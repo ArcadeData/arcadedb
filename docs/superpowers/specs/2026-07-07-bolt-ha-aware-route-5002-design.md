@@ -65,25 +65,39 @@ returns must be genuinely reachable on the Bolt port.
 
 ### 2. Interface (server module)
 
-**`HAServerPlugin`** gains two methods with safe defaults so non-Raft or absent
+**`HAServerPlugin`** gains a single snapshot method with a safe default so non-Raft or absent
 implementations need no change:
 ```java
-default String getLeaderBoltAddress()   { return null; }
-default String getReplicaBoltAddresses() { return ""; }
+record BoltRoutingTable(String writer, List<String> readers) {}
+default BoltRoutingTable getBoltRoutingTable() { return null; }
 ```
-**`RaftHAPlugin`** overrides both, delegating to `RaftHAServer`.
+**`RaftHAPlugin`** overrides it, delegating to `RaftHAServer`, which derives the writer and readers from
+a single `getLeaderId()` read and returns `readers` as an immutable `List.copyOf`.
+
+> Implementation note (post-review): an earlier draft exposed two methods
+> (`getLeaderBoltAddress()` + `getReplicaBoltAddresses()`). Code review flagged that reading the leader
+> twice opens a window where the writer and reader sets can disagree about who the leader is, so the
+> final design collapses them into one snapshot method.
 
 ### 3. ROUTE handler (bolt module)
 
-**`BoltNetworkExecutor.handleRoute`**: obtain `server.getHA()`. When it is non-null and a
-leader is resolvable (`getLeaderBoltAddress() != null`), build the routing table from live
-membership:
-- leader Bolt address -> `WRITE` and `ROUTE`
-- each replica Bolt address -> `READ` and `ROUTE`
+**`BoltNetworkExecutor.handleRoute`**: ROUTE enumerates every peer's Bolt endpoint, so it is gated
+behind an authenticated session (`state == READY`), matching the other request handlers - a ROUTE sent
+before HELLO/LOGON completes is refused. When authenticated, obtain `server.getHA()` and its
+`getBoltRoutingTable()` snapshot. When the snapshot is non-null (HA active with a known leader), build the
+routing table:
+- leader (writer) Bolt address -> `WRITE` and `ROUTE`
+- each replica (reader) Bolt address -> `READ` and `ROUTE`
 - `ttl` from `BOLT_ROUTING_TTL`, `db` from the message/session (unchanged).
 
-When HA is null or no leader is resolvable yet, fall back to the **current single-node table**
-(self as `WRITE`/`READ`/`ROUTE`) - unchanged behavior.
+When the snapshot is null, fall back by HA state:
+- **HA active but no leader known yet** (mid-election): advertise this node as `READ` + `ROUTE` only -
+  never `WRITE`, since it may be a follower - so a driver keeps reading and re-routes after the TTL
+  instead of writing to a follower.
+- **No HA** (true single-node): advertise this node as `WRITE`/`READ`/`ROUTE` (unchanged).
+
+The self address uses the connection's actual bound Bolt port (`socket.getLocalPort()`), not the global
+default, so a non-default listener port is advertised correctly.
 
 Because the table is rebuilt on every ROUTE call and the leader/replica split is taken from
 live membership, **reader/writer classification tracks leader changes automatically**: after

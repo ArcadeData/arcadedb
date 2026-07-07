@@ -8,6 +8,15 @@
 
 **Tech Stack:** Java 21, Maven multi-module, Apache Ratis (Raft), JUnit 5 + AssertJ, neo4j-java-driver (test), custom PackStream Bolt codec.
 
+> **Post-review deltas (final code differs from the task steps below):** code review reshaped three points.
+> (1) The two-method interface (`getLeaderBoltAddress()` + `getReplicaBoltAddresses()`) was collapsed into a
+> single `HAServerPlugin.BoltRoutingTable getBoltRoutingTable()` computed from one `getLeaderId()` read, to
+> remove the writer/reader leader-disagreement window; `readers` is an immutable `List.copyOf`. (2)
+> `handleRoute` is gated behind an authenticated session (`state == READY`) because ROUTE enumerates cluster
+> Bolt endpoints. (3) The fallback distinguishes HA-active-but-leaderless (advertise `READ` + `ROUTE` only,
+> never `WRITE`) from true single-node (`WRITE`/`READ`/`ROUTE`), and uses `socket.getLocalPort()` for the
+> self address. The task steps below capture the original plan; the spec's section 2/3 reflect the final design.
+
 ## Global Constraints
 
 - Java 21+; import classes, do not use fully-qualified names inline.

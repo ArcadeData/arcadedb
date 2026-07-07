@@ -929,6 +929,15 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
+    if (state != State.READY) {
+      // ROUTE enumerates every peer's Bolt endpoint, so it must not run for an unauthenticated caller.
+      // Require an authenticated (READY) session, matching the other request handlers. A Bolt driver
+      // always sends ROUTE after HELLO/LOGON, so this does not affect legitimate routing.
+      sendFailure(BoltException.PROTOCOL_ERROR, "ROUTE not expected in state: " + state);
+      state = State.FAILED;
+      return;
+    }
+
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong());
     rt.put("db", message.getDatabase() != null ? message.getDatabase() : databaseName);

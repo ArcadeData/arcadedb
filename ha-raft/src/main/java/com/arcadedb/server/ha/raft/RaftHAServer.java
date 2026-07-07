@@ -1271,7 +1271,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           readers.add(reader);
       }
     }
-    return new HAServerPlugin.BoltRoutingTable(writer, readers);
+    return new HAServerPlugin.BoltRoutingTable(writer, List.copyOf(readers));
   }
 
   /**
