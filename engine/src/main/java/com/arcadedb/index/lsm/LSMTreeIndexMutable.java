@@ -107,8 +107,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       int pos = INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
 
-      // TODO: COUNT THE MUTABLE PAGES FROM THE TAIL BACK TO THE HEAD
-      currentMutablePages = 1;
+      // #4960: every page in this file was created after the last compaction (splitIndex starts a fresh
+      // file), so the whole file counts towards the next auto-compaction. Hardcoding 1 here undercounted
+      // after every restart, deferring the scheduled compaction by up to a full threshold of new pages.
+      currentMutablePages = Math.max(1, getTotalPages());
 
       final int subIndexFileId = currentPage.readInt(pos);
 
@@ -300,6 +302,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   public void setCurrentMutablePages(final int currentMutablePages) {
     this.currentMutablePages = currentMutablePages;
+  }
+
+  public int getCurrentMutablePages() {
+    return currentMutablePages;
   }
 
   protected MutablePage createNewPage() throws IOException {
