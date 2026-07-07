@@ -27,7 +27,9 @@ import org.junit.jupiter.api.Test;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -167,6 +169,72 @@ class DatabaseContextLifecycleTest extends TestHelper {
       assertThat(leaked).isEmpty();
     } finally {
       gav.drop();
+    }
+  }
+
+  @Test
+  void concurrentSweepsRollBackAbandonedTransactionsExactlyOnce() throws Exception {
+    // CONTRACT TEST: two threads can run cleanupDeadThreads() concurrently (both landing on the periodic
+    // 1000th-init() boundary). Each dead entry must be CLAIMED atomically so its abandoned transactions are
+    // rolled back exactly once; without the claim both sweepers could pass the liveness check on the same
+    // entry and double-roll-back the same transaction (probabilistic race, no deterministic repro).
+    final DatabaseInternal internal = (DatabaseInternal) database;
+
+    final class CountingTransaction extends TransactionContext {
+      private final AtomicInteger rollbacks = new AtomicInteger();
+
+      private CountingTransaction() {
+        super(internal.getWrappedDatabaseInstance());
+      }
+
+      @Override
+      public boolean isActive() {
+        return true;
+      }
+
+      @Override
+      public void rollback() {
+        rollbacks.incrementAndGet();
+      }
+    }
+
+    final int workers = 16;
+    final CountingTransaction[] transactions = new CountingTransaction[workers];
+    final Thread[] threads = new Thread[workers];
+    for (int i = 0; i < workers; i++) {
+      final CountingTransaction tx = new CountingTransaction();
+      transactions[i] = tx;
+      threads[i] = new Thread(() -> DatabaseContext.INSTANCE.init(internal, tx), "ctx-lifecycle-sweep-race-" + i);
+      threads[i].start();
+    }
+    for (final Thread thread : threads) {
+      thread.join(10_000);
+      assertThat(thread.isAlive()).isFalse();
+    }
+
+    final CyclicBarrier barrier = new CyclicBarrier(2);
+    final AtomicReference<Throwable> error = new AtomicReference<>();
+    final Runnable sweeper = () -> {
+      try {
+        barrier.await(10, TimeUnit.SECONDS);
+        DatabaseContext.cleanupDeadThreads();
+      } catch (final Throwable e) {
+        error.set(e);
+      }
+    };
+    final Thread sweeper1 = new Thread(sweeper, "ctx-lifecycle-sweeper-1");
+    final Thread sweeper2 = new Thread(sweeper, "ctx-lifecycle-sweeper-2");
+    sweeper1.start();
+    sweeper2.start();
+    sweeper1.join(10_000);
+    sweeper2.join(10_000);
+    assertThat(sweeper1.isAlive()).isFalse();
+    assertThat(sweeper2.isAlive()).isFalse();
+    assertThat(error.get()).isNull();
+
+    for (int i = 0; i < workers; i++) {
+      assertThat(transactions[i].rollbacks.get()).as("worker %d rollback count", i).isEqualTo(1);
+      assertThat(DatabaseContext.isThreadRegistered(threads[i].threadId())).isFalse();
     }
   }
 

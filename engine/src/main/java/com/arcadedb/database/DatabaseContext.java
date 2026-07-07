@@ -151,8 +151,10 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       if (tl != null)
         result.add(tl);
       // DO NOT PRUNE THE CONTEXTS ENTRY HERE EVEN WHEN THE MAP BECAME EMPTY: THIS RUNS ON THE CLOSING THREAD AND
-      // WOULD RACE THE OWNER THREAD'S init() RE-REGISTRATION, UNREGISTERING A LIVE CONTEXT (ISSUE #4939). EMPTY
-      // ENTRIES ARE PRUNED BY THE OWNER (removeContext/removeCurrentThreadContexts) OR BY THE DEAD-THREAD SWEEP
+      // WOULD RACE THE OWNER THREAD'S init() RE-REGISTRATION, UNREGISTERING A LIVE CONTEXT (ISSUE #4939). AN
+      // EMPTY ENTRY LINGERS UNTIL ITS OWNER NEXT TOUCHES THE CONTEXT API (removeContext/
+      // removeCurrentThreadContexts) OR DIES (DEAD-THREAD SWEEP): AN IDLE LIVE THREAD KEEPS A TINY EMPTY-MAP
+      // ENTRY MEANWHILE, BOUNDED BY THE LIVE-THREAD COUNT
     }
     return result;
   }
@@ -220,16 +222,34 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * example via {@code acquireLock().type(...).lock()}) stayed owned by the dead thread forever and every later
    * commit touching them timed out until restart (issue #4941).
    * <p>
+   * The rollbacks run INLINE on the triggering thread: unlike the pre-#4941 sweep (a cheap map cleanup), the
+   * unlucky request whose {@code init()} hits the periodic boundary pays for the full rollback (callbacks, page
+   * reloads, lock release) of every transaction the dead threads abandoned. Acceptable for a safety-net path,
+   * but operators should expect a tail-latency blip when the sweep finds abandoned work. The rollback may also
+   * re-enter this class on the sweeping thread (record reloads resolve the sweeper's own transaction context);
+   * that is safe because the dead entry is atomically claimed and unlinked before the rollbacks start and the
+   * CONTEXTS traversal is weakly consistent.
+   * <p>
    * Package-private (instead of private) for tests only.
    */
   static void cleanupDeadThreads() {
-    for (final Iterator<ThreadContexts> it = CONTEXTS.values().iterator(); it.hasNext(); ) {
-      final ThreadContexts threadContexts = it.next();
+    for (final Map.Entry<Long, ThreadContexts> entry : CONTEXTS.entrySet()) {
+      final ThreadContexts threadContexts = entry.getValue();
       final Thread owner = threadContexts.owner.get();
       if (owner == null || !owner.isAlive()) {
-        it.remove();
-        for (final DatabaseContextTL tl : threadContexts.contexts.values())
-          rollbackAbandonedTransactions(tl);
+        // MEMORY VISIBILITY: THE isAlive() == false CHECK IS LOAD-BEARING, NOT JUST A LIVENESS TEST. PER JLS
+        // 17.4.4 THE FINAL ACTION OF A TERMINATED THREAD SYNCHRONIZES-WITH ANOTHER THREAD DETECTING THE
+        // TERMINATION VIA isAlive()/join(), SO THIS THREAD IS GUARANTEED TO SEE ALL THE DEAD OWNER'S WRITES
+        // (E.G. TransactionContext.requester, WHICH IS NON-VOLATILE). DO NOT REPLACE IT WITH A BARE
+        // WeakReference STALENESS CHECK. THE owner == null BRANCH LACKS THE FORMAL GUARANTEE BUT A GC-CLEARED
+        // Thread IS LONG TERMINATED (AND ITS WRITES LONG PUBLISHED) IN PRACTICE.
+        //
+        // ATOMICALLY CLAIM THE DEAD ENTRY: TWO THREADS CAN SWEEP CONCURRENTLY (BOTH LANDING ON THE PERIODIC
+        // init() BOUNDARY) AND THE ABANDONED TRANSACTIONS MUST BE ROLLED BACK EXACTLY ONCE. THREAD IDS ARE
+        // NEVER REUSED, SO THE KEYED REMOVE CANNOT DROP AN ENTRY BELONGING TO A DIFFERENT THREAD
+        if (CONTEXTS.remove(entry.getKey(), threadContexts))
+          for (final DatabaseContextTL tl : threadContexts.contexts.values())
+            rollbackAbandonedTransactions(tl);
       }
     }
   }

@@ -244,7 +244,10 @@ that could starve the very snapshot resync meant to heal the node.
   foreign registry entries, closing a data race with the owner thread's `init()` that could corrupt the plain
   `HashMap` or unregister a live context ([#4939](https://github.com/ArcadeData/arcadedb/issues/4939); the
   reported mid-commit cross-thread rollback interleaving is already excluded by the database RW lock - commit
-  holds the read lock for its whole duration while close's rollbacks run under the write lock).
+  holds the read lock for its whole duration while close's rollbacks run under the write lock). Review
+  follow-up: concurrent sweeps (two threads landing on the periodic boundary together) now claim each dead
+  entry atomically, so its abandoned transactions are rolled back exactly once instead of racing a double
+  rollback (double unlock, concurrent record reloads on shared caches).
 - **Pool discipline, TimeSeries threading and low-severity storage/WAL/LSM cleanups (2026-07 audit).**
   The partitioned triangle-count operator now runs chunk 0 on the calling thread instead of submitting
   every chunk to the shared query pool and blocking on all of them - the same caller-runs-chunk-0
