@@ -181,6 +181,25 @@ that could starve the very snapshot resync meant to heal the node.
   database close now fails with the intended "Async executor has been shut down" error instead of a raw
   NullPointerException ([#4955](https://github.com/ArcadeData/arcadedb/issues/4955)).
 
+- **Commit: the WAL append is now the point of no return.** Page versions are validated and bumped BEFORE
+  the transaction is appended to the WAL, so a WAL record can only exist for a transaction that can no
+  longer fail validation - previously a phase-2 validation failure left the aborted transaction in the WAL
+  with no abort marker, and crash recovery partially replayed it
+  ([#4936](https://github.com/ArcadeData/arcadedb/issues/4936)). Enabling that guarantee, the commit lock
+  set is verified AFTER all page-set mutation and extended when files joined late (EXTERNAL-property
+  buckets, indexes created inside the transaction, and the vector index's companion graph file, which now
+  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)). **Behavioral
+  change for explicit locking:** a transaction using explicit locks that writes a file absent from its lock
+  list - including files it could not have locked up front, such as an index created inside the same
+  transaction or an EXTERNAL property's paired bucket - now fails with the "not all the modified resources
+  were locked" error instead of committing without the lock (which was unsafe). Lock the type after
+  creating its indexes, or create indexes outside explicit-lock transactions. Note the commit
+  boundary this makes explicit: a failure AFTER the WAL append (e.g. while publishing pages) is resolved by
+  recovery replay, never by abort - the caller may see an error for a transaction that becomes durable on
+  restart. If that post-append failure ever happens, the database is FENCED: every further operation fails
+  with a "close and reopen to run recovery" error, preventing new transactions from appending conflicting
+  WAL records for the same page versions, and the ack-gated close preserves the WAL so the reopen replays
+  the orphaned transaction.
 - **WAL/recovery correctness (2026-07 audit).** Recovery now RE-APPLIES a WAL delta whose version equals
   the on-disk page version, repairing a torn page write (a 64KB flush spans many sectors; a power loss can
   persist the new version header while the delta sectors still hold the previous content - the old `<=`
@@ -226,6 +245,68 @@ that could starve the very snapshot resync meant to heal the node.
   `HashMap` or unregister a live context ([#4939](https://github.com/ArcadeData/arcadedb/issues/4939); the
   reported mid-commit cross-thread rollback interleaving is already excluded by the database RW lock - commit
   holds the read lock for its whole duration while close's rollbacks run under the write lock).
+- **Pool discipline, TimeSeries threading and low-severity storage/WAL/LSM cleanups (2026-07 audit).**
+  The partitioned triangle-count operator now runs chunk 0 on the calling thread instead of submitting
+  every chunk to the shared query pool and blocking on all of them - the same caller-runs-chunk-0
+  discipline as `parallelForRange`, removing a pool-starvation deadlock risk when the operator is reached
+  from a pool thread ([#4952](https://github.com/ArcadeData/arcadedb/issues/4952)).
+  `TimeSeriesEngine.appendBatch` no longer dispatches shard writes to the shard executor when the calling
+  thread has an enclosing transaction open - each TS-Shard thread ran with its own fresh transaction,
+  publishing the shard pages out of band with the enclosing commit and, under HA, reordering the page
+  versions on the Raft log; the per-shard sub-batches are now written sequentially in-thread in that case,
+  honoring the `appendSamples` threading contract
+  ([#4957](https://github.com/ArcadeData/arcadedb/issues/4957)). Low-severity storage/WAL cleanups
+  ([#4958](https://github.com/ArcadeData/arcadedb/issues/4958)): the WAL read/write helpers now loop until
+  complete with per-call buffers (a partial read decoded stale garbage from a shared buffer; a partial
+  write left a torn record the gap detector then flagged as corruption); a corrupt per-page WAL header can
+  no longer trigger a ~2GB transient allocation during recovery (the declared delta is clamped to the
+  remaining file size - before, the resulting `OutOfMemoryError` escaped the recovery guard entirely);
+  `TransactionManager.getStats()` no longer inflates its totals with polling frequency and no longer NPEs
+  on read-only databases; the page cache-miss counter is actually incremented (it stayed at ~0 forever, so
+  the hit/miss ratio was meaningless); a nested `suspendFlushAndExecute` (snapshot during backup) now runs
+  the inner callback under the outer suspension instead of silently skipping it, and the HA Raft
+  snapshot/checksums endpoint now serializes per database so a concurrent snapshot request can never
+  stream files without owning the flush suspension (the suspend flag is first-caller-owned; the owner's
+  exit would have resumed flushing mid-read for the other request, tearing the streamed files - reachable
+  with the default `HA_SNAPSHOT_MAX_CONCURRENT` of 2); WAL files preserved by an
+  aborted recovery are renamed to `.wal.corrupt` and the WAL pool counter is seeded past existing files,
+  so preserved content is never adopted as an active WAL (appending new transactions after corrupt bytes)
+  nor replayed again (the HA Raft snapshot checksum skips the preserved `.corrupt` files like it already
+  skipped `.wal`); per-bucket free-space statistics now measure the usable content region (not the
+  physical page size) and their counters are thread-safe. Low-severity LSM cleanups
+  ([#4960](https://github.com/ArcadeData/arcadedb/issues/4960)): `BufferBloomFilter` (not yet wired into
+  the read path) hardened before use - the bit index can no longer land one bit past the region, `add` is
+  atomic (a dropped bit is a false negative, the one failure a bloom filter must never have) and two
+  probes are derived from the 64-bit Murmur halves; the LSM mutable-index reference is now `volatile`
+  (unlocked readers could observe a stale or partially published instance after a compaction swap);
+  `close()` now cancels a scheduled-but-not-started compaction instead of silently doing nothing and logs
+  loudly when an in-progress compaction blocks the close; `splitIndex` verifies the new-file lock outcome
+  instead of ignoring it; a reloaded mutable index restores its uncompacted-pages counter from the file
+  instead of hardcoding 1, so auto-compaction is no longer deferred by up to a full threshold of new
+  pages after every restart. Items deliberately left open on #4958/#4960 with reasoning on the issues:
+  the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
+  conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
+  cursor rescan (perf-only).
+- **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
+  transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
+  records created in the failed transaction get their optimistically-assigned RID reset to provisional and
+  modified records are reloaded to their committed content, so retrying with the same in-memory objects
+  re-inserts them instead of updating a record that was never persisted; a failure after the WAL append
+  still keeps the assigned RIDs, since the transaction is durable and recovery replays it
+  ([#4940](https://github.com/ArcadeData/arcadedb/issues/4940)). From the low-severity group
+  ([#4959](https://github.com/ArcadeData/arcadedb/issues/4959)): a deferred update whose record was deleted
+  by a concurrent transaction now fails the commit with a retryable `ConcurrentModificationException`
+  instead of being silently skipped while the rest of the transaction commits (silent partial commit);
+  `transaction()` no longer burns every retry attempt (plus retry delays) on a deterministic
+  `DuplicatedKeyException` - one retry disambiguates it from a concurrency-induced duplicate. **Behavioral
+  change:** `transaction(block, joinTx, attempts)` now caps duplicate-key retries at 2 attempts regardless
+  of the `attempts` argument (duplicates are detected against durable state only, so a duplicate that
+  survives one retry is deterministic and further attempts just burn time and retry delays);
+  `executeLockingFiles` now locks on behalf of the current transaction's requester (thread or session), so
+  a thread acting for a session no longer times out on locks its own session already holds; and the
+  page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
+  levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
+  `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
 
 ### Improvements
 
