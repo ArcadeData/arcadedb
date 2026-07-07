@@ -10,6 +10,16 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Import/Export: `IMPORT DATABASE` no longer crashes on a JSONL dump that contains an `LSM_VECTOR` index.**
+  Exporting a database with a vector index produced a valid JSONL dump, but re-importing it failed with
+  `CommandExecutionException: Error on importing database` (root cause: `JSONObject[unique] not found`),
+  leaving the target database half-imported. The JSONL schema loader assumed every index serialises the
+  `unique`/`nullStrategy` fields, which `LSM_VECTOR` indexes do not. The importer now rebuilds vector
+  indexes through the dedicated vector builder using the exported metadata (dimensions, similarity
+  function, HNSW parameters); the index is restored and repopulated from the imported embeddings, so no
+  manual filtering or post-import `create_vector_index()` step is needed
+  ([#5069](https://github.com/ArcadeData/arcadedb/issues/5069)).
+
 - **HA: leader now auto-recovers a follower's replication channel wedged on stale DNS after a pod-IP change.**
   On Kubernetes, a follower that restarts with a new pod IP could stay stranded until a manual
   `transferLeadership`, dropping the cluster to bare quorum for minutes
