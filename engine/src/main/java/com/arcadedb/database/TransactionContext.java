@@ -109,7 +109,7 @@ public class TransactionContext implements Transaction {
   // capture on a non-owner thread would key later lock operations inconsistently and leak the file locks
   // forever (#4941). The check-then-set in captureRequester() is not atomic and is safe only under this
   // single-writer discipline.
-  // volatile (#5060 review round 3): the DEAD-owner release path gets its happens-before from
+  // volatile (#5060): the DEAD-owner release path gets its happens-before from
   // isAlive()==false (JLS 17.4.4), but closeInternal can roll back a LIVE owner's context, where no such
   // edge exists - a plain read could see a stale null, re-capture the closing thread and key the unlock
   // wrong, leaking the very locks #4941 fixes. The volatile read extends the guarantee to live owners
@@ -577,9 +577,12 @@ public class TransactionContext implements Transaction {
    * executeLockingFiles) may capture.
    */
   Object captureRequester() {
-    if (requester == null)
-      requester = Thread.currentThread();
-    return requester;
+    Object captured = requester;
+    if (captured == null) {
+      captured = Thread.currentThread();
+      requester = captured;
+    }
+    return captured;
   }
 
   /**
