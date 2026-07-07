@@ -395,8 +395,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     // Restore into a temporary sibling directory first, then atomically swap it into place only on
     // success. This keeps an existing target database intact when the restore fails (issue #5027).
+    // The temp directory name is prefixed with the reserved-database marker ('.') so that, if the
+    // process dies mid-restore, loadDatabases() skips the orphan at next startup instead of trying
+    // to open it as a user database.
     final File finalDir = new File(dbPath);
-    final File tempDir = new File(dbPath + ".restore-tmp-" + System.nanoTime());
+    final File tempDir = new File(finalDir.getParentFile(),
+        ArcadeDBServer.RESERVED_DATABASE_PREFIX + "restore-tmp-" + databaseName + "-" + System.nanoTime());
 
     if (isSSERequested(exchange)) {
       startSSE(exchange);
@@ -462,21 +466,29 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    */
   private void swapRestoredDatabase(final ArcadeDBServer server, final String databaseName, final File finalDir,
       final File tempDir) {
-    // Drop the previous target (HA-aware) only after a successful restore.
-    if (server.existsDatabase(databaseName))
-      dropDatabase(databaseName);
-    else if (finalDir.exists())
-      FileUtils.deleteRecursively(finalDir);
-
-    try {
+    // Serialise the drop + on-disk swap against concurrent registry access (getDatabase / createDatabase)
+    // so no concurrent open observes the transient half-swapped directory, matching the snapshot-installer
+    // pattern (issue #4832). Any failure cleans up the temporary directory so it is never leaked on disk.
+    synchronized (server.getDatabasesLock()) {
       try {
-        Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
-      } catch (final AtomicMoveNotSupportedException e) {
-        Files.move(tempDir.toPath(), finalDir.toPath());
+        // Drop the previous target (HA-aware) only after a successful restore into tempDir.
+        if (server.existsDatabase(databaseName))
+          dropDatabase(databaseName);
+        else if (finalDir.exists())
+          FileUtils.deleteRecursively(finalDir);
+
+        try {
+          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
+        } catch (final AtomicMoveNotSupportedException e) {
+          Files.move(tempDir.toPath(), finalDir.toPath());
+        }
+      } catch (final CommandExecutionException e) {
+        FileUtils.deleteRecursively(tempDir);
+        throw e;
+      } catch (final Exception e) {
+        FileUtils.deleteRecursively(tempDir);
+        throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
       }
-    } catch (final IOException e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
     }
   }
 
@@ -526,6 +538,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       for (final InetAddress addr : InetAddress.getAllByName(host)) {
         if (addr.isLoopbackAddress() || addr.isAnyLocalAddress() || addr.isLinkLocalAddress()
             || addr.isSiteLocalAddress() || addr.isMulticastAddress())
+          return true;
+
+        // InetAddress flags miss two modern private ranges, so check the raw bytes explicitly.
+        final byte[] bytes = addr.getAddress();
+        // IPv6 Unique Local Addresses (ULA) fc00::/7 (RFC 4193).
+        if (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc)
+          return true;
+        // IPv4 Carrier-Grade NAT (CGNAT) 100.64.0.0/10 (RFC 6598).
+        if (bytes.length == 4 && (bytes[0] & 0xff) == 100 && (bytes[1] & 0xc0) == 64)
           return true;
       }
       return false;

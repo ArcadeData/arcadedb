@@ -131,10 +131,19 @@ public class ImportSecurityValidator {
    * {@code IMPORT DATABASE} (loopback, link-local, site-local/private, wildcard or multicast).
    */
   static boolean isBlockedAddress(final InetAddress address) {
-    return address.isLoopbackAddress()      // 127.0.0.0/8, ::1
+    if (address.isLoopbackAddress()         // 127.0.0.0/8, ::1
         || address.isLinkLocalAddress()     // 169.254.0.0/16 (cloud metadata), fe80::/10
         || address.isSiteLocalAddress()     // 10/8, 172.16/12, 192.168/16
         || address.isAnyLocalAddress()      // 0.0.0.0, ::
-        || address.isMulticastAddress();    // 224.0.0.0/4, ff00::/8
+        || address.isMulticastAddress())    // 224.0.0.0/4, ff00::/8
+      return true;
+
+    // InetAddress flags miss two modern private ranges, so check the raw bytes explicitly.
+    final byte[] bytes = address.getAddress();
+    // IPv6 Unique Local Addresses (ULA) fc00::/7 (RFC 4193).
+    if (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc)
+      return true;
+    // IPv4 Carrier-Grade NAT (CGNAT) 100.64.0.0/10 (RFC 6598).
+    return bytes.length == 4 && (bytes[0] & 0xff) == 100 && (bytes[1] & 0xc0) == 64;
   }
 }

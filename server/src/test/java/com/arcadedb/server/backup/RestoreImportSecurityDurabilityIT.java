@@ -146,6 +146,14 @@ class RestoreImportSecurityDurabilityIT extends BaseGraphServerTest {
   }
 
   @Test
+  void importDatabaseRejectsCgnatHostByDefault() throws Exception {
+    // 100.64.0.0/10 (RFC 6598) is not covered by InetAddress.isSiteLocalAddress().
+    final HttpResponse<String> response = postCommand("import database ssrf_cgnat http://100.64.0.1/x.tgz");
+    assertThat(response.statusCode()).as("CGNAT host must be rejected by default").isEqualTo(403);
+    assertThat(getServer(0).existsDatabase("ssrf_cgnat")).isFalse();
+  }
+
+  @Test
   void failedOverwriteRestorePreservesOriginalDatabase() throws Exception {
     final String databaseName = getDatabaseName();
     restoredDatabaseName = databaseName + "_durability";
