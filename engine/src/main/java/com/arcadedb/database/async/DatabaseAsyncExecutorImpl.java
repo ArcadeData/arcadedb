@@ -1027,6 +1027,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         scheduled = false;
 
       if (scheduled) {
+        // NOTE (#5081 review): remove(Object) on the Disruptor queue is an O(n) whole-queue-locking scan.
+        // Acceptable ONLY because this undo runs on the rare dead-worker post-shutdown race - it must never
+        // migrate onto the steady-state scheduling path.
         if (!target.isAlive() && removeQuietly(queue, task))
           // The worker exited (shutdown) after its final queue drain but before this offer landed:
           // the task would sit unexecuted forever. Undo the offer and fail like any post-shutdown
