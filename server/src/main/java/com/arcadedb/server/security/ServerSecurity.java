@@ -34,7 +34,6 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
-import com.arcadedb.utility.LRUCache;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
@@ -43,6 +42,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
@@ -64,13 +64,22 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private final        SecurityGroupFileRepository     groupRepository;
   private final        String                          algorithm;
   private final        SecretKeyFactory                secretKeyFactory;
-  private final        Map<String, String>             saltCache;
+  private final        ConcurrentSaltCache             saltCache;
   private final        int                             saltIteration;
   private final        Map<String, ServerSecurityUser> users                = new HashMap<>();
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
   public static final  int                             SALT_SIZE            = 32;
+
+  // Reused per thread so the Basic-auth hot path avoids a getInstance provider lookup on every call.
+  private static final ThreadLocal<MessageDigest>      SHA256_DIGEST        = ThreadLocal.withInitial(() -> {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (final NoSuchAlgorithmException e) {
+      throw new ServerSecurityException("SHA-256 not available for salt cache key", e);
+    }
+  });
   private              Timer                           reloadConfigurationTimer;
   private final        ApiTokenConfiguration           apiTokenConfig;
   private static final int                                MAX_TOKEN_FAILURES   = 5;
@@ -85,10 +94,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     final int cacheSize = configuration.getValueAsInteger(SERVER_SECURITY_SALT_CACHE_SIZE);
 
-    if (cacheSize > 0)
-      saltCache = Collections.synchronizedMap(new LRUCache<>(cacheSize));
-    else
-      saltCache = Collections.emptyMap();
+    saltCache = cacheSize > 0 ? new ConcurrentSaltCache(cacheSize) : null;
 
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
@@ -346,8 +352,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   protected String encodePassword(final String password, final String salt, final int iterations) {
-    if (!saltCache.isEmpty()) {
-      final String encoded = saltCache.get(password + "$" + salt + "$" + iterations);
+    // Key the cache on a SHA-256 digest of the plaintext+salt+iterations rather than the raw
+    // password, so cleartext credentials are never retained as reachable map keys in the heap.
+    final String cacheKey = saltCache != null ? saltCacheKey(password, salt, iterations) : null;
+
+    if (cacheKey != null) {
+      final String encoded = saltCache.get(cacheKey);
       if (encoded != null)
         // FOUND CACHED
         return encoded;
@@ -357,9 +367,43 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final String encoded = "%s$%d$%s$%s".formatted(algorithm, iterations, salt, hash);
 
     // CACHE IT
-    saltCache.put(password + "$" + salt + "$" + iterations, encoded);
+    if (cacheKey != null)
+      saltCache.put(cacheKey, encoded);
 
     return encoded;
+  }
+
+  /**
+   * Builds the salt-cache key as a SHA-256 hex digest of {@code password$salt$iterations}. The raw
+   * password is never used as a key, so casual string-scanning of a heap/core dump or swap file
+   * cannot recover plaintext credentials from the cache.
+   * <p>
+   * Residual risk (by design, not a defect): the salt and iteration count are also embedded in the
+   * cached <em>value</em> (and the salt is not secret), so a full heap dump still lets an attacker
+   * brute-force low-entropy passwords by computing one fast SHA-256 per guess. That is inherent to
+   * caching a slow KDF under any recomputable-without-plaintext key; it is strictly better than the
+   * previous plaintext-key exposure but weaker than the PBKDF2 hash it sits next to. Prefer
+   * session-token auth for hot clients, and disable the cache
+   * ({@code arcadedb.server.securitySaltCacheSize=0}) when even this residual exposure is
+   * unacceptable.
+   * <p>
+   * The {@link MessageDigest} is held in a {@link ThreadLocal} to avoid a per-call
+   * {@code getInstance} provider lookup on the Basic-auth hot path.
+   */
+  private static String saltCacheKey(final String password, final String salt, final int iterations) {
+    // digest(byte[]) is a one-shot that resets the instance afterwards, so the reused ThreadLocal
+    // digest is always clean at entry on this update-free path.
+    final MessageDigest digest = SHA256_DIGEST.get();
+    final byte[] hash = digest.digest((password + "$" + salt + "$" + iterations).getBytes(StandardCharsets.UTF_8));
+    return HexFormat.of().formatHex(hash);
+  }
+
+  /**
+   * Returns a snapshot of the current salt-cache keys, or an empty set when the cache is disabled.
+   * Package-private: intended for tests that assert plaintext passwords are never retained as keys.
+   */
+  Set<String> getSaltCacheKeysSnapshot() {
+    return saltCache != null ? saltCache.keys() : Set.of();
   }
 
   public List<JSONObject> usersToJSON() {
