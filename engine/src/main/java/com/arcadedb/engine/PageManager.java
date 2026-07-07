@@ -150,7 +150,7 @@ public class PageManager extends LockContext {
     synchronized (LIFECYCLE_LOCK) {
       if (lifecycleRefCount > 0)
         LogManager.instance().log(this, Level.WARNING,
-            "Configuration profile change ignored: %d database(s) are open and the page manager cannot be swapped live. Set the profile before opening databases",
+            "Configuration profile PARTIALLY applied: %d database(s) are open, so the page manager keeps its current sizing while the profile's other settings (async/HTTP threads, queue sizes) did change. Set the profile before opening databases for a consistent configuration",
             null, lifecycleRefCount);
     }
   }

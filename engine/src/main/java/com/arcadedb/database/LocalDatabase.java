@@ -320,14 +320,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
+   * <p>
+   * NOTE (#4927): kill() deliberately does NOT release this instance's PageManager lifecycle reference -
+   * the documented kill-then-close contract relies on the following {@code close()} releasing it
+   * (closeInternal's release runs with {@code open == false} too, exactly once via its CAS). A kill()
+   * never followed by close() pins the page manager open for the JVM's life.
    */
   @Override
-  /**
-   * Test-only crash simulation. NOTE (#4927): kill() deliberately does NOT release this instance's
-   * PageManager lifecycle reference - the documented kill-then-close contract relies on the following
-   * {@code close()} releasing it (closeInternal's release runs with {@code open == false} too, exactly
-   * once via its CAS). A kill() never followed by close() pins the page manager open for the JVM's life.
-   */
   public void kill() {
     if (async != null)
       async.kill();
@@ -2199,6 +2198,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // call), which is exactly how the pre-#4927 code stayed double-close-safe. The executor teardown stays
     // on the map-emptiness heuristic DELIBERATELY (#5070 review): unlike the flush thread, a shutdown
     // executor lazily re-creates itself on the next getExecutor(), so the mid-flight-open race self-heals.
+    // A redundant double-close of the LAST database calls it twice (the empty map returns true again):
+    // harmless, closeExecutor() is idempotent (early-returns on null/isShutdown under its class lock).
     if (DatabaseFactory.removeActiveDatabaseInstance(databasePath, this))
       GraphAnalyticalView.closeExecutor();
 

@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * original interleavings (a close nulling the flush thread under a mid-flight open on another thread, or two
  * opens double-starting it) are pure races, so the contract that makes them impossible is what is tested.
  */
+@org.junit.jupiter.api.parallel.ResourceLock("PageManager.INSTANCE")
 class PageManagerLifecycleRefCountTest {
 
   private static final String DB_A = "target/databases/PageManagerLifecycleRefCountTestA";
@@ -45,7 +46,9 @@ class PageManagerLifecycleRefCountTest {
   void normalizeGlobalState() {
     // #5070 review: PageManager.INSTANCE is process-global. Force-reset the refcount to a known zero
     // baseline so these assertions are not order-dependent on another test leaking an open database (or a
-    // kill() without the paired close()) in the same surefire fork.
+    // kill() without the paired close()) in the same surefire fork. The class-level @ResourceLock declares
+    // the singleton dependency: this force-teardown must never run concurrently with another class holding
+    // an open database (safe under the current sequential surefire config).
     PageManager.INSTANCE.close();
   }
 
