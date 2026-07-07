@@ -3976,6 +3976,13 @@ public class CypherExecutionPlan {
    * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
    */
   private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context) {
+    // Count-push-down operators reason only about node labels and edge types; they cannot honor
+    // inline property filters (e.g. (a:Node {id: 1})) or dynamic labels on the pattern's nodes.
+    // If any node carries such a filter, skip all push-down detectors so the query falls back to
+    // the normal materialization pipeline, which applies the filter. See issue #5071.
+    if (hasInlineNodePropertyOrDynamicLabel())
+      return null;
+
     CountOp op = tryDetectChainCountStar();
     if (op == null)
       op = tryDetectAntiJoinChainCountStar();
@@ -3989,6 +3996,27 @@ public class CypherExecutionPlan {
       return null;
     final String alias = isCountStarReturn();
     return new CSRCountStep(op, alias, context);
+  }
+
+  /**
+   * Returns true if any node in any MATCH path pattern carries an inline property filter
+   * (e.g. {@code {id: 1}} or {@code $props}) or a dynamic label. Such filters cannot be honored by
+   * the count-push-down operators, which key purely off node labels and edge types. See issue #5071.
+   */
+  private boolean hasInlineNodePropertyOrDynamicLabel() {
+    if (statement.getMatchClauses() == null)
+      return false;
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns())
+        continue;
+      for (final PathPattern pp : mc.getPathPatterns())
+        for (int i = 0; i <= pp.getRelationshipCount(); i++) {
+          final NodePattern node = pp.getNode(i);
+          if (node.hasProperties() || node.hasDynamicLabels())
+            return true;
+        }
+    }
+    return false;
   }
 
   private CountOp tryDetectChainCountStar() {
