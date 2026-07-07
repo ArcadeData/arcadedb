@@ -180,29 +180,11 @@ class DatabaseContextLifecycleTest extends TestHelper {
     // entry and double-roll-back the same transaction (probabilistic race, no deterministic repro).
     final DatabaseInternal internal = (DatabaseInternal) database;
 
-    final class CountingTransaction extends TransactionContext {
-      private final AtomicInteger rollbacks = new AtomicInteger();
-
-      private CountingTransaction() {
-        super(internal.getWrappedDatabaseInstance());
-      }
-
-      @Override
-      public boolean isActive() {
-        return true;
-      }
-
-      @Override
-      public void rollback() {
-        rollbacks.incrementAndGet();
-      }
-    }
-
     final int workers = 16;
     final CountingTransaction[] transactions = new CountingTransaction[workers];
     final Thread[] threads = new Thread[workers];
     for (int i = 0; i < workers; i++) {
-      final CountingTransaction tx = new CountingTransaction();
+      final CountingTransaction tx = new CountingTransaction(internal);
       transactions[i] = tx;
       threads[i] = new Thread(() -> DatabaseContext.INSTANCE.init(internal, tx), "ctx-lifecycle-sweep-race-" + i);
       threads[i].start();
@@ -235,6 +217,76 @@ class DatabaseContextLifecycleTest extends TestHelper {
     for (int i = 0; i < workers; i++) {
       assertThat(transactions[i].rollbacks.get()).as("worker %d rollback count", i).isEqualTo(1);
       assertThat(DatabaseContext.isThreadRegistered(threads[i].threadId())).isFalse();
+    }
+  }
+
+  @Test
+  void sweepAndDatabaseCloseRollBackAbandonedTransactionsExactlyOnce() throws Exception {
+    // CONTRACT TEST: LocalDatabase.closeInternal claims each per-thread context of the closing database via
+    // removeAllContexts() and rolls it back under the DB write lock; the dead-thread sweep rolls back the
+    // same contexts with NO db lock, so the commit-read-lock/close-write-lock isolation argument does not
+    // cover this pair. Each abandoned transaction must be rolled back by exactly one of the two paths;
+    // without the sweep's per-database value-keyed claim both could obtain the same tl and double-roll-back
+    // it. The closeInternal side is simulated faithfully (removeAllContexts() plus rollback of the returned
+    // contexts, as LocalDatabase.closeInternal does). The race window is a single iteration crossover per
+    // sweep (both paths traverse CONTEXTS in the same order), so the race is retried over many rounds. NOTE:
+    // even hammered, the pre-fix window (sub-microsecond, between the closer fetching the ThreadContexts and
+    // its inner remove) never reproduced locally; this is an exactly-once CONTRACT test, not a red-first
+    // repro - post-fix the invariant is guaranteed by the two-level atomic claim.
+    final DatabaseInternal internal = (DatabaseInternal) database;
+    final int rounds = 100;
+    final int workers = 4;
+
+    for (int round = 0; round < rounds; round++) {
+      final CountingTransaction[] transactions = new CountingTransaction[workers];
+      final Thread[] threads = new Thread[workers];
+      for (int i = 0; i < workers; i++) {
+        final CountingTransaction tx = new CountingTransaction(internal);
+        transactions[i] = tx;
+        threads[i] = new Thread(() -> DatabaseContext.INSTANCE.init(internal, tx), "ctx-lifecycle-close-race-" + i);
+        threads[i].start();
+      }
+      for (final Thread thread : threads) {
+        thread.join(10_000);
+        assertThat(thread.isAlive()).isFalse();
+      }
+
+      final CyclicBarrier barrier = new CyclicBarrier(2);
+      final AtomicReference<Throwable> error = new AtomicReference<>();
+      final Thread sweeper = new Thread(() -> {
+        try {
+          barrier.await(10, TimeUnit.SECONDS);
+          DatabaseContext.cleanupDeadThreads();
+        } catch (final Throwable e) {
+          error.set(e);
+        }
+      }, "ctx-lifecycle-close-race-sweeper");
+      final Thread closer = new Thread(() -> {
+        try {
+          barrier.await(10, TimeUnit.SECONDS);
+          for (final DatabaseContext.DatabaseContextTL tl : DatabaseContext.INSTANCE.removeAllContexts(
+              internal.getDatabasePath())) {
+            for (int i = tl.transactions.size() - 1; i > -1; --i) {
+              final TransactionContext tx = tl.transactions.get(i);
+              if (tx.isActive())
+                tx.rollback();
+            }
+            tl.transactions.clear();
+          }
+        } catch (final Throwable e) {
+          error.set(e);
+        }
+      }, "ctx-lifecycle-close-race-closer");
+      sweeper.start();
+      closer.start();
+      sweeper.join(10_000);
+      closer.join(10_000);
+      assertThat(sweeper.isAlive()).isFalse();
+      assertThat(closer.isAlive()).isFalse();
+      assertThat(error.get()).isNull();
+
+      for (int i = 0; i < workers; i++)
+        assertThat(transactions[i].rollbacks.get()).as("round %d worker %d rollback count", round, i).isEqualTo(1);
     }
   }
 
@@ -278,5 +330,27 @@ class DatabaseContextLifecycleTest extends TestHelper {
     owner.join(30_000);
     assertThat(owner.isAlive()).isFalse();
     assertThat(error.get()).isNull();
+  }
+
+  /**
+   * Always-active transaction stub whose rollback only counts invocations: lets the exactly-once contract
+   * tests detect a double rollback of the same abandoned transaction without touching real storage.
+   */
+  private static final class CountingTransaction extends TransactionContext {
+    private final AtomicInteger rollbacks = new AtomicInteger();
+
+    private CountingTransaction(final DatabaseInternal database) {
+      super(database.getWrappedDatabaseInstance());
+    }
+
+    @Override
+    public boolean isActive() {
+      return true;
+    }
+
+    @Override
+    public void rollback() {
+      rollbacks.incrementAndGet();
+    }
   }
 }

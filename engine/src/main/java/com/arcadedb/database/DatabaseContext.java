@@ -132,7 +132,10 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     if (map != null) {
       final DatabaseContextTL tl = map.remove(name);
       if (map.isEmpty()) {
-        // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY
+        // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY. THE UNCONDITIONAL (NON-VALUE-KEYED) REMOVE IS SAFE,
+        // UNLIKE IN THE SWEEP: THIS RUNS ON THE OWNER THREAD, ONLY THE OWNER EVER REGISTERS UNDER ITS OWN
+        // NEVER-REUSED THREAD ID AND THE SWEEP ONLY CLAIMS DEAD THREADS, SO THE ENTRY UNDER THIS KEY CAN ONLY
+        // BE THIS THREAD'S OWN CURRENT REGISTRATION
         super.remove();
         CONTEXTS.remove(Thread.currentThread().threadId());
       }
@@ -210,6 +213,8 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    */
   public void removeCurrentThreadContexts() {
     super.remove();
+    // UNCONDITIONAL REMOVE IS SAFE FOR THE SAME REASON AS IN removeContext(): OWNER-THREAD-ONLY KEY,
+    // THREAD IDS NEVER REUSED, THE SWEEP ONLY CLAIMS DEAD THREADS
     CONTEXTS.remove(Thread.currentThread().threadId());
   }
 
@@ -248,8 +253,14 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
         // init() BOUNDARY) AND THE ABANDONED TRANSACTIONS MUST BE ROLLED BACK EXACTLY ONCE. THREAD IDS ARE
         // NEVER REUSED, SO THE KEYED REMOVE CANNOT DROP AN ENTRY BELONGING TO A DIFFERENT THREAD
         if (CONTEXTS.remove(entry.getKey(), threadContexts))
-          for (final DatabaseContextTL tl : threadContexts.contexts.values())
-            rollbackAbandonedTransactions(tl);
+          for (final Map.Entry<String, DatabaseContextTL> ctx : threadContexts.contexts.entrySet())
+            // CLAIM EACH PER-DATABASE CONTEXT TOO: closeInternal (DATABASE CLOSE/DROP) CONCURRENTLY CLAIMS
+            // THE SAME tl VIA removeAllContexts()'s remove(databaseName) AND ROLLS IT BACK UNDER THE DB
+            // WRITE LOCK, WHICH THE SWEEP DOES NOT TAKE. THE VALUE-KEYED REMOVE GUARANTEES EXACTLY ONE OF
+            // THE TWO PATHS ROLLS BACK EACH ABANDONED TRANSACTION - SAME HAZARD CLASS AS THE
+            // SWEEPER-VS-SWEEPER CLAIM ABOVE (DOUBLE UNLOCK, CONCURRENT MUTATION OF tl.transactions)
+            if (threadContexts.contexts.remove(ctx.getKey(), ctx.getValue()))
+              rollbackAbandonedTransactions(ctx.getValue());
       }
     }
   }
@@ -258,8 +269,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * Rolls back, from last to first, the transactions abandoned by a dead thread. The rollback is executed on the
    * sweeping thread but releases the file locks with the requester captured at lock-acquisition time (see
    * {@code TransactionContext#getRequester()}), which the {@code LockManager} explicitly supports. Nobody else can
-   * touch these transactions (the owner is dead and the entry was already unlinked from CONTEXTS), so the
-   * cross-thread access is safe.
+   * touch these transactions: the owner is dead and the caller atomically claimed the tl at BOTH levels (the
+   * CONTEXTS entry against concurrent sweepers, the per-database key against closeInternal's
+   * removeAllContexts()), so the cross-thread access is exclusive.
    */
   private static void rollbackAbandonedTransactions(final DatabaseContextTL tl) {
     for (int i = tl.transactions.size() - 1; i > -1; --i) {
