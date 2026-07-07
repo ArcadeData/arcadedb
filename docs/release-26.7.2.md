@@ -389,6 +389,11 @@ that could starve the very snapshot resync meant to heal the node.
   instead of hardcoding 1, so auto-compaction is no longer deferred by up to a full threshold of new
   pages after every restart. Items deliberately left open on #4958/#4960 with reasoning on the issues:
   the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
+<<<<<<< fix/5067-audit-lows
+  conflict-heavy file) and the descending duplicate-run cursor rescan (perf-only); the `createNewPage`
+  rollback counter drift was subsequently fixed in
+  [#5067](https://github.com/ArcadeData/arcadedb/issues/5067).
+=======
   conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
   cursor rescan (perf-only).
 - **Storage: flush suspension is refcounted - overlapping backup/verify/snapshot each own their window
@@ -405,6 +410,7 @@ that could starve the very snapshot resync meant to heal the node.
   serialization (no longer needed for correctness, retained to serialize same-database zip streams and
   keep each suspension window - and therefore the deferred backlog - short)
   ([#5068](https://github.com/ArcadeData/arcadedb/issues/5068)).
+>>>>>>> main
 - **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
   transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
   records created in the failed transaction get their optimistically-assigned RID reset to provisional and
@@ -425,6 +431,20 @@ that could starve the very snapshot resync meant to heal the node.
   page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
   levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
   `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
+- **Low-severity audit residuals (2026-07 audit).** Four small residuals collected from the audit
+  follow-up PRs ([#5067](https://github.com/ArcadeData/arcadedb/issues/5067)):
+  `TransactionContext.kill()` (test-only API) now releases the file locks acquired by a commit's 1st
+  phase instead of leaking the `LockManager` entries until the whole lock manager is torn down (symmetry
+  with `reset()`); `LocalBucket.updatePageStatistics` now measures free space against the usable page
+  content region like `gatherPageStatistics` does (#4958), instead of the physical page size that
+  overstated every page by the page header and skewed the reuse-space threshold; the LSM mutable index
+  re-aligns its uncompacted-pages counter with the real page count at commit time, so page creations
+  discarded by a rolled-back transaction can no longer inflate the counter and schedule auto-compaction
+  early; and the periodic thread-context sweep now opportunistically drops the empty per-thread entries a
+  foreign database close leaves behind (a claim/re-check protocol closes the #4939 re-registration race),
+  so open/close churn on large long-lived thread pools no longer accumulates them. A file-enumeration
+  audit of backup, snapshot and resync paths against the `.wal.corrupt` evidence files confirmed all
+  sites use extension allowlists (report on the issue); no changes needed.
 
 ### Improvements
 

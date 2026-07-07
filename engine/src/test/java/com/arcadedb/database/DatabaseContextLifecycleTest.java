@@ -148,6 +148,70 @@ class DatabaseContextLifecycleTest extends TestHelper {
   }
 
   @Test
+  void sweepPrunesEmptyEntryOfLiveThreadAfterForeignClose() throws Exception {
+    final CountDownLatch registered = new CountDownLatch(1);
+    final CountDownLatch pruned = new CountDownLatch(1);
+    final CountDownLatch reinitDone = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicReference<Throwable> workerError = new AtomicReference<>();
+
+    final Thread worker = new Thread(() -> {
+      try {
+        database.begin();
+        database.rollback();
+        registered.countDown();
+        // STAYS ALIVE AND IDLE, LIKE A LONG-LIVED POOL THREAD THAT OPENED AND CLOSED A DATABASE
+        if (!pruned.await(10, TimeUnit.SECONDS))
+          throw new IllegalStateException("prune signal not received");
+        // AFTER THE PRUNE, THE OWNER'S NEXT init() MUST RE-REGISTER CLEANLY
+        database.begin();
+        database.rollback();
+        reinitDone.countDown();
+        release.await(10, TimeUnit.SECONDS);
+      } catch (final Throwable e) {
+        workerError.set(e);
+      } finally {
+        DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+      }
+    }, "ctx-lifecycle-live-empty");
+    worker.start();
+
+    assertThat(registered.await(10, TimeUnit.SECONDS)).isTrue();
+    try {
+      assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
+
+      // A FOREIGN CLOSE (removeAllContexts ON THIS THREAD) EMPTIES THE WORKER'S PER-DATABASE MAP BUT
+      // DELIBERATELY DOES NOT PRUNE ITS CONTEXTS ENTRY (#4939): THE EMPTY ENTRY LINGERS WHILE THE WORKER
+      // IS ALIVE
+      // NOTE (#5076 review): this empties the per-db map for EVERY thread that had the db open, including
+      // THIS main test thread - the sweep may prune the main thread's now-empty entry too. Harmless: the
+      // next context-API touch (teardown's init()) re-registers it; the assertions below key on the worker.
+      DatabaseContext.INSTANCE.removeAllContexts(database.getDatabasePath());
+      assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
+
+      // #5067: THE PERIODIC SWEEP MUST OPPORTUNISTICALLY DROP THE NOW-EMPTY ENTRY EVEN THOUGH ITS OWNER IS
+      // STILL ALIVE, SO OPEN/CLOSE CHURN ON LARGE LONG-LIVED THREAD POOLS DOES NOT ACCUMULATE EMPTY ENTRIES
+      DatabaseContext.cleanupDeadThreads();
+      assertThat(DatabaseContext.isThreadRegistered(worker.threadId()))
+          .as("the sweep must prune a live thread's empty context entry")
+          .isFalse();
+
+      // THE PRUNED OWNER RE-REGISTERS ON ITS NEXT init()
+      pruned.countDown();
+      assertThat(reinitDone.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
+    } finally {
+      pruned.countDown();
+      release.countDown();
+    }
+
+    worker.join(10_000);
+    assertThat(worker.isAlive()).isFalse();
+    assertThat(workerError.get()).isNull();
+    assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isFalse();
+  }
+
+  @Test
   void gavAsyncBuildUnregistersWorkerContext() {
     database.getSchema().getOrCreateVertexType("Person");
     database.getSchema().getOrCreateEdgeType("Knows");
