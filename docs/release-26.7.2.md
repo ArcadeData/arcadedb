@@ -232,8 +232,10 @@ that could starve the very snapshot resync meant to heal the node.
   the identity of the queue head across two 5s windows, so any head task running longer than 10s made
   innocent producers throw "Asynchronous queue is stalled"); detection is now progress-based (per-worker
   completed-task counters) and, more importantly, a worker that schedules a cross-slot follow-up (the
-  bidirectional-edge incoming-link task) into another worker's full queue now drains and executes its OWN
-  queue while it waits, so two workers cross-scheduling into each other no longer deadlock - a cycle the
+  bidirectional-edge incoming-link task) into another worker's full queue now drains its OWN
+  queue while it waits (the polled tasks are parked and run once the current task unwinds, so no
+  transaction boundary can fall inside a suspended task's execution and per-task atomicity is
+  preserved), so two workers cross-scheduling into each other no longer deadlock - a cycle the
   old detector could only break by throwing inside the worker, rolling back the whole in-flight commit
   batch (up to `commitEvery - 1` already-executed operations silently discarded) and dropping the
   follow-up (ghost half-edges) ([#4953](https://github.com/ArcadeData/arcadedb/issues/4953)). Shutdown no
