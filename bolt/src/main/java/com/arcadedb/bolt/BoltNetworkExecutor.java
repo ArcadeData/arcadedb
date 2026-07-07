@@ -430,7 +430,7 @@ public class BoltNetworkExecutor extends Thread {
   private Map<String, Object> buildHelloSuccessMetadata() {
     final Map<String, Object> metadata = new LinkedHashMap<>();
     metadata.put("server", "Neo4j/5.26.0 compatible (ArcadeDB " + Constants.getRawVersion() + ")");
-    metadata.put("connection_id", "bolt-" + Thread.currentThread().getId());
+    metadata.put("connection_id", "bolt-" + Thread.currentThread().threadId());
     return metadata;
   }
 
