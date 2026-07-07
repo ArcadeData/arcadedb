@@ -218,4 +218,21 @@ class ArcadeStateMachineBootstrapBaselinePersistenceTest {
         .as("a co-located database's baseline survives the drop")
         .isNotNull();
   }
+
+  /**
+   * A corrupt/unparseable baselines file degrades to "no baselines" (null) rather than throwing, so a
+   * damaged file cannot crash the apply/status paths. Mirrors the applied-index corrupt-file rationale.
+   */
+  @Test
+  void corruptFileDegradesToNullWithoutThrowing() throws Exception {
+    final Path raftDir = serverDir.resolve(".raft");
+    Files.createDirectories(raftDir);
+    // Looks like a JSON document (leading '{') but is truncated, so parsing fails mid-way.
+    Files.writeString(raftDir.resolve("bootstrap-baselines"), "{\"db-a\": {\"fingerprint\":");
+
+    final ArcadeStateMachine sm = newStateMachine();
+    assertThat(sm.getBootstrapBaseline(DB_A))
+        .as("a corrupt file degrades to no baseline instead of throwing")
+        .isNull();
+  }
 }

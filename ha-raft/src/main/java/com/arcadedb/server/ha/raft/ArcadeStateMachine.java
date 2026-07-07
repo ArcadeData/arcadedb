@@ -1658,15 +1658,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String databaseName = decoded.databaseName();
 
-    // Evict the dropped database's persisted bootstrap baseline unconditionally, before the presence
-    // check below: applyBootstrapFingerprintEntry records a baseline by name even when the database is
-    // not present locally (the late-joiner path), so a node can hold a persisted baseline for a
-    // database it never had locally. Evicting only when present would leave that baseline stale in the
-    // file for the node lifetime. Mirrors the unconditional per-database applied-index drop eviction.
-    evictBootstrapBaseline(databaseName);
-
-    // Idempotent on replay: if the database is already gone, nothing to do.
+    // Idempotent on replay: if the database is already gone, nothing to do beyond evicting any
+    // persisted baseline. applyBootstrapFingerprintEntry records a baseline by name even when the
+    // database is not present locally (the late-joiner path), so a node can hold a persisted baseline
+    // for a database it never had locally; evict it here so it does not linger in the file for the
+    // node lifetime. This branch never calls drop(), so the eviction cannot precede a failed drop.
     if (!server.existsDatabase(databaseName)) {
+      evictBootstrapBaseline(databaseName);
       HALog.log(this, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
       return;
     }
@@ -1674,6 +1672,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
     db.getEmbedded().drop();
     server.removeDatabase(databaseName);
+
+    // Evict AFTER the drop succeeded, mirroring the applied-index drop eviction which runs only once
+    // apply completes: if drop() had thrown and quarantined this database, the baseline must stay so a
+    // restart can still recover it (evicting first would lose the baseline of a database that was not
+    // actually dropped - the #5100 failure mode).
+    evictBootstrapBaseline(databaseName);
 
     LogManager.instance().log(this, Level.INFO, "Database '%s' dropped via Raft drop-database entry", databaseName);
   }
@@ -1896,6 +1900,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
             for (final String name : json.keySet()) {
               final JSONObject entry = json.getJSONObject(name);
               final String fingerprint = entry.getString("fingerprint", null);
+              // putIfAbsent is defensive: recordBootstrapBaseline already loads before it puts, so a
+              // session-applied baseline is written after this load runs and would win anyway; this
+              // just guarantees the on-disk copy never overwrites a value already present in memory.
               if (fingerprint != null)
                 bootstrapBaselines.putIfAbsent(name, new BootstrapBaseline(fingerprint, entry.getLong("lastTxId", -1)));
             }
