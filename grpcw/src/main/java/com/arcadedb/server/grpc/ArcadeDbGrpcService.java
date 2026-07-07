@@ -1374,10 +1374,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
-    // Reserve a per-principal slot atomically. If it would exceed the cap, roll it back and reject.
+    // Reserve a per-principal slot atomically. Always increment (so the counter stays balanced with the
+    // release-on-commit/rollback/reap decrement even when the cap is disabled); only enforce the limit when it is
+    // enabled. Otherwise a disabled cap would let releasePrincipalSlot() drift the counter negative.
     final String principal = (user != null && !user.isBlank()) ? user : ANONYMOUS_PRINCIPAL;
     final AtomicInteger principalCount = perPrincipalTxCount.computeIfAbsent(principal, k -> new AtomicInteger());
-    if (maxConcurrentTransactionsPerPrincipal > 0 && principalCount.incrementAndGet() > maxConcurrentTransactionsPerPrincipal) {
+    if (principalCount.incrementAndGet() > maxConcurrentTransactionsPerPrincipal && maxConcurrentTransactionsPerPrincipal > 0) {
       principalCount.decrementAndGet();
       LogManager.instance().log(this, Level.WARNING,
           "beginTransaction(): rejected for principal=%s, per-principal concurrent-transaction cap reached (max=%s)",
@@ -1458,11 +1460,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responseObserver.onNext(response);
       responseObserver.onCompleted();
     } catch (Throwable t) {
-      // Shutdown the executor if it was created but not registered (prevents thread leak)
       if (txCtx != null) {
+        // If the tx was already registered (e.g. responseObserver.onNext/onCompleted threw after the put, such as on
+        // a client cancel), remove it so the reaper does not later reclaim it and release the same per-principal slot
+        // a second time - a double-decrement would drift the counter negative and weaken the cap (issue #5048, SEC-7).
+        // remove(key, value) is a no-op when the tx was never registered.
+        activeTransactions.remove(txCtx.txId, txCtx);
         txCtx.shutdown();
       }
-      // Release the per-principal slot reserved above: this transaction never became active (issue #5048, SEC-7).
+      // Release the per-principal slot reserved above exactly once: this transaction never became usable.
       releasePrincipalSlot(principal);
       Throwable cause = t instanceof ExecutionException && t.getCause() != null ? t.getCause() : t;
       LogManager.instance()

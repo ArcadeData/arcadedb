@@ -268,10 +268,13 @@ public class GrpcServerPlugin implements ServerPlugin {
     serverBuilder.compressorRegistry(CompressorRegistry.getDefaultInstance())
         .decompressorRegistry(DecompressorRegistry.getDefaultInstance());
 
-    // Configure max message size
+    // Configure max message size. This is now the effective inbound cap (SEC-8), so compute in long and clamp:
+    // an int multiply overflows for configured values >= 2048 MB, which would otherwise pass a negative size to
+    // maxInboundMessageSize (whose parameter is an int, so Integer.MAX_VALUE ~ 2 GB is the representable ceiling).
     int maxMessageSizeMB = getConfigInt(config, CONFIG_MAX_MESSAGE_SIZE, 100);
+    final long maxMessageSizeBytes = (long) maxMessageSizeMB * 1024 * 1024;
 
-    serverBuilder.maxInboundMessageSize(maxMessageSizeMB * 1024 * 1024);
+    serverBuilder.maxInboundMessageSize((int) Math.min(maxMessageSizeBytes, Integer.MAX_VALUE));
 
     // Add interceptors for logging, metrics, auth, etc.
     serverBuilder.intercept(new GrpcLoggingInterceptor());
