@@ -50,7 +50,7 @@ class Issue4544FlushIndexIdentityTest extends TestHelper {
   @Test
   void staleFlushMustNotEvictNewerIndexedPage() {
     // Constructing the flush thread directly does NOT start the background thread (that happens in
-    // PageManager.configure()), so the index can be exercised deterministically in isolation.
+    // PageManager.startup(), run on the first acquire), so the index can be exercised deterministically in isolation.
     final PageManagerFlushThread flush = new PageManagerFlushThread(PageManager.INSTANCE, new ContextConfiguration());
 
     final PageId pageId = new PageId(database, 3, 7);

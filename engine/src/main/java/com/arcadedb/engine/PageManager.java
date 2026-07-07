@@ -50,7 +50,7 @@ public class PageManager extends LockContext {
 
   // Package-private (instead of private) so the white-box regression test for #4925/#4933 can assert on
   // the cache content and RAM accounting directly, without reflection.
-  ConcurrentMap<PageId, CachedPage> readCache;
+  volatile ConcurrentMap<PageId, CachedPage> readCache;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
   private          long                              maxRAM;
@@ -68,8 +68,10 @@ public class PageManager extends LockContext {
   // LIFECYCLE INVARIANT (#5070 review): flushThread and readCache are written only under LIFECYCLE_LOCK
   // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
   // ONLY because a reader implies refcount > 0 (its database holds a reference), so no transition can run
-  // concurrently. If a future change ever mutates these under live readers, make them volatile and re-audit.
-  private          PageManagerFlushThread            flushThread;
+  // concurrently. volatile (three review rounds converged on it): the barrier cost is negligible next to the
+  // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
+  // database-publication happens-before for cross-thread visibility of the startup() writes.
+  private volatile PageManagerFlushThread            flushThread;
   private          int                               freePageRAM;
 
   @ExcludeFromJacocoGeneratedReport
