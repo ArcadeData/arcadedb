@@ -32,3 +32,19 @@ full live change feed (record contents) of a database they have no rights to rea
 ## Impact
 Closes a HIGH-severity cross-database data-disclosure hole in the change stream. No new auth model:
 reuses the existing `ServerSecurityUser.canAccessToDatabase` primitive already used by the REST layer.
+
+## Pull request
+https://github.com/ArcadeData/arcadedb/pull/5087
+
+## Review cycles
+- Cycle 1 - head SHA `28926f5`: `gemini-code-assist` reviewed (COMMENTED) with no actionable
+  feedback ("the implementation is solid and well-tested"); zero inline comments. The `claude`
+  gating bot did not post a review within the 15-minute per-cycle window.
+
+## Deferred items
+None.
+
+## Final state
+`timeout` - only one of the two gating reviewers (`gemini-code-assist`) responded within the
+per-cycle timeout; `claude` did not. No changes were required by the review that did arrive.
+The PR is left open for the developer; merge remains the developer's responsibility.
