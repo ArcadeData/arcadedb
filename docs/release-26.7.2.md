@@ -227,6 +227,35 @@ that could starve the very snapshot resync meant to heal the node.
   shadows committed RIDs whose key equals an uncommitted entry's key - is tracked in
   [#5055](https://github.com/ArcadeData/arcadedb/issues/5055).
 
+- **Thread-context lifecycle hardening (2026-07 audit).** The periodic dead-thread sweep of the per-thread
+  database contexts now rolls back any transaction the dead thread abandoned, releasing its file locks:
+  before, a thread dying with an open transaction holding explicit locks (`acquireLock().type(...).lock()`)
+  left the `LockManager` files owned by the dead thread forever, and every later commit touching them timed
+  out until restart ([#4941](https://github.com/ArcadeData/arcadedb/issues/4941)); the cross-thread unlock
+  works because the lock requester is now captured once at lock-acquisition time instead of being re-resolved
+  as the calling thread at release time. Dead-thread detection no longer uses `Thread.getAllStackTraces()`,
+  which misses virtual threads (a LIVE virtual thread's context was pruned as dead while its transaction was
+  running) and captures every platform-thread stack at a global safepoint (a periodic multi-ms latency spike);
+  each context entry now holds a `WeakReference<Thread>` checked with `isAlive()` - O(1), safepoint-free,
+  virtual-thread-correct - and the GraphAnalyticalView async build/rebuild/compaction workers unregister their
+  thread contexts on completion instead of leaking them until the next sweep
+  ([#4956](https://github.com/ArcadeData/arcadedb/issues/4956)). The per-thread contexts map is now a
+  `ConcurrentHashMap` and `removeAllContexts` (database close/drop from another thread) no longer prunes
+  foreign registry entries, closing a data race with the owner thread's `init()` that could corrupt the plain
+  `HashMap` or unregister a live context ([#4939](https://github.com/ArcadeData/arcadedb/issues/4939); the
+  reported mid-commit cross-thread rollback interleaving is already excluded by the database RW lock - commit
+  holds the read lock for its whole duration while close's rollbacks run under the write lock). Review
+  follow-up: concurrent sweeps (two threads landing on the periodic boundary together) now claim each dead
+  entry atomically, so its abandoned transactions are rolled back exactly once instead of racing a double
+  rollback (double unlock, concurrent record reloads on shared caches); the sweep additionally claims each
+  per-database context with a value-keyed remove, closing the same double-rollback race against
+  `closeInternal`'s `removeAllContexts()` (which rolls back foreign contexts under the DB write lock the
+  sweep does not take); the lazy requester capture is now an explicit `captureRequester()` invoked only
+  from the lock-acquisition paths, with `getRequester()` a pure read for the release paths, so a future
+  non-owner call can no longer pin the wrong lock identity (structural guard for the #4941 invariant).
+  A sweep that performs real rollback work now emits a single attributable WARNING (transaction count,
+  thread ids, databases; zero-work sweeps stay silent), and the exactly-once arguments are pinned to the
+  JDK 21+ `Thread.threadId()` non-reuse guarantee at the registry declaration.
 - **Async executor hardening (2026-07 audit).** Three fixes to the per-database async executor. The
   queue stall detector no longer false-positives on a worker merely busy with one slow task (it compared
   the identity of the queue head across two 5s windows, so any head task running longer than 10s made

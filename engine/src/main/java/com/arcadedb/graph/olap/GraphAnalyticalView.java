@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
@@ -354,6 +355,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           else
             LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
         } finally {
+          // #4956: this virtual thread dies right after the task, but its DatabaseContext entry (pinning Binary
+          // temp buffers) would otherwise linger until the next periodic sweep. Remove it before the latch is
+          // released so callers observing readiness see a clean state.
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
           BUILD_PERMITS.release();
           buildQueued.set(false);
           latch.countDown();
@@ -1327,6 +1332,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             else
               LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
           } finally {
+            // #4956: drop this worker's DatabaseContext entry (see buildAsync)
+            DatabaseContext.INSTANCE.removeCurrentThreadContexts();
             BUILD_PERMITS.release();
             compacting.set(false);
             latch.countDown();
@@ -1473,6 +1480,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               forced.edgePropertiesUpdated = true;
               applyDelta(forced);
             }
+            // #4956: drop this worker's DatabaseContext entry (see buildAsync). Last statement because
+            // applyDelta() above may touch the database on this thread and re-register a context.
+            // NOTE: this ordering deliberately DIFFERS from buildAsync/rebuild (which unregister FIRST): here
+            // applyDelta(forced) runs synchronously after taskCompleted() and can re-register a context on this
+            // same thread, so the unregister must be the true last statement.
+            DatabaseContext.INSTANCE.removeCurrentThreadContexts();
           }
         });
       } catch (final RejectedExecutionException e) {
