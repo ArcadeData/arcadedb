@@ -313,7 +313,10 @@ that could starve the very snapshot resync meant to heal the node.
   lock-free fast path (CAS-claimed sequences; note `fast` trades CPU for latency - the Disruptor
   queue busy-spins before parking, so idle workers cost more CPU than `standard`, same as the
   previous `fast` implementation), supports `remove(Object)` (the shutdown undo now
-  works identically on both impls) and rounds capacities up to the next power of two. Shutdown no
+  works identically on both impls) and rounds capacities up to the next power of two (so for a
+  non-power-of-two configured `ASYNC_OPERATIONS_QUEUE_SIZE / parallelLevel`, `fast` applies
+  back-pressure at a slightly different real fill level than `standard`, which uses the exact size).
+  Shutdown no
   longer strands completion waiters: an interrupted or exiting worker now notifies `completed()` on every
   task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /
   `waitCompletion()` hung forever), and `close()` no longer blocks unbounded on `queue.put(FORCE_EXIT)`

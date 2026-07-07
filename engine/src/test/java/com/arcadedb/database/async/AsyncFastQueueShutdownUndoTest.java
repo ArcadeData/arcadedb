@@ -173,6 +173,8 @@ class AsyncFastQueueShutdownUndoTest extends TestHelper {
   }
 
   private static DatabaseAsyncExecutorImpl.AsyncThread findWorkerThread(final DatabaseInternal db, final int slot) {
+    // Couples to the worker thread name set in the AsyncThread constructor ("AsyncExecutor-<db>-<slot>");
+    // if that format changes these tests fail here rather than obscurely.
     final String name = "AsyncExecutor-" + db.getName() + "-" + slot;
     return (DatabaseAsyncExecutorImpl.AsyncThread) Thread.getAllStackTraces().keySet().stream()
         .filter(t -> t.getName().equals(name)).findFirst()

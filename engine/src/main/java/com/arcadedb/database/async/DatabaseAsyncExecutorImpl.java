@@ -1077,6 +1077,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * and on the 'fast' {@link com.conversantmedia.util.concurrent.DisruptorBlockingQueue} the two are
    * weakly-consistent estimates, so a full-then-drained race between the calls could yield a zero
    * denominator ({@code ArithmeticException}). {@code Math.max(1, ...)} guards the divide regardless.
+   * <p>
+   * On the guarded {@code remaining=0, size=0} snapshot this returns 100 ("full"), not 0: an ambiguous
+   * estimate biases toward MORE back-pressure for that one iteration, self-correcting on the next re-read.
    */
   // Package-visible for AsyncFastQueueShutdownUndoTest, which feeds a fake queue reporting the racy 0/0
   // snapshot the real TOCTOU cannot be forced to produce deterministically.
