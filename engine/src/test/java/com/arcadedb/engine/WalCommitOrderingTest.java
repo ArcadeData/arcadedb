@@ -302,6 +302,7 @@ class WalCommitOrderingTest {
 
     final DatabaseInternal db = (DatabaseInternal) factory.create();
     final PageId[] victimPageId = new PageId[1];
+    final PageId[] victim2PageId = new PageId[1];
     try {
       db.getSchema().createDocumentType("Doc");
       db.transaction(() -> db.newDocument("Doc").set("v", "committed").save());
@@ -345,6 +346,7 @@ class WalCommitOrderingTest {
       final TransactionContext tx2 = (TransactionContext) db.getTransaction();
       final TransactionContext.TransactionPhase1 phase2 = tx2.commit1stPhase(true);
       final MutablePage victim2 = phase2.modifiedPages.getFirst();
+      victim2PageId[0] = victim2.getPageId();
       final MutablePage conflicting2 = new MutablePage(victim2.getPageId(), (int) victim2.getPhysicalSize(),
           victim2.getContent().array().clone(), (int) (victim2.getVersion() + 1), victim2.getContentSize());
       PageManager.INSTANCE.putPageInReadCache(new CachedPage(conflicting2, false));
@@ -355,6 +357,9 @@ class WalCommitOrderingTest {
     } finally {
       if (victimPageId[0] != null)
         PageManager.INSTANCE.removePageFromCache(victimPageId[0]);
+      if (victim2PageId[0] != null)
+        // Both poisoned pages evicted (#5075 review): PageManager.INSTANCE is process-global.
+        PageManager.INSTANCE.removePageFromCache(victim2PageId[0]);
       db.close();
       factory.close();
     }
