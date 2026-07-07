@@ -10,6 +10,17 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Transactions: in-transaction iteration on a non-unique index no longer drops a committed RID that shares
+  its key with an uncommitted entry.** On a non-unique index, when an uncommitted row had the SAME composite
+  key as an already-committed row, in-transaction index iteration emitted only ONE row for that key: the
+  transaction overlay was treated as authoritative and shadowed the disk cursor's equal-key entries instead
+  of merging the distinct RIDs. Both RIDs became visible again only after commit
+  ([#5055](https://github.com/ArcadeData/arcadedb/issues/5055)). `LSMTreeIndexCursor` now UNIONs the disk and
+  overlay RIDs at a colliding key. While fixing this, a related direction bug surfaced: the overlay range
+  filter always used the ascending sense of the far bound, so a **descending** in-transaction range scan
+  dropped uncommitted overlay entries sitting above the range's lower bound (the top of the scan) even with no
+  collision; the filter is now order-aware.
+
 - **Import/Export: `IMPORT DATABASE` no longer crashes on a JSONL dump that contains an `LSM_VECTOR` index.**
   Exporting a database with a vector index produced a valid JSONL dump, but re-importing it failed with
   `CommandExecutionException: Error on importing database` (root cause: `JSONObject[unique] not found`),

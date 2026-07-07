@@ -55,6 +55,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       int                                    currentValueIndex = 0;
   private       int                                    validIterators;
   private       TempIndexCursor                        txCursor;
+  private       Object[]                               txCursorKeys;
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -361,19 +362,28 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
       }
 
-      if (txCursor != null && txCursor.hasNext()) {
-        currentValues = new RID[] { (RID) txCursor.next() };
-
-        final Object[] txKeys = txCursor.getKeys();
-        if (minorKey != null) {
-          final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, txKeys, minorKey);
-          if (compare == 0) {
-          } else if ((ascendingOrder && compare < 0) || (!ascendingOrder && compare > 0)) {
-            minorKey = txKeys;
+      // #5055: the in-transaction overlay batch (txCursor) always covers a SINGLE key (txCursorKeys, all its
+      // entries share it). Decide whether that key participates in this round WITHOUT consuming any entry yet,
+      // so its RIDs can be MERGED with the disk RIDs when the keys collide (a committed and an uncommitted
+      // record sharing the same non-unique key), and so a tx key strictly greater than the disk minor key is
+      // left for a later round instead of being consumed and dropped.
+      boolean includeTx = false;
+      if (txCursor != null && txCursor.hasNext() && txCursorKeys != null) {
+        if (minorKey == null) {
+          minorKey = txCursorKeys;
+          includeTx = true;
+        } else {
+          final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, txCursorKeys, minorKey);
+          if (compare == 0)
+            // COLLISION: the same key exists on disk AND in the overlay - merge both sets of RIDs.
+            includeTx = true;
+          else if ((ascendingOrder && compare < 0) || (!ascendingOrder && compare > 0)) {
+            // The overlay key sorts before every disk key: emit it alone this round.
+            minorKey = txCursorKeys;
             minorKeyIndexes.clear();
+            includeTx = true;
           }
-        } else
-          minorKey = txKeys;
+        }
       }
 
       if (minorKey == null) {
@@ -423,15 +433,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
       }
 
-      // ADVANCE EACH PAGE CURSOR PAST THIS KEY AND, if any page contributed, refresh
-      // currentValues with the per-RID-filtered set. When the minor key came only from
-      // the in-transaction cursor (minorKeyIndexes empty), leave the currentValues that
-      // was already set by the txCursor branch above.
+      // Collect the surviving RIDs for this key. #5055: disk RIDs and overlay RIDs are UNIONed - a committed
+      // record and an uncommitted one sharing the same non-unique key must both appear during in-tx iteration.
+      final Set<RID> mergedRIDs = new HashSet<>();
+
+      // ADVANCE EACH PAGE CURSOR PAST THIS KEY and, if any page contributed, add its per-RID-filtered set.
       if (!minorKeyIndexes.isEmpty()) {
-        final Set<RID> validRIDs = new HashSet<>();
         for (final var entry : ridState.entrySet()) {
           if (Boolean.FALSE.equals(entry.getValue()))
-            validRIDs.add(entry.getKey());
+            mergedRIDs.add(entry.getKey());
         }
 
         for (int i = 0; i < minorKeyIndexes.size(); ++i) {
@@ -460,12 +470,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
             --validIterators;
           }
         }
-
-        if (validRIDs.isEmpty())
-          currentValues = null;
-        else
-          currentValues = validRIDs.toArray(new RID[0]);
       }
+
+      // #5055: drain ALL overlay RIDs sharing this key (the whole txCursor batch) and merge them in.
+      if (includeTx)
+        while (txCursor.hasNext())
+          mergedRIDs.add((RID) txCursor.next());
+
+      currentValues = mergedRIDs.isEmpty() ? null : mergedRIDs.toArray(new RID[0]);
 
       if (txCursor == null || !txCursor.hasNext())
         getClosestEntryInTx(currentKeys != null ? currentKeys : fromKeys, false);
@@ -479,6 +491,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
   private void getClosestEntryInTx(final Object[] keys, final boolean inclusive) {
     txCursor = null;
+    txCursorKeys = null;
     if (index.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
@@ -519,16 +532,25 @@ public class LSMTreeIndexCursor implements IndexCursor {
               final Object[] tmpKeys = entry.getKey().values;
 
               if (toKeys != null) {
+                // #5055: toKeys bounds the FAR end of the scan, whose direction flips with the order: for an
+                // ascending scan it is the upper bound (skip entries ABOVE it), for a descending scan it is the
+                // lower bound (skip entries BELOW it). The filter used the ascending sense unconditionally, so
+                // a descending in-tx overlay dropped every entry above the lower bound - e.g. the top key of a
+                // range, including a committed/uncommitted collision there.
                 final int cmp = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, tmpKeys, toKeys);
 
-                if (cmp > 0)
+                if (ascendingOrder ? cmp > 0 : cmp < 0)
                   continue;
                 else if (!toKeysInclusive && cmp == 0)
                   continue;
               }
 
-              if (txChanges == null)
+              if (txChanges == null) {
                 txChanges = new HashSet<>();
+                // All entries of this batch share the single overlay key just navigated to; cache it so
+                // next() can peek the batch key without consuming an entry (#5055).
+                txCursorKeys = tmpKeys;
+              }
 
               txChanges.add(new IndexCursorEntry(tmpKeys, value.rid, 1));
             }
