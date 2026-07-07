@@ -32,4 +32,30 @@ Insecure fallbacks and hardcoded limits in `GrpcServerPlugin`, `ArcadeDbGrpcServ
 
 ## Impact
 Fail-closed transport security for gRPC; bounded per-transaction resource usage. Client credential behavior is
-backward compatible via existing constructors; secure-by-default is available on the new constructor.
+backward compatible via existing constructors; secure-by-default is available on the new constructor, and a
+warn-once log fires when credentials are attached over a plaintext channel.
+
+## PR
+https://github.com/ArcadeData/arcadedb/pull/5103
+
+## Review cycles
+- cycle 1 (`0e8109a`): both bots reviewed the initial commit. Addressed: per-principal slot double-release/leak on
+  failure after registration; per-principal counter negative drift when the cap is disabled; int overflow of the
+  now-effective inbound message size. Added `GrpcTransactionSlotReleaseIT`.
+- cycle 2 (`3bbda4c`): both bots reviewed. Addressed: warn-once when attaching credentials over plaintext (SEC-5
+  real-world effect); configurable `grpc.maxMetadataSize` (default 16 KiB); ownership-gated slot release to close a
+  theoretical reaper race; partial-start teardown on mid-startup failure; `@Tag("slow")` on the two slow ITs;
+  documented intentional non-pruning of `perPrincipalTxCount`.
+- cycle 3 (`878b5db`): Gemini re-reviewed with only stale items (its naive `remove(txId)` suggestion is superseded by
+  the safer ownership-gated `remove(txId, txCtx)` already applied) and one out-of-scope note on `BootstrapElection`.
+  Claude did not re-review within the 15-minute budget.
+
+## Deferred / not actioned (with rationale)
+- `BootstrapElection` `System.nanoTime()` and callback-blocking notes: OUT OF SCOPE. Those `ha-raft` files come from
+  a pre-existing local commit (6839cf94b) that was on local `main` but not yet pushed to `origin/main`, so this
+  branch inherited it. Not part of this issue's change; left for the developer.
+- Flipping the client credential default to fail-closed: would break the ~150 existing gRPC ITs that construct the
+  client with `plaintext=true`; instead the opt-in default is preserved and a warn-once log added.
+
+## Final state
+timeout (Claude did not re-review the final SHA within the per-iteration budget; all actionable feedback resolved).
