@@ -558,7 +558,13 @@ public class TransactionContext implements Transaction {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
       explicitLockedFiles = null;
     }
-    lockedFiles = null;
+    // #5067: SAME RELEASE SYMMETRY AS reset(). NULLING THE FIELD WITHOUT UNLOCKING LEAKED THE LockManager
+    // ENTRIES OF A TRANSACTION KILLED IN COMMIT_1ST_PHASE (WHERE lockFilesInOrder POPULATED lockedFiles)
+    // UNTIL TransactionManager.kill() CLOSED THE WHOLE LOCK MANAGER
+    if (lockedFiles != null) {
+      database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+      lockedFiles = null;
+    }
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
