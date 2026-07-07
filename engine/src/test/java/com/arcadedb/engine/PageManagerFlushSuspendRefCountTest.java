@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -207,5 +208,60 @@ class PageManagerFlushSuspendRefCountTest extends TestHelper {
       flush.setSuspended(db, false);
       assertThat(flush.isSuspended(db)).isFalse();
     });
+  }
+
+  /**
+   * Regression test for the second half of the #5068 fix: an interrupt delivered while
+   * {@code suspendFlushAndExecute} waits for the in-flight batch ({@code waitForCurrentFlushToComplete})
+   * must still release this caller's suspension reference. Pre-fix the wait ran BEFORE the try block, so
+   * the {@code InterruptedException} skipped {@code setSuspended(false)} and the database stayed suspended
+   * forever. The interleaving is fully deterministic: the in-flight batch is fabricated through the
+   * package-private {@code nextPagesToFlush} marker and the suspender interrupts ITSELF before entering,
+   * so the wait's {@code Thread.sleep} throws immediately - no timing window.
+   */
+  @Test
+  void interruptDuringWaitForFlushStillReleasesSuspension() {
+    final Database db = (Database) database;
+    final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+    final PageManagerFlushThread flush = pageManager.getFlushThread();
+
+    // Fake in-flight batch for this database: makes waitForCurrentFlushToComplete actually wait. It is
+    // installed only in the marker (never in the queue), so no I/O can ever be attempted on it.
+    final PageId pageId = new PageId(database, 999_887, 0);
+    final MutablePage page = new MutablePage(pageId, 1024, new byte[1024], 0, 0);
+    final PagesToFlush inFlight = new PagesToFlush(List.of(page));
+
+    final AtomicBoolean callbackRan = new AtomicBoolean(false);
+    final AtomicReference<Throwable> thrown = new AtomicReference<>();
+
+    assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+      // Install the marker only when the flush thread is idle (empty queue, no in-flight batch), so the
+      // real thread cannot clear it while the suspender is parked in the wait.
+      while (!(flush.queue.isEmpty() && flush.nextPagesToFlush.compareAndSet(null, inFlight)))
+        Thread.sleep(10);
+
+      try {
+        final Thread suspender = new Thread(() -> {
+          // Self-interrupt BEFORE entering: the wait's Thread.sleep(1) then throws on its first call,
+          // which is exactly an interrupt landing during waitForCurrentFlushToComplete.
+          Thread.currentThread().interrupt();
+          try {
+            pageManager.suspendFlushAndExecute(db, () -> callbackRan.set(true));
+          } catch (final Throwable t) {
+            thrown.set(t);
+          }
+        }, "test-interrupted-suspender");
+        suspender.start();
+        suspender.join();
+      } finally {
+        flush.nextPagesToFlush.compareAndSet(inFlight, null);
+      }
+    });
+
+    // The interrupt aborted the suspension before the callback could run...
+    assertThat(thrown.get()).isInstanceOf(InterruptedException.class);
+    assertThat(callbackRan.get()).isFalse();
+    // ...but this caller's reference was still released. Pre-fix this stayed true forever (the leak).
+    assertThat(pageManager.isPageFlushingSuspended(db)).isFalse();
   }
 }
