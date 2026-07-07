@@ -259,6 +259,16 @@ that could starve the very snapshot resync meant to heal the node.
   its waiter blocked forever, and `QueryEngineManager.register()` publishes a copy-on-write map so a
   post-construction registration cannot corrupt concurrent readers
   ([#4961](https://github.com/ArcadeData/arcadedb/issues/4961)).
+- **PageManager lifecycle is refcounted.** The JVM-wide page manager was started and stopped on a racy
+  "is the active-database map empty" check-then-act spanning factory instances: closing the last instance
+  of one database could null the shared flush thread under a database whose open was still in flight
+  (NPE on the first cache miss, or scheduled pages never flushed), and two concurrent opens could start two
+  flush threads, leaking one with queued pages. Every open/create now acquires a reference and every close
+  releases it under one global lock, with startup on the first acquire and teardown on the last release;
+  `configure()` (the PROFILE setter hook) no longer starts a flush thread when no database is open, and a
+  profile change while databases are OPEN is refused with a warning (the page manager keeps its current
+  sizing rather than being swapped live under running queries; set the profile before opening databases)
+  ([#4927](https://github.com/ArcadeData/arcadedb/issues/4927)).
 - **Pool discipline, TimeSeries threading and low-severity storage/WAL/LSM cleanups (2026-07 audit).**
   The partitioned triangle-count operator now runs chunk 0 on the calling thread instead of submitting
   every chunk to the shared query pool and blocking on all of them - the same caller-runs-chunk-0
