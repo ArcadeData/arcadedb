@@ -57,4 +57,15 @@ Grab-bag of small, independent hardening items from the 2026-07 `server` module 
 
 ## Impact
 All changes are server-side and backward compatible. Default (`development`) mode error responses are unchanged
-except for an additive `requestId` field. Production mode now conceals internal exception details.
+except for an additive `requestId` field. Concealment only engages when an operator explicitly sets
+`arcadedb.server.mode=production`; the default mode stays verbose.
+
+Production mode conceals only the free-form `detail` cause chain; the `exception` class name and `exceptionArgs`
+are preserved so the remote-driver / HA typed-exception contract still holds. One deliberate trade-off follows
+from concealing `detail`: consumers that read the cause-chain message degrade gracefully against a
+production-mode server. Specifically the remote Java driver (`RemoteHttpComponent.manageException`) parses the RID
+for `RecordNotFoundException` out of `detail`, so it reconstructs the typed exception with a `null` RID; and both
+the driver and HA leader-exception reconstruction (`RaftReplicatedDatabase.reconstructLeaderException`) fall back
+to a generic message (`"Unknown"` / the top-level `error`) for message-only exceptions. `exceptionArgs`-based
+exceptions (`DuplicatedKeyException`, `ServerIsNotTheLeaderException`) are unaffected because their structured args
+are preserved. `Issue5037ProductionErrorBodyIT` locks in the production wiring end-to-end.
