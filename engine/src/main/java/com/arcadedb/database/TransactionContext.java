@@ -101,7 +101,12 @@ public class TransactionContext implements Transaction {
   private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel              = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
-  private       Object                               requester;
+  // volatile (#5060 review round 3): the DEAD-owner release path gets its happens-before from
+  // isAlive()==false (JLS 17.4.4), but closeInternal can roll back a LIVE owner's context, where no such
+  // edge exists - a plain read could see a stale null, re-capture the closing thread and key the unlock
+  // wrong, leaking the very locks #4941 fixes. The volatile read extends the guarantee to live owners
+  // whose lazy capture ran at lock-acquisition time (well before the close).
+  private volatile Object                             requester;
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
 
