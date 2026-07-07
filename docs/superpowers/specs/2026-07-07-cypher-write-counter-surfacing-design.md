@@ -42,13 +42,13 @@ PR #5016 added a reusable engine capability: a `QueryStatistics` accumulator on 
 
 ### 1. UNION / CALL aggregation (engine)
 
-Add `QueryStatistics.add(QueryStatistics other)` - a field-wise sum used to merge branch/subquery accumulators.
+Add `QueryStatistics.add(QueryStatistics other)` - a null-safe field-wise sum used to merge branch/subquery accumulators. `getStatistics()` semantics are left unchanged (lower blast radius than the parent-delegation idea originally sketched; code inspection showed the CALL subquery context has no link to the outer context and top-level UNION branches run as independent root plans, so delegation would require threading anyway).
 
-**CALL subqueries** (`executeWithSeedRow`): make `BasicCommandContext.getStatistics()` delegate to `parent` when a parent is present, so the root context owns the single accumulator and nested contexts write straight into it. This matches the parent-delegation pattern already used by several accessors on `BasicCommandContext`. Ensure the CALL subquery context is wired with the outer context as its parent (verify; set if missing). Because read queries never call `getStatistics()`, the "read query allocates nothing" regression from #5016 still holds. `restore()` / `copy()` continue to operate on the single root instance, so transaction-retry rollback of counts is unaffected.
+**CALL subqueries** (`executeWithSeedRow` / `SubqueryStep.executeInnerQuery`): thread the outer `CommandContext` into `executeWithSeedRow(...)` and have the inner context **share the outer's `QueryStatistics` instance** via a new `CommandContext.setStatistics(QueryStatistics)`. Inner mutation steps then accumulate directly into the outer accumulator - the same instance-sharing rationale `BasicCommandContext.copy()` already documents. No post-hoc merge, no wrapper, no change to `getStatistics()`. The "read query allocates nothing" regression from #5016 still holds because sharing only happens once the outer context has already allocated its accumulator for a write, and a pure-read CALL never triggers a mutation step.
 
-**Top-level UNION** (`executeUnion`): each branch runs as an independent *root* context with no parent, so delegation cannot reach it. Sum each branch's `QueryStatistics` into a combined accumulator via `add(...)` and attach it to the returned union `ResultSet` via `setStatistics(...)`.
+**Top-level UNION** (`executeUnion` / `UnionStep`): each branch runs as an independent root `CypherExecutionPlan.execute()` whose stats are attached to its own `ResultSet`. `UnionStep` accumulates each exhausted branch's `getStatistics()` into an internal aggregate via `add(...)` and exposes it (`getAggregatedStatistics()`). The read path stays lazy and unchanged; for a write UNION (`!statement.isReadOnly()`), `executeUnion()` materializes the union result (mirroring the non-union write path), then attaches the aggregate to the returned `IteratorResultSet` only when `containsUpdates()`.
 
-Rationale for the hybrid: delegation is idiomatic to `BasicCommandContext` and was the mechanism suggested in issue review; explicit merge is structurally unavoidable for UNION's fresh-root branches. Blast radius of the `getStatistics()` change is bounded: only Cypher mutation steps populate the accumulator, and only Bolt/HTTP/gRPC read it back off a `ResultSet`; SQL result sets never carry statistics.
+Blast radius is bounded: only Cypher mutation steps populate the accumulator, and only Bolt/HTTP/gRPC read it back off a `ResultSet`; SQL result sets never carry statistics.
 
 ### 2. HTTP `POST /command` surfacing
 
@@ -120,5 +120,6 @@ Single PR on branch `feat/5015-cypher-write-counter-surfacing`. TDD: failing tes
 
 ## Open risks
 
-- Making `getStatistics()` delegate to `parent` is a change to a widely-called method. Mitigation: audit confirms only Cypher writes populate it and only Bolt/HTTP/gRPC read it off result sets; a read-allocates-nothing regression test guards the hot path.
+- `getStatistics()` is left unchanged; the only new context API is `setStatistics(...)`, used solely to share the outer accumulator into a CALL subquery context. A read-allocates-nothing regression test guards the hot path.
+- Making `executeUnion()` materialize the union result for **write** UNIONs (to force branch writes and aggregate counters) changes read behavior for none - the read path stays lazy. Large write-UNION result sets are materialized, matching the existing non-union write path.
 - Proto field additions are backward compatible (new field numbers only); no existing field is renumbered.
