@@ -375,7 +375,8 @@ that could starve the very snapshot resync meant to heal the node.
   asynchronous tasks on database close/drop used an UNBOUNDED wait, so a worker stuck inside a user task
   or callback blocked shutdown forever. It now waits at most `arcadedb.asyncCloseTimeout` ms (default
   60000, 0 = wait forever) before logging a WARNING and forcing the async workers down; the forced
-  shutdown is itself bounded (interrupt + 1s join per worker) and notifies completion of the leftover
+  shutdown is itself bounded (FORCE_EXIT offer + interrupt + a ~10s join per worker, escalated to a
+  second interrupt and join) and notifies completion of the leftover
   tasks ([#5080](https://github.com/ArcadeData/arcadedb/issues/5080)).
 - **PageManager lifecycle is refcounted.** The JVM-wide page manager was started and stopped on a racy
   "is the active-database map empty" check-then-act spanning factory instances: closing the last instance

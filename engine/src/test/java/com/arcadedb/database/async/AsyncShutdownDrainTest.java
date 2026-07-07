@@ -143,6 +143,73 @@ class AsyncShutdownDrainTest extends TestHelper {
     }
   }
 
+  @Test
+  @Timeout(30)
+  void forceShutdownStillInterruptsWorkerWhenCallerThreadIsInterrupted() throws Exception {
+    // #5105 review (finding 1): when close() drains from an already-interrupted thread, waitCompletion
+    // returns false and re-sets the interrupt flag. async.close()'s shutdown uses interruptible steps, so
+    // leaving the flag set makes them throw immediately and the wedged worker is never interrupted - it
+    // keeps running behind a returned close(). The fix clears the flag across the force-shutdown.
+    final String dbPath = "target/databases/AsyncCloseInterruptTest";
+    DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    try {
+      db.getConfiguration().setValue(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT, 1_000L);
+      final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
+      async.setParallelLevel(1);
+      async.setTransactionUseWAL(true);
+
+      final CountDownLatch blockerStarted = new CountDownLatch(1);
+      // Signals iff the worker actually receives an interrupt: on the pre-fix code the caller's set flag
+      // neuters the force-shutdown, this latch never fires, and the test times out.
+      final CountDownLatch workerInterrupted = new CountDownLatch(1);
+      async.scheduleTask(0, interruptSignallingBlockerTask(blockerStarted, workerInterrupted), true, 0);
+      assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+      // Close from an INTERRUPTED thread - the scenario finding 1 covers.
+      Thread.currentThread().interrupt();
+      db.close();
+      // close() restores the caller's interrupt flag; consume it so it does not leak into the assertions
+      // (and JUnit's own waits) below.
+      assertThat(Thread.interrupted()).as("close() must restore the caller's interrupt flag").isTrue();
+
+      assertThat(workerInterrupted.await(10, TimeUnit.SECONDS))
+          .as("the wedged worker must be interrupted by the force-shutdown even when close()'s caller was interrupted")
+          .isTrue();
+    } finally {
+      Thread.interrupted();
+      if (db.isOpen())
+        db.close();
+      final DatabaseFactory cleanup = new DatabaseFactory(dbPath);
+      if (cleanup.exists())
+        cleanup.open().drop();
+    }
+  }
+
+  private static DatabaseAsyncTask interruptSignallingBlockerTask(final CountDownLatch started,
+      final CountDownLatch interrupted) {
+    return new DatabaseAsyncTask() {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal database) {
+        started.countDown();
+        try {
+          Thread.sleep(60_000);
+        } catch (final InterruptedException e) {
+          interrupted.countDown();
+          Thread.currentThread().interrupt();
+        }
+      }
+
+      @Override
+      public boolean requiresActiveTx() {
+        return false;
+      }
+    };
+  }
+
   private static DatabaseAsyncTask blockerTask(final CountDownLatch started, final long sleepMs) {
     return new DatabaseAsyncTask() {
       @Override
