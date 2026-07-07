@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.Schema;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -77,6 +78,13 @@ public final class DegreeProductOp implements CountOp {
 
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db) {
+    // With no mandatory arm there is no degree filter to exclude non-central-type nodes from the
+    // provider's node domain, and zero-degree central nodes must still contribute 1 row each
+    // (OPTIONAL MATCH preserves the left-hand row). The CSR scan cannot distinguish the two
+    // cases, so fall back to the OLTP path which iterates the central type. See issue #5094.
+    if (!hasMandatoryArm())
+      return executeOLTP(db);
+
     final int nodeCount = provider.getNodeCount();
 
     // Fast path: when all arms are single-hop, pre-fetch NeighborViews and scan
@@ -234,7 +242,7 @@ public final class DegreeProductOp implements CountOp {
    */
   @SuppressWarnings("unchecked")
   private long executeOLTPDegreeMap(final Database db) {
-    final HashMap<RID, int[]>  degreesPerVertex = new HashMap<>();
+    final HashMap<RID, int[]> degreesPerVertex = new HashMap<>();
 
     // For each arm, iterate all edges of that type and count per central vertex
     for (int a = 0; a < arms.length; a++) {
@@ -262,9 +270,16 @@ public final class DegreeProductOp implements CountOp {
       }
     }
 
-    // Compute degree products: only vertices with non-zero mandatory arm degrees contribute
+    // Compute degree products: only vertices with non-zero mandatory arm degrees contribute.
+    // The map is keyed by edge endpoints, so it can contain vertices that are not of the central
+    // type: filter them out via a cheap bucket-to-type lookup (no record load). See issue #5094.
+    final Schema schema = db.getSchema();
     long total = 0;
+    long centralSeen = 0;
     for (final Map.Entry<RID, int[]> entry : degreesPerVertex.entrySet()) {
+      if (!schema.getTypeByBucketId(entry.getKey().getBucketId()).instanceOf(centralLabel))
+        continue;
+      centralSeen++;
       final int[] degrees = entry.getValue();
       long product = 1;
       boolean skip = false;
@@ -283,7 +298,20 @@ public final class DegreeProductOp implements CountOp {
       if (!skip)
         total += product;
     }
+
+    // With no mandatory arm, central vertices without any edge never enter the map but still
+    // produce one null-preserving row each (OPTIONAL MATCH keeps the left-hand row). See issue #5094.
+    if (!hasMandatoryArm())
+      total += db.countType(centralLabel, true) - centralSeen;
+
     return total;
+  }
+
+  private boolean hasMandatoryArm() {
+    for (final Arm arm : arms)
+      if (!arm.optional)
+        return true;
+    return false;
   }
 
   private void incrementDegree(final HashMap<RID, int[]> map, final RID vertex, final int armIndex) {

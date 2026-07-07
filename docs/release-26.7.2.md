@@ -10,6 +10,19 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: `count(*)` after `OPTIONAL MATCH` no longer drops the null-preserving rows.** A query like
+  `MATCH (n:BugNode) OPTIONAL MATCH (n)-[:LINK]->(m:BugNode) RETURN count(*)` returned only the number of
+  rows where the optional pattern matched (i.e. `count(m)`) instead of counting every row, including those
+  where `m` is `null` ([#5094](https://github.com/ArcadeData/arcadedb/issues/5094)). The star-join count
+  push-down (`DegreeProductOp`) built its per-vertex degree map by iterating edges, so central vertices with
+  no matching edges never entered the map and their null rows were lost when every arm was optional. The
+  OLTP degree-map path now adds one row per central-type vertex missing from the map when no mandatory arm
+  exists, and filters out map entries that are not of the central type (they could previously inflate the
+  count when the same edge type connected other vertex types). The CSR fast path falls back to the OLTP
+  path in the all-optional-arms case, since the CSR node domain cannot distinguish zero-degree central
+  nodes from nodes of other types. Row materialization of the same pattern was already correct; results
+  now match Neo4j, Memgraph, and FalkorDB.
+
 - **SQL: `FROM` can now be used as a property name.** `CREATE PROPERTY fulfilledBy.From STRING` failed with a
   parsing exception while the symmetric `fulfilledBy.To` worked, because `FROM` was a fully reserved keyword and
   `TO` a soft one ([#5092](https://github.com/ArcadeData/arcadedb/issues/5092)). The grammar now accepts `FROM`
