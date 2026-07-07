@@ -582,6 +582,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * this node steps down (issue #4740 Fix 2 makes that recoverable instead of fatal).
    */
   private boolean reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
+    // #5075 review: this also runs when the post-append failure FENCED the database. applyChanges operates
+    // at the FileManager/PageManager level and never passes through checkDatabaseIsOpen (the fence's only
+    // choke point besides the pre-append guard), so reconciliation works on a fenced database - it is the
+    // same page-level machinery recovery replay uses on reopen.
     try {
       final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
       proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), true);
