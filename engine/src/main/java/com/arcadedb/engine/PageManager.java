@@ -50,10 +50,10 @@ public class PageManager extends LockContext {
 
   // Package-private (instead of private) so the white-box regression test for #4925/#4933 can assert on
   // the cache content and RAM accounting directly, without reflection.
-  ConcurrentMap<PageId, CachedPage> readCache;
+  volatile ConcurrentMap<PageId, CachedPage> readCache;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
-  private          long                              maxRAM;
+  private volatile long                               maxRAM;
   final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
@@ -65,8 +65,14 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
-  private          PageManagerFlushThread            flushThread;
-  private          int                               freePageRAM;
+  // LIFECYCLE INVARIANT (#5070 review): flushThread and readCache are written only under LIFECYCLE_LOCK
+  // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
+  // ONLY because a reader implies refcount > 0 (its database holds a reference), so no transition can run
+  // concurrently. volatile (three review rounds converged on it): the barrier cost is negligible next to the
+  // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
+  // database-publication happens-before for cross-thread visibility of the startup() writes.
+  private volatile PageManagerFlushThread             flushThread;
+  private volatile int                                freePageRAM;
 
   @ExcludeFromJacocoGeneratedReport
   public interface ConcurrentPageAccessCallback {
@@ -92,7 +98,78 @@ public class PageManager extends LockContext {
   private PageManager() {
   }
 
+  /**
+   * #4927: the JVM-wide PageManager is REFCOUNTED. Every DatabaseFactory open/create acquires one reference
+   * (starting the flush machinery on 0 -> 1) and every database close releases it (tearing down on 1 -> 0),
+   * all under one global lock. The previous lifecycle keyed on ACTIVE_INSTANCES.isEmpty() was a
+   * check-then-act racing across factory instances (open/create synchronize on the factory, the map is
+   * static, and registration happens only AFTER database.open() completes): closing the last instance of
+   * one database could null the flush thread under a database whose open was mid-flight (NPE on the first
+   * cache miss, or scheduled pages never flushed), and two opens could both see the map empty and start two
+   * flush threads, leaking one with queued pages.
+   */
+  private static final Object LIFECYCLE_LOCK = new Object();
+  private       int    lifecycleRefCount = 0; // guarded by LIFECYCLE_LOCK
+
+  /** Acquires one lifecycle reference; the flush machinery starts on the 0 -> 1 transition. Pair with {@link #release()}. */
+  public void acquire() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (++lifecycleRefCount == 1)
+        try {
+          startup();
+        } catch (final RuntimeException | Error e) {
+          // #5070 review: startup() can throw (e.g. ConfigurationException on a negative MAX_PAGE_RAM). The
+          // increment must not survive it, or the counter is left at 1 with no flush thread and the NEXT
+          // acquire sees 1 -> 2 and never starts one - a wedged manager the caller's catch cannot repair
+          // (its release() would just decrement back to the same broken state at 1).
+          lifecycleRefCount = 0;
+          throw e;
+        }
+    }
+  }
+
+  /** Releases one lifecycle reference; the flush machinery is torn down on the 1 -> 0 transition. Over-releases are clamped. */
+  public void release() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (lifecycleRefCount == 0)
+        // Over-release (e.g. a test calling close() directly followed by a paired release): clamp instead of
+        // going negative and tearing down a manager a later acquire believes it owns.
+        return;
+      if (--lifecycleRefCount == 0)
+        shutdown();
+    }
+  }
+
+  /**
+   * Declares that the configuration changed (used by the GlobalConfiguration PROFILE setter). Always a
+   * no-op at runtime: with no database open the next {@link #acquire()} reads the fresh settings anyway
+   * (and starting a flush thread with zero databases - the old behavior - leaked it until the next
+   * lifecycle transition); with databases OPEN a live shutdown+startup swap would race the hot paths, which
+   * read {@code flushThread}/{@code readCache} without the lifecycle lock (#5070 review) - so a live
+   * profile change is refused loudly instead. Set the PROFILE before opening databases.
+   */
   public void configure() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (lifecycleRefCount > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Configuration profile PARTIALLY applied: %d database(s) are open, so the page manager keeps its current sizing while the profile's other settings (async/HTTP threads, queue sizes) did change. Set the profile before opening databases for a consistent configuration",
+            null, lifecycleRefCount);
+    }
+  }
+
+  /**
+   * Force teardown regardless of refcount (test/emergency API): the counter resets so the next acquire
+   * starts fresh. ONLY safe when no database is open: a live database's eventual release() would decrement
+   * the NEW manager started by a later acquire and tear it down under that newcomer (#5070 review).
+   */
+  public void close() {
+    synchronized (LIFECYCLE_LOCK) {
+      lifecycleRefCount = 0;
+      shutdown();
+    }
+  }
+
+  private void startup() {
     final ContextConfiguration configuration = new ContextConfiguration();
     this.freePageRAM = configuration.getValueAsInteger(GlobalConfiguration.FREE_PAGE_RAM);
     this.readCache = new ConcurrentHashMap<>(configuration.getValueAsInteger(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE));
@@ -101,24 +178,31 @@ public class PageManager extends LockContext {
     if (this.maxRAM < 0)
       throw new ConfigurationException(GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + maxRAM + " MB)");
 
-    if (flushThread != null)
-      close();
-
     flushThread = new PageManagerFlushThread(this, configuration);
     flushThread.start();
   }
 
-  public void close() {
+  /**
+   * INVARIANT (#5070 review): runs under LIFECYCLE_LOCK and joins the flush thread - the flush thread must
+   * therefore NEVER call acquire()/release()/configure()/close(), or this join becomes a deadlock (the
+   * flush thread blocking on the lock this thread holds while waiting for it to exit). Verified true today.
+   */
+  private void shutdown() {
     if (flushThread != null) {
       try {
         flushThread.closeAndJoin();
-        flushThread = null;
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
+      } finally {
+        // Null out regardless of interrupt (#5070 review): a stale dead reference with refcount 0 was
+        // harmless (the next startup() overwrites it) but inconsistent.
+        flushThread = null;
       }
     }
 
-    readCache.clear();
+    if (readCache != null)
+      // close() is a reachable test/emergency API and may run before any startup() (#5070 review).
+      readCache.clear();
     totalReadCacheRAM.set(0L);
   }
 
@@ -397,7 +481,7 @@ public class PageManager extends LockContext {
     final PPageManagerStats stats = new PPageManagerStats();
     stats.maxRAM = maxRAM;
     stats.readCacheRAM = totalReadCacheRAM.get();
-    // readCache and flushThread are populated by configure(), which is called on first DB
+    // readCache and flushThread are populated by startup() (the 0 -> 1 acquire transition), which is called on first DB
     // open. When no database has been opened yet (e.g. a profiler snapshot taken at server
     // startup) they're still null - report empty cache/queue rather than NPE.
     stats.readCachePages = readCache != null ? readCache.size() : 0;

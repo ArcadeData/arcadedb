@@ -320,6 +320,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
+   * <p>
+   * NOTE (#4927): kill() deliberately does NOT release this instance's PageManager lifecycle reference -
+   * the documented kill-then-close contract relies on the following {@code close()} releasing it
+   * (closeInternal's release runs with {@code open == false} too, exactly once via its CAS). A kill()
+   * never followed by close() pins the page manager open for the JVM's life.
    */
   @Override
   public void kill() {
@@ -2194,10 +2199,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath)) {
+    // Unconditional on purpose: a KILLED database (crash simulation) reaches close() with open == false and
+    // must still unregister - removeActiveDatabaseInstance is naturally idempotent (false on the second
+    // call), which is exactly how the pre-#4927 code stayed double-close-safe. The executor teardown stays
+    // on the map-emptiness heuristic DELIBERATELY (#5070 review): unlike the flush thread, a shutdown
+    // executor lazily re-creates itself on the next getExecutor(), so the mid-flight-open race self-heals.
+    // A redundant double-close of the LAST database calls it twice (the empty map returns true again):
+    // harmless, closeExecutor() is idempotent (early-returns on null/isShutdown under its class lock).
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath, this))
       GraphAnalyticalView.closeExecutor();
-      PageManager.INSTANCE.close();
-    }
+
+    // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
+    // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
+    // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
+    // from under). The atomic flag makes the release EXACTLY ONCE per database instance (#5070 review): a
+    // redundant double-close cannot steal another database's reference, and when registerActiveInstance
+    // closes a same-path open race loser, the factory's catch sees the flag and does not release again.
+    if (pageManagerReferenceReleased.compareAndSet(false, true))
+      PageManager.INSTANCE.release();
+  }
+
+  /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */
+  private final AtomicBoolean pageManagerReferenceReleased = new AtomicBoolean(false);
+
+  boolean isPageManagerReferenceReleased() {
+    return pageManagerReferenceReleased.get();
   }
 
   private void checkForRecovery() throws IOException {

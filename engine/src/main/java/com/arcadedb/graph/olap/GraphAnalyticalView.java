@@ -106,7 +106,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Gracefully shuts down the shared async build executor. Waits up to 30 seconds
    * for in-progress builds to complete, then forcibly terminates remaining tasks.
-   * Called when the last database instance is closed (alongside {@code PageManager.INSTANCE.close()}).
+   * Called when the last REGISTERED database instance is closed. NOTE (#4927): unlike the PageManager -
+   * whose lifecycle is refcounted - this teardown deliberately stays on the ACTIVE_INSTANCES-empty
+   * heuristic: the executor lazily re-creates itself on the next getExecutor(), so the mid-flight-open
+   * race that was fatal for the flush thread merely costs a re-created executor here.
    * The executor is lazily re-created if a new database is opened later.
    *
    * <p><b>Multi-database note:</b> The executor is shared across all databases in the JVM.
