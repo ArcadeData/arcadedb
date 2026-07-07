@@ -40,7 +40,7 @@ import java.util.stream.StreamSupport;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class SelectIterator<T extends Document> implements Iterator<T> {
+public class SelectIterator<T extends Document> implements Iterator<T>, AutoCloseable {
   protected final SelectExecutor                   executor;
   protected final Iterator<? extends Identifiable> iterator;
   protected final Set<RID>                         filterOutRecords;
@@ -132,6 +132,16 @@ public class SelectIterator<T extends Document> implements Iterator<T> {
 
   public T nextOrNull() {
     return hasNext() ? next() : null;
+  }
+
+  /**
+   * Releases the resources associated to the iterator. The serial implementation has nothing to release; the parallel
+   * implementation ({@link SelectParallelIterator}) overrides this method to stop the background producers, so an early
+   * close does not leave async workers running (#5065). Closing an iterator is optional when it is fully consumed.
+   */
+  @Override
+  public void close() {
+    // NOTHING TO RELEASE IN THE SERIAL IMPLEMENTATION
   }
 
   public List<T> toList() {
