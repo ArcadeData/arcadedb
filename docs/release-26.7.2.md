@@ -383,6 +383,26 @@ that could starve the very snapshot resync meant to heal the node.
   page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
   levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
   `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
+- **Parallel select no longer pins async workers at 100% CPU when the consumer stops draining (2026-07
+  audit follow-up).** The native-query `select().parallel()` iterator hands records from its per-bucket
+  async browse tasks to the consumer through a fixed 4,096-slot queue, and the producers offered into it
+  with an unbounded busy-spin: a consumer that stopped fetching (an exception in user code, an early
+  return, or plain abandonment) left one async worker per bucket spinning at 100% CPU forever, and the
+  next `Database.close()`/`drop()` hung indefinitely behind the async executor's unbounded
+  `waitCompletion()`. The offer is now bounded: producers park briefly between attempts and give up
+  cleanly - through the regular task-completion path, preserving the async executor contracts hardened
+  with #5062 - when the iterator is closed, the worker is interrupted (executor shutdown), the limit is
+  already satisfied, or the consumer makes no progress for the whole stall bound (the select timeout when
+  set, otherwise 60s, matching the async executor's zero-progress backstop). A consumer still alive after
+  the producers stall out gets a `TimeoutException` instead of a silently truncated result set (unless it
+  opted into truncation with a non-throwing timeout), and `SelectIterator` is now `AutoCloseable` so an
+  early-terminating consumer can release the producers deterministically. The rework also fixes three
+  latent defects in the parallel path: `limit` was accounted on the producer side, so the consumer could
+  receive fewer records than requested (down to zero on a fast producer); `skip` crashed with a
+  `NullPointerException` (the base constructor consumed the skipped records before the parallel machinery
+  existed); and a record published between the consumer's last poll and the final producer's countdown
+  could be silently dropped at end of stream
+  ([#5065](https://github.com/ArcadeData/arcadedb/issues/5065)).
 
 ### Improvements
 
