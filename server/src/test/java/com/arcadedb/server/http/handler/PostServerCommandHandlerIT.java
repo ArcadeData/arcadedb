@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class PostServerCommandHandlerIT extends BaseGraphServerTest {
   private final HttpClient client = HttpClient.newHttpClient();
+
+  @Override
+  protected void onServerConfiguration(final ContextConfiguration config) {
+    super.onServerConfiguration(config);
+    // The 'restore database ... file://<local-backup>' happy path below is a legitimate operator
+    // action that, since issue #5027, requires explicitly opting into local-file/private-host URLs.
+    config.setValue(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS, true);
+  }
 
   @Test
   void setDatabaseSettingCommand() throws Exception {
