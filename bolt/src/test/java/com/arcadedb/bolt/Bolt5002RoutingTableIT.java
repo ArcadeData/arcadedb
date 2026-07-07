@@ -21,7 +21,6 @@ package com.arcadedb.bolt;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BoltMessage;
-import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.server.ha.raft.BaseRaftHATest;
 import org.junit.jupiter.api.AfterEach;
@@ -110,9 +109,9 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     final int askIndex = (leaderIndex + 1) % getServerCount();
     final Map<String, Object> rt = awaitRoutingTable(BASE_BOLT_PORT + askIndex, leaderBolt);
 
-    assertThat(addressesForRole(rt, "WRITE")).containsExactly(leaderBolt);
-    assertThat(addressesForRole(rt, "READ")).containsExactlyInAnyOrderElementsOf(followerBolt);
-    assertThat(addressesForRole(rt, "ROUTE")).contains(leaderBolt).containsAll(followerBolt);
+    assertThat(BoltRouteTestSupport.addressesForRole(rt, "WRITE")).containsExactly(leaderBolt);
+    assertThat(BoltRouteTestSupport.addressesForRole(rt, "READ")).containsExactlyInAnyOrderElementsOf(followerBolt);
+    assertThat(BoltRouteTestSupport.addressesForRole(rt, "ROUTE")).contains(leaderBolt).containsAll(followerBolt);
   }
 
   @Test
@@ -161,7 +160,7 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
 
     final String newLeaderBolt = "localhost:" + (BASE_BOLT_PORT + newLeader);
     final Map<String, Object> rt = awaitRoutingTable(BASE_BOLT_PORT + newLeader, newLeaderBolt);
-    assertThat(addressesForRole(rt, "WRITE")).containsExactly(newLeaderBolt);
+    assertThat(BoltRouteTestSupport.addressesForRole(rt, "WRITE")).containsExactly(newLeaderBolt);
   }
 
   // --- raw Bolt ROUTE helper -------------------------------------------------
@@ -175,13 +174,16 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     for (int attempt = 0; attempt < 40; attempt++) {
       try {
         rt = fetchRoutingTable(boltPort);
-        if (List.of(expectedWriter).equals(addressesForRole(rt, "WRITE")))
+        if (List.of(expectedWriter).equals(BoltRouteTestSupport.addressesForRole(rt, "WRITE")))
           return rt;
       } catch (final Exception e) {
         // A node contacted mid-failover may reset the connection; retry until it settles.
       }
       Thread.sleep(250);
     }
+    assertThat(rt)
+        .as("no routing table advertising writer %s obtained from bolt port %d after retries", expectedWriter, boltPort)
+        .isNotNull();
     return rt;
   }
 
@@ -221,27 +223,7 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
 
       final byte[] response = in.readMessage();
       assertThat(response[1]).as("ROUTE must succeed").isEqualTo(BoltMessage.SUCCESS);
-      return readRoutingTable(response);
+      return BoltRouteTestSupport.readRoutingTable(response);
     }
-  }
-
-  @SuppressWarnings("unchecked")
-  private static Map<String, Object> readRoutingTable(final byte[] successResponse) throws java.io.IOException {
-    // SUCCESS is a single-field structure: [struct marker][signature][metadata map]. Skip the two
-    // header bytes and read the metadata map, then pull out the "rt" routing table.
-    final PackStreamReader reader = new PackStreamReader(successResponse);
-    reader.readRawByte();
-    reader.readRawByte();
-    final Map<String, Object> metadata = (Map<String, Object>) reader.readValue();
-    return (Map<String, Object>) metadata.get("rt");
-  }
-
-  @SuppressWarnings("unchecked")
-  private static List<String> addressesForRole(final Map<String, Object> rt, final String role) {
-    final List<Map<String, Object>> servers = (List<Map<String, Object>>) rt.get("servers");
-    for (final Map<String, Object> s : servers)
-      if (role.equals(s.get("role")))
-        return (List<String>) s.get("addresses");
-    return List.of();
   }
 }

@@ -20,7 +20,6 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BoltMessage;
-import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
@@ -200,11 +199,13 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       final byte[] response = chunkedIn.readMessage();
       assertThat(response[1]).as("ROUTE must succeed").isEqualTo(BoltMessage.SUCCESS);
 
-      final Map<String, Object> rt = readRoutingTable(response);
-      final String self = addressForRole(rt, "WRITE");
+      final Map<String, Object> rt = BoltRouteTestSupport.readRoutingTable(response);
+      final List<String> writers = BoltRouteTestSupport.addressesForRole(rt, "WRITE");
+      assertThat(writers).hasSize(1);
+      final String self = writers.get(0);
       assertThat(self).isNotBlank();
-      assertThat(addressForRole(rt, "READ")).isEqualTo(self);
-      assertThat(addressForRole(rt, "ROUTE")).isEqualTo(self);
+      assertThat(BoltRouteTestSupport.addressesForRole(rt, "READ")).containsExactly(self);
+      assertThat(BoltRouteTestSupport.addressesForRole(rt, "ROUTE")).containsExactly(self);
     }
   }
 
@@ -252,28 +253,6 @@ public class BoltProtocolIT extends BaseGraphServerTest {
     }
   }
 
-  @SuppressWarnings("unchecked")
-  private static Map<String, Object> readRoutingTable(final byte[] successResponse) throws java.io.IOException {
-    // SUCCESS is a single-field structure: [struct marker][signature][metadata map]. Skip the two
-    // header bytes and read the metadata map, then pull out the "rt" routing table.
-    final PackStreamReader reader = new PackStreamReader(successResponse);
-    reader.readRawByte();
-    reader.readRawByte();
-    final Map<String, Object> metadata = (Map<String, Object>) reader.readValue();
-    return (Map<String, Object>) metadata.get("rt");
-  }
-
-  @SuppressWarnings("unchecked")
-  private static String addressForRole(final Map<String, Object> rt, final String role) {
-    final List<Map<String, Object>> servers = (List<Map<String, Object>>) rt.get("servers");
-    for (final Map<String, Object> s : servers) {
-      if (role.equals(s.get("role"))) {
-        final List<String> addrs = (List<String>) s.get("addresses");
-        return addrs.isEmpty() ? null : addrs.get(0);
-      }
-    }
-    return null;
-  }
 
   @Test
   void simpleQuery() {
