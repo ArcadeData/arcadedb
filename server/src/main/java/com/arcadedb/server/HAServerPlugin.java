@@ -112,6 +112,22 @@ public interface HAServerPlugin extends ServerPlugin {
   String getReplicaAddresses();
 
   /**
+   * Returns the client-reachable Bolt address (host:port) of the current leader, or null when unknown
+   * or HA is not active. Used to build the writer entry of the Bolt ROUTE routing table.
+   */
+  default String getLeaderBoltAddress() {
+    return null;
+  }
+
+  /**
+   * Returns a comma-separated list of client-reachable Bolt addresses for the non-leader replicas,
+   * or an empty string when none. Used to build the reader entries of the Bolt ROUTE routing table.
+   */
+  default String getReplicaBoltAddresses() {
+    return "";
+  }
+
+  /**
    * Sends a shutdown command to a remote server in the cluster.
    */
   void shutdownRemoteServer(String serverName);

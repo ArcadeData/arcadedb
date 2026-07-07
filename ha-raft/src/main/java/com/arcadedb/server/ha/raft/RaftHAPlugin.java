@@ -262,6 +262,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public String getLeaderBoltAddress() {
+    return raftHAServer != null ? raftHAServer.getLeaderBoltAddress() : null;
+  }
+
+  @Override
+  public String getReplicaBoltAddresses() {
+    return raftHAServer != null ? raftHAServer.getReplicaBoltAddresses() : "";
+  }
+
+  @Override
   public void shutdownRemoteServer(final String serverName) {
     if (raftHAServer == null)
       throw new RuntimeException("Raft HA server not started");
