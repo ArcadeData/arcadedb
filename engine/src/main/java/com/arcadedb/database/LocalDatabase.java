@@ -2164,10 +2164,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath)) {
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
       GraphAnalyticalView.closeExecutor();
-      PageManager.INSTANCE.close();
-    }
+
+    // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
+    // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
+    // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
+    // from under).
+    PageManager.INSTANCE.release();
   }
 
   private void checkForRecovery() throws IOException {
