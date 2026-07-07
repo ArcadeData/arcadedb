@@ -288,6 +288,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       LogManager.instance()
               .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
+    } catch (final TransactionCommittedRemotelyException e) {
+      LogManager.instance()
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
+      // 409 Conflict, NOT 5xx (#5064/#5075 review): the transaction IS durably committed cluster-wide -
+      // only the local apply failed. A 5xx would invite HTTP clients and load balancers to RETRY, which
+      // would apply the changes a second time (duplicate inserts) - the exact hazard the distinct
+      // exception type exists to prevent. Same rationale as the DuplicatedKeyException 409 below (#4350).
+      sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry", e, null);
     } catch (final DuplicatedKeyException e) {
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),

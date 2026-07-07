@@ -24,6 +24,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,6 +43,7 @@ import static org.assertj.core.api.Assertions.fail;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 class Issue5064CommittedRemotelyContractIT extends BaseRaftHATest {
 
   private static final String VERTEX_TYPE = "Contract5064";
