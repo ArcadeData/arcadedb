@@ -233,7 +233,9 @@ that could starve the very snapshot resync meant to heal the node.
   (NPE on the first cache miss, or scheduled pages never flushed), and two concurrent opens could start two
   flush threads, leaking one with queued pages. Every open/create now acquires a reference and every close
   releases it under one global lock, with startup on the first acquire and teardown on the last release;
-  `configure()` (the PROFILE setter hook) no longer starts a flush thread when no database is open
+  `configure()` (the PROFILE setter hook) no longer starts a flush thread when no database is open, and a
+  profile change while databases are OPEN is refused with a warning (the page manager keeps its current
+  sizing rather than being swapped live under running queries; set the profile before opening databases)
   ([#4927](https://github.com/ArcadeData/arcadedb/issues/4927)).
 - **Pool discipline, TimeSeries threading and low-severity storage/WAL/LSM cleanups (2026-07 audit).**
   The partitioned triangle-count operator now runs chunk 0 on the calling thread instead of submitting
