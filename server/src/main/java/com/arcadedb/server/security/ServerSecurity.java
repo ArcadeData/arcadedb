@@ -238,6 +238,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       final long ts = System.currentTimeMillis();
       if (entry == null || ts - entry[1] > PASSWORD_LOCKOUT_MS)
         return new long[] { 1, ts };
+      // Preserve the FIRST-failure timestamp on increment (index 1). The lockout window is therefore
+      // measured from the first failure in the window, not the last - matching the API-token path.
       return new long[] { entry[0] + 1, entry[1] };
     });
   }
