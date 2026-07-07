@@ -31,11 +31,21 @@ never back-ported to the original password path; two create-user entry points ev
 4. `passwordMatch()` compares encoded hashes with `MessageDigest.isEqual` (constant-time).
 
 ## Keying decision (Defect 1)
-Lockout is keyed by user name, mirroring the API-token path exactly (which keys by token-hash
-prefix, no IP). Threading source IP would require changing the `authenticate` signature across 9
-call sites in 6 modules (http, bolt, postgresw, grpcw, mongodbw, mcp); the acceptance criterion only
-requires per-principal lockout "like API tokens". IP-scoped keying is noted as a possible future
-refinement.
+Lockout is keyed by a bounded 64-bit SHA-256 prefix of the user name, mirroring the API-token path
+(which keys by a token-hash prefix, no IP) and the salt-cache key strategy in the same class.
+Hashing bounds per-entry memory regardless of user-name length and avoids retaining plaintext user
+names as reachable map keys. Threading source IP would require changing the `authenticate` signature
+across 9 call sites in 6 modules (http, bolt, postgresw, grpcw, mongodbw, mcp); the acceptance
+criterion only requires per-principal lockout "like API tokens". IP-scoped keying is noted as a
+possible future refinement.
+
+### Known tradeoff: targeted account-lockout DoS
+Because the lockout is keyed by principal (not source IP), an attacker who knows a valid user name
+(e.g. the well-known `root`) can hold that account in lockout by sending 5 bad passwords every 30s,
+denying that principal across all protocols. This is inherent to any per-principal lockout and is
+identical to the pre-existing API-token behavior this change mirrors. Accepted for now per the issue
+scope ("like API tokens"); IP-scoped keying and operator-configurable threshold/window are the
+follow-up mitigations.
 
 ## Tests
 - `ServerSecurityAuthHardeningTest` (new): password lockout after N failures, throttle message,

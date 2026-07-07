@@ -199,23 +199,24 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
     // Brute-force protection for password (Basic-auth / login) authentication, mirroring the API-token
     // path: reject fast when a principal has exceeded the failure threshold within the lockout window.
-    final long[] existing = passwordFailures.get(userName);
+    // The failure map is keyed by a bounded hash prefix of the user name rather than the raw name, so an
+    // attacker flooding arbitrary-length user names cannot inflate per-entry memory, and plaintext user
+    // names are not retained as reachable heap keys.
+    final String failureKey = passwordFailureKey(userName);
+    final long[] existing = passwordFailures.get(failureKey);
     if (existing != null && existing[0] >= MAX_PASSWORD_FAILURES && System.currentTimeMillis() - existing[1] < PASSWORD_LOCKOUT_MS)
       throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
 
     final ServerSecurityUser su = users.get(userName);
-    if (su == null) {
-      recordPasswordFailure(userName);
-      throw new ServerSecurityException("User/Password not valid");
-    }
-
-    if (!passwordMatch(userPassword, su.getPassword())) {
-      recordPasswordFailure(userName);
+    // A user with no stored password (e.g. before first-run root initialization) can never authenticate;
+    // guard here so passwordMatch is not handed a null hash to split.
+    if (su == null || su.getPassword() == null || !passwordMatch(userPassword, su.getPassword())) {
+      recordPasswordFailure(failureKey);
       throw new ServerSecurityException("User/Password not valid");
     }
 
     // Successful authentication: clear the failure counter for this principal.
-    passwordFailures.remove(userName);
+    passwordFailures.remove(failureKey);
 
     if (databaseName != null) {
       final Set<String> allowedDatabases = su.getAuthorizedDatabases();
@@ -227,21 +228,29 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
-   * Records a failed password authentication attempt for the given principal, atomically incrementing
-   * the failure counter (or restarting it once the lockout window has elapsed).
+   * Records a failed password authentication attempt for the given key, atomically incrementing the
+   * failure counter (or restarting it once the lockout window has elapsed). Each update publishes a
+   * fresh {@code long[]} instance rather than mutating the existing one in place, so concurrent readers
+   * in {@link #authenticate} always observe a safely-published, internally-consistent snapshot.
    */
-  private void recordPasswordFailure(final String userName) {
-    passwordFailures.compute(userName, (k, entry) -> {
+  private void recordPasswordFailure(final String failureKey) {
+    passwordFailures.compute(failureKey, (k, entry) -> {
       final long ts = System.currentTimeMillis();
-      if (entry == null)
+      if (entry == null || ts - entry[1] > PASSWORD_LOCKOUT_MS)
         return new long[] { 1, ts };
-      if (ts - entry[1] > PASSWORD_LOCKOUT_MS) {
-        entry[0] = 1;
-        entry[1] = ts;
-      } else
-        entry[0]++;
-      return entry;
+      return new long[] { entry[0] + 1, entry[1] };
     });
+  }
+
+  /**
+   * Builds the brute-force failure-map key as a bounded (16 hex chars / 64-bit) SHA-256 prefix of the
+   * user name. Keeps per-entry memory constant regardless of user-name length and avoids retaining
+   * plaintext user names as reachable map keys, mirroring the salt-cache and API-token key strategy.
+   */
+  private static String passwordFailureKey(final String userName) {
+    final MessageDigest digest = SHA256_DIGEST.get();
+    final byte[] hash = digest.digest(userName.getBytes(StandardCharsets.UTF_8));
+    return HexFormat.of().formatHex(hash, 0, 8);
   }
 
   /**
