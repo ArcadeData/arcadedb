@@ -35,6 +35,7 @@ import java.io.*;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
@@ -395,7 +396,12 @@ public class TransactionManager {
               try {
                 // Files.move (vs File.renameTo, which just returns false) fails with a cause and performs an
                 // atomic rename where the filesystem supports it. Best-effort semantics preserved: log and continue.
-                Files.move(walFile.toPath(), walFile.toPath().resolveSibling(walFile.getName() + ".corrupt"));
+                // REPLACE_EXISTING (#5063 review round 4): a prior ABORTED recovery can leave a same-named
+                // .corrupt file behind; without it the move throws FileAlreadyExistsException and the original
+                // .wal stays in place, re-scanned and re-aborted on every restart - the exact loop this breaks.
+                // The stale .corrupt it replaces is evidence from the SAME file's earlier failed attempt.
+                Files.move(walFile.toPath(), walFile.toPath().resolveSibling(walFile.getName() + ".corrupt"),
+                    StandardCopyOption.REPLACE_EXISTING);
               } catch (final IOException e) {
                 LogManager.instance().log(this, Level.WARNING,
                     "Error on renaming preserved WAL file '%s' to '%s.corrupt'", e, walFile, walFile.getName());
