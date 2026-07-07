@@ -102,6 +102,23 @@ class AiConfigurationTest {
     assertThat(config.isConfigured()).isFalse();
   }
 
+  @Test
+  void saveWritesValidFileAndLeavesNoTempArtifacts() {
+    final AiConfiguration config = new AiConfiguration(TEST_ROOT);
+    config.activate("token-abc", "127.0.0.1", "hw-1", "1.2.3");
+
+    // Reload from disk: the persisted file must be complete and valid.
+    final AiConfiguration reloaded = new AiConfiguration(TEST_ROOT);
+    reloaded.load();
+    assertThat(reloaded.isConfigured()).isTrue();
+    assertThat(reloaded.getSubscriptionToken()).isEqualTo("token-abc");
+
+    // The atomic write must not leave any temporary files behind.
+    final File configDir = Paths.get(TEST_ROOT, "config").toFile();
+    final File[] leftovers = configDir.listFiles((dir, name) -> name.endsWith(".tmp"));
+    assertThat(leftovers).isNullOrEmpty();
+  }
+
   private void writeConfigFile(final JSONObject json) throws Exception {
     final File configDir = Paths.get(TEST_ROOT, "config").toFile();
     configDir.mkdirs();
