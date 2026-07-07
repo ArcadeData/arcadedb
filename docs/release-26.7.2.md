@@ -243,7 +243,10 @@ that could starve the very snapshot resync meant to heal the node.
   blocking call in a task) still surfaces an error instead of hanging: a progress-gated backstop
   throws after 12 consecutive stall windows with zero completed tasks (60s with the default
   `checkForStalledQueuesMaxDelay` of 5s) - much longer than the old 10s false-positive-prone bound,
-  tunable via `setCheckForStalledQueuesMaxDelay()`. Known residual gap: with the opt-in
+  tunable via `setCheckForStalledQueuesMaxDelay()`; a worker parked handing a task cross-slot with a
+  flat completed count (a likely scheduling cycle) is reported faster, after 3 consecutive stall
+  windows (15s by default), so a peer merely busy on one slow task does not trip it. Known residual
+  gap: with the opt-in
   `arcadedb.asyncOperationsQueueImpl=fast` queue, a task whose enqueue races the target worker's
   exit cannot be removed (`remove(Object)` unsupported) and its completion is never notified; a
   WARNING is logged when this happens, and the default `standard` queue is not affected. Shutdown no
