@@ -94,4 +94,29 @@ public class Bolt5000ResultCountersIT extends BaseGraphServerTest {
       assertThat(counters.containsUpdates()).isTrue();
     }
   }
+
+  @Test
+  void callSubqueryWriteReportsCountersOverBolt() {
+    try (final Driver driver = getDriver();
+         final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      final SummaryCounters counters = session.run(
+          "UNWIND [1,2] AS x CALL { WITH x CREATE (:BoltCall {v:x}) } RETURN x").consume().counters();
+      assertThat(counters.nodesCreated()).isEqualTo(2);
+      assertThat(counters.propertiesSet()).isEqualTo(2);
+      assertThat(counters.containsUpdates()).isTrue();
+    }
+  }
+
+  @Test
+  void unionWriteReportsSummedCountersOverBolt() {
+    try (final Driver driver = getDriver();
+         final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      final SummaryCounters counters = session.run(
+          "CREATE (:BoltUnionA {n:1}) RETURN 1 AS r UNION ALL CREATE (:BoltUnionB {n:2}) RETURN 2 AS r")
+          .consume().counters();
+      assertThat(counters.nodesCreated()).isEqualTo(2);
+      assertThat(counters.propertiesSet()).isEqualTo(2);
+      assertThat(counters.containsUpdates()).isTrue();
+    }
+  }
 }
