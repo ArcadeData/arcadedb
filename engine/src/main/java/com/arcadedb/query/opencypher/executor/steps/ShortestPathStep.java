@@ -27,6 +27,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -196,6 +197,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * Returns a list of alternating Vertex and Edge objects representing the path.
    */
   private List<Object> computeShortestPath(final Vertex source, final Vertex target, final CommandContext context) {
+    // Inline edge property filters (e.g. shortestPath((a)-[:LINK*1..3 {w: 1}]->(b))) are not honoured
+    // by SQLFunctionShortestPath, so route through an edge-aware BFS that only walks matching edges (issue #5096).
+    final Map<String, Object> edgeFilters = edgePropertyFilters();
+    if (edgeFilters != null)
+      return computeShortestPathFiltered(source, target, edgeFilters, context);
+
     // Collect every relationship type declared in the pattern. Variable-length type alternation
     // (e.g. [:R1|R2*]) is expressed as a single relationship with multiple types - all of them
     // must reach SQLFunctionShortestPath, otherwise paths that walk across more than one type
@@ -262,6 +269,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * to find first, violating the OpenCypher contract.
    */
   private List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target, final CommandContext context) {
+    // Inline edge property filters must be enforced on every hop (issue #5096); the vertex-only BFS below
+    // cannot see edge properties, so delegate to the edge-aware variant when a filter is declared.
+    final Map<String, Object> edgeFilters = edgePropertyFilters();
+    if (edgeFilters != null)
+      return computeAllShortestPathsFiltered(source, target, edgeFilters, context);
+
     final List<String> edgeTypes;
     if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
       edgeTypes = pattern.getRelationship(0).getTypes();
@@ -356,6 +369,267 @@ public class ShortestPathStep extends AbstractExecutionStep {
     for (final List<RID> ridPath : ridPaths)
       result.add(resolvePathWithEdges(ridPath, direction, edgeTypes, database));
     return result;
+  }
+
+  /**
+   * Returns the inline edge property filters declared on the pattern relationship (e.g. {@code {w: 1}}),
+   * or {@code null} when none are present. Mirrors what the standard variable-length MATCH path feeds into
+   * {@code VariableLengthPathTraverser}, so shortestPath()/allShortestPaths() enforce the same constraint.
+   */
+  private Map<String, Object> edgePropertyFilters() {
+    if (pattern.getRelationshipCount() > 0) {
+      final RelationshipPattern rel = pattern.getRelationship(0);
+      if (rel.hasProperties() && !rel.getProperties().isEmpty())
+        return rel.getProperties();
+    }
+    return null;
+  }
+
+  private Vertex.DIRECTION patternDirection() {
+    if (pattern.getRelationshipCount() > 0) {
+      switch (pattern.getRelationship(0).getDirection()) {
+        case OUT:
+          return Vertex.DIRECTION.OUT;
+        case IN:
+          return Vertex.DIRECTION.IN;
+        default:
+          return Vertex.DIRECTION.BOTH;
+      }
+    }
+    return Vertex.DIRECTION.BOTH;
+  }
+
+  private String[] patternEdgeTypesArray() {
+    if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes()) {
+      final List<String> types = pattern.getRelationship(0).getTypes();
+      if (!types.isEmpty())
+        return types.toArray(new String[0]);
+    }
+    return null;
+  }
+
+  /**
+   * Checks an edge against the inline property filters. Uses the same numeric-coercion rules as
+   * {@code GraphTraverser.matchesPropertyFilter} so filtered shortestPath() behaves identically to a
+   * variable-length MATCH pattern carrying the same {@code {prop: value}} constraint.
+   */
+  private static boolean edgeMatchesFilter(final Edge edge, final Map<String, Object> filters) {
+    for (final Map.Entry<String, Object> entry : filters.entrySet()) {
+      final Object actual = edge.get(entry.getKey());
+      final Object expected = entry.getValue();
+      if (actual == null)
+        return false;
+      if (actual instanceof Number && expected instanceof Number) {
+        if (((Number) actual).longValue() != ((Number) expected).longValue())
+          return false;
+      } else if (!actual.equals(expected))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Edge-aware BFS returning a single shortest path (alternating Vertex/Edge objects) that only traverses
+   * edges satisfying {@code edgeFilters}. Tracks the actual edge used to reach each vertex so parallel edges
+   * with different property values are disambiguated correctly.
+   */
+  private List<Object> computeShortestPathFiltered(final Vertex source, final Vertex target,
+      final Map<String, Object> edgeFilters, final CommandContext context) {
+    final RID sourceRid = source.getIdentity();
+    final RID targetRid = target.getIdentity();
+    if (sourceRid.equals(targetRid)) {
+      final List<Object> single = new ArrayList<>(1);
+      single.add(source);
+      return single;
+    }
+
+    final Vertex.DIRECTION[] directions = expandDirections(patternDirection());
+    final String[] typesArray = patternEdgeTypesArray();
+
+    final Map<RID, Vertex> parentVertex = new HashMap<>();
+    final Map<RID, Edge> incomingEdge = new HashMap<>();
+    final Set<RID> visited = new HashSet<>();
+    visited.add(sourceRid);
+
+    Deque<Vertex> frontier = new ArrayDeque<>();
+    frontier.add(source);
+
+    while (!frontier.isEmpty()) {
+      if (Thread.interrupted())
+        throw new CommandExecutionException("The shortestPath() function has been interrupted");
+
+      final Deque<Vertex> next = new ArrayDeque<>();
+      for (final Vertex v : frontier) {
+        for (final Vertex.DIRECTION dir : directions) {
+          final Iterable<Edge> edges = typesArray != null ? v.getEdges(dir, typesArray) : v.getEdges(dir);
+          for (final Edge edge : edges) {
+            if (!edgeMatchesFilter(edge, edgeFilters))
+              continue;
+            final Vertex neighbor;
+            try {
+              neighbor = dir == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+            } catch (final RecordNotFoundException e) {
+              GhostEdgeReporter.reportSkipped(e);
+              continue;
+            }
+            final RID neighborRid = neighbor.getIdentity();
+            if (!visited.add(neighborRid))
+              continue;
+            parentVertex.put(neighborRid, v);
+            incomingEdge.put(neighborRid, edge);
+            if (neighborRid.equals(targetRid))
+              return reconstructFilteredPath(source, target, parentVertex, incomingEdge);
+            next.add(neighbor);
+          }
+        }
+      }
+      frontier = next;
+    }
+    return null;
+  }
+
+  /**
+   * Rebuilds the source-to-target path (alternating Vertex/Edge) by walking the predecessor maps backwards.
+   */
+  private static List<Object> reconstructFilteredPath(final Vertex source, final Vertex target,
+      final Map<RID, Vertex> parentVertex, final Map<RID, Edge> incomingEdge) {
+    final Deque<Object> path = new ArrayDeque<>();
+    final RID sourceRid = source.getIdentity();
+    Vertex current = target;
+    path.addFirst(current);
+    while (!current.getIdentity().equals(sourceRid)) {
+      final RID currentRid = current.getIdentity();
+      path.addFirst(incomingEdge.get(currentRid));
+      current = parentVertex.get(currentRid);
+      path.addFirst(current);
+    }
+    return new ArrayList<>(path);
+  }
+
+  /**
+   * Edge-aware layered BFS returning EVERY co-shortest path honouring {@code edgeFilters}. Records each
+   * co-shortest predecessor together with the edge that reached the vertex, so parallel edges yield the
+   * distinct paths OpenCypher requires.
+   */
+  private List<List<Object>> computeAllShortestPathsFiltered(final Vertex source, final Vertex target,
+      final Map<String, Object> edgeFilters, final CommandContext context) {
+    final RID sourceRid = source.getIdentity();
+    final RID targetRid = target.getIdentity();
+    if (sourceRid.equals(targetRid)) {
+      final List<Object> single = new ArrayList<>(1);
+      single.add(source);
+      return Collections.singletonList(single);
+    }
+
+    final Vertex.DIRECTION[] directions = expandDirections(patternDirection());
+    final String[] typesArray = patternEdgeTypesArray();
+    final Database database = context.getDatabase();
+
+    final Map<RID, Integer> distance = new HashMap<>();
+    final Map<RID, List<PredecessorLink>> predecessors = new HashMap<>();
+    distance.put(sourceRid, 0);
+
+    Deque<Vertex> currentLayer = new ArrayDeque<>();
+    currentLayer.add(source);
+    int currentDepth = 0;
+    int foundDepth = -1;
+
+    while (!currentLayer.isEmpty()) {
+      if (Thread.interrupted())
+        throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
+
+      if (foundDepth >= 0 && currentDepth >= foundDepth)
+        break;
+
+      final Deque<Vertex> nextLayer = new ArrayDeque<>();
+      final Set<RID> nextLayerSeen = new HashSet<>();
+
+      for (final Vertex v : currentLayer) {
+        final RID vRid = v.getIdentity();
+        for (final Vertex.DIRECTION dir : directions) {
+          final Iterable<Edge> edges = typesArray != null ? v.getEdges(dir, typesArray) : v.getEdges(dir);
+          for (final Edge edge : edges) {
+            if (!edgeMatchesFilter(edge, edgeFilters))
+              continue;
+            final Vertex neighbor;
+            try {
+              neighbor = dir == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+            } catch (final RecordNotFoundException e) {
+              GhostEdgeReporter.reportSkipped(e);
+              continue;
+            }
+            final RID neighborRid = neighbor.getIdentity();
+            final Integer existing = distance.get(neighborRid);
+            if (existing == null) {
+              distance.put(neighborRid, currentDepth + 1);
+              final List<PredecessorLink> parents = new ArrayList<>(1);
+              parents.add(new PredecessorLink(vRid, edge));
+              predecessors.put(neighborRid, parents);
+              if (neighborRid.equals(targetRid))
+                foundDepth = currentDepth + 1;
+              else if (nextLayerSeen.add(neighborRid))
+                nextLayer.add(neighbor);
+            } else if (existing == currentDepth + 1) {
+              // Another co-shortest predecessor (or a parallel edge from the same vertex) at this BFS depth.
+              predecessors.get(neighborRid).add(new PredecessorLink(vRid, edge));
+            }
+          }
+        }
+      }
+
+      currentLayer = nextLayer;
+      currentDepth++;
+    }
+
+    if (foundDepth < 0)
+      return Collections.emptyList();
+
+    final List<List<Object>> result = new ArrayList<>();
+    final Deque<Object> stack = new ArrayDeque<>();
+    buildAllFilteredPaths(targetRid, sourceRid, predecessors, database, stack, result);
+    return result;
+  }
+
+  private static void buildAllFilteredPaths(final RID current, final RID sourceRid,
+      final Map<RID, List<PredecessorLink>> predecessors, final Database database,
+      final Deque<Object> stack, final List<List<Object>> out) {
+    final Vertex currentVertex = (Vertex) database.lookupByRID(current, true);
+    stack.push(currentVertex);
+    if (current.equals(sourceRid)) {
+      // stack head-to-tail already reads source-to-target because we push from target down to source.
+      out.add(new ArrayList<>(stack));
+      stack.pop();
+      return;
+    }
+    final List<PredecessorLink> parents = predecessors.get(current);
+    if (parents != null) {
+      for (final PredecessorLink link : parents) {
+        stack.push(link.edge);
+        buildAllFilteredPaths(link.parent, sourceRid, predecessors, database, stack, out);
+        stack.pop();
+      }
+    }
+    stack.pop();
+  }
+
+  private static Vertex.DIRECTION[] expandDirections(final Vertex.DIRECTION direction) {
+    return direction == Vertex.DIRECTION.BOTH ?
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+        new Vertex.DIRECTION[] { direction };
+  }
+
+  /**
+   * A co-shortest predecessor of a vertex together with the specific edge used to reach it. The edge is
+   * retained (rather than re-derived) so parallel edges with differing properties stay disambiguated.
+   */
+  private static final class PredecessorLink {
+    final RID  parent;
+    final Edge edge;
+
+    PredecessorLink(final RID parent, final Edge edge) {
+      this.parent = parent;
+      this.edge = edge;
+    }
   }
 
   private static void buildAllPaths(final RID current, final RID sourceRid, final Map<RID, List<RID>> predecessors,
