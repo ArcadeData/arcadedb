@@ -390,7 +390,9 @@ that could starve the very snapshot resync meant to heal the node.
   whether the local pages were reconciled, and that it must NOT be retried - instead of a generic commit
   failure that invited retries. The identities of records created in such a transaction are no longer reset
   to provisional (they are the identities the cluster committed), so an application-level retry no longer
-  inserts duplicates of already-committed records
+  inserts duplicates of already-committed records. The contract also survives the wire: the HTTP command
+  endpoint maps it to 409 Conflict (not a retry-worthy 5xx), and a follower forwarding a write to the
+  leader reconstructs the same exception type instead of a generic commit failure
   ([#5064](https://github.com/ArcadeData/arcadedb/issues/5064)).
 
 ### Improvements

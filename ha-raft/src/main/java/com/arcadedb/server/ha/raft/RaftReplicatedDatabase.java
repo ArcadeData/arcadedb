@@ -122,8 +122,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /**
    * Carries transaction state between Phase 1 (WAL capture under lock) and
    * Replication (without lock) and Phase 2 (local apply under lock).
+   * Package-private so unit tests can build one for {@link #applyLocallyAfterMajorityCommit}.
    */
-  private record ReplicationPayload(
+  record ReplicationPayload(
       TransactionContext tx,
       TransactionContext.TransactionPhase1 phase1,
       byte[] walData,
@@ -179,6 +180,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
       Map.entry(TransactionException.class.getName(), TransactionException::new),
+      // #5064: preserves the 'committed cluster-wide, do NOT retry' contract when a follower forwards a
+      // write to the leader - without this entry the 409 body would collapse to a generic
+      // TransactionException on the follower and the client would lose the do-not-retry signal.
+      Map.entry(TransactionCommittedRemotelyException.class.getName(), TransactionCommittedRemotelyException::new),
       Map.entry(CommandExecutionException.class.getName(), CommandExecutionException::new),
       Map.entry(CommandParsingException.class.getName(), CommandParsingException::new),
       Map.entry(CommandSQLParsingException.class.getName(), CommandSQLParsingException::new),
@@ -463,8 +468,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Applies phase 2 locally when ALL-quorum watch fails after MAJORITY commit.
    * The Raft entry is durably committed (MAJORITY applied it, including origin-skip on the leader),
    * so we must write the local pages to prevent permanent divergence.
+   * Package-private for direct unit testing (the real trigger needs an ALL-quorum cluster whose
+   * watch fails after MAJORITY commit, which depends on Ratis watch timeouts).
    */
-  private void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
+  void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {

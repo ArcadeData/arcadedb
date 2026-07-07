@@ -23,10 +23,16 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -118,6 +124,88 @@ class Issue5064CommittedRemotelyContractIT extends BaseRaftHATest {
       final Database db = getServerDatabase(i, getDatabaseName());
       assertThat(db.countType(VERTEX_TYPE, true))
           .as("Node %d must hold the baseline, the remotely-committed and the post-stepdown vertices", i)
+          .isEqualTo(3L);
+    }
+  }
+
+  /**
+   * The wire-facing half of the contract (#5075 review, round 4): the same post-quorum local failure
+   * surfaced through the HTTP command endpoint must map to 409 Conflict with an explicit do-not-retry
+   * detail - never a retry-worthy 5xx that would invite clients and load balancers to re-drive the
+   * write (the exact duplicate-insert hazard, same rationale as the DuplicatedKeyException 409 of
+   * issue #4350). Complements the server-module unit test on the catch mapping
+   * (Issue5064CommittedRemotelyHttpStatusTest) by proving the exception reaches that catch RAW
+   * through the real Raft commit path and transaction wrapper.
+   */
+  @Test
+  void postQuorumLocalFailureOverHttpReturns409DoNotRetry() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.transaction(() -> {
+      if (!leaderDb.getSchema().existsType(VERTEX_TYPE))
+        leaderDb.getSchema().createVertexType(VERTEX_TYPE, 1);
+    });
+    // Baseline vertex: registers the property name in the dictionary so its INTERNAL transaction does
+    // not consume the single-shot fault below (same pattern as the embedded-API test above).
+    leaderDb.transaction(() -> leaderDb.newVertex(VERTEX_TYPE).set("k", "baseline").save());
+    assertClusterConsistency();
+
+    final AtomicBoolean faultFired = new AtomicBoolean(false);
+    RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT = dbName -> {
+      if (!faultFired.compareAndSet(false, true))
+        return;
+      throw new ConcurrentModificationException("TEST fault injection: simulated post-quorum local failure (#5064)");
+    };
+
+    final int leaderHttpPort = getServer(leaderIndex).getHttpServer().getPort();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:" + leaderHttpPort + "/api/v1/command/" + getDatabaseName()).openConnection();
+    try {
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.setDoOutput(true);
+
+      final JSONObject request = new JSONObject()
+          .put("language", "sql")
+          .put("command", "CREATE VERTEX " + VERTEX_TYPE + " SET k = 'over-http'");
+      try (final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()))) {
+        pw.write(request.toString());
+      }
+
+      final int statusCode = connection.getResponseCode();
+      final String response = readError(connection);
+
+      assertThat(faultFired.get()).as("the phase-2 fault hook must have fired").isTrue();
+      assertThat(statusCode)
+          .as("committed-remotely must surface as 409 Conflict over the wire, got %d (body=%s)", statusCode, response)
+          .isEqualTo(409);
+
+      final JSONObject json = new JSONObject(response);
+      assertThat(json.getString("exception")).isEqualTo(TransactionCommittedRemotelyException.class.getName());
+      assertThat(json.getString("error")).isEqualTo("Transaction committed cluster-wide but the local apply failed - do not retry");
+      assertThat(json.getString("detail")).contains("committed cluster-wide").contains("Do NOT retry");
+    } finally {
+      connection.disconnect();
+    }
+
+    // The write IS durably committed despite the 409: after the fault-triggered step-down, drive the
+    // log forward and verify every node serves both the baseline and the over-http vertex.
+    final int newLeaderIndex = findLeaderIndex();
+    assertThat(newLeaderIndex).as("A leader must be elected after the phase-2 step-down").isGreaterThanOrEqualTo(0);
+    final Database newLeaderDb = getServerDatabase(newLeaderIndex, getDatabaseName());
+    newLeaderDb.transaction(() -> newLeaderDb.newVertex(VERTEX_TYPE).set("k", "post-stepdown").save());
+
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    assertClusterConsistency();
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database db = getServerDatabase(i, getDatabaseName());
+      assertThat(db.countType(VERTEX_TYPE, true))
+          .as("Node %d must hold the baseline, the over-http and the post-stepdown vertices", i)
           .isEqualTo(3L);
     }
   }

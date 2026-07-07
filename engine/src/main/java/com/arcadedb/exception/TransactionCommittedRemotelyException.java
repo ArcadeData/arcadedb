@@ -31,6 +31,11 @@ package com.arcadedb.exception;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TransactionCommittedRemotelyException extends TransactionException {
+  /** Message-only form, used when reconstructing the exception from a wire response (forwarded writes). */
+  public TransactionCommittedRemotelyException(final String message) {
+    super(message);
+  }
+
   public TransactionCommittedRemotelyException(final String message, final Throwable cause) {
     super(message, cause);
   }

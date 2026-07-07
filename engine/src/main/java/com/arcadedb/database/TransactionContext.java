@@ -1023,7 +1023,9 @@ public class TransactionContext implements Transaction {
         // orphaned local WAL record to diverge from; the Raft layer reconciles the pages from the
         // replicated payload). A failure AFTER the local append takes the walAppended branch above and
         // still fences, INTENTIONALLY: an orphaned local WAL record exists there regardless of the remote
-        // commit, and that branch also preserves identities via reset().
+        // commit, and that branch also preserves identities via reset(). Unlike the #4940 rollback below,
+        // modified records are intentionally NOT reloaded: their in-memory content is exactly what the
+        // cluster committed, so there is nothing to restore.
         reset();
       else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
         // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
