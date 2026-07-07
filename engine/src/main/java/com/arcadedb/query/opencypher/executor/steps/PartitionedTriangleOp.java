@@ -103,7 +103,7 @@ public final class PartitionedTriangleOp implements CountOp {
       // was reached from a pool thread (or with the pool full of blocked producers), the caller waited on
       // tasks queued behind threads that were themselves waiting: a pool-starvation deadlock only mitigated
       // by the bounded queue's caller-runs rejection.
-      // #5063 review round 3: chunk 0 runs inside try/finally so the submitted chunks are ALWAYS awaited.
+      // #5063: chunk 0 runs inside try/finally so the submitted chunks are ALWAYS awaited.
       // Without it, a chunk-0 exception unwound this frame while chunks 1..N-1 kept running and writing
       // into partialCounts (and holding pool threads) behind the caller's back.
       boolean chunk0Completed = false;

@@ -709,7 +709,7 @@ public class TransactionContext implements Transaction {
     status = STATUS.COMMIT_1ST_PHASE;
 
     try {
-      // #4937 review: explicit-lock mode captured before checkExplicitLocks nulls explicitLockedFiles, so the
+      // #4937: explicit-lock mode captured before checkExplicitLocks nulls explicitLockedFiles, so the
       // late-joiner block below can still tell an explicit-lock transaction from an auto-locked one.
       boolean explicitLockMode = false;
       if (isLeader) {
@@ -723,7 +723,7 @@ public class TransactionContext implements Transaction {
         final IntHashSet modifiedFiles = lockFilesFromChanges();
 
         // checkExplicitLocks nulls explicitLockedFiles on success, so remember the mode now for the
-        // late-joiner check further down (#4937 review): otherwise that check always sees null and would
+        // late-joiner check further down (#4937): otherwise that check always sees null and would
         // silently expand an explicit-lock transaction's lock set, defeating the explicit-locking contract.
         explicitLockMode = explicitLockedFiles != null;
 
@@ -875,7 +875,7 @@ public class TransactionContext implements Transaction {
       throw e;
     } catch (final TransactionException e) {
       // Already a first-class transaction error (e.g. the explicit-lock contract violation): rethrow as-is
-      // instead of double-wrapping it in a generic "Transaction error on commit" (#5053 review).
+      // instead of double-wrapping it in a generic "Transaction error on commit" (#5053).
       rollback();
       throw e;
     } catch (final Exception e) {
@@ -914,7 +914,7 @@ public class TransactionContext implements Transaction {
       // data never committed. The bump below mutates only this transaction's private MutablePage instances,
       // so a WAL-append failure still aborts cleanly with nothing observable. The in-between window is safe
       // because every modified file's lock is held (#4937 guarantees coverage) until reset().
-      // #5053 review: refuse to commit on a fenced database, before doing any work. The file locks this
+      // #5053: refuse to commit on a fenced database, before doing any work. The file locks this
       // transaction acquired in phase 1 give the happens-before edge: for any transaction sharing a page
       // with the failed one, the fence write (made before the failed commit's reset() released those locks)
       // is visible here - it cannot append a WAL record targeting the same page version the orphaned record
@@ -1013,7 +1013,7 @@ public class TransactionContext implements Transaction {
         try {
           rollback();
         } catch (final Throwable rollbackError) {
-          // #5061 review: the cleanup must never SUPPRESS the primary commit exception - e.g. a failed
+          // #5061: the cleanup must never SUPPRESS the primary commit exception - e.g. a failed
           // dictionary reload here would surface a retryable ConcurrentModificationException as a
           // non-retryable SchemaException, breaking the caller's retry loop. Log the secondary failure and
           // degrade to reset() so locks and status are still released (reset() is safe after a partial
@@ -1223,7 +1223,7 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * #4937 review: late-joiner coverage check for an EXPLICIT-lock transaction. By this point the earlier
+   * #4937: late-joiner coverage check for an EXPLICIT-lock transaction. By this point the earlier
    * {@link #checkExplicitLocks} has moved the user's explicit lock set into {@code lockedFiles} (and nulled
    * {@code explicitLockedFiles}), so a file in the transaction's page set that is NOT in {@code lockedFiles}
    * is one the user did not lock. Surface it as the same contract violation a direct modification of an

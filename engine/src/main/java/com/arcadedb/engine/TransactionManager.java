@@ -256,7 +256,7 @@ public class TransactionManager {
 
   public void notifyPageFlushed(final MutablePage page) {
     // takeWALFile (not get) so the ack is released exactly once even when this races the file-dropped
-    // flush branch or the dropped-file batch purge on the same page (#4928 review).
+    // flush branch or the dropped-file batch purge on the same page (#4928).
     final WALFile walFile = page.takeWALFile();
     if (walFile != null)
       walFile.notifyPageFlushed();
@@ -396,7 +396,7 @@ public class TransactionManager {
               try {
                 // Files.move (vs File.renameTo, which just returns false) fails with a cause and performs an
                 // atomic rename where the filesystem supports it. Best-effort semantics preserved: log and continue.
-                // REPLACE_EXISTING (#5063 review round 4): a prior ABORTED recovery can leave a same-named
+                // REPLACE_EXISTING (#5063): a prior ABORTED recovery can leave a same-named
                 // .corrupt file behind; without it the move throws FileAlreadyExistsException and the original
                 // .wal stays in place, re-scanned and re-aborted on every restart - the exact loop this breaks.
                 // The stale .corrupt it replaces is evidence from the SAME file's earlier failed attempt.

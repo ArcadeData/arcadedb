@@ -2059,7 +2059,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (!firstRun && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
       return;
 
-    // #5063 review round 2: consume the change counter atomically at the decision point. The previous
+    // #5063: consume the change counter atomically at the decision point. The previous
     // get() > 0 check paired with a set(0L) at the end of the scan wiped any increment landing while the
     // scan ran; getAndSet(0L) carries those increments into the next cycle instead of losing them.
     final long consumedChanges = changesFromLastStats.getAndSet(0L);
@@ -2093,7 +2093,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           timeOfLastStats = System.currentTimeMillis();
         }
       } catch (Exception e) {
-        // #5063 review round 3: THE COUNTER WAS ALREADY CONSUMED. RESTORE THE FULL CONSUMED COUNT (NOT A
+        // #5063: THE COUNTER WAS ALREADY CONSUMED. RESTORE THE FULL CONSUMED COUNT (NOT A
         // SINGLE INCREMENT, WHICH UNDERCOUNTED THE PENDING CHANGES) SO THE FAILED SCAN IS RETRIED AT THE
         // NEXT CYCLE; max(consumed, 1) COVERS THE firstRun CASE WHERE THE CONSUMED COUNT MAY BE ZERO
         changesFromLastStats.addAndGet(Math.max(consumedChanges, 1L));

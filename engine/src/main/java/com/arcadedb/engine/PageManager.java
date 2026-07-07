@@ -65,10 +65,10 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
-  // LIFECYCLE INVARIANT (#5070 review): flushThread and readCache are written only under LIFECYCLE_LOCK
+  // LIFECYCLE INVARIANT (#5070): flushThread and readCache are written only under LIFECYCLE_LOCK
   // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
   // ONLY because a reader implies refcount > 0 (its database holds a reference), so no transition can run
-  // concurrently. volatile (three review rounds converged on it): the barrier cost is negligible next to the
+  // concurrently. volatile: the barrier cost is negligible next to the
   // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
@@ -118,7 +118,7 @@ public class PageManager extends LockContext {
         try {
           startup();
         } catch (final RuntimeException | Error e) {
-          // #5070 review: startup() can throw (e.g. ConfigurationException on a negative MAX_PAGE_RAM). The
+          // #5070: startup() can throw (e.g. ConfigurationException on a negative MAX_PAGE_RAM). The
           // increment must not survive it, or the counter is left at 1 with no flush thread and the NEXT
           // acquire sees 1 -> 2 and never starts one - a wedged manager the caller's catch cannot repair
           // (its release() would just decrement back to the same broken state at 1).
@@ -145,7 +145,7 @@ public class PageManager extends LockContext {
    * no-op at runtime: with no database open the next {@link #acquire()} reads the fresh settings anyway
    * (and starting a flush thread with zero databases - the old behavior - leaked it until the next
    * lifecycle transition); with databases OPEN a live shutdown+startup swap would race the hot paths, which
-   * read {@code flushThread}/{@code readCache} without the lifecycle lock (#5070 review) - so a live
+   * read {@code flushThread}/{@code readCache} without the lifecycle lock (#5070) - so a live
    * profile change is refused loudly instead. Set the PROFILE before opening databases.
    */
   public void configure() {
@@ -160,7 +160,7 @@ public class PageManager extends LockContext {
   /**
    * Force teardown regardless of refcount (test/emergency API): the counter resets so the next acquire
    * starts fresh. ONLY safe when no database is open: a live database's eventual release() would decrement
-   * the NEW manager started by a later acquire and tear it down under that newcomer (#5070 review).
+   * the NEW manager started by a later acquire and tear it down under that newcomer (#5070).
    */
   public void close() {
     synchronized (LIFECYCLE_LOCK) {
@@ -176,14 +176,15 @@ public class PageManager extends LockContext {
 
     this.maxRAM = configuration.getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM) * 1024 * 1024;
     if (this.maxRAM < 0)
-      throw new ConfigurationException(GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + maxRAM + " MB)");
+      throw new ConfigurationException(
+          GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + (maxRAM / (1024 * 1024)) + " MB)");
 
     flushThread = new PageManagerFlushThread(this, configuration);
     flushThread.start();
   }
 
   /**
-   * INVARIANT (#5070 review): runs under LIFECYCLE_LOCK and joins the flush thread - the flush thread must
+   * INVARIANT (#5070): runs under LIFECYCLE_LOCK and joins the flush thread - the flush thread must
    * therefore NEVER call acquire()/release()/configure()/close(), or this join becomes a deadlock (the
    * flush thread blocking on the lock this thread holds while waiting for it to exit). Verified true today.
    */
@@ -194,14 +195,14 @@ public class PageManager extends LockContext {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       } finally {
-        // Null out regardless of interrupt (#5070 review): a stale dead reference with refcount 0 was
+        // Null out regardless of interrupt (#5070): a stale dead reference with refcount 0 was
         // harmless (the next startup() overwrites it) but inconsistent.
         flushThread = null;
       }
     }
 
     if (readCache != null)
-      // close() is a reachable test/emergency API and may run before any startup() (#5070 review).
+      // close() is a reachable test/emergency API and may run before any startup() (#5070).
       readCache.clear();
     totalReadCacheRAM.set(0L);
   }
