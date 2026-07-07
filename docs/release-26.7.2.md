@@ -245,7 +245,10 @@ that could starve the very snapshot resync meant to heal the node.
   `checkForStalledQueuesMaxDelay` of 5s) - much longer than the old 10s false-positive-prone bound,
   tunable via `setCheckForStalledQueuesMaxDelay()`; a worker parked handing a task cross-slot with a
   flat completed count (a likely scheduling cycle) is reported faster, after 3 consecutive stall
-  windows (15s by default), so a peer merely busy on one slow task does not trip it. Known residual
+  windows (15s by default), so a peer merely busy on one slow task does not trip it. Operators
+  running scheduling chains deeper than two workers with individual tasks slower than 15s should
+  raise `checkForStalledQueuesMaxDelay` (only the window duration is tunable, the counts are fixed),
+  or the cross-slot detector can fire on a chain that would have resolved. Known residual
   gap: with the opt-in
   `arcadedb.asyncOperationsQueueImpl=fast` queue, a task whose enqueue races the target worker's
   exit cannot be removed (`remove(Object)` unsupported) and its completion is never notified; a
@@ -253,8 +256,11 @@ that could starve the very snapshot resync meant to heal the node.
   longer strands completion waiters: an interrupted or exiting worker now notifies `completed()` on every
   task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /
   `waitCompletion()` hung forever), and `close()` no longer blocks unbounded on `queue.put(FORCE_EXIT)`
-  under the lifecycle lock when a busy worker's queue is full - the marker is offered with a timeout and
-  the worker is interrupted on failure ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)).
+  under the lifecycle lock when a busy worker's queue is full - the marker is offered with a timeout,
+  the worker is interrupted on failure, and a worker still alive after the 10s grace period (e.g. one
+  that consumed the marker while help-waiting on a wedged peer's full queue) is escalated to an
+  interrupt and re-joined instead of being left running behind a returned `close()`
+  ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)).
   Low-severity cleanups from the same audit: async executor settings (`parallelLevel`, `commitEvery`,
   back-pressure, callbacks) are now `volatile` so post-startup changes reach the workers,
   `setCommitEvery(0)` is rejected instead of making every task fail on `count % 0`, the JVM-wide query
