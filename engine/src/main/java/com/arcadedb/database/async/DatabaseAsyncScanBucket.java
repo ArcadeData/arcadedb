@@ -43,21 +43,22 @@ public class DatabaseAsyncScanBucket implements DatabaseAsyncTask {
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    try {
-      bucket.scan((rid, view) -> {
-        if (async.isShutdown())
-          return false;
+    bucket.scan((rid, view) -> {
+      if (async.isShutdown())
+        return false;
 
-        final Record record = database.getRecordFactory()
-            .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
+      final Record record = database.getRecordFactory()
+          .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
 
-        return userCallback.onRecord((Document) record);
-      }, errorRecordCallback);
+      return userCallback.onRecord((Document) record);
+    }, errorRecordCallback);
+  }
 
-    } finally {
-      // UNLOCK THE CALLER THREAD
-      semaphore.countDown();
-    }
+  @Override
+  public void completed() {
+    // UNLOCK THE CALLER THREAD. The worker invokes completed() after execute() but also when the
+    // task is dropped during shutdown (#4954), so scanType() never hangs on the latch.
+    semaphore.countDown();
   }
 
   @Override

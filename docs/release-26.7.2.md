@@ -227,6 +227,51 @@ that could starve the very snapshot resync meant to heal the node.
   shadows committed RIDs whose key equals an uncommitted entry's key - is tracked in
   [#5055](https://github.com/ArcadeData/arcadedb/issues/5055).
 
+- **Async executor hardening (2026-07 audit).** Three fixes to the per-database async executor. The
+  queue stall detector no longer false-positives on a worker merely busy with one slow task (it compared
+  the identity of the queue head across two 5s windows, so any head task running longer than 10s made
+  innocent producers throw "Asynchronous queue is stalled"); detection is now progress-based (per-worker
+  completed-task counters) and, more importantly, a worker that schedules a cross-slot follow-up (the
+  bidirectional-edge incoming-link task) into another worker's full queue now drains its OWN
+  queue while it waits (the polled tasks are parked and run once the current task unwinds, so no
+  transaction boundary can fall inside a suspended task's execution and per-task atomicity is
+  preserved), so two workers cross-scheduling into each other no longer deadlock - a cycle the
+  old detector could only break by throwing inside the worker, rolling back the whole in-flight commit
+  batch (up to `commitEvery - 1` already-executed operations silently discarded) and dropping the
+  follow-up (ghost half-edges) ([#4953](https://github.com/ArcadeData/arcadedb/issues/4953)). A
+  producer blocked on the full queue of a worker wedged inside user code (an infinite loop or a
+  blocking call in a task) still surfaces an error instead of hanging: a progress-gated backstop
+  throws after 12 consecutive stall windows with zero completed tasks (60s with the default
+  `checkForStalledQueuesMaxDelay` of 5s) - much longer than the old 10s false-positive-prone bound,
+  tunable via `setCheckForStalledQueuesMaxDelay()`; a worker parked handing a task cross-slot with a
+  flat completed count (a likely scheduling cycle) is reported faster, after 3 consecutive stall
+  windows (15s by default), so a peer merely busy on one slow task does not trip it. The same applies
+  to the backstop itself: a SINGLE legitimately long task (a large scan, a heavy user callback) that
+  exceeds 12 x `checkForStalledQueuesMaxDelay` (60s by default) while producers wait on that worker's
+  full queue is indistinguishable from a wedged one and trips the stall exception - raise the delay if
+  your tasks legitimately run that long. Operators
+  running scheduling chains deeper than two workers with individual tasks slower than 15s should
+  raise `checkForStalledQueuesMaxDelay` (only the window duration is tunable, the counts are fixed),
+  or the cross-slot detector can fire on a chain that would have resolved. Known residual
+  gap: with the opt-in
+  `arcadedb.asyncOperationsQueueImpl=fast` queue, a task whose enqueue races the target worker's
+  exit cannot be removed (`remove(Object)` unsupported) and its completion is never notified; a
+  WARNING is logged when this happens, and the default `standard` queue is not affected. Shutdown no
+  longer strands completion waiters: an interrupted or exiting worker now notifies `completed()` on every
+  task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /
+  `waitCompletion()` hung forever), and `close()` no longer blocks unbounded on `queue.put(FORCE_EXIT)`
+  under the lifecycle lock when a busy worker's queue is full - the marker is offered with a timeout,
+  the worker is interrupted on failure, and a worker still alive after the 10s grace period (e.g. one
+  that consumed the marker while help-waiting on a wedged peer's full queue) is escalated to an
+  interrupt and re-joined instead of being left running behind a returned `close()`
+  ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)).
+  Low-severity cleanups from the same audit: async executor settings (`parallelLevel`, `commitEvery`,
+  back-pressure, callbacks) are now `volatile` so post-startup changes reach the workers,
+  `setCommitEvery(0)` is rejected instead of making every task fail on `count % 0`, the JVM-wide query
+  parallelism and sparse-vector pools cancel a `Future` rejected after pool shutdown instead of leaving
+  its waiter blocked forever, and `QueryEngineManager.register()` publishes a copy-on-write map so a
+  post-construction registration cannot corrupt concurrent readers
+  ([#4961](https://github.com/ArcadeData/arcadedb/issues/4961)).
 - **PageManager lifecycle is refcounted.** The JVM-wide page manager was started and stopped on a racy
   "is the active-database map empty" check-then-act spanning factory instances: closing the last instance
   of one database could null the shared flush thread under a database whose open was still in flight

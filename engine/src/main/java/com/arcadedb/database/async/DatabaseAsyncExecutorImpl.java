@@ -41,6 +41,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
@@ -62,15 +63,39 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   // observe a half-built or just-nulled array. See lifecycleLock for the publish discipline.
   private volatile AsyncThread[]     executorThreads;
   private final Object               lifecycleLock                 = new Object();
-  private       int                  parallelLevel                 = 1;
-  private       int                  commitEvery;
-  private       int                  backPressurePercentage        = 0;
-  private       boolean              transactionUseWAL             = true;
-  private       WALFile.FlushType    transactionSync               = WALFile.FlushType.NO;
-  private       long                 checkForStalledQueuesMaxDelay = 5_000;
+  // #4961: these settings are written by user threads and read by the worker threads, so they must
+  // be volatile or a change applied after createThreads() may never become visible to the workers.
+  private volatile int               parallelLevel                 = 1;
+  private volatile int               commitEvery;
+  private volatile int               backPressurePercentage        = 0;
+  private volatile boolean           transactionUseWAL             = true;
+  private volatile WALFile.FlushType transactionSync               = WALFile.FlushType.NO;
+  private volatile long              checkForStalledQueuesMaxDelay = 5_000;
+  // #5062 review r4 (point 1): grace period each worker gets to exit on its own before shutdown
+  // escalates to interrupt() and again before giving up with a WARNING. Package-private (and
+  // volatile: written by tests, read by the closing thread) so shutdown regression tests can shrink
+  // it instead of waiting the production 10s.
+  volatile         long              shutdownJoinTimeoutMs         = 10_000;
   private final AtomicLong           transactionCounter            = new AtomicLong();
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
   private final AtomicLong           tsAppendCounter               = new AtomicLong();
+
+  // #5062 review r2 (point 1): producer-side backstop for a worker wedged inside user code. After
+  // this many consecutive stall windows (checkForStalledQueuesMaxDelay each, 60s with the defaults)
+  // in which the target worker completed NO task while its queue stayed full, offerWaiting throws
+  // instead of letting the caller hang forever. Progress-gated so a single legitimately slow task
+  // does not trip it (the #4953 false positive). Only the window DURATION is tunable, via the
+  // volatile setCheckForStalledQueuesMaxDelay(); this count and the cross-slot one below are fixed.
+  private static final int STALLED_NO_PROGRESS_WINDOWS = 12;
+
+  // #5062 review r3 (point 1): same progress gating for the cross-slot-park branch. A worker parked
+  // handing a task to another queue with a flat completed count is much more likely to sit in a
+  // genuine scheduling cycle than a wedged one (it only reaches offerWaiting after exhausting its
+  // help-deferral budget), so the bound is far smaller than the wedged-worker one - but it must
+  // exceed 2, the old head-identity bound that a peer merely busy on one slow task could flatten,
+  // or the #4953 false positive recurs on producers targeting a budget-exhausted worker. 15s with
+  // the default 5s window: genuine capped cycles still fail loudly in bounded time.
+  private static final int STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS = 3;
 
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
@@ -85,9 +110,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
   };
 
-  private OkCallback    onOkCallback;
-  private ErrorCallback onErrorCallback;
-  private AtomicLong    counterScheduledTasks = new AtomicLong();
+  // #4961: read by worker threads, written by user threads: must be volatile.
+  private volatile OkCallback    onOkCallback;
+  private volatile ErrorCallback onErrorCallback;
+  private final    AtomicLong    counterScheduledTasks = new AtomicLong();
 
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
@@ -96,6 +122,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public volatile boolean                          forceShutdown = false;
     public          AtomicBoolean                    executingTask = new AtomicBoolean(false);
     public          long                             count         = 0;
+    // #4953: monotonic count of tasks this worker has finished (successfully or not). Producers
+    // blocked on this worker's full queue use it as a progress probe: only written by the worker,
+    // read by any thread, hence volatile.
+    private volatile long                            completedTaskCount    = 0;
+    // #4953: true while this worker is parked in scheduleTask waiting to hand a task to a queue.
+    // Combined with a flat completedTaskCount it identifies a genuine cross-scheduling stall.
+    private volatile boolean                         waitingCrossSlotOffer = false;
+    // #5062 review (point 1): tasks polled from the own queue while help-waiting are NOT executed
+    // re-entrantly (a nested execution could commit or roll back the suspended task's partial
+    // writes, breaking per-task atomicity); they are parked here, in poll order, and run by the run
+    // loop once the current task unwinds. Thread-confined: only this worker touches it.
+    // Memory bound (#5062 review r3, point 3): at most queueCapacity task references
+    // (ASYNC_OPERATIONS_QUEUE_SIZE / parallelLevel, so one extra queue's worth per worker in the
+    // worst case), a transient spike under sustained cross-slot pressure that drains as soon as the
+    // current task unwinds.
+    private final    ArrayDeque<DatabaseAsyncTask>   helpDeferredTasks     = new ArrayDeque<>();
+    // Capacity of the own queue, doubling as the helpDeferredTasks budget (see offerHelping).
+    private final    int                             queueCapacity;
 
     private AsyncThread(final DatabaseInternal database, final int id) {
       super("AsyncExecutor-" + database.getName() + "-" + id);
@@ -105,6 +149,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE) / parallelLevel;
       if (queueSize < 1)
         queueSize = 1;
+      this.queueCapacity = queueSize;
 
       final String cfgQueueImpl =
           database.getConfiguration().getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
@@ -139,49 +184,19 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       while (!forceShutdown) {
         try {
-          final DatabaseAsyncTask message = queue.poll(500, TimeUnit.MILLISECONDS);
+          // TASKS PARKED BY THE HELP-WHILE-WAITING PATH RUN FIRST, IN POLL ORDER, NOW THAT THE TASK
+          // THAT WAS SUSPENDED WHILE THEY WERE POLLED HAS FULLY UNWOUND (SEE offerHelping)
+          final DatabaseAsyncTask message =
+              helpDeferredTasks.isEmpty() ? queue.poll(500, TimeUnit.MILLISECONDS) : helpDeferredTasks.pollFirst();
           if (message != null) {
-            executingTask.set(true);
-            try {
-              LogManager.instance()
-                  .log(this, Level.FINE, "Received async message %s (threadId=%d)", message,
-                      Thread.currentThread().threadId());
-
-              if (message == FORCE_EXIT) {
-                break;
-              } else {
-
-                if (message.requiresActiveTx() && !database.isTransactionActive())
-                  database.begin();
-
-                message.execute(this, database);
-
-                count++;
-
-                if (database.isTransactionActive() && count % commitEvery == 0) {
-                  database.commit();
-                  database.begin();
-                }
-
-              }
-            } catch (final Throwable e) {
-              onError(e);
-              if (database.isTransactionActive())
-                database.rollback();
-            } finally {
-              try {
-                message.completed();
-              } finally {
-                executingTask.set(false);
-              }
-            }
-
+            if (message == FORCE_EXIT)
+              break;
+            executeTask(message);
           } else if (shutdown)
             break;
 
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
-          queue.clear();
           break;
         } catch (final Throwable e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on executing asynchronous operation (asyncThread=%s)",
@@ -196,6 +211,76 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       } catch (final Exception e) {
         onError(e);
       }
+
+      // #4954: whatever ended the loop (FORCE_EXIT, shutdown flag, interrupt), tasks may still sit in
+      // the queue and will never execute. Notify completed() on each so threads blocked in scanType()
+      // or waitCompletion() are released instead of hanging forever (the previous code queue.clear()-ed
+      // on interrupt, silently discarding them).
+      drainQueueNotifyingWaiters();
+    }
+
+    /**
+     * Executes a single task applying the shared transaction-batching contract (begin on demand,
+     * commit every {@code commitEvery} tasks, rollback + onError on failure, always notify
+     * {@code completed()}). Called from the run loop only: the help-while-waiting path of #4953
+     * defers polled tasks back to the run loop instead of nesting executions, so that no
+     * transaction boundary can fall inside a suspended task's execution (#5062 review, point 1).
+     */
+    private void executeTask(final DatabaseAsyncTask message) {
+      final boolean nested = executingTask.getAndSet(true);
+      try {
+        LogManager.instance()
+            .log(this, Level.FINE, "Received async message %s (threadId=%d)", message,
+                Thread.currentThread().threadId());
+
+        if (message.requiresActiveTx() && !database.isTransactionActive())
+          database.begin();
+
+        message.execute(this, database);
+
+        // #5062 review (point 1): the commit-every-N boundary must never fire from a nested
+        // execution while an enclosing task is suspended mid-execute(), or it would commit that
+        // task's partial writes. The helping path defers tasks instead of nesting (see
+        // offerHelping), so today `nested` is always false here; the guard is defense-in-depth
+        // should a re-entrant call path ever be reintroduced.
+        if (!nested) {
+          count++;
+
+          if (database.isTransactionActive() && count % commitEvery == 0) {
+            database.commit();
+            database.begin();
+          }
+        }
+      } catch (final Throwable e) {
+        onError(e);
+        // SAME GUARD AS ABOVE: A NESTED ROLLBACK WOULD DESTROY THE SUSPENDED TASK'S WRITES
+        if (!nested && database.isTransactionActive())
+          database.rollback();
+      } finally {
+        try {
+          message.completed();
+        } finally {
+          completedTaskCount++;
+          executingTask.set(nested);
+        }
+      }
+    }
+
+    private void drainQueueNotifyingWaiters() {
+      DatabaseAsyncTask leftover;
+      // TASKS PARKED BY THE HELPING PATH ARE DROPPED TASKS TOO: NOTIFY THEM FIRST, THEN THE QUEUE
+      while ((leftover = helpDeferredTasks.isEmpty() ? queue.poll() : helpDeferredTasks.pollFirst()) != null)
+        if (leftover != FORCE_EXIT)
+          try {
+            leftover.completed();
+          } catch (final Throwable e) {
+            LogManager.instance()
+                .log(this, Level.SEVERE, "Error on notifying completion of dropped asynchronous task %s", e, leftover);
+          }
+    }
+
+    DatabaseAsyncExecutorImpl getOwner() {
+      return DatabaseAsyncExecutorImpl.this;
     }
 
     public void onError(final Throwable e) {
@@ -214,7 +299,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public DatabaseAsyncExecutorImpl(final DatabaseInternal database, final ContextConfiguration configuration) {
     this.database = database;
     this.configuration = configuration;
-    this.commitEvery = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_TX_BATCH_SIZE);
+    // #4961: a non-positive batch size would make every task fail on count % commitEvery.
+    this.commitEvery = Math.max(1, database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_TX_BATCH_SIZE));
     createThreads(database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
   }
 
@@ -258,6 +344,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     return checkForStalledQueuesMaxDelay;
   }
 
+  /**
+   * Sets the duration of one stall-detection window (default 5s). Producers blocked on a full queue
+   * throw after {@code STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS} (3) flat windows when the target
+   * worker is parked handing a task cross-slot, or after {@code STALLED_NO_PROGRESS_WINDOWS} (12)
+   * flat windows when it is not (wedged in user code). Only the window DURATION is tunable, the
+   * window counts are fixed. #5062 review r4 (point 2): scheduling chains deeper than two workers
+   * whose tail runs individual tasks longer than 3 windows (15s by default) can still trip the
+   * cross-slot detector even though the chain would resolve; raise this delay for such workloads.
+   */
   public void setCheckForStalledQueuesMaxDelay(final long checkForStalledQueuesMaxDelay) {
     this.checkForStalledQueuesMaxDelay = checkForStalledQueuesMaxDelay;
   }
@@ -328,23 +423,40 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (threads == null)
       return true;
 
+    if (timeout <= 0)
+      timeout = Long.MAX_VALUE;
+    final long beginTime = System.currentTimeMillis();
+
     final DatabaseAsyncAbstractCallbackTask[] semaphores =
         new DatabaseAsyncAbstractCallbackTask[threads.length];
 
     for (int i = 0; i < threads.length; ++i)
       try {
         semaphores[i] = new DatabaseAsyncCompletion();
-        threads[i].queue.put(semaphores[i]);
+        // #4954: bounded offer with a liveness check instead of an untimed put(): a worker that
+        // exited (shutdown) will never drain a full queue, so the old code hung here forever.
+        // #5062 review (point 3): the timeout is a single budget spanning enqueue AND await, so a
+        // persistently full queue on a live worker cannot block the caller past the timeout.
+        while (true) {
+          final long remaining = timeout - (System.currentTimeMillis() - beginTime);
+          if (remaining <= 0)
+            return false;
+          if (threads[i].queue.offer(semaphores[i], Math.min(500, remaining), TimeUnit.MILLISECONDS))
+            break;
+          if (!threads[i].isAlive()) {
+            // NOTHING WILL EVER RUN ON THIS QUEUE ANYMORE: TREAT IT AS FLUSHED
+            semaphores[i].completed();
+            break;
+          }
+        }
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
       }
 
-    if (timeout <= 0)
-      timeout = Long.MAX_VALUE;
-
-    long currentTimeout = timeout;
-    final long beginTime = System.currentTimeMillis();
+    long currentTimeout = timeout - (System.currentTimeMillis() - beginTime);
+    if (currentTimeout < 1)
+      return false;
 
     for (int i = 0; i < semaphores.length; ++i)
       try {
@@ -740,6 +852,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void setCommitEvery(final int commitEvery) {
+    // #4961: 0 would make every task fail with an ArithmeticException on count % commitEvery.
+    if (commitEvery < 1)
+      throw new IllegalArgumentException("commitEvery must be >= 1 (was " + commitEvery + ")");
     this.commitEvery = commitEvery;
   }
 
@@ -790,20 +905,44 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     // Unpublish first so concurrent readers stop seeing the about-to-die threads.
     executorThreads = null;
-    try {
-      // SET SHUTDOWN STATUS TO ALL THE THREADS
-      for (int i = 0; i < toClose.length; ++i)
-        toClose[i].shutdown = true;
 
-      // WAIT FOR SHUTDOWN, MAX 10S EACH
-      for (int i = 0; i < toClose.length; ++i) {
-        toClose[i].queue.put(FORCE_EXIT);
-        toClose[i].join(10000);
+    // SET SHUTDOWN STATUS TO ALL THE THREADS
+    for (int i = 0; i < toClose.length; ++i)
+      toClose[i].shutdown = true;
+
+    // #4954: the old untimed queue.put(FORCE_EXIT) under lifecycleLock hung database.close() (and
+    // any later createThreads()/kill()) for as long as a busy worker with a full queue kept running
+    // its current task. Bounded offer + interrupt on failure: the woken worker exits its loop and
+    // notifies completed() on whatever it could not execute (see drainQueueNotifyingWaiters).
+    boolean interrupted = false;
+    for (int i = 0; i < toClose.length; ++i) {
+      try {
+        if (!toClose[i].queue.offer(FORCE_EXIT, 1, TimeUnit.SECONDS))
+          toClose[i].interrupt();
+
+        // WAIT FOR SHUTDOWN, MAX shutdownJoinTimeoutMs EACH (10S BY DEFAULT)
+        toClose[i].join(shutdownJoinTimeoutMs);
+
+        if (toClose[i].isAlive()) {
+          // #5062 review r4 (point 1): a successful FORCE_EXIT offer sends no interrupt, but the
+          // marker may have been consumed inside offerHelping, which only sets forceShutdown and
+          // keeps looping to hand off the current follow-up: on a wedged peer's full queue the flag
+          // is not re-checked until the stall backstop fires (up to ~60s). Escalate after the grace
+          // period: the interrupt wakes the offer park, unwinds the task loudly (onError) and the
+          // run loop exits on the flag.
+          toClose[i].interrupt();
+          toClose[i].join(shutdownJoinTimeoutMs);
+        }
+      } catch (final InterruptedException e) {
+        interrupted = true;
       }
-    } catch (final InterruptedException e) {
-      // IGNORE IT
-      Thread.currentThread().interrupt();
+      if (toClose[i].isAlive())
+        LogManager.instance()
+            .log(this, Level.WARNING, "AsyncThread %s did not stop within %dms after shutdown (escalated to interrupt)",
+                toClose[i].getName(), shutdownJoinTimeoutMs);
     }
+    if (interrupted)
+      Thread.currentThread().interrupt();
   }
 
   @Override
@@ -850,7 +989,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         throw new DatabaseOperationException(
             "Async executor has been shut down; cannot schedule asynchronous task " + task);
 
-      final BlockingQueue<DatabaseAsyncTask> queue = threads[slot].queue;
+      final AsyncThread target = threads[slot];
+      final BlockingQueue<DatabaseAsyncTask> queue = target.queue;
 
       if (applyBackPressureOnPercentage > 0) {
         final int queueFullAt = 100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
@@ -860,41 +1000,195 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           Thread.sleep(queueFullAt);
       }
 
-      if (waitIfQueueIsFull) {
-        if (!queue.offer(task, checkForStalledQueuesMaxDelay, TimeUnit.MILLISECONDS)) {
-          // QUEUE FULL, RETRY WITH CHECK FOR QUEUE STALLED
+      final boolean scheduled;
+      if (queue.offer(task))
+        scheduled = true;
+      else if (waitIfQueueIsFull) {
+        offerWaiting(target, slot, task, applyBackPressureOnPercentage);
+        scheduled = true;
+      } else
+        scheduled = false;
 
-          final DatabaseAsyncTask firstInQueueAtBeginning = queue.peek();
-
-          while (!queue.offer(task, checkForStalledQueuesMaxDelay, TimeUnit.MILLISECONDS)) {
-            final DatabaseAsyncTask firstInQueue = queue.peek();
-            if (firstInQueue != null && firstInQueue == firstInQueueAtBeginning) {
-              // QUEUE STALLED
-              throw new DatabaseOperationException("Asynchronous queue " + slot
-                  + " is stalled. This could happen when an asynchronous task schedules more asynchronous tasks");
-            }
-
-            if (applyBackPressureOnPercentage > 0) {
-              final int queueFullAt =
-                  100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
-              Thread.sleep(100 + (4L * queueFullAt));
-            }
-          }
-        }
-
+      if (scheduled) {
+        if (!target.isAlive() && removeQuietly(queue, task))
+          // The worker exited (shutdown) after its final queue drain but before this offer landed:
+          // the task would sit unexecuted forever. Undo the offer and fail like any post-shutdown
+          // scheduling attempt. #5062 review r3 (point 2): this recheck is best-effort, not total -
+          // an offer landing after the final drain poll but before isAlive() flips to false passes
+          // the guard and is orphaned; closing it would need a lock on this hot path.
+          // #5062 review r4 (point 4): completed() is deliberately NOT invoked on the removed task -
+          // unlike the shutdown drain, the scheduling caller is still on the stack and this
+          // exception informs it directly, so no waiter can be parked on the task yet.
+          throw new DatabaseOperationException(
+              "Async executor has been shut down; cannot schedule asynchronous task " + task);
         counterScheduledTasks.incrementAndGet();
-
-        return true;
       }
-
-      final boolean result = queue.offer(task);
-      if (result)
-        counterScheduledTasks.incrementAndGet();
-      return result;
+      return scheduled;
 
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new DatabaseOperationException("Error on executing asynchronous task " + task);
+    }
+  }
+
+  private static boolean removeQuietly(final BlockingQueue<DatabaseAsyncTask> queue, final DatabaseAsyncTask task) {
+    try {
+      return queue.remove(task);
+    } catch (final UnsupportedOperationException e) {
+      // THE "fast" QUEUE (PushPullBlockingQueue) DOES NOT SUPPORT remove(Object): the offer cannot
+      // be undone, so a task that landed right after a dead worker's final drain stays queued and
+      // its completed() never fires (#5062 review, point 4). Known gap, accepted: the impl is
+      // opt-in and the window (an offer racing the worker's exit) is a few instructions wide. The
+      // WARNING below gives operators the reason should a scanType()/waitCompletion() waiter hang.
+      LogManager.instance()
+          .log(DatabaseAsyncExecutorImpl.class, Level.WARNING,
+              "Asynchronous task %s was scheduled on a worker that already shut down and cannot be removed from its "
+                  + "'fast' queue: its completion will never be notified. Use the 'standard' async queue implementation "
+                  + "to close this window", task);
+      return false;
+    }
+  }
+
+  /**
+   * Blocks until the task is enqueued on the target worker's currently full queue (#4953).
+   * <p>
+   * Two behaviors depending on the calling thread:
+   * <ul>
+   *   <li><b>Worker of this executor (e.g. the cross-slot incoming-edge follow-up in newEdge):</b>
+   *   the worker drains tasks from its OWN queue into a parked list while it waits (see
+   *   {@code offerHelping}). Two workers cross-scheduling into each other's full queues
+   *   (bidirectional edge load) formed a wait cycle the old head-identity stall detector could only
+   *   break by throwing, which rolled back the worker's whole in-flight commit batch and silently
+   *   dropped the follow-up. Draining frees the slot the peer is parked on, so the cycle resolves
+   *   without throwing; if the deferral budget runs out the worker falls through to the bounded
+   *   wait below.</li>
+   *   <li><b>Any other producer:</b> waits in windows of {@code checkForStalledQueuesMaxDelay} and
+   *   throws if the target worker completed no task over
+   *   {@code STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS} consecutive windows while itself being
+   *   parked handing a task to another queue (a genuine scheduling cycle beyond the helping budget),
+   *   after the worker died, or - the backstop for a worker wedged inside user code - after
+   *   {@code STALLED_NO_PROGRESS_WINDOWS} consecutive windows with zero completed tasks. A worker
+   *   merely busy on a single slow task no longer trips the detector: the old code compared the
+   *   identity of the queue head across two windows, so any head task running longer than 2x the
+   *   delay made innocent producers throw.</li>
+   * </ul>
+   */
+  private void offerWaiting(final AsyncThread target, final int slot, final DatabaseAsyncTask task,
+                            final int applyBackPressureOnPercentage) throws InterruptedException {
+    final AsyncThread self =
+        Thread.currentThread() instanceof AsyncThread worker && worker.getOwner() == this ? worker : null;
+
+    if (self != null && offerHelping(self, target, task))
+      return;
+
+    final BlockingQueue<DatabaseAsyncTask> queue = target.queue;
+    final boolean prevWaiting = self != null && self.waitingCrossSlotOffer;
+    if (self != null)
+      self.waitingCrossSlotOffer = true;
+    try {
+      long observedCompleted = target.completedTaskCount;
+      int windowsWithoutProgress = 0;
+      while (!queue.offer(task, checkForStalledQueuesMaxDelay, TimeUnit.MILLISECONDS)) {
+        if (!target.isAlive())
+          throw new DatabaseOperationException(
+              "Async executor has been shut down; cannot schedule asynchronous task " + task);
+
+        final long nowCompleted = target.completedTaskCount;
+        if (nowCompleted == observedCompleted) {
+          ++windowsWithoutProgress;
+
+          if (target.waitingCrossSlotOffer) {
+            // NO TASK COMPLETED OVER N CONSECUTIVE WINDOWS WHILE THE WORKER IS ITSELF PARKED HANDING
+            // A TASK TO ANOTHER QUEUE. #5062 review r3 (point 1): a single flat window used to throw
+            // here, but a budget-exhausted worker whose peer is merely busy on one slow task shows
+            // exactly that signature for a moment: require enough windows to outlive a slow peer.
+            if (windowsWithoutProgress >= STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS)
+              throw new DatabaseOperationException("Asynchronous queue " + slot
+                  + " is stalled. This could happen when an asynchronous task schedules more asynchronous tasks");
+
+            // #5062 review r2 (point 1): a worker wedged inside user code (infinite loop or blocking
+            // call in a task's execute()/callback) never sets waitingCrossSlotOffer, so without this
+            // backstop the producer would hang here forever. Much longer than the old 2-window
+            // head-identity detector and progress-gated, so a single slow task does not trip it.
+          } else if (windowsWithoutProgress >= STALLED_NO_PROGRESS_WINDOWS)
+            throw new DatabaseOperationException(
+                "Asynchronous queue " + slot + " is stalled: no task completed in the last " + (
+                    STALLED_NO_PROGRESS_WINDOWS * checkForStalledQueuesMaxDelay)
+                    + " ms while its queue stayed full. The worker may be blocked inside a user task or callback");
+        } else {
+          windowsWithoutProgress = 0;
+          observedCompleted = nowCompleted;
+        }
+
+        if (applyBackPressureOnPercentage > 0) {
+          final int queueFullAt =
+              100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
+          Thread.sleep(100 + (4L * queueFullAt));
+        }
+      }
+    } finally {
+      if (self != null)
+        self.waitingCrossSlotOffer = prevWaiting;
+    }
+  }
+
+  /**
+   * Help-while-waiting loop (#4953): the calling worker keeps draining its own queue while it waits
+   * for space on the target queue, so two workers cross-scheduling into each other's full queues
+   * free the slot the peer is parked on and the cycle resolves on its own. Polled tasks are NOT
+   * executed here: this worker is suspended mid-execute() of its current task, and a nested
+   * execution could commit or roll back that task's partial writes, breaking per-task atomicity
+   * (#5062 review, point 1). They are parked in {@code helpDeferredTasks} and run by the run loop,
+   * in poll order, once the current task unwinds; that is also after the hand-off, so a parked
+   * waitCompletion() marker cannot fire before the current task's follow-up has been scheduled.
+   * <p>
+   * The parked backlog is capped at the queue capacity: past it the method gives up (returns false)
+   * and the caller falls back to the bounded wait with stall detection, restoring queue-full
+   * backpressure on producers. There is deliberately NO liveness detector here beyond target death
+   * (#5062 review, point 2): a target wedged forever in user code is indistinguishable from one
+   * busy on a legitimately slow task, and throwing out of a worker mid-task rolls back its commit
+   * batch and silently drops the follow-up, which is the exact #4953 defect. As long as the target
+   * is alive it either progresses (offer eventually lands) or is itself parked cross-slot, in which
+   * case draining resolves the cycle or the budget above fails over to the detecting wait.
+   *
+   * @return true if the task was handed to the target queue, false if the deferral budget is
+   * exhausted and the caller must fall back to the bounded wait of {@code offerWaiting}.
+   */
+  private boolean offerHelping(final AsyncThread self, final AsyncThread target, final DatabaseAsyncTask task)
+      throws InterruptedException {
+    final boolean prevWaiting = self.waitingCrossSlotOffer;
+    self.waitingCrossSlotOffer = true;
+    try {
+      while (true) {
+        // SHORT WINDOW WHEN THERE IS OWN WORK TO DRAIN, LONGER WHEN IDLE TO AVOID SPINNING. THE 1MS
+        // WINDOW IS INTENTIONALLY AGGRESSIVE: EVERY ITERATION FREES A SLOT THE PARKED PEER MAY BE
+        // WAITING ON, AND THE LOOP IS BOUNDED BY THE DEFERRAL BUDGET BELOW
+        final long window = self.queue.isEmpty() ? 100 : 1;
+        if (target.queue.offer(task, window, TimeUnit.MILLISECONDS))
+          return true;
+
+        if (!target.isAlive())
+          throw new DatabaseOperationException(
+              "Async executor has been shut down; cannot schedule asynchronous task " + task);
+
+        if (self.helpDeferredTasks.size() >= self.queueCapacity)
+          // DEFERRAL BUDGET EXHAUSTED: STOP EXTENDING THE OWN QUEUE AND FALL BACK TO THE BOUNDED WAIT
+          return false;
+
+        final DatabaseAsyncTask own = self.queue.poll();
+        if (own == null)
+          continue;
+
+        if (own == FORCE_EXIT)
+          // GRACEFUL SHUTDOWN REQUESTED WHILE HELPING: THE MARKER IS CONSUMED HERE AND IT IS THE
+          // forceShutdown FLAG (NOT THE MARKER) THAT MAKES THE RUN LOOP EXIT ONCE THE CURRENT TASK
+          // UNWINDS, SO shutdownThreadsLocked'S BOUNDED join() STILL COMPLETES (#5062 review, point 5)
+          self.forceShutdown = true;
+        else
+          self.helpDeferredTasks.addLast(own);
+      }
+    } finally {
+      self.waitingCrossSlotOffer = prevWaiting;
     }
   }
 
