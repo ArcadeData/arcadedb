@@ -208,4 +208,27 @@ class PageManagerLifecycleRefCountTest {
       factory.close();
     }
   }
+
+  @Test
+  void liveConfigureIsRefusedInsteadOfSwappingTheFlushThreadUnderReaders() {
+    // #5070 review round 2: a live shutdown+startup swap in configure() raced the hot paths, which read
+    // flushThread/readCache without the lifecycle lock - a concurrent flush could NPE on the transient
+    // null. A profile change while databases are open is now refused loudly; the thread survives untouched.
+    final DatabaseFactory factory = new DatabaseFactory(DB_A);
+    try {
+      final Database db = factory.create();
+      final PageManagerFlushThread before = PageManager.INSTANCE.getFlushThread();
+      assertThat(before).isNotNull();
+
+      PageManager.INSTANCE.configure();
+
+      assertThat(PageManager.INSTANCE.getFlushThread())
+          .as("configure() with open databases must not swap the live flush thread (#5070)")
+          .isSameAs(before);
+      assertThat(before.isAlive()).isTrue();
+      db.drop();
+    } finally {
+      factory.close();
+    }
+  }
 }

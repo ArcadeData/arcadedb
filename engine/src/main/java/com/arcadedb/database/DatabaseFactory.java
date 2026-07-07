@@ -164,9 +164,12 @@ public class DatabaseFactory implements AutoCloseable {
     return ACTIVE_INSTANCES.get(normalizedPath);
   }
 
-  protected static boolean removeActiveDatabaseInstance(final String databasePath) {
-    var normalizedPath = getNormalizedPath(databasePath);
-    ACTIVE_INSTANCES.remove(normalizedPath);
+  protected static boolean removeActiveDatabaseInstance(final String databasePath, final Database instance) {
+    final var normalizedPath = getNormalizedPath(databasePath);
+    // Keyed to the instance (#5070 review): when registerActiveInstance closes a same-path open-race LOSER,
+    // the loser's close must not remove the WINNER's still-live mapping - a plain remove(path) did, orphaning
+    // the winner from the registry and letting a third open of the same path pass checkForActiveInstance.
+    ACTIVE_INSTANCES.remove(normalizedPath, instance);
     return ACTIVE_INSTANCES.isEmpty();
   }
 

@@ -2191,7 +2191,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // Unconditional on purpose: a KILLED database (crash simulation) reaches close() with open == false and
     // must still unregister - removeActiveDatabaseInstance is naturally idempotent (false on the second
     // call), which is exactly how the pre-#4927 code stayed double-close-safe.
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath, this))
       GraphAnalyticalView.closeExecutor();
 
     // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by

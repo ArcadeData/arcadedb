@@ -135,16 +135,19 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * Re-applies the current configuration (used by the GlobalConfiguration PROFILE setter). A no-op when no
-   * database is open: the next {@link #acquire()} reads the fresh settings anyway, and starting a flush
-   * thread with zero databases (the old behavior) leaked it until the next lifecycle transition.
+   * Declares that the configuration changed (used by the GlobalConfiguration PROFILE setter). Always a
+   * no-op at runtime: with no database open the next {@link #acquire()} reads the fresh settings anyway
+   * (and starting a flush thread with zero databases - the old behavior - leaked it until the next
+   * lifecycle transition); with databases OPEN a live shutdown+startup swap would race the hot paths, which
+   * read {@code flushThread}/{@code readCache} without the lifecycle lock (#5070 review) - so a live
+   * profile change is refused loudly instead. Set the PROFILE before opening databases.
    */
   public void configure() {
     synchronized (LIFECYCLE_LOCK) {
-      if (lifecycleRefCount == 0)
-        return;
-      shutdown();
-      startup();
+      if (lifecycleRefCount > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Configuration profile change ignored: %d database(s) are open and the page manager cannot be swapped live. Set the profile before opening databases",
+            null, lifecycleRefCount);
     }
   }
 
