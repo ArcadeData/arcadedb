@@ -51,7 +51,7 @@ class PageManagerReadCacheRamAccountingTest {
   @BeforeEach
   void setUp() {
     FileUtils.deleteRecursively(new File(DB_PATH));
-    // Set small RAM limit BEFORE opening the database so PageManager.configure() picks it up
+    // Set small RAM limit BEFORE opening the database so PageManager.startup() (run on the 0 -> 1 acquire) picks it up
     GlobalConfiguration.MAX_PAGE_RAM.setValue(MAX_RAM_MB);
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     db = factory.create();
