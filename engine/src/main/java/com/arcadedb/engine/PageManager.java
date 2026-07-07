@@ -231,17 +231,17 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
-    // #4958: when the database is ALREADY suspended by an outer scope (nested backup/snapshot), the
-    // callback still runs - under the outer suspension - instead of being silently skipped as before.
-    // Only the outermost caller owns the flag and restores it on exit.
-    final boolean acquired = flushThread.setSuspended(database, true);
-    if (acquired)
-      flushThread.waitForCurrentFlushToComplete(database);
+    // #5068: the suspension is REFCOUNTED, so every caller (backup, verify, HA snapshot serving, nested
+    // scopes per #4958) owns its whole window even when the windows overlap on the same database: flushing
+    // is resumed (and the deferred batches flushed) only when the LAST suspender exits. The wait for the
+    // in-flight batch runs INSIDE the try so an interrupt during the wait still releases this caller's
+    // reference; it is cheap for non-first suspenders (the flush thread is already parked deferring).
+    flushThread.setSuspended(database, true);
     try {
+      flushThread.waitForCurrentFlushToComplete(database);
       CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
     } finally {
-      if (acquired)
-        flushThread.setSuspended(database, false);
+      flushThread.setSuspended(database, false);
     }
   }
 

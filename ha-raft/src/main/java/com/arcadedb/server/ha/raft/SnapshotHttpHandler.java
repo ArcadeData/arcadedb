@@ -76,19 +76,18 @@ public class SnapshotHttpHandler implements HttpHandler {
   private static final Semaphore CONCURRENCY_SEMAPHORE =
       new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
 
-  // #5063 (review round 5): PageManagerFlushThread.setSuspended is ownership-based (putIfAbsent) - only
-  // the FIRST caller owns the suspend flag, and suspendFlushAndExecute now ALWAYS runs the callback
-  // (issue #4958). A second thread entering for the same database would stream files WITHOUT owning the
-  // suspension: it skips waitForCurrentFlushToComplete (so a flush batch may still be mid-write), and
-  // when the owner exits, setSuspended(false) synchronously flushes the deferred batches to disk,
-  // tearing the files the non-owner is still reading. Neither existing guard prevents that overlap:
-  // CONCURRENCY_SEMAPHORE admits HA_SNAPSHOT_MAX_CONCURRENT (default 2) requests - possibly for the
-  // same database, e.g. two followers resyncing at once - and executeInReadLock is a SHARED lock.
-  // This per-database lock serializes the snapshot and checksums paths, so the single thread inside
-  // suspendFlushAndExecute always owns the suspension for its whole read. A concurrent request for the
-  // same database waits its turn; requests beyond the semaphore limit still get a fast 503. Overlap
-  // with OTHER suspendFlushAndExecute callers (SQL BACKUP DATABASE, database verify) is a pre-existing
-  // exposure of the ownership model, out of this handler's control.
+  // #5063 (review round 5) introduced this per-database lock because PageManagerFlushThread.setSuspended
+  // was ownership-based (putIfAbsent): only the FIRST caller owned the suspend flag, so a second thread
+  // streaming the same database could observe a resumed flush mid-read. Issue #5068 made the suspension
+  // REFCOUNTED in the engine - flushing resumes only when the LAST suspender exits - so overlapping
+  // suspendFlushAndExecute callers (this handler, SQL BACKUP DATABASE, database verify) each own their
+  // whole window and the lock is NO LONGER needed for suspension correctness.
+  // DECISION (#5068): the lock STAYS, for resource discipline rather than correctness. It serializes the
+  // whole zip streaming per database: two followers resyncing the same multi-GB database at once would
+  // double the read I/O and, with refcounted suspension, keep flushing suspended for the UNION of both
+  // windows, growing the deferred-page backlog toward the #4728 backpressure cap and throttling commits
+  // for longer. Serializing keeps each suspension window as short as possible. Requests beyond the
+  // CONCURRENCY_SEMAPHORE limit (HA_SNAPSHOT_MAX_CONCURRENT, default 2) still get a fast 503.
   // Entries are never pruned by design: one small ReentrantLock per database NAME ever snapshotted, bounded
   // by the server's database count (a dropped-and-recreated database safely reuses its lock). Pruning on
   // drop would need lifecycle callbacks this handler does not have, for negligible memory.
@@ -195,8 +194,8 @@ public class SnapshotHttpHandler implements HttpHandler {
       dbSuspendLock.lock();
       try {
         db.executeInReadLock(() -> {
-          // Serialized per database (see perDatabaseSuspendLock), so this call always OWNS the flush
-          // suspension: the callback streams the files with the flush thread parked for the whole read.
+          // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
+          // perDatabaseSuspendLock additionally serializes same-database zip streams (see its comment).
           db.getPageManager().suspendFlushAndExecute(db, () -> serveSnapshotZip(exchange, db, databaseName));
           return null;
         });
@@ -219,7 +218,8 @@ public class SnapshotHttpHandler implements HttpHandler {
     final DatabaseInternal db = server.getDatabase(databaseName);
 
     // Flush pages and hold a read lock to ensure a consistent point-in-time view of database files.
-    // Serialized per database (see perDatabaseSuspendLock) so this thread always OWNS the suspension.
+    // The refcounted suspension (#5068) guarantees ownership of the window; the per-database lock only
+    // serializes same-database reads with the snapshot zip path (see perDatabaseSuspendLock).
     final ReentrantLock dbSuspendLock = suspendLockFor(databaseName);
     dbSuspendLock.lock();
     try {
@@ -248,9 +248,10 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   /**
    * Returns the per-database lock serializing every entry into {@code suspendFlushAndExecute} made by
-   * this handler (snapshot ZIP and checksums paths), so the entering thread always owns the flush
-   * suspension for its whole read (see {@link #perDatabaseSuspendLock}). One lock instance per database
-   * name for the lifetime of the handler. Package-private for unit testing.
+   * this handler (snapshot ZIP and checksums paths). Since the refcounted suspension of issue #5068 this
+   * is not needed for correctness; it is retained to serialize same-database zip streaming and keep each
+   * suspension window short (see {@link #perDatabaseSuspendLock}). One lock instance per database name
+   * for the lifetime of the handler. Package-private for unit testing.
    */
   ReentrantLock suspendLockFor(final String databaseName) {
     return perDatabaseSuspendLock.computeIfAbsent(databaseName, k -> new ReentrantLock());
