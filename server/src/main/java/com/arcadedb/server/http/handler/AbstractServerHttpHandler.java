@@ -45,7 +45,10 @@ import io.undertow.util.StatusCodes;
 
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -607,25 +610,75 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             Level.FINE;
   }
 
+  /**
+   * Returns true when the server runs in {@code production} mode. In production the error responses conceal the
+   * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
+   * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
+   * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
+   */
+  private boolean isProductionMode() {
+    return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
+  }
+
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
                                  final String exceptionArgs) {
     if (!exchange.isResponseStarted())
       exchange.setStatusCode(code);
 
-    String detail = "";
-    if (e != null) {
-      final StringBuilder buffer = new StringBuilder();
-      buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+    // Reuse the correlation id already echoed in the response header so operators can cross-reference a
+    // concealed production error with the detailed server log entry.
+    final String correlationId = exchange.getResponseHeaders().getFirst(REQUEST_ID_HEADER);
 
-      Throwable current = e.getCause();
-      while (current != null && current != current.getCause() && current != e) {
-        buffer.append(" -> ");
-        buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
-        current = current.getCause();
-      }
-      detail = buffer.toString();
+    exchange.getResponseSender().send(buildErrorBody(!isProductionMode(), errorMessage, e, exceptionArgs, correlationId));
+  }
+
+  /**
+   * Builds the JSON error body sent to the client. The exception class name ({@code exception}) and the structured
+   * {@code exceptionArgs} are a wire contract consumed by the remote Java driver
+   * ({@code RemoteHttpComponent.manageException}) and by HA leader-exception reconstruction
+   * ({@code RaftReplicatedDatabase.reconstructLeaderException}) to rebuild typed exceptions, leader-redirect hints and
+   * duplicate-key details; they are bounded, non-sensitive values and are therefore emitted in every mode. Only the
+   * free-form cause chain ({@code detail}), which can carry file paths and engine internals, is concealed in
+   * production ({@code verbose == false}) so it is never leaked to a client probing endpoints. Package-private for
+   * direct unit testing.
+   */
+  String buildErrorBody(final boolean verbose, final String errorMessage, final Throwable e, final String exceptionArgs,
+                        final String correlationId) {
+    final JSONObject json = new JSONObject();
+    json.put("error", errorMessage);
+    if (correlationId != null && !correlationId.isEmpty())
+      json.put("requestId", correlationId);
+
+    if (e != null)
+      json.put("exception", e.getClass().getName());
+    if (exceptionArgs != null)
+      json.put("exceptionArgs", exceptionArgs);
+
+    // The cause chain is the only free-form field: conceal it outside development/test to avoid leaking
+    // internal file paths and engine errors to a client probing endpoints.
+    if (verbose && e != null)
+      json.put("detail", encodeError(buildDetailChain(e)));
+
+    return json.toString();
+  }
+
+  /**
+   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping when a cause
+   * has already been seen to avoid an infinite loop on cyclic chains. Uses identity comparison so distinct exceptions
+   * with equal {@code equals}/{@code hashCode} are still walked. Package-private for direct unit testing.
+   */
+  static String buildDetailChain(final Throwable e) {
+    final StringBuilder buffer = new StringBuilder();
+    buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    visited.add(e);
+    Throwable current = e.getCause();
+    while (current != null && visited.add(current)) {
+      buffer.append(" -> ");
+      buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
+      current = current.getCause();
     }
-
-    exchange.getResponseSender().send(error2json(errorMessage, detail, e, exceptionArgs, null));
+    return buffer.toString();
   }
 }

@@ -33,7 +33,6 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
 import java.io.IOException;
-import java.util.Map;
 
 public class PostBeginHandler extends DatabaseAbstractHandler {
 
@@ -48,19 +47,20 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     if (txId != null && !txId.isEmpty()) {
       final HttpSession tx = httpServer.getSessionManager().getSessionById(user, txId.getFirst());
       if (tx != null)
-        return new ExecutionResponse(401, "{ \"error\" : \"Transaction already started\" }");
+        // 409 Conflict (RFC 9110): re-issuing begin on an existing session is a state conflict, not an
+        // authentication failure - returning 401 wrongly makes clients re-authenticate.
+        return new ExecutionResponse(409, "{ \"error\" : \"Transaction already started\" }");
     }
 
     DatabaseContext.INSTANCE.init((DatabaseInternal) database);
 
-    if (payload != null) {
-      final Map<String, Object> requestMap = payload.toMap();
-      final String isolationLevel = (String) requestMap.get("isolationLevel");
-      if (isolationLevel == null)
-        return new ExecutionResponse(400, "Missing parameter 'isolationLevel'");
-
+    // isolationLevel is optional: when a payload is present but omits it, fall back to the default isolation.
+    // getString(name, default) avoids the full recursive toMap() copy on this hot path; a scalar value stringifies
+    // (no ClassCastException, unlike the old (String) cast), while a JSON object/array would still be rejected.
+    final String isolationLevel = payload != null ? payload.getString("isolationLevel", null) : null;
+    if (isolationLevel != null)
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel));
-    } else
+    else
       database.begin();
 
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
