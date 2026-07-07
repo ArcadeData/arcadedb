@@ -121,10 +121,11 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
-   * Returns a single-snapshot Bolt routing table for the ROUTE response, or null when HA is inactive or
-   * no leader is currently known. Readers reflect the configured cluster membership (parity with
-   * {@link #getReplicaAddresses()}); a down or partitioned follower is still advertised until it leaves
-   * the group, and the driver fails over. Used to build the Bolt ROUTE routing table.
+   * Returns a single-snapshot Bolt routing table for the ROUTE response, or null when HA is inactive,
+   * no leader is currently known, or the leader has no resolvable Bolt address. Readers reflect the
+   * configured cluster membership (parity with {@link #getReplicaAddresses()}); a down or partitioned
+   * follower is still advertised until it leaves the group, and the driver fails over. Used to build the
+   * Bolt ROUTE routing table.
    */
   default BoltRoutingTable getBoltRoutingTable() {
     return null;
