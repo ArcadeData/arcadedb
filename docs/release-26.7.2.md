@@ -245,7 +245,11 @@ that could starve the very snapshot resync meant to heal the node.
   `checkForStalledQueuesMaxDelay` of 5s) - much longer than the old 10s false-positive-prone bound,
   tunable via `setCheckForStalledQueuesMaxDelay()`; a worker parked handing a task cross-slot with a
   flat completed count (a likely scheduling cycle) is reported faster, after 3 consecutive stall
-  windows (15s by default), so a peer merely busy on one slow task does not trip it. Operators
+  windows (15s by default), so a peer merely busy on one slow task does not trip it. The same applies
+  to the backstop itself: a SINGLE legitimately long task (a large scan, a heavy user callback) that
+  exceeds 12 x `checkForStalledQueuesMaxDelay` (60s by default) while producers wait on that worker's
+  full queue is indistinguishable from a wedged one and trips the stall exception - raise the delay if
+  your tasks legitimately run that long. Operators
   running scheduling chains deeper than two workers with individual tasks slower than 15s should
   raise `checkForStalledQueuesMaxDelay` (only the window duration is tunable, the counts are fixed),
   or the cross-slot detector can fire on a chain that would have resolved. Known residual
