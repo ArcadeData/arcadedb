@@ -48,14 +48,18 @@ import io.undertow.util.HttpString;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -252,6 +256,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: restore database <name> <url>");
 
+    validateClientRestoreImportUrl(url);
+
     checkServerIsLeaderIfInHA();
 
     final ArcadeDBServer server = httpServer.getServer();
@@ -302,14 +308,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         + File.separator + targetDatabase;
 
     final boolean exists = server.existsDatabase(targetDatabase) || new File(dbPath).exists();
-    if (exists) {
-      if (!overwrite)
-        throw new IllegalArgumentException(
-            "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
-      // Drop the existing target so the restore writes into a clean directory (HA-aware).
-      dropDatabase(targetDatabase);
-    }
+    if (exists && !overwrite)
+      throw new IllegalArgumentException(
+          "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
 
+    // Note: any existing target is dropped by performRestore only AFTER the restore into a temporary
+    // directory succeeds, so a failed restore leaves the original database intact (issue #5027).
+    // The backup file is resolved server-side, so this internal file:// URL bypasses the SSRF guard.
     final String url = "file://" + backupFile.toAbsolutePath();
     return performRestore(targetDatabase, dbPath, url, exchange);
   }
@@ -388,13 +393,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       final HttpServerExchange exchange) {
     final ArcadeDBServer server = httpServer.getServer();
 
+    // Restore into a temporary sibling directory first, then atomically swap it into place only on
+    // success. This keeps an existing target database intact when the restore fails (issue #5027).
+    final File finalDir = new File(dbPath);
+    final File tempDir = new File(dbPath + ".restore-tmp-" + System.nanoTime());
+
     if (isSSERequested(exchange)) {
       startSSE(exchange);
       final OutputStream out = exchange.getOutputStream();
 
       try {
         final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-        final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, dbPath);
+        final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
 
         // Set a logger with SSE callback for progress
         final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
@@ -411,10 +421,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
         sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
         clazz.getMethod("restoreDatabase").invoke(restorer);
+        swapRestoredDatabase(server, databaseName, finalDir, tempDir);
         final ServerDatabase restoredSse = server.getDatabase(databaseName);
         replicateRestoredDatabase(server, restoredSse, databaseName);
         sendSSE(out, new JSONObject().put("status", "completed").put("message", databaseName + " restored successfully"));
       } catch (final Exception e) {
+        FileUtils.deleteRecursively(tempDir);
         final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
         sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
       } finally {
@@ -426,18 +438,100 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // Synchronous fallback (no SSE)
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, dbPath);
+      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
       clazz.getMethod("restoreDatabase").invoke(restorer);
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException
                    | InstantiationException e) {
+      FileUtils.deleteRecursively(tempDir);
       throw new CommandExecutionException("Restore libs not found in classpath", e);
     } catch (final java.lang.reflect.InvocationTargetException e) {
+      FileUtils.deleteRecursively(tempDir);
       throw new CommandExecutionException("Error restoring database", e.getTargetException());
     }
 
+    swapRestoredDatabase(server, databaseName, finalDir, tempDir);
     final ServerDatabase restored = server.getDatabase(databaseName);
     replicateRestoredDatabase(server, restored, databaseName);
     return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+  }
+
+  /**
+   * Swaps a freshly-restored temporary directory into the final database directory. The existing
+   * target database (if any) is dropped only now that the restore into {@code tempDir} has
+   * succeeded, so a failed restore never destroys the original data (issue #5027).
+   */
+  private void swapRestoredDatabase(final ArcadeDBServer server, final String databaseName, final File finalDir,
+      final File tempDir) {
+    // Drop the previous target (HA-aware) only after a successful restore.
+    if (server.existsDatabase(databaseName))
+      dropDatabase(databaseName);
+    else if (finalDir.exists())
+      FileUtils.deleteRecursively(finalDir);
+
+    try {
+      try {
+        Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tempDir.toPath(), finalDir.toPath());
+      }
+    } catch (final IOException e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
+    }
+  }
+
+  /**
+   * Validates a client-supplied restore/import URL to prevent SSRF and local-file reads. Unless the
+   * operator enables {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS}, only
+   * {@code http}/{@code https} URLs to non-private hosts are accepted; {@code file://} and any
+   * private, loopback, link-local, site-local, multicast, wildcard or unresolvable host is rejected.
+   */
+  private void validateClientRestoreImportUrl(final String url) {
+    if (httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS))
+      return;
+
+    final URI uri;
+    try {
+      uri = URI.create(url.trim());
+    } catch (final IllegalArgumentException e) {
+      throw new SecurityException("Invalid restore/import URL");
+    }
+
+    final String scheme = uri.getScheme() == null ? null : uri.getScheme().toLowerCase(Locale.ENGLISH);
+    if (scheme == null)
+      throw new SecurityException("Restore/import URL must use the 'http' or 'https' scheme");
+
+    if (!"http".equals(scheme) && !"https".equals(scheme))
+      throw new SecurityException("Restore/import URL scheme '" + scheme + "' is not allowed. Enable '"
+          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey()
+          + "' to permit local-file and non-HTTP URLs");
+
+    final String host = uri.getHost();
+    if (host == null || host.isBlank())
+      throw new SecurityException("Restore/import URL host is missing");
+
+    if (isBlockedHost(host))
+      throw new SecurityException("Restore/import from private, loopback or link-local hosts is blocked. Enable '"
+          + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey() + "' to override");
+  }
+
+  /**
+   * Returns true when {@code host} resolves to (or is) an address in a range that must not be reached
+   * from a client-supplied restore/import URL. Every resolved address is checked so a hostname that
+   * resolves to a mix of public and private addresses is still rejected. An unresolvable host is
+   * treated as blocked.
+   */
+  private static boolean isBlockedHost(final String host) {
+    try {
+      for (final InetAddress addr : InetAddress.getAllByName(host)) {
+        if (addr.isLoopbackAddress() || addr.isAnyLocalAddress() || addr.isLinkLocalAddress()
+            || addr.isSiteLocalAddress() || addr.isMulticastAddress())
+          return true;
+      }
+      return false;
+    } catch (final UnknownHostException e) {
+      return true;
+    }
   }
 
   /**
@@ -454,6 +548,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     if (databaseName.isEmpty() || url.isEmpty())
       throw new IllegalArgumentException("Usage: import database <name> <url>");
+
+    // Validate BEFORE creating the database so a rejected URL leaves no empty database behind.
+    validateClientRestoreImportUrl(url);
 
     checkServerIsLeaderIfInHA();
 
