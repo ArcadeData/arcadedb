@@ -120,12 +120,6 @@ class AsyncFastQueueShutdownUndoTest extends TestHelper {
     assertThat(async.waitCompletion(10_000)).isTrue();
   }
 
-  private static DatabaseAsyncExecutorImpl.AsyncThread findWorkerThread(final DatabaseInternal db, final int slot) {
-    final String name = "AsyncExecutor-" + db.getName() + "-" + slot;
-    return (DatabaseAsyncExecutorImpl.AsyncThread) Thread.getAllStackTraces().keySet().stream()
-        .filter(t -> t.getName().equals(name)).findFirst()
-        .orElseThrow(() -> new IllegalStateException("Worker thread " + name + " not found"));
-  }
   @Test
   @Timeout(60)
   void fastQueueSupportsEffectiveCapacityOne() throws Exception {
@@ -160,6 +154,13 @@ class AsyncFastQueueShutdownUndoTest extends TestHelper {
     }
 
     assertThat(async.waitCompletion(10_000)).isTrue();
+  }
+
+  private static DatabaseAsyncExecutorImpl.AsyncThread findWorkerThread(final DatabaseInternal db, final int slot) {
+    final String name = "AsyncExecutor-" + db.getName() + "-" + slot;
+    return (DatabaseAsyncExecutorImpl.AsyncThread) Thread.getAllStackTraces().keySet().stream()
+        .filter(t -> t.getName().equals(name)).findFirst()
+        .orElseThrow(() -> new IllegalStateException("Worker thread " + name + " not found"));
   }
 
 }
