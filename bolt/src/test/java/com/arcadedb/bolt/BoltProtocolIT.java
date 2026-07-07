@@ -20,6 +20,7 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BoltMessage;
+import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
@@ -156,6 +157,78 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         assertThat(result.next().get("value").asLong()).isEqualTo(1L);
       }
     }
+  }
+
+  // Single-node (non-HA) ROUTE must keep advertising this node for every role. Guards the fallback
+  // branch so the HA-aware routing table never regresses standalone deployments.
+  @Test
+  void routeTableSingleNodeReturnsSelfForAllRoles() throws Exception {
+    try (Socket socket = new Socket("localhost", 7687)) {
+      final OutputStream rawOut = socket.getOutputStream();
+
+      final ByteBuffer handshake = ByteBuffer.allocate(20);
+      handshake.put((byte) 0x60).put((byte) 0x60).put((byte) 0xB0).put((byte) 0x17);
+      handshake.putInt(0x00020404);
+      handshake.putInt(0x00000004);
+      handshake.putInt(0x00000003);
+      handshake.putInt(0x00000000);
+      handshake.flip();
+      rawOut.write(handshake.array());
+      rawOut.flush();
+
+      final DataInputStream rawIn = new DataInputStream(socket.getInputStream());
+      final byte[] negotiatedVersion = new byte[4];
+      rawIn.readFully(negotiatedVersion);
+
+      final BoltChunkedOutput chunkedOut = new BoltChunkedOutput(rawOut);
+      final BoltChunkedInput chunkedIn = new BoltChunkedInput(socket.getInputStream());
+
+      final PackStreamWriter hello = new PackStreamWriter();
+      hello.writeStructureHeader(BoltMessage.HELLO, 1);
+      hello.writeMap(Map.of("user_agent", "route-regression/1.0", "scheme", "basic",
+          "principal", "root", "credentials", DEFAULT_PASSWORD_FOR_TESTS));
+      chunkedOut.writeMessage(hello.toByteArray());
+      chunkedIn.readMessage();
+
+      final PackStreamWriter route = new PackStreamWriter();
+      route.writeStructureHeader(BoltMessage.ROUTE, 3);
+      route.writeMap(Map.of());
+      route.writeList(List.of());
+      route.writeMap(Map.of("db", getDatabaseName()));
+      chunkedOut.writeMessage(route.toByteArray());
+
+      final byte[] response = chunkedIn.readMessage();
+      assertThat(response[1]).as("ROUTE must succeed").isEqualTo(BoltMessage.SUCCESS);
+
+      final Map<String, Object> rt = readRoutingTable(response);
+      final String self = addressForRole(rt, "WRITE");
+      assertThat(self).isNotBlank();
+      assertThat(addressForRole(rt, "READ")).isEqualTo(self);
+      assertThat(addressForRole(rt, "ROUTE")).isEqualTo(self);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> readRoutingTable(final byte[] successResponse) throws java.io.IOException {
+    // SUCCESS is a single-field structure: [struct marker][signature][metadata map]. Skip the two
+    // header bytes and read the metadata map, then pull out the "rt" routing table.
+    final PackStreamReader reader = new PackStreamReader(successResponse);
+    reader.readRawByte();
+    reader.readRawByte();
+    final Map<String, Object> metadata = (Map<String, Object>) reader.readValue();
+    return (Map<String, Object>) metadata.get("rt");
+  }
+
+  @SuppressWarnings("unchecked")
+  private static String addressForRole(final Map<String, Object> rt, final String role) {
+    final List<Map<String, Object>> servers = (List<Map<String, Object>>) rt.get("servers");
+    for (final Map<String, Object> s : servers) {
+      if (role.equals(s.get("role"))) {
+        final List<String> addrs = (List<String>) s.get("addresses");
+        return addrs.isEmpty() ? null : addrs.get(0);
+      }
+    }
+    return null;
   }
 
   @Test

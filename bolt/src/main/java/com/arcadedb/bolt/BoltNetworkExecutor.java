@@ -56,6 +56,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
@@ -928,36 +929,55 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    // For single-server setup, return this server as the only endpoint
-    final String address = getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger());
-
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong());
     rt.put("db", message.getDatabase() != null ? message.getDatabase() : databaseName);
 
     final List<Map<String, Object>> servers = new ArrayList<>();
 
-    // Writer server
-    final Map<String, Object> writer = new LinkedHashMap<>();
-    writer.put("addresses", List.of(address));
-    writer.put("role", "WRITE");
-    servers.add(writer);
+    final HAServerPlugin ha = server.getHA();
+    final String leaderBolt = ha != null ? ha.getLeaderBoltAddress() : null;
 
-    // Reader server (same as writer for single-server)
-    final Map<String, Object> reader = new LinkedHashMap<>();
-    reader.put("addresses", List.of(address));
-    reader.put("role", "READ");
-    servers.add(reader);
+    if (leaderBolt != null) {
+      // HA cluster: the leader is the writer and a router, followers are readers and routers.
+      final List<String> readers = new ArrayList<>();
+      final String replicaCsv = ha.getReplicaBoltAddresses();
+      if (replicaCsv != null && !replicaCsv.isEmpty())
+        for (final String addr : replicaCsv.split(","))
+          if (!addr.isBlank())
+            readers.add(addr.trim());
 
-    // Route server
-    final Map<String, Object> router = new LinkedHashMap<>();
-    router.put("addresses", List.of(address));
-    router.put("role", "ROUTE");
-    servers.add(router);
+      final List<String> routers = new ArrayList<>();
+      routers.add(leaderBolt);
+      routers.addAll(readers);
+
+      servers.add(roleEntry(List.of(leaderBolt), "WRITE"));
+      servers.add(roleEntry(readers.isEmpty() ? List.of(leaderBolt) : readers, "READ"));
+      servers.add(roleEntry(routers, "ROUTE"));
+    } else {
+      // Single-server (or HA leader not yet known): advertise this node for every role, using the
+      // actual bound Bolt port of this connection rather than the global default. A driver hitting the
+      // transient HA case retries after the TTL and receives the full topology once the leader is known.
+      final String address = getBoltAddress(socket.getLocalPort());
+      servers.add(roleEntry(List.of(address), "WRITE"));
+      servers.add(roleEntry(List.of(address), "READ"));
+      servers.add(roleEntry(List.of(address), "ROUTE"));
+    }
 
     rt.put("servers", servers);
 
     sendSuccess(CollectionUtils.singletonMap("rt", rt));
+  }
+
+  /**
+   * Builds a single ROUTE routing-table server entry pairing a list of client-reachable addresses with
+   * a Bolt routing role (WRITE, READ, or ROUTE).
+   */
+  private static Map<String, Object> roleEntry(final List<String> addresses, final String role) {
+    final Map<String, Object> entry = new LinkedHashMap<>();
+    entry.put("addresses", addresses);
+    entry.put("role", role);
+    return entry;
   }
 
   /**
