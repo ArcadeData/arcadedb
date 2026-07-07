@@ -41,6 +41,7 @@ public class BasicCommandContext implements CommandContext {
   protected       CommandContext       parent;
   protected       CommandContext       child;
   protected       Map<String, Object>  variables;
+  protected       QueryStatistics      statistics;
   protected       Map<String, Object>  cachedValues;
   protected       Map<String, Object>  inputParameters;
   protected       ContextConfiguration configuration           = new ContextConfiguration();
@@ -408,6 +409,9 @@ public class BasicCommandContext implements CommandContext {
     copy.parent = parent;
     copy.child = child;
     copy.profiling = profiling;
+    // Share the same statistics accumulator so mutations performed through the copied context
+    // aggregate into one place instead of silently vanishing.
+    copy.statistics = statistics;
     return copy;
   }
 
@@ -447,6 +451,13 @@ public class BasicCommandContext implements CommandContext {
       return parent.getDatabase();
 
     return null;
+  }
+
+  @Override
+  public QueryStatistics getStatistics() {
+    if (statistics == null)
+      statistics = new QueryStatistics();
+    return statistics;
   }
 
   public CommandContext setDatabase(final Database database) {

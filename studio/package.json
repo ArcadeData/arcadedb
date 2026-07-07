@@ -1,6 +1,6 @@
 {
   "name": "arcadedb-studio",
-  "version": "26.8.1-SNAPSHOT",
+  "version": "26.7.2-SNAPSHOT",
   "description": "ArcadeDB Studio Frontend - Multi-Model Database Administration Interface",
   "main": "src/main/resources/static/index.html",
   "scripts": {
@@ -22,7 +22,7 @@
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.0",
     "@popperjs/core": "^2.11.8",
-    "apexcharts": "^5.15.2",
+    "apexcharts": "^5.16.0",
     "bootstrap": "^5.3.8",
     "codemirror": "^5.65.21",
     "cytoscape": "^3.34.0",
@@ -52,8 +52,8 @@
     "html-webpack-plugin": "^5.6.7",
     "style-loader": "^4.0.0",
     "url-loader": "^4.1.1",
-    "webpack": "^5.108.1",
-    "webpack-cli": "^7.1.0"
+    "webpack": "^5.108.4",
+    "webpack-cli": "^7.2.1"
   },
   "overrides": {
     "ajv": "^8.20.0"

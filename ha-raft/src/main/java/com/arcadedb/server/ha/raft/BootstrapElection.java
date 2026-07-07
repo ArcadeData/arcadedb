@@ -118,6 +118,18 @@ class BootstrapElection {
   // Tracks per-database whether the bootstrap protocol has been attempted in this leader's
   // lifetime. Used to short-circuit on repeated notifyLeaderChanged callbacks for the same term.
   private final Set<String>             attemptedThisTerm = ConcurrentHashMap.newKeySet();
+  // Maximum time to wait for getCommitIndex() to return a definitive (non-negative) value right after
+  // this node becomes leader. The notifyLeaderChanged callback fires before the Raft division's log is
+  // queryable, so the very first read returns the -1 UNKNOWN sentinel for a brief window (~100 ms in
+  // practice); without waiting, the once-per-term bootstrap pass would skip on that transient -1 and
+  // never re-run. 10 s is deliberately generous versus the observed ~100 ms readiness gap: the wait
+  // ends as soon as the index resolves (or leadership is lost), so the full budget is only ever spent
+  // on a genuinely broken read - a rare case that does not warrant an operator-facing config knob.
+  // Package-private and non-final so tests can shorten it. See awaitReadableCommitIndex.
+  long                                  commitIndexReadinessTimeoutMs = 10_000L;
+  // Poll interval while waiting for the division to become readable. Package-private and non-final so
+  // tests can set it to 0 and spin without sleeping.
+  long                                  commitIndexReadinessPollMs    = 100L;
 
   BootstrapElection(final RaftHAServer haServer, final ArcadeDBServer server) {
     this.haServer = haServer;
@@ -151,7 +163,15 @@ class BootstrapElection {
     // ("Gating") in #4147. A negative value means the index is UNKNOWN (the Raft division is not
     // ready, or getCommitIndex() hit a transient IOException) and must NOT be mistaken for an empty
     // log - see isConfirmedFirstFormation and issue #4800.
-    final long commitIndex = haServer.getCommitIndex();
+    //
+    // The notifyLeaderChanged callback that drives this runs before the freshly-elected leader's Raft
+    // division exposes its committed index, so the very first read returns the -1 UNKNOWN sentinel for
+    // a brief window. Since bootstrap runs at most once per term, skipping on that transient -1 would
+    // leave the baseline uncommitted forever. Wait a bounded time for a definitive reading: on genuine
+    // first formation it resolves to 0 and the gate opens; on an already-running cluster it resolves
+    // to a positive index and the gate stays closed; if it never resolves (persistent read failure) we
+    // conservatively skip, exactly as issue #4800 requires.
+    final long commitIndex = awaitReadableCommitIndex();
     if (!isConfirmedFirstFormation(commitIndex))
       return Outcome.SKIPPED_NOT_FIRST_FORMATION;
 
@@ -190,6 +210,34 @@ class BootstrapElection {
    */
   static boolean isConfirmedFirstFormation(final long commitIndex) {
     return commitIndex == 0L;
+  }
+
+  /**
+   * Poll {@link RaftHAServer#getCommitIndex()} until it returns a definitive (non-negative) value or
+   * {@link #commitIndexReadinessTimeoutMs} elapses, then return the last reading. Right after a leader
+   * change the division briefly reports -1 (log not yet queryable); this absorbs that startup window
+   * so the gate sees the real first-formation index (0) instead of the transient -1. A non-negative
+   * reading is returned immediately (no wait for a running cluster or a confirmed empty log). If this
+   * node stops being the leader while waiting, we stop early and return the last reading so the gate
+   * can skip. A persistent -1 (genuine read failure) is returned unchanged after the budget, keeping
+   * the issue #4800 "never bootstrap on an unconfirmed index" guarantee.
+   */
+  private long awaitReadableCommitIndex() {
+    // Monotonic deadline: nanoTime is immune to wall-clock steps/NTP adjustments and the
+    // (now - start) form is overflow-safe, unlike a currentTimeMillis-based absolute deadline.
+    final long start = System.nanoTime();
+    final long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(commitIndexReadinessTimeoutMs);
+    long commitIndex = haServer.getCommitIndex();
+    while (commitIndex < 0 && (System.nanoTime() - start) < timeoutNanos && haServer.isLeader()) {
+      try {
+        Thread.sleep(commitIndexReadinessPollMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      commitIndex = haServer.getCommitIndex();
+    }
+    return commitIndex;
   }
 
   /**

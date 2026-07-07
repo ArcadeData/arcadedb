@@ -252,6 +252,44 @@ public enum GlobalConfiguration {
       back-pressure. 0 = available cores (min 2)""",
       Integer.class, 0),
 
+  PARALLEL_SCAN_PRODUCER_POOL_THREADS("arcadedb.parallelScanProducerPoolThreads", SCOPE.JVM,
+      """
+      Maximum number of threads in the JVM-wide pool that runs the (blocking) producer tasks of \
+      parallel bucket scans. Kept separate from the query-parallelism pool because scan producers \
+      block on each query's bounded result queue and would starve non-blocking compute work. \
+      0 = available cores (min 2); consider capping explicitly on very high core-count machines""",
+      Integer.class, 0),
+
+  FLUSH_ALL_PAGES_TIMEOUT("arcadedb.flushAllPagesTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds of NO FLUSH PROGRESS after which waiting for all of a database's pages to reach the \
+      disk (on close, rename, backup-suspend) gives up with a SEVERE log instead of hanging forever on a \
+      wedged flush. The window resets whenever the pending-page count decreases, so a healthy but slow \
+      backlog never trips it. NOTE: the window is per-database no-progress time, not total flush time - \
+      on a heavily loaded multi-database server a database starved by its siblings can give up, turning \
+      that close into recovery-on-next-open. A close that gives up preserves the WAL files and the lock \
+      file, so the next open runs recovery and replays the unflushed pages. 0 waits forever \
+      (pre-26.7.2 behavior)""",
+      Long.class, 60_000L),
+
+  ASYNC_CLOSE_TIMEOUT("arcadedb.asyncCloseTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds to wait for in-flight asynchronous tasks to drain when closing or dropping a database \
+      before giving up with a WARNING and forcing the async workers down. Without a bound, a worker wedged \
+      inside a user task or callback made close()/drop() hang forever (#5080). Giving up here is safe: the \
+      forced shutdown interrupts the workers and notifies completion, and any task that never ran is simply \
+      not applied. 0 waits forever (pre-26.7.2 behavior)""",
+      Long.class, 60_000L),
+
+  PARALLEL_SCAN_ABANDONED_TIMEOUT("arcadedb.parallelScanAbandonedTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds a parallel-scan producer keeps waiting on a full result queue with NO consumer \
+      activity before declaring the ResultSet abandoned: it then frees its pool thread and the query \
+      fails on the next access instead of silently returning fewer rows. Raise it for workloads that \
+      hold cursors open with long idle pauses (e.g. Postgres/Bolt wire portals); 0 disables the \
+      timeout entirely (producers park until the ResultSet is closed)""",
+      Long.class, 600_000L),
+
   QUERY_PARALLELISM_QUEUE_SIZE("arcadedb.queryParallelismQueueSize", SCOPE.JVM,
       """
       Maximum number of tasks that can wait in the QueryEngineManager pool's queue before the \
@@ -606,6 +644,10 @@ public enum GlobalConfiguration {
   SERVER_BACKUP_DIRECTORY("arcadedb.server.backupDirectory", SCOPE.JVM, "Directory containing the backups", String.class,
       "${arcadedb.server.rootPath}/backups"),
 
+  SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS("arcadedb.server.restoreImportAllowLocalUrls", SCOPE.SERVER,
+      "Allow the 'restore database' and 'import database' server commands to fetch from local-file ('file://') URLs and from private, loopback or link-local network hosts. Disabled by default to prevent SSRF and local-file-read via a client-supplied URL; enable only when the operator explicitly trusts these sources",
+      Boolean.class, false),
+
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
 
@@ -891,7 +933,11 @@ public enum GlobalConfiguration {
       """
       Shared secret for inter-node request forwarding authentication. \
       Must be identical on all cluster nodes. \
-      If empty, a random token is auto-generated and stored in raft-storage at startup.""",
+      If empty, a random token is auto-generated and stored in raft-storage at startup. \
+      SECURITY: set an explicit high-entropy value in production. When left empty the effective token may be \
+      derived from the cluster name and root password with a fixed public salt, so a weak root password plus a \
+      reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
+      forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),
 
   HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,
@@ -921,6 +967,10 @@ public enum GlobalConfiguration {
   HA_PEER_UNREACHABLE_THRESHOLD("arcadedb.ha.peerUnreachableThreshold", SCOPE.SERVER,
       "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
       Long.class, 10000L),
+
+  HA_PEER_CHANNEL_RESET_DURATION("arcadedb.ha.peerChannelResetDuration", SCOPE.SERVER,
+      "Time in milliseconds a follower must stay continuously unreachable (no successful RPC, beyond HA_PEER_UNREACHABLE_THRESHOLD) before the leader resets that one follower's replication gRPC channel, closing the wedged channel so the next send re-resolves DNS and reconnects. Recovers a leader appender channel stuck on a stale DNS result after a follower restarts with a new address (e.g. a Kubernetes pod-IP change, issue #4696) without a leadership transfer, so there is no flapping risk. Only the unreachable peer's channel is touched. While the follower stays unreachable the reset is retried once per interval, up to a small bounded number of attempts, after which the leader gives up and logs for operator intervention; the counter re-arms when the follower reconnects. Requires HA_PEER_UNREACHABLE_THRESHOLD > 0 (its 'unreachable' signal). Set to 0 to disable the automatic channel reset (the manual leadership transfer remains available).",
+      Long.class, 60000L),
 
   HA_RESYNC_CATCHUP_LAG_THRESHOLD("arcadedb.ha.resyncCatchupLagThreshold", SCOPE.SERVER,
       "Minimum apply backlog (Raft log entries a follower has committed/received but not yet applied to its state machine) before the catch-up resync narrative is logged. This is a locally observable signal, not the distance from the leader's commit index. Keeps the small steady-state apply backlog under write load from being narrated; only a genuine post-restart burst crosses this threshold. The narrative finishes once the backlog drains to within a tenth of it.",

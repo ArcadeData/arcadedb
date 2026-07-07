@@ -40,12 +40,14 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -54,6 +56,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
@@ -78,6 +81,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.logging.Level;
@@ -92,9 +96,13 @@ public class BoltNetworkExecutor extends Thread {
   // BOLT magic bytes
   private static final byte[] BOLT_MAGIC = { 0x60, 0x60, (byte) 0xB0, 0x17 };
 
-  // Supported protocol versions (in order of preference)
+  // Supported protocol versions (in order of preference). Package-private so the negotiation unit
+  // test asserts against the real advertised set rather than a drifting copy.
   // Encoding: [unused(8)][range(8)][minor(8)][major(8)] — major = value & 0xFF, minor = (value >> 8) & 0xFF
-  private static final int[] SUPPORTED_VERSIONS = { 0x00000404, 0x00000004, 0x00000003 }; // v4.4, v4.0, v3.0
+  static final int[] SUPPORTED_VERSIONS = {
+      0x00000405, 0x00000305, 0x00000205, 0x00000105, 0x00000005, // v5.4, v5.3, v5.2, v5.1, v5.0
+      0x00000404, 0x00000004, 0x00000003                          // v4.4, v4.0, v3.0
+  };
 
   // Server states
   private enum State {
@@ -294,30 +302,7 @@ public class BoltNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.FINE, "BOLT client versions: %s",
           Arrays.toString(Arrays.stream(clientVersions).mapToObj(v -> String.format("0x%08X", v)).toArray()));
 
-    // Select best matching version using Bolt version negotiation with range support.
-    // The range means the client supports minor versions from (minor - range) up to minor
-    // (inclusive) for the given major version. Zero entries are trailing padding per the Bolt spec.
-    protocolVersion = 0;
-    for (final int clientVersion : clientVersions) {
-      if (clientVersion == 0)
-        break;
-
-      final int clientMajor = getMajorVersion(clientVersion);
-      final int clientMinor = getMinorVersion(clientVersion);
-      final int clientRange = getVersionRange(clientVersion);
-
-      for (final int supportedVersion : SUPPORTED_VERSIONS) {
-        final int serverMajor = getMajorVersion(supportedVersion);
-        final int serverMinor = getMinorVersion(supportedVersion);
-
-        if (clientMajor == serverMajor && serverMinor <= clientMinor && serverMinor >= clientMinor - clientRange) {
-          protocolVersion = supportedVersion;
-          break;
-        }
-      }
-      if (protocolVersion != 0)
-        break;
-    }
+    protocolVersion = selectVersion(clientVersions);
 
     // Send selected version
     output.writeRawInt(protocolVersion);
@@ -375,6 +360,14 @@ public class BoltNetworkExecutor extends Thread {
     case BoltMessage.ROUTE:
       handleRoute((RouteMessage) message);
       break;
+    case BoltMessage.TELEMETRY:
+      // A FAILED connection must respond IGNORED to every request except RESET (Bolt state machine),
+      // consistent with the other request handlers; otherwise acknowledge with SUCCESS.
+      if (state == State.FAILED)
+        sendIgnored();
+      else
+        sendSuccess(Map.of());
+      break;
     default:
       sendFailure(BoltException.PROTOCOL_ERROR, "Unknown message: " + BoltMessage.signatureName(message.getSignature()));
     }
@@ -403,31 +396,43 @@ public class BoltNetworkExecutor extends Thread {
       }
     }
 
+    if (deferAuthToLogon(protocolVersion, scheme, principal, credentials)) {
+      // Bolt 5.1+ handshake: accept HELLO now, authenticate on the subsequent LOGON.
+      sendSuccess(buildHelloSuccessMetadata());
+      state = State.AUTHENTICATION;
+      return;
+    }
+
     // Try to authenticate
-    if ("basic".equals(scheme) && principal != null && credentials != null) {
-      if (!authenticateUser(principal, credentials)) {
-        return;
-      }
-    } else if ("none".equals(scheme)) {
-      // No authentication - reject (authentication is always required)
+    if ("none".equals(scheme)) {
+      // Explicit no-auth is always rejected.
       sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication required");
       state = State.FAILED;
       return;
-    } else if (principal != null && credentials != null) {
-      // Try basic auth even without explicit scheme
-      if (!authenticateUser(principal, credentials)) {
-        return;
-      }
+    }
+    // Covers "basic" with credentials, any other/missing scheme with credentials, and
+    // the missing-scheme/missing-credentials case (authenticateUser null-checks and
+    // rejects with "Missing credentials" rather than treating it as implicitly
+    // authenticated). A legitimate Bolt 5.1+ HELLO with no auth fields never reaches this
+    // point - the deferAuthToLogon() check above already routed it to await LOGON.
+    if (!authenticateUser(principal, credentials)) {
+      return;
     }
 
-    // Build success response with server info
-    // Use "Neo4j" prefix for compatibility with official Neo4j drivers
+    sendSuccess(buildHelloSuccessMetadata());
+    state = State.READY;
+  }
+
+  /**
+   * Builds the HELLO success metadata shared by the authenticated-success path and the Bolt 5.1+
+   * auth-deferral path. The "Neo4j" server prefix is used for compatibility with official Neo4j drivers.
+   * Insertion order (server first, then connection_id) is significant for wire equality.
+   */
+  private Map<String, Object> buildHelloSuccessMetadata() {
     final Map<String, Object> metadata = new LinkedHashMap<>();
     metadata.put("server", "Neo4j/5.26.0 compatible (ArcadeDB " + Constants.getRawVersion() + ")");
-    metadata.put("connection_id", "bolt-" + Thread.currentThread().getId());
-
-    sendSuccess(metadata);
-    state = State.READY;
+    metadata.put("connection_id", "bolt-" + Thread.currentThread().threadId());
+    return metadata;
   }
 
   /**
@@ -625,7 +630,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
-      sendFailure(BoltException.SYNTAX_ERROR, parseMsg);
+      sendFailure(classifyParsingError(e), parseMsg);
       state = State.FAILED;
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
@@ -710,6 +715,10 @@ public class BoltNetworkExecutor extends Thread {
           metadata.put(currentPlanMetadataKey, currentPlanMetadata);
 
         if (currentResultSet != null) {
+          final Optional<QueryStatistics> stats = currentResultSet.getStatistics();
+          if (stats.isPresent() && stats.get().containsUpdates())
+            metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
+
           try {
             currentResultSet.close();
           } catch (final Exception e) {
@@ -754,7 +763,11 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     // Discard all remaining records
+    Optional<QueryStatistics> stats = Optional.empty();
     if (currentResultSet != null) {
+      // Statistics are computed eagerly when the write is materialized in the query plan, so they
+      // are valid to read before draining/closing the result set.
+      stats = currentResultSet.getStatistics();
       while (currentResultSet.hasNext()) {
         currentResultSet.next();
       }
@@ -777,6 +790,8 @@ public class BoltNetworkExecutor extends Thread {
       metadata.put(currentPlanMetadataKey, currentPlanMetadata);
     currentPlanMetadata = null;
     currentPlanMetadataKey = null;
+    if (stats.isPresent() && stats.get().containsUpdates())
+      metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
     metadata.put("has_more", false);
 
     sendSuccess(metadata);
@@ -914,8 +929,14 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    // For single-server setup, return this server as the only endpoint
-    final String address = getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger());
+    if (state != State.READY) {
+      // ROUTE enumerates every peer's Bolt endpoint, so it must not run for an unauthenticated caller.
+      // Require an authenticated (READY) session, matching the other request handlers. A Bolt driver
+      // always sends ROUTE after HELLO/LOGON, so this does not affect legitimate routing.
+      sendFailure(BoltException.PROTOCOL_ERROR, "ROUTE not expected in state: " + state);
+      state = State.FAILED;
+      return;
+    }
 
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong());
@@ -923,27 +944,55 @@ public class BoltNetworkExecutor extends Thread {
 
     final List<Map<String, Object>> servers = new ArrayList<>();
 
-    // Writer server
-    final Map<String, Object> writer = new LinkedHashMap<>();
-    writer.put("addresses", List.of(address));
-    writer.put("role", "WRITE");
-    servers.add(writer);
+    final HAServerPlugin ha = server.getHA();
+    final HAServerPlugin.BoltRoutingTable table = ha != null ? ha.getBoltRoutingTable() : null;
 
-    // Reader server (same as writer for single-server)
-    final Map<String, Object> reader = new LinkedHashMap<>();
-    reader.put("addresses", List.of(address));
-    reader.put("role", "READ");
-    servers.add(reader);
+    if (table != null) {
+      // HA cluster with a known leader: the leader is the writer and a router, followers are readers and
+      // routers. Writer and readers come from one leader snapshot, so they cannot disagree about the leader.
+      final String writer = table.writer();
+      final List<String> readers = table.readers();
 
-    // Route server
-    final Map<String, Object> router = new LinkedHashMap<>();
-    router.put("addresses", List.of(address));
-    router.put("role", "ROUTE");
-    servers.add(router);
+      final List<String> routers = new ArrayList<>();
+      routers.add(writer);
+      routers.addAll(readers);
+
+      servers.add(roleEntry(List.of(writer), "WRITE"));
+      servers.add(roleEntry(readers.isEmpty() ? List.of(writer) : readers, "READ"));
+      servers.add(roleEntry(routers, "ROUTE"));
+    } else {
+      // No known leader. Advertise this node using the actual bound Bolt port of this connection rather
+      // than the global default.
+      final String address = getBoltAddress(socket.getLocalPort());
+      if (ha != null) {
+        // HA is active but the leader is not known yet (e.g. mid-election): advertise this node as reader
+        // and router only - never writer, since it may be a follower. The driver keeps reading and
+        // re-routes after the TTL, receiving a writer once the leader is known, instead of sending a write
+        // to a follower and getting an error.
+        servers.add(roleEntry(List.of(address), "READ"));
+        servers.add(roleEntry(List.of(address), "ROUTE"));
+      } else {
+        // True single-node deployment: this node is writer, reader, and router.
+        servers.add(roleEntry(List.of(address), "WRITE"));
+        servers.add(roleEntry(List.of(address), "READ"));
+        servers.add(roleEntry(List.of(address), "ROUTE"));
+      }
+    }
 
     rt.put("servers", servers);
 
     sendSuccess(CollectionUtils.singletonMap("rt", rt));
+  }
+
+  /**
+   * Builds a single ROUTE routing-table server entry pairing a list of client-reachable addresses with
+   * a Bolt routing role (WRITE, READ, or ROUTE).
+   */
+  private static Map<String, Object> roleEntry(final List<String> addresses, final String role) {
+    final Map<String, Object> entry = new LinkedHashMap<>();
+    entry.put("addresses", addresses);
+    entry.put("role", role);
+    return entry;
   }
 
   /**
@@ -1635,6 +1684,15 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
+   * Classify a query-parsing error into a Bolt status code. {@link CommandSemanticException} marks a
+   * statement that parsed correctly but violates a semantic rule (e.g. an undefined variable), so it maps
+   * to Neo4j's SemanticError; every other {@link CommandParsingException} is a genuine syntax error.
+   */
+  static String classifyParsingError(final CommandParsingException error) {
+    return error instanceof CommandSemanticException ? BoltErrorCodes.SEMANTIC_ERROR : BoltErrorCodes.SYNTAX_ERROR;
+  }
+
+  /**
    * Whether the error (or any wrapped cause) is one of ArcadeDB's optimistic-concurrency conflicts
    * ({@link NeedRetryException}). Such conflicts are expected under contention and auto-retried by the
    * driver, so callers both classify them as transient and log them at a lower level.
@@ -1672,7 +1730,7 @@ public class BoltNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.FINE, "BOLT >> %s", message);
     }
 
-    final PackStreamWriter writer = new PackStreamWriter();
+    final PackStreamWriter writer = new PackStreamWriter().boltMajorVersion(getMajorVersion(protocolVersion));
     message.writeTo(writer);
     output.writeMessage(writer.toByteArray());
   }
@@ -1863,5 +1921,47 @@ public class BoltNetworkExecutor extends Thread {
 
   static int getVersionRange(final int version) {
     return (version >> 16) & 0xFF;
+  }
+
+  /**
+   * Select the highest-preference server version compatible with the client's proposals, or 0 if none match.
+   * Client proposals are tried in order; for each, the range means the client supports minor versions from
+   * (minor - range) up to minor inclusive for that major. A zero entry is trailing padding and stops the scan.
+   * Pure function over {@link #SUPPORTED_VERSIONS} so the negotiation logic is exercised directly by tests.
+   */
+  static int selectVersion(final int[] clientVersions) {
+    for (final int clientVersion : clientVersions) {
+      if (clientVersion == 0)
+        break;
+
+      final int clientMajor = getMajorVersion(clientVersion);
+      final int clientMinor = getMinorVersion(clientVersion);
+      final int clientRange = getVersionRange(clientVersion);
+
+      for (final int supportedVersion : SUPPORTED_VERSIONS) {
+        final int serverMajor = getMajorVersion(supportedVersion);
+        final int serverMinor = getMinorVersion(supportedVersion);
+
+        if (clientMajor == serverMajor && serverMinor <= clientMinor && serverMinor >= clientMinor - clientRange)
+          return supportedVersion;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * A Bolt 5.1+ HELLO carries no authentication - the driver authenticates with a separate LOGON.
+   * Returns true only when the negotiated version is >= 5.1 and the HELLO omits all auth fields, so
+   * such a HELLO is accepted (awaiting LOGON) instead of being rejected as "missing credentials".
+   * Pre-5.1 keeps HELLO-embedded auth; an explicit scheme (incl. "none") is never a deferral.
+   */
+  static boolean deferAuthToLogon(final int protocolVersion, final String scheme, final String principal,
+      final String credentials) {
+    final int major = getMajorVersion(protocolVersion);
+    final int minor = getMinorVersion(protocolVersion);
+    // Lexicographic >= 5.1 so a higher major with minor 0 (e.g. a hypothetical 6.0) still defers,
+    // rather than being excluded by an independent minor >= 1 test.
+    final boolean atLeast51 = major > 5 || (major == 5 && minor >= 1);
+    return atLeast51 && scheme == null && principal == null && credentials == null;
   }
 }

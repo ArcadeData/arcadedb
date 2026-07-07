@@ -31,6 +31,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.RidHashSet;
 
 import java.io.IOException;
 import java.util.*;
@@ -78,7 +79,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       final Set<IndexCursorEntry> set = new HashSet<>();
 
       // SEARCH IN COMPACTED INDEX
-      searchInCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>());
+      searchInCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>(), new RidHashSet());
 
       return set;
 
@@ -422,7 +423,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
   protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
       final Set<IndexCursorEntry> set,
-      final Set<TransactionIndexContext.ComparableKey> removedKeys) throws IOException {
+      final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
     final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
@@ -506,7 +507,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
             final int count = getCount(currentPage);
 
             if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-                removedKeys))
+                removedKeys, deletedRIDs))
               return;
           }
         } else {
@@ -516,7 +517,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           final int count = getCount(currentPage);
 
           if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-              removedKeys))
+              removedKeys, deletedRIDs))
             return;
         }
       }
@@ -527,6 +528,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
   private int getCompactedPageNumberOfSeries(final BasePage currentPage) {
     return currentPage.readInt(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE);
+  }
+
+  /**
+   * #4946: rolls the in-RAM page count back to the pre-compaction value after a failed compaction round.
+   * The orphaned leaf pages flushed by the failed round stay on disk but become unreachable: page 0's series
+   * counter never included them, and with the count rolled back {@link #setCompactedTotalPages} of a LATER
+   * successful round no longer publishes them (they are overwritten by that round's own pages instead).
+   */
+  void rollbackPageCountTo(final int pages) {
+    pageCount.set(pages);
   }
 
   protected MutablePage setCompactedTotalPages() throws IOException {

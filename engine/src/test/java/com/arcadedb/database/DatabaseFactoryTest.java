@@ -62,7 +62,7 @@ class DatabaseFactoryTest extends TestHelper {
     final Database db = f.create();
 
     DatabaseFactory.getActiveDatabaseInstances().contains(db);
-    DatabaseFactory.removeActiveDatabaseInstance(db.getDatabasePath());
+    DatabaseFactory.removeActiveDatabaseInstance(db.getDatabasePath(), db);
     assertThat(DatabaseFactory.getActiveDatabaseInstance(db.getDatabasePath())).isNull();
 
     db.drop();

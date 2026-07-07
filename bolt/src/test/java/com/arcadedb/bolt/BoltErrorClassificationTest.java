@@ -18,6 +18,8 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
@@ -89,5 +91,17 @@ class BoltErrorClassificationTest {
     assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).startsWith("Neo.TransientError.");
     assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).isNotEqualTo("Neo.TransientError.Transaction.Terminated");
     assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).isNotEqualTo("Neo.TransientError.Transaction.LockClientStopped");
+  }
+
+  @Test
+  void semanticExceptionClassifiesAsSemanticError() {
+    assertThat(BoltNetworkExecutor.classifyParsingError(new CommandSemanticException("UndefinedVariable")))
+        .isEqualTo(BoltErrorCodes.SEMANTIC_ERROR);
+  }
+
+  @Test
+  void plainParsingExceptionClassifiesAsSyntaxError() {
+    assertThat(BoltNetworkExecutor.classifyParsingError(new CommandParsingException("unexpected token")))
+        .isEqualTo(BoltErrorCodes.SYNTAX_ERROR);
   }
 }

@@ -31,7 +31,7 @@ try:
     from lxml import etree
 except ImportError:
     print("Missing dependency: lxml")
-    print("Install with: uv pip install lxml")
+    print("Install with: pip install lxml")
     sys.exit(1)
 
 
@@ -1163,15 +1163,13 @@ def run_oltp_arcadedb(
                         else None
                     )
                 if target_id is not None and update_col is not None:
-
-                    def do_update():
-                        with db.transaction():
-                            db.command(
-                                "sql",
-                                f"UPDATE {table_name} SET {update_col} = coalesce({update_col}, 0) + 1 WHERE Id = {target_id}",
-                            )
-
-                    run_with_retry(do_update, arcade_error)
+                    db.run_in_transaction(
+                        lambda: db.command(
+                            "sql",
+                            f"UPDATE {table_name} SET {update_col} = coalesce({update_col}, 0) + 1 WHERE Id = {target_id}",
+                        ),
+                        retries=100,
+                    )
             elif op == "insert":
                 with id_lock:
                     new_id = next_ids[table_name]
@@ -1192,15 +1190,13 @@ def run_oltp_arcadedb(
                         else None
                     )
                 if target_id is not None:
-
-                    def do_delete():
-                        with db.transaction():
-                            db.command(
-                                "sql",
-                                f"DELETE FROM {table_name} WHERE Id = {target_id}",
-                            )
-
-                    run_with_retry(do_delete, arcade_error)
+                    db.run_in_transaction(
+                        lambda: db.command(
+                            "sql",
+                            f"DELETE FROM {table_name} WHERE Id = {target_id}",
+                        ),
+                        retries=100,
+                    )
                     with id_lock:
                         try:
                             id_pools[table_name].remove(target_id)

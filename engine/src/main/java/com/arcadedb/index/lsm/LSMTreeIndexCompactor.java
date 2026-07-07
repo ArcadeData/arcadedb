@@ -60,14 +60,49 @@ public class LSMTreeIndexCompactor {
     final long startTime = System.currentTimeMillis();
 
     LSMTreeIndexCompacted compactedIndex = mutableIndex.getSubIndex();
+    boolean createdCompactedIndex = false;
     if (compactedIndex == null) {
       // CREATE A NEW INDEX
       compactedIndex = mutableIndex.createNewForCompaction();
       mutableIndex.getDatabase().getSchema().getEmbedded().registerFile(compactedIndex);
+      createdCompactedIndex = true;
       LogManager.instance()
           .log(mainIndex, Level.WARNING, "- Creating sub-index '%s' with fileId=%d (threadId=%d)...", null, compactedIndex,
               compactedIndex.getFileId(), Thread.currentThread().threadId());
     }
+
+    // #4946: make a failed compaction atomic. Leaf pages are flushed eagerly during the merge with no WAL;
+    // if compact() throws after some were written (root-page overflow, I/O error, interrupt), the orphans
+    // sit on disk with the in-RAM page count bumped - and the NEXT successful round's
+    // setCompactedTotalPages() would publish them (stale duplicates re-exposing tombstoned entries, and a
+    // malformed partial series walked by positional logic). Roll the page count back on failure so the
+    // orphan region is overwritten by the next round; if this call CREATED the compacted file (first
+    // compaction), also drop it, or every failed first-compaction would leak a registered TEMP file.
+    final int preCompactionPages = compactedIndex.getTotalPages();
+    try {
+      return compactInternal(mainIndex, mutableIndex, compactedIndex);
+    } catch (final Throwable e) {
+      // Drain in-flight flushes of the orphan pages FIRST: the flush path's updatePageCount would otherwise
+      // race this rollback and re-raise the count right after it was reset.
+      mutableIndex.getDatabase().getPageManager().waitAllPagesOfDatabaseAreFlushed(mutableIndex.getDatabase());
+      compactedIndex.rollbackPageCountTo(preCompactionPages);
+      if (createdCompactedIndex) {
+        try {
+          mutableIndex.getDatabase().getSchema().getEmbedded().removeFile(compactedIndex.getFileId());
+          mutableIndex.getDatabase().getFileManager().dropFile(compactedIndex.getFileId());
+        } catch (final Throwable cleanupError) {
+          e.addSuppressed(cleanupError);
+        }
+      }
+      throw e;
+    }
+  }
+
+  private boolean compactInternal(final LSMTreeIndex mainIndex, final LSMTreeIndexMutable mutableIndex,
+      final LSMTreeIndexCompacted compactedIndex) throws IOException, InterruptedException {
+    final DatabaseInternal database = mutableIndex.getDatabase();
+    final int totalPages = mutableIndex.getTotalPages();
+    final long startTime = System.currentTimeMillis();
 
     final byte[] keyTypes = mutableIndex.getBinaryKeyTypes();
 
@@ -215,7 +250,13 @@ public class LSMTreeIndexCompactor {
               for (int r = 0; r < value.length; ++r) {
                 final RID rid = (RID) value[r];
                 // ADD ALSO REMOVED RIDS. ONCE THE COMPACTING OF COMPACTED INDEXES (2nd LEVEL) IS DONE, REMOVED ENTRIES CAN BE REMOVED
-                rids.add(rid);
+                // #4942: pages merge oldest to newest and the reader treats the LAST position as the newest entry,
+                // so a duplicate (a re-added RID after its tombstone, or a repeated tombstone) must move to the end
+                // or the older occurrence keeps its position and the reader resolves the wrong winner, losing the row.
+                if (!rids.add(rid)) {
+                  rids.remove(rid);
+                  rids.add(rid);
+                }
               }
 
               totalMergedValues += value.length;

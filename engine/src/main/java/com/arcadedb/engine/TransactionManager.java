@@ -34,6 +34,8 @@ import com.arcadedb.utility.LockManager;
 import java.io.*;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
@@ -117,6 +119,26 @@ public class TransactionManager {
   }
 
   public void close(final boolean drop) {
+    close(drop, false);
+  }
+
+  /**
+   * @param preserveWalFiles when true (a close after {@code waitAllPagesOfDatabaseAreFlushed} gave up, #4928)
+   *                         the WAL files are closed but NOT deleted: they still protect pages that never
+   *                         reached the disk, and together with the preserved lock file they make the next
+   *                         open run recovery and replay them. A normal clean close deletes them as before.
+   *                         Independently of this flag, a non-drop close also preserves the WAL when any WAL
+   *                         file still has UNACKED pages: a page whose flush failed and was contained (#4928)
+   *                         leaves the flush pipeline without ever calling notifyPageFlushed, so the pending
+   *                         ack - not the pipeline emptiness the caller's wait observes - is the ground truth
+   *                         that the WAL still holds the only durable copy of something. Such a page is never
+   *                         re-flushed in-process; deleting its WAL on a later clean close would silently
+   *                         lose the committed change.
+   *
+   * @return whether the WAL files were preserved for recovery (the caller then also keeps the lock file, so
+   *     the next open replays them).
+   */
+  public boolean close(final boolean drop, final boolean preserveWalFiles) {
     if (task != null)
       task.cancel();
 
@@ -151,6 +173,17 @@ public class TransactionManager {
       }
     }
 
+    // Ground-truth durability check BEFORE the files are closed below: any unacked page means some WAL
+    // entry is the only durable copy of a committed change (e.g. a contained flush failure, #4928).
+    boolean pendingAcks = false;
+    if (!drop)
+      for (final WALFile file : List.copyOf(inactiveWALFilePool))
+        if (file.getPendingPagesToFlush() > 0) {
+          pendingAcks = true;
+          break;
+        }
+    final boolean preserve = preserveWalFiles || (!drop && pendingAcks);
+
     for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
         Thread.sleep(100);
@@ -160,10 +193,19 @@ public class TransactionManager {
       }
     }
 
-    if (!cleanWALFiles(drop, drop))
+    if (!cleanWALFiles(drop, drop)) {
       LogManager.instance()
           .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
-    else {
+      return preserve;
+    } else if (preserve) {
+      // #4928: pages never reached the disk (the bounded wait gave up, or a contained flush failure left
+      // unacked WAL entries). The WAL content on disk is the only durable copy of those pages: deleting it
+      // here (as a clean close does) would silently lose the most recent transactions. The files were closed
+      // above; leave them (and the caller leaves the lock file) so the next open runs recovery and replays.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Preserving the WAL files of database '%s': not all pages reached the disk (%s), the next open will recover them",
+          null, database.getName(), preserveWalFiles ? "flush wait gave up" : "unacked WAL pages");
+    } else {
       // DELETE ALL THE WAL FILES AT OS-LEVEL
       final File dir = new File(database.getDatabasePath());
       File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
@@ -176,6 +218,7 @@ public class TransactionManager {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
     }
+    return preserve;
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {
@@ -202,13 +245,19 @@ public class TransactionManager {
         Thread.sleep(10);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        break;
+        // Fail loud instead of returning as if the WAL write succeeded (#4938). Breaking out here let
+        // commit2ndPhase publish the transaction's pages with NO WAL record: unrecoverable on crash, and later
+        // transactions on the same pages would raise WALVersionGap during recovery. The interrupt flag is
+        // restored above so the cancellation is still observable to the caller.
+        throw new TransactionException("Interrupted while writing transaction " + txId + " to the WAL", e);
       }
     }
   }
 
   public void notifyPageFlushed(final MutablePage page) {
-    final WALFile walFile = page.getWALFile();
+    // takeWALFile (not get) so the ack is released exactly once even when this races the file-dropped
+    // flush branch or the dropped-file batch purge on the same page (#4928).
+    final WALFile walFile = page.takeWALFile();
     if (walFile != null)
       walFile.notifyPageFlushed();
   }
@@ -329,7 +378,11 @@ public class TransactionManager {
             }
           }
         } else {
-          // Close WAL files without deleting: preserve for manual inspection after gap detection
+          // Close WAL files without deleting: preserve for manual inspection after gap detection.
+          // #4958: renamed to '<name>.corrupt' so the next open can neither adopt a preserved file as an
+          // active WAL (appending new transactions after the corrupt content) nor re-scan and re-abort on
+          // it at every recovery. Recovery is aborted for ALL the files (no further transaction will ever
+          // be replayed from them), so all of them are moved aside.
           for (final WALFile file : activeWALFilePool) {
             if (file == null)
               continue;
@@ -338,9 +391,24 @@ public class TransactionManager {
             } catch (final IOException e) {
               LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
             }
+            final File walFile = new File(file.getFilePath());
+            if (walFile.exists())
+              try {
+                // Files.move (vs File.renameTo, which just returns false) fails with a cause and performs an
+                // atomic rename where the filesystem supports it. Best-effort semantics preserved: log and continue.
+                // REPLACE_EXISTING (#5063): a prior ABORTED recovery can leave a same-named
+                // .corrupt file behind; without it the move throws FileAlreadyExistsException and the original
+                // .wal stays in place, re-scanned and re-aborted on every restart - the exact loop this breaks.
+                // The stale .corrupt it replaces is evidence from the SAME file's earlier failed attempt.
+                Files.move(walFile.toPath(), walFile.toPath().resolveSibling(walFile.getName() + ".corrupt"),
+                    StandardCopyOption.REPLACE_EXISTING);
+              } catch (final IOException e) {
+                LogManager.instance().log(this, Level.WARNING,
+                    "Error on renaming preserved WAL file '%s' to '%s.corrupt'", e, walFile, walFile.getName());
+              }
           }
           LogManager.instance().log(this, Level.SEVERE,
-              "WAL files for database '%s' have been preserved in '%s' for manual inspection.",
+              "WAL files for database '%s' have been preserved in '%s' with the '.corrupt' extension for manual inspection.",
               null, database, database.getDatabasePath());
         }
         createWALFilePool();
@@ -355,16 +423,25 @@ public class TransactionManager {
     final Map<String, Object> map = new HashMap<>();
     map.put("logFiles", logFileCounter.get());
 
-    for (final WALFile file : activeWALFilePool) {
-      if (file != null) {
-        final Map<String, Object> stats = file.getStats();
-        statsPagesWritten.addAndGet((Long) stats.get("pagesWritten"));
-        statsBytesWritten.addAndGet((Long) stats.get("bytesWritten"));
-      }
-    }
+    // #4958: compute a SNAPSHOT of the totals. The previous code folded each active file's cumulative
+    // counters into the long-lived accumulators on every call, so the numbers inflated with polling
+    // frequency and were double-counted again when the file was retired in cleanWALFiles(). The
+    // accumulators are only mutated at file retirement; here the active files' current counters are
+    // added on the fly without persisting them. Also guards the read-only case (no active pool).
+    long pagesWritten = statsPagesWritten.get();
+    long bytesWritten = statsBytesWritten.get();
 
-    map.put("pagesWritten", statsPagesWritten.get());
-    map.put("bytesWritten", statsBytesWritten.get());
+    final WALFile[] pool = activeWALFilePool;
+    if (pool != null)
+      for (final WALFile file : pool)
+        if (file != null) {
+          final Map<String, Object> stats = file.getStats();
+          pagesWritten += (Long) stats.get("pagesWritten");
+          bytesWritten += (Long) stats.get("bytesWritten");
+        }
+
+    map.put("pagesWritten", pagesWritten);
+    map.put("bytesWritten", bytesWritten);
     return map;
   }
 
@@ -414,17 +491,34 @@ public class TransactionManager {
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion,
                 page.getVersion());
 
-        if (txPage.currentPageVersion <= page.getVersion()) {
-          // Always skip already-applied pages instead of aborting the entire transaction.
-          // During Raft state machine replay or crash recovery, a partial apply may have
-          // written some pages but not others. Skipping only the already-applied pages
-          // (instead of throwing ConcurrentModificationException and aborting the loop)
-          // ensures the remaining un-applied pages in the same transaction are still processed.
-          // This prevents version-gap cascades where skipping a multi-page transaction leaves
-          // some pages behind, causing WALVersionGapException on all subsequent transactions
-          // that touch those pages.
+        if (txPage.currentPageVersion < page.getVersion()) {
+          // Always skip OLDER pages instead of aborting the entire transaction. During Raft state machine
+          // replay or crash recovery, a partial apply may have written some pages but not others. Skipping
+          // only the superseded pages (instead of throwing ConcurrentModificationException and aborting the
+          // loop) ensures the remaining un-applied pages in the same transaction are still processed. This
+          // prevents version-gap cascades where skipping a multi-page transaction leaves some pages behind,
+          // causing WALVersionGapException on all subsequent transactions that touch those pages.
+          //
+          // #4926: STRICTLY older only - the equal-version case falls through and RE-APPLIES the delta. A
+          // 64KB page flush is many disk sectors and the version header lives in sector 0: a torn write at
+          // power loss can persist the new version header while the delta sectors still hold the previous
+          // content. The old `<=` skip declared such a page "already applied" and left it silently corrupt
+          // (new version, old bytes) despite an intact WAL. Re-applying at equal version is idempotent (the
+          // WAL delta carries absolute bytes for exactly this version) and repairs the torn state; skipping
+          // a STRICTLY older entry remains required, because its delta would overwrite newer content.
+          //
+          // KNOWN LIMITATION (multi-version accumulation): async flush coalesces several committed versions
+          // into a single physical page write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the
+          // v4 flush hitting the platter. If THAT flush tears, only v4's delta region is repaired here; the
+          // regions changed by v2/v3 (skipped as strictly-older) can stay torn. The version header alone
+          // cannot tell a torn page from an intact one, so detecting which pages need the older deltas
+          // re-applied needs a per-page checksum (the longer-term fix noted in #4926, tracked in #5054); an
+          // unconditional
+          // in-order replay of every entry <= disk version would repair it but changes the recovery
+          // semantics that also govern the version-gap/forceApply paths, out of scope here. This fix still
+          // strictly improves on `<=` (which repaired nothing) and fully covers the single-flush case.
           LogManager.instance().log(this, Level.FINE,
-              "Skipping already-applied page %s (log v.%d <= db v.%d)", null,
+              "Skipping superseded page %s (log v.%d < db v.%d)", null,
               pageId, txPage.currentPageVersion, page.getVersion());
           continue;
         }
@@ -745,6 +839,24 @@ public class TransactionManager {
   }
 
   private void createWALFilePool() {
+    // #4958: seed the counter PAST any existing txlog_<n>.wal. WALFile opens its path in "rw" mode
+    // without truncation, so restarting the counter from 0 while preserved WAL files are still on disk
+    // (corrupt-gap detection or a #4928 crash-equivalent close) silently reused them as active WALs:
+    // new transactions were appended after the old content and the old records replayed again.
+    final File[] existingWALFiles = new File(database.getDatabasePath()).listFiles((dir, name) -> name.endsWith(".wal"));
+    if (existingWALFiles != null)
+      for (final File existing : existingWALFiles) {
+        final String name = existing.getName();
+        if (name.startsWith("txlog_"))
+          try {
+            final long counter = Long.parseLong(name.substring("txlog_".length(), name.length() - ".wal".length()));
+            if (counter >= logFileCounter.get())
+              logFileCounter.set(counter + 1);
+          } catch (final NumberFormatException e) {
+            // NOT A POOL FILE, IGNORE IT
+          }
+      }
+
     activeWALFilePool = new WALFile[database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FILES)];
     for (int i = 0; i < activeWALFilePool.length; ++i) {
       final long counter = logFileCounter.getAndIncrement();
@@ -819,7 +931,11 @@ public class TransactionManager {
             // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
             // right before the first WAL file is actually dropped in this pass (issue #4509).
             if (syncDataOnDrop && !dataSynced) {
-              database.getFileManager().syncFiles();
+              if (!database.getFileManager().syncFiles()) {
+                // #4934: the fsync failed - the data this WAL protects may never reach the disk. Dropping
+                // the WAL now would make it unrecoverable; abort this pass, the rotation retries later.
+                return false;
+              }
               dataSynced = true;
             }
             file.drop();

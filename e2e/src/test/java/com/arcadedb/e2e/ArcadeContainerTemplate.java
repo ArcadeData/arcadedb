@@ -18,11 +18,15 @@
  */
 package com.arcadedb.e2e;
 
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.junit.jupiter.api.extension.TestWatcher;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 
 import java.time.Duration;
 
+@ExtendWith(ArcadeContainerTemplate.ContainerLogOnFailure.class)
 public abstract class ArcadeContainerTemplate {
   static final GenericContainer<?> ARCADE;
 
@@ -52,4 +56,22 @@ public abstract class ArcadeContainerTemplate {
   protected int    gremlinPort = ARCADE.getMappedPort(8182);
   protected int    grpcPort    = ARCADE.getMappedPort(50051);
   protected int    boltPort    = ARCADE.getMappedPort(7687);
+
+  /**
+   * Dumps the ArcadeDB container's server log when a test fails. Wire-protocol drivers surface only a
+   * generic message (e.g. "Error executing Cypher command"), so the server-side cause is otherwise
+   * invisible in CI output. Best-effort: never fails the test itself.
+   */
+  static class ContainerLogOnFailure implements TestWatcher {
+    @Override
+    public void testFailed(final ExtensionContext context, final Throwable cause) {
+      try {
+        System.out.println("===== ArcadeDB container log (failed: " + context.getDisplayName() + ") =====");
+        System.out.println(ARCADE.getLogs());
+        System.out.println("===== end ArcadeDB container log =====");
+      } catch (final RuntimeException ignored) {
+        // best-effort diagnostic only
+      }
+    }
+  }
 }

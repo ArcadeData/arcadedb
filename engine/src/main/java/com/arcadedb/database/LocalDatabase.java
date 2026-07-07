@@ -320,6 +320,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
+   * <p>
+   * NOTE (#4927): kill() deliberately does NOT release this instance's PageManager lifecycle reference -
+   * the documented kill-then-close contract relies on the following {@code close()} releasing it
+   * (closeInternal's release runs with {@code open == false} too, exactly once via its CAS). A kill()
+   * never followed by close() pins the page manager open for the JVM's life.
    */
   @Override
   public void kill() {
@@ -355,6 +360,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // CLEAR ANY THREAD-LOCAL CONTEXT POINTING AT THIS (NOW DEAD) DATABASE, OTHERWISE A SUBSEQUENT OPERATION ON THE SAME
       // THREAD (E.G. RESOLVING A BARE RID) WOULD STILL FIND THE KILLED DATABASE AS THE ACTIVE ONE. MIRRORS close().
+      // UNLIKE closeInternal, THE RETURNED CONTEXTS ARE NOT ROLLED BACK, AND ONCE UNLINKED HERE THE DEAD-THREAD
+      // SWEEP CAN NEVER REACH THEM EITHER. THAT IS SAFE ONLY IN THIS TEST-ONLY CRASH SIMULATION: THE FILE LOCKS
+      // THEY COULD HOLD LIVE IN THIS INSTANCE'S TransactionManager LockManager, WHICH transactionManager.kill()
+      // ALREADY CLOSED ABOVE - A REOPENED DATABASE STARTS WITH A FRESH LockManager, SO NOTHING CAN LEAK
       try {
         DatabaseContext.INSTANCE.removeAllContexts(databasePath);
       } catch (final Throwable e) {
@@ -1065,15 +1074,30 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
         // RECORD
         try {
-          getTransaction().addUpdatedRecord(record);
+          final TransactionContext tx = getTransaction();
+          tx.addUpdatedRecord(record);
 
           if (record instanceof Document document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
             final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
             if (!indexes.isEmpty()) {
-              // UPDATE THE INDEXES TOO
-              final Document originalRecord = getOriginalDocument(record);
-              indexer.updateDocument(originalRecord, document, indexes);
+              // UPDATE THE INDEXES TOO.
+              // #4935: when the same record is updated more than once in this tx, diff against the previous
+              // in-tx indexed state (snapshot below), not the committed buffer returned by
+              // getOriginalDocument() - the buffer stays frozen until commit because serialization is
+              // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
+              // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
+              // stay light on allocations for wide documents and bulk updates.
+              final RID rid = record.getIdentity();
+              final Document previous = tx.getLastIndexedSnapshot(rid);
+              final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
+              // updateDocument returns a refreshed snapshot (built from the key values it already extracted
+              // for the diff) ONLY when an index actually changed: otherwise the previous diff source
+              // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
+              // that touch only non-indexed properties pay no snapshot cost at all.
+              final Document refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              if (refreshedSnapshot != null)
+                tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
             }
           }
         } catch (final IOException e) {
@@ -1279,6 +1303,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     final int retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
 
+    boolean duplicatedKeyRetried = false;
+
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
 
@@ -1307,6 +1333,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         if (error != null)
           error.call(e);
+
+        if (e instanceof DuplicatedKeyException) {
+          // #4959: a genuine duplicate is deterministic and fails identically on every attempt. Only a
+          // concurrency-induced duplicate can succeed on retry, and one retry is enough to disambiguate:
+          // fail fast instead of burning all the remaining attempts plus their retry delays.
+          //
+          // #5061: a TRANSIENT duplicate from an in-flight sibling transaction that later rolls back
+          // is unreachable - checkUniqueIndexKeys reads committed pages plus THIS transaction's own overlay
+          // (TransactionIndexContext is per-transaction), so uncommitted sibling entries are invisible and a
+          // detected duplicate is always against durable state (or this same transaction). The one retry
+          // covers the only nondeterministic case: racing a COMMIT that lands between attempts.
+          if (duplicatedKeyRetried)
+            throw e;
+          duplicatedKeyRetried = true;
+        }
 
         if (retry < attempts - 1)
           delayBetweenRetries(retryDelay);
@@ -1773,9 +1814,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, Callable<RET> callable) {
+    // #4959: file locks are keyed by requester (thread or session). Lock on behalf of the current
+    // transaction's requester when one exists, so a thread acting for a session does not time out on locks
+    // its own session already holds (a re-acquisition by the same requester is ALREADY_ACQUIRED and is not
+    // released below, only the locks actually acquired here are). ACQUISITION PATH: captureRequester()
+    // pins the identity on the owner thread (getTransactionIfExists resolves the CURRENT thread's tx, so
+    // this thread IS the owner); see the INVARIANT on TransactionContext.requester (#4941).
+    final TransactionContext tx = getTransactionIfExists();
+    final Object requester = tx != null ? tx.captureRequester() : Thread.currentThread();
+
     List<Integer> lockedFiles = null;
     try {
-      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000, Thread.currentThread());
+      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000, requester);
 
       return callable.call();
 
@@ -1787,7 +1837,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     } finally {
       if (lockedFiles != null)
-        transactionManager.unlockFilesInOrder(lockedFiles, Thread.currentThread());
+        transactionManager.unlockFilesInOrder(lockedFiles, requester);
     }
   }
 
@@ -1989,10 +2039,53 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void closeInternal(final boolean drop) {
+    // Graceful async drain FIRST, with the caller's interrupt flag INTACT so an interrupted caller bails
+    // this wait fast; the warning distinguishes an interrupt from a real timeout.
     if (async != null) {
       try {
         // EXECUTE OUTSIDE LOCK
-        async.waitCompletion();
+        // #5080: bound the graceful drain so a worker wedged inside a user task or callback cannot make
+        // close()/drop() hang forever. On expiry, closeDurableParts() below force-shuts the workers (that
+        // path is itself bounded: FORCE_EXIT offer + interrupt + a ~10s join, escalated to a second one).
+        final long asyncCloseTimeout = configuration.getValueAsLong(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT);
+        if (!async.waitCompletion(asyncCloseTimeout)) {
+          // waitCompletion also returns false when the caller thread is interrupted (it re-sets the flag
+          // and returns), not only on timeout - distinguish the two so the message is accurate and never
+          // prints "within 0 ms" for the wait-forever (interrupt) case.
+          if (Thread.currentThread().isInterrupted())
+            LogManager.instance().log(this, Level.WARNING, """
+                Interrupted while draining the asynchronous tasks of database '%s' on close: forcing the \
+                async workers down. A task blocked inside user code may not have completed""", name);
+          else
+            LogManager.instance().log(this, Level.WARNING, """
+                Asynchronous tasks of database '%s' did not drain within %d ms on close: forcing the async \
+                workers down. A task blocked inside user code may not have completed""", name, asyncCloseTimeout);
+        }
+      } catch (final Throwable e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, """
+                Error while draining the asynchronous manager during closing operation for database \
+                '%s'""", e, name);
+      }
+    }
+
+    // #5105 review: the DURABLE part of the close (async force-shutdown + the page flush in
+    // executeInWriteLock) uses INTERRUPTIBLE steps - the bounded FORCE_EXIT offer/join, and PageManager
+    // throws InterruptedIOException on a set flag. A set interrupt would therefore skip interrupting a
+    // wedged worker AND truncate the flush into a needless crash-equivalent close. Run it all with the
+    // flag CLEARED (unconditionally, so async == null is covered too) and restore it for the caller after.
+    final boolean callerWasInterrupted = Thread.interrupted();
+    try {
+      closeDurableParts(drop);
+    } finally {
+      if (callerWasInterrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  private void closeDurableParts(final boolean drop) {
+    if (async != null) {
+      try {
         async.close();
       } catch (final Throwable e) {
         LogManager.instance()
@@ -2044,12 +2137,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (drop)
         PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
 
-      PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
+      // #4928: bounded wait. When it gives up (wedged flush / unwritable disk), this close becomes
+      // CRASH-EQUIVALENT: the WAL files and the lock file are preserved below, so the next open runs
+      // recovery and replays the pages that never reached the disk, instead of this close silently
+      // deleting the only durable copy of them.
+      boolean dataSafeOnDisk = PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
 
-      if (!drop)
-        fileManager.syncFiles();
+      if (!drop && !fileManager.syncFiles()) {
+        // #4934: the fsync failed, so the OS may have dropped the dirty pages (fsyncgate semantics) - the
+        // pages the wait above considered flushed may never reach the platter. Deleting the WAL below would
+        // then make the committed data unrecoverable after a power loss, with only a log line as evidence.
+        // Treat the close as crash-equivalent instead: preserve WAL + lock file, recover on next open.
+        dataSafeOnDisk = false;
+      }
+
+      final boolean preserveWalForRecovery = !dataSafeOnDisk && !drop;
 
       open = false;
+
+      if (preserveWalForRecovery)
+        // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
+        // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge
+        // them so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
 
       PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
 
@@ -2078,10 +2188,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       for (QueryEngine e : reusableQueryEngines.values())
         e.close();
 
+      // Whether the WAL was ACTUALLY preserved: either this close's flush wait gave up, or the
+      // TransactionManager found unacked WAL pages (a contained flush failure, #4928). Drives the lock-file
+      // decision below so the next open runs recovery exactly when there is something to recover.
+      boolean walPreservedForRecovery = preserveWalForRecovery;
       try {
         schema.close();
         fileManager.close();
-        transactionManager.close(drop);
+        walPreservedForRecovery = transactionManager.close(drop, preserveWalForRecovery);
         statementCache.clear();
         reusableQueryEngines.clear();
 
@@ -2105,12 +2219,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             lockFileIOChannel.close();
           if (lockFileIO != null)
             lockFileIO.close();
-          if (lockFile.exists())
-            Files.delete(Path.of(lockFile.getAbsolutePath()));
 
-          if (lockFile.exists() && !lockFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
+          if (walPreservedForRecovery)
+            // #4928: leave the lock file as the unclean-shutdown marker - together with the preserved WAL it
+            // makes the next open run recovery and replay the pages this close could not flush.
+            LogManager.instance().log(this, Level.SEVERE,
+                "Database '%s' closed with unflushed pages: the lock file and the WAL were preserved so the next open will recover them",
+                null, name);
+          else {
+            if (lockFile.exists())
+              Files.delete(Path.of(lockFile.getAbsolutePath()));
 
+            if (lockFile.exists() && !lockFile.delete())
+              LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
+          }
         } catch (final IOException e) {
           // IGNORE IT
           LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
@@ -2120,10 +2242,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     });
 
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath)) {
+    // Unconditional on purpose: a KILLED database (crash simulation) reaches close() with open == false and
+    // must still unregister - removeActiveDatabaseInstance is naturally idempotent (false on the second
+    // call), which is exactly how the pre-#4927 code stayed double-close-safe. The executor teardown stays
+    // on the map-emptiness heuristic DELIBERATELY (#5070): unlike the flush thread, a shutdown
+    // executor lazily re-creates itself on the next getExecutor(), so the mid-flight-open race self-heals.
+    // A redundant double-close of the LAST database calls it twice (the empty map returns true again):
+    // harmless, closeExecutor() is idempotent (early-returns on null/isShutdown under its class lock).
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath, this))
       GraphAnalyticalView.closeExecutor();
-      PageManager.INSTANCE.close();
-    }
+
+    // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
+    // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
+    // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
+    // from under). The atomic flag makes the release EXACTLY ONCE per database instance (#5070): a
+    // redundant double-close cannot steal another database's reference, and when registerActiveInstance
+    // closes a same-path open race loser, the factory's catch sees the flag and does not release again.
+    if (pageManagerReferenceReleased.compareAndSet(false, true))
+      PageManager.INSTANCE.release();
+  }
+
+  /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */
+  private final AtomicBoolean pageManagerReferenceReleased = new AtomicBoolean(false);
+
+  boolean isPageManagerReferenceReleased() {
+    return pageManagerReferenceReleased.get();
   }
 
   private void checkForRecovery() throws IOException {
@@ -2259,6 +2402,33 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
+  /**
+   * #5053: set when a commit fails AFTER its transaction was appended to the WAL (the point of no
+   * return) but BEFORE its pages were published. From that moment the WAL and the live state diverge: the
+   * transaction is durable (recovery will replay it) but invisible, and letting new transactions run would
+   * let them bump the same page versions and append conflicting WAL records for the same target versions.
+   * Fencing turns the divergence into the same crash-equivalent close/reopen cycle used elsewhere (#4928):
+   * the orphaned record's pages were never flush-acked, so the ack-gated close preserves the WAL and the
+   * lock file, and the next open replays it.
+   * <p>
+   * HA note: on a replica this fences the wrapped LocalDatabase too, halting replication apply until the
+   * node restarts - intended: the fence surfaces exactly like a crash, and the standard restart
+   * reconciliation (recovery replay, or snapshot re-install via the DatabaseReconciler) repairs the node.
+   */
+  private volatile String fenceReason = null;
+
+  public void fenceForRecovery(final String reason) {
+    if (fenceReason == null) {
+      fenceReason = reason;
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' fenced for recovery: %s. Close and reopen the database to replay the WAL", null, name, reason);
+    }
+  }
+
+  public boolean isFencedForRecovery() {
+    return fenceReason != null;
+  }
+
   protected void checkDatabaseIsOpen() {
     checkDatabaseIsOpen(false, null);
   }
@@ -2266,6 +2436,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
     if (!open)
       throw new DatabaseIsClosedException(name);
+    if (fenceReason != null)
+      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
+      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
+      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
+      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
+      throw new DatabaseOperationException(
+          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
+              + fenceReason + ")");
     if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
 

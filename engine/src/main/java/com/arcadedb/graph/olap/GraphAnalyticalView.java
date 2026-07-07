@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
@@ -105,7 +106,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Gracefully shuts down the shared async build executor. Waits up to 30 seconds
    * for in-progress builds to complete, then forcibly terminates remaining tasks.
-   * Called when the last database instance is closed (alongside {@code PageManager.INSTANCE.close()}).
+   * Called when the last REGISTERED database instance is closed. NOTE (#4927): unlike the PageManager -
+   * whose lifecycle is refcounted - this teardown deliberately stays on the ACTIVE_INSTANCES-empty
+   * heuristic: the executor lazily re-creates itself on the next getExecutor(), so the mid-flight-open
+   * race that was fatal for the flush thread merely costs a re-created executor here.
    * The executor is lazily re-created if a new database is opened later.
    *
    * <p><b>Multi-database note:</b> The executor is shared across all databases in the JVM.
@@ -351,6 +355,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           else
             LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
         } finally {
+          // #4956: this virtual thread dies right after the task, but its DatabaseContext entry (pinning Binary
+          // temp buffers) would otherwise linger until the next periodic sweep. Remove it before the latch is
+          // released so callers observing readiness see a clean state.
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
           BUILD_PERMITS.release();
           buildQueued.set(false);
           latch.countDown();
@@ -1324,6 +1332,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             else
               LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
           } finally {
+            // #4956: drop this worker's DatabaseContext entry (see buildAsync)
+            DatabaseContext.INSTANCE.removeCurrentThreadContexts();
             BUILD_PERMITS.release();
             compacting.set(false);
             latch.countDown();
@@ -1470,6 +1480,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               forced.edgePropertiesUpdated = true;
               applyDelta(forced);
             }
+            // #4956: drop this worker's DatabaseContext entry (see buildAsync). Last statement because
+            // applyDelta() above may touch the database on this thread and re-register a context.
+            // NOTE: this ordering deliberately DIFFERS from buildAsync/rebuild (which unregister FIRST): here
+            // applyDelta(forced) runs synchronously after taskCompleted() and can re-register a context on this
+            // same thread, so the unregister must be the true last statement.
+            DatabaseContext.INSTANCE.removeCurrentThreadContexts();
           }
         });
       } catch (final RejectedExecutionException e) {

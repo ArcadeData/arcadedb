@@ -37,7 +37,11 @@ public class MutablePage extends BasePage implements TrackableContent {
   private static final byte[]  ZERO_BYTES_ARRAY;
   private              int     modifiedRangeFrom = Integer.MAX_VALUE;
   private              int     modifiedRangeTo   = -1;
-  private              WALFile walFile;
+  // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
+  // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
+  // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
+  // pending ack - letting the close-time ack gate delete a WAL that still holds unflushed committed data.
+  private final        java.util.concurrent.atomic.AtomicReference<WALFile> walFile = new java.util.concurrent.atomic.AtomicReference<>();
 
   static {
     ZERO_BYTES_ARRAY = new byte[GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger()];
@@ -206,11 +210,20 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public WALFile getWALFile() {
-    return walFile;
+    return walFile.get();
   }
 
   public void setWALFile(final WALFile WALFile) {
-    this.walFile = WALFile;
+    this.walFile.set(WALFile);
+  }
+
+  /**
+   * Atomically detaches the WAL file from this page, so the pending-flush ack can be released EXACTLY once
+   * whichever of the racing paths (flush success, file-dropped flush branch, dropped-file batch purge) gets
+   * here first. Returns {@code null} for every caller but the first.
+   */
+  public WALFile takeWALFile() {
+    return walFile.getAndSet(null);
   }
 
   public void move(int startPosition, int destPosition, final int length) {

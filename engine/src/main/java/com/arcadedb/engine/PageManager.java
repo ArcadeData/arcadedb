@@ -34,11 +34,13 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.function.BiFunction;
 
 /**
  * Manages pages from disk to RAM. Each page can have different size.
@@ -46,11 +48,13 @@ import java.util.logging.Level;
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
 
-  private          ConcurrentMap<PageId, CachedPage> readCache;
+  // Package-private (instead of private) so the white-box regression test for #4925/#4933 can assert on
+  // the cache content and RAM accounting directly, without reflection.
+  volatile ConcurrentMap<PageId, CachedPage> readCache;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
-  private          long                              maxRAM;
-  private final    AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
+  private volatile long                               maxRAM;
+  final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
   private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();
@@ -61,8 +65,14 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
-  private          PageManagerFlushThread            flushThread;
-  private          int                               freePageRAM;
+  // LIFECYCLE INVARIANT (#5070): flushThread and readCache are written only under LIFECYCLE_LOCK
+  // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
+  // ONLY because a reader implies refcount > 0 (its database holds a reference), so no transition can run
+  // concurrently. volatile: the barrier cost is negligible next to the
+  // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
+  // database-publication happens-before for cross-thread visibility of the startup() writes.
+  private volatile PageManagerFlushThread             flushThread;
+  private volatile int                                freePageRAM;
 
   @ExcludeFromJacocoGeneratedReport
   public interface ConcurrentPageAccessCallback {
@@ -88,50 +98,131 @@ public class PageManager extends LockContext {
   private PageManager() {
   }
 
+  /**
+   * #4927: the JVM-wide PageManager is REFCOUNTED. Every DatabaseFactory open/create acquires one reference
+   * (starting the flush machinery on 0 -> 1) and every database close releases it (tearing down on 1 -> 0),
+   * all under one global lock. The previous lifecycle keyed on ACTIVE_INSTANCES.isEmpty() was a
+   * check-then-act racing across factory instances (open/create synchronize on the factory, the map is
+   * static, and registration happens only AFTER database.open() completes): closing the last instance of
+   * one database could null the flush thread under a database whose open was mid-flight (NPE on the first
+   * cache miss, or scheduled pages never flushed), and two opens could both see the map empty and start two
+   * flush threads, leaking one with queued pages.
+   */
+  private static final Object LIFECYCLE_LOCK = new Object();
+  private       int    lifecycleRefCount = 0; // guarded by LIFECYCLE_LOCK
+
+  /** Acquires one lifecycle reference; the flush machinery starts on the 0 -> 1 transition. Pair with {@link #release()}. */
+  public void acquire() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (++lifecycleRefCount == 1)
+        try {
+          startup();
+        } catch (final RuntimeException | Error e) {
+          // #5070: startup() can throw (e.g. ConfigurationException on a negative MAX_PAGE_RAM). The
+          // increment must not survive it, or the counter is left at 1 with no flush thread and the NEXT
+          // acquire sees 1 -> 2 and never starts one - a wedged manager the caller's catch cannot repair
+          // (its release() would just decrement back to the same broken state at 1).
+          lifecycleRefCount = 0;
+          throw e;
+        }
+    }
+  }
+
+  /** Releases one lifecycle reference; the flush machinery is torn down on the 1 -> 0 transition. Over-releases are clamped. */
+  public void release() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (lifecycleRefCount == 0)
+        // Over-release (e.g. a test calling close() directly followed by a paired release): clamp instead of
+        // going negative and tearing down a manager a later acquire believes it owns.
+        return;
+      if (--lifecycleRefCount == 0)
+        shutdown();
+    }
+  }
+
+  /**
+   * Declares that the configuration changed (used by the GlobalConfiguration PROFILE setter). Always a
+   * no-op at runtime: with no database open the next {@link #acquire()} reads the fresh settings anyway
+   * (and starting a flush thread with zero databases - the old behavior - leaked it until the next
+   * lifecycle transition); with databases OPEN a live shutdown+startup swap would race the hot paths, which
+   * read {@code flushThread}/{@code readCache} without the lifecycle lock (#5070) - so a live
+   * profile change is refused loudly instead. Set the PROFILE before opening databases.
+   */
   public void configure() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (lifecycleRefCount > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Configuration profile PARTIALLY applied: %d database(s) are open, so the page manager keeps its current sizing while the profile's other settings (async/HTTP threads, queue sizes) did change. Set the profile before opening databases for a consistent configuration",
+            null, lifecycleRefCount);
+    }
+  }
+
+  /**
+   * Force teardown regardless of refcount (test/emergency API): the counter resets so the next acquire
+   * starts fresh. ONLY safe when no database is open: a live database's eventual release() would decrement
+   * the NEW manager started by a later acquire and tear it down under that newcomer (#5070).
+   */
+  public void close() {
+    synchronized (LIFECYCLE_LOCK) {
+      lifecycleRefCount = 0;
+      shutdown();
+    }
+  }
+
+  private void startup() {
     final ContextConfiguration configuration = new ContextConfiguration();
     this.freePageRAM = configuration.getValueAsInteger(GlobalConfiguration.FREE_PAGE_RAM);
     this.readCache = new ConcurrentHashMap<>(configuration.getValueAsInteger(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE));
 
     this.maxRAM = configuration.getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM) * 1024 * 1024;
     if (this.maxRAM < 0)
-      throw new ConfigurationException(GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + maxRAM + " MB)");
-
-    if (flushThread != null)
-      close();
+      throw new ConfigurationException(
+          GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + (maxRAM / (1024 * 1024)) + " MB)");
 
     flushThread = new PageManagerFlushThread(this, configuration);
     flushThread.start();
   }
 
-  public void close() {
+  /**
+   * INVARIANT (#5070): runs under LIFECYCLE_LOCK and joins the flush thread - the flush thread must
+   * therefore NEVER call acquire()/release()/configure()/close(), or this join becomes a deadlock (the
+   * flush thread blocking on the lock this thread holds while waiting for it to exit). Verified true today.
+   */
+  private void shutdown() {
     if (flushThread != null) {
       try {
         flushThread.closeAndJoin();
-        flushThread = null;
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
+      } finally {
+        // Null out regardless of interrupt (#5070): a stale dead reference with refcount 0 was
+        // harmless (the next startup() overwrites it) but inconsistent.
+        flushThread = null;
       }
     }
 
-    readCache.clear();
+    if (readCache != null)
+      // close() is a reachable test/emergency API and may run before any startup() (#5070).
+      readCache.clear();
     totalReadCacheRAM.set(0L);
   }
 
   public void removeAllReadPagesOfDatabase(final Database database) {
-    for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
-      final CachedPage p = it.next();
+    for (final CachedPage p : readCache.values()) {
       final PageId pageId = p.getPageId();
-      if (pageId.getDatabase().equals(database)) {
-        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
-        it.remove();
-      }
+      if (pageId.getDatabase().equals(database))
+        // #4933: drive the accounting from the value ACTUALLY removed. Subtracting before it.remove()
+        // double-subtracted a page that a concurrent evictOldestPages/removePageFromCache removed first,
+        // driving totalReadCacheRAM negative and permanently disabling eviction (unbounded cache growth).
+        removePageFromCache(pageId);
     }
   }
 
-  public void waitAllPagesOfDatabaseAreFlushed(final Database database) {
+  /** @return true when everything reached the disk; false when the bounded wait gave up (see #4928). */
+  public boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
     if (flushThread != null)
-      flushThread.waitAllPagesOfDatabaseAreFlushed(database);
+      return flushThread.waitAllPagesOfDatabaseAreFlushed(database);
+    return true;
   }
 
   public void removeModifiedPagesOfDatabase(final Database database) {
@@ -141,13 +232,17 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
-    if (flushThread.setSuspended(database, true)) {
+    // #5068: the suspension is REFCOUNTED, so every caller (backup, verify, HA snapshot serving, nested
+    // scopes per #4958) owns its whole window even when the windows overlap on the same database: flushing
+    // is resumed (and the deferred batches flushed) only when the LAST suspender exits. The wait for the
+    // in-flight batch runs INSIDE the try so an interrupt during the wait still releases this caller's
+    // reference; it is cheap for non-first suspenders (the flush thread is already parked deferring).
+    flushThread.setSuspended(database, true);
+    try {
       flushThread.waitForCurrentFlushToComplete(database);
-      try {
-        CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
-      } finally {
-        flushThread.setSuspended(database, false);
-      }
+      CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
+    } finally {
+      flushThread.setSuspended(database, false);
     }
   }
 
@@ -169,13 +264,11 @@ public class PageManager extends LockContext {
     if (flushThread != null)
       flushThread.removeAllPagesOfFile(database, fileId);
 
-    for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
-      final CachedPage p = it.next();
+    for (final CachedPage p : readCache.values()) {
       final PageId pageId = p.getPageId();
-      if (pageId.getDatabase().equals(database) && pageId.getFileId() == fileId) {
-        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
-        it.remove();
-      }
+      if (pageId.getDatabase().equals(database) && pageId.getFileId() == fileId)
+        // #4933: accounting driven by the value actually removed (see removeAllReadPagesOfDatabase).
+        removePageFromCache(pageId);
     }
   }
 
@@ -256,8 +349,29 @@ public class PageManager extends LockContext {
     }
   }
 
+  /**
+   * Atomic convenience form of {@link #validateAndBumpVersions} + {@link #publishPages}. NOTE: since #4936
+   * the engine commit path no longer calls this - commit2ndPhase invokes the two halves separately with the
+   * WAL append in between, so validate+publish are NOT atomic under one lock there. Kept as public API for
+   * embedded users and backward compatibility; new engine code should call the halves explicitly and state
+   * what serializes the gap.
+   */
   public void updatePages(final Map<PageId, MutablePage> newPages, final Map<PageId, MutablePage> modifiedPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    publishPages(validateAndBumpVersions(newPages, modifiedPages), newPages, asyncFlush);
+  }
+
+  /**
+   * First half of {@link #updatePages}: validates every page against the most recent committed version and
+   * bumps the (transaction-private) page versions, WITHOUT publishing anything. #4936: the commit calls this
+   * BEFORE appending the transaction to the WAL, so the append is the point of no return - a WAL record can
+   * only ever exist for a transaction that already passed validation. Any {@link ConcurrentModificationException}
+   * fires before anything durable exists, so crash recovery can never partially replay an aborted transaction.
+   * The bump only mutates the transaction's own MutablePage instances: if the WAL append still fails
+   * (e.g. interrupt), the reset() discards them and nothing observable happened.
+   */
+  public List<MutablePage> validateAndBumpVersions(final Map<PageId, MutablePage> newPages,
+      final Map<PageId, MutablePage> modifiedPages) throws IOException, InterruptedException {
     lock();
     try {
       final List<MutablePage> pagesToWrite = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
@@ -269,6 +383,26 @@ public class PageManager extends LockContext {
       for (final MutablePage p : modifiedPages.values())
         pagesToWrite.add(updatePageVersion(p, false));
 
+      return pagesToWrite;
+    } finally {
+      unlock();
+    }
+  }
+
+  /**
+   * Second half of {@link #updatePages}: publishes the validated pages (read cache + flush scheduling).
+   * Runs AFTER the WAL append (#4936): from the caller's perspective the transaction is committed once the
+   * WAL is durable, and a failure here leaves the WAL to replay the pages on recovery. Releasing the global
+   * PageManager lock between the two halves is safe only because the caller serializes committers per page
+   * by other means. Two regimes exist: on a leader (commit1stPhase(true)) the per-file commit locks are held
+   * until reset(), so no other transaction can validate, bump or publish these pages in the gap; on an HA
+   * follower (commit1stPhase(false)) lockedFiles is EMPTY and it is the single-threaded Raft apply in
+   * RaftReplicatedDatabase that provides the serialization - do not rely on file locks being held there.
+   */
+  public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
+      final boolean asyncFlush) throws IOException, InterruptedException {
+    lock();
+    try {
       // Write pages (and put in readCache) BEFORE updating pageCount, otherwise concurrent
       // transactions can observe pageCount > readCache state and treat the new page as a
       // pre-existing empty page (sparse-file semantics), allowing two records' chunk chains
@@ -348,7 +482,7 @@ public class PageManager extends LockContext {
     final PPageManagerStats stats = new PPageManagerStats();
     stats.maxRAM = maxRAM;
     stats.readCacheRAM = totalReadCacheRAM.get();
-    // readCache and flushThread are populated by configure(), which is called on first DB
+    // readCache and flushThread are populated by startup() (the 0 -> 1 acquire transition), which is called on first DB
     // open. When no database has been opened yet (e.g. a profiler snapshot taken at server
     // startup) they're still null - report empty cache/queue rather than NPE.
     stats.readCachePages = readCache != null ? readCache.size() : 0;
@@ -425,10 +559,18 @@ public class PageManager extends LockContext {
         // the metadata updates.
       }
 
-    } else
+    } else {
       LogManager.instance()
           .log(this, Level.FINE, "Cannot flush page %s because the file has been dropped (threadId=%d)...", null, page,
               Thread.currentThread().threadId());
+      // The page will never be flushed and its content is irrelevant (the file is gone): release its WAL
+      // ack, or the stale pending count would make every later clean close preserve the WAL for nothing
+      // (the close-time ack gate, #4928). takeWALFile makes the release exactly-once against the racing
+      // dropped-file batch purge.
+      final WALFile walFile = page.takeWALFile();
+      if (walFile != null)
+        walFile.notifyPageFlushed();
+    }
   }
 
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache)
@@ -472,11 +614,19 @@ public class PageManager extends LockContext {
   private void concurrentPageAccess(final PageId pageId, final Boolean writeAccess, final ConcurrentPageAccessCallback callback)
       throws IOException {
     // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
-    while (!Thread.currentThread().isInterrupted()) {
+    while (true) {
+      // Fail loud on interrupt instead of silently skipping the I/O (#4924). The interrupt is only checked
+      // BEFORE acquiring the per-page slot, so an in-flight read/write is never torn. Returning here without
+      // running the callback would let a caller cache a zero-filled page (loadPage) or ack a flush that never
+      // reached disk via notifyPageFlushed (flushPage) - both silently lose committed data. The interrupt flag
+      // is left set so upper layers still observe the cancellation.
+      if (Thread.currentThread().isInterrupted())
+        throw new InterruptedIOException("Interrupted while acquiring I/O lock for page " + pageId);
+
       if (pendingFlushPages.putIfAbsent(pageId, writeAccess) == null)
         try {
           callback.access();
-          break;
+          return;
         } finally {
           pendingFlushPages.remove(pageId);
         }
@@ -529,8 +679,10 @@ public class PageManager extends LockContext {
     for (final CachedPage page : pagesOrderedByAge) {
       final CachedPage removedPage = readCache.remove(page.getPageId());
       if (removedPage != null) {
-        freedRAM += page.getPhysicalSize();
-        totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
+        // Account the entry ACTUALLY removed, not the TreeSet snapshot: the version-monotonic put can swap
+        // a same-PageId entry for a different instance between the snapshot and this remove (#4925/#4933).
+        freedRAM += removedPage.getPhysicalSize();
+        totalReadCacheRAM.addAndGet(-1L * removedPage.getPhysicalSize());
         pagesEvicted.incrementAndGet();
 
         if (freedRAM > ramToFree)
@@ -551,15 +703,36 @@ public class PageManager extends LockContext {
     lastCheckForRAM = System.currentTimeMillis();
   }
 
-  private void putPageInReadCache(final CachedPage page) {
-    final CachedPage prev = readCache.put(page.getPageId(), page);
-    if (prev == null)
-      totalReadCacheRAM.addAndGet(page.getPhysicalSize());
-    else {
-      final long delta = page.getPhysicalSize() - prev.getPhysicalSize();
-      if (delta != 0)
-        totalReadCacheRAM.addAndGet(delta);
+  // Reused per-thread slot for the RAM delta decided inside VERSION_MONOTONIC_MERGE: keeps the put hot
+  // path allocation-free (a capturing lambda + holder array per call would rely on escape analysis that is
+  // not guaranteed under a megamorphic merge call site).
+  private static final ThreadLocal<long[]> PUT_RAM_DELTA = ThreadLocal.withInitial(() -> new long[1]);
+
+  // #4925: version-monotonic merge. Keeps whichever version is newer; an EQUAL version replaces on purpose
+  // (identical content, freshest instance, zero RAM delta). Static and non-capturing: merge() hands the new
+  // page in as the second argument, so this function allocates nothing per call.
+  private static final BiFunction<CachedPage, CachedPage, CachedPage> VERSION_MONOTONIC_MERGE = (prev, cur) -> {
+    if (cur.getVersion() >= prev.getVersion()) {
+      PUT_RAM_DELTA.get()[0] = cur.getPhysicalSize() - prev.getPhysicalSize();
+      return cur;
     }
+    // STALE WRITE ATTEMPT: KEEP THE NEWER CACHED VERSION, NO ACCOUNTING CHANGE
+    PUT_RAM_DELTA.get()[0] = 0;
+    return prev;
+  };
+
+  void putPageInReadCache(final CachedPage page) {
+    // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
+    // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
+    // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
+    // transaction pass its MVCC check and silently overwrite the lost committed update. The RAM delta is
+    // decided inside the same atomic merge so the accounting always matches the actual cache content.
+    final long[] ramDelta = PUT_RAM_DELTA.get();
+    // Default covers the absent-key case: merge() inserts the page WITHOUT invoking the remapping function.
+    ramDelta[0] = page.getPhysicalSize();
+    readCache.merge(page.getPageId(), page, VERSION_MONOTONIC_MERGE);
+    if (ramDelta[0] != 0)
+      totalReadCacheRAM.addAndGet(ramDelta[0]);
 
     checkForPageDisposal();
   }
@@ -570,14 +743,17 @@ public class PageManager extends LockContext {
 
     CachedPage page = readCache.get(pageId);
     if (page == null) {
+      // #4958: count the miss BEFORE returning the freshly loaded page. The counter used to be bumped
+      // only on the page-not-found fall-through below, so cacheMiss stayed at ~0 forever and the
+      // hit/miss ratio in the stats was meaningless.
+      cacheMiss.incrementAndGet();
+
       page = loadPage(pageId, pageSize, createIfNotExists, true);
       if (page == null) {
         if (isNew)
           return null;
       } else
         return page;
-
-      cacheMiss.incrementAndGet();
 
     } else {
       cacheHits.incrementAndGet();

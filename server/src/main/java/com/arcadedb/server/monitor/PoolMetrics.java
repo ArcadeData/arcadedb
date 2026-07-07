@@ -20,6 +20,7 @@ package com.arcadedb.server.monitor;
 
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
+import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
 
 import io.micrometer.core.instrument.FunctionCounter;
@@ -77,6 +78,18 @@ public final class PoolMetrics implements MeterBinder {
         () -> svsp.getPoolStats().queueCapacityRemaining(),
         () -> svsp.getPoolStats().completedTasks(),
         () -> svsp.getPoolStats().callerRunFallbacks());
+
+    // Dedicated pool for the BLOCKING parallel-scan producers (issues #4948/#4950): unbounded task queue by
+    // design (backpressure comes from each query's bounded result queue), so callerRunFallbacks is always 0
+    // and queueCapacityRemaining reports -1 (not applicable); queue_depth is the signal to watch.
+    final ParallelScanProducerPool pspp = ParallelScanProducerPool.getInstance();
+    bindPool(registry, "parallel_scan", "ParallelScanProducerPool bucket-scan producer pool",
+        () -> pspp.getPoolStats().poolSize(),
+        () -> pspp.getPoolStats().activeThreads(),
+        () -> pspp.getPoolStats().queueDepth(),
+        () -> pspp.getPoolStats().queueCapacityRemaining(),
+        () -> pspp.getPoolStats().completedTasks(),
+        () -> pspp.getPoolStats().callerRunFallbacks());
 
     // Not a pool, but a graph data-integrity signal surfaced the same way. A monotonic FunctionCounter
     // (not a gauge) so dashboards can compute a rate() and alert on a sudden spike of corruption,

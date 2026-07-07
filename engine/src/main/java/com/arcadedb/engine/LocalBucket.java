@@ -119,8 +119,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // access is enforced by `synchronized (freeSpaceInPages)` blocks at every callsite.
   private final          IntIntHashMap             freeSpaceInPages                 = new IntIntHashMap();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
-  private                long                      timeOfLastStats                  = 0L;
-  private                long                      changesFromLastStats             = 0L;
+  // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
+  // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
+  private volatile       long                      timeOfLastStats                  = 0L;
+  private final          AtomicLong                changesFromLastStats             = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
     LOW, MEDIUM, HIGH
@@ -146,6 +148,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                            final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
       return new LocalBucket(database, name, filePath, id, mode, pageSize, version);
     }
+  }
+
+  /**
+   * Record position (the RID's long position) for a slot in a page. Package-private static so the overflow
+   * regression test for #4931 can verify it directly: the pre-fix inline {@code int * int} arithmetic
+   * overflowed for buckets beyond 2^31 positions, and {@code check(fix=true)} then deleted an innocent
+   * record at the wrong RID.
+   */
+  static long recordPosition(final int pageId, final int maxRecordsInPage, final int positionInPage) {
+    return (long) pageId * maxRecordsInPage + positionInPage;
   }
 
   /**
@@ -295,7 +307,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-            final RID rid = new RID(fileId, ((long) pageId) * maxRecordsInPage + recordIdInPage);
+            final RID rid = new RID(fileId, recordPosition(pageId, maxRecordsInPage, recordIdInPage));
 
             try {
               final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
@@ -484,7 +496,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int pageChunks = 0;
 
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
-          final RID rid = new RID(file.getFileId(), pageId * maxRecordsInPage + positionInPage);
+          // #4931: int*int overflowed here for buckets beyond 2^31 positions, and check(fix=true) then
+          // deleted an innocent record at the wrong RID. recordPosition() widens to long.
+          final RID rid = new RID(file.getFileId(), recordPosition(pageId, maxRecordsInPage, positionInPage));
 
           final int recordPositionInPage = (int) page.readUnsignedInt(
                   PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
@@ -1157,7 +1171,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             getFreeSpaceInPage(pageAnalysis);
             updatePageStatistics(pageId, pageAnalysis.spaceAvailableInCurrentPage, (int) ((recordSize[0] + recordSize[1]) * -1));
           } else
-            ++changesFromLastStats;
+            changesFromLastStats.incrementAndGet();
         }
 
       } else {
@@ -1169,6 +1183,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().threadId());
 
     } catch (final RecordNotFoundException e) {
+      throw e;
+    } catch (final ConcurrentModificationException e) {
+      // #4932: this is the retry signal deliberately thrown above when a multi-page chunk chain was modified
+      // concurrently. The generic catch below used to swallow it, zero the slot pointer and return success:
+      // the retry never happened, the remaining NEXT_CHUNK records were orphaned (permanent space leak) and
+      // the caller believed the delete succeeded. Rethrow so the retry machinery actually retries.
       throw e;
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on deletion of record " + rid, e);
@@ -1343,8 +1363,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (size < 0 || size > getPageSize() - contentHeaderSize) {
           // INVALID SIZE
           LogManager.instance().log(this, Level.SEVERE,
-                  "Invalid record size " + size + " for record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage)
-                          + positionInPage + ": deleting record");
+                  "Invalid record size " + size + " for record #" + fileId + ":"
+                          + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage) + ": deleting record");
 
           if (readOnly) {
             if (!(page instanceof MutablePage))
@@ -1355,7 +1375,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
-                "Error on loading record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage) + positionInPage);
+                "Error on loading record #" + fileId + ":" + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage));
         continue;
       }
 
@@ -2035,8 +2055,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 3. if the tree map is full (size > MAX_PAGES_GATHER_STATS), stop
    */
   public void gatherPageStatistics() {
-    if (timeOfLastStats == 0L || (System.currentTimeMillis() - timeOfLastStats > MAX_TIMEOUT_GATHER_STATS
-            && changesFromLastStats > 0))
+    final boolean firstRun = timeOfLastStats == 0L;
+    if (!firstRun && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
+      return;
+
+    // #5063: consume the change counter atomically at the decision point. The previous
+    // get() > 0 check paired with a set(0L) at the end of the scan wiped any increment landing while the
+    // scan ran; getAndSet(0L) carries those increments into the next cycle instead of losing them.
+    final long consumedChanges = changesFromLastStats.getAndSet(0L);
+    if (consumedChanges > 0 || firstRun)
       try {
         int txPageCount = getTotalPages();
 
@@ -2046,13 +2073,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
             final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, true);
 
-            int freeSpaceInPage = getPageSize() - contentHeaderSize;
+            // #4958: measure against the usable content region (getMaxContentSize), not the physical
+            // page size: the latter overstated the free space of every page by the page header size.
+            int freeSpaceInPage = page.getMaxContentSize() - contentHeaderSize;
             if (!orderedRecordContentInPage.isEmpty()) {
               final int[] lastRecord = orderedRecordContentInPage.getLast();
-              freeSpaceInPage = getPageSize() - (lastRecord[0] + lastRecord[1]);
+              freeSpaceInPage = page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
             }
 
-            final int freeSpacePerc = freeSpaceInPage * 100 / (getPageSize() - contentHeaderSize);
+            final int freeSpacePerc = freeSpaceInPage * 100 / (page.getMaxContentSize() - contentHeaderSize);
 
             if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC)
               freeSpaceInPages.put(pageId, freeSpaceInPage);
@@ -2062,9 +2091,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
 
           timeOfLastStats = System.currentTimeMillis();
-          changesFromLastStats = 0L;
         }
       } catch (Exception e) {
+        // #5063: THE COUNTER WAS ALREADY CONSUMED. RESTORE THE FULL CONSUMED COUNT (NOT A
+        // SINGLE INCREMENT, WHICH UNDERCOUNTED THE PENDING CHANGES) SO THE FAILED SCAN IS RETRIED AT THE
+        // NEXT CYCLE; max(consumed, 1) COVERS THE firstRun CASE WHERE THE CONSUMED COUNT MAY BE ZERO
+        changesFromLastStats.addAndGet(Math.max(consumedChanges, 1L));
         LogManager.instance().log(this, Level.WARNING, "Error on gathering statistics on bucket '%s'", e, getName());
       }
   }
@@ -2073,7 +2105,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Update the in memory statistics about the free space in page.
    */
   private void updatePageStatistics(final int pageId, final int availableSpace, final int delta) {
-    ++changesFromLastStats;
+    changesFromLastStats.incrementAndGet();
 
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;
@@ -2082,7 +2114,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (availableSpace + delta == 0)
         freeSpaceInPages.remove(pageId, -1);
       else {
-        final int usableSpaceInPage = getPageSize() - contentHeaderSize;
+        // #5067: same usable-space base as gatherPageStatistics() (#4958): measure against the usable
+        // content region (physical page size minus the page header), not the physical page size, which
+        // overstated the space of every page and skewed the GATHER_STATS_MIN_SPACE_PERC threshold
+        final int usableSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
 
         final boolean hasEntry = freeSpaceInPages.containsKey(pageId);
         final int existingFreeSpace = hasEntry ? freeSpaceInPages.get(pageId, 0) : 0;

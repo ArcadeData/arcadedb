@@ -252,4 +252,64 @@ class CypherCaseTest {
     final Result result = results.next();
     assertThat((Object) result.getProperty("category")).isEqualTo("young adult"); // Bob is 25
   }
+
+  /**
+   * Issue #5083: simple CASE (CASE expr WHEN value) with numeric operands in a WHERE clause returned
+   * no rows because the WHEN equality used strict Java {@code Object.equals()}, which fails when the
+   * property and the literal are different numeric boxed types (e.g. Integer vs Long).
+   */
+  @Test
+  void simpleCaseNumericWhenInWhereClause() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("BugNode");
+      database.newVertex("BugNode").set("id", 1).set("val", 10).save();
+      database.newVertex("BugNode").set("id", 2).set("val", 50).save();
+      database.newVertex("BugNode").set("id", 3).set("val", 30).save();
+      database.newVertex("BugNode").set("id", 4).set("val", 10).save();
+    });
+
+    final ResultSet results = database.query("opencypher",
+        """
+        MATCH (n:BugNode) \
+        WHERE CASE n.val \
+                WHEN 10 THEN 'low' \
+                WHEN 50 THEN 'high' \
+                ELSE 'mid' \
+              END = 'low' \
+        RETURN n.id AS id, n.val AS val \
+        ORDER BY id""");
+
+    int count = 0;
+    while (results.hasNext()) {
+      final Result result = results.next();
+      final int id = ((Number) result.getProperty("id")).intValue();
+      assertThat(id).isIn(1, 4);
+      count++;
+    }
+    assertThat(count).isEqualTo(2);
+  }
+
+  /**
+   * Issue #5083: the extended CASE WHEN equality must also fold numeric types when producing a value
+   * (not only when used as a WHERE predicate).
+   */
+  @Test
+  void simpleCaseNumericWhenReturnsValue() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("BugNode2");
+      database.newVertex("BugNode2").set("id", 1).set("val", 10L).save();
+    });
+
+    final ResultSet results = database.query("opencypher",
+        """
+        MATCH (n:BugNode2) RETURN \
+        CASE n.val \
+          WHEN 10 THEN 'low' \
+          WHEN 50 THEN 'high' \
+          ELSE 'mid' \
+        END AS bucket""");
+
+    assertThat((boolean) results.hasNext()).isTrue();
+    assertThat((Object) results.next().getProperty("bucket")).isEqualTo("low");
+  }
 }

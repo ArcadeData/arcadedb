@@ -645,15 +645,15 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
       final Object[] originalKeys, final Object[] convertedKeys, final int limit, final Set<IndexCursorEntry> set,
-      final Set<TransactionIndexContext.ComparableKey> removedKeys) {
+      final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) {
     final LookupResult result = lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer, convertedKeys, 1);
     if (result.found) {
       // REAL ALL THE ENTRIES
       final List<RID> allValues = readAllValuesFromResult(currentPageBuffer, result);
 
-      final RidHashSet validRIDs = new RidHashSet();
-      final RidHashSet deletedRIDs = new RidHashSet();
-
+      // #4945: deletedRIDs is threaded from the caller across pages and the compacted sub-index, exactly like
+      // removedKeys. For a non-unique index a per-RID tombstone and its ADD frequently live in different pages,
+      // so a page-local deletedRIDs set resurrected the deleted RID once the walk reached the older page.
       final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
 
       // START FROM THE LAST ENTRY
@@ -684,7 +684,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
           continue;
         }
 
-        validRIDs.add(rid);
         set.add(new IndexCursorEntry(originalKeys, rid, 1));
 
         if (limit > -1 && set.size() >= limit) {
@@ -716,8 +715,24 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       result = 1;
       for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
         final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
-        if (!notNull)
+        if (!notNull) {
+          // #4947 (pre-existing corruption): the stored component is NULL. Breaking here with the PREVIOUS
+          // component's result (0 when the prefix matched) declared (k,null) the "same key" as (k,v), and
+          // the purpose-1 caller then applied MID's key size to every pointer of the run - (k,null)'s key
+          // is shorter, so its value position landed mid-bytes and the read underflowed. Same key only if
+          // the search component is null too; otherwise nulls sort LOW, matching compareKey().
+          result = keys[keyIndex] == null ? 0 : 1;
+          if (result != 0)
+            break;
+          continue;
+        }
+
+        if (keys[keyIndex] == null) {
+          // Search component null vs stored non-null: not the same key (nulls sort LOW). The old code fed
+          // the null into compareBytes/compare below - an NPE for string keys.
+          result = -1;
           break;
+        }
 
         final byte keyType = binaryKeyTypes[keyIndex];
         if (keyType == BinaryTypes.TYPE_STRING) {

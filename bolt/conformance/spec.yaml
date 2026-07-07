@@ -9,8 +9,10 @@ driver_version_bands:
     band_names: [oldest-supported-4.x, latest-5.x, latest-6.x]
     driver_artifact: "org.neo4j.driver:neo4j-java-driver"
     resolution_note: >
-      Resolved to concrete versions by #4889 at implementation time; current
-      repo baseline is 6.2.0 (root pom.xml neo4j-driver.version).
+      Resolved by #4889: latest-6.x = 6.2.0 (root pom.xml neo4j-driver.version,
+      default e2e RemoteBoltDatabaseIT); oldest-supported-4.x = 4.4.20 via the
+      e2e `bolt-driver-legacy` Maven profile running RemoteBoltLegacyDriverIT.
+      latest-5.x is exercised in CI's driver-version matrix (#4891).
   javascript:
     band_names: [oldest-supported-4.x, latest-5.x, latest-6.x]
     driver_artifact: "neo4j-driver (npm)"
@@ -108,12 +110,13 @@ scenarios:
       - "When the driver connects to neo4j://<any-node>:7687 and requests a routing table"
       - "Then the routing table should list the true leader as writer and the true followers as readers"
     applicable_driver_versions: all
-    current_status: expected-fail
+    current_status: passing
     known_limitation: >
-      BoltNetworkExecutor.handleRoute (bolt/src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java:903-939)
-      always returns the local node's own address as WRITE, READ, and ROUTE
-      roles, regardless of actual cluster topology - single-node only.
-    tracking_issue: "#4890"
+      For clusters with heterogeneous Bolt ports, each node's client-reachable
+      Bolt address must be declared with the object-form 'bolt:' field in
+      HA_SERVER_LIST (host:{raft:..,http:..,bolt:..}). When omitted, the address
+      is derived from each peer's Raft host plus this node's Bolt port, which is
+      correct only for homogeneous deployments (e.g. a Kubernetes StatefulSet).
   - id: CONN-005
     area: connection
     title: "TLS OPTIONAL mode falls back to plaintext bolt://"
@@ -214,7 +217,7 @@ scenarios:
       - "When the driver calls session.executeWrite(tx -> tx.run('CREATE (:Beer {name: $n})', params))"
       - "Then the write is committed and visible afterward"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: TX-005
     area: transactions
     title: "Managed transaction function retries on Neo.TransientError.*"
@@ -231,13 +234,7 @@ scenarios:
       - "When the failure occurs inside an executeWrite callback"
       - "Then the driver should see a Neo.TransientError.* code and retry automatically per its built-in policy"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltErrorCodes.java defines only 7 codes, all Neo.ClientError.*/
-      Neo.DatabaseError.* - no Neo.TransientError.* code exists, so
-      ArcadeDB never signals a retryable condition and driver-side
-      transient-retry logic cannot be exercised.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: CAUSAL-001
     area: causal-consistency
     title: "Bookmark enforces read-after-write across sessions"
@@ -252,7 +249,7 @@ scenarios:
       - "When session B is opened with bookmarks=[that bookmark] and immediately reads the written data"
       - "Then session B's read reflects session A's write, even against a follower"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: MDB-001
     area: multi-database
     title: "Session selects a specific named database"
@@ -280,7 +277,7 @@ scenarios:
       - "When one session writes to the scratch database inside an open transaction"
       - "Then a concurrent session against beer is unaffected and unaware of that transaction"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: RESULT-001
     area: result-handling
     title: "Streaming PULL returns records incrementally"
@@ -305,7 +302,7 @@ scenarios:
       - "When the driver issues PULL {n: 2} against a query with 5 results"
       - "Then exactly 2 records are returned, and a follow-up PULL {n: -1} (or DISCARD) returns/discards the remaining 3 without gaps or duplicates"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: RESULT-003
     area: result-handling
     title: "DISCARD abandons remaining rows without materializing them"
@@ -330,7 +327,7 @@ scenarios:
       - "When the driver runs 'CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})'"
       - "Then summary.counters().nodesCreated() == 2, relationshipsCreated() == 1, and propertiesSet() matches"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: TYPE-001
     area: type-roundtrip
     title: "Node round-trips as a native Bolt structure"
@@ -363,12 +360,7 @@ scenarios:
       - "When the driver runs 'MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1'"
       - "Then the client receives a native Path value (sig 0x50) with correctly ordered nodes/relationships"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      structure/BoltPath.java exists but has zero call sites constructing
-      it anywhere in BoltStructureMapper - query results never actually
-      produce native Path structures today.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-004
     area: type-roundtrip
     title: "ByteArray round-trips as a bound parameter"
@@ -414,12 +406,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localDateProp AS d'"
       - "Then d is a native LocalDate/Date driver type, and 'RETURN $d AS echo' with params={d: <that date>} round-trips it unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltStructureMapper.toPackStreamValue (lines 116-150) converts
-      LocalDate via .toString()/ISO string fallback instead of the native
-      Bolt Date structure (sig 0x44).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-008
     area: type-roundtrip
     title: "LocalTime round-trips as a native Bolt LocalTime structure"
@@ -430,11 +417,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localTimeProp AS t2'"
       - "Then t2 is a native LocalTime driver type, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for LocalTime (native Bolt
-      LocalTime structure sig 0x74 not produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-009
     area: type-roundtrip
     title: "LocalDateTime round-trips as a native Bolt LocalDateTime structure"
@@ -445,11 +428,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localDateTimeProp AS dt'"
       - "Then dt is a native LocalDateTime driver type, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for LocalDateTime (native Bolt
-      LocalDateTime structure sig 0x64 not produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-010
     area: type-roundtrip
     title: "Offset/zoned DateTime round-trips as a native Bolt DateTime structure"
@@ -460,12 +439,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.offsetDateTimeProp AS dt'"
       - "Then dt is a native OffsetDateTime/ZonedDateTime driver type preserving the +02:00 offset, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for OffsetDateTime/ZonedDateTime
-      (native Bolt DateTime/DateTimeZoneId structures, sig 0x49/0x69, not
-      produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-011
     area: type-roundtrip
     title: "Duration round-trips as a native Bolt Duration structure"
@@ -481,12 +455,7 @@ scenarios:
       - "When the driver runs 'RETURN $d AS echo' with params={d: <that duration>}"
       - "Then echo round-trips without precision loss"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltStructureMapper/PackStreamWriter have no Duration handling at
-      all - not even a string fallback branch, falls through to generic
-      value.toString().
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-012
     area: type-roundtrip
     title: "Point round-trips as a native Bolt Point structure"
@@ -502,14 +471,7 @@ scenarios:
       - "When the driver runs 'RETURN $p AS echo' with params={p: <that point>}"
       - "Then echo round-trips without precision loss"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      No Point/spatial type handling exists anywhere in
-      BoltStructureMapper or PackStreamWriter (confirmed even though the
-      underlying ArcadeDB Cypher engine itself does support point() -
-      verified point({x:12.34,y:56.78}) creates/stores correctly via
-      HTTP/embedded execution; the gap is Bolt wire serialization only).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: ERR-001
     area: errors
     title: "Syntax error returns Neo.ClientError.Statement.SyntaxError"
@@ -542,7 +504,12 @@ scenarios:
       - "When the driver sends RUN before completing HELLO/LOGON"
       - "Then the driver receives error code Neo.ClientError.Security.Forbidden (BoltErrorCodes.FORBIDDEN_ERROR)"
     applicable_driver_versions: all
-    current_status: passing
+    current_status: not-applicable
+    known_limitation: >
+      Cannot be triggered through any official driver's public API - every
+      official Neo4j driver completes HELLO/LOGON internally before exposing
+      session/query methods to user code. Testable only via a bespoke
+      raw-socket client, which the epic's governing principles exclude.
   - id: ERR-004
     area: errors
     title: "Transient conditions surface Neo.TransientError.* codes"
@@ -559,12 +526,7 @@ scenarios:
       - "When the losing session's write fails"
       - "Then it should receive a Neo.TransientError.* code, not a ClientError/DatabaseError code"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltErrorCodes.java defines only Neo.ClientError.*/Neo.DatabaseError.*
-      codes (7 total) - no Neo.TransientError.* code exists anywhere in the
-      Bolt module.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: PROTO-001
     area: protocol
     title: "Version negotiation succeeds for Bolt 4.4, 4.0, and 3.0"
@@ -589,13 +551,7 @@ scenarios:
       - "When a driver's handshake proposes only Bolt 5.x version ranges"
       - "Then the server should either negotiate a 5.x version, or the negotiation failure/fallback behavior should be documented and intentional"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltNetworkExecutor.SUPPORTED_VERSIONS (line 96) never advertises
-      any Bolt 5.x version; current drivers that support 5.x only work
-      today by silently downgrading to 4.4, which is undocumented and
-      untested as a deliberate compatibility stance.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: PROTO-003
     area: protocol
     title: "RESET returns the connection to a clean state mid-stream"
@@ -607,4 +563,4 @@ scenarios:
       - "When the driver sends RESET"
       - "Then the server discards the pending stream and the connection accepts a new RUN immediately"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing

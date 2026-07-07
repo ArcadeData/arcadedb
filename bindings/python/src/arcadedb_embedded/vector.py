@@ -9,6 +9,11 @@ import jpype.types as jtypes
 
 from .exceptions import ArcadeDBError
 
+try:  # optional; hoisted to module scope to keep it out of per-call hot paths
+    import numpy as _np
+except ImportError:  # pragma: no cover - numpy is an optional dependency
+    _np = None
+
 
 def _quote_identifier(identifier: str) -> str:
     if not identifier:
@@ -33,13 +38,8 @@ def to_java_float_array(vector):
         Java float array compatible with ArcadeDB vector indexes
     """
     # Handle NumPy arrays
-    try:
-        import numpy as np
-
-        if isinstance(vector, np.ndarray):
-            return jtypes.JArray(jtypes.JFloat)(vector)
-    except ImportError:
-        pass
+    if _np is not None and isinstance(vector, _np.ndarray):
+        return jtypes.JArray(jtypes.JFloat)(vector)
 
     # Convert to Python list if needed
     if not isinstance(vector, list):
@@ -181,18 +181,30 @@ class VectorIndex:
         """
         self._java_index = java_index
         self._database = database
+        # Resolved once per wrapper: the underlying LSM indexes and the
+        # PRODUCT-quantization readiness check are stable for the lifetime of
+        # this wrapper, but were previously re-derived on every search (several
+        # JPype crossings per query).
+        self._lsm_indexes = None
+        self._pq_ready = False
 
     def _iter_lsm_indexes(self):
-        if "LSMVectorIndex" in self._java_index.getClass().getName():
-            yield self._java_index
-            return
+        if self._lsm_indexes is None:
+            self._lsm_indexes = self._resolve_lsm_indexes()
+        return iter(self._lsm_indexes)
 
+    def _resolve_lsm_indexes(self):
+        if "LSMVectorIndex" in self._java_index.getClass().getName():
+            return [self._java_index]
+
+        resolved = []
         if "TypeIndex" in self._java_index.getClass().getName():
             sub_indexes = self._java_index.getSubIndexes()
             if sub_indexes and not sub_indexes.isEmpty():
                 for sub in sub_indexes:
                     if "LSMVectorIndex" in sub.getClass().getName():
-                        yield sub
+                        resolved.append(sub)
+        return resolved
 
     def _get_primary_lsm_index(self):
         for index in self._iter_lsm_indexes():
@@ -200,6 +212,13 @@ class VectorIndex:
         return None
 
     def _ensure_product_quantization_ready(self):
+        # Once the check confirms enough vectors it stays valid (indexed vectors
+        # only accumulate), so don't repeat the metadata/countEntries crossings
+        # on every search. An empty PRODUCT bucket is inconclusive (data may
+        # arrive later), so it does not memoize.
+        if self._pq_ready:
+            return
+        all_confirmed = True
         for index in self._iter_lsm_indexes():
             meta = index.getMetadata()
             if str(meta.quantizationType) != "PRODUCT":
@@ -217,6 +236,9 @@ class VectorIndex:
                     "Use a smaller pq_clusters value, insert more vectors, "
                     "or use INT8/BINARY/NONE."
                 )
+            if vector_count == 0:
+                all_confirmed = False
+        self._pq_ready = all_confirmed
 
     def _normalize_ef_search(self, ef_search):
         if ef_search is None:
@@ -317,7 +339,10 @@ class VectorIndex:
         return allowed_rids_set
 
     def _lookup_record_by_rid(self, rid):
-        record = self._database.lookup_by_rid(str(rid))
+        # `rid` is already a Java RID from the search result: pass it straight
+        # through instead of stringifying and re-parsing it (previously one
+        # str() crossing + a new Java RID allocation per hit).
+        record = self._database._lookup_by_java_rid(rid)
         if record is None:
             raise ArcadeDBError(f"Vector search returned missing RID: {rid}")
         return record

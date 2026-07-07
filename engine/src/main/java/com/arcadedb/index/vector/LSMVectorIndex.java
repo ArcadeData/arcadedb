@@ -3730,6 +3730,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public List<Integer> getFileIds() {
+    // #4937: the companion graph file receives page writes during the transaction too - it must be part of
+    // the commit lock set, or its pages pass the version checks without their file lock held.
+    if (graphFile != null)
+      return List.of(mutable.getFileId(), graphFile.getFileId());
     return Collections.singletonList(mutable.getFileId());
   }
 
@@ -3939,7 +3943,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // is needed because LSMVectorIndexCompactor calls writePages(..., asyncFlush=true).
       final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
         final boolean compactSuccess = LSMVectorIndexCompactor.compact(this);
-        database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+        // If the bounded wait gives up (#4928), the shipped component could contain unflushed (zero) pages:
+        // fail the compaction, it is rescheduled later.
+        if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+          throw new IOException("Vector index compaction aborted: pages are still pending flush after the no-progress timeout");
         return compactSuccess;
       });
       if (success) {

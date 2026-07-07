@@ -105,6 +105,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -270,12 +271,22 @@ public class CypherExecutionPlan {
       while (resultSet.hasNext()) {
         materializedResults.add((ResultInternal) resultSet.next());
       }
+      // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
+      // DeleteStep, RemoveStep, MergeStep) on the returned result set. Always present after a
+      // write statement, even if it performed no actual mutation (containsUpdates() is false then).
+      final QueryStatistics stats = context.getStatistics();
+
       // If no RETURN clause (or GQL FINISH was used), return empty results
       // (write side effects still happened). Issue #3365 section 1.3.
-      if (statement.getReturnClause() == null || statement.hasFinishClause())
-        return new IteratorResultSet(Collections.<Result>emptyList().iterator());
+      if (statement.getReturnClause() == null || statement.hasFinishClause()) {
+        final IteratorResultSet empty = new IteratorResultSet(Collections.<Result>emptyList().iterator());
+        empty.setStatistics(stats);
+        return empty;
+      }
       // Return the materialized results
-      return new IteratorResultSet(materializedResults.iterator());
+      final IteratorResultSet out = new IteratorResultSet(materializedResults.iterator());
+      out.setStatistics(stats);
+      return out;
     }
 
     // Read-only path: GQL FINISH still suppresses any rows the MATCH would have produced.
@@ -298,6 +309,10 @@ public class CypherExecutionPlan {
    * @return result set from the inner query execution
    */
   public ResultSet executeWithSeedRow(final Result seedRow) {
+    // Limitation: each branch/inner plan runs with its own BasicCommandContext, so QueryStatistics
+    // from writes performed inside this CALL subquery are not aggregated into the outer plan's
+    // statistics. The ResultSet returned to the caller only reflects top-level mutation steps.
+
     // Handle UNION inside CALL subqueries: execute each branch with the seed row
     if (statement instanceof UnionStatement unionStmt) {
       final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
@@ -389,6 +404,10 @@ public class CypherExecutionPlan {
    * @return combined result set
    */
   private ResultSet executeUnion() {
+    // Limitation: each UNION branch executes as its own sub-plan with its own QueryStatistics, so
+    // write statistics from inside a branch are not aggregated into the combined ResultSet's
+    // statistics; only top-level mutation steps outside the UNION are reflected there.
+
     // Use UnionStep to combine results from all subqueries
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
@@ -3196,6 +3215,15 @@ public class CypherExecutionPlan {
     if (!nodePattern.hasLabels())
       return null;
 
+    // Only a single label can be counted with the O(1) countType() shortcut. A multi-label
+    // conjunction pattern (n:A:B) has no single type representing "instanceOf A AND instanceOf B"
+    // (each label maps to its own supertype, and the composite type also carries any other
+    // labels the node was created with), so counting by the first label alone would over-count
+    // (issue #5084). Multi-label (and label-disjunction) patterns fall back to the regular
+    // materialization path, which filters on every label correctly.
+    if (nodePattern.getLabels().size() != 1 || nodePattern.isLabelDisjunction())
+      return null;
+
     // Node must not have property constraints
     if (nodePattern.hasProperties())
       return null;
@@ -3204,7 +3232,6 @@ public class CypherExecutionPlan {
     if (variable == null)
       return null;
 
-    // Get the first label (for simplicity, use the first one if multiple labels exist)
     final String typeName = nodePattern.getLabels().get(0);
 
     // Must have RETURN clause
@@ -3455,6 +3482,16 @@ public class CypherExecutionPlan {
         case SET: {
           final SetClause sc = entry.getTypedClause();
           for (final SetClause.SetItem item : sc.getItems())
+            if (variable.equals(item.getVariable()))
+              return true;
+          break;
+        }
+        case REMOVE: {
+          // REMOVE r.prop / REMOVE r:Label keeps the edge binding alive. Missing this dropped the
+          // edge binding, so a top-level REMOVE on a relationship property silently found no edge
+          // and became a no-op unless the edge was also projected through WITH (issue #5013).
+          final RemoveClause rc = entry.getTypedClause();
+          for (final RemoveClause.RemoveItem item : rc.getItems())
             if (variable.equals(item.getVariable()))
               return true;
           break;
@@ -3947,6 +3984,13 @@ public class CypherExecutionPlan {
    * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
    */
   private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context) {
+    // Count-push-down operators reason only about node labels and edge types; they cannot honor
+    // inline property filters (e.g. (a:Node {id: 1})) or dynamic labels on the pattern's nodes.
+    // If any node carries such a filter, skip all push-down detectors so the query falls back to
+    // the normal materialization pipeline, which applies the filter. See issue #5071.
+    if (hasInlineNodePropertyOrDynamicLabel())
+      return null;
+
     CountOp op = tryDetectChainCountStar();
     if (op == null)
       op = tryDetectAntiJoinChainCountStar();
@@ -3960,6 +4004,27 @@ public class CypherExecutionPlan {
       return null;
     final String alias = isCountStarReturn();
     return new CSRCountStep(op, alias, context);
+  }
+
+  /**
+   * Returns true if any node in any MATCH path pattern carries an inline property filter
+   * (e.g. {@code {id: 1}} or {@code $props}) or a dynamic label. Such filters cannot be honored by
+   * the count-push-down operators, which key purely off node labels and edge types. See issue #5071.
+   */
+  private boolean hasInlineNodePropertyOrDynamicLabel() {
+    if (statement.getMatchClauses() == null)
+      return false;
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.hasPathPatterns())
+        continue;
+      for (final PathPattern pp : mc.getPathPatterns())
+        for (int i = 0; i <= pp.getRelationshipCount(); i++) {
+          final NodePattern node = pp.getNode(i);
+          if (node.hasProperties() || node.hasDynamicLabels())
+            return true;
+        }
+    }
+    return false;
   }
 
   private CountOp tryDetectChainCountStar() {

@@ -19,6 +19,7 @@
 package com.arcadedb.bolt.structure;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
+import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -27,9 +28,11 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.math.BigDecimal;
@@ -76,6 +79,9 @@ public class BoltStructureMapper {
       return resultToValue(result);
     }
 
+    if (value instanceof TraversalPath path)
+      return toPath(path);
+
     if (value instanceof RID rid) {
       return rid.toString();
     }
@@ -102,6 +108,12 @@ public class BoltStructureMapper {
     if (value instanceof Object[] array) {
       return toList(Arrays.asList(array));
     }
+
+    // Spatial Point: Cypher point() returns a plain Map (there is no Point class), so detect
+    // structurally (a crs key plus numeric x/y or longitude/latitude) before the generic Map branch.
+    final BoltPointStructure point = toPointStructure(value);
+    if (point != null)
+      return point;
 
     if (value instanceof Map<?, ?> map) {
       return toMap(map);
@@ -189,6 +201,62 @@ public class BoltStructureMapper {
     final Map<String, Object> properties = toProperties(edge);
 
     return new BoltUnboundRelationship(id, type, properties, elementId);
+  }
+
+  /**
+   * Convert a Cypher path result into a native Bolt Path structure. nodes and relationships are
+   * deduplicated (Bolt requires unique lists); indices is a flat [relIndex, nodeIndex, ...] sequence
+   * where relIndex is 1-based and signed by traversal direction (positive = the edge's OUT side is the
+   * previous path node, negative = traversed backward) and nodeIndex is the 0-based index of the node
+   * reached at that hop. The start node is index 0 and implicit.
+   */
+  public static BoltPath toPath(final TraversalPath path) {
+    final List<Vertex> vertices = path.getVertices();
+    final List<Edge> edges = path.getEdges();
+
+    // A MATCH path always has a start vertex, but TraversalPath's default constructor allows an
+    // empty path; guard it explicitly rather than let vertices.get(0) throw below.
+    if (vertices.isEmpty())
+      return new BoltPath(List.of(), List.of(), List.of());
+
+    final List<BoltNode> nodes = new ArrayList<>();
+    final Map<RID, Integer> nodeIndex = new HashMap<>();
+    final List<BoltUnboundRelationship> rels = new ArrayList<>();
+    final Map<RID, Integer> relIndex = new HashMap<>();
+    final List<Long> indices = new ArrayList<>(edges.size() * 2);
+
+    addPathNode(vertices.get(0), nodes, nodeIndex);
+
+    // Invariant: vertices.size() == edges.size() + 1, guaranteed by TraversalPath construction, so
+    // vertices.get(i + 1) below is always in range for i < edges.size().
+    for (int i = 0; i < edges.size(); i++) {
+      final Edge edge = edges.get(i);
+      final Vertex from = vertices.get(i);
+      final Vertex to = vertices.get(i + 1);
+
+      final RID relRid = edge.getIdentity();
+      Integer ri = relIndex.get(relRid);
+      if (ri == null) {
+        rels.add(toUnboundRelationship(edge));
+        ri = rels.size(); // 1-based
+        relIndex.put(relRid, ri);
+      }
+      final boolean forward = edge.getOut().equals(from.getIdentity());
+      indices.add((long) (forward ? ri : -ri));
+      indices.add((long) addPathNode(to, nodes, nodeIndex));
+    }
+    return new BoltPath(nodes, rels, indices);
+  }
+
+  private static int addPathNode(final Vertex vertex, final List<BoltNode> nodes, final Map<RID, Integer> nodeIndex) {
+    final RID rid = vertex.getIdentity();
+    Integer i = nodeIndex.get(rid);
+    if (i == null) {
+      nodes.add(toNode(vertex));
+      i = nodes.size() - 1; // 0-based
+      nodeIndex.put(rid, i);
+    }
+    return i;
   }
 
   /**
@@ -348,6 +416,52 @@ public class BoltStructureMapper {
   private static final byte SIG_DATE_TIME_OFFSET_UTC    = 0x49; // 'I'  [secondsUtc,  nanos, offsetSeconds] (Bolt 5.0+)
   private static final byte SIG_DATE_TIME_ZONEID_UTC    = 0x69; // 'i'  [secondsUtc,  nanos, zoneId]        (Bolt 5.0+)
 
+  private static final byte SIG_POINT_2D = 0x58; // 'X' [srid, x, y]
+  private static final byte SIG_POINT_3D = 0x59; // 'Y' [srid, x, y, z]
+
+  private static final byte SIG_DURATION = 0x45; // 'E' [months, days, seconds, nanoseconds]
+
+  private static final Set<String> RECOGNIZED_CRS = Set.of("cartesian", "cartesian-3D", "WGS-84", "WGS-84-3D");
+
+  /**
+   * Recognize a Cypher spatial point (a Map carrying numeric x/y or longitude/latitude, plus either a
+   * recognized crs value - {@code cartesian}, {@code cartesian-3D}, {@code WGS-84}, {@code WGS-84-3D} -
+   * or a numeric srid key) and encode it as a native Bolt Point structure. This is deliberately tighter
+   * than "any map with a crs key": an ordinary user map that happens to carry an unrelated crs value must
+   * not be misencoded as a Point on the wire. Returns null when the value is not a point so the caller
+   * falls through to generic Map handling.
+   */
+  static BoltPointStructure toPointStructure(final Object value) {
+    if (!(value instanceof Map<?, ?> map) || !map.containsKey("crs"))
+      return null;
+    final Object crs = map.get("crs");
+    if ((crs == null || !RECOGNIZED_CRS.contains(crs)) && !(map.get("srid") instanceof Number))
+      return null;
+    final Double x = pointCoord(map, "x", "longitude");
+    final Double y = pointCoord(map, "y", "latitude");
+    if (x == null || y == null)
+      return null;
+    final Double z = pointCoord(map, "z", "height");
+    final int srid = pointSrid(map, z != null);
+    return z == null ? new BoltPointStructure(srid, x, y) : new BoltPointStructure(srid, x, y, z);
+  }
+
+  private static Double pointCoord(final Map<?, ?> map, final String primary, final String alt) {
+    Object v = map.get(primary);
+    if (!(v instanceof Number))
+      v = map.get(alt);
+    return v instanceof Number n ? n.doubleValue() : null;
+  }
+
+  private static int pointSrid(final Map<?, ?> map, final boolean is3d) {
+    if (map.get("srid") instanceof Number n)
+      return n.intValue();
+    final String crs = map.get("crs") != null ? map.get("crs").toString() : "";
+    if (crs.startsWith("WGS-84"))
+      return is3d ? 4979 : 4326;
+    return is3d ? 9157 : 7203; // cartesian
+  }
+
   /**
    * Outbound direction (issue #4907): encode a temporal value as its native Bolt PackStream structure so
    * a Neo4j client receives a real date/time instead of an ISO-8601 string. Accepts both raw
@@ -355,16 +469,13 @@ public class BoltStructureMapper {
    * wrappers (from a scalar {@code RETURN e.valid_at}), which are unwrapped to their {@code java.time} value
    * first. Returns {@code null} when the value is not a temporal (so the caller can fall through).
    * <p>
-   * <b>Encoding is tied to the negotiated protocol version.</b> ArcadeDB advertises Bolt v4.4 max
-   * ({@code BoltNetworkExecutor.SUPPORTED_VERSIONS = { 4.4, 4.0, 3.0 }}), so the legacy (pre-5.0)
-   * DateTime / DateTimeZoneId encoding is always correct here: the seconds field is the LOCAL epoch-second
-   * (offset folded in), matching the legacy branch of {@link #fromPackStreamValue}. The inbound path already
-   * decodes both the legacy and the 5.0 "UTC" signatures, but this outbound path emits legacy only.
-   * TODO: if {@code SUPPORTED_VERSIONS} ever gains Bolt 5.0 (where seconds is the true UTC epoch-second),
-   * branch on the negotiated version here and emit {@code SIG_*_UTC}, otherwise a 5.0 driver would decode
-   * these structs to the wrong instant.
+   * <b>Encoding is tied to the negotiated protocol version.</b> DateTime / DateTimeZoneId values carry both
+   * epoch bases (local and true UTC) computed here at build time; {@link BoltDateTimeStructure#writeTo} then
+   * picks the legacy 'F'/'f' signature and local epoch-second for Bolt 4.x, or the 'I'/'i' signature and true
+   * UTC epoch-second for Bolt 5.0+, based on the writer's negotiated major version. All other temporal kinds
+   * (Date, Time, LocalTime, LocalDateTime, Duration) are version-invariant and stay on {@link BoltTemporalStructure}.
    */
-  static BoltTemporalStructure toTemporalStructure(final Object rawValue) {
+  static PackStreamStructure toTemporalStructure(final Object rawValue) {
     final Object value = unwrapCypherTemporal(rawValue);
 
     if (value instanceof LocalDate d)
@@ -380,8 +491,8 @@ public class BoltStructureMapper {
     if (value instanceof ZonedDateTime zdt) {
       if (zdt.getZone() instanceof ZoneOffset offset)
         return dateTimeWithOffset(zdt.toLocalDateTime(), offset);
-      return new BoltTemporalStructure(SIG_DATE_TIME_ZONEID_LEGACY, zdt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC),
-          (long) zdt.getNano(), zdt.getZone().getId());
+      return BoltDateTimeStructure.zoneId(zdt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC), zdt.toEpochSecond(),
+          zdt.getNano(), zdt.getZone().getId());
     }
     // A bare instant (Instant / java.util.Date) has no zone; Bolt has no pure-instant type, so it is
     // deliberately widened to a DateTime struct at UTC. The instant is preserved; the client receives a
@@ -399,14 +510,16 @@ public class BoltStructureMapper {
     if (value instanceof Calendar calendar)
       // Preserve the calendar's own zone instead of forcing UTC.
       return toTemporalStructure(ZonedDateTime.ofInstant(calendar.toInstant(), calendar.getTimeZone().toZoneId()));
+    if (value instanceof CypherDuration d)
+      return new BoltTemporalStructure(SIG_DURATION, d.getMonths(), d.getDays(), d.getSeconds(), (long) d.getNanosAdjustment());
 
     return null;
   }
 
-  private static BoltTemporalStructure dateTimeWithOffset(final LocalDateTime local, final ZoneOffset offset) {
-    // Legacy encoding: seconds is the local epoch-second (the wall clock treated as if UTC).
-    return new BoltTemporalStructure(SIG_DATE_TIME_OFFSET_LEGACY, local.toEpochSecond(ZoneOffset.UTC), (long) local.getNano(),
-        (long) offset.getTotalSeconds());
+  private static BoltDateTimeStructure dateTimeWithOffset(final LocalDateTime local, final ZoneOffset offset) {
+    // localEpoch: wall clock treated as UTC (legacy basis). utcEpoch: the true instant (5.0+ basis).
+    return BoltDateTimeStructure.offset(local.toEpochSecond(ZoneOffset.UTC), local.toEpochSecond(offset),
+        local.getNano(), offset.getTotalSeconds());
   }
 
   private static Object unwrapCypherTemporal(final Object value) {
@@ -420,9 +533,9 @@ public class BoltStructureMapper {
       return ldt.getValue();
     if (value instanceof CypherDateTime dt)
       return dt.getValue();
-    // NOTE: CypherDuration is intentionally not unwrapped - Bolt has a Duration struct but there is no single
-    // java.time value for it (months + days + seconds together), so a returned duration still falls through to
-    // the generic (ISO-8601 string) handling. Tracked as a follow-up if native Duration output is needed.
+    // NOTE: CypherDuration is intentionally not unwrapped to a java.time value - Bolt has a native Duration
+    // struct but there is no single java.time type for it (months + days + seconds together). It is matched
+    // directly as CypherDuration in toTemporalStructure below and emitted as a SIG_DURATION struct.
     return value;
   }
 
@@ -434,7 +547,7 @@ public class BoltStructureMapper {
   @SuppressWarnings("unchecked")
   public static Object fromPackStreamValue(final Object value) {
     if (value instanceof PackStreamReader.StructureValue structure)
-      return fromTemporalStructure(structure);
+      return fromInboundStructure(structure);
 
     if (value instanceof Map<?, ?> map) {
       final Map<String, Object> converted = new LinkedHashMap<>(map.size());
@@ -454,13 +567,14 @@ public class BoltStructureMapper {
   }
 
   /**
-   * Decode a single Bolt temporal PackStream structure into a {@code java.time} value.
-   * Unknown (non-temporal) structures are returned as-is. A structure that carries the wrong field
-   * count or field types for its temporal signature (a misbehaving client) is also returned as-is
+   * Decode a single inbound Bolt PackStream structure - temporal, Duration, or Point - into its
+   * engine-friendly value ({@code java.time} value, {@link CypherDuration}, or a Point map).
+   * Unknown (unrecognized) structures are returned as-is. A structure that carries the wrong field
+   * count or field types for its signature (a misbehaving client) is also returned as-is
    * rather than propagating a raw {@code IndexOutOfBoundsException} / {@code ClassCastException} out of
    * RUN parsing - the parameter simply stays opaque instead of crashing the connection.
    */
-  private static Object fromTemporalStructure(final PackStreamReader.StructureValue structure) {
+  private static Object fromInboundStructure(final PackStreamReader.StructureValue structure) {
     final List<Object> f = structure.getFields();
     final byte signature = structure.getSignature();
     if (!hasExpectedArity(signature, f.size()))
@@ -502,19 +616,29 @@ public class BoltStructureMapper {
         return ZonedDateTime.ofInstant(instant, ZoneId.of(String.valueOf(f.get(2))));
       }
 
+      case SIG_DURATION:
+        return new CypherDuration(asLong(f.get(0)), asLong(f.get(1)), asLong(f.get(2)), (int) asLong(f.get(3)));
+
+      case SIG_POINT_2D:
+        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), null);
+
+      case SIG_POINT_3D:
+        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), asDouble(f.get(3)));
+
       default:
-        // Not a temporal structure (or Duration, which has no single java.time representation): leave as-is.
+        // Not a recognized temporal, Duration or Point signature: leave as-is.
         return structure;
       }
     } catch (final RuntimeException e) {
-      // Malformed temporal payload (e.g. non-numeric field, unresolvable zone id): leave opaque.
+      // Malformed payload (e.g. non-numeric field, unresolvable zone id): leave opaque.
       return structure;
     }
   }
 
   /**
-   * Number of fields each temporal signature is expected to carry. Non-temporal signatures return
-   * {@code true} so they fall through to the default (opaque) branch unchanged.
+   * Number of fields each recognized signature (temporal, Duration, Point) is expected to carry.
+   * Unrecognized signatures return {@code true} so they fall through to the default (opaque)
+   * branch unchanged.
    */
   private static boolean hasExpectedArity(final byte signature, final int fieldCount) {
     return switch (signature) {
@@ -522,11 +646,48 @@ public class BoltStructureMapper {
       case SIG_TIME, SIG_LOCAL_DATE_TIME -> fieldCount == 2;
       case SIG_DATE_TIME_OFFSET_LEGACY, SIG_DATE_TIME_ZONEID_LEGACY, SIG_DATE_TIME_OFFSET_UTC, SIG_DATE_TIME_ZONEID_UTC ->
           fieldCount == 3;
+      case SIG_DURATION, SIG_POINT_3D -> fieldCount == 4;
+      case SIG_POINT_2D -> fieldCount == 3;
       default -> true;
     };
   }
 
   private static long asLong(final Object value) {
     return ((Number) value).longValue();
+  }
+
+  private static double asDouble(final Object value) {
+    return ((Number) value).doubleValue();
+  }
+
+  /**
+   * Build the inbound decoded representation of a Point: a map carrying x, y, an optional z,
+   * the srid and a derived crs key. The crs key is required so an echoed Point (e.g.
+   * {@code RETURN $p AS echo}) is recognized by {@link #toPointStructure} and re-encoded as a
+   * native Bolt Point rather than a generic map.
+   */
+  private static Map<String, Object> pointMap(final int srid, final double x, final double y, final Double z) {
+    final Map<String, Object> m = new LinkedHashMap<>();
+    m.put("srid", srid);
+    m.put("x", x);
+    m.put("y", y);
+    if (z != null)
+      m.put("z", z);
+    m.put("crs", crsForSrid(srid, z != null));
+    return m;
+  }
+
+  /**
+   * Map an SRID to its Neo4j-compatible crs name. Known SRIDs (4326 WGS-84, 4979 WGS-84-3D,
+   * 9157 cartesian-3D) map explicitly; any other SRID falls back to cartesian(-3D) based on
+   * dimensionality.
+   */
+  private static String crsForSrid(final int srid, final boolean is3d) {
+    return switch (srid) {
+      case 4326 -> "WGS-84";
+      case 4979 -> "WGS-84-3D";
+      case 9157 -> "cartesian-3D";
+      default -> is3d ? "cartesian-3D" : "cartesian";
+    };
   }
 }

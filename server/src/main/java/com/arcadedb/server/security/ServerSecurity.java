@@ -34,7 +34,6 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
-import com.arcadedb.utility.LRUCache;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
@@ -43,6 +42,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
@@ -64,19 +64,34 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private final        SecurityGroupFileRepository     groupRepository;
   private final        String                          algorithm;
   private final        SecretKeyFactory                secretKeyFactory;
-  private final        Map<String, String>             saltCache;
+  private final        ConcurrentSaltCache             saltCache;
   private final        int                             saltIteration;
-  private final        Map<String, ServerSecurityUser> users                = new HashMap<>();
+  // Volatile reference to an immutable-by-convention snapshot: readers (authenticate on Undertow worker
+  // threads) grab the current map lock-free, while loadUsers/applyReplicatedUsers build a fresh map and
+  // publish it in one atomic reference swap so a read never observes a clear()->repopulate empty window.
+  private volatile     Map<String, ServerSecurityUser> users                = new ConcurrentHashMap<>();
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
   public static final  int                             SALT_SIZE            = 32;
+
+  // Reused per thread so the Basic-auth hot path avoids a getInstance provider lookup on every call.
+  private static final ThreadLocal<MessageDigest>      SHA256_DIGEST        = ThreadLocal.withInitial(() -> {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (final NoSuchAlgorithmException e) {
+      throw new ServerSecurityException("SHA-256 not available for salt cache key", e);
+    }
+  });
   private              Timer                           reloadConfigurationTimer;
   private final        ApiTokenConfiguration           apiTokenConfig;
   private static final int                                MAX_TOKEN_FAILURES   = 5;
   private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
   private final        ConcurrentHashMap<String, long[]>  tokenFailures        = new ConcurrentHashMap<>();
   private              Timer                               tokenFailureCleanupTimer;
+  private static final int                                MAX_PASSWORD_FAILURES = 5;
+  private static final long                               PASSWORD_LOCKOUT_MS   = 30_000;
+  private final        ConcurrentHashMap<String, long[]>  passwordFailures      = new ConcurrentHashMap<>();
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -85,10 +100,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     final int cacheSize = configuration.getValueAsInteger(SERVER_SECURITY_SALT_CACHE_SIZE);
 
-    if (cacheSize > 0)
-      saltCache = Collections.synchronizedMap(new LRUCache<>(cacheSize));
-    else
-      saltCache = Collections.emptyMap();
+    saltCache = cacheSize > 0 ? new ConcurrentSaltCache(cacheSize) : null;
 
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
@@ -121,22 +133,26 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public void loadUsers() {
     try {
-      users.clear();
+      final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
 
       try {
         for (final JSONObject userJson : usersRepository.getUsers()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          users.put(user.getName(), user);
+          newUsers.put(user.getName(), user);
         }
       } catch (final JSONException e) {
         groupRepository.saveInError(e);
         for (final JSONObject userJson : SecurityUserFileRepository.createDefault()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          users.put(user.getName(), user);
+          newUsers.put(user.getName(), user);
         }
       }
 
-      if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
+      // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
+      // previous complete map or this one, never an empty intermediate state.
+      this.users = newUsers;
+
+      if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
         askForRootPassword();
 
       apiTokenConfig.load();
@@ -149,6 +165,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           public void run() {
             final long now = System.currentTimeMillis();
             tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
+            passwordFailures.entrySet().removeIf(e -> now - e.getValue()[1] > PASSWORD_LOCKOUT_MS);
           }
         }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
       }
@@ -181,19 +198,32 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       tokenFailureCleanupTimer = null;
     }
 
-    users.clear();
+    users = new ConcurrentHashMap<>();
     if (groupRepository != null)
       groupRepository.stop();
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
+    // Brute-force protection for password (Basic-auth / login) authentication, mirroring the API-token
+    // path: reject fast when a principal has exceeded the failure threshold within the lockout window.
+    // The failure map is keyed by a bounded hash prefix of the user name rather than the raw name, so an
+    // attacker flooding arbitrary-length user names cannot inflate per-entry memory, and plaintext user
+    // names are not retained as reachable heap keys.
+    final String failureKey = passwordFailureKey(userName);
+    final long[] existing = passwordFailures.get(failureKey);
+    if (existing != null && existing[0] >= MAX_PASSWORD_FAILURES && System.currentTimeMillis() - existing[1] < PASSWORD_LOCKOUT_MS)
+      throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
 
     final ServerSecurityUser su = users.get(userName);
-    if (su == null)
+    // A user with no stored password (e.g. before first-run root initialization) can never authenticate;
+    // guard here so passwordMatch is not handed a null hash to split.
+    if (su == null || su.getPassword() == null || !passwordMatch(userPassword, su.getPassword())) {
+      recordPasswordFailure(failureKey);
       throw new ServerSecurityException("User/Password not valid");
+    }
 
-    if (!passwordMatch(userPassword, su.getPassword()))
-      throw new ServerSecurityException("User/Password not valid");
+    // Successful authentication: clear the failure counter for this principal.
+    passwordFailures.remove(failureKey);
 
     if (databaseName != null) {
       final Set<String> allowedDatabases = su.getAuthorizedDatabases();
@@ -205,10 +235,46 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * Records a failed password authentication attempt for the given key, atomically incrementing the
+   * failure counter (or restarting it once the lockout window has elapsed). Each update publishes a
+   * fresh {@code long[]} instance rather than mutating the existing one in place, so concurrent readers
+   * in {@link #authenticate} always observe a safely-published, internally-consistent snapshot.
+   */
+  private void recordPasswordFailure(final String failureKey) {
+    passwordFailures.compute(failureKey, (k, entry) -> {
+      final long ts = System.currentTimeMillis();
+      if (entry == null || ts - entry[1] > PASSWORD_LOCKOUT_MS)
+        return new long[] { 1, ts };
+      // Preserve the FIRST-failure timestamp on increment (index 1). The lockout window is therefore
+      // measured from the first failure in the window, not the last - matching the API-token path.
+      return new long[] { entry[0] + 1, entry[1] };
+    });
+  }
+
+  /**
+   * Builds the brute-force failure-map key as a bounded (16 hex chars / 64-bit) SHA-256 prefix of the
+   * user name. Keeps per-entry memory constant regardless of user-name length and avoids retaining
+   * plaintext user names as reachable map keys, mirroring the salt-cache and API-token key strategy.
+   */
+  private static String passwordFailureKey(final String userName) {
+    final MessageDigest digest = SHA256_DIGEST.get();
+    final byte[] hash = digest.digest(userName.getBytes(StandardCharsets.UTF_8));
+    return HexFormat.of().formatHex(hash, 0, 8);
+  }
+
+  /**
    * Override the default @{@link CredentialsValidator} implementation (@{@link DefaultCredentialsValidator}) providing a custom one.
    */
   public void setCredentialsValidator(final CredentialsValidator credentialsValidator) {
     this.credentialsValidator = credentialsValidator;
+  }
+
+  /**
+   * Returns the active credentials validator so that all create-user paths can enforce a single
+   * password/username policy.
+   */
+  public CredentialsValidator getCredentialsValidator() {
+    return credentialsValidator;
   }
 
   public boolean existsUser(final String userName) {
@@ -332,11 +398,18 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // wrong hash format
       return false;
 
-    final int iterations = Integer.parseInt(parts[1]);
+    final int iterations;
+    try {
+      iterations = Integer.parseInt(parts[1]);
+    } catch (final NumberFormatException e) {
+      // malformed iteration count in the stored hash: treat as a non-match rather than throwing
+      return false;
+    }
     final String salt = parts[2];
     final String hash = encodePassword(password, salt, iterations);
 
-    return hash.equals(hashedPassword);
+    // Constant-time comparison to avoid leaking how many leading bytes matched via timing.
+    return MessageDigest.isEqual(hash.getBytes(StandardCharsets.UTF_8), hashedPassword.getBytes(StandardCharsets.UTF_8));
   }
 
   protected static String generateRandomSalt() {
@@ -346,8 +419,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   protected String encodePassword(final String password, final String salt, final int iterations) {
-    if (!saltCache.isEmpty()) {
-      final String encoded = saltCache.get(password + "$" + salt + "$" + iterations);
+    // Key the cache on a SHA-256 digest of the plaintext+salt+iterations rather than the raw
+    // password, so cleartext credentials are never retained as reachable map keys in the heap.
+    final String cacheKey = saltCache != null ? saltCacheKey(password, salt, iterations) : null;
+
+    if (cacheKey != null) {
+      final String encoded = saltCache.get(cacheKey);
       if (encoded != null)
         // FOUND CACHED
         return encoded;
@@ -357,9 +434,43 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final String encoded = "%s$%d$%s$%s".formatted(algorithm, iterations, salt, hash);
 
     // CACHE IT
-    saltCache.put(password + "$" + salt + "$" + iterations, encoded);
+    if (cacheKey != null)
+      saltCache.put(cacheKey, encoded);
 
     return encoded;
+  }
+
+  /**
+   * Builds the salt-cache key as a SHA-256 hex digest of {@code password$salt$iterations}. The raw
+   * password is never used as a key, so casual string-scanning of a heap/core dump or swap file
+   * cannot recover plaintext credentials from the cache.
+   * <p>
+   * Residual risk (by design, not a defect): the salt and iteration count are also embedded in the
+   * cached <em>value</em> (and the salt is not secret), so a full heap dump still lets an attacker
+   * brute-force low-entropy passwords by computing one fast SHA-256 per guess. That is inherent to
+   * caching a slow KDF under any recomputable-without-plaintext key; it is strictly better than the
+   * previous plaintext-key exposure but weaker than the PBKDF2 hash it sits next to. Prefer
+   * session-token auth for hot clients, and disable the cache
+   * ({@code arcadedb.server.securitySaltCacheSize=0}) when even this residual exposure is
+   * unacceptable.
+   * <p>
+   * The {@link MessageDigest} is held in a {@link ThreadLocal} to avoid a per-call
+   * {@code getInstance} provider lookup on the Basic-auth hot path.
+   */
+  private static String saltCacheKey(final String password, final String salt, final int iterations) {
+    // digest(byte[]) is a one-shot that resets the instance afterwards, so the reused ThreadLocal
+    // digest is always clean at entry on this update-free path.
+    final MessageDigest digest = SHA256_DIGEST.get();
+    final byte[] hash = digest.digest((password + "$" + salt + "$" + iterations).getBytes(StandardCharsets.UTF_8));
+    return HexFormat.of().formatHex(hash);
+  }
+
+  /**
+   * Returns a snapshot of the current salt-cache keys, or an empty set when the cache is disabled.
+   * Package-private: intended for tests that assert plaintext passwords are never retained as keys.
+   */
+  Set<String> getSaltCacheKeysSnapshot() {
+    return saltCache != null ? saltCache.keys() : Set.of();
   }
 
   public List<JSONObject> usersToJSON() {
@@ -387,6 +498,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     } catch (final IOException e) {
       LogManager.instance()
           .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
+      // Propagate so an HTTP create/update/drop user request fails instead of falsely returning success
+      // while nothing was persisted (the change would silently vanish on restart).
+      throw new ServerSecurityException(
+          "Error on saving security configuration to file '" + SecurityUserFileRepository.FILE_NAME + "'", e);
     }
   }
 
@@ -439,10 +554,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerException("Failed to save replicated users file", e);
     }
 
-    // Build in-memory map from the authoritative Raft payload, not from the file.
-    users.clear();
+    // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
+    // single atomic reference swap so concurrent readers never observe an empty/torn window.
+    final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
     for (final JSONObject userJson : list)
-      users.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
+      newUsers.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
+    this.users = newUsers;
   }
 
   public void saveGroups() {

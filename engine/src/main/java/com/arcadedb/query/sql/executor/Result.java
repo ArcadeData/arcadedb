@@ -140,7 +140,8 @@ public interface Result {
         final JSONArray array = new JSONArray();
         final int length = Array.getLength(val);
         for (int i = 0; i < length; i++)
-          array.put(Array.get(val, i));
+          array.put(valueToJSON(Array.get(val, i)));
+        return array;
       } else if (val instanceof Date) {
         final Database database = getDatabase();
         if (database != null)

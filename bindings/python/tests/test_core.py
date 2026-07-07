@@ -1,6 +1,6 @@
 """
 Core functionality tests for ArcadeDB Python bindings.
-These tests work with our base package (includes SQL, OpenCypher, Studio).
+These tests work with our base package (includes SQL and OpenCypher).
 """
 
 import json
@@ -276,6 +276,30 @@ def test_fulltext_search_preserves_wildcards(temp_db_path):
         contents = [record.get("content") for record in result]
 
         assert contents == ["Hello database world", "Help me search"]
+
+
+def test_fulltext_search_bm25_term_boosts(temp_db_path):
+    """BM25 scoring honors per-term caret boosts (term^weight) in the query string."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Article")
+        db.command("sql", "CREATE PROPERTY Article.content STRING")
+        db.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT")
+
+        with db.transaction():
+            db.command("sql", "INSERT INTO Article SET content = 'java tutorial'")
+            db.command("sql", "INSERT INTO Article SET content = 'database tutorial'")
+
+        # Boost 'database' heavily: the database article must outrank the java one
+        result = db.query(
+            "sql",
+            "SELECT content, $score FROM Article "
+            "WHERE SEARCH_INDEX('Article[content]', 'java^1.0 database^5.0') = true "
+            "ORDER BY $score DESC",
+        )
+        records = list(result)
+        assert len(records) == 2
+        assert records[0].get("content") == "database tutorial"
+        assert records[0].get("$score") > records[1].get("$score")
 
 
 def test_sqlscript_returns_last_command_result(temp_db_path):
@@ -920,3 +944,185 @@ def test_lookup_by_rid(temp_db_path):
         # Test lookup with invalid RID format
         with pytest.raises(arcadedb.ArcadeDBError):
             db.lookup_by_rid("invalid_rid")
+
+
+def test_to_json_list_bulk_materialization(temp_db_path):
+    """to_json_list returns all rows with JSON-native types via the bridge."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Item")
+        db.command("sql", "CREATE PROPERTY Item.n INTEGER")
+        db.command("sql", "CREATE PROPERTY Item.name STRING")
+        db.command("sql", "CREATE PROPERTY Item.active BOOLEAN")
+        db.command("sql", "CREATE PROPERTY Item.emb ARRAY_OF_FLOATS")
+
+        with db.transaction():
+            for i in range(25):
+                db.command(
+                    "sql",
+                    "INSERT INTO Item SET n = ?, name = ?, active = ?, emb = [1.5, 2.5]",
+                    i,
+                    f"item-{i}",
+                    i % 2 == 0,
+                )
+
+        # batch_size smaller than the result forces multiple Java batches
+        rows = db.query(
+            "sql", "SELECT n, name, active, emb FROM Item ORDER BY n"
+        ).to_json_list(batch_size=10)
+        assert len(rows) == 25
+        assert rows[3]["n"] == 3
+        assert rows[3]["name"] == "item-3"
+        assert rows[3]["active"] is False
+        assert rows[3]["emb"] == [1.5, 2.5]
+        # parity with the per-row path on JSON-representable columns
+        rows_slow = db.query(
+            "sql", "SELECT n, name, active, emb FROM Item ORDER BY n"
+        ).to_list()
+        assert [r["n"] for r in rows] == [r["n"] for r in rows_slow]
+
+
+def test_to_json_list_empty_result(temp_db_path):
+    """to_json_list on an empty result returns an empty list."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Empty")
+        assert db.query("sql", "SELECT FROM Empty").to_json_list() == []
+
+
+def test_resultset_close_and_context_manager(temp_db_path):
+    """ResultSet supports close() and the context-manager protocol."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE C")
+        with db.transaction():
+            for i in range(5):
+                db.command("sql", f"INSERT INTO C SET n = {i}")
+
+        with db.query("sql", "SELECT FROM C") as rs:
+            first = rs.first()
+            assert first is not None
+
+        rs = db.query("sql", "SELECT FROM C")
+        rs.close()
+        rs.close()  # idempotent
+
+
+def test_failed_open_does_not_hang_process_exit(tmp_path):
+    """A failed open_database must not leave the process unable to exit
+    (regression: engine's non-daemon AsyncFlush thread leaked on failed open)."""
+    import subprocess  # nosec B404 - fixed argv, no shell
+    import sys
+
+    code = (
+        "import arcadedb_embedded as a\n"
+        "try:\n"
+        f"    a.open_database({str(tmp_path / 'missing_db')!r})\n"
+        "except Exception:\n"
+        "    pass\n"
+        "print('ok')\n"
+    )
+    proc = subprocess.run(  # nosec B603 - interpreter + inline snippet, no shell
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0
+    assert "ok" in proc.stdout
+
+
+def test_run_in_transaction_commits_and_returns(temp_db_path):
+    """run_in_transaction executes fn transactionally and returns its value."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE R")
+
+        def work():
+            db.command("sql", "INSERT INTO R SET n = 1")
+            return "done"
+
+        assert db.run_in_transaction(work) == "done"
+        assert db.query("sql", "SELECT count(*) as c FROM R").first().get("c") == 1
+
+        # non-retryable errors propagate and roll back
+        def bad():
+            db.command("sql", "INSERT INTO R SET n = 2")
+            raise_sql = "SELECT FROM NonExistentType"
+            db.query("sql", raise_sql).first()
+
+        with pytest.raises(arcadedb.ArcadeDBError):
+            db.run_in_transaction(bad)
+        assert db.query("sql", "SELECT count(*) as c FROM R").first().get("c") == 1
+
+
+def test_single_list_arg_is_positional_param_array(temp_db_path):
+    """A single list argument binds one element per `?` placeholder
+    (historical semantics; regression test for the example-04 CSV ingest
+    idiom that briefly broke when lists became collection parameters)."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE M")
+        db.command("sql", "CREATE PROPERTY M.movieId LONG")
+        db.command("sql", "CREATE PROPERTY M.title STRING")
+        db.command("sql", "CREATE PROPERTY M.score DOUBLE")
+
+        with db.transaction():
+            db.command(
+                "sql",
+                "INSERT INTO M SET `movieId` = ?, `title` = ?, `score` = ?",
+                [1, "Toy Story", 4.5],
+            )
+
+        row = db.query("sql", "SELECT FROM M").first()
+        assert row.get("movieId") == 1
+        assert row.get("title") == "Toy Story"
+        assert row.get("score") == 4.5
+
+        # a collection among MULTIPLE args stays a single collection param
+        rs = db.query(
+            "sql", "SELECT vectorCosineSimilarity(?, ?) as r", [1.0, 0.0], [1.0, 0.0]
+        )
+        assert abs(next(rs).get("r") - 1.0) < 0.001
+
+
+def test_to_columns_typed_bulk_materialization(temp_db_path):
+    """to_columns returns typed numpy columns with pandas-convention nulls."""
+    np = __import__("numpy")
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE T")
+        db.command("sql", "CREATE PROPERTY T.n INTEGER")
+        db.command("sql", "CREATE PROPERTY T.x DOUBLE")
+        db.command("sql", "CREATE PROPERTY T.s STRING")
+        db.command("sql", "CREATE PROPERTY T.ok BOOLEAN")
+        db.command("sql", "CREATE PROPERTY T.ts DATETIME")
+        db.command("sql", "CREATE PROPERTY T.tags LIST")
+
+        with db.transaction():
+            db.command(
+                "sql",
+                "INSERT INTO T SET n = 1, x = 1.5, s = 'a', ok = true, "
+                "ts = date('2026-01-02 03:04:05', 'yyyy-MM-dd HH:mm:ss'), tags = [1, 2]",
+            )
+            db.command("sql", "INSERT INTO T SET n = 2, x = null, s = null, ok = false")
+
+        cols = db.query(
+            "sql", "SELECT n, x, s, ok, ts, tags FROM T ORDER BY n"
+        ).to_columns()
+        assert cols is not None
+        assert cols["n"].dtype == np.int64 and list(cols["n"]) == [1, 2]
+        assert np.isnan(cols["x"][1]) and cols["x"][0] == 1.5
+        assert cols["s"] == ["a", None]
+        assert str(cols["ts"].dtype).startswith("datetime64")
+        assert str(cols["ts"][0]).startswith("2026-01-02")
+        assert cols["tags"][0] == [1, 2] and cols["tags"][1] is None
+
+        # empty result
+        assert db.query("sql", "SELECT FROM T WHERE n > 99").to_columns() == {}
+
+
+def test_to_dataframe_fast_path(temp_db_path):
+    """to_dataframe uses the columnar path and yields typed dtypes."""
+    pytest.importorskip("pandas")
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE D")
+        with db.transaction():
+            for i in range(50):
+                db.command("sql", "INSERT INTO D SET n = ?, name = ?", i, f"r{i}")
+
+        df = db.query("sql", "SELECT n, name FROM D ORDER BY n").to_dataframe()
+        assert len(df) == 50
+        assert df["n"].dtype.kind == "i"
+        assert df["name"].iloc[3] == "r3"

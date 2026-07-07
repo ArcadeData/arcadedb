@@ -2078,6 +2078,11 @@ public class LocalSchema implements Schema {
     }
 
     database.getExecutionPlanCache().invalidate();
+    // The OpenCypher plan cache embeds schema-derived physical operators (index-seek vs scan, bucket
+    // sets, cost estimates), so a schema change - including one received from the HA leader via this
+    // update() path - must flush it too. The Cypher statement cache holds only the syntactic AST and
+    // is schema-independent, so it is intentionally left untouched (same as SQL's statement cache).
+    database.getCypherPlanCache().invalidate();
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {
@@ -2100,6 +2105,11 @@ public class LocalSchema implements Schema {
 
       // INVALIDATE EXECUTION PLAN IN CASE TYPE OR INDEX CONCUR IN THE GENERATED PLANS
       database.getExecutionPlanCache().invalidate();
+      // Same reasoning for the OpenCypher plan cache: a cached PhysicalPlan can reference an index or
+      // type that this schema mutation just added or dropped (e.g. a NodeIndexSeek over an index that
+      // no longer exists), so flush it on every local schema change. The Cypher statement (AST) cache
+      // is syntactic and schema-independent, so it is deliberately not flushed here.
+      database.getCypherPlanCache().invalidate();
 
       return result;
 

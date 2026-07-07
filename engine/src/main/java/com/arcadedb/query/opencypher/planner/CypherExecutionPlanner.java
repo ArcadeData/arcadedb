@@ -218,6 +218,17 @@ public class CypherExecutionPlanner {
           if (path.hasPathVariable())
             return false;
 
+          // Inline relationship property filters (e.g., [r:LINK {w: 1}]) and inline relationship
+          // WHERE predicates (e.g., [r:LINK WHERE r.w = 1]) are not applied by the optimizer's
+          // ExpandAll/ExpandInto operators (and the GAV/CSR fast paths never load edge objects,
+          // so they cannot evaluate edge predicates at all). Fall back to the legacy path, whose
+          // MatchRelationshipStep applies both filters correctly. See issue #5093.
+          for (int ri = 0; ri < path.getRelationshipCount(); ri++) {
+            final RelationshipPattern relP = path.getRelationship(ri);
+            if (relP.hasProperties() || relP.hasWhereExpression())
+              return false;
+          }
+
           for (final NodePattern node : path.getNodes()) {
             // Anonymous nodes (no variable) with unidirectional edges can't be handled
             // by the optimizer's expansion chain - anchor validation can't re-anchor

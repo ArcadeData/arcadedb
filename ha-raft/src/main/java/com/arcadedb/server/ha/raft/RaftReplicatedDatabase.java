@@ -50,8 +50,19 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
@@ -88,7 +99,6 @@ import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -99,6 +109,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 
@@ -111,8 +122,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /**
    * Carries transaction state between Phase 1 (WAL capture under lock) and
    * Replication (without lock) and Phase 2 (local apply under lock).
+   * Package-private so unit tests can build one for {@link #applyLocallyAfterMajorityCommit}.
    */
-  private record ReplicationPayload(
+  record ReplicationPayload(
       TransactionContext tx,
       TransactionContext.TransactionPhase1 phase1,
       byte[] walData,
@@ -138,6 +150,47 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       ThreadLocal.withInitial(ArrayList::new);
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+
+  /**
+   * Registry of leader-side exception class names to a factory that rebuilds the same type from its
+   * message, used by {@link #reconstructLeaderException} on forwarded-command errors. Reconstructing
+   * the exact type (rather than collapsing to a common supertype) preserves retry semantics for
+   * callers: a {@link com.arcadedb.exception.ConcurrentModificationException} or
+   * {@link LockTimeoutException} stays a {@link NeedRetryException} subtype and therefore retryable,
+   * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
+   * retryable one. It also lets callers catch the specific type directly.
+   * <p>
+   * Only {@link ArcadeDBException} subtypes with a single {@code (String)} constructor belong here:
+   * non-{@code ArcadeDBException} types (e.g. {@code SecurityException}) would not be caught by the
+   * {@code catch (ArcadeDBException)} on the forwarding path and would be re-wrapped anyway, and
+   * types that need structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed
+   * explicitly in {@link #reconstructLeaderException}. New entries are safe to add as one line each;
+   * extending this map is preferred over reflectively instantiating an arbitrary class name from the
+   * response. {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at
+   * ten pairs.
+   * <p>
+   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name, and
+   * {@link java.util.ConcurrentModificationException} is intentionally NOT imported, so that a bare
+   * {@code ConcurrentModificationException} anywhere in this file cannot silently bind to the JDK type
+   * (which the engine never throws) - the root cause of issue #5018.
+   */
+  private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.ofEntries(
+      Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
+      Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
+      Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
+      Map.entry(TimeoutException.class.getName(), TimeoutException::new),
+      Map.entry(TransactionException.class.getName(), TransactionException::new),
+      // #5064: preserves the 'committed cluster-wide, do NOT retry' contract when a follower forwards a
+      // write to the leader - without this entry the 409 body would collapse to a generic
+      // TransactionException on the follower and the client would lose the do-not-retry signal.
+      Map.entry(TransactionCommittedRemotelyException.class.getName(), TransactionCommittedRemotelyException::new),
+      Map.entry(CommandExecutionException.class.getName(), CommandExecutionException::new),
+      Map.entry(CommandParsingException.class.getName(), CommandParsingException::new),
+      Map.entry(CommandSQLParsingException.class.getName(), CommandSQLParsingException::new),
+      Map.entry(CommandSemanticException.class.getName(), CommandSemanticException::new),
+      Map.entry(QueryNotIdempotentException.class.getName(), QueryNotIdempotentException::new),
+      Map.entry(ValidationException.class.getName(), ValidationException::new),
+      Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
   private static final long LEADER_WAIT_POLL_INTERVAL_MS = 100;
@@ -376,6 +429,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // #5064: from here the transaction is durably committed CLUSTER-WIDE (the quorum accepted it) -
+        // shift the transaction's durability boundary so a local phase-2 failure below releases resources
+        // without rolling back user-held record identities (a retry would insert duplicates of records the
+        // cluster already committed) and without fencing (no orphaned local WAL record; pages are
+        // reconciled from the replicated payload in the catch).
+        payload.tx().setRemotelyCommitted(true);
+
         // Test-only fault injection: simulate a phase-2 commit failure while followers are ahead.
         final Consumer<String> phase2Fault = TEST_PHASE2_COMMIT_FAULT;
         if (phase2Fault != null)
@@ -386,24 +446,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
-        if (e instanceof ConcurrentModificationException)
-          LogManager.instance().log(this, Level.SEVERE,
-              """
-              Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
-              A page was concurrently modified under file lock - this may indicate a locking bug. \
-              Followers have applied this transaction but the leader has not. \
-              Stepping down to prevent stale reads. Error: %s""",
-              getName(), payload.tx(), e.getMessage());
-        else
-          LogManager.instance().log(this, Level.SEVERE,
-              """
-              Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). \
-              Followers have applied this transaction but the leader has not. \
-              Stepping down to prevent stale reads. Error: %s""",
-              getName(), payload.tx(), e.getMessage());
-        reconcileLeaderPagesAfterPhase2Failure(payload);
+        LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(e), getName(), payload.tx(), e.getMessage());
+        // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
+        // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
+        // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
+        // the same absolute bytes (idempotent), a lower-version one is skipped.
+        final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
-        throw e;
+        // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
+        // The generic rethrow here told applications the commit FAILED while the data was durably committed
+        // on the quorum - and an application-level retry of the same records would insert duplicates.
+        final String reconcileOutcome = reconciled ? " (local pages reconciled from the replicated payload)"
+            : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)";
+        throw new TransactionCommittedRemotelyException(
+            "Transaction " + payload.tx() + " is committed cluster-wide but the local apply failed"
+                + reconcileOutcome + ". Do NOT retry: reload the records and continue", e);
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -415,11 +472,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Applies phase 2 locally when ALL-quorum watch fails after MAJORITY commit.
    * The Raft entry is durably committed (MAJORITY applied it, including origin-skip on the leader),
    * so we must write the local pages to prevent permanent divergence.
+   * Package-private for direct unit testing (the real trigger needs an ALL-quorum cluster whose
+   * watch fails after MAJORITY commit, which depends on Ratis watch timeouts).
    */
-  private void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
+  void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // #5064: MAJORITY already committed - same durability-boundary shift as the main phase-2 path.
+        // Unlike that path, a failure here is NOT surfaced as TransactionCommittedRemotelyException: this is
+        // background ALL-quorum recovery with no user caller waiting on this commit - the reconcile +
+        // step-down below are the whole remedy, and the flag only steers the finally away from the
+        // identity rollback.
+        payload.tx().setRemotelyCommitted(true);
         payload.tx().commit2ndPhase(payload.phase1());
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
@@ -470,6 +535,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final long STEP_DOWN_RETRY_DELAY_MS = 500;
 
   /**
+   * Selects the SEVERE log template for a phase-2 commit failure that happened AFTER Raft had already
+   * replicated the entry (followers applied it, the leader did not). A page-version conflict - the
+   * engine's {@link com.arcadedb.exception.ConcurrentModificationException}, NOT
+   * {@link java.util.ConcurrentModificationException} - gets the more specific wording because it
+   * points at a locking bug rather than an arbitrary failure. Both templates take
+   * {@code (db, txId, errorMessage)} as their three arguments.
+   * <p>
+   * The type test is written against the fully qualified engine exception on purpose: before issue
+   * #5018 the check bound to the JDK {@code java.util.ConcurrentModificationException} (an unrelated
+   * type the engine never throws), so the page-conflict branch was dead and every phase-2 conflict
+   * was logged with the generic wording.
+   */
+  static String phase2CommitFailureMessage(final Throwable e) {
+    if (e instanceof com.arcadedb.exception.ConcurrentModificationException)
+      return """
+          Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
+          A page was concurrently modified under file lock - this may indicate a locking bug. \
+          Followers have applied this transaction but the leader has not. \
+          Stepping down to prevent stale reads. Error: %s""";
+
+    return """
+        Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). \
+        Followers have applied this transaction but the leader has not. \
+        Stepping down to prevent stale reads. Error: %s""";
+  }
+
+  /**
    * Attempts to bring the leader's pages into sync with the committed Raft entry after
    * {@code commit2ndPhase} has failed. The WAL bytes in {@code payload} are the same bytes
    * that Raft replicated to the followers; calling {@link com.arcadedb.engine.TransactionManager#applyChanges}
@@ -489,16 +581,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * is applied; any page it cannot is left for the normal follower-side WAL-gap path to resync once
    * this node steps down (issue #4740 Fix 2 makes that recoverable instead of fatal).
    */
-  private void reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
+  private boolean reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
+    // #5075 review: this also runs when the post-append failure FENCED the database. applyChanges operates
+    // at the FileManager/PageManager level and never passes through checkDatabaseIsOpen (the fence's only
+    // choke point besides the pre-append guard), so reconciliation works on a fenced database - it is the
+    // same page-level machinery recovery replay uses on reopen.
     try {
       final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
       proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), true);
       LogManager.instance().log(this, Level.INFO,
           "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());
+      return true;
     } catch (final Exception reconcileEx) {
       LogManager.instance().log(this, Level.SEVERE,
           "Phase 2 failure: leader page reconciliation also failed (db=%s, tx=%s): %s",
           getName(), payload.tx(), reconcileEx.getMessage());
+      return false;
     }
   }
 
@@ -1691,11 +1789,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
-        throw new TransactionException(
-            "Leader returned HTTP " + response.statusCode() + " for forwarded command: " + response.body());
+        throw reconstructLeaderException(response.statusCode(), response.body());
 
       return parseResultSetFromJson(response.body());
-    } catch (final TransactionException e) {
+    } catch (final ArcadeDBException e) {
       throw e;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -1757,5 +1854,55 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     return resultSet;
+  }
+
+  /**
+   * Parses the JSON error body returned by the leader and reconstructs the original exception so
+   * the Follower throws the same type the Leader would have thrown locally. For example, a
+   * {@link DuplicatedKeyException} is reconstructed with its index name, keys, and existing RID so
+   * callers can catch it directly instead of having to inspect a generic
+   * {@link TransactionException} message string. Other known types are reconstructed via
+   * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
+   * <p>
+   * If the body is non-JSON, empty, or the exception class is not recognised, a generic
+   * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
+   */
+  static RuntimeException reconstructLeaderException(final int httpStatus, final String body) {
+    final String message = "Leader returned HTTP " + httpStatus + " for forwarded command: " + body;
+    String detail = null;
+    String exceptionClass = null;
+    String exceptionArgs = null;
+
+    try {
+      if (body != null && !body.isEmpty()) {
+        final JSONObject json = new JSONObject(body);
+        detail = json.getString("detail", json.getString("error", null));
+        exceptionClass = json.getString("exception", null);
+        exceptionArgs = json.getString("exceptionArgs", null);
+      }
+    } catch (final Exception ignored) {
+      return new TransactionException(message);
+    }
+
+    if (exceptionClass == null)
+      return new TransactionException(message);
+
+    // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
+    // reconstructed explicitly rather than from a plain message.
+    if (DuplicatedKeyException.class.getName().equals(exceptionClass) && exceptionArgs != null) {
+      final String[] parts = exceptionArgs.split("\\|", 3);
+      if (parts.length == 3)
+        try {
+          return new DuplicatedKeyException(parts[0], parts[1], new RID(parts[2]));
+        } catch (final Exception ignored) {
+          // fall through if the RID token is malformed
+        }
+    }
+
+    final Function<String, RuntimeException> factory = LEADER_EXCEPTION_FACTORIES.get(exceptionClass);
+    if (factory != null)
+      return factory.apply(detail != null ? detail : message);
+
+    return new TransactionException(message);
   }
 }

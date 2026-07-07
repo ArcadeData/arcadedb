@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import org.apache.ratis.client.RaftClient;
@@ -41,6 +42,8 @@ import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.RaftServerRpc;
+import org.apache.ratis.server.RaftServerRpcWithProxy;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
@@ -118,6 +121,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
   private final    AtomicBoolean           httpsFallbackWarned = new AtomicBoolean(false);
+  // Client-reachable Bolt endpoints (optional object-form 'bolt' field in HA_SERVER_LIST). Advertised
+  // in the Bolt ROUTE routing table so neo4j:// drivers can discover leader/followers.
+  private final    Map<RaftPeerId, String> boltAddresses      = new HashMap<>();
+  // Logged at most once: warns operators that Bolt routing addresses are derived (not explicitly configured).
+  private final    AtomicBoolean           boltFallbackWarned = new AtomicBoolean(false);
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
   private final    String                  clusterName;
 
@@ -179,6 +187,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.httpAddresses.putAll(parsed.httpAddresses());
     this.httpsAddresses.putAll(parsed.httpsAddresses());
+    this.boltAddresses.putAll(parsed.boltAddresses());
 
     RaftPeerId resolvedLocalPeerId;
     try {
@@ -262,8 +271,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         GlobalConfiguration.HA_STALLED_REPLICA_RESYNC_DURATION_MS);
     final boolean resyncNarrative = configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING);
     final long peerUnreachableThresholdMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_UNREACHABLE_THRESHOLD);
+    final long peerChannelResetDurationMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_CHANNEL_RESET_DURATION);
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
-        this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs);
+        this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs, peerChannelResetDurationMs,
+        this::resetPeerReplicationChannel);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -380,6 +391,64 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
       }
     });
+  }
+
+  /**
+   * Leader-side recovery for a follower whose outbound replication gRPC channel has wedged on a stale
+   * DNS result after the follower restarted with a new address (issue #4696, "Gap 1"). Invoked by
+   * {@link ClusterMonitor} on the leader's lag-monitor thread once the follower has stayed continuously
+   * unreachable (no successful RPC) for {@link GlobalConfiguration#HA_PEER_CHANNEL_RESET_DURATION}.
+   * <p>
+   * Ratis keeps one outbound {@code GrpcServerProtocolClient} (wrapping a gRPC {@code ManagedChannel})
+   * per follower in the leader's server-RPC {@code PeerProxyMap}. When the follower's pod IP changes,
+   * grpc-java can keep returning the stale/negative DNS result on that cached channel indefinitely -
+   * Ratis's own error path only calls {@code resetConnectBackoff()}, which never recreates the channel
+   * or re-resolves DNS - so the appender never reconnects. {@code resetProxy} closes that one channel
+   * and drops it from the map; the appender's next send rebuilds a fresh channel against the same peer
+   * DNS name, which re-resolves to the follower's current IP. Only this one follower's channel is
+   * touched and leadership is unchanged, so there is no flapping risk (unlike a leadership transfer).
+   * <p>
+   * This is the automatic, less-disruptive alternative to the manual {@code transferLeadership} lever
+   * that Gap 1 was previously left to.
+   */
+  void resetPeerReplicationChannel(final String peerId) {
+    final RaftServer server = raftServer;
+    if (peerId == null || server == null || shutdownRequested || !isLeader())
+      return;
+
+    final RaftPeerId targetId = RaftPeerId.valueOf(peerId);
+    if (targetId.equals(localPeerId))
+      return; // the leader keeps no appender channel to itself
+
+    // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
+    // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
+    // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
+    if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
+      LogManager.instance().log(this, Level.FINE,
+          "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and reconnect (issue #4696).",
+          peerId);
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "Requested a replication-channel reset for follower '%s' but the Raft server RPC is not proxy-based; cannot reset the channel.",
+          peerId);
+  }
+
+  /**
+   * Closes and re-creates the leader's outbound gRPC proxy (channel) for {@code peerId}, forcing a
+   * fresh DNS re-resolution on the next send. Returns {@code true} when the reset was applied, or
+   * {@code false} when the RPC layer is not the expected proxy-based Ratis implementation.
+   * <p>
+   * Package-private and static so the Ratis-coupling seam can be unit-tested without a live cluster.
+   */
+  static boolean resetPeerAppenderChannel(final RaftServerRpc rpc, final RaftPeerId peerId) {
+    if (rpc instanceof RaftServerRpcWithProxy<?, ?> withProxy) {
+      final var proxies = withProxy.getProxies();
+      if (proxies != null) {
+        proxies.resetProxy(peerId);
+        return true;
+      }
+    }
+    return false;
   }
 
   private static ThreadPoolExecutor createStalledResyncExecutor() {
@@ -1181,6 +1250,31 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Builds a single-snapshot Bolt routing table (leader as writer, followers as readers) from one
+   * {@link #getLeaderId()} read, so a concurrent leader change cannot make the writer and reader sets
+   * mutually inconsistent. Returns {@code null} when no leader is known or the leader has no resolvable
+   * Bolt address. Readers reflect the configured cluster membership, matching {@link #getReplicaAddresses()};
+   * peers whose Bolt address cannot be resolved are skipped.
+   */
+  public HAServerPlugin.BoltRoutingTable getBoltRoutingTable() {
+    final RaftPeerId leaderId = getLeaderId();
+    if (leaderId == null)
+      return null;
+    final String writer = resolveBoltAddress(leaderId);
+    if (writer == null)
+      return null;
+    final List<String> readers = new ArrayList<>();
+    for (final RaftPeer peer : raftGroup.getPeers()) {
+      if (!peer.getId().equals(leaderId)) {
+        final String reader = resolveBoltAddress(peer.getId());
+        if (reader != null)
+          readers.add(reader);
+      }
+    }
+    return new HAServerPlugin.BoltRoutingTable(writer, List.copyOf(readers));
+  }
+
+  /**
    * Resolves the HTTP address (host:port) of a peer. When the peer's HTTP port was declared
    * explicitly in {@link GlobalConfiguration#HA_SERVER_LIST} (the {@code host:raftPort:httpPort}
    * syntax) that value is returned. Otherwise a best-effort address is synthesized by combining the
@@ -1205,6 +1299,43 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (configured != null)
       return configured;
     return deriveHttpAddressWithWarning(peer.getAddress());
+  }
+
+  /**
+   * Resolves the client-reachable Bolt address (host:boltPort) of a peer. Returns the address declared
+   * with the object-form {@code bolt:} field when present; otherwise derives it from the peer's Raft host
+   * plus this node's local Bolt port. The fallback is correct only for homogeneous deployments where every
+   * node listens on the same Bolt port (e.g. a Kubernetes StatefulSet); a one-time WARNING is logged so
+   * operators declare explicit Bolt ports for heterogeneous clusters. Returns {@code null} when the peer is
+   * unknown or the local Bolt port is unavailable.
+   */
+  private String resolveBoltAddress(final RaftPeerId peerId) {
+    if (peerId == null)
+      return null;
+    final String configured = boltAddresses.get(peerId);
+    if (configured != null)
+      return configured;
+    final int localBoltPort = configuration.getValueAsInteger(GlobalConfiguration.BOLT_PORT);
+    final String derived = deriveBoltAddress(peerRaftAddress(peerId), localBoltPort);
+    if (derived != null && boltFallbackWarned.compareAndSet(false, true))
+      LogManager.instance().log(this, Level.WARNING,
+          "HA Bolt routing addresses are not configured in '%s': deriving peer Bolt endpoints from each peer's Raft host plus this node's Bolt port (%d). "
+              + "This is correct only when every node listens on the same Bolt port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous "
+              + "Bolt ports, declare them explicitly using the 'host:{raft:..,bolt:..}' object syntax in %s.",
+          GlobalConfiguration.HA_SERVER_LIST.getKey(), localBoltPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
+    return derived;
+  }
+
+  /**
+   * Derives a Bolt address (host:boltPort) by combining a peer's Raft host with the given Bolt port.
+   * Returns {@code null} when the port is not positive or the host cannot be extracted. Package-private
+   * for testing.
+   */
+  static String deriveBoltAddress(final String raftAddress, final int boltPort) {
+    if (raftAddress == null || boltPort <= 0)
+      return null;
+    final String host = extractHost(raftAddress);
+    return host != null ? host + ":" + boltPort : null;
   }
 
   private String deriveHttpAddressWithWarning(final String raftAddress) {

@@ -39,6 +39,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -176,6 +177,15 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
                 var idx = indexes.getJSONObject(index);
                 var idxType = Schema.INDEX_TYPE.valueOf(idx.getString("type"));
                 var idxFields = idx.getJSONArray("properties").toList().stream().map(Object::toString).toArray(String[]::new);
+
+                // LSM_VECTOR indexes carry their own metadata (dimensions, similarity, ...) and, unlike the other
+                // index types, do not serialise the "unique"/"nullStrategy" fields (issue #5069). Rebuild them
+                // through the dedicated vector builder so the exported metadata is restored instead of crashing.
+                if (idxType == Schema.INDEX_TYPE.LSM_VECTOR) {
+                  loadVectorIndex(databaseSchema, typeName, idxFields, idx);
+                  return;
+                }
+
                 var typeIndex = docType.getOrCreateTypeIndex(idxType, idx.getBoolean("unique"), idxFields);
                 typeIndex.setNullStrategy(NULL_STRATEGY.valueOf(idx.getString("nullStrategy")));
               });
@@ -185,6 +195,27 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // final report
     databaseSchema.getTypes()
         .forEach(type -> logger.logLine(2, " - Created type %s: %s", type.getName(), type.toJSON()));
+  }
+
+  /**
+   * Recreates an {@code LSM_VECTOR} index from its exported schema definition (issue #5069). Vector indexes need the
+   * full metadata (dimensions, similarity function, HNSW parameters, ...) that {@code getOrCreateTypeIndex} cannot
+   * carry, so they are rebuilt through the dedicated {@link TypeLSMVectorIndexBuilder}. Records imported afterwards
+   * populate the graph incrementally through the index {@code put} hook.
+   */
+  private void loadVectorIndex(final Schema databaseSchema, final String typeName, final String[] fields, final JSONObject idx) {
+    // The exporter (LSMVectorIndex.toJSON) writes the similarity function under "similarityFunction", while the
+    // builder reads "similarity"; bridge the two so the configured metric survives the round-trip.
+    final JSONObject metadata = new JSONObject(idx.toMap());
+    if (metadata.has("similarityFunction") && !metadata.has("similarity"))
+      metadata.put("similarity", metadata.getString("similarityFunction"));
+
+    final TypeLSMVectorIndexBuilder builder = databaseSchema.buildTypeIndex(typeName, fields)
+        .withType(Schema.INDEX_TYPE.LSM_VECTOR)
+        .withLSMVectorType();
+    builder.withMetadata(metadata);
+    builder.withIgnoreIfExists(true);
+    builder.create();
   }
 
   private void loadDocument(DatabaseInternal database,

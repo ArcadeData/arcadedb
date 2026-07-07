@@ -55,6 +55,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       int                                    currentValueIndex = 0;
   private       int                                    validIterators;
   private       TempIndexCursor                        txCursor;
+  private       Object[]                               txCursorKeys;
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -202,9 +203,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
             if (pageCursor.hasNext()) {
               pageCursor.next();
               cursorKeys[i] = pageCursor.getKeys();
-            } else
-              // INVALID
-              pageCursors[i] = null;
+              // Re-evaluate the new key from scratch (removedKeys, range and tombstone checks): falling
+              // through would run them against the OLD key still bound above.
+              continue;
+            }
+            // INVALID
+            pageCursors[i] = null;
+            break;
           }
         }
 
@@ -224,36 +229,43 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
         if (pageCursors[i] != null) {
           final RID[] rids = pageCursors[i].getValue();
-          if (rids != null && rids.length > 0) {
-            // For non-unique indexes a key may have a mix of valid RIDs and per-RID tombstones
-            // (encoded as RID(-(bucketId+2), position)). The page still contributes to iteration
-            // as long as it holds anything other than pure REMOVED_ENTRY_RID full-key tombstones;
-            // per-RID filtering happens in next(). validIterators must stay in sync with the
-            // --validIterators decrement done by next() when each pageCursor is advanced.
-            boolean allFullKeyTomb = true;
+
+          // For non-unique indexes a key may have a mix of valid RIDs and per-RID tombstones
+          // (encoded as RID(-(bucketId+2), position)). The page still contributes to iteration
+          // as long as it holds anything other than pure REMOVED_ENTRY_RID full-key tombstones;
+          // per-RID filtering happens in next().
+          boolean allFullKeyTomb = rids != null && rids.length > 0;
+          if (allFullKeyTomb)
             for (final RID r : rids) {
               if (r.getBucketId() != -1 || r.getPosition() != -1) {
                 allFullKeyTomb = false;
                 break;
               }
             }
-            if (allFullKeyTomb)
-              removedKeys.add(keys);
-            else
-              validIterators++;
-          }
-        }
 
-        if (validIterators == 0 && pageCursor != null) {
-          // CHECK FOR THE NEXT ENTRY
-          if (pageCursor.hasNext())
-            pageCursor.next();
-          else
+          if (allFullKeyTomb) {
+            // #4944: never leave a cursor parked on a full-key tombstone. It would stay alive but
+            // uncounted in validIterators, while next() decrements the counter whenever ANY cursor
+            // is exhausted or leaves the range: the counter could reach zero with other cursors
+            // still holding valid rows, silently truncating the scan. Skip past tombstone-only keys
+            // (recording them so older cursors skip their shadowed entries too: a newer re-add of
+            // the same key always lives in an earlier-processed cursor, so this stays temporally
+            // correct) until a countable key is found or the cursor is exhausted. The invariant is:
+            // every cursor left alive by this constructor is counted in validIterators.
+            removedKeys.add(keys);
+            if (pageCursor.hasNext()) {
+              pageCursor.next();
+              cursorKeys[i] = pageCursor.getKeys(); // keep cache in sync with the advanced cursor
+              continue;
+            }
+            pageCursors[i] = null;
+            cursorKeys[i] = null;
             break;
-        } else
-          break;
+          }
 
-        pageCursor = pageCursors[i];
+          validIterators++;
+        }
+        break;
       }
     }
 
@@ -350,19 +362,28 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
       }
 
-      if (txCursor != null && txCursor.hasNext()) {
-        currentValues = new RID[] { (RID) txCursor.next() };
-
-        final Object[] txKeys = txCursor.getKeys();
-        if (minorKey != null) {
-          final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, txKeys, minorKey);
-          if (compare == 0) {
-          } else if ((ascendingOrder && compare < 0) || (!ascendingOrder && compare > 0)) {
-            minorKey = txKeys;
+      // #5055: the in-transaction overlay batch (txCursor) always covers a SINGLE key (txCursorKeys, all its
+      // entries share it). Decide whether that key participates in this round WITHOUT consuming any entry yet,
+      // so its RIDs can be MERGED with the disk RIDs when the keys collide (a committed and an uncommitted
+      // record sharing the same non-unique key), and so a tx key strictly greater than the disk minor key is
+      // left for a later round instead of being consumed and dropped.
+      boolean includeTx = false;
+      if (txCursor != null && txCursor.hasNext() && txCursorKeys != null) {
+        if (minorKey == null) {
+          minorKey = txCursorKeys;
+          includeTx = true;
+        } else {
+          final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, txCursorKeys, minorKey);
+          if (compare == 0)
+            // COLLISION: the same key exists on disk AND in the overlay - merge both sets of RIDs.
+            includeTx = true;
+          else if ((ascendingOrder && compare < 0) || (!ascendingOrder && compare > 0)) {
+            // The overlay key sorts before every disk key: emit it alone this round.
+            minorKey = txCursorKeys;
             minorKeyIndexes.clear();
+            includeTx = true;
           }
-        } else
-          minorKey = txKeys;
+        }
       }
 
       if (minorKey == null) {
@@ -412,15 +433,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
         }
       }
 
-      // ADVANCE EACH PAGE CURSOR PAST THIS KEY AND, if any page contributed, refresh
-      // currentValues with the per-RID-filtered set. When the minor key came only from
-      // the in-transaction cursor (minorKeyIndexes empty), leave the currentValues that
-      // was already set by the txCursor branch above.
+      // Collect the surviving RIDs for this key. #5055: disk RIDs and overlay RIDs are UNIONed - a committed
+      // record and an uncommitted one sharing the same non-unique key must both appear during in-tx iteration.
+      final Set<RID> mergedRIDs = new HashSet<>();
+
+      // ADVANCE EACH PAGE CURSOR PAST THIS KEY and, if any page contributed, add its per-RID-filtered set.
       if (!minorKeyIndexes.isEmpty()) {
-        final Set<RID> validRIDs = new HashSet<>();
         for (final var entry : ridState.entrySet()) {
           if (Boolean.FALSE.equals(entry.getValue()))
-            validRIDs.add(entry.getKey());
+            mergedRIDs.add(entry.getKey());
         }
 
         for (int i = 0; i < minorKeyIndexes.size(); ++i) {
@@ -449,12 +470,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
             --validIterators;
           }
         }
-
-        if (validRIDs.isEmpty())
-          currentValues = null;
-        else
-          currentValues = validRIDs.toArray(new RID[0]);
       }
+
+      // #5055: drain ALL overlay RIDs sharing this key (the whole txCursor batch) and merge them in.
+      if (includeTx)
+        while (txCursor.hasNext())
+          mergedRIDs.add((RID) txCursor.next());
+
+      currentValues = mergedRIDs.isEmpty() ? null : mergedRIDs.toArray(new RID[0]);
 
       if (txCursor == null || !txCursor.hasNext())
         getClosestEntryInTx(currentKeys != null ? currentKeys : fromKeys, false);
@@ -468,6 +491,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
   private void getClosestEntryInTx(final Object[] keys, final boolean inclusive) {
     txCursor = null;
+    txCursorKeys = null;
     if (index.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
@@ -475,20 +499,25 @@ public class LSMTreeIndexCursor implements IndexCursor {
           .getTransaction().getIndexChanges().getIndexKeys(index.getName());
       if (indexChanges != null) {
         final Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> entry;
+        // #4947: biased navigation keys, never plain ComparableKeys. A PARTIAL key compares equal to every
+        // entry sharing its prefix, so plain ceiling/floor/higher/lower land in the MIDDLE of the prefix run
+        // (wherever the tree walk first hits equality) and silently skip the run's other entries. The biased
+        // keys sort strictly before (low) or after (high) the whole run, making the navigation exact; for
+        // full-length keys they degenerate to the plain behavior.
         if (ascendingOrder) {
           if (keys == null)
             entry = indexChanges.firstEntry();
           else if (inclusive)
-            entry = indexChanges.ceilingEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.ceilingEntry(TransactionIndexContext.lowNavigationKey(keys));
           else
-            entry = indexChanges.higherEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.higherEntry(TransactionIndexContext.highNavigationKey(keys));
         } else {
           if (keys == null)
             entry = indexChanges.lastEntry();
           else if (inclusive)
-            entry = indexChanges.floorEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.floorEntry(TransactionIndexContext.highNavigationKey(keys));
           else
-            entry = indexChanges.lowerEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.lowerEntry(TransactionIndexContext.lowNavigationKey(keys));
         }
 
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values =
@@ -503,16 +532,25 @@ public class LSMTreeIndexCursor implements IndexCursor {
               final Object[] tmpKeys = entry.getKey().values;
 
               if (toKeys != null) {
+                // #5055: toKeys bounds the FAR end of the scan, whose direction flips with the order: for an
+                // ascending scan it is the upper bound (skip entries ABOVE it), for a descending scan it is the
+                // lower bound (skip entries BELOW it). The filter used the ascending sense unconditionally, so
+                // a descending in-tx overlay dropped every entry above the lower bound - e.g. the top key of a
+                // range, including a committed/uncommitted collision there.
                 final int cmp = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, tmpKeys, toKeys);
 
-                if (cmp > 0)
+                if (ascendingOrder ? cmp > 0 : cmp < 0)
                   continue;
                 else if (!toKeysInclusive && cmp == 0)
                   continue;
               }
 
-              if (txChanges == null)
+              if (txChanges == null) {
                 txChanges = new HashSet<>();
+                // All entries of this batch share the single overlay key just navigated to; cache it so
+                // next() can peek the batch key without consuming an entry (#5055).
+                txCursorKeys = tmpKeys;
+              }
 
               txChanges.add(new IndexCursorEntry(tmpKeys, value.rid, 1));
             }

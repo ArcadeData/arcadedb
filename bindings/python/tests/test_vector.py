@@ -650,13 +650,15 @@ class TestLSMVectorIndex:
             )
 
         lookup_calls = {"count": 0}
-        original_lookup = test_db.lookup_by_rid
+        # Result materialization uses the Java-RID fast path (no string
+        # round-trip), still delegated to the Database wrapper.
+        original_lookup = test_db._lookup_by_java_rid
 
         def wrapped_lookup(rid):
             lookup_calls["count"] += 1
             return original_lookup(rid)
 
-        monkeypatch.setattr(test_db, "lookup_by_rid", wrapped_lookup)
+        monkeypatch.setattr(test_db, "_lookup_by_java_rid", wrapped_lookup)
 
         results = index.find_nearest([1.0, 0.0, 0.0], k=2)
 

@@ -13,3 +13,6 @@ data/
 # Benchmark logs
 benchmark_logs/
 benchmark_work/
+
+# scratch logs (e.g. `... | tee foo`)
+/foo

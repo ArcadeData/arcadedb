@@ -84,12 +84,18 @@ class ValidateSpecTest(unittest.TestCase):
         self.assertTrue(any("tracking_issue" in e for e in errors), errors)
 
     def test_missing_gap_tracking_area_is_flagged(self):
-        spec = minimal_valid_spec()
-        spec["scenarios"] = [s for s in spec["scenarios"] if s["id"] != "TYPE-900"]
-        errors = validate(spec)
-        self.assertTrue(
-            any("type-roundtrip" in e for e in errors), errors
-        )
+        # REQUIRED_GAP_AREAS is empty once every #4890-tracked gap is closed, so the missing-gap
+        # mechanism is exercised against a temporarily required area rather than the live config.
+        import validate_spec
+        original = validate_spec.REQUIRED_GAP_AREAS
+        validate_spec.REQUIRED_GAP_AREAS = {"connection"}
+        try:
+            spec = minimal_valid_spec()
+            spec["scenarios"] = [s for s in spec["scenarios"] if s["id"] != "CONN-900"]
+            errors = validate(spec)
+            self.assertTrue(any("connection" in e for e in errors), errors)
+        finally:
+            validate_spec.REQUIRED_GAP_AREAS = original
 
     def test_missing_driver_language_is_flagged(self):
         spec = minimal_valid_spec()

@@ -147,7 +147,7 @@ def build_rid_lookup_for_vertex_type(db, vertex_type: str) -> Dict[int, str]:
     rows = db.query(
         "sql",
         f"SELECT Id, @rid as rid FROM {safe_vertex_type}",  # nosec B608 - validated identifier
-    ).to_list()
+    ).to_json_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
         row_id = row.get("Id")
@@ -683,6 +683,9 @@ def run_graph_batch_graph_load(
                 for vertex_id, rid in zip(vertex_ids, created_rids):
                     rid_lookup[vertex_id] = rid
 
+            edge_sources: List[str] = []
+            edge_destinations: List[str] = []
+            edge_payloads: List[dict] = []
             for edge_id in range(1, edge_count + 1):
                 from_id, to_id = edge_endpoints(edge_id, vertex_count)
 
@@ -708,7 +711,17 @@ def run_graph_batch_graph_load(
                             string_size,
                         )
 
-                batch.new_edge(from_rid, edge_type, to_rid, **payload)
+                edge_sources.append(from_rid)
+                edge_destinations.append(to_rid)
+                edge_payloads.append(payload)
+
+            if edge_sources:
+                batch.new_edges(
+                    edge_sources,
+                    edge_type,
+                    edge_destinations,
+                    properties=edge_payloads,
+                )
 
         db.command("sql", f"CREATE INDEX ON {vertex_type} (Id) UNIQUE_HASH")
 

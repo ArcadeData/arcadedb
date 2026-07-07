@@ -241,20 +241,7 @@ SQL-first route-planning workflow:
 
 ---
 
-### 🌐 [21_server_mode_http_access.py](./21_server_mode_http_access.py)
-**Server Mode | HTTP API | Bearer Auth | Mixed Access Pattern**
-
-Embedded-first server workflow:
-- starts ArcadeDB server mode from the Python package
-- reads server metadata over HTTP
-- creates a database through the server-managed Java API
-- mixes embedded writes with HTTP queries and updates
-
-**Learn:** The current supported client-server posture for this repo without changing the public Python API surface
-
----
-
-### 🕸️ [22_graph_analytical_view_sql.py](./22_graph_analytical_view_sql.py)
+### 🕸️ [21_graph_analytical_view_sql.py](./21_graph_analytical_view_sql.py)
 **Graph Analytical View | SQL DDL | Schema Metadata | Rebuild Lifecycle**
 
 SQL-first Graph Analytical View workflow:

@@ -75,32 +75,53 @@ public class DatabaseFactory implements AutoCloseable {
   public synchronized Database open(final ComponentFile.MODE mode) {
     checkForActiveInstance(databasePath);
 
-    if (ACTIVE_INSTANCES.isEmpty())
-      PageManager.INSTANCE.configure();
+    // #4927: refcounted acquire under the PageManager's global lifecycle lock - the previous
+    // ACTIVE_INSTANCES.isEmpty() check-then-act raced concurrent open/close across factory instances.
+    PageManager.INSTANCE.acquire();
 
-    final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
-    database.setAutoTransaction(autoTransaction);
-    database.open();
+    LocalDatabase database = null;
+    try {
+      database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
+      database.setAutoTransaction(autoTransaction);
+      database.open();
 
-    registerActiveInstance(database);
+      registerActiveInstance(database);
 
-    return database;
+      return database;
+    } catch (final Throwable e) {
+      // Balance the acquire above so a failed open does not leak the flush thread (#4991) - but EXACTLY
+      // once per instance (#5070): when registerActiveInstance loses a same-path open race it closes
+      // the database itself, and that close already consumed this reference; releasing again here would
+      // double-decrement and could tear the manager down under the race winner.
+      if (database == null || !database.isPageManagerReferenceReleased())
+        PageManager.INSTANCE.release();
+      throw e;
+    }
   }
 
   public synchronized Database create() {
     checkForActiveInstance(databasePath);
 
-    if (ACTIVE_INSTANCES.isEmpty())
-      PageManager.INSTANCE.configure();
+    // #4927: refcounted acquire under the PageManager's global lifecycle lock - the previous
+    // ACTIVE_INSTANCES.isEmpty() check-then-act raced concurrent open/close across factory instances.
+    PageManager.INSTANCE.acquire();
 
-    final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
-        callbacks);
-    database.setAutoTransaction(autoTransaction);
-    database.create();
+    LocalDatabase database = null;
+    try {
+      database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
+      database.setAutoTransaction(autoTransaction);
+      database.create();
 
-    registerActiveInstance(database);
+      registerActiveInstance(database);
 
-    return database;
+      return database;
+    } catch (final Throwable e) {
+      // Balance the acquire above so a failed create does not leak the flush thread (#4991) - but EXACTLY
+      // once per instance (#5070): see open().
+      if (database == null || !database.isPageManagerReferenceReleased())
+        PageManager.INSTANCE.release();
+      throw e;
+    }
   }
 
   public synchronized DatabaseFactory setAutoTransaction(final boolean enabled) {
@@ -142,9 +163,12 @@ public class DatabaseFactory implements AutoCloseable {
     return ACTIVE_INSTANCES.get(normalizedPath);
   }
 
-  protected static boolean removeActiveDatabaseInstance(final String databasePath) {
-    var normalizedPath = getNormalizedPath(databasePath);
-    ACTIVE_INSTANCES.remove(normalizedPath);
+  protected static boolean removeActiveDatabaseInstance(final String databasePath, final Database instance) {
+    final var normalizedPath = getNormalizedPath(databasePath);
+    // Keyed to the instance (#5070): when registerActiveInstance closes a same-path open-race LOSER,
+    // the loser's close must not remove the WINNER's still-live mapping - a plain remove(path) did, orphaning
+    // the winner from the registry and letting a third open of the same path pass checkForActiveInstance.
+    ACTIVE_INSTANCES.remove(normalizedPath, instance);
     return ACTIVE_INSTANCES.isEmpty();
   }
 

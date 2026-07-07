@@ -5,6 +5,8 @@ Tests cover:
 - New SQL vector functions introduced in recent ArcadeDB versions
 """
 
+import math
+
 import arcadedb_embedded as arcadedb
 import jpype.types as jtypes
 import pytest
@@ -101,6 +103,106 @@ class TestVectorSQL:
         res = next(rs).get("res")
         assert abs(res[0] - 0.6) < 0.001
         assert abs(res[1] - 0.8) < 0.001
+
+    def test_vector_has_null(self, test_db):
+        """vector.hasNull / vectorHasNull detect NaN/null elements in a vector."""
+        # Clean vector -> False (both the dotted name and the camelCase alias).
+        rs = test_db.query("sql", "SELECT vectorHasNull([1.0, 2.0, 3.0]) as res")
+        assert next(rs).get("res") is False
+
+        rs = test_db.query("sql", "SELECT `vector.hasNull`([1.0, 2.0, 3.0]) as res")
+        assert next(rs).get("res") is False
+
+        # sqrt(-1.0) yields NaN -> True.
+        rs = test_db.query("sql", "SELECT vectorHasNull([1.0, sqrt(-1.0), 3.0]) as res")
+        assert next(rs).get("res") is True
+
+    def test_vector_l2_norm_aliases(self, test_db):
+        """vector.l2Norm / vectorL2Norm are aliases of vectorMagnitude."""
+        # magnitude([3, 4]) == 5
+        for expr in (
+            "vectorL2Norm([3.0, 4.0])",
+            "`vector.l2Norm`([3.0, 4.0])",
+            "vectorMagnitude([3.0, 4.0])",
+        ):
+            rs = test_db.query("sql", f"SELECT {expr} as res")
+            assert abs(next(rs).get("res") - 5.0) < 0.001
+
+    def test_vector_clamp(self, test_db):
+        """vectorClamp / vector.clamp limit each element to the [min, max] range."""
+        rs = test_db.query("sql", "SELECT vectorClamp([1.0, 5.0, 10.0], 2, 8) as res")
+        assert next(rs).get("res") == [2.0, 5.0, 8.0]
+
+        rs = test_db.query(
+            "sql", "SELECT `vector.clamp`([1.0, 5.0, 10.0], 2, 8) as res"
+        )
+        assert next(rs).get("res") == [2.0, 5.0, 8.0]
+
+    def test_vector_manhattan_distance(self, test_db):
+        """vectorManhattanDistance / vectorL1Distance compute the L1 (sum-of-abs) distance."""
+        v1 = [1.0, 0.0]
+        v2 = [0.0, 1.0]
+        # |1-0| + |0-1| == 2
+        for name in (
+            "vectorManhattanDistance",
+            "vectorL1Distance",
+            "`vector.manhattanDistance`",
+            "`vector.l1Distance`",
+        ):
+            rs = test_db.query("sql", f"SELECT {name}({v1}, {v2}) as res")
+            assert abs(next(rs).get("res") - 2.0) < 0.001
+
+    def test_vector_add_subtract_scalar_broadcast(self, test_db):
+        """vectorAdd / vectorSubtract broadcast a scalar operand across the vector."""
+        # vector + scalar and the commutative scalar + vector
+        rs = test_db.query("sql", "SELECT vectorAdd([1.0, 2.0, 3.0], 4.0) as res")
+        assert next(rs).get("res") == [5.0, 6.0, 7.0]
+        rs = test_db.query("sql", "SELECT vectorAdd(4.0, [1.0, 2.0, 3.0]) as res")
+        assert next(rs).get("res") == [5.0, 6.0, 7.0]
+
+        # subtraction preserves operand order
+        rs = test_db.query("sql", "SELECT vectorSubtract([1.0, 2.0, 3.0], 1.0) as res")
+        assert next(rs).get("res") == [0.0, 1.0, 2.0]
+        rs = test_db.query("sql", "SELECT vectorSubtract(10.0, [1.0, 2.0, 3.0]) as res")
+        assert next(rs).get("res") == [9.0, 8.0, 7.0]
+
+    def test_vector_score_transform_modes(self, test_db):
+        """vector.scoreTransform supports LN (== LOG) and TANH modes."""
+        rs = test_db.query("sql", "SELECT `vector.scoreTransform`(2.5, 'LN') as res")
+        assert abs(next(rs).get("res") - math.log(2.5)) < 1e-5
+
+        rs = test_db.query("sql", "SELECT `vector.scoreTransform`(2.5, 'LOG') as res")
+        assert abs(next(rs).get("res") - math.log(2.5)) < 1e-5
+
+        rs = test_db.query("sql", "SELECT `vector.scoreTransform`(0.5, 'TANH') as res")
+        assert abs(next(rs).get("res") - math.tanh(0.5)) < 1e-5
+
+    def test_vector_multi_score_fusion(self, test_db):
+        """vector.multiScore fuses a list of scores; MAX returns the largest."""
+        rs = test_db.query(
+            "sql", "SELECT `vector.multiScore`([0.2, 0.8], 'MAX') as res"
+        )
+        assert abs(next(rs).get("res") - 0.8) < 0.001
+
+    def test_vector_sparsity_modes(self, test_db):
+        """vector.sparsity reports a default sparsity ratio plus L0 / GMEAN modes."""
+        # default: 1 zero out of 4 elements -> 0.25
+        rs = test_db.query(
+            "sql", "SELECT `vector.sparsity`([0.0, 1.0, 2.0, 3.0]) as res"
+        )
+        assert abs(next(rs).get("res") - 0.25) < 1e-5
+
+        # L0: count of elements >= threshold (0.5) -> 3
+        rs = test_db.query(
+            "sql", "SELECT `vector.sparsity`([0.0, 1.0, 2.0, 3.0], 0.5, 'L0') as res"
+        )
+        assert next(rs).get("res") == 3
+
+        # GMEAN: geometric mean (1*2*4)^(1/3) == 2.0
+        rs = test_db.query(
+            "sql", "SELECT `vector.sparsity`([1.0, 2.0, 4.0], 0.0, 'GMEAN') as res"
+        )
+        assert abs(next(rs).get("res") - 2.0) < 1e-5
 
     def test_sql_create_index_builds_vector_graph_immediately_by_default(self, test_db):
         """SQL LSM_VECTOR creation should be queryable immediately."""
@@ -890,3 +992,127 @@ class TestVectorSQL:
         assert "Banana" in names
         assert "Car" not in names
         assert "Truck" not in names
+
+
+class TestVectorConversionSQL:
+    """Vector <-> string / sparse / binary conversions (new in ArcadeDB 26.7)."""
+
+    def test_as_string_formats(self, test_db):
+        """asString() emits COMPACT/PYTHON/NUMPY/MATLAB/JULIA/MATLAB_COLUMN layouts."""
+        # NUMPY is a bare comma-separated list (no brackets), ready for numpy parsing
+        rs = test_db.query("sql", "SELECT [1.0, 2.5].asString('NUMPY') as res")
+        numpy_str = str(next(rs).get("res"))
+        assert "[" not in numpy_str and "," in numpy_str
+
+        import numpy as np
+
+        parsed = np.array(numpy_str.split(","), dtype=np.float32)
+        assert parsed.tolist() == [1.0, 2.5]
+
+        # MATLAB is bracketed and space-separated
+        rs = test_db.query("sql", "SELECT [1.0, 2.5].asString('MATLAB') as res")
+        matlab_str = str(next(rs).get("res"))
+        assert matlab_str.startswith("[") and "," not in matlab_str
+
+        # MATLAB_COLUMN is bracketed and semicolon-separated
+        rs = test_db.query("sql", "SELECT [1.0, 2.5].asString('MATLAB_COLUMN') as res")
+        assert ";" in str(next(rs).get("res"))
+
+        # JULIA is bracketed and comma-separated
+        rs = test_db.query("sql", "SELECT [1.0, 2.5].asString('JULIA') as res")
+        julia_str = str(next(rs).get("res"))
+        assert julia_str.startswith("[") and "," in julia_str
+
+    def test_as_vector_round_trip(self, test_db):
+        """asVector() parses every asString() format back into a float vector."""
+        # Space-separated (MATLAB-style) string literal
+        rs = test_db.query("sql", "SELECT '[1.0 2.0 3.0]'.asVector() as res")
+        assert list(next(rs).get("res")) == [1.0, 2.0, 3.0]
+
+        # Full round-trip: vector -> NUMPY string -> vector
+        rs = test_db.query(
+            "sql", "SELECT [1.0, 2.5].asString('NUMPY').asVector() as res"
+        )
+        assert list(next(rs).get("res")) == [1.0, 2.5]
+
+        # A single number becomes a one-element vector
+        rs = test_db.query("sql", "SELECT (42).asVector() as res")
+        assert list(next(rs).get("res")) == [42.0]
+
+    def test_as_sparse_round_trip(self, test_db):
+        """asSparse() converts dense -> sparse; vector.sparseToDense inverts it."""
+        rs = test_db.query(
+            "sql",
+            "SELECT `vector.sparseToDense`([0.0, 5.0, 0.0, 3.0].asSparse()) as res",
+        )
+        assert list(next(rs).get("res")) == [0.0, 5.0, 0.0, 3.0]
+
+    def test_quantize_dequantize_binary(self, test_db):
+        """vector.dequantizeBinary reconstructs +-1 values from binary quantization."""
+        rs = test_db.query(
+            "sql",
+            "SELECT `vector.dequantizeBinary`("
+            "`vector.quantizeBinary`([1.0, -1.0, 0.5, -0.5])) as res",
+        )
+        res = list(next(rs).get("res"))
+        # Binary quantization keeps only the sign; defaults reconstruct to -1.0/1.0
+        assert res == [1.0, -1.0, 1.0, -1.0]
+
+        # Custom low/high reconstruction values
+        rs = test_db.query(
+            "sql",
+            "SELECT `vector.dequantizeBinary`("
+            "`vector.quantizeBinary`([1.0, -1.0]), 0.0, 10.0) as res",
+        )
+        assert list(next(rs).get("res")) == [10.0, 0.0]
+
+
+class TestConversionFastPaths:
+    """Regression tests for the JPype-overhead fixes (2026-07)."""
+
+    def test_plain_list_query_params(self, test_db):
+        """Plain Python lists work as query parameters (previously failed
+        JPype varargs overload resolution; only numpy arrays worked)."""
+        rs = test_db.query(
+            "sql",
+            "SELECT vectorCosineSimilarity(?, ?) as res",
+            [1.0, 0.0],
+            [1.0, 0.0],
+        )
+        assert abs(next(rs).get("res") - 1.0) < 0.001
+
+    def test_float_array_property_round_trip(self, test_db):
+        """ARRAY_OF_FLOATS properties come back as Python float lists via the
+        bulk (buffer-protocol) conversion path."""
+        test_db.command("sql", "CREATE DOCUMENT TYPE FV")
+        test_db.command("sql", "CREATE PROPERTY FV.emb ARRAY_OF_FLOATS")
+        with test_db.transaction():
+            test_db.command("sql", "INSERT INTO FV SET emb = [0.25, -1.5, 3.0]")
+
+        row = test_db.query("sql", "SELECT emb FROM FV").first()
+        emb = row.get("emb")
+        assert isinstance(emb, list)
+        assert emb == [0.25, -1.5, 3.0]
+        assert all(isinstance(v, float) for v in emb)
+
+    def test_find_nearest_repeated_calls_consistent(self, test_db):
+        """Cached index resolution / PQ memoization returns identical results
+        across consecutive searches."""
+        test_db.command("sql", "CREATE DOCUMENT TYPE VDoc")
+        test_db.command("sql", "CREATE PROPERTY VDoc.v ARRAY_OF_FLOATS")
+        test_db.command(
+            "sql",
+            'CREATE INDEX ON VDoc (v) LSM_VECTOR METADATA {"dimensions": 3}',
+        )
+        with test_db.transaction():
+            for i in range(20):
+                test_db.command(
+                    "sql", f"INSERT INTO VDoc SET id = {i}, v = [{i}.0, 1.0, 0.0]"
+                )
+
+        vidx = test_db.schema.get_vector_index("VDoc", "v")
+        r1 = vidx.find_nearest([5.0, 1.0, 0.0], k=3)
+        r2 = vidx.find_nearest([5.0, 1.0, 0.0], k=3)
+        ids1 = [rec.get("id") for rec, _ in r1]
+        ids2 = [rec.get("id") for rec, _ in r2]
+        assert ids1 == ids2 and len(ids1) == 3

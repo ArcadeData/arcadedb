@@ -49,6 +49,7 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -56,6 +57,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
@@ -73,6 +75,23 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   private static final Semaphore CONCURRENCY_SEMAPHORE =
       new Semaphore(GlobalConfiguration.HA_SNAPSHOT_MAX_CONCURRENT.getValueAsInteger(), true);
+
+  // #5063 (review round 5) introduced this per-database lock because PageManagerFlushThread.setSuspended
+  // was ownership-based (putIfAbsent): only the FIRST caller owned the suspend flag, so a second thread
+  // streaming the same database could observe a resumed flush mid-read. Issue #5068 made the suspension
+  // REFCOUNTED in the engine - flushing resumes only when the LAST suspender exits - so overlapping
+  // suspendFlushAndExecute callers (this handler, SQL BACKUP DATABASE, database verify) each own their
+  // whole window and the lock is NO LONGER needed for suspension correctness.
+  // DECISION (#5068): the lock STAYS, for resource discipline rather than correctness. It serializes the
+  // whole zip streaming per database: two followers resyncing the same multi-GB database at once would
+  // double the read I/O and, with refcounted suspension, keep flushing suspended for the UNION of both
+  // windows, growing the deferred-page backlog toward the #4728 backpressure cap and throttling commits
+  // for longer. Serializing keeps each suspension window as short as possible. Requests beyond the
+  // CONCURRENCY_SEMAPHORE limit (HA_SNAPSHOT_MAX_CONCURRENT, default 2) still get a fast 503.
+  // Entries are never pruned by design: one small ReentrantLock per database NAME ever snapshotted, bounded
+  // by the server's database count (a dropped-and-recreated database safely reuses its lock). Pruning on
+  // drop would need lifecycle callbacks this handler does not have, for negligible memory.
+  private final ConcurrentHashMap<String, ReentrantLock> perDatabaseSuspendLock = new ConcurrentHashMap<>();
 
   private final ScheduledExecutorService watchdogExecutor =
       Executors.newSingleThreadScheduledExecutor(r -> {
@@ -171,22 +190,18 @@ public class SnapshotHttpHandler implements HttpHandler {
 
       final DatabaseInternal db = server.getDatabase(databaseName);
 
-      db.executeInReadLock(() -> {
-        // suspendFlushAndExecute uses a putIfAbsent-based guard that only one concurrent
-        // caller can "own" the suspend. If flush is already suspended (e.g. a concurrent
-        // snapshot request), isPageFlushingSuspended() is true and it is safe to read files
-        // directly since the flush thread is not writing. In both cases we serve the snapshot.
-        final boolean[] executed = { false };
-        db.getPageManager().suspendFlushAndExecute(db, () -> {
-          executed[0] = true;
-          serveSnapshotZip(exchange, db, databaseName);
+      final ReentrantLock dbSuspendLock = suspendLockFor(databaseName);
+      dbSuspendLock.lock();
+      try {
+        db.executeInReadLock(() -> {
+          // The refcounted suspension (#5068) guarantees the flush thread is parked for this whole read;
+          // perDatabaseSuspendLock additionally serializes same-database zip streams (see its comment).
+          db.getPageManager().suspendFlushAndExecute(db, () -> serveSnapshotZip(exchange, db, databaseName));
+          return null;
         });
-        if (!executed[0]) {
-          // Flush was already suspended by another concurrent snapshot request; serve directly.
-          serveSnapshotZip(exchange, db, databaseName);
-        }
-        return null;
-      });
+      } finally {
+        dbSuspendLock.unlock();
+      }
     } finally {
       CONCURRENCY_SEMAPHORE.release();
     }
@@ -202,25 +217,44 @@ public class SnapshotHttpHandler implements HttpHandler {
 
     final DatabaseInternal db = server.getDatabase(databaseName);
 
-    // Flush pages and hold a read lock to ensure a consistent point-in-time view of database files
-    db.executeInReadLock(() -> {
-      db.getPageManager().suspendFlushAndExecute(db, () -> {
-        try {
-          final File dbDir = new File(db.getDatabasePath());
-          final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(dbDir);
-          final JSONObject response = new JSONObject();
-          for (final var entry : checksums.entrySet())
-            response.put(entry.getKey(), entry.getValue());
+    // Flush pages and hold a read lock to ensure a consistent point-in-time view of database files.
+    // The refcounted suspension (#5068) guarantees ownership of the window; the per-database lock only
+    // serializes same-database reads with the snapshot zip path (see perDatabaseSuspendLock).
+    final ReentrantLock dbSuspendLock = suspendLockFor(databaseName);
+    dbSuspendLock.lock();
+    try {
+      db.executeInReadLock(() -> {
+        db.getPageManager().suspendFlushAndExecute(db, () -> {
+          try {
+            final File dbDir = new File(db.getDatabasePath());
+            final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(dbDir);
+            final JSONObject response = new JSONObject();
+            for (final var entry : checksums.entrySet())
+              response.put(entry.getKey(), entry.getValue());
 
-          exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-          exchange.getResponseSender().send(response.toString());
-        } catch (final Exception e) {
-          exchange.setStatusCode(500);
-          exchange.getResponseSender().send("Error computing checksums: " + e.getMessage());
-        }
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+            exchange.getResponseSender().send(response.toString());
+          } catch (final Exception e) {
+            exchange.setStatusCode(500);
+            exchange.getResponseSender().send("Error computing checksums: " + e.getMessage());
+          }
+        });
+        return null;
       });
-      return null;
-    });
+    } finally {
+      dbSuspendLock.unlock();
+    }
+  }
+
+  /**
+   * Returns the per-database lock serializing every entry into {@code suspendFlushAndExecute} made by
+   * this handler (snapshot ZIP and checksums paths). Since the refcounted suspension of issue #5068 this
+   * is not needed for correctness; it is retained to serialize same-database zip streaming and keep each
+   * suspension window short (see {@link #perDatabaseSuspendLock}). One lock instance per database name
+   * for the lifetime of the handler. Package-private for unit testing.
+   */
+  ReentrantLock suspendLockFor(final String databaseName) {
+    return perDatabaseSuspendLock.computeIfAbsent(databaseName, k -> new ReentrantLock());
   }
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {

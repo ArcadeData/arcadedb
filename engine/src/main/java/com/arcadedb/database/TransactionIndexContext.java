@@ -82,6 +82,40 @@ public class TransactionIndexContext {
     }
   }
 
+  /**
+   * #4947: navigation key for TreeMap positioning with PARTIAL (prefix) keys. ComparableKey.compareTo
+   * returns 0 for any entry sharing the prefix, so ceiling/floor/higher/lower land on whichever
+   * prefix-equal node the tree walk reaches first - the MIDDLE of the run - silently skipping the other
+   * entries of the run during in-tx iteration. A biased key never compares equal: bias -1 sorts before the
+   * whole prefix run (ceiling finds the run's FIRST entry), bias +1 after it (higher skips the whole run;
+   * floor finds its LAST entry). For full-length keys the bias degenerates to the exact same navigation the
+   * raw key gives, so callers can use it unconditionally.
+   */
+  private static class NavigationKey extends ComparableKey {
+    private final int bias;
+
+    private NavigationKey(final Object[] values, final int bias) {
+      super(values);
+      this.bias = bias;
+    }
+
+    @Override
+    public int compareTo(final ComparableKey that) {
+      final int cmp = super.compareTo(that);
+      return cmp != 0 ? cmp : bias;
+    }
+  }
+
+  /** Navigation key sorting BEFORE every entry whose key starts with {@code keys} (see {@link NavigationKey}). */
+  public static ComparableKey lowNavigationKey(final Object[] keys) {
+    return new NavigationKey(keys, -1);
+  }
+
+  /** Navigation key sorting AFTER every entry whose key starts with {@code keys} (see {@link NavigationKey}). */
+  public static ComparableKey highNavigationKey(final Object[] keys) {
+    return new NavigationKey(keys, 1);
+  }
+
   public static class ComparableKey implements Comparable<ComparableKey> {
     public final Object[] values;
 
@@ -113,9 +147,13 @@ public class TransactionIndexContext {
         int cmp = 0;
         if (v1 == v2) {
         } else if (v1 == null) {
-          return 1;
-        } else if (v2 == null) {
+          // #4947: nulls sort LOW, matching BinaryComparator.compare and LSMTreeIndexAbstract.compareKey.
+          // The tx overlay used nulls-HIGH here, so with NULL_STRATEGY.INDEX and composite keys containing
+          // nulls, the cursor's TreeMap navigation (ceiling/floor/higher/lower) disagreed with the disk
+          // merge order: uncommitted entries could be skipped or emitted out of order during in-tx iteration.
           return -1;
+        } else if (v2 == null) {
+          return 1;
         } else if (v1 instanceof List<?> list && v2 instanceof List<?> list1) {
 
           return CollectionUtils.compare(list, list1);
@@ -261,7 +299,11 @@ public class TransactionIndexContext {
         // ALREADY IN THE SET
         continue;
 
-      modifiedFiles.add(index.getFileId());
+      // getFileIds (plural), not getFileId: a multi-file index (e.g. LSMVectorIndex with its companion
+      // graph file) writes pages into ALL its component files during the transaction; omitting one lets its
+      // pages pass the commit version checks without the file lock held (#4937).
+      for (final int indexFileId : index.getFileIds())
+        modifiedFiles.add(indexFileId);
 
       // Lock only the data bucket this index entry belongs to (not all buckets of the type).
       // Guard against -1, returned by composite (TypeIndex) or metadata-less indexes, which is not a valid file id.

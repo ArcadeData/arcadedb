@@ -203,6 +203,27 @@ fi
 # Always filter excluded jars, even when reusing an existing jars directory from a prior build.
 apply_jar_exclusions "$JARS_DIR" "$JAR_EXCLUSIONS_FILE"
 
+# Build the Python-bindings bridge jar (batched row transport; see
+# src/java/com/arcadedb/python/RowBatcher.java). Mirrors Dockerfile.build.
+echo -e "${CYAN}🔨 Building arcadedb-python-bridge.jar...${NC}"
+BRIDGE_SRC="$PY_BINDINGS_DIR/src/java"
+BRIDGE_CLASSES=$(mktemp -d)
+# The `dir/*` wildcard classpath breaks on Windows Git Bash (MSYS skips path
+# conversion for args containing `*`, so javac.exe gets an unreadable POSIX
+# path). Build an explicit platform-correct jar list instead.
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*)
+        BRIDGE_CP=$(find "$JARS_DIR" -name '*.jar' -exec cygpath -m {} \; | paste -sd ';' -)
+        ;;
+    *)
+        BRIDGE_CP=$(find "$JARS_DIR" -name '*.jar' | paste -sd ':' -)
+        ;;
+esac
+javac -cp "$BRIDGE_CP" -d "$BRIDGE_CLASSES" $(find "$BRIDGE_SRC" -name "*.java")
+jar cf "$JARS_DIR/arcadedb-python-bridge.jar" -C "$BRIDGE_CLASSES" .
+rm -rf "$BRIDGE_CLASSES"
+echo -e "${GREEN}✅ Bridge jar built${NC}"
+
 # Step 2: Build minimal JRE with jlink
 echo -e "${CYAN}🔨 Building minimal JRE with jlink...${NC}"
 
@@ -213,7 +234,7 @@ echo -e "${CYAN}🔍 Analyzing JARs to determine required modules (jdeps)...${NC
 # --multi-release 25: treat multi-release JARs as Java 25
 # Note: Filter out jboss/wildfly jars which often have broken module descriptors
 # Note: Do NOT use --class-path or --recursive to avoid resolving bad modules
-RAW_JDEPS_OUTPUT=$(find "$JARS_DIR" -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 2>&1 || true)
+RAW_JDEPS_OUTPUT=$(find "$JARS_DIR" -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | grep -v "spatial-extras" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 2>&1 || true)
 DETECTED_MODULES=$(echo "$RAW_JDEPS_OUTPUT" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -E '^[a-zA-Z0-9_.]+$' | sort -u | paste -sd "," - || true)
 
 JMODS_DIR="${JAVA_HOME}/jmods"
@@ -232,14 +253,18 @@ else
     FILTERED_MODULES="$DETECTED_MODULES"
 fi
 
-# Manual overrides:
-# java.se: Stable baseline of standard Java SE modules needed by server/import/runtime paths
-# jdk.management: Required by server metrics integrations
+# Manual overrides (added to the jdeps-detected set; jlink pulls transitive
+# `requires` automatically, e.g. java.xml/java.logging via java.sql):
+# jdk.management: JMX beans used by engine memory monitoring
 # jdk.zipfs: Required for JPype to load classes from JARs
 # jdk.unsupported: Often required for Unsafe access in libraries
 # jdk.incubator.vector: Required for vectorized execution paths
+# NOTE: the java.se umbrella used to be force-added as a safety net; with the
+# package embedded-only and jdeps detection fixed, the detected set gates the
+# JRE (full suite + examples verify each build). java.se remains the fallback
+# when detection yields nothing.
 if [ -n "$FILTERED_MODULES" ]; then
-    REQUIRED_MODULES="${FILTERED_MODULES},java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
+    REQUIRED_MODULES="${FILTERED_MODULES},jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
 else
     REQUIRED_MODULES="java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector"
 fi

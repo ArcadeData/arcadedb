@@ -160,11 +160,11 @@ public class ServerMonitor {
 									heapAvailablePerc, heapUsed / (1024.0 * 1024.0 * 1024.0), heapMax / (1024.0 * 1024.0 * 1024.0)));
 					lastHeapWarningReported = System.currentTimeMillis();
 
-					// Optionally suggest GC if memory is critically low
-					if (heapAvailablePerc < 10) {
-						LOGGER.log(Level.INFO, "Suggesting garbage collection due to low memory");
-						System.gc();
-					}
+					// Do NOT force System.gc() here: a stop-the-world collection triggered precisely when the
+					// server is already under memory pressure can cascade into HA election timeouts. Log the
+					// critical condition and leave heap management to the JVM collector.
+					if (heapAvailablePerc < 10)
+						LOGGER.log(Level.WARNING, "Available heap RAM is critically low; relying on the JVM garbage collector");
 				}
 			}
 		}

@@ -327,6 +327,56 @@ class OpenCypherPatternPredicateTest {
         assertThat(resultList).isEmpty();
       }
     }
+
+    /**
+     * See issue #5007: a 2-hop pattern comprehension with an anonymous middle node
+     * {@code (:Person)} silently returned an empty list. The anonymous node must be
+     * carried forward as the start of the following hop.
+     */
+    @Test
+    void patternComprehensionTwoHopAnonymousMiddleNode() {
+      database.transaction(() ->
+          database.command("opencypher",
+              """
+              CREATE (p:Person {probe: true}), (m:Person {gid: 2}), (t:Person {gid: 3}), \
+              (p)-[:KNOWS]->(m), (m)-[:KNOWS]->(t)"""));
+
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (p:Person {probe: true}) \
+          RETURN [(p)-[:KNOWS]->(:Person)-[:KNOWS]->(target:Person) | target.gid] AS targets""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object resultObj = row.getProperty("targets");
+        assertThat(resultObj).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        final List<Object> resultList = (List<Object>) resultObj;
+        assertThat(resultList).containsExactly(3);
+      }
+    }
+
+    /** See issue #5007: a 2-hop pattern comprehension with a named middle node must keep working. */
+    @Test
+    void patternComprehensionTwoHopNamedMiddleNode() {
+      database.transaction(() ->
+          database.command("opencypher",
+              """
+              CREATE (p:Person {probe: true}), (m:Person {gid: 2}), (t:Person {gid: 3}), \
+              (p)-[:KNOWS]->(m), (m)-[:KNOWS]->(t)"""));
+
+      try (final ResultSet rs = database.query("opencypher",
+          """
+          MATCH (p:Person {probe: true}) \
+          RETURN [(p)-[:KNOWS]->(mid:Person)-[:KNOWS]->(target:Person) | target.gid] AS targets""")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object resultObj = row.getProperty("targets");
+        assertThat(resultObj).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        final List<Object> resultList = (List<Object>) resultObj;
+        assertThat(resultList).containsExactly(3);
+      }
+    }
   }
 
   /** See issue #3938: existential pattern predicate must filter by target-node properties too. */

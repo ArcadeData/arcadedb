@@ -19,6 +19,8 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.bolt.message.BoltMessage;
+import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -98,6 +100,44 @@ public class BoltProtocolIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void helloWithoutAuthSchemeIsRejected() throws Exception {
+    // A HELLO extra map with no "scheme", "principal", or "credentials" key at all - not
+    // even scheme:"none" - must still be rejected rather than treated as authenticated.
+    try (Socket socket = new Socket("localhost", 7687)) {
+      final OutputStream rawOut = socket.getOutputStream();
+
+      final ByteBuffer handshake = ByteBuffer.allocate(20);
+      handshake.put((byte) 0x60).put((byte) 0x60).put((byte) 0xB0).put((byte) 0x17); // magic
+      handshake.putInt(0x00020404); // v4.4 with range 2
+      handshake.putInt(0x00000004); // v4.0
+      handshake.putInt(0x00000003); // v3.0
+      handshake.putInt(0x00000000); // padding
+      handshake.flip();
+      rawOut.write(handshake.array());
+      rawOut.flush();
+
+      final DataInputStream rawIn = new DataInputStream(socket.getInputStream());
+      final byte[] negotiatedVersion = new byte[4];
+      rawIn.readFully(negotiatedVersion);
+
+      final PackStreamWriter writer = new PackStreamWriter();
+      writer.writeStructureHeader(BoltMessage.HELLO, 1);
+      writer.writeMap(Map.of("user_agent", "helloWithoutAuthSchemeIsRejected/1.0"));
+
+      final BoltChunkedOutput chunkedOut = new BoltChunkedOutput(rawOut);
+      chunkedOut.writeMessage(writer.toByteArray());
+
+      final BoltChunkedInput chunkedIn = new BoltChunkedInput(socket.getInputStream());
+      final byte[] response = chunkedIn.readMessage();
+
+      // response[0] = TINY_STRUCT|fieldCount marker, response[1] = signature byte
+      // (SuccessMessage/FailureMessage are both single-field structures).
+      assertThat(response[1]).as("HELLO with no scheme/principal/credentials must be rejected")
+          .isEqualTo(BoltMessage.FAILURE);
+    }
+  }
+
   // Reproduces issue #4916: the neo4j:// routing scheme sends a ROUTE message whose third field is
   // extra::Map{db, imp_user} under the negotiated Bolt 4.4 protocol, not the pre-4.4 db::String shape.
   @Test
@@ -117,6 +157,102 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  // Single-node (non-HA) ROUTE must keep advertising this node for every role. Guards the fallback
+  // branch so the HA-aware routing table never regresses standalone deployments.
+  @Test
+  void routeTableSingleNodeReturnsSelfForAllRoles() throws Exception {
+    try (Socket socket = new Socket("localhost", 7687)) {
+      final OutputStream rawOut = socket.getOutputStream();
+
+      final ByteBuffer handshake = ByteBuffer.allocate(20);
+      handshake.put((byte) 0x60).put((byte) 0x60).put((byte) 0xB0).put((byte) 0x17);
+      handshake.putInt(0x00020404);
+      handshake.putInt(0x00000004);
+      handshake.putInt(0x00000003);
+      handshake.putInt(0x00000000);
+      handshake.flip();
+      rawOut.write(handshake.array());
+      rawOut.flush();
+
+      final DataInputStream rawIn = new DataInputStream(socket.getInputStream());
+      final byte[] negotiatedVersion = new byte[4];
+      rawIn.readFully(negotiatedVersion);
+
+      final BoltChunkedOutput chunkedOut = new BoltChunkedOutput(rawOut);
+      final BoltChunkedInput chunkedIn = new BoltChunkedInput(socket.getInputStream());
+
+      final PackStreamWriter hello = new PackStreamWriter();
+      hello.writeStructureHeader(BoltMessage.HELLO, 1);
+      hello.writeMap(Map.of("user_agent", "route-regression/1.0", "scheme", "basic",
+          "principal", "root", "credentials", DEFAULT_PASSWORD_FOR_TESTS));
+      chunkedOut.writeMessage(hello.toByteArray());
+      chunkedIn.readMessage();
+
+      final PackStreamWriter route = new PackStreamWriter();
+      route.writeStructureHeader(BoltMessage.ROUTE, 3);
+      route.writeMap(Map.of());
+      route.writeList(List.of());
+      route.writeMap(Map.of("db", getDatabaseName()));
+      chunkedOut.writeMessage(route.toByteArray());
+
+      final byte[] response = chunkedIn.readMessage();
+      assertThat(response[1]).as("ROUTE must succeed").isEqualTo(BoltMessage.SUCCESS);
+
+      final Map<String, Object> rt = BoltRouteTestSupport.readRoutingTable(response);
+      final List<String> writers = BoltRouteTestSupport.addressesForRole(rt, "WRITE");
+      assertThat(writers).hasSize(1);
+      final String self = writers.get(0);
+      assertThat(self).isNotBlank();
+      assertThat(BoltRouteTestSupport.addressesForRole(rt, "READ")).containsExactly(self);
+      assertThat(BoltRouteTestSupport.addressesForRole(rt, "ROUTE")).containsExactly(self);
+    }
+  }
+
+  // ROUTE enumerates the cluster's Bolt endpoints, so it must require an authenticated session. Bolt 5.1+
+  // defers auth to LOGON: after a HELLO with no credentials the session is not yet authenticated, and a
+  // ROUTE sent before LOGON must be refused rather than disclosing the topology.
+  @Test
+  void routeBeforeLogonIsRejected() throws Exception {
+    try (Socket socket = new Socket("localhost", 7687)) {
+      final OutputStream rawOut = socket.getOutputStream();
+
+      final ByteBuffer handshake = ByteBuffer.allocate(20);
+      handshake.put((byte) 0x60).put((byte) 0x60).put((byte) 0xB0).put((byte) 0x17);
+      handshake.putInt(0x00000405); // v5.4
+      handshake.putInt(0x00000404); // v4.4
+      handshake.putInt(0x00000003); // v3.0
+      handshake.putInt(0x00000000);
+      handshake.flip();
+      rawOut.write(handshake.array());
+      rawOut.flush();
+
+      final DataInputStream rawIn = new DataInputStream(socket.getInputStream());
+      final byte[] negotiated = new byte[4];
+      rawIn.readFully(negotiated);
+      assertThat(negotiated[3]).as("server must negotiate Bolt 5.x for the deferred-auth path").isEqualTo((byte) 5);
+
+      final BoltChunkedOutput chunkedOut = new BoltChunkedOutput(rawOut);
+      final BoltChunkedInput chunkedIn = new BoltChunkedInput(socket.getInputStream());
+
+      // HELLO with no auth fields: Bolt 5.1+ accepts it and awaits LOGON (session not yet authenticated).
+      final PackStreamWriter hello = new PackStreamWriter();
+      hello.writeStructureHeader(BoltMessage.HELLO, 1);
+      hello.writeMap(Map.of("user_agent", "route-auth-gate/1.0"));
+      chunkedOut.writeMessage(hello.toByteArray());
+      assertThat(chunkedIn.readMessage()[1]).as("HELLO accepted under deferred auth").isEqualTo(BoltMessage.SUCCESS);
+
+      // ROUTE before LOGON must be rejected.
+      final PackStreamWriter route = new PackStreamWriter();
+      route.writeStructureHeader(BoltMessage.ROUTE, 3);
+      route.writeMap(Map.of());
+      route.writeList(List.of());
+      route.writeMap(Map.of("db", getDatabaseName()));
+      chunkedOut.writeMessage(route.toByteArray());
+      assertThat(chunkedIn.readMessage()[1]).as("ROUTE before LOGON must be rejected").isEqualTo(BoltMessage.FAILURE);
+    }
+  }
+
 
   @Test
   void simpleQuery() {

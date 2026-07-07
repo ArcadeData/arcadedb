@@ -24,11 +24,12 @@ REQUIRED_AREAS = {
 VALID_STATUSES = {"passing", "expected-fail", "not-applicable", "unverified"}
 REQUIRED_LANGUAGES = {"java", "javascript", "python", "csharp", "go"}
 KNOWN_GAP_TRACKING_ISSUE = "#4890"
-# Areas that must each carry at least one #4890-tracked expected-fail scenario:
-# connection (single-node-only ROUTE), errors (missing Neo.TransientError.*),
-# protocol (no Bolt 5.x negotiation), type-roundtrip (temporal-as-string,
-# missing Duration, missing Point).
-REQUIRED_GAP_AREAS = {"connection", "errors", "protocol", "type-roundtrip"}
+# Areas that must each carry at least one #4890-tracked expected-fail scenario.
+# All #4890-tracked gaps are now closed and flipped to passing: connection
+# (CONN-004, HA-aware ROUTE), errors (ERR-002), type-roundtrip (TYPE-003/011/012),
+# and protocol (PROTO-002) each previously appeared here as the only #4890-tracked
+# gap in their area. None remain, so this set is empty.
+REQUIRED_GAP_AREAS = set()
 # Canonical AREA-NNN id prefix per area - not derivable from the area string
 # (e.g. transactions -> TX, multi-database -> MDB, causal-consistency ->
 # CAUSAL), so scenario ids are checked against this table rather than a

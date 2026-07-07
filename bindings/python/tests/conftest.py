@@ -8,10 +8,6 @@ import tempfile
 
 import pytest
 
-# Shared test password used by server-mode tests. ArcadeDB requires >= 8 chars.
-# Hardcoded test fixture, not a real credential.
-TEST_PASSWORD = "test12345"  # nosec B105
-
 
 @pytest.fixture
 def temp_db_path():
@@ -79,16 +75,6 @@ def temp_db():
 
 
 @pytest.fixture
-def temp_server_root():
-    """Create a temporary server root directory."""
-    temp_dir = tempfile.mkdtemp(prefix="arcadedb_test_server_")
-    yield temp_dir
-    # Cleanup
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-
-
-@pytest.fixture
 def temp_dir_factory():
     """Factory fixture to create multiple temporary directories with cleanup."""
     temp_dirs = []
@@ -105,21 +91,6 @@ def temp_dir_factory():
     for temp_dir in temp_dirs:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def has_server_support():
-    """Check if server support is available (available in our base package)."""
-    try:
-        from arcadedb_embedded.jvm import get_jar_path
-
-        # Check if studio JAR exists (indicates server support)
-        jar_dir = get_jar_path()
-        if not os.path.exists(jar_dir):
-            return False
-        jar_files = os.listdir(jar_dir)
-        return any("studio" in jar.lower() for jar in jar_files)
-    except Exception:
-        return False
 
 
 def has_graph_export_support():
@@ -140,10 +111,6 @@ def has_graph_export_support():
 # Pytest markers for conditional test execution
 def pytest_configure(config):
     """Register custom markers."""
-    config.addinivalue_line(
-        "markers",
-        "server: tests that require server support (available in base package)",
-    )
     config.addinivalue_line(
         "markers",
         "graph_export: tests that require GraphML/GraphSON support",

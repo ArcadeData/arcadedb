@@ -694,3 +694,44 @@ class TestLSMVectorIndexSchemaOps:
         index = schema.get_vector_index("Doc", "embedding")
         assert index is not None
         assert index.get_size() == 1
+
+
+class TestMapIndexByKeyValue:
+    """CREATE INDEX ON <type> (<prop> BY KEY / BY VALUE) — new in 26.8 (#4879-#4881)."""
+
+    def test_map_index_by_key_and_value(self, test_db):
+        test_db.command("sql", "CREATE DOCUMENT TYPE Movie")
+        test_db.command("sql", "CREATE PROPERTY Movie.title STRING")
+        test_db.command("sql", "CREATE PROPERTY Movie.thumbs MAP")
+        test_db.command("sql", "CREATE INDEX ON Movie (thumbs BY KEY) NOTUNIQUE")
+        test_db.command("sql", "CREATE INDEX ON Movie (thumbs BY VALUE) NOTUNIQUE")
+
+        with test_db.transaction():
+            test_db.command(
+                "sql",
+                "INSERT INTO Movie CONTENT "
+                '{"title": "M1", "thumbs": {"banner": "b1", "poster": "p1"}}',
+            )
+            test_db.command(
+                "sql",
+                'INSERT INTO Movie CONTENT {"title": "M2", "thumbs": {"poster": "p2"}}',
+            )
+
+        rs = test_db.query(
+            "sql", "SELECT title FROM Movie WHERE thumbs CONTAINSKEY 'banner'"
+        )
+        assert [r.get("title") for r in rs] == ["M1"]
+
+        rs = test_db.query(
+            "sql", "SELECT title FROM Movie WHERE thumbs CONTAINSKEY 'poster'"
+        )
+        assert sorted(r.get("title") for r in rs) == ["M1", "M2"]
+
+        rs = test_db.query(
+            "sql", "SELECT title FROM Movie WHERE thumbs CONTAINSVALUE 'p2'"
+        )
+        assert [r.get("title") for r in rs] == ["M2"]
+
+        # The BY KEY / BY VALUE variants coexist as distinct indexes
+        assert test_db.schema.get_index_by_name("Movie[thumbsbykey]") is not None
+        assert test_db.schema.get_index_by_name("Movie[thumbsbyvalue]") is not None

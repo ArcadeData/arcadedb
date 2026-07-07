@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.*;
 
 import java.util.*;
@@ -34,6 +35,13 @@ import java.util.*;
  * - Boolean operand types (reject non-boolean literals)
  * - Nested aggregations and aggregation in WHERE
  * - CREATE/MERGE/DELETE structural constraints
+ * <p>
+ * <b>Semantic vs syntax boundary:</b> only an undefined-variable violation throws
+ * {@link CommandSemanticException}, which Bolt surfaces as {@code Neo.ClientError.Statement.SemanticError}
+ * (certified by conformance scenario ERR-002). Every other validation failure in this class throws
+ * {@link CommandParsingException}, surfaced over Bolt as {@code SyntaxError}. This split is deliberate but
+ * not yet verified case-by-case against real Neo4j error classification; other violations here may turn
+ * out to be genuine semantic errors on further scrutiny.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -451,7 +459,7 @@ public class CypherSemanticValidator {
           if (setClause != null && !setClause.isEmpty())
             for (final SetClause.SetItem item : setClause.getItems()) {
               if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
-                throw new CommandParsingException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+                throw new CommandSemanticException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
               if (item.getValueExpression() != null)
                 checkExpressionScope(item.getValueExpression(), scope);
             }
@@ -464,7 +472,7 @@ public class CypherSemanticValidator {
           if (deleteClause2 != null && !deleteClause2.isEmpty())
             for (final String var : deleteClause2.getVariables())
               if (isValidVariableName(var) && !scope.contains(var))
-                throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+                throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
           break;
         case RETURN:
           // Validate RETURN references — only check top-level variable references
@@ -560,11 +568,11 @@ public class CypherSemanticValidator {
       if (!isValidVariableName(varName))
         return;
       if (!scope.contains(varName))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + varName + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
     } else if (expr instanceof PropertyAccessExpression) {
       final String varName = ((PropertyAccessExpression) expr).getVariableName();
       if (isValidVariableName(varName) && !scope.contains(varName))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + varName + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
     } else if (expr instanceof FunctionCallExpression) {
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         checkExpressionScope(arg, scope);
@@ -661,12 +669,12 @@ public class CypherSemanticValidator {
     for (final NodePattern node : path.getNodes()) {
       final String var = node.getVariable();
       if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
     }
     for (final RelationshipPattern rel : path.getRelationships()) {
       final String var = rel.getVariable();
       if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
     }
   }
 
@@ -724,7 +732,7 @@ public class CypherSemanticValidator {
       return;
     for (final SetClause.SetItem item : setClause.getItems()) {
       if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
       if (item.getValueExpression() != null)
         checkExpressionScope(item.getValueExpression(), scope);
     }
@@ -948,7 +956,7 @@ public class CypherSemanticValidator {
           if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation()) {
             final String exprText = expr.getText();
             if (exprText != null && !projectedNames.contains(exprText))
-              throw new CommandParsingException("UndefinedVariable: Aggregation in ORDER BY is not projected");
+              throw new CommandSemanticException("UndefinedVariable: Aggregation in ORDER BY is not projected");
           }
           if (expr.containsAggregation())
             checkMixedAggregation(expr, groupingVars);

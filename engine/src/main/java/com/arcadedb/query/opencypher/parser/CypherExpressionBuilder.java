@@ -1742,12 +1742,31 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Parse a function invocation into a FunctionCallExpression.
+   * Parse a function invocation into an Expression.
+   * <p>
+   * Most invocations produce a {@link FunctionCallExpression}. The one exception is the deprecated
+   * function-style pattern predicate {@code exists((a)-[:R]->(b))}: when {@code exists} is applied to a
+   * single graph pattern argument it must behave like the {@code EXISTS { ... }} subquery (test whether
+   * the pattern matches), not like the property {@code exists()} function (a non-null check). Without this
+   * the pattern argument evaluates to a non-null value and {@code exists()} always returns true, which
+   * silently breaks conditions such as {@code CASE WHEN exists((u)-[:R]->()) ... } (issue #4993).
    */
-  FunctionCallExpression parseFunctionInvocation(final Cypher25Parser.FunctionInvocationContext ctx) {
+  Expression parseFunctionInvocation(final Cypher25Parser.FunctionInvocationContext ctx) {
     final String functionName = ctx.functionName().getText();
     final boolean distinct = ctx.DISTINCT() != null;
     final List<Expression> arguments = new ArrayList<>();
+
+    // Function-style pattern predicate: exists((a)-[:R]->(b)) -> pattern existence check.
+    if (!distinct && "exists".equalsIgnoreCase(functionName) && ctx.functionArgument().size() == 1) {
+      final Cypher25Parser.ExpressionContext argExpr = ctx.functionArgument(0).expression();
+      final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpressionRecursive(argExpr);
+      if (patternExpr != null) {
+        final PathPattern pathPattern = parsePathPatternNonEmpty(patternExpr.pathPatternNonEmpty());
+        final PatternPredicateExpression predicate = new PatternPredicateExpression(pathPattern, false,
+            CypherASTBuilder.getOriginalText(patternExpr));
+        return new BooleanWrapperExpression(predicate);
+      }
+    }
 
     // Parse arguments
     for (final Cypher25Parser.FunctionArgumentContext argCtx : ctx.functionArgument()) {
@@ -1762,6 +1781,21 @@ class CypherExpressionBuilder {
     }
 
     return new FunctionCallExpression(functionName, arguments, distinct);
+  }
+
+  /**
+   * Recursively find a {@link Cypher25Parser.PatternExpressionContext} within the given parse tree,
+   * used to detect a graph pattern passed to the function-style {@code exists(pattern)} predicate.
+   */
+  private Cypher25Parser.PatternExpressionContext findPatternExpressionRecursive(final ParseTree node) {
+    if (node instanceof Cypher25Parser.PatternExpressionContext)
+      return (Cypher25Parser.PatternExpressionContext) node;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.PatternExpressionContext found = findPatternExpressionRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+    return null;
   }
 
   /**

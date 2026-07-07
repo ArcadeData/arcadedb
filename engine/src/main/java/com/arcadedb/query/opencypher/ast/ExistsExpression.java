@@ -195,11 +195,15 @@ public class ExistsExpression implements Expression {
 
     if (clauseStart >= 0) {
       if (topWherePos >= 0 && topWherePos < clauseStart) {
-        // Existing WHERE before the clause — append to it
+        // Existing WHERE before the clause — prepend the correlation conditions. The existing
+        // WHERE body is parenthesized so a top-level OR in the body keeps its precedence: without
+        // the parentheses "cond AND a OR b" would parse as "(cond AND a) OR b", dropping the
+        // correlation from the OR branch (see issue #4995).
         int insertPos = topWherePos + 5;
         while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
           insertPos++;
-        return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
+        final String whereBody = query.substring(insertPos, clauseStart).trim();
+        return query.substring(0, insertPos) + conditions + " AND (" + whereBody + ") " + query.substring(clauseStart);
       }
       // Insert new WHERE before the clause keyword
       return query.substring(0, clauseStart) + "WHERE " + conditions + " " + query.substring(clauseStart);
@@ -210,7 +214,8 @@ public class ExistsExpression implements Expression {
       int insertPos = topWherePos + 5;
       while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
         insertPos++;
-      return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
+      final String whereBody = query.substring(insertPos).trim();
+      return query.substring(0, insertPos) + conditions + " AND (" + whereBody + ")";
     }
 
     // Append WHERE at end

@@ -1006,8 +1006,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
-        // Pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections
-        if (findPatternExpressionRecursive(itemCtx.expression()) != null)
+        // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections.
+        // A pattern nested inside a function-style exists(pattern) predicate is allowed: it evaluates
+        // to a boolean, not a projected path (issue #4993).
+        final Cypher25Parser.PatternExpressionContext patternInReturn = findPatternExpressionRecursive(itemCtx.expression());
+        if (patternInReturn != null && !isArgumentOfExistsFunction(patternInReturn))
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in RETURN projections");
         final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
         final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
@@ -1123,6 +1126,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         return found;
     }
     return null;
+  }
+
+  /**
+   * Returns true when the given pattern expression is the argument of a function-style
+   * {@code exists(pattern)} predicate. Such a pattern is a boolean existence check, not a projected
+   * path, so it is permitted in contexts (e.g. RETURN) where a bare pattern would be rejected.
+   */
+  private boolean isArgumentOfExistsFunction(final ParseTree node) {
+    for (ParseTree p = node.getParent(); p != null; p = p.getParent()) {
+      if (p instanceof Cypher25Parser.FunctionInvocationContext funcCtx)
+        return "exists".equalsIgnoreCase(funcCtx.functionName().getText());
+    }
+    return false;
   }
 
   /**

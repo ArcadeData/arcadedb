@@ -38,6 +38,7 @@ public class WebSocketEventBus {
   private final       ConcurrentHashMap<String, DatabaseEventWatcherThread>                        databaseWatchers = new ConcurrentHashMap<>();
   private final       ArcadeDBServer                                                               arcadeServer;
   public static final String                                                                       CHANNEL_ID       = "ID";
+  public static final String                                                                       USER             = "USER";
 
   public WebSocketEventBus(final ArcadeDBServer server) {
     this.arcadeServer = server;

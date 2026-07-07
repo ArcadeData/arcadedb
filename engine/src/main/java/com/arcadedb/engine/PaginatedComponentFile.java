@@ -80,6 +80,18 @@ public class PaginatedComponentFile extends ComponentFile {
     channelLock.writeLock().lock();
     try {
       try {
+        // #4930: only recover a channel closed by ACCIDENT (thread interrupt). If the file was closed on
+        // purpose (close()/drop set open=false) or its OS file no longer exists (dropped by DDL while a
+        // page was in flight in the flush thread), reopening would RE-CREATE the deleted file - open() uses
+        // RandomAccessFile("rw") - leaving a one-page ghost file that FileManager re-registers on the next
+        // open: schema/file-id confusion. Surface the closed-channel condition to the caller instead.
+        if (!open)
+          throw new FileNotFoundException(
+              "File '" + fileName + "' was closed on purpose, refusing to reopen it after a ClosedChannelException");
+        if (!new File(filePath).exists())
+          throw new FileNotFoundException(
+              "File '" + fileName + "' no longer exists on disk (dropped?), refusing to re-create it after a ClosedChannelException");
+
         if (channel == null || !channel.isOpen())
           open(filePath, mode);
       } finally {

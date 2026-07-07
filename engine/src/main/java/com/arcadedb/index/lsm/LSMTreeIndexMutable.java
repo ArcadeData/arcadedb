@@ -37,6 +37,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.RidHashSet;
 
 import java.io.File;
 import java.io.IOException;
@@ -106,8 +107,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       int pos = INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
 
-      // TODO: COUNT THE MUTABLE PAGES FROM THE TAIL BACK TO THE HEAD
-      currentMutablePages = 1;
+      // #4960: every page in this file was created after the last compaction (splitIndex starts a fresh
+      // file), so the whole file counts towards the next auto-compaction. Hardcoding 1 here undercounted
+      // after every restart, deferring the scheduled compaction by up to a full threshold of new pages.
+      currentMutablePages = Math.max(1, getTotalPages());
 
       final int subIndexFileId = currentPage.readInt(pos);
 
@@ -141,6 +144,16 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   @Override
   public void onAfterCommit() {
+    // #5067: createNewPage() increments currentMutablePages eagerly inside the transaction, so a rolled
+    // back transaction (e.g. a commit that failed in 1st phase after applying some index changes) discards
+    // the pages but not the increments, and the counter drifts above the real page count until the next
+    // reload (#5063's onAfterLoad re-derivation). The transaction's page counters are already published at
+    // this point of the commit, so clamp to the real total to keep the drift from scheduling a compaction
+    // early.
+    final int totalPages = getTotalPages();
+    if (currentMutablePages > totalPages)
+      currentMutablePages = totalPages;
+
     if (minPagesToScheduleACompaction > 1 && currentMutablePages >= minPagesToScheduleACompaction) {
       LogManager.instance()
           .log(this, Level.FINE, "Scheduled compaction of index '%s' (currentMutablePages=%d totalPages=%d)", null, componentName,
@@ -230,7 +243,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final Set<IndexCursorEntry> set = new HashSet<>();
 
     // NON COMPACTED INDEX, SEARCH IN ALL THE PAGES
-    searchInNonCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>());
+    searchInNonCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>(), new RidHashSet());
 
     return new TempIndexCursor(set);
   }
@@ -301,6 +314,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     this.currentMutablePages = currentMutablePages;
   }
 
+  public int getCurrentMutablePages() {
+    return currentMutablePages;
+  }
+
   protected MutablePage createNewPage() throws IOException {
     // NEW FILE, CREATE HEADER PAGE
     final int txPageCounter = getTotalPages();
@@ -330,7 +347,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   private void searchInNonCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set, final Set<TransactionIndexContext.ComparableKey> removedKeys) throws IOException {
+      final Set<IndexCursorEntry> set, final Set<TransactionIndexContext.ComparableKey> removedKeys,
+      final RidHashSet deletedRIDs) throws IOException {
     // SEARCH FROM THE LAST PAGE BACK
     final int totalPages = getTotalPages();
 
@@ -343,13 +361,13 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         continue;
 
       if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-          removedKeys))
+          removedKeys, deletedRIDs))
         return;
     }
 
     if (subIndex != null)
       // CONTINUE ON THE SUB-INDEX
-      subIndex.searchInCompactedIndex(originalKeys, convertedKeys, limit, set, removedKeys);
+      subIndex.searchInCompactedIndex(originalKeys, convertedKeys, limit, set, removedKeys, deletedRIDs);
   }
 
   protected void internalPut(final Object[] keys, final RID[] rids) {

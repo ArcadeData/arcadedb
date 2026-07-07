@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.RidHashSet;
@@ -37,7 +38,6 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
@@ -86,23 +86,41 @@ public final class PartitionedTriangleOp implements CountOp {
       partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, nodeCount);
     } else {
       final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-      final Future<?>[] futures = new Future<?>[threadCount];
+      final Future<?>[] futures = new Future<?>[threadCount - 1];
       final int chunkSize = (nodeCount + threadCount - 1) / threadCount;
-      for (int t = 0; t < threadCount; t++) {
+      int launched = 0;
+      for (int t = 1; t < threadCount; t++) {
         final int start = t * chunkSize;
         final int end = Math.min(start + chunkSize, nodeCount);
+        if (start >= nodeCount)
+          break;
         final int threadIdx = t;
-        futures[t] = executor.submit(() ->
+        futures[launched++] = executor.submit(() ->
             partialCounts[threadIdx] = countRange(knowsView, nbrs, personPartition, start, end));
       }
-      for (final Future<?> future : futures) {
+      // #4952: the calling thread runs chunk 0 itself (same discipline as GraphAlgorithms.parallelForRange)
+      // instead of submitting ALL chunks and blocking. Submitting everything meant that, when this operator
+      // was reached from a pool thread (or with the pool full of blocked producers), the caller waited on
+      // tasks queued behind threads that were themselves waiting: a pool-starvation deadlock only mitigated
+      // by the bounded queue's caller-runs rejection.
+      // #5063: chunk 0 runs inside try/finally so the submitted chunks are ALWAYS awaited.
+      // Without it, a chunk-0 exception unwound this frame while chunks 1..N-1 kept running and writing
+      // into partialCounts (and holding pool threads) behind the caller's back.
+      boolean chunk0Completed = false;
+      try {
+        partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, Math.min(chunkSize, nodeCount));
+        chunk0Completed = true;
+      } finally {
+        // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
+        // so a killed/timed-out query can never sum partial (and still-being-written) partialCounts as a
+        // complete answer.
         try {
-          future.get();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          break;
-        } catch (final ExecutionException e) {
-          throw new RuntimeException("Parallel triangle counting failed", e.getCause());
+          GraphAlgorithms.awaitFutures(futures, launched);
+        } catch (final RuntimeException awaitError) {
+          if (chunk0Completed)
+            throw awaitError;
+          // Chunk 0's own exception is already propagating and stays primary; the await above only had to
+          // guarantee that no background chunk outlives this frame.
         }
       }
     }

@@ -93,6 +93,12 @@ public class PatternPredicateExpression implements BooleanExpression {
       return evaluateAsSubquery(result, context);
     }
 
+    // Enforce any label conjunction and inline property constraints declared on the
+    // (already-bound) start node, e.g. exists((n:A:B)-->(:Node)). These constraints
+    // must hold on the bound variable itself, not only on the traversal target (issue #5095).
+    if (!matchesNodePattern(startVertex, startNodePattern, context))
+      return false;
+
     // Get the relationship pattern
     final RelationshipPattern relPattern = pathPattern.getRelationship(0);
 

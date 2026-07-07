@@ -25,6 +25,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -58,14 +60,19 @@ public class SelectOrderByTest extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex").orderBy("notIndexedId", true).compile();
       int lastId = -1;
+      int count = 0;
       final SelectIterator<Vertex> result = select.vertices();
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("notIndexedId");
         assertThat(id > lastId).isTrue();
         lastId = id;
+        count++;
       }
 
+      // ISSUE #5079: ORDER BY ON A NON-INDEX-SERVED PROPERTY MUST NOT RETURN AN EMPTY RESULT SET
+      assertThat(count).isEqualTo(110);
+      assertThat(lastId).isEqualTo(109);
       assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
     }
 
@@ -73,17 +80,54 @@ public class SelectOrderByTest extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex").orderBy("notIndexedId", false).compile();
       int lastId = Integer.MAX_VALUE;
+      int count = 0;
       final SelectIterator<Vertex> result = select.vertices();
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("notIndexedId");
         assertThat(id < lastId).isTrue();
         lastId = id;
+        count++;
       }
 
+      // ISSUE #5079: ORDER BY ON A NON-INDEX-SERVED PROPERTY MUST NOT RETURN AN EMPTY RESULT SET
+      assertThat(count).isEqualTo(110);
+      assertThat(lastId).isEqualTo(0);
       assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
-
     }
+  }
+
+  @Test
+  void okOrderByNoIndexToList() {
+    // ISSUE #5079: toList() ON AN ORDER BY QUERY MUST RETURN ALL THE SORTED ROWS
+    final SelectCompiled select = database.select().fromType("Vertex").orderBy("notIndexedId", true).compile();
+    final List<Vertex> list = select.vertices().toList();
+
+    assertThat(list).hasSize(110);
+    for (int i = 0; i < list.size(); i++)
+      assertThat(list.get(i).getInteger("notIndexedId")).isEqualTo(i);
+  }
+
+  @Test
+  void okOrderByNoIndexWithLimitAndSkip() {
+    // ISSUE #5079: LIMIT AND SKIP MUST BE HONORED ON THE SORTED (NON-INDEX-SERVED) PATH
+    final SelectCompiled select = database.select().fromType("Vertex").orderBy("notIndexedId", true).skip(5).limit(10).compile();
+    final List<Vertex> list = select.vertices().toList();
+
+    assertThat(list).hasSize(10);
+    for (int i = 0; i < list.size(); i++)
+      assertThat(list.get(i).getInteger("notIndexedId")).isEqualTo(i + 5);
+  }
+
+  @Test
+  void okOrderByNoIndexDescendingIndexServedProperty() {
+    // ISSUE #5079: DESCENDING ORDER ON AN INDEXED PROPERTY THAT THE INDEX SCANS ASCENDING MUST STILL SORT
+    final SelectCompiled select = database.select().fromType("Vertex").where().property("id").gt().value(-1).orderBy("id", false).compile();
+    final List<Vertex> list = select.vertices().toList();
+
+    assertThat(list).hasSize(110);
+    for (int i = 0; i < list.size(); i++)
+      assertThat(list.get(i).getInteger("id")).isEqualTo(109 - i);
   }
 
   @Test
@@ -92,14 +136,17 @@ public class SelectOrderByTest extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex").where().property("id").gt().value(-1).orderBy("id", true).compile();
       int lastId = -1;
+      int count = 0;
       final SelectIterator<Vertex> result = select.vertices();
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("id");
         assertThat(id > lastId).isTrue();
         lastId = id;
+        count++;
       }
 
+      assertThat(count).isEqualTo(110);
       assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
     }
 
@@ -107,16 +154,18 @@ public class SelectOrderByTest extends TestHelper {
     {
       final SelectCompiled select = database.select().fromType("Vertex").where().property("id").gt().value(-1).orderBy("id", false).compile();
       int lastId = Integer.MAX_VALUE;
+      int count = 0;
       final SelectIterator<Vertex> result = select.vertices();
 
       while (result.hasNext()) {
         final Integer id = result.next().getInteger("id");
         assertThat(id < lastId).isTrue();
         lastId = id;
+        count++;
       }
 
+      assertThat(count).isEqualTo(110);
       assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
-
     }
   }
 }

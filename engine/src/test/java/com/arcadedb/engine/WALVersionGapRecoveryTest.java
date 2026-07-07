@@ -163,9 +163,11 @@ class WALVersionGapRecoveryTest extends TestHelper {
         .as("DB_NOT_CLOSED callback must fire - recovery must have run")
         .isTrue();
 
-    final File[] walFilesAfterReopen = dbDir.listFiles((d, n) -> n.endsWith(".wal"));
-    assertThat(walFilesAfterReopen)
-        .as("WAL files must be preserved when a version gap is detected during recovery")
+    // #4958: the preserved files carry the .corrupt suffix so the fresh active pool cannot reuse them
+    // and their stale records are never replayed again.
+    final File[] preservedAfterReopen = dbDir.listFiles((d, n) -> n.endsWith(".corrupt"));
+    assertThat(preservedAfterReopen)
+        .as("WAL files must be preserved (renamed .corrupt) when a version gap is detected during recovery")
         .isNotEmpty();
   }
 

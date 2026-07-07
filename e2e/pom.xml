@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>26.8.1-SNAPSHOT</version>
+        <version>26.7.2-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -96,5 +96,45 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <profiles>
+        <!--
+            Exercises the A1 java driver-version range against the
+            oldest-supported-4.x band (neo4j-java-driver 4.4.20). The full
+            RemoteBoltDatabaseIT uses 5.x+ driver API (executeWrite,
+            lastBookmarks) and is excluded from compilation here; only the
+            cross-version-stable RemoteBoltLegacyDriverIT runs. The default
+            build resolves latest-6.x (root pom neo4j-driver.version, 6.2.0).
+            The full driver-version matrix and its scheduling live in #4891.
+        -->
+        <profile>
+            <id>bolt-driver-legacy</id>
+            <properties>
+                <neo4j-driver.version>6.2.0</neo4j-driver.version>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <testExcludes>
+                                <testExclude>**/RemoteBoltDatabaseIT.java</testExclude>
+                            </testExcludes>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <includes>
+                                <include>**/RemoteBoltLegacyDriverIT.java</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

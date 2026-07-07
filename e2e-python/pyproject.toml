@@ -19,7 +19,7 @@ name = "arcadedb-e2e-python"
 version = "0.1.0"
 description = "End-to-end Python tests for ArcadeDB"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 
 dependencies = [
@@ -32,11 +32,12 @@ dependencies = [
     "psycopg-binary>=3.3.4",
     "asyncpg>=0.31.0",
     "requests>=2.34.2",
-    "sqlalchemy>=2.0.51"
+    "sqlalchemy>=2.0.51",
+    "neo4j>=6.2.0"
 ]
 
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

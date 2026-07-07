@@ -33,7 +33,7 @@ try:
     from lxml import etree
 except ImportError:
     print("Missing dependency: lxml")
-    print("Install with: uv pip install lxml")
+    print("Install with: pip install lxml")
     sys.exit(1)
 
 
@@ -1146,19 +1146,25 @@ def arcadedb_insert_edges(
         use_wal=False,
         parallel_flush=parallel_flush,
     ) as batch:
+        sources = []
+        destinations = []
+        payloads = []
         for row in rows:
             from_rid = row.get("from_rid")
             to_rid = row.get("to_rid")
             if from_rid is None or to_rid is None:
                 continue
-            payload = {
-                key: row.get(key) for key in prop_keys if row.get(key) is not None
-            }
-            batch.new_edge(from_rid, edge_type, to_rid, **payload)
+            sources.append(from_rid)
+            destinations.append(to_rid)
+            payloads.append(
+                {key: row.get(key) for key in prop_keys if row.get(key) is not None}
+            )
+        if sources:
+            batch.new_edges(sources, edge_type, destinations, properties=payloads)
 
 
 def build_arcadedb_rid_lookup(db, vertex_type: str) -> Dict[int, str]:
-    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_list()
+    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_json_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
         row_id = row.get("Id")

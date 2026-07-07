@@ -127,8 +127,9 @@ public final class SnapshotManager {
     final byte[] buffer = new byte[8192];
     for (final File file : files) {
       final String name = file.getName();
-      // Skip transient files that differ between nodes: WAL logs, schema backups, lock files
-      if (name.endsWith(".wal") || name.endsWith(".prev.json") || name.endsWith(".lock"))
+      // Skip transient files that differ between nodes: WAL logs, schema backups, lock files,
+      // and WAL files preserved as .corrupt evidence after an aborted recovery (#4958)
+      if (name.endsWith(".wal") || name.endsWith(".prev.json") || name.endsWith(".lock") || name.endsWith(".corrupt"))
         continue;
 
       final CRC32 crc = new CRC32();

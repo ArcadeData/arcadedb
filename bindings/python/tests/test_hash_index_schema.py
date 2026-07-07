@@ -82,3 +82,29 @@ def test_hash_index_schema_get_or_create_and_force_drop(temp_db_path):
 
         schema.drop_index(index_name, force=True)
         assert not schema.exists_index(index_name)
+
+
+def test_indexed_in_named_list_parameter_returns_rows(temp_db_path):
+    """Indexed SQL IN parameters should expand Python list values in named args."""
+    with arcadedb.create_database(temp_db_path) as db:
+        schema = db.schema
+        schema.create_document_type("IssueItem")
+        schema.create_property("IssueItem", "code", arcadedb.PropertyType.INTEGER)
+        schema.create_index(
+            "IssueItem", ["code"], index_type=arcadedb.IndexType.LSM_TREE
+        )
+
+        with db.transaction():
+            db.command("sql", "INSERT INTO IssueItem SET code = 1, name = 'one'")
+            db.command("sql", "INSERT INTO IssueItem SET code = 2, name = 'two'")
+            db.command("sql", "INSERT INTO IssueItem SET code = 3, name = 'three'")
+
+        rows = list(
+            db.query(
+                "sql",
+                "SELECT code FROM IssueItem WHERE code IN :codes ORDER BY code",
+                {"codes": [1, 2, 3]},
+            )
+        )
+
+        assert [row.get("code") for row in rows] == [1, 2, 3]

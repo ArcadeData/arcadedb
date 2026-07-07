@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Ensure SHA pinned actions
-        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@ca46236c6ce584ae24bc6283ba8dcf4b3ec8a066 # v5.0.4
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@3db98c0363e2fa5df3e1c4c471777a7c10b24cc9 # v5.0.5
       - name: Run pre-commit
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -53,10 +53,10 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Get project version
         id: get-version
@@ -497,6 +497,46 @@ jobs:
       - name: E2E C# Tests
         working-directory: e2e-csharp/ArcadeDB.E2ETests
         run: dotnet test --logger "trx;LogFileName=test-results.trx"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
+
+  go-e2e-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-package
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          # Track the module's go directive so the toolchain always matches
+          # go.mod instead of a hardcoded version that can drift after dep bumps.
+          go-version-file: "e2e-go/go.mod"
+          cache-dependency-path: "e2e-go/go.sum"
+
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+
+      # The TLS scenarios (CONN-002/005) generate a keystore with keytool. It
+      # ships with the JDK preinstalled on ubuntu-latest; fail loudly here if it
+      # ever leaves the PATH, so those scenarios can't silently skip in CI.
+      - name: Verify keytool is available (required by TLS scenarios)
+        run: command -v keytool
+
+      - name: E2E Go Tests
+        working-directory: e2e-go
+        # 20m timeout: the plain container plus a derived-image build and two
+        # TLS containers (150s startup each) run sequentially and can approach
+        # the default 10m per-package deadline on a shared runner.
+        run: go test -v -timeout 20m ./...
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
