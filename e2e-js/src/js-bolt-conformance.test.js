@@ -22,10 +22,9 @@
 // official neo4j-driver. Each test name embeds its spec id ([AREA-NNN]) for
 // traceability, per bolt/conformance/README.md.
 //
-// ArcadeDB negotiates Bolt 4.4/4.0/3.0 at most (see PROTO-002 - it never
-// advertises 5.x). This suite depends on neo4j-driver continuing to silently
-// downgrade to 4.4; a future driver major dropping legacy negotiation would
-// break the whole suite, not just PROTO-002.
+// Since #5001 ArcadeDB advertises Bolt 5.0-5.4 (and still 4.4/4.0/3.0), so
+// neo4j-driver negotiates 5.x (see PROTO-002). A future driver major dropping
+// legacy negotiation would not affect this suite as long as 5.x stays offered.
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -40,6 +39,13 @@ const BASE_JAVA_OPTS =
   " -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}" +
   " -Darcadedb.server.plugins=BoltProtocolPlugin";
 const TLS_STORE_PASSWORD = "changeit";
+// neo4j:// routing (CONN-003) makes the driver connect to the address
+// handleRoute advertises - the server's own bound container IP. That IP is
+// host-routable on the native Docker bridge used by Linux CI, but not from
+// the host on Docker Desktop (macOS/Windows), where it is unreachable and the
+// driver times out. Run the scenario only where the routed address is
+// reachable; bolt:// scenarios use the mapped host port and are unaffected.
+const ROUTING_HOST_REACHABLE = process.platform === "linux";
 
 const TYPE_MATRIX_FIXTURE = path.resolve(
   __dirname,
@@ -260,7 +266,7 @@ describe("Bolt conformance (issue #4888)", () => {
       await driver.verifyConnectivity();
     });
 
-    it("[CONN-003] neo4j:// routing discovery, single-node", async () => {
+    (ROUTING_HOST_REACHABLE ? it : it.skip)("[CONN-003] neo4j:// routing discovery, single-node", async () => {
       const d = neo4j.driver(
         boltUri("neo4j"),
         neo4j.auth.basic("root", ROOT_PASSWORD)
@@ -849,13 +855,9 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    // KNOWN GAP (#4890): the server never advertises any Bolt 5.x version;
-    // 5.x-capable drivers only work by silently downgrading to 4.4, which is
-    // undocumented/untested as a deliberate stance. Under it.failing this body
-    // asserts the Neo4j-correct behavior (negotiated protocol >= 5), so the
-    // test stays green while the gap reproduces (a 4.x version is negotiated)
-    // and flips red (XPASS) the moment the server starts advertising 5.x.
-    it.failing("[PROTO-002] Bolt 5.x negotiation is supported", async () => {
+    // Since #5001 the server advertises Bolt 5.0-5.4, so a 5.x-capable driver
+    // negotiates a 5.x protocol version instead of silently downgrading to 4.4.
+    it("[PROTO-002] Bolt 5.x negotiation is supported", async () => {
       const info = await driver.getServerInfo({ database: "beer" });
       expect(Number(info.protocolVersion)).toBeGreaterThanOrEqual(5);
     });

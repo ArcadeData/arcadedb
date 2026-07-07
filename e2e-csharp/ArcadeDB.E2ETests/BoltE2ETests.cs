@@ -21,6 +21,7 @@
  */
 
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Neo4j.Driver;
 using Xunit;
@@ -46,6 +47,15 @@ public class BoltE2ETests
     [Fact(DisplayName = "CONN-003: Connect via neo4j:// routing discovery, single-node deployment")]
     public async Task Conn003_NeoRoutingSingleNode()
     {
+        // neo4j:// routing makes the driver connect to the container IP that
+        // handleRoute advertises. That address is host-routable on Linux CI's
+        // native Docker bridge but not from the host on Docker Desktop
+        // (macOS/Windows), where the driver times out. xUnit 2.x has no runtime
+        // skip, so short-circuit off Linux; bolt:// scenarios use the mapped
+        // host port and are unaffected.
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            return;
+
         await using var driver = GraphDatabase.Driver(
             _fixture.NeoRoutingUri,
             AuthTokens.Basic(ArcadeDbBoltFixture.RootUser, ArcadeDbBoltFixture.RootPassword));
@@ -541,21 +551,20 @@ public class BoltE2ETests
     }
 
     [Fact(DisplayName = "PROTO-002: Version negotiation with a Bolt 5.x-only driver")]
-    public async Task Proto002_Bolt5xNegotiationIsDocumented()
+    public async Task Proto002_Bolt5xNegotiationIsSupported()
     {
-        await KnownGapAssertions.AssertStillFailsAsync(async () =>
-        {
-            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
-            var result = await session.RunAsync("RETURN 1 AS value");
-            var summary = await result.ConsumeAsync();
+        // Since #5001 the server advertises Bolt 5.0-5.4, so a 5.x-capable
+        // driver negotiates a 5.x protocol version instead of downgrading to 4.4.
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("RETURN 1 AS value");
+        var summary = await result.ConsumeAsync();
 
-            var protocolVersionString = summary.Server.ProtocolVersion?.ToString()
-                ?? throw new InvalidCastException("ProtocolVersion was null");
-            if (!int.TryParse(protocolVersionString.Split('.')[0], out var majorVersion))
-                throw new InvalidCastException($"ProtocolVersion '{protocolVersionString}' was not in the expected 'major.minor' shape");
-            Assert.True(majorVersion >= 5,
-                $"driver negotiated Bolt {protocolVersionString} instead of a documented Bolt 5.x version");
-        }, "PROTO-002: BoltNetworkExecutor.SUPPORTED_VERSIONS never advertises Bolt 5.x - see #4890");
+        var protocolVersionString = summary.Server.ProtocolVersion?.ToString()
+            ?? throw new InvalidCastException("ProtocolVersion was null");
+        if (!int.TryParse(protocolVersionString.Split('.')[0], out var majorVersion))
+            throw new InvalidCastException($"ProtocolVersion '{protocolVersionString}' was not in the expected 'major.minor' shape");
+        Assert.True(majorVersion >= 5,
+            $"driver negotiated Bolt {protocolVersionString} instead of a 5.x version");
     }
 
     [Fact(DisplayName = "PROTO-003: RESET returns the connection to a clean state mid-stream")]

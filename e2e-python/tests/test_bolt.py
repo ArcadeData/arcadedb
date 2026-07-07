@@ -21,14 +21,12 @@ against the official `neo4j` Python driver. Each test function name embeds
 its spec.yaml scenario id (test_<AREA>_<NNN>_<slug>) for traceability, per
 bolt/conformance/README.md's "Traceability convention".
 
-Note: ArcadeDB negotiates Bolt 4.4/4.0/3.0 at most (see PROTO-002 - it
-never advertises 5.x). This entire suite depends on the pinned `neo4j`
-driver continuing to silently downgrade to 4.4 rather than requiring 5.x -
-a future driver major version that drops legacy protocol negotiation would
-break every test here, not just PROTO-002.
+Note: since #5001 ArcadeDB advertises Bolt 5.0-5.4 (and still 4.4/4.0/3.0),
+so the pinned `neo4j` driver negotiates 5.x (see PROTO-002).
 """
 
 import datetime
+import platform
 import shutil
 import subprocess
 import threading
@@ -318,6 +316,13 @@ def test_CONN_002_tls_required(bolt_container_tls_required):
             assert result.single()["name"] is not None
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="neo4j:// routing makes the driver connect to the container IP "
+    "handleRoute advertises; that address is host-routable on Linux CI's "
+    "native Docker bridge but not from the host on Docker Desktop "
+    "(macOS/Windows), where it times out - bolt:// scenarios are unaffected",
+)
 def test_CONN_003_neo4j_routing_single_node(bolt_container):
     with GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD)) as driver:
         driver.verify_connectivity()
@@ -750,14 +755,9 @@ def test_PROTO_001_version_negotiation_succeeds(bolt_driver):
         assert session.run("RETURN 1 AS value").single()["value"] == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BoltNetworkExecutor.SUPPORTED_VERSIONS never advertises any "
-    "Bolt 5.x version; drivers that support 5.x only work today by "
-    "silently downgrading to 4.4, which is undocumented and untested as a "
-    "deliberate compatibility stance; see #4890",
-)
-def test_PROTO_002_bolt_5x_negotiation_is_documented(bolt_driver):
+def test_PROTO_002_bolt_5x_negotiation_is_supported(bolt_driver):
+    # Since #5001 the server advertises Bolt 5.0-5.4, so a 5.x-capable driver
+    # negotiates a 5.x protocol version instead of silently downgrading to 4.4.
     with bolt_driver.session(database="beer") as session:
         summary = session.run("RETURN 1 AS value").consume()
         negotiated_version = summary.server.protocol_version
