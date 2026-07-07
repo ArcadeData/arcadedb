@@ -191,6 +191,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
           final long serializationStart = System.nanoTime();
           serializeResultSet(database, serializer, limit, response, qResult);
 
+          if (qResult != null) {
+            final var qStats = qResult.getStatistics();
+            if (qStats.isPresent() && qStats.get().containsUpdates())
+              response.put("stats", qStats.get().toJSON());
+          }
+
           if (qResult != null && qResult.getExecutionPlan().isPresent() &&
               (profileExecution != null ||
                   command.toUpperCase(Locale.ENGLISH).startsWith("PROFILE "))) {
