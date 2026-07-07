@@ -2066,9 +2066,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       GraphTraversalProviderRegistry.clearAll(this);
     }
 
-    executeInWriteLock(() -> {
+    final Boolean actuallyClosed = executeInWriteLock(() -> {
       if (!open)
-        return null;
+        // Idempotent close contract: a redundant second close() must be a no-op - in particular it must NOT
+        // consume another PageManager lifecycle reference below (#5070 review: the unconditional release
+        // tore the flush thread down under other open databases through the double-close door).
+        return false;
 
       try {
         if (async != null)
@@ -2185,17 +2188,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
-      return null;
+      return true;
     });
 
-    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
-      GraphAnalyticalView.closeExecutor();
+    if (Boolean.TRUE.equals(actuallyClosed)) {
+      if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+        GraphAnalyticalView.closeExecutor();
 
-    // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
-    // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
-    // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
-    // from under).
-    PageManager.INSTANCE.release();
+      // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
+      // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
+      // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
+      // from under). Guarded by actuallyClosed and recorded in the flag: the lifecycle reference is consumed
+      // EXACTLY ONCE per database instance, however many times close() is called and whoever calls it
+      // (including registerActiveInstance closing a same-path open race loser before the factory's catch).
+      pageManagerReferenceReleased = true;
+      PageManager.INSTANCE.release();
+    }
+  }
+
+  /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */
+  private volatile boolean pageManagerReferenceReleased = false;
+
+  boolean isPageManagerReferenceReleased() {
+    return pageManagerReferenceReleased;
   }
 
   private void checkForRecovery() throws IOException {

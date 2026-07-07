@@ -109,7 +109,16 @@ public class PageManager extends LockContext {
   public void acquire() {
     synchronized (LIFECYCLE_LOCK) {
       if (++lifecycleRefCount == 1)
-        startup();
+        try {
+          startup();
+        } catch (final RuntimeException | Error e) {
+          // #5070 review: startup() can throw (e.g. ConfigurationException on a negative MAX_PAGE_RAM). The
+          // increment must not survive it, or the counter is left at 1 with no flush thread and the NEXT
+          // acquire sees 1 -> 2 and never starts one - a wedged manager the caller's catch cannot repair
+          // (its release() would just decrement back to the same broken state at 1).
+          lifecycleRefCount = 0;
+          throw e;
+        }
     }
   }
 

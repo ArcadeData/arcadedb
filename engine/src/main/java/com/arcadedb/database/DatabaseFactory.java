@@ -79,8 +79,9 @@ public class DatabaseFactory implements AutoCloseable {
     // ACTIVE_INSTANCES.isEmpty() check-then-act raced concurrent open/close across factory instances.
     PageManager.INSTANCE.acquire();
 
+    LocalDatabase database = null;
     try {
-      final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
+      database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
       database.setAutoTransaction(autoTransaction);
       database.open();
 
@@ -88,9 +89,12 @@ public class DatabaseFactory implements AutoCloseable {
 
       return database;
     } catch (final Throwable e) {
-      // Balance the acquire above so a failed open does not leak the flush thread (#4991): the refcount
-      // reaches zero (and tears the manager down) only when no other database is active.
-      PageManager.INSTANCE.release();
+      // Balance the acquire above so a failed open does not leak the flush thread (#4991) - but EXACTLY
+      // once per instance (#5070 review): when registerActiveInstance loses a same-path open race it closes
+      // the database itself, and that close already consumed this reference; releasing again here would
+      // double-decrement and could tear the manager down under the race winner.
+      if (database == null || !database.isPageManagerReferenceReleased())
+        PageManager.INSTANCE.release();
       throw e;
     }
   }
@@ -102,8 +106,9 @@ public class DatabaseFactory implements AutoCloseable {
     // ACTIVE_INSTANCES.isEmpty() check-then-act raced concurrent open/close across factory instances.
     PageManager.INSTANCE.acquire();
 
+    LocalDatabase database = null;
     try {
-      final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
+      database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
           callbacks);
       database.setAutoTransaction(autoTransaction);
       database.create();
@@ -112,9 +117,10 @@ public class DatabaseFactory implements AutoCloseable {
 
       return database;
     } catch (final Throwable e) {
-      // Balance the acquire above so a failed open does not leak the flush thread (#4991): the refcount
-      // reaches zero (and tears the manager down) only when no other database is active.
-      PageManager.INSTANCE.release();
+      // Balance the acquire above so a failed create does not leak the flush thread (#4991) - but EXACTLY
+      // once per instance (#5070 review): see open().
+      if (database == null || !database.isPageManagerReferenceReleased())
+        PageManager.INSTANCE.release();
       throw e;
     }
   }
