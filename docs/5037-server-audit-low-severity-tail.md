@@ -61,7 +61,11 @@ except for an additive `requestId` field. Concealment only engages when an opera
 `arcadedb.server.mode=production`; the default mode stays verbose.
 
 Production mode conceals only the free-form `detail` cause chain; the `exception` class name and `exceptionArgs`
-are preserved so the remote-driver / HA typed-exception contract still holds. One deliberate trade-off follows
+are preserved so the remote-driver / HA typed-exception contract still holds. The "no leak in production" property
+therefore covers `detail` only: `exceptionArgs` is intentionally NOT concealed because the driver and HA need its
+structured tokens to reconstruct the typed exception. This is a deliberate, bounded trade-off - for
+`DuplicatedKeyException` the args carry the index name, the colliding key (caller-supplied) and the pre-existing
+record's RID, so a production error response still discloses that RID to the client. One deliberate trade-off follows
 from concealing `detail`: consumers that read the cause-chain message degrade gracefully against a
 production-mode server. Specifically the remote Java driver (`RemoteHttpComponent.manageException`) parses the RID
 for `RecordNotFoundException` out of `detail`, so it reconstructs the typed exception with a `null` RID; and both
