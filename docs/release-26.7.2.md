@@ -266,7 +266,9 @@ that could starve the very snapshot resync meant to heal the node.
   ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)). Follow-up hardening on the helping
   loop itself: a worker handing off a cross-slot task to a wedged-alive peer while its OWN queue is
   empty (so the deferral budget cannot grow) no longer spins forever - the same 60s progress-gated
-  backstop aborts the hand-off loudly via `onError` and the worker keeps serving its queue; and a
+  backstop aborts the hand-off loudly via `onError` and the worker keeps serving its queue (failure mode
+  when this trips on a bidirectional-edge follow-up: the outgoing direction is already persisted while the
+  dropped follow-up carried the incoming link - a PARTIAL edge until the operation is repeated); and a
   worker that consumed the shutdown marker while help-waiting now abandons the hand-off immediately,
   so `close()` returns within one offer window on that path instead of waiting out the grace period.
   Low-severity cleanups from the same audit: async executor settings (`parallelLevel`, `commitEvery`,

@@ -1177,7 +1177,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       long observedCompleted = target.completedTaskCount;
       long windowStart = System.currentTimeMillis();
       int windowsWithoutProgress = 0;
-      long noProgressSince = 0;
+      long lastProgressAt = System.currentTimeMillis();
       while (true) {
         // #5062 review r6 (point 2): consuming FORCE_EXIT below only sets the flag; keeping the
         // hand-off alive on a possibly wedged peer would make close() pay the whole grace period
@@ -1208,18 +1208,19 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (now - windowStart >= checkForStalledQueuesMaxDelay) {
           final long nowCompleted = target.completedTaskCount;
           if (nowCompleted == observedCompleted) {
-            if (windowsWithoutProgress == 0)
-              noProgressSince = now;
             if (++windowsWithoutProgress >= STALLED_NO_PROGRESS_WINDOWS)
-              // Report the MEASURED elapsed (#5072 review): at tiny configured delays each iteration is
-              // floored by the offer window, so the nominal windows-x-delay product would understate it.
+              // Report the MEASURED span since the last observed progress (#5072 review): at tiny
+              // configured delays each iteration is floored by the offer window, so the nominal
+              // windows-x-delay product would understate it - and measuring from the last progress (not
+              // the first no-progress window) covers the full span, matching the 12-window trip.
               throw new DatabaseOperationException(
                   "Asynchronous queue of " + target.getName() + " is stalled: no task completed in the last " + (
-                      now - noProgressSince)
+                      now - lastProgressAt)
                       + " ms while handing off a cross-slot task. The worker may be blocked inside a user task or callback");
           } else {
             windowsWithoutProgress = 0;
             observedCompleted = nowCompleted;
+            lastProgressAt = now;
           }
           windowStart = now;
         }
