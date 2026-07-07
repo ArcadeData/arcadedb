@@ -90,7 +90,7 @@ public class DatabaseFactory implements AutoCloseable {
       return database;
     } catch (final Throwable e) {
       // Balance the acquire above so a failed open does not leak the flush thread (#4991) - but EXACTLY
-      // once per instance (#5070 review): when registerActiveInstance loses a same-path open race it closes
+      // once per instance (#5070): when registerActiveInstance loses a same-path open race it closes
       // the database itself, and that close already consumed this reference; releasing again here would
       // double-decrement and could tear the manager down under the race winner.
       if (database == null || !database.isPageManagerReferenceReleased())
@@ -117,7 +117,7 @@ public class DatabaseFactory implements AutoCloseable {
       return database;
     } catch (final Throwable e) {
       // Balance the acquire above so a failed create does not leak the flush thread (#4991) - but EXACTLY
-      // once per instance (#5070 review): see open().
+      // once per instance (#5070): see open().
       if (database == null || !database.isPageManagerReferenceReleased())
         PageManager.INSTANCE.release();
       throw e;
@@ -165,7 +165,7 @@ public class DatabaseFactory implements AutoCloseable {
 
   protected static boolean removeActiveDatabaseInstance(final String databasePath, final Database instance) {
     final var normalizedPath = getNormalizedPath(databasePath);
-    // Keyed to the instance (#5070 review): when registerActiveInstance closes a same-path open-race LOSER,
+    // Keyed to the instance (#5070): when registerActiveInstance closes a same-path open-race LOSER,
     // the loser's close must not remove the WINNER's still-live mapping - a plain remove(path) did, orphaning
     // the winner from the registry and letting a third open of the same path pass checkForActiveInstance.
     ACTIVE_INSTANCES.remove(normalizedPath, instance);

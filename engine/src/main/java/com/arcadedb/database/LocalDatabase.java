@@ -1339,7 +1339,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // concurrency-induced duplicate can succeed on retry, and one retry is enough to disambiguate:
           // fail fast instead of burning all the remaining attempts plus their retry delays.
           //
-          // #5061 review: a TRANSIENT duplicate from an in-flight sibling transaction that later rolls back
+          // #5061: a TRANSIENT duplicate from an in-flight sibling transaction that later rolls back
           // is unreachable - checkUniqueIndexKeys reads committed pages plus THIS transaction's own overlay
           // (TransactionIndexContext is per-transaction), so uncommitted sibling entries are invisible and a
           // detected duplicate is always against durable state (or this same transaction). The one retry
@@ -2202,7 +2202,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // Unconditional on purpose: a KILLED database (crash simulation) reaches close() with open == false and
     // must still unregister - removeActiveDatabaseInstance is naturally idempotent (false on the second
     // call), which is exactly how the pre-#4927 code stayed double-close-safe. The executor teardown stays
-    // on the map-emptiness heuristic DELIBERATELY (#5070 review): unlike the flush thread, a shutdown
+    // on the map-emptiness heuristic DELIBERATELY (#5070): unlike the flush thread, a shutdown
     // executor lazily re-creates itself on the next getExecutor(), so the mid-flight-open race self-heals.
     // A redundant double-close of the LAST database calls it twice (the empty map returns true again):
     // harmless, closeExecutor() is idempotent (early-returns on null/isShutdown under its class lock).
@@ -2212,7 +2212,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
     // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
     // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
-    // from under). The atomic flag makes the release EXACTLY ONCE per database instance (#5070 review): a
+    // from under). The atomic flag makes the release EXACTLY ONCE per database instance (#5070): a
     // redundant double-close cannot steal another database's reference, and when registerActiveInstance
     // closes a same-path open race loser, the factory's catch sees the flag and does not release again.
     if (pageManagerReferenceReleased.compareAndSet(false, true))
@@ -2360,7 +2360,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
-   * #5053 review: set when a commit fails AFTER its transaction was appended to the WAL (the point of no
+   * #5053: set when a commit fails AFTER its transaction was appended to the WAL (the point of no
    * return) but BEFORE its pages were published. From that moment the WAL and the live state diverge: the
    * transaction is durable (recovery will replay it) but invisible, and letting new transactions run would
    * let them bump the same page versions and append conflicting WAL records for the same target versions.
@@ -2394,7 +2394,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (!open)
       throw new DatabaseIsClosedException(name);
     if (fenceReason != null)
-      // #5053 review: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
+      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
       // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
       // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
       // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
