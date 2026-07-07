@@ -28,6 +28,7 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -178,6 +179,22 @@ class RaftReplicatedDatabaseTest {
     assertThat(result).isInstanceOf(CommandSQLParsingException.class);
     assertThat(result).isInstanceOf(CommandParsingException.class);
     assertThat(result.getMessage()).isEqualTo("Syntax error near 'SELCT'");
+  }
+
+  @Test
+  void reconstructLeaderExceptionCommittedRemotelyKeepsDoNotRetryContract() {
+    // #5064: a follower forwarding a write must hand the caller the SAME do-not-retry contract the
+    // leader produced - collapsing it to a generic TransactionException (or worse, a retryable type)
+    // would let the client re-drive a transaction the cluster already committed, inserting duplicates.
+    final String body = "{\"error\":\"Transaction committed cluster-wide but the local apply failed - do not retry\","
+        + "\"detail\":\"Transaction TX(1) is committed cluster-wide but the local apply failed. Do NOT retry: reload the records and continue\","
+        + "\"exception\":\"com.arcadedb.exception.TransactionCommittedRemotelyException\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(409, body);
+
+    assertThat(result).isInstanceOf(TransactionCommittedRemotelyException.class);
+    assertThat(result).isNotInstanceOf(NeedRetryException.class);
+    assertThat(result.getMessage()).contains("committed cluster-wide").contains("Do NOT retry");
   }
 
   @Test
