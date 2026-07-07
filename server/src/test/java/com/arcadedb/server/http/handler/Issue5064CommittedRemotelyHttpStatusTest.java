@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
@@ -75,6 +76,37 @@ class Issue5064CommittedRemotelyHttpStatusTest {
     assertThat(json.getString("error")).isEqualTo("Transaction committed cluster-wide but the local apply failed - do not retry");
     assertThat(json.getString("exception")).isEqualTo(TransactionCommittedRemotelyException.class.getName());
     assertThat(json.getString("detail")).contains("committed cluster-wide").contains("Do NOT retry");
+  }
+
+  @Test
+  void committedRemotelyWrappedInCommandExecutionExceptionKeeps409() {
+    // #5075 round 6 (defense in depth): script execution and command planners wrap exceptions in
+    // CommandExecutionException. The do-not-retry 409 must survive the wrapping - falling through to the
+    // generic 500 would re-invite the duplicate-insert retry the distinct type exists to prevent.
+    final HandledResponse response = handle(new CommandExecutionException("Error on command execution",
+        new TransactionCommittedRemotelyException("Transaction TX(1) is committed cluster-wide but the local apply failed."
+            + " Do NOT retry: reload the records and continue", new IllegalStateException("simulated"))));
+
+    assertThat(response.statusCode)
+        .as("a WRAPPED committed-remotely outcome must keep the non-retryable 409 (body=%s)", response.body)
+        .isEqualTo(409);
+    assertThat(new JSONObject(response.body).getString("exception"))
+        .isEqualTo(TransactionCommittedRemotelyException.class.getName());
+  }
+
+  @Test
+  void committedRemotelyWrappedInTransactionExceptionKeeps409() {
+    // Same guard for the auto-commit wrapper in DatabaseAbstractHandler, which wraps any Exception thrown
+    // by execute() in a plain TransactionException.
+    final HandledResponse response = handle(new TransactionException("Error on transaction commit",
+        new TransactionCommittedRemotelyException("Transaction TX(1) is committed cluster-wide but the local apply failed."
+            + " Do NOT retry: reload the records and continue", new IllegalStateException("simulated"))));
+
+    assertThat(response.statusCode)
+        .as("the auto-commit wrapper must not degrade the committed-remotely 409 (body=%s)", response.body)
+        .isEqualTo(409);
+    assertThat(new JSONObject(response.body).getString("exception"))
+        .isEqualTo(TransactionCommittedRemotelyException.class.getName());
   }
 
   @Test
