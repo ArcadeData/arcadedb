@@ -181,6 +181,25 @@ that could starve the very snapshot resync meant to heal the node.
   database close now fails with the intended "Async executor has been shut down" error instead of a raw
   NullPointerException ([#4955](https://github.com/ArcadeData/arcadedb/issues/4955)).
 
+- **Commit: the WAL append is now the point of no return.** Page versions are validated and bumped BEFORE
+  the transaction is appended to the WAL, so a WAL record can only exist for a transaction that can no
+  longer fail validation - previously a phase-2 validation failure left the aborted transaction in the WAL
+  with no abort marker, and crash recovery partially replayed it
+  ([#4936](https://github.com/ArcadeData/arcadedb/issues/4936)). Enabling that guarantee, the commit lock
+  set is verified AFTER all page-set mutation and extended when files joined late (EXTERNAL-property
+  buckets, indexes created inside the transaction, and the vector index's companion graph file, which now
+  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)). **Behavioral
+  change for explicit locking:** a transaction using explicit locks that writes a file absent from its lock
+  list - including files it could not have locked up front, such as an index created inside the same
+  transaction or an EXTERNAL property's paired bucket - now fails with the "not all the modified resources
+  were locked" error instead of committing without the lock (which was unsafe). Lock the type after
+  creating its indexes, or create indexes outside explicit-lock transactions. Note the commit
+  boundary this makes explicit: a failure AFTER the WAL append (e.g. while publishing pages) is resolved by
+  recovery replay, never by abort - the caller may see an error for a transaction that becomes durable on
+  restart. If that post-append failure ever happens, the database is FENCED: every further operation fails
+  with a "close and reopen to run recovery" error, preventing new transactions from appending conflicting
+  WAL records for the same page versions, and the ack-gated close preserves the WAL so the reopen replays
+  the orphaned transaction.
 - **WAL/recovery correctness (2026-07 audit).** Recovery now RE-APPLIES a WAL delta whose version equals
   the on-disk page version, repairing a torn page write (a 64KB flush spans many sectors; a power loss can
   persist the new version header while the delta sectors still hold the previous content - the old `<=`
