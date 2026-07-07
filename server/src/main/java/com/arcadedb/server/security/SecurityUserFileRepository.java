@@ -25,15 +25,27 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 
 public class SecurityUserFileRepository {
   public static final  String FILE_NAME        = "server-users.jsonl";
   private static final int    BUFFER_SIZE      = 65536 * 10;
   private final        String securityConfPath;
-  private              long   fileLastModified = -1;
+  // Serializes all writers (local mutations, config reload, Raft apply) so their output never interleaves.
+  private final        Object saveLock         = new Object();
+  private volatile     long   fileLastModified = -1;
 
   public SecurityUserFileRepository(String securityConfPath) {
     if (!securityConfPath.endsWith(File.separator))
@@ -43,15 +55,53 @@ public class SecurityUserFileRepository {
 
   public void save(final List<JSONObject> configuration) throws IOException {
     final File file = new File(securityConfPath, FILE_NAME);
-    if (!file.exists())
-      file.getParentFile().mkdirs();
 
-    try (final FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
-      for (final JSONObject line : configuration)
-        writer.write(line.toString() + "\n");
+    final StringBuilder sb = new StringBuilder();
+    for (final JSONObject line : configuration)
+      sb.append(line.toString()).append("\n");
+    final byte[] bytes = sb.toString().getBytes(DatabaseFactory.getDefaultCharset());
+
+    synchronized (saveLock) {
+      final File dir = file.getParentFile();
+      if (dir != null && !dir.exists())
+        dir.mkdirs();
+
+      final Path target = file.toPath();
+      // Write to a sibling temp file, fsync it, then atomically rename over the target. A crash or power
+      // loss mid-write can only ever damage the throwaway temp file: the live users file remains the
+      // previous complete version, so restart never falls back to createDefault() and resets all users.
+      final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
+      try {
+        try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
+          channel.write(ByteBuffer.wrap(bytes));
+          channel.force(true);
+        }
+
+        // Restrict to owner-only (mode 600) before publishing, matching ApiTokenConfiguration, so the
+        // password-hash file is never world-readable.
+        applyOwnerOnlyPermissions(tmp);
+
+        try {
+          Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (final AtomicMoveNotSupportedException e) {
+          Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+      } finally {
+        Files.deleteIfExists(tmp);
+      }
+
+      fileLastModified = file.lastModified();
     }
+  }
 
-    fileLastModified = file.lastModified();
+  private static void applyOwnerOnlyPermissions(final Path path) {
+    try {
+      final PosixFileAttributeView posixView = Files.getFileAttributeView(path, PosixFileAttributeView.class);
+      if (posixView != null)
+        posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+    } catch (final IOException | UnsupportedOperationException e) {
+      // Non-POSIX system (e.g. Windows): skip
+    }
   }
 
   public List<JSONObject> getUsers() {
