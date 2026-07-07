@@ -119,8 +119,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // access is enforced by `synchronized (freeSpaceInPages)` blocks at every callsite.
   private final          IntIntHashMap             freeSpaceInPages                 = new IntIntHashMap();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
-  private                long                      timeOfLastStats                  = 0L;
-  private                long                      changesFromLastStats             = 0L;
+  // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
+  // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
+  private volatile       long                      timeOfLastStats                  = 0L;
+  private final          AtomicLong                changesFromLastStats             = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
     LOW, MEDIUM, HIGH
@@ -1169,7 +1171,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             getFreeSpaceInPage(pageAnalysis);
             updatePageStatistics(pageId, pageAnalysis.spaceAvailableInCurrentPage, (int) ((recordSize[0] + recordSize[1]) * -1));
           } else
-            ++changesFromLastStats;
+            changesFromLastStats.incrementAndGet();
         }
 
       } else {
@@ -2053,8 +2055,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 3. if the tree map is full (size > MAX_PAGES_GATHER_STATS), stop
    */
   public void gatherPageStatistics() {
-    if (timeOfLastStats == 0L || (System.currentTimeMillis() - timeOfLastStats > MAX_TIMEOUT_GATHER_STATS
-            && changesFromLastStats > 0))
+    final boolean firstRun = timeOfLastStats == 0L;
+    if (!firstRun && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
+      return;
+
+    // #5063 review round 2: consume the change counter atomically at the decision point. The previous
+    // get() > 0 check paired with a set(0L) at the end of the scan wiped any increment landing while the
+    // scan ran; getAndSet(0L) carries those increments into the next cycle instead of losing them.
+    final long consumedChanges = changesFromLastStats.getAndSet(0L);
+    if (consumedChanges > 0 || firstRun)
       try {
         int txPageCount = getTotalPages();
 
@@ -2064,13 +2073,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
             final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, true);
 
-            int freeSpaceInPage = getPageSize() - contentHeaderSize;
+            // #4958: measure against the usable content region (getMaxContentSize), not the physical
+            // page size: the latter overstated the free space of every page by the page header size.
+            int freeSpaceInPage = page.getMaxContentSize() - contentHeaderSize;
             if (!orderedRecordContentInPage.isEmpty()) {
               final int[] lastRecord = orderedRecordContentInPage.getLast();
-              freeSpaceInPage = getPageSize() - (lastRecord[0] + lastRecord[1]);
+              freeSpaceInPage = page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
             }
 
-            final int freeSpacePerc = freeSpaceInPage * 100 / (getPageSize() - contentHeaderSize);
+            final int freeSpacePerc = freeSpaceInPage * 100 / (page.getMaxContentSize() - contentHeaderSize);
 
             if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC)
               freeSpaceInPages.put(pageId, freeSpaceInPage);
@@ -2080,9 +2091,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
 
           timeOfLastStats = System.currentTimeMillis();
-          changesFromLastStats = 0L;
         }
       } catch (Exception e) {
+        // #5063 review round 3: THE COUNTER WAS ALREADY CONSUMED. RESTORE THE FULL CONSUMED COUNT (NOT A
+        // SINGLE INCREMENT, WHICH UNDERCOUNTED THE PENDING CHANGES) SO THE FAILED SCAN IS RETRIED AT THE
+        // NEXT CYCLE; max(consumed, 1) COVERS THE firstRun CASE WHERE THE CONSUMED COUNT MAY BE ZERO
+        changesFromLastStats.addAndGet(Math.max(consumedChanges, 1L));
         LogManager.instance().log(this, Level.WARNING, "Error on gathering statistics on bucket '%s'", e, getName());
       }
   }
@@ -2091,7 +2105,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Update the in memory statistics about the free space in page.
    */
   private void updatePageStatistics(final int pageId, final int availableSpace, final int delta) {
-    ++changesFromLastStats;
+    changesFromLastStats.incrementAndGet();
 
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;

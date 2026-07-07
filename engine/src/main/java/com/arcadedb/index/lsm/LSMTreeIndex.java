@@ -82,7 +82,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private              TypeIndex                     typeIndex;
   private              boolean                       valid        = true;
   private              IndexMetadata                 metadata;
-  protected            LSMTreeIndexMutable           mutable;
+  // #4960: volatile because the reference is swapped under the write lock (splitIndex) but read
+  // WITHOUT the lock by getFileId/getKeyTypes/getBinaryKeyTypes/convertKeys and the metadata paths:
+  // an unfenced reader could otherwise see a stale (or partially constructed) instance.
+  protected volatile   LSMTreeIndexMutable           mutable;
 
   public static class LSMTreeIndexFactoryHandler implements IndexFactoryHandler {
     @Override
@@ -337,13 +340,22 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public void close() {
     checkIsValid();
-    if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
+    // #4960: a compaction that is merely SCHEDULED has not started yet, so it is safely cancelled here
+    // (its own CAS COMPACTION_SCHEDULED -> COMPACTION_IN_PROGRESS will fail) and the close proceeds.
+    // Before this fix the AVAILABLE-only CAS made close() a silent no-op in that state, leaving the
+    // index files open and the compactor free to start against a closing database.
+    if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)
+        || status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.UNAVAILABLE)) {
       lock.executeInWriteLock(() -> {
         if (mutable != null)
           mutable.close();
         return null;
       });
-    }
+    } else if (status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS)
+      // An actually running compaction cannot be cancelled here without corrupting its output: leave it
+      // to fail against the closed files, but do it loudly instead of silently skipping the close.
+      LogManager.instance().log(this, Level.WARNING,
+          "Index '%s' not closed because a compaction is in progress", null, name);
   }
 
   public void drop() {
@@ -647,8 +659,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
             "splitIndex: replaced mutable for index '%s' (oldName='%s' oldFileId=%d) with newName='%s' newFileId=%d",
             null, getName(), mutable.getName(), mutable.getFileId(), newName, newMutableIndex.getFileId());
 
-        // LOCK NEW FILE
-        database.getTransactionManager().tryLockFile(newMutableIndex.getFileId(), 0, Thread.currentThread());
+        // LOCK NEW FILE. #4960: check the outcome instead of ignoring it - the id is brand new so a
+        // failure can only be a bug, but proceeding unlocked would corrupt the swap in silence.
+        final LockManager.LOCK_STATUS newFileLocked = database.getTransactionManager()
+            .tryLockFile(newMutableIndex.getFileId(), 0, Thread.currentThread());
+        if (newFileLocked == LockManager.LOCK_STATUS.NO)
+          throw new IllegalStateException(
+              "Cannot replace compacted index because cannot lock the new index file " + newMutableIndex.getFileId());
         lockedNewFileId.set(newMutableIndex.getFileId());
 
         final List<MutablePage> modifiedPages = new ArrayList<>(2 + mutable.getTotalPages() - startingFromPage);
