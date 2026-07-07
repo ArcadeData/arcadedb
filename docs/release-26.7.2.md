@@ -250,7 +250,9 @@ that could starve the very snapshot resync meant to heal the node.
   rollback (double unlock, concurrent record reloads on shared caches); the sweep additionally claims each
   per-database context with a value-keyed remove, closing the same double-rollback race against
   `closeInternal`'s `removeAllContexts()` (which rolls back foreign contexts under the DB write lock the
-  sweep does not take).
+  sweep does not take); the lazy requester capture is now an explicit `captureRequester()` invoked only
+  from the lock-acquisition paths, with `getRequester()` a pure read for the release paths, so a future
+  non-owner call can no longer pin the wrong lock identity (structural guard for the #4941 invariant).
 - **Pool discipline, TimeSeries threading and low-severity storage/WAL/LSM cleanups (2026-07 audit).**
   The partitioned triangle-count operator now runs chunk 0 on the calling thread instead of submitting
   every chunk to the shared query pool and blocking on all of them - the same caller-runs-chunk-0

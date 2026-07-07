@@ -101,6 +101,14 @@ public class TransactionContext implements Transaction {
   private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel              = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
+  // INVARIANT (#4941/#4959): this field is written by exactly two paths. (1) setRequester(), the explicit
+  // protocol-session identity, which always wins. (2) captureRequester(), the lazy owner-thread capture,
+  // called ONLY from the lock-ACQUISITION paths (lockFilesInOrder's tryLockFiles, LocalDatabase's
+  // executeLockingFiles) and therefore always on the owning thread BEFORE any lock exists. Release paths
+  // (reset, kill, the commit unlocks) must use the PURE getRequester() and must never write the field: a
+  // capture on a non-owner thread would key later lock operations inconsistently and leak the file locks
+  // forever (#4941). The check-then-set in captureRequester() is not atomic and is safe only under this
+  // single-writer discipline.
   // volatile (#5060 review round 3): the DEAD-owner release path gets its happens-before from
   // isAlive()==false (JLS 17.4.4), but closeInternal can roll back a LIVE owner's context, where no such
   // edge exists - a plain read could see a stale null, re-capture the closing thread and key the unlock
@@ -560,20 +568,34 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Returns the identity file locks are keyed by for this transaction: the explicit requester (e.g. a
-   * server-side session) when one was set via {@link #setRequester(Object)} (#4959), otherwise the OWNING
-   * thread, captured lazily at first use - which is always lock-acquisition time on the owner (#4941).
+   * Captures (lazily) and returns the identity file locks are keyed by for this transaction: the explicit
+   * requester (e.g. a server-side session) when one was set via {@link #setRequester(Object)} (#4959),
+   * otherwise the OWNING thread, captured at first call - which is always lock-acquisition time on the
+   * owner (#4941). MUST be called only from the lock-acquisition paths on the owning thread; see the
+   * INVARIANT note on the {@code requester} field. Release paths use the pure {@link #getRequester()}.
+   * Package-private on purpose: only same-package acquisition code (this class and LocalDatabase's
+   * executeLockingFiles) may capture.
+   */
+  Object captureRequester() {
+    if (requester == null)
+      requester = Thread.currentThread();
+    return requester;
+  }
+
+  /**
+   * PURE read of the identity file locks are keyed by for this transaction (no capture, safe to call from
+   * any thread): the explicit requester when one was set via {@link #setRequester(Object)} (#4959),
+   * otherwise the owning thread captured by {@link #captureRequester()} at lock-acquisition time (#4941).
    * Re-resolving Thread.currentThread() per call returned the WRONG requester when the locks were released
    * by another thread (database close rolling back foreign contexts, or the dead-thread sweep rolling back
    * an abandoned transaction): the unlock failed with LockException and the file locks leaked forever. The
    * LockManager explicitly supports acquire-on-one-thread/release-on-another as long as the requester
-   * object is identical. An explicit setRequester always wins: it assigns the field directly, whether it
-   * runs before or after the lazy capture.
+   * object is identical. The current-thread fallback is harmless: a null requester at release time means
+   * this transaction never acquired a file lock, so there is nothing keyed by it to release.
    */
   public Object getRequester() {
-    if (requester == null)
-      requester = Thread.currentThread();
-    return requester;
+    final Object captured = requester;
+    return captured != null ? captured : Thread.currentThread();
   }
 
   public Map<Integer, Integer> getBucketRecordDelta() {
@@ -1154,7 +1176,8 @@ public class TransactionContext implements Transaction {
     // file id is authoritative because the buffered index entries are resolved by index name at commit time and
     // therefore land in the current (migrated) file regardless of which id we lock here.
     for (int attempt = 0; ; ++attempt) {
-      final List<Integer> locked = database.getTransactionManager().tryLockFiles(filesToLock.toArray(), timeout, getRequester());
+      // ACQUISITION PATH: CAPTURES THE REQUESTER ON THE OWNER THREAD (SEE THE INVARIANT ON THE FIELD)
+      final List<Integer> locked = database.getTransactionManager().tryLockFiles(filesToLock.toArray(), timeout, captureRequester());
 
       // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX.
       int missingFile = -1;

@@ -238,6 +238,12 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * same reasons (weakly-consistent traversal + the atomic claim: a nested sweep cannot double-roll-back a
    * claimed entry), noted so the recursion is a documented possibility rather than a surprise.
    * <p>
+   * Offloading the rollbacks to {@code DatabaseAsyncExecutor} was considered and rejected: that executor is
+   * PER-DATABASE and may itself be closing or saturated exactly when the sweep runs (the sweep reclaims
+   * contexts for ANY database, including ones mid-close), and a rollback queued behind a stalled async queue
+   * delays the lock release this sweep exists to guarantee. Revisit only with a dedicated JVM-wide cleanup
+   * executor if the inline cost ever shows up in practice.
+   * <p>
    * Package-private (instead of private) for tests only.
    */
   static void cleanupDeadThreads() {
@@ -248,7 +254,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
         // MEMORY VISIBILITY: THE isAlive() == false CHECK IS LOAD-BEARING, NOT JUST A LIVENESS TEST. PER JLS
         // 17.4.4 THE FINAL ACTION OF A TERMINATED THREAD SYNCHRONIZES-WITH ANOTHER THREAD DETECTING THE
         // TERMINATION VIA isAlive()/join(), SO THIS THREAD IS GUARANTEED TO SEE ALL THE DEAD OWNER'S WRITES
-        // (E.G. TransactionContext.requester, WHICH IS NON-VOLATILE). DO NOT REPLACE IT WITH A BARE
+        // EVEN THE NON-VOLATILE ONES (TransactionContext.requester IS VOLATILE SINCE ROUND 3 FOR THE
+        // LIVE-OWNER CLOSE PATH, BUT THE DEAD-OWNER GUARANTEE HERE DOES NOT DEPEND ON THAT). DO NOT REPLACE
+        // THE LIVENESS TEST WITH A BARE
         // WeakReference STALENESS CHECK. THE owner == null BRANCH LACKS THE FORMAL GUARANTEE BUT A GC-CLEARED
         // Thread IS LONG TERMINATED (AND ITS WRITES LONG PUBLISHED) IN PRACTICE.
         //
@@ -297,10 +305,18 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   }
 
   /**
-   * Package-private test hook: returns a snapshot of the registered thread ids.
+   * Package-private test hook: returns true when any registered entry is owned by a still-reachable thread
+   * whose name starts with the given prefix. Lets tests key assertions to specific worker threads (e.g. the
+   * GAV "gav-worker-" virtual threads) instead of diffing JVM-wide id snapshots, which would go spuriously
+   * red whenever an unrelated thread registered a context between the snapshots.
    */
-  static Set<Long> registeredThreadIds() {
-    return new HashSet<>(CONTEXTS.keySet());
+  static boolean isThreadRegisteredWithNamePrefix(final String prefix) {
+    for (final ThreadContexts threadContexts : CONTEXTS.values()) {
+      final Thread owner = threadContexts.owner.get();
+      if (owner != null && owner.getName().startsWith(prefix))
+        return true;
+    }
+    return false;
   }
 
   public static class DatabaseContextTL {

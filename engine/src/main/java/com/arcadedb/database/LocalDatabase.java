@@ -355,6 +355,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // CLEAR ANY THREAD-LOCAL CONTEXT POINTING AT THIS (NOW DEAD) DATABASE, OTHERWISE A SUBSEQUENT OPERATION ON THE SAME
       // THREAD (E.G. RESOLVING A BARE RID) WOULD STILL FIND THE KILLED DATABASE AS THE ACTIVE ONE. MIRRORS close().
+      // UNLIKE closeInternal, THE RETURNED CONTEXTS ARE NOT ROLLED BACK, AND ONCE UNLINKED HERE THE DEAD-THREAD
+      // SWEEP CAN NEVER REACH THEM EITHER. THAT IS SAFE ONLY IN THIS TEST-ONLY CRASH SIMULATION: THE FILE LOCKS
+      // THEY COULD HOLD LIVE IN THIS INSTANCE'S TransactionManager LockManager, WHICH transactionManager.kill()
+      // ALREADY CLOSED ABOVE - A REOPENED DATABASE STARTS WITH A FRESH LockManager, SO NOTHING CAN LEAK
       try {
         DatabaseContext.INSTANCE.removeAllContexts(databasePath);
       } catch (final Throwable e) {
@@ -1808,9 +1812,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // #4959: file locks are keyed by requester (thread or session). Lock on behalf of the current
     // transaction's requester when one exists, so a thread acting for a session does not time out on locks
     // its own session already holds (a re-acquisition by the same requester is ALREADY_ACQUIRED and is not
-    // released below, only the locks actually acquired here are).
+    // released below, only the locks actually acquired here are). ACQUISITION PATH: captureRequester()
+    // pins the identity on the owner thread (getTransactionIfExists resolves the CURRENT thread's tx, so
+    // this thread IS the owner); see the INVARIANT on TransactionContext.requester (#4941).
     final TransactionContext tx = getTransactionIfExists();
-    final Object requester = tx != null ? tx.getRequester() : Thread.currentThread();
+    final Object requester = tx != null ? tx.captureRequester() : Thread.currentThread();
 
     List<Integer> lockedFiles = null;
     try {

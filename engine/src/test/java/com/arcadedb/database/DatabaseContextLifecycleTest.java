@@ -24,8 +24,6 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
@@ -153,8 +151,6 @@ class DatabaseContextLifecycleTest extends TestHelper {
       a.newEdge("Knows", b);
     });
 
-    final Set<Long> before = DatabaseContext.registeredThreadIds();
-
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
         .withVertexTypes("Person")
         .withEdgeTypes("Knows")
@@ -162,11 +158,11 @@ class DatabaseContextLifecycleTest extends TestHelper {
     try {
       assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
 
-      // THE ASYNC BUILD WORKER (A DIED-AFTER-TASK VIRTUAL THREAD) MUST HAVE REMOVED ITS OWN CONTEXT ENTRY
-      // BEFORE RELEASING THE READY LATCH; BEFORE THE FIX THE ENTRY LINGERED UNTIL THE NEXT PERIODIC SWEEP
-      final Set<Long> leaked = new HashSet<>(DatabaseContext.registeredThreadIds());
-      leaked.removeAll(before);
-      assertThat(leaked).isEmpty();
+      // THE ASYNC BUILD WORKER (A DIED-AFTER-TASK "gav-worker-*" VIRTUAL THREAD) MUST HAVE REMOVED ITS OWN
+      // CONTEXT ENTRY BEFORE RELEASING THE READY LATCH; BEFORE THE FIX THE ENTRY LINGERED UNTIL THE NEXT
+      // PERIODIC SWEEP. KEYED TO THE WORKER THREAD NAME PREFIX: A JVM-WIDE SNAPSHOT DIFF WOULD GO SPURIOUSLY
+      // RED IF ANY UNRELATED THREAD REGISTERED A CONTEXT DURING THE BUILD
+      assertThat(DatabaseContext.isThreadRegisteredWithNamePrefix("gav-worker-")).isFalse();
     } finally {
       gav.drop();
     }
