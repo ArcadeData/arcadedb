@@ -60,6 +60,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
@@ -423,6 +424,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // #5064: from here the transaction is durably committed CLUSTER-WIDE (the quorum accepted it) -
+        // shift the transaction's durability boundary so a local phase-2 failure below releases resources
+        // without rolling back user-held record identities (a retry would insert duplicates of records the
+        // cluster already committed) and without fencing (no orphaned local WAL record; pages are
+        // reconciled from the replicated payload in the catch).
+        payload.tx().setRemotelyCommitted(true);
+
         // Test-only fault injection: simulate a phase-2 commit failure while followers are ahead.
         final Consumer<String> phase2Fault = TEST_PHASE2_COMMIT_FAULT;
         if (phase2Fault != null)
@@ -434,9 +442,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(e), getName(), payload.tx(), e.getMessage());
-        reconcileLeaderPagesAfterPhase2Failure(payload);
+        final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
-        throw e;
+        // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
+        // The generic rethrow here told applications the commit FAILED while the data was durably committed
+        // on the quorum - and an application-level retry of the same records would insert duplicates.
+        throw new TransactionCommittedRemotelyException(
+            "Transaction " + payload.tx() + " is committed cluster-wide but the local apply failed"
+                + (reconciled ? " (local pages reconciled from the replicated payload)"
+                : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)")
+                + ". Do NOT retry: reload the records and continue", e);
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -453,6 +468,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // #5064: MAJORITY already committed - same durability-boundary shift as the main phase-2 path.
+        payload.tx().setRemotelyCommitted(true);
         payload.tx().commit2ndPhase(payload.phase1());
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
@@ -549,16 +566,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * is applied; any page it cannot is left for the normal follower-side WAL-gap path to resync once
    * this node steps down (issue #4740 Fix 2 makes that recoverable instead of fatal).
    */
-  private void reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
+  private boolean reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
     try {
       final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
       proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), true);
       LogManager.instance().log(this, Level.INFO,
           "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());
+      return true;
     } catch (final Exception reconcileEx) {
       LogManager.instance().log(this, Level.SEVERE,
           "Phase 2 failure: leader page reconciliation also failed (db=%s, tx=%s): %s",
           getName(), payload.tx(), reconcileEx.getMessage());
+      return false;
     }
   }
 
