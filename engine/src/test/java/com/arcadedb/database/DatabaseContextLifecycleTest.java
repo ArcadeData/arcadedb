@@ -183,6 +183,9 @@ class DatabaseContextLifecycleTest extends TestHelper {
       // A FOREIGN CLOSE (removeAllContexts ON THIS THREAD) EMPTIES THE WORKER'S PER-DATABASE MAP BUT
       // DELIBERATELY DOES NOT PRUNE ITS CONTEXTS ENTRY (#4939): THE EMPTY ENTRY LINGERS WHILE THE WORKER
       // IS ALIVE
+      // NOTE (#5076 review): this empties the per-db map for EVERY thread that had the db open, including
+      // THIS main test thread - the sweep may prune the main thread's now-empty entry too. Harmless: the
+      // next context-API touch (teardown's init()) re-registers it; the assertions below key on the worker.
       DatabaseContext.INSTANCE.removeAllContexts(database.getDatabasePath());
       assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
 
