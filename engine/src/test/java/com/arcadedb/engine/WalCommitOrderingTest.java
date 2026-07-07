@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
@@ -286,6 +287,82 @@ class WalCommitOrderingTest {
     @SuppressWarnings("unchecked")
     final Map<Integer, Integer> counters = (Map<Integer, Integer>) countersField.get(tx);
     counters.put(9_999, 1);
+  }
+
+  @Test
+  void remotelyCommittedRegimePreservesIdentitiesOnPreWalFailure() throws Exception {
+    // #5064 (engine branch): when the HA layer marked the transaction remotely committed (quorum accepted
+    // it) and the LOCAL apply then fails BEFORE the local WAL append, the finally must take the
+    // reset()-without-rollback regime: the identities the cluster committed survive on the user-held
+    // records (rollback would reset them to provisional and an application retry would insert duplicates),
+    // and the database is NOT fenced (nothing local is durable; the Raft layer reconciles the pages).
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    final PageId[] victimPageId = new PageId[1];
+    final PageId[] victim2PageId = new PageId[1];
+    try {
+      db.getSchema().createDocumentType("Doc");
+      db.transaction(() -> db.newDocument("Doc").set("v", "committed").save());
+
+      db.begin();
+      final MutableDocument held = db.newDocument("Doc").set("v", "remote");
+      held.save();
+      final Object identityAtSave = held.getIdentity();
+      assertThat(identityAtSave).isNotNull();
+
+      final TransactionContext tx = (TransactionContext) db.getTransaction();
+      final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+      assertThat(phase1).isNotNull();
+
+      // Simulate the HA layer: quorum committed, local phase 2 about to run.
+      tx.setRemotelyCommitted(true);
+
+      // Inject a conflicting committed version so validateAndBumpVersions fails PRE-WAL (same toolkit as
+      // failedValidationLeavesNoWalRecord).
+      final MutablePage victim = phase1.modifiedPages.getFirst();
+      victimPageId[0] = victim.getPageId();
+      final MutablePage conflicting = new MutablePage(victim.getPageId(), (int) victim.getPhysicalSize(),
+          victim.getContent().array().clone(), (int) (victim.getVersion() + 1), victim.getContentSize());
+      PageManager.INSTANCE.putPageInReadCache(new CachedPage(conflicting, false));
+
+      assertThatThrownBy(() -> tx.commit2ndPhase(phase1)).isInstanceOf(ConcurrentModificationException.class);
+
+      assertThat(held.getIdentity())
+          .as("the remotely-committed regime must preserve the cluster-committed identity (#5064)")
+          .isEqualTo(identityAtSave);
+      assertThat(((LocalDatabase) db).isFencedForRecovery())
+          .as("no fence: nothing local is durable, the Raft layer reconciles").isFalse();
+
+      // The flag is single-transaction-scoped: a FRESH transaction failing the same way must roll back
+      // normally (#4940) - the sticky-flag hazard the review caught.
+      db.begin();
+      // Deliberately the SAME reused base context object - the reviewer's sticky-flag hazard: only
+      // begin()/reset() clearing the flag protects this second transaction.
+      final MutableDocument held2 = db.newDocument("Doc").set("v", "local-only");
+      held2.save();
+      final TransactionContext tx2 = (TransactionContext) db.getTransaction();
+      final TransactionContext.TransactionPhase1 phase2 = tx2.commit1stPhase(true);
+      final MutablePage victim2 = phase2.modifiedPages.getFirst();
+      victim2PageId[0] = victim2.getPageId();
+      final MutablePage conflicting2 = new MutablePage(victim2.getPageId(), (int) victim2.getPhysicalSize(),
+          victim2.getContent().array().clone(), (int) (victim2.getVersion() + 1), victim2.getContentSize());
+      PageManager.INSTANCE.putPageInReadCache(new CachedPage(conflicting2, false));
+      assertThatThrownBy(() -> tx2.commit2ndPhase(phase2)).isInstanceOf(ConcurrentModificationException.class);
+      assertThat(held2.getIdentity())
+          .as("a plain local failure on the SAME thread context must still roll back identities (#4940)")
+          .isNull();
+    } finally {
+      if (victimPageId[0] != null)
+        PageManager.INSTANCE.removePageFromCache(victimPageId[0]);
+      if (victim2PageId[0] != null)
+        // Both poisoned pages evicted (#5075 review): PageManager.INSTANCE is process-global.
+        PageManager.INSTANCE.removePageFromCache(victim2PageId[0]);
+      db.close();
+      factory.close();
+    }
   }
 
   private static long totalWalBytes() {

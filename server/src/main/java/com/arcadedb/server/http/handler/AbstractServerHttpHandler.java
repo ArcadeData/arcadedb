@@ -291,6 +291,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       LogManager.instance()
               .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
+    } catch (final TransactionCommittedRemotelyException e) {
+      LogManager.instance()
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
+      // 409 Conflict, NOT 5xx (#5064/#5075 review): the transaction IS durably committed cluster-wide -
+      // only the local apply failed. A 5xx would invite HTTP clients and load balancers to RETRY, which
+      // would apply the changes a second time (duplicate inserts) - the exact hazard the distinct
+      // exception type exists to prevent. Same rationale as the DuplicatedKeyException 409 below (#4350).
+      sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry", e, null);
     } catch (final DuplicatedKeyException e) {
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -329,6 +338,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else if (realException instanceof TransactionCommittedRemotelyException committedRemotely) {
+        // Symmetric with the un-wrapped arm (#5064/#5075): a wrapped committed-remotely outcome must keep
+        // its non-retryable 409 - degrading to 500 invites the client retry that inserts duplicates of
+        // records the cluster already committed. Same defense-in-depth as the DuplicatedKeyException
+        // branch below.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
+                committedRemotely, null);
       } else if (realException instanceof DuplicatedKeyException dup) {
         // Symmetric with the un-wrapped DuplicatedKeyException catch arm. Some code paths
         // (e.g. script execution, command planners) wrap DuplicatedKeyException in
@@ -368,6 +387,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
+      } else if (realException instanceof TransactionCommittedRemotelyException committedRemotely) {
+        // Same as the un-wrapped committed-remotely arm above (#5064/#5075), reached when the auto-commit
+        // wrapper re-wrapped it: the non-retryable 409 must survive the wrapping.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
+                committedRemotely, null);
       } else if (realException instanceof DuplicatedKeyException dup) {
         // Same as the un-wrapped DuplicatedKeyException arm above, but reached when the
         // exception was thrown inside the auto-commit transaction wrapper in
