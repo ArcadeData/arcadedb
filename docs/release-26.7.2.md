@@ -10,6 +10,17 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Native `select()` API: `ORDER BY` on a non-index-served property no longer returns an empty result set.**
+  When the fluent `database.select()...orderBy(...)` query could not be served directly by an index, the
+  in-memory sort path built an empty `sortedResultSet` and never drained the underlying iterator (the
+  materialization loop condition was `orderIndex < sortedResultSet.size()`, i.e. `0 < 0`, so it never ran).
+  Every such query silently returned zero rows. The same executor also built a **descending** index range scan
+  with an open (`null`) bound - an unsupported cursor shape that likewise returned empty - so `ORDER BY ...
+  descending` on an indexed property was affected too ([#5079](https://github.com/ArcadeData/arcadedb/issues/5079)).
+  The iterator now materializes the full result set via the internal fetch loop, sorts it, and honors `SKIP`
+  and `LIMIT`; the index scan direction is decoupled from `ORDER BY` (always ascending selection, descending
+  order served by the in-memory sort). Materialization is now lazy so it composes with the parallel iterator.
+
 - **Transactions: in-transaction iteration on a non-unique index no longer drops a committed RID that shares
   its key with an uncommitted entry.** On a non-unique index, when an uncommitted row had the SAME composite
   key as an already-committed row, in-transaction index iteration emitted only ONE row for that key: the
