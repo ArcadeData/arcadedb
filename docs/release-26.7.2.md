@@ -10,6 +10,15 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: `exists()` now enforces multi-label constraints on an already-bound start variable.** A predicate
+  like `exists((n:A:B)-->(:Node))` accepted the `A:B` label conjunction but silently ignored it on the bound
+  variable `n`, so nodes lacking one of the labels (but with a matching outgoing edge) still passed
+  ([#5095](https://github.com/ArcadeData/arcadedb/issues/5095)). The single-edge fast path in
+  `PatternPredicateExpression` validated only the traversal target's labels/properties, never the start
+  node's own declared pattern. It now checks the bound start vertex against its declared labels and inline
+  properties before traversing, so `exists((n:A:B)-->(:Node))` matches exactly the nodes that also match
+  `MATCH (n:A:B)`, in line with Neo4j.
+
 - **Cypher: `shortestPath()`/`allShortestPaths()` now enforce inline edge property filters.** A pattern like
   `shortestPath((a)-[:LINK*1..3 {w: 1}]->(b))` accepted the `{w: 1}` edge filter but silently ignored it,
   traversing (and returning) paths that crossed edges with a different value
