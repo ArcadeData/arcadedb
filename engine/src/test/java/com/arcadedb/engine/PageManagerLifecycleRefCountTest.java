@@ -147,4 +147,65 @@ class PageManagerLifecycleRefCountTest {
     assertThat(failure.get()).as("no thread may observe a torn-down PageManager while its database is open").isNull();
     assertThat(PageManager.INSTANCE.getFlushThread()).as("all references released: manager torn down").isNull();
   }
+
+  @Test
+  void redundantDoubleCloseDoesNotStealAnotherDatabasesReference() {
+    // #5070 review (the acute regression): close() is documented-idempotent (the lambda early-returns on
+    // !open), but the lifecycle release ran unconditionally - a defensive double-close consumed a SECOND
+    // reference and tore the flush thread down under the other open database.
+    final DatabaseFactory factoryA = new DatabaseFactory(DB_A);
+    final DatabaseFactory factoryB = new DatabaseFactory(DB_B);
+    try {
+      final Database dbA = factoryA.create();
+      final Database dbB = factoryB.create();
+
+      dbA.close();
+      dbA.close(); // redundant, must be a full no-op
+
+      assertThat(PageManager.INSTANCE.getFlushThread())
+          .as("a redundant double-close must not consume another database's lifecycle reference (#5070)")
+          .isNotNull();
+
+      dbB.getSchema().createDocumentType("Doc");
+      dbB.transaction(() -> dbB.newDocument("Doc").set("v", 1).save());
+      dbB.close();
+
+      assertThat(PageManager.INSTANCE.getFlushThread()).isNull();
+    } finally {
+      factoryA.close();
+      factoryB.close();
+    }
+  }
+
+  @Test
+  void startupFailureRollsBackTheAcquiredReference() {
+    // #5070 review: startup() can throw (negative MAX_PAGE_RAM) AFTER the refcount increment; without the
+    // rollback the counter wedged at 1 with no flush thread and every later open ran against a dead manager.
+    final Object previous = com.arcadedb.GlobalConfiguration.MAX_PAGE_RAM.getValue();
+    com.arcadedb.GlobalConfiguration.MAX_PAGE_RAM.setValue(-2);
+    try {
+      final DatabaseFactory factory = new DatabaseFactory(DB_A);
+      try {
+        org.assertj.core.api.Assertions.assertThatThrownBy(factory::create)
+            .as("misconfigured startup must fail the open").hasMessageContaining("configuration is invalid");
+      } finally {
+        factory.close();
+      }
+    } finally {
+      com.arcadedb.GlobalConfiguration.MAX_PAGE_RAM.setValue(previous);
+    }
+
+    // The failed acquire left no residue: a healthy open now starts the manager normally.
+    final DatabaseFactory factory = new DatabaseFactory(DB_A);
+    try {
+      final Database db = factory.create();
+      assertThat(PageManager.INSTANCE.getFlushThread())
+          .as("the wedged-counter state must not survive a startup failure (#5070)").isNotNull();
+      db.getSchema().createDocumentType("Doc");
+      db.transaction(() -> db.newDocument("Doc").set("v", 1).save());
+      db.drop();
+    } finally {
+      factory.close();
+    }
+  }
 }
