@@ -171,4 +171,51 @@ class ArcadeStateMachineBootstrapBaselinePersistenceTest {
     assertThat(third.getBootstrapBaseline(DB_OTHER).fingerprint()).isEqualTo("a".repeat(64));
     assertThat(third.getBootstrapBaseline(DB_OTHER).lastTxId()).isEqualTo(7L);
   }
+
+  /**
+   * Dropping a database evicts its persisted baseline even when the database was never present locally
+   * (the late-joiner-then-drop case): {@code applyBootstrapFingerprintEntry} records a baseline by name
+   * without a local copy, so the eviction must run unconditionally, before the presence check.
+   */
+  @Test
+  void dropEvictsBaselineForDatabaseNeverPresentLocally() {
+    final ArcadeStateMachine writer = newStateMachine();
+    // DB_OTHER is never registered: recorded purely by name via the late-joiner path.
+    writer.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encodeBaseline(DB_OTHER, "b".repeat(64), 3L)), 51L);
+    assertThat(writer.getBootstrapBaseline(DB_OTHER)).isNotNull();
+
+    writer.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_OTHER)));
+    assertThat(writer.getBootstrapBaseline(DB_OTHER))
+        .as("baseline evicted in-memory after drop")
+        .isNull();
+
+    // The eviction is durable: a fresh instance reading from disk does not see the dropped baseline.
+    final ArcadeStateMachine reopened = newStateMachine();
+    assertThat(reopened.getBootstrapBaseline(DB_OTHER))
+        .as("dropped database's baseline does not linger in the persisted file")
+        .isNull();
+  }
+
+  /**
+   * Dropping a database that IS present locally evicts its persisted baseline while leaving a
+   * co-located database's baseline intact.
+   */
+  @Test
+  void dropEvictsBaselineForPresentDatabaseKeepingOthers() throws Exception {
+    final ArcadeStateMachine writer = newStateMachine();
+    final String fingerprintA = BootstrapFingerprint.compute(new File(dbAPath));
+    final long lastTxIdA = localDbA.getLastTransactionId();
+    writer.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encodeBaseline(DB_A, fingerprintA, lastTxIdA)), 50L);
+    writer.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encodeBaseline(DB_OTHER, "c".repeat(64), 9L)), 51L);
+
+    writer.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_A)));
+
+    final ArcadeStateMachine reopened = newStateMachine();
+    assertThat(reopened.getBootstrapBaseline(DB_A))
+        .as("dropped database's baseline is gone from disk")
+        .isNull();
+    assertThat(reopened.getBootstrapBaseline(DB_OTHER))
+        .as("a co-located database's baseline survives the drop")
+        .isNotNull();
+  }
 }
