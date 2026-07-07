@@ -161,9 +161,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Per-database bootstrap baseline committed via {@link RaftLogEntryType#BOOTSTRAP_FINGERPRINT_ENTRY}.
    * Populated when the entry is applied (locally on every peer), used by the catch-up decision
    * tree (locally bootstrapped vs leader-shipped vs late-newer-joiner refusal). Issue #4147.
+   * <p>
+   * The map is also durably persisted to {@code .raft/bootstrap-baselines} and reloaded lazily on
+   * first access. The committed {@code BOOTSTRAP_FINGERPRINT_ENTRY} is compacted below the Ratis
+   * snapshot index and is therefore not replayed after a restart, and the map is not part of the
+   * state-machine snapshot; without the persisted copy the durable baseline in the Raft log would be
+   * invisible to {@link #getBootstrapBaseline} after a restart (issue #5100).
    */
   private final ConcurrentHashMap<String, BootstrapBaseline> bootstrapBaselines =
       new ConcurrentHashMap<>();
+  private volatile boolean bootstrapBaselinesLoaded   = false;
+  private final    Object  bootstrapBaselinesFileLock = new Object();
 
   /** Per-database bootstrap baseline as it appears in the committed Raft log entry. */
   public record BootstrapBaseline(String fingerprint, long lastTxId) {
@@ -1404,7 +1412,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
           dbName, chosenFingerprint);
       return;
     }
+    // Load any baselines persisted by a prior session before recording this one, so the subsequent
+    // durable write preserves other databases' baselines instead of clobbering them (load-before-mutate).
+    ensureBootstrapBaselinesLoaded();
     bootstrapBaselines.put(dbName, new BootstrapBaseline(chosenFingerprint, chosenLastTxId));
+    persistBootstrapBaselinesFile();
 
     // Re-application during log replay on restart: if we've persisted an applied index at or
     // beyond this entry's index, the verification ran in a prior session and the local database
@@ -1641,6 +1653,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * tests and the cluster-status exporter (Phase 7).
    */
   public BootstrapBaseline getBootstrapBaseline(final String dbName) {
+    ensureBootstrapBaselinesLoaded();
     return bootstrapBaselines.get(dbName);
   }
 
@@ -1656,6 +1669,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
     db.getEmbedded().drop();
     server.removeDatabase(databaseName);
+
+    // Evict the dropped database's persisted bootstrap baseline so the file does not retain a stale
+    // entry for a database that no longer exists (mirrors the per-database applied-index eviction).
+    ensureBootstrapBaselinesLoaded();
+    if (bootstrapBaselines.remove(databaseName) != null)
+      persistBootstrapBaselinesFile();
 
     LogManager.instance().log(this, Level.INFO, "Database '%s' dropped via Raft drop-database entry", databaseName);
   }
@@ -1839,6 +1858,87 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (dbDir == null)
       return null;
     return Path.of(dbDir, ".raft", "applied-index");
+  }
+
+  /**
+   * Lazily parses the persisted bootstrap-baselines file once into {@link #bootstrapBaselines}. A
+   * baseline already recorded in this session (freshly applied from a replayed entry) is authoritative,
+   * so entries from the file are merged with {@code putIfAbsent} and never overwrite it. A
+   * missing/unreadable file simply means "nothing persisted yet" and still latches the cache as loaded.
+   * <p>
+   * When the file path cannot yet be resolved (no server wired) the cache is NOT latched, so a later
+   * call retries once the server is available. In the current wiring {@code setServer(...)} always runs
+   * before the first read, so this only guards against a future reordering.
+   */
+  private void ensureBootstrapBaselinesLoaded() {
+    if (bootstrapBaselinesLoaded)
+      return;
+    synchronized (bootstrapBaselinesFileLock) {
+      if (bootstrapBaselinesLoaded)
+        return;
+      final Path file = getBootstrapBaselinesFile();
+      if (file == null)
+        return; // server not wired yet: do not latch, retry once the path is resolvable
+      try {
+        if (Files.exists(file)) {
+          final String content = Files.readString(file).trim();
+          if (!content.isEmpty()) {
+            final JSONObject json = new JSONObject(content);
+            for (final String name : json.keySet()) {
+              final JSONObject entry = json.getJSONObject(name);
+              final String fingerprint = entry.getString("fingerprint", null);
+              if (fingerprint != null)
+                bootstrapBaselines.putIfAbsent(name, new BootstrapBaseline(fingerprint, entry.getLong("lastTxId", -1)));
+            }
+          }
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Could not read persisted bootstrap baselines: %s", e.getMessage());
+      } finally {
+        // The path was resolvable and we attempted a read: latch even on a parse failure so a corrupt
+        // file is not re-read on every access (it degrades to no persisted baselines, which re-runs the
+        // idempotent bootstrap verification on the next committed entry rather than losing correctness).
+        bootstrapBaselinesLoaded = true;
+      }
+    }
+  }
+
+  /**
+   * Serialises {@link #bootstrapBaselines} to {@code .raft/bootstrap-baselines} via a temp file and
+   * atomic rename, so a crash mid-write never leaves a corrupt file. Written only when a bootstrap
+   * baseline is recorded or evicted (rare), not on the hot apply path.
+   */
+  private void persistBootstrapBaselinesFile() {
+    synchronized (bootstrapBaselinesFileLock) {
+      try {
+        final Path file = getBootstrapBaselinesFile();
+        if (file == null)
+          return;
+        final JSONObject json = new JSONObject();
+        for (final Map.Entry<String, BootstrapBaseline> e : bootstrapBaselines.entrySet()) {
+          final JSONObject entry = new JSONObject();
+          entry.put("fingerprint", e.getValue().fingerprint());
+          entry.put("lastTxId", e.getValue().lastTxId());
+          json.put(e.getKey(), entry);
+        }
+        Files.createDirectories(file.getParent());
+        final Path tmp = file.resolveSibling("bootstrap-baselines.tmp");
+        Files.writeString(tmp, json.toString());
+        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Could not write persisted bootstrap baselines: %s", e.getMessage());
+      }
+    }
+  }
+
+  private Path getBootstrapBaselinesFile() {
+    if (server == null)
+      return null;
+    final String dbDir = server.getConfiguration().getValueAsString(
+        GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+    if (dbDir == null)
+      return null;
+    return Path.of(dbDir, ".raft", "bootstrap-baselines");
   }
 
   private void triggerSnapshotDownload() {
