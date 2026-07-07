@@ -89,6 +89,9 @@ public class SnapshotHttpHandler implements HttpHandler {
   // same database waits its turn; requests beyond the semaphore limit still get a fast 503. Overlap
   // with OTHER suspendFlushAndExecute callers (SQL BACKUP DATABASE, database verify) is a pre-existing
   // exposure of the ownership model, out of this handler's control.
+  // Entries are never pruned by design: one small ReentrantLock per database NAME ever snapshotted, bounded
+  // by the server's database count (a dropped-and-recreated database safely reuses its lock). Pruning on
+  // drop would need lifecycle callbacks this handler does not have, for negligible memory.
   private final ConcurrentHashMap<String, ReentrantLock> perDatabaseSuspendLock = new ConcurrentHashMap<>();
 
   private final ScheduledExecutorService watchdogExecutor =
