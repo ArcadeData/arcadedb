@@ -113,11 +113,20 @@ class BootstrapElection {
       .connectTimeout(Duration.ofSeconds(5))
       .build();
 
+  // Poll interval while waiting for the freshly-elected leader's Raft division to become readable.
+  private static final long             COMMIT_INDEX_READINESS_POLL_MS = 100L;
+
   private final RaftHAServer            haServer;
   private final ArcadeDBServer          server;
   // Tracks per-database whether the bootstrap protocol has been attempted in this leader's
   // lifetime. Used to short-circuit on repeated notifyLeaderChanged callbacks for the same term.
   private final Set<String>             attemptedThisTerm = ConcurrentHashMap.newKeySet();
+  // Maximum time to wait for getCommitIndex() to return a definitive (non-negative) value right after
+  // this node becomes leader. The notifyLeaderChanged callback fires before the Raft division's log is
+  // queryable, so the very first read returns the -1 UNKNOWN sentinel for a brief window (~100 ms in
+  // practice); without waiting, the once-per-term bootstrap pass would skip on that transient -1 and
+  // never re-run. Package-private and non-final so tests can shorten it. See awaitReadableCommitIndex.
+  long                                  commitIndexReadinessTimeoutMs = 10_000L;
 
   BootstrapElection(final RaftHAServer haServer, final ArcadeDBServer server) {
     this.haServer = haServer;
@@ -151,7 +160,15 @@ class BootstrapElection {
     // ("Gating") in #4147. A negative value means the index is UNKNOWN (the Raft division is not
     // ready, or getCommitIndex() hit a transient IOException) and must NOT be mistaken for an empty
     // log - see isConfirmedFirstFormation and issue #4800.
-    final long commitIndex = haServer.getCommitIndex();
+    //
+    // The notifyLeaderChanged callback that drives this runs before the freshly-elected leader's Raft
+    // division exposes its committed index, so the very first read returns the -1 UNKNOWN sentinel for
+    // a brief window. Since bootstrap runs at most once per term, skipping on that transient -1 would
+    // leave the baseline uncommitted forever. Wait a bounded time for a definitive reading: on genuine
+    // first formation it resolves to 0 and the gate opens; on an already-running cluster it resolves
+    // to a positive index and the gate stays closed; if it never resolves (persistent read failure) we
+    // conservatively skip, exactly as issue #4800 requires.
+    final long commitIndex = awaitReadableCommitIndex();
     if (!isConfirmedFirstFormation(commitIndex))
       return Outcome.SKIPPED_NOT_FIRST_FORMATION;
 
@@ -190,6 +207,31 @@ class BootstrapElection {
    */
   static boolean isConfirmedFirstFormation(final long commitIndex) {
     return commitIndex == 0L;
+  }
+
+  /**
+   * Poll {@link RaftHAServer#getCommitIndex()} until it returns a definitive (non-negative) value or
+   * {@link #commitIndexReadinessTimeoutMs} elapses, then return the last reading. Right after a leader
+   * change the division briefly reports -1 (log not yet queryable); this absorbs that startup window
+   * so the gate sees the real first-formation index (0) instead of the transient -1. A non-negative
+   * reading is returned immediately (no wait for a running cluster or a confirmed empty log). If this
+   * node stops being the leader while waiting, we stop early and return the last reading so the gate
+   * can skip. A persistent -1 (genuine read failure) is returned unchanged after the budget, keeping
+   * the issue #4800 "never bootstrap on an unconfirmed index" guarantee.
+   */
+  private long awaitReadableCommitIndex() {
+    final long deadline = System.currentTimeMillis() + commitIndexReadinessTimeoutMs;
+    long commitIndex = haServer.getCommitIndex();
+    while (commitIndex < 0 && System.currentTimeMillis() < deadline && haServer.isLeader()) {
+      try {
+        Thread.sleep(COMMIT_INDEX_READINESS_POLL_MS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      commitIndex = haServer.getCommitIndex();
+    }
+    return commitIndex;
   }
 
   /**

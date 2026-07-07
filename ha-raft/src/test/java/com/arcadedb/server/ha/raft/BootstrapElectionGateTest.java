@@ -81,14 +81,44 @@ class BootstrapElectionGateTest {
 
     final RaftHAServer mockHa = mock(RaftHAServer.class);
     when(mockHa.isLeader()).thenReturn(true);
-    when(mockHa.getCommitIndex()).thenReturn(-1L); // transient IOException / division not ready
+    when(mockHa.getCommitIndex()).thenReturn(-1L); // persistent IOException / division never ready
 
     final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    election.commitIndexReadinessTimeoutMs = 0L; // a persistent -1 must skip without a real wait
     final BootstrapElection.Outcome outcome = election.runIfEligible();
 
     assertThat(outcome).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
     // The gate must short-circuit before any data is collected: no database enumeration happened.
     verify(mockServer, never()).getDatabaseNames();
+  }
+
+  /**
+   * The regression case: the {@code notifyLeaderChanged} callback runs the bootstrap pass before the
+   * freshly-elected leader's Raft division is queryable, so {@code getCommitIndex()} returns the -1
+   * UNKNOWN sentinel for a brief window before resolving to the genuine first-formation index 0. Since
+   * bootstrap runs at most once per term, an instant skip on that transient -1 would leave the baseline
+   * uncommitted forever. The gate must absorb the startup window and open once the index resolves to 0.
+   */
+  @Test
+  void transientUnknownCommitIndexThatResolvesToZeroEngagesBootstrap() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
+
+    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    when(mockServer.getConfiguration()).thenReturn(config);
+    when(mockServer.getDatabaseNames()).thenReturn(Set.of());
+
+    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    when(mockHa.isLeader()).thenReturn(true);
+    // -1 (division not ready) on the first read, then the real first-formation index 0.
+    when(mockHa.getCommitIndex()).thenReturn(-1L, -1L, 0L);
+
+    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    final BootstrapElection.Outcome outcome = election.runIfEligible();
+
+    // Past the gate once the index resolved to 0: it tried to collect databases and found none.
+    assertThat(outcome).isEqualTo(BootstrapElection.Outcome.SKIPPED_NO_DATABASES);
+    verify(mockServer).getDatabaseNames();
   }
 
   /**
