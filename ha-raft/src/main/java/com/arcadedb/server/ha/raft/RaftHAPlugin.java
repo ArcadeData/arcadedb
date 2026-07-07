@@ -262,13 +262,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
-  public String getLeaderBoltAddress() {
-    return raftHAServer != null ? raftHAServer.getLeaderBoltAddress() : null;
-  }
-
-  @Override
-  public String getReplicaBoltAddresses() {
-    return raftHAServer != null ? raftHAServer.getReplicaBoltAddresses() : "";
+  public BoltRoutingTable getBoltRoutingTable() {
+    return raftHAServer != null ? raftHAServer.getBoltRoutingTable() : null;
   }
 
   @Override

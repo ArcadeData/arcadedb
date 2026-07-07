@@ -173,9 +173,13 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
   private Map<String, Object> awaitRoutingTable(final int boltPort, final String expectedWriter) throws Exception {
     Map<String, Object> rt = null;
     for (int attempt = 0; attempt < 40; attempt++) {
-      rt = fetchRoutingTable(boltPort);
-      if (List.of(expectedWriter).equals(addressesForRole(rt, "WRITE")))
-        return rt;
+      try {
+        rt = fetchRoutingTable(boltPort);
+        if (List.of(expectedWriter).equals(addressesForRole(rt, "WRITE")))
+          return rt;
+      } catch (final Exception e) {
+        // A node contacted mid-failover may reset the connection; retry until it settles.
+      }
       Thread.sleep(250);
     }
     return rt;

@@ -936,32 +936,38 @@ public class BoltNetworkExecutor extends Thread {
     final List<Map<String, Object>> servers = new ArrayList<>();
 
     final HAServerPlugin ha = server.getHA();
-    final String leaderBolt = ha != null ? ha.getLeaderBoltAddress() : null;
+    final HAServerPlugin.BoltRoutingTable table = ha != null ? ha.getBoltRoutingTable() : null;
 
-    if (leaderBolt != null) {
-      // HA cluster: the leader is the writer and a router, followers are readers and routers.
-      final List<String> readers = new ArrayList<>();
-      final String replicaCsv = ha.getReplicaBoltAddresses();
-      if (replicaCsv != null && !replicaCsv.isEmpty())
-        for (final String addr : replicaCsv.split(","))
-          if (!addr.isBlank())
-            readers.add(addr.trim());
+    if (table != null) {
+      // HA cluster with a known leader: the leader is the writer and a router, followers are readers and
+      // routers. Writer and readers come from one leader snapshot, so they cannot disagree about the leader.
+      final String writer = table.writer();
+      final List<String> readers = table.readers();
 
       final List<String> routers = new ArrayList<>();
-      routers.add(leaderBolt);
+      routers.add(writer);
       routers.addAll(readers);
 
-      servers.add(roleEntry(List.of(leaderBolt), "WRITE"));
-      servers.add(roleEntry(readers.isEmpty() ? List.of(leaderBolt) : readers, "READ"));
+      servers.add(roleEntry(List.of(writer), "WRITE"));
+      servers.add(roleEntry(readers.isEmpty() ? List.of(writer) : readers, "READ"));
       servers.add(roleEntry(routers, "ROUTE"));
     } else {
-      // Single-server (or HA leader not yet known): advertise this node for every role, using the
-      // actual bound Bolt port of this connection rather than the global default. A driver hitting the
-      // transient HA case retries after the TTL and receives the full topology once the leader is known.
+      // No known leader. Advertise this node using the actual bound Bolt port of this connection rather
+      // than the global default.
       final String address = getBoltAddress(socket.getLocalPort());
-      servers.add(roleEntry(List.of(address), "WRITE"));
-      servers.add(roleEntry(List.of(address), "READ"));
-      servers.add(roleEntry(List.of(address), "ROUTE"));
+      if (ha != null) {
+        // HA is active but the leader is not known yet (e.g. mid-election): advertise this node as reader
+        // and router only - never writer, since it may be a follower. The driver keeps reading and
+        // re-routes after the TTL, receiving a writer once the leader is known, instead of sending a write
+        // to a follower and getting an error.
+        servers.add(roleEntry(List.of(address), "READ"));
+        servers.add(roleEntry(List.of(address), "ROUTE"));
+      } else {
+        // True single-node deployment: this node is writer, reader, and router.
+        servers.add(roleEntry(List.of(address), "WRITE"));
+        servers.add(roleEntry(List.of(address), "READ"));
+        servers.add(roleEntry(List.of(address), "ROUTE"));
+      }
     }
 
     rt.put("servers", servers);

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import org.apache.ratis.client.RaftClient;
@@ -1249,33 +1250,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Returns the client-reachable Bolt address (host:boltPort) of the current leader for the Bolt ROUTE
-   * routing table, or {@code null} when the leader is unknown or no Bolt address can be resolved.
+   * Builds a single-snapshot Bolt routing table (leader as writer, followers as readers) from one
+   * {@link #getLeaderId()} read, so a concurrent leader change cannot make the writer and reader sets
+   * mutually inconsistent. Returns {@code null} when no leader is known or the leader has no resolvable
+   * Bolt address. Readers reflect the configured cluster membership, matching {@link #getReplicaAddresses()};
+   * peers whose Bolt address cannot be resolved are skipped.
    */
-  public String getLeaderBoltAddress() {
-    return resolveBoltAddress(getLeaderId());
-  }
-
-  /**
-   * Returns a comma-separated list of client-reachable Bolt addresses for every peer except the leader
-   * (or except this node when the leader is unknown), for the reader entries of the Bolt ROUTE routing
-   * table. Peers whose Bolt address cannot be resolved are skipped. Returns an empty string when none.
-   */
-  public String getReplicaBoltAddresses() {
+  public HAServerPlugin.BoltRoutingTable getBoltRoutingTable() {
     final RaftPeerId leaderId = getLeaderId();
-    final RaftPeerId excludeId = leaderId != null ? leaderId : localPeerId;
-    final StringBuilder sb = new StringBuilder();
+    if (leaderId == null)
+      return null;
+    final String writer = resolveBoltAddress(leaderId);
+    if (writer == null)
+      return null;
+    final List<String> readers = new ArrayList<>();
     for (final RaftPeer peer : raftGroup.getPeers()) {
-      if (!peer.getId().equals(excludeId)) {
-        final String boltAddr = resolveBoltAddress(peer.getId());
-        if (boltAddr != null) {
-          if (!sb.isEmpty())
-            sb.append(",");
-          sb.append(boltAddr);
-        }
+      if (!peer.getId().equals(leaderId)) {
+        final String reader = resolveBoltAddress(peer.getId());
+        if (reader != null)
+          readers.add(reader);
       }
     }
-    return sb.toString();
+    return new HAServerPlugin.BoltRoutingTable(writer, readers);
   }
 
   /**
@@ -1336,7 +1332,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * for testing.
    */
   static String deriveBoltAddress(final String raftAddress, final int boltPort) {
-    if (boltPort <= 0)
+    if (raftAddress == null || boltPort <= 0)
       return null;
     final String host = extractHost(raftAddress);
     return host != null ? host + ":" + boltPort : null;

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -112,19 +113,21 @@ public interface HAServerPlugin extends ServerPlugin {
   String getReplicaAddresses();
 
   /**
-   * Returns the client-reachable Bolt address (host:port) of the current leader, or null when unknown
-   * or HA is not active. Used to build the writer entry of the Bolt ROUTE routing table.
+   * Immutable snapshot of the Bolt routing topology: the current leader's client-reachable Bolt address
+   * (writer) and the non-leader replicas' Bolt addresses (readers). Both sets are derived from a single
+   * leader read so a concurrent leader change cannot make them mutually inconsistent.
    */
-  default String getLeaderBoltAddress() {
-    return null;
+  record BoltRoutingTable(String writer, List<String> readers) {
   }
 
   /**
-   * Returns a comma-separated list of client-reachable Bolt addresses for the non-leader replicas,
-   * or an empty string when none. Used to build the reader entries of the Bolt ROUTE routing table.
+   * Returns a single-snapshot Bolt routing table for the ROUTE response, or null when HA is inactive or
+   * no leader is currently known. Readers reflect the configured cluster membership (parity with
+   * {@link #getReplicaAddresses()}); a down or partitioned follower is still advertised until it leaves
+   * the group, and the driver fails over. Used to build the Bolt ROUTE routing table.
    */
-  default String getReplicaBoltAddresses() {
-    return "";
+  default BoltRoutingTable getBoltRoutingTable() {
+    return null;
   }
 
   /**
