@@ -30,6 +30,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
@@ -331,6 +332,11 @@ public enum Type {
         return binary.toByteArray();
       else if (byte[].class.isAssignableFrom(valueClass)) {
         return value;
+      } else if (value instanceof JSONArray jsonArray) {
+        // JSONArray is an Iterable but not a java.util.Collection, so without this branch it would fall through to
+        // the `List.of(value)` case below and get wrapped as a single element instead of having its items copied.
+        // Normalize it to a real List and re-enter the conversion so the collection/array branches handle it (issue #5091).
+        return convert(database, jsonArray.toList(), targetClass, property);
       } else if (targetClass.equals(float[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to float[]
         final float[] array = new float[collection.size()];
