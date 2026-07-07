@@ -2043,8 +2043,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         // EXECUTE OUTSIDE LOCK
         // #5080: bound the graceful drain so a worker wedged inside a user task or callback cannot make
-        // close()/drop() hang forever. On expiry, fall through to async.close(), which is itself already
-        // bounded (interrupt + 1s join per worker) and notifies completion of the leftover tasks.
+        // close()/drop() hang forever. On expiry, fall through to async.close(), which is itself bounded
+        // (FORCE_EXIT offer + interrupt + a ~10s join per worker, escalated to a second interrupt+join)
+        // and notifies completion of the leftover tasks.
         final long asyncCloseTimeout = configuration.getValueAsLong(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT);
         if (!async.waitCompletion(asyncCloseTimeout)) {
           // #5105 review: waitCompletion also returns false when the caller thread is interrupted (it
@@ -2059,7 +2060,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 Asynchronous tasks of database '%s' did not drain within %d ms on close: forcing the async \
                 workers down. A task blocked inside user code may not have completed""", name, asyncCloseTimeout);
         }
-        async.close();
+        // #5105 review: async.close()'s shutdown uses INTERRUPTIBLE steps (bounded FORCE_EXIT offer, join)
+        // - if the caller thread's interrupt flag is still set (waitCompletion re-set it above), those
+        // steps throw immediately and the wedged worker is never actually interrupted/joined. Clear the
+        // flag across the force-shutdown so it can do its job, then restore it for the caller.
+        final boolean wasInterrupted = Thread.interrupted();
+        try {
+          async.close();
+        } finally {
+          if (wasInterrupted)
+            Thread.currentThread().interrupt();
+        }
       } catch (final Throwable e) {
         LogManager.instance()
             .log(this, Level.WARNING, """
