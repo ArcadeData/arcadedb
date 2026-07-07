@@ -65,6 +65,10 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
+  // LIFECYCLE INVARIANT (#5070 review): flushThread and readCache are written only under LIFECYCLE_LOCK
+  // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
+  // ONLY because a reader implies refcount > 0 (its database holds a reference), so no transition can run
+  // concurrently. If a future change ever mutates these under live readers, make them volatile and re-audit.
   private          PageManagerFlushThread            flushThread;
   private          int                               freePageRAM;
 
@@ -151,7 +155,11 @@ public class PageManager extends LockContext {
     }
   }
 
-  /** Force teardown regardless of refcount (test/emergency API): the counter resets so the next acquire starts fresh. */
+  /**
+   * Force teardown regardless of refcount (test/emergency API): the counter resets so the next acquire
+   * starts fresh. ONLY safe when no database is open: a live database's eventual release() would decrement
+   * the NEW manager started by a later acquire and tear it down under that newcomer (#5070 review).
+   */
   public void close() {
     synchronized (LIFECYCLE_LOCK) {
       lifecycleRefCount = 0;
