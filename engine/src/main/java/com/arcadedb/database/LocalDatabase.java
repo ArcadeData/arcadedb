@@ -2066,12 +2066,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       GraphTraversalProviderRegistry.clearAll(this);
     }
 
-    final Boolean actuallyClosed = executeInWriteLock(() -> {
+    executeInWriteLock(() -> {
       if (!open)
-        // Idempotent close contract: a redundant second close() must be a no-op - in particular it must NOT
-        // consume another PageManager lifecycle reference below (#5070 review: the unconditional release
-        // tore the flush thread down under other open databases through the double-close door).
-        return false;
+        return null;
 
       try {
         if (async != null)
@@ -2188,29 +2185,30 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
-      return true;
+      return null;
     });
 
-    if (Boolean.TRUE.equals(actuallyClosed)) {
-      if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
-        GraphAnalyticalView.closeExecutor();
+    // Unconditional on purpose: a KILLED database (crash simulation) reaches close() with open == false and
+    // must still unregister - removeActiveDatabaseInstance is naturally idempotent (false on the second
+    // call), which is exactly how the pre-#4927 code stayed double-close-safe.
+    if (DatabaseFactory.removeActiveDatabaseInstance(databasePath))
+      GraphAnalyticalView.closeExecutor();
 
-      // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
-      // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
-      // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
-      // from under). Guarded by actuallyClosed and recorded in the flag: the lifecycle reference is consumed
-      // EXACTLY ONCE per database instance, however many times close() is called and whoever calls it
-      // (including registerActiveInstance closing a same-path open race loser before the factory's catch).
-      pageManagerReferenceReleased = true;
+    // #4927: paired with the acquire in DatabaseFactory.open/create - the flush machinery is torn down by
+    // the refcount reaching zero, never by the racy "was this the last registered instance" check (an open
+    // in flight on another thread holds a reference before it registers, so it can no longer be pulled out
+    // from under). The atomic flag makes the release EXACTLY ONCE per database instance (#5070 review): a
+    // redundant double-close cannot steal another database's reference, and when registerActiveInstance
+    // closes a same-path open race loser, the factory's catch sees the flag and does not release again.
+    if (pageManagerReferenceReleased.compareAndSet(false, true))
       PageManager.INSTANCE.release();
-    }
   }
 
   /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */
-  private volatile boolean pageManagerReferenceReleased = false;
+  private final AtomicBoolean pageManagerReferenceReleased = new AtomicBoolean(false);
 
   boolean isPageManagerReferenceReleased() {
-    return pageManagerReferenceReleased;
+    return pageManagerReferenceReleased.get();
   }
 
   private void checkForRecovery() throws IOException {
