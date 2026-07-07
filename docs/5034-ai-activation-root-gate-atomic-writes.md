@@ -45,11 +45,29 @@
 - Cycle 2 - head `2ed4fb11f` (after applying the fixes): gemini-code-assist re-posted the same HIGH
   comment, which is now stale/already-resolved (HEAD already passes `ATOMIC_MOVE, REPLACE_EXISTING`);
   no action required. The `claude` bot again did not post within the 15-minute window.
+- Cycle 3 - head `ae22c687` (docs update): `claude` LGTM with 6 minor/non-blocking observations;
+  gemini's inline comment on this SHA was the stale re-anchored `REPLACE_EXISTING` note (already
+  resolved). Applied three: (1) streaming path now logs (not throws) a `saveChat` failure because the
+  SSE exchange is already committed - re-throwing would attempt a second response on the committed
+  exchange; (2) dropped the redundant `mkdirs()` in `saveChat` (`atomicWriteFile` already creates the
+  parent dir); (3) tightened the lock-stripe comment to state the anti-splice guarantee comes from the
+  atomic rename, not the lock. All 24 AI/config tests pass. Pushed as `e11e0473`.
+- Cycle 4 - head `e11e0473`: `claude` fresh review (LGTM, "none are blockers"). Its one substantive
+  item (non-streaming path returns 500 on a persistence failure, discarding a possibly-billed AI
+  answer) is a deliberate design decision that directly matches issue #5034's acceptance criterion
+  "a save failure surfaces as an error" - not auto-reversed; deferred to the developer. Remaining
+  items (parent-dir fsync, dropping the lock stripe, @Tag("slow"), 0600 perms) were skipped with
+  rationale (dropping the lock would contradict the issue's "add a per-(user, chatId) lock" criterion;
+  the concurrency test measured 0.201 s so is not "slow"). No code change this cycle. `gemini` did not
+  post a fresh review on this HEAD within the window (only the stale re-anchored inline comment).
 
 ## Deferred items
-- None.
+- `docs/review-deferred-e11e0473.md` (local-only, not committed) - Item 1: non-streaming persistence
+  failure returns 500 vs. preserving a billed AI answer. Default recommendation: keep current behavior
+  (matches issue acceptance criteria). Also records the skipped optional items with rationale.
 
 ## Final state
-- `timeout`: all actionable review feedback (gemini's two items) was applied in cycle 1 and verified;
-  the gating `claude` bot never responded within the per-cycle 15-minute window on either commit.
-  PR left open for the developer. Merge remains the developer's responsibility.
+- `deferred-items`: all clearly-actionable feedback was applied in cycle 3 and verified (24 tests
+  green). The one remaining substantive suggestion (cycle 4, item 1) is a conscious product decision
+  surfaced to the developer rather than auto-applied, because reversing it would contradict issue
+  #5034's explicit acceptance criteria. PR left open. Merge remains the developer's responsibility.
