@@ -24,11 +24,18 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -229,60 +236,67 @@ class DatabaseContextLifecycleTest extends TestHelper {
     // even hammered, the pre-fix window (sub-microsecond, between the closer fetching the ThreadContexts and
     // its inner remove) never reproduced locally; this is an exactly-once CONTRACT test, not a red-first
     // repro - post-fix the invariant is guaranteed by the two-level atomic claim.
-    final DatabaseInternal internal = (DatabaseInternal) database;
-    final int rounds = 100;
-    final int workers = 4;
+    // A DEDICATED THROWAWAY DATABASE ISOLATES THE SIMULATED CLOSE: removeAllContexts() ON THE SHARED LIVE
+    // TEST DATABASE WOULD ALSO STRIP THE MAIN THREAD'S REAL REGISTRY ENTRY EVERY ROUND
+    final Database throwaway = createThrowawayDatabase("_closerace");
+    try {
+      final DatabaseInternal internal = (DatabaseInternal) throwaway;
+      final int rounds = 100;
+      final int workers = 4;
 
-    for (int round = 0; round < rounds; round++) {
-      final CountingTransaction[] transactions = new CountingTransaction[workers];
-      final Thread[] threads = new Thread[workers];
-      for (int i = 0; i < workers; i++) {
-        final CountingTransaction tx = new CountingTransaction(internal);
-        transactions[i] = tx;
-        threads[i] = new Thread(() -> DatabaseContext.INSTANCE.init(internal, tx), "ctx-lifecycle-close-race-" + i);
-        threads[i].start();
-      }
-      for (final Thread thread : threads) {
-        thread.join(10_000);
-        assertThat(thread.isAlive()).isFalse();
-      }
-
-      final CyclicBarrier barrier = new CyclicBarrier(2);
-      final AtomicReference<Throwable> error = new AtomicReference<>();
-      final Thread sweeper = new Thread(() -> {
-        try {
-          barrier.await(10, TimeUnit.SECONDS);
-          DatabaseContext.cleanupDeadThreads();
-        } catch (final Throwable e) {
-          error.set(e);
+      for (int round = 0; round < rounds; round++) {
+        final CountingTransaction[] transactions = new CountingTransaction[workers];
+        final Thread[] threads = new Thread[workers];
+        for (int i = 0; i < workers; i++) {
+          final CountingTransaction tx = new CountingTransaction(internal);
+          transactions[i] = tx;
+          threads[i] = new Thread(() -> DatabaseContext.INSTANCE.init(internal, tx), "ctx-lifecycle-close-race-" + i);
+          threads[i].start();
         }
-      }, "ctx-lifecycle-close-race-sweeper");
-      final Thread closer = new Thread(() -> {
-        try {
-          barrier.await(10, TimeUnit.SECONDS);
-          for (final DatabaseContext.DatabaseContextTL tl : DatabaseContext.INSTANCE.removeAllContexts(
-              internal.getDatabasePath())) {
-            for (int i = tl.transactions.size() - 1; i > -1; --i) {
-              final TransactionContext tx = tl.transactions.get(i);
-              if (tx.isActive())
-                tx.rollback();
-            }
-            tl.transactions.clear();
+        for (final Thread thread : threads) {
+          thread.join(10_000);
+          assertThat(thread.isAlive()).isFalse();
+        }
+
+        final CyclicBarrier barrier = new CyclicBarrier(2);
+        final AtomicReference<Throwable> error = new AtomicReference<>();
+        final Thread sweeper = new Thread(() -> {
+          try {
+            barrier.await(10, TimeUnit.SECONDS);
+            DatabaseContext.cleanupDeadThreads();
+          } catch (final Throwable e) {
+            error.set(e);
           }
-        } catch (final Throwable e) {
-          error.set(e);
-        }
-      }, "ctx-lifecycle-close-race-closer");
-      sweeper.start();
-      closer.start();
-      sweeper.join(10_000);
-      closer.join(10_000);
-      assertThat(sweeper.isAlive()).isFalse();
-      assertThat(closer.isAlive()).isFalse();
-      assertThat(error.get()).isNull();
+        }, "ctx-lifecycle-close-race-sweeper");
+        final Thread closer = new Thread(() -> {
+          try {
+            barrier.await(10, TimeUnit.SECONDS);
+            for (final DatabaseContext.DatabaseContextTL tl : DatabaseContext.INSTANCE.removeAllContexts(
+                internal.getDatabasePath())) {
+              for (int i = tl.transactions.size() - 1; i > -1; --i) {
+                final TransactionContext tx = tl.transactions.get(i);
+                if (tx.isActive())
+                  tx.rollback();
+              }
+              tl.transactions.clear();
+            }
+          } catch (final Throwable e) {
+            error.set(e);
+          }
+        }, "ctx-lifecycle-close-race-closer");
+        sweeper.start();
+        closer.start();
+        sweeper.join(10_000);
+        closer.join(10_000);
+        assertThat(sweeper.isAlive()).isFalse();
+        assertThat(closer.isAlive()).isFalse();
+        assertThat(error.get()).isNull();
 
-      for (int i = 0; i < workers; i++)
-        assertThat(transactions[i].rollbacks.get()).as("round %d worker %d rollback count", round, i).isEqualTo(1);
+        for (int i = 0; i < workers; i++)
+          assertThat(transactions[i].rollbacks.get()).as("round %d worker %d rollback count", round, i).isEqualTo(1);
+      }
+    } finally {
+      throwaway.drop();
     }
   }
 
@@ -292,40 +306,116 @@ class DatabaseContextLifecycleTest extends TestHelper {
     // by removeAllContexts() from another thread. A deterministic corruption repro is impossible (pure data
     // race on the old plain HashMap); this hammers the two paths concurrently and asserts that no exception
     // surfaces and the owner thread's context always survives for the database that is never closed.
-    final DatabaseInternal internal = (DatabaseInternal) database;
-    final AtomicReference<Throwable> error = new AtomicReference<>();
-    final CountDownLatch done = new CountDownLatch(1);
-    final String otherName = "not-existing-database-path";
+    // THE FOREIGN KEY IS A GENUINELY REGISTERED THROWAWAY DATABASE: THE OWNER RE-REGISTERS IT EVERY
+    // ITERATION, SO removeAllContexts() EXERCISES A REAL SAME-KEY remove() ON THE OWNER'S MAP RACING THE
+    // OWNER'S put() - A NEVER-REGISTERED NAME WOULD ONLY EXERCISE THE CONTEXTS ITERATION, NEVER THE REMOVAL
+    final Database foreign = createThrowawayDatabase("_foreign");
+    try {
+      final DatabaseInternal internal = (DatabaseInternal) database;
+      final DatabaseInternal foreignInternal = (DatabaseInternal) foreign;
+      final AtomicReference<Throwable> error = new AtomicReference<>();
+      final CountDownLatch done = new CountDownLatch(1);
 
-    final Thread owner = new Thread(() -> {
-      try {
-        for (int i = 0; i < 20_000; i++) {
-          DatabaseContext.INSTANCE.init(internal);
-          final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
-              internal.getDatabasePath());
-          if (ctx == null)
-            throw new IllegalStateException("Owner thread lost its own context at iteration " + i);
+      final Thread owner = new Thread(() -> {
+        try {
+          for (int i = 0; i < 20_000; i++) {
+            DatabaseContext.INSTANCE.init(internal);
+            DatabaseContext.INSTANCE.init(foreignInternal);
+            final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
+                internal.getDatabasePath());
+            if (ctx == null)
+              throw new IllegalStateException("Owner thread lost its own context at iteration " + i);
+          }
+        } catch (final Throwable e) {
+          error.set(e);
+        } finally {
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+          done.countDown();
         }
-      } catch (final Throwable e) {
-        error.set(e);
-      } finally {
-        DatabaseContext.INSTANCE.removeCurrentThreadContexts();
-        done.countDown();
+      }, "ctx-lifecycle-owner");
+      owner.start();
+
+      // HAMMER removeAllContexts FROM THIS THREAD (SIMULATES CLOSE/DROP OF THE FOREIGN DATABASE) WHILE THE
+      // OWNER KEEPS MUTATING ITS OWN PER-THREAD MAP, RE-REGISTERING THE FOREIGN KEY EVERY ITERATION
+      while (done.getCount() > 0) {
+        DatabaseContext.INSTANCE.removeAllContexts(foreignInternal.getDatabasePath());
+        if (!done.await(0, TimeUnit.MILLISECONDS))
+          Thread.onSpinWait();
       }
-    }, "ctx-lifecycle-owner");
-    owner.start();
 
-    // HAMMER removeAllContexts FROM THIS THREAD (SIMULATES CLOSE/DROP OF ANOTHER DATABASE) WHILE THE OWNER
-    // KEEPS MUTATING ITS OWN PER-THREAD MAP
-    while (done.getCount() > 0) {
-      DatabaseContext.INSTANCE.removeAllContexts(otherName);
-      if (!done.await(0, TimeUnit.MILLISECONDS))
-        Thread.onSpinWait();
+      owner.join(30_000);
+      assertThat(owner.isAlive()).isFalse();
+      assertThat(error.get()).isNull();
+    } finally {
+      foreign.drop();
     }
+  }
 
-    owner.join(30_000);
-    assertThat(owner.isAlive()).isFalse();
-    assertThat(error.get()).isNull();
+  @Test
+  void sweepEmitsSingleSummaryWarningWhenItRollsBackWork() throws Exception {
+    // OPERABILITY CONTRACT: a sweep that performs real rollback work must emit ONE attributable WARNING
+    // (count + thread id + database), so the inline tail-latency blip on the triggering thread can be traced;
+    // zero-work sweeps stay silent. The test raises the DatabaseContext logger to WARNING because the shared
+    // test logging config caps com.arcadedb at SEVERE.
+    final DatabaseInternal internal = (DatabaseInternal) database;
+    final Logger sweepLogger = Logger.getLogger(DatabaseContext.class.getName());
+    final List<LogRecord> warnings = Collections.synchronizedList(new ArrayList<>());
+    final Handler capture = new Handler() {
+      @Override
+      public void publish(final LogRecord logRecord) {
+        if (logRecord.getLevel() == Level.WARNING)
+          warnings.add(logRecord);
+      }
+
+      @Override
+      public void flush() {
+        // NOTHING TO FLUSH
+      }
+
+      @Override
+      public void close() {
+        // NOTHING TO CLOSE
+      }
+    };
+    final Level previousLevel = sweepLogger.getLevel();
+    sweepLogger.setLevel(Level.WARNING);
+    sweepLogger.addHandler(capture);
+    try {
+      // DRAIN ANY DEAD ENTRIES LEFT BY EARLIER TESTS IN THE SAME JVM, THEN PROVE A ZERO-WORK SWEEP IS SILENT
+      DatabaseContext.cleanupDeadThreads();
+      warnings.clear();
+      DatabaseContext.cleanupDeadThreads();
+      assertThat(warnings).isEmpty();
+
+      final CountingTransaction tx = new CountingTransaction(internal);
+      final Thread worker = new Thread(() -> DatabaseContext.INSTANCE.init(internal, tx), "ctx-lifecycle-sweep-log");
+      worker.start();
+      worker.join(10_000);
+      assertThat(worker.isAlive()).isFalse();
+
+      DatabaseContext.cleanupDeadThreads();
+
+      assertThat(tx.rollbacks.get()).isEqualTo(1);
+      assertThat(warnings).hasSize(1);
+      final String message = warnings.get(0).getMessage();
+      assertThat(message).contains("1 abandoned transaction");
+      assertThat(message).contains("threadId=" + worker.threadId());
+      assertThat(message).contains(internal.getDatabasePath());
+    } finally {
+      sweepLogger.removeHandler(capture);
+      sweepLogger.setLevel(previousLevel);
+    }
+  }
+
+  /**
+   * Creates a dedicated throwaway database next to the shared test one, so contract tests that simulate a
+   * database close (removeAllContexts) do not reach into the live shared instance's registry entries.
+   */
+  private Database createThrowawayDatabase(final String suffix) {
+    final DatabaseFactory factory = new DatabaseFactory(database.getDatabasePath() + suffix);
+    if (factory.exists())
+      factory.open().drop();
+    return factory.create();
   }
 
   /**

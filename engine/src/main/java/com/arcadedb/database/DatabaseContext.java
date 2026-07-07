@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -27,12 +28,18 @@ import java.lang.ref.WeakReference;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * Thread local to store transaction data.
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
   public static final  DatabaseContext                         INSTANCE          = new DatabaseContext();
+  // KEYED BY Thread.threadId(): ON JDK 21+ (THIS PROJECT'S BASELINE) threadId() IS SPECIFIED AS A POSITIVE ID
+  // GENERATED WHEN THE THREAD IS CREATED AND NEVER REUSED - UNLIKE THE OLD Thread.getId(), WHOSE CONTRACT
+  // EXPLICITLY PERMITTED REUSE AFTER TERMINATION. EVERY EXACTLY-ONCE CLAIM/REMOVE ARGUMENT IN THIS CLASS
+  // (THE SWEEP'S KEYED CLAIM, removeContext, removeCurrentThreadContexts) DEPENDS ON THIS NON-REUSE:
+  // DO NOT REFACTOR TO getId() OR ANY OTHER REUSABLE KEY, AND RE-VERIFY THE GUARANTEE ON JDK MAJOR BUMPS
   private static final ConcurrentHashMap<Long, ThreadContexts> CONTEXTS          = new ConcurrentHashMap<>();
   private static final AtomicInteger                           INIT_CALL_COUNTER = new AtomicInteger();
   private static final int                                     CLEANUP_INTERVAL  = 1000;
@@ -134,8 +141,8 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       if (map.isEmpty()) {
         // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY. THE UNCONDITIONAL (NON-VALUE-KEYED) REMOVE IS SAFE,
         // UNLIKE IN THE SWEEP: THIS RUNS ON THE OWNER THREAD, ONLY THE OWNER EVER REGISTERS UNDER ITS OWN
-        // NEVER-REUSED THREAD ID AND THE SWEEP ONLY CLAIMS DEAD THREADS, SO THE ENTRY UNDER THIS KEY CAN ONLY
-        // BE THIS THREAD'S OWN CURRENT REGISTRATION
+        // NEVER-REUSED THREAD ID (SEE THE threadId() PROVENANCE NOTE ON CONTEXTS) AND THE SWEEP ONLY CLAIMS
+        // DEAD THREADS, SO THE ENTRY UNDER THIS KEY CAN ONLY BE THIS THREAD'S OWN CURRENT REGISTRATION
         super.remove();
         CONTEXTS.remove(Thread.currentThread().threadId());
       }
@@ -214,7 +221,8 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   public void removeCurrentThreadContexts() {
     super.remove();
     // UNCONDITIONAL REMOVE IS SAFE FOR THE SAME REASON AS IN removeContext(): OWNER-THREAD-ONLY KEY,
-    // THREAD IDS NEVER REUSED, THE SWEEP ONLY CLAIMS DEAD THREADS
+    // THREAD IDS NEVER REUSED (SEE THE threadId() PROVENANCE NOTE ON CONTEXTS), THE SWEEP ONLY CLAIMS
+    // DEAD THREADS
     CONTEXTS.remove(Thread.currentThread().threadId());
   }
 
@@ -230,7 +238,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * The rollbacks run INLINE on the triggering thread: unlike the pre-#4941 sweep (a cheap map cleanup), the
    * unlucky request whose {@code init()} hits the periodic boundary pays for the full rollback (callbacks, page
    * reloads, lock release) of every transaction the dead threads abandoned. Acceptable for a safety-net path,
-   * but operators should expect a tail-latency blip when the sweep finds abandoned work. The rollback may also
+   * but operators should expect a tail-latency blip when the sweep finds abandoned work; a sweep that performs
+   * real rollback work emits a single WARNING summarizing count, thread ids and databases so the blip is
+   * attributable (zero-work sweeps stay silent). The rollback may also
    * re-enter this class on the sweeping thread (record reloads resolve the sweeper's own transaction context);
    * that is safe because the dead entry is atomically claimed and unlinked before the rollbacks start and the
    * CONTEXTS traversal is weakly consistent.
@@ -247,6 +257,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * Package-private (instead of private) for tests only.
    */
   static void cleanupDeadThreads() {
+    int rolledBack = 0;
+    StringBuilder details = null;
+
     for (final Map.Entry<Long, ThreadContexts> entry : CONTEXTS.entrySet()) {
       final ThreadContexts threadContexts = entry.getValue();
       final Thread owner = threadContexts.owner.get();
@@ -262,7 +275,8 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
         //
         // ATOMICALLY CLAIM THE DEAD ENTRY: TWO THREADS CAN SWEEP CONCURRENTLY (BOTH LANDING ON THE PERIODIC
         // init() BOUNDARY) AND THE ABANDONED TRANSACTIONS MUST BE ROLLED BACK EXACTLY ONCE. THREAD IDS ARE
-        // NEVER REUSED, SO THE KEYED REMOVE CANNOT DROP AN ENTRY BELONGING TO A DIFFERENT THREAD
+        // NEVER REUSED (SEE THE threadId() PROVENANCE NOTE ON THE CONTEXTS FIELD), SO THE KEYED REMOVE
+        // CANNOT DROP AN ENTRY BELONGING TO A DIFFERENT THREAD
         if (CONTEXTS.remove(entry.getKey(), threadContexts))
           for (final Map.Entry<String, DatabaseContextTL> ctx : threadContexts.contexts.entrySet())
             // CLAIM EACH PER-DATABASE CONTEXT TOO: closeInternal (DATABASE CLOSE/DROP) CONCURRENTLY CLAIMS
@@ -270,10 +284,28 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
             // WRITE LOCK, WHICH THE SWEEP DOES NOT TAKE. THE VALUE-KEYED REMOVE GUARANTEES EXACTLY ONE OF
             // THE TWO PATHS ROLLS BACK EACH ABANDONED TRANSACTION - SAME HAZARD CLASS AS THE
             // SWEEPER-VS-SWEEPER CLAIM ABOVE (DOUBLE UNLOCK, CONCURRENT MUTATION OF tl.transactions)
-            if (threadContexts.contexts.remove(ctx.getKey(), ctx.getValue()))
-              rollbackAbandonedTransactions(ctx.getValue());
+            if (threadContexts.contexts.remove(ctx.getKey(), ctx.getValue())) {
+              final int rolled = rollbackAbandonedTransactions(ctx.getValue());
+              if (rolled > 0) {
+                rolledBack += rolled;
+                if (details == null)
+                  details = new StringBuilder();
+                else
+                  details.append(", ");
+                details.append("threadId=").append(entry.getKey()).append(" database='").append(ctx.getKey())
+                    .append("' transactions=").append(rolled);
+              }
+            }
       }
     }
+
+    // OPERABILITY (#5060 REVIEW): ONE SUMMARY LINE PER SWEEP THAT DID REAL WORK, SO THE INLINE ROLLBACK'S
+    // TAIL-LATENCY BLIP ON THE TRIGGERING THREAD IS ATTRIBUTABLE INSTEAD OF MYSTERIOUS. ZERO-WORK SWEEPS
+    // (THE OVERWHELMINGLY COMMON CASE) STAY SILENT AND ALLOCATE NOTHING
+    if (rolledBack > 0)
+      LogManager.instance().log(DatabaseContext.class, Level.WARNING,
+          "Dead-thread sweep rolled back %d abandoned transaction(s) inline on thread '%s': %s", rolledBack,
+          Thread.currentThread().getName(), details);
   }
 
   /**
@@ -282,19 +314,24 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * {@code TransactionContext#getRequester()}), which the {@code LockManager} explicitly supports. Nobody else can
    * touch these transactions: the owner is dead and the caller atomically claimed the tl at BOTH levels (the
    * CONTEXTS entry against concurrent sweepers, the per-database key against closeInternal's
-   * removeAllContexts()), so the cross-thread access is exclusive.
+   * removeAllContexts()), so the cross-thread access is exclusive. Returns the number of ACTIVE transactions
+   * rolled back, feeding the sweep's operability summary log.
    */
-  private static void rollbackAbandonedTransactions(final DatabaseContextTL tl) {
+  private static int rollbackAbandonedTransactions(final DatabaseContextTL tl) {
+    int rolledBack = 0;
     for (int i = tl.transactions.size() - 1; i > -1; --i) {
       try {
         final TransactionContext tx = tl.transactions.get(i);
-        if (tx.isActive())
+        if (tx.isActive()) {
           tx.rollback();
+          ++rolledBack;
+        }
       } catch (final Throwable e) {
         // IGNORE ERRORS: BEST-EFFORT CLEANUP OF TRANSACTIONS ABANDONED BY A DEAD THREAD
       }
     }
     tl.transactions.clear();
+    return rolledBack;
   }
 
   /**

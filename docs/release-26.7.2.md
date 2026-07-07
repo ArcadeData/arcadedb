@@ -253,6 +253,9 @@ that could starve the very snapshot resync meant to heal the node.
   sweep does not take); the lazy requester capture is now an explicit `captureRequester()` invoked only
   from the lock-acquisition paths, with `getRequester()` a pure read for the release paths, so a future
   non-owner call can no longer pin the wrong lock identity (structural guard for the #4941 invariant).
+  A sweep that performs real rollback work now emits a single attributable WARNING (transaction count,
+  thread ids, databases; zero-work sweeps stay silent), and the exactly-once arguments are pinned to the
+  JDK 21+ `Thread.threadId()` non-reuse guarantee at the registry declaration.
 - **PageManager lifecycle is refcounted.** The JVM-wide page manager was started and stopped on a racy
   "is the active-database map empty" check-then-act spanning factory instances: closing the last instance
   of one database could null the shared flush thread under a database whose open was still in flight
