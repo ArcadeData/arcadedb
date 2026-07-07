@@ -34,6 +34,7 @@ import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
 
 import java.io.DataInputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -222,7 +223,10 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
       out.writeMessage(route.toByteArray());
 
       final byte[] response = in.readMessage();
-      assertThat(response[1]).as("ROUTE must succeed").isEqualTo(BoltMessage.SUCCESS);
+      // Throw (rather than assert) on a non-SUCCESS ROUTE so awaitRoutingTable's retry loop, which
+      // catches Exception, keeps polling through a failover window instead of failing on an AssertionError.
+      if (response[1] != BoltMessage.SUCCESS)
+        throw new IOException("ROUTE did not return SUCCESS (signature 0x" + Integer.toHexString(response[1] & 0xFF) + ")");
       return BoltRouteTestSupport.readRoutingTable(response);
     }
   }
