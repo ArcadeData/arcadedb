@@ -267,7 +267,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
         // MEMORY VISIBILITY: THE isAlive() == false CHECK IS LOAD-BEARING, NOT JUST A LIVENESS TEST. PER JLS
         // 17.4.4 THE FINAL ACTION OF A TERMINATED THREAD SYNCHRONIZES-WITH ANOTHER THREAD DETECTING THE
         // TERMINATION VIA isAlive()/join(), SO THIS THREAD IS GUARANTEED TO SEE ALL THE DEAD OWNER'S WRITES
-        // EVEN THE NON-VOLATILE ONES (TransactionContext.requester IS VOLATILE SINCE ROUND 3 FOR THE
+        // EVEN THE NON-VOLATILE ONES (TransactionContext.requester IS VOLATILE FOR THE
         // LIVE-OWNER CLOSE PATH, BUT THE DEAD-OWNER GUARANTEE HERE DOES NOT DEPEND ON THAT). DO NOT REPLACE
         // THE LIVENESS TEST WITH A BARE
         // WeakReference STALENESS CHECK. THE owner == null BRANCH LACKS THE FORMAL GUARANTEE BUT A GC-CLEARED
@@ -285,7 +285,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
             // THE TWO PATHS ROLLS BACK EACH ABANDONED TRANSACTION - SAME HAZARD CLASS AS THE
             // SWEEPER-VS-SWEEPER CLAIM ABOVE (DOUBLE UNLOCK, CONCURRENT MUTATION OF tl.transactions)
             if (threadContexts.contexts.remove(ctx.getKey(), ctx.getValue())) {
-              final int rolled = rollbackAbandonedTransactions(ctx.getValue());
+              final int rolled = rollbackAbandonedTransactions(ctx.getValue(), entry.getKey(), ctx.getKey());
               if (rolled > 0) {
                 rolledBack += rolled;
                 if (details == null)
@@ -317,7 +317,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * removeAllContexts()), so the cross-thread access is exclusive. Returns the number of ACTIVE transactions
    * rolled back, feeding the sweep's operability summary log.
    */
-  private static int rollbackAbandonedTransactions(final DatabaseContextTL tl) {
+  private static int rollbackAbandonedTransactions(final DatabaseContextTL tl, final long threadId, final String databaseName) {
     int rolledBack = 0;
     for (int i = tl.transactions.size() - 1; i > -1; --i) {
       try {
@@ -327,7 +327,12 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
           ++rolledBack;
         }
       } catch (final Throwable e) {
-        // IGNORE ERRORS: BEST-EFFORT CLEANUP OF TRANSACTIONS ABANDONED BY A DEAD THREAD
+        // BEST-EFFORT CLEANUP, BUT NEVER SILENT (#5060): A FAILED ROLLBACK MEANS THE ABANDONED
+        // TRANSACTION'S FILE LOCKS MAY STILL BE HELD - THE EXACT LEAK THIS SWEEP EXISTS TO FIX - SO THE
+        // OPERATOR MUST SEE IT. THE SWEEP CONTINUES WITH THE REMAINING TRANSACTIONS EITHER WAY.
+        LogManager.instance().log(DatabaseContext.class, Level.WARNING,
+            "Dead-thread sweep failed to roll back an abandoned transaction (threadId=%d, database='%s'): its file locks may remain held",
+            e, threadId, databaseName);
       }
     }
     tl.transactions.clear();
