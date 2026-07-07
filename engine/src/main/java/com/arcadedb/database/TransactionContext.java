@@ -145,11 +145,11 @@ public class TransactionContext implements Transaction {
 
   @Override
   public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
-        // #5064: the base context is REUSED across transactions on this thread - the regime flag must never
+    // #5064: the base context is REUSED across transactions on this thread - the regime flag must never
     // leak from a previous (Raft-committed) transaction into a fresh one, or a plain local failure would
     // silently skip the #4940 rollback. Cleared here AND in reset() (belt and braces).
     remotelyCommitted = false;
-this.isolationLevel = isolationLevel;
+    this.isolationLevel = isolationLevel;
 
     if (status != STATUS.INACTIVE)
       throw new TransactionException("Transaction already begun");
@@ -1075,8 +1075,8 @@ this.isolationLevel = isolationLevel;
   }
 
   public void reset() {
-        remotelyCommitted = false;
-status = STATUS.INACTIVE;
+    remotelyCommitted = false;
+    status = STATUS.INACTIVE;
 
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());

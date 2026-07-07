@@ -289,7 +289,6 @@ class WalCommitOrderingTest {
     counters.put(9_999, 1);
   }
 
-
   @Test
   void remotelyCommittedRegimePreservesIdentitiesOnPreWalFailure() throws Exception {
     // #5064 (engine branch): when the HA layer marked the transaction remotely committed (quorum accepted
