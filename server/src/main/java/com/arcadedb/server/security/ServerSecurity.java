@@ -66,7 +66,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private final        SecretKeyFactory                secretKeyFactory;
   private final        ConcurrentSaltCache             saltCache;
   private final        int                             saltIteration;
-  private final        Map<String, ServerSecurityUser> users                = new HashMap<>();
+  // Volatile reference to an immutable-by-convention snapshot: readers (authenticate on Undertow worker
+  // threads) grab the current map lock-free, while loadUsers/applyReplicatedUsers build a fresh map and
+  // publish it in one atomic reference swap so a read never observes a clear()->repopulate empty window.
+  private volatile     Map<String, ServerSecurityUser> users                = new ConcurrentHashMap<>();
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
@@ -130,22 +133,26 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public void loadUsers() {
     try {
-      users.clear();
+      final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
 
       try {
         for (final JSONObject userJson : usersRepository.getUsers()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          users.put(user.getName(), user);
+          newUsers.put(user.getName(), user);
         }
       } catch (final JSONException e) {
         groupRepository.saveInError(e);
         for (final JSONObject userJson : SecurityUserFileRepository.createDefault()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
-          users.put(user.getName(), user);
+          newUsers.put(user.getName(), user);
         }
       }
 
-      if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
+      // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
+      // previous complete map or this one, never an empty intermediate state.
+      this.users = newUsers;
+
+      if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
         askForRootPassword();
 
       apiTokenConfig.load();
@@ -191,7 +198,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       tokenFailureCleanupTimer = null;
     }
 
-    users.clear();
+    users = new ConcurrentHashMap<>();
     if (groupRepository != null)
       groupRepository.stop();
   }
@@ -491,6 +498,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     } catch (final IOException e) {
       LogManager.instance()
           .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
+      // Propagate so an HTTP create/update/drop user request fails instead of falsely returning success
+      // while nothing was persisted (the change would silently vanish on restart).
+      throw new ServerSecurityException(
+          "Error on saving security configuration to file '" + SecurityUserFileRepository.FILE_NAME + "'", e);
     }
   }
 
@@ -543,10 +554,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerException("Failed to save replicated users file", e);
     }
 
-    // Build in-memory map from the authoritative Raft payload, not from the file.
-    users.clear();
+    // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
+    // single atomic reference swap so concurrent readers never observe an empty/torn window.
+    final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
     for (final JSONObject userJson : list)
-      users.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
+      newUsers.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
+    this.users = newUsers;
   }
 
   public void saveGroups() {
