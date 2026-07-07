@@ -128,7 +128,11 @@ public class ImportSecurityValidator {
 
   /**
    * Returns {@code true} if the address belongs to a network range that must not be reachable through
-   * {@code IMPORT DATABASE} (loopback, link-local, site-local/private, wildcard or multicast).
+   * {@code IMPORT DATABASE} (loopback, link-local, site-local/private, wildcard, multicast, IPv6 ULA
+   * or IPv4 CGNAT).
+   * <p>
+   * The blocked-range logic mirrors {@code PostServerCommandHandler.isBlockedHost} in the server
+   * module; keep the two in sync when adding ranges.
    */
   static boolean isBlockedAddress(final InetAddress address) {
     if (address.isLoopbackAddress()         // 127.0.0.0/8, ::1

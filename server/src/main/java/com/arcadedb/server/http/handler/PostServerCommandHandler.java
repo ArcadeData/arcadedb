@@ -466,29 +466,32 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    */
   private void swapRestoredDatabase(final ArcadeDBServer server, final String databaseName, final File finalDir,
       final File tempDir) {
-    // Serialise the drop + on-disk swap against concurrent registry access (getDatabase / createDatabase)
-    // so no concurrent open observes the transient half-swapped directory, matching the snapshot-installer
-    // pattern (issue #4832). Any failure cleans up the temporary directory so it is never leaked on disk.
-    synchronized (server.getDatabasesLock()) {
-      try {
-        // Drop the previous target (HA-aware) only after a successful restore into tempDir.
-        if (server.existsDatabase(databaseName))
-          dropDatabase(databaseName);
-        else if (finalDir.exists())
+    try {
+      // Drop the previous target (HA-aware) BEFORE taking the registry lock and only after a
+      // successful restore into tempDir. In HA mode dropDatabase() round-trips through Raft and the
+      // apply thread itself acquires databasesLock, so holding that lock here would deadlock; only the
+      // pure-local file swap below runs under the lock, matching the snapshot-installer pattern (#4832).
+      if (server.existsDatabase(databaseName))
+        dropDatabase(databaseName);
+
+      // Serialise the on-disk swap against concurrent getDatabase / createDatabase so no concurrent
+      // open observes the transient half-swapped directory.
+      synchronized (server.getDatabasesLock()) {
+        if (finalDir.exists())
           FileUtils.deleteRecursively(finalDir);
 
         try {
           Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.ATOMIC_MOVE);
         } catch (final AtomicMoveNotSupportedException e) {
-          Files.move(tempDir.toPath(), finalDir.toPath());
+          Files.move(tempDir.toPath(), finalDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
-      } catch (final CommandExecutionException e) {
-        FileUtils.deleteRecursively(tempDir);
-        throw e;
-      } catch (final Exception e) {
-        FileUtils.deleteRecursively(tempDir);
-        throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
       }
+    } catch (final CommandExecutionException e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw e;
+    } catch (final Exception e) {
+      FileUtils.deleteRecursively(tempDir);
+      throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
     }
   }
 
@@ -532,6 +535,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * from a client-supplied restore/import URL. Every resolved address is checked so a hostname that
    * resolves to a mix of public and private addresses is still rejected. An unresolvable host is
    * treated as blocked.
+   * <p>
+   * The blocked-range logic mirrors {@code ImportSecurityValidator.isBlockedAddress} in the
+   * (test-scoped, reflectively-loaded) integration module; keep the two in sync when adding ranges.
    */
   private static boolean isBlockedHost(final String host) {
     try {
