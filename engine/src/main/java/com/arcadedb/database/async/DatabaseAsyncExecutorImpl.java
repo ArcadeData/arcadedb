@@ -82,6 +82,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   // does not trip it (the #4953 false positive); tune via setCheckForStalledQueuesMaxDelay().
   private static final int STALLED_NO_PROGRESS_WINDOWS = 12;
 
+  // #5062 review r3 (point 1): same progress gating for the cross-slot-park branch. A worker parked
+  // handing a task to another queue with a flat completed count is much more likely to sit in a
+  // genuine scheduling cycle than a wedged one (it only reaches offerWaiting after exhausting its
+  // help-deferral budget), so the bound is far smaller than the wedged-worker one - but it must
+  // exceed 2, the old head-identity bound that a peer merely busy on one slow task could flatten,
+  // or the #4953 false positive recurs on producers targeting a budget-exhausted worker. 15s with
+  // the default 5s window: genuine capped cycles still fail loudly in bounded time.
+  private static final int STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS = 3;
+
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
     @Override
@@ -118,6 +127,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // re-entrantly (a nested execution could commit or roll back the suspended task's partial
     // writes, breaking per-task atomicity); they are parked here, in poll order, and run by the run
     // loop once the current task unwinds. Thread-confined: only this worker touches it.
+    // Memory bound (#5062 review r3, point 3): at most queueCapacity task references
+    // (ASYNC_OPERATIONS_QUEUE_SIZE / parallelLevel, so one extra queue's worth per worker in the
+    // worst case), a transient spike under sustained cross-slot pressure that drains as soon as the
+    // current task unwinds.
     private final    ArrayDeque<DatabaseAsyncTask>   helpDeferredTasks     = new ArrayDeque<>();
     // Capacity of the own queue, doubling as the helpDeferredTasks budget (see offerHelping).
     private final    int                             queueCapacity;
@@ -973,7 +986,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (!target.isAlive() && removeQuietly(queue, task))
           // The worker exited (shutdown) after its final queue drain but before this offer landed:
           // the task would sit unexecuted forever. Undo the offer and fail like any post-shutdown
-          // scheduling attempt.
+          // scheduling attempt. #5062 review r3 (point 2): this recheck is best-effort, not total -
+          // an offer landing after the final drain poll but before isAlive() flips to false passes
+          // the guard and is orphaned; closing it would need a lock on this hot path.
           throw new DatabaseOperationException(
               "Async executor has been shut down; cannot schedule asynchronous task " + task);
         counterScheduledTasks.incrementAndGet();
@@ -1018,7 +1033,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    *   without throwing; if the deferral budget runs out the worker falls through to the bounded
    *   wait below.</li>
    *   <li><b>Any other producer:</b> waits in windows of {@code checkForStalledQueuesMaxDelay} and
-   *   throws if the target worker completed no task over a whole window while itself being
+   *   throws if the target worker completed no task over
+   *   {@code STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS} consecutive windows while itself being
    *   parked handing a task to another queue (a genuine scheduling cycle beyond the helping budget),
    *   after the worker died, or - the backstop for a worker wedged inside user code - after
    *   {@code STALLED_NO_PROGRESS_WINDOWS} consecutive windows with zero completed tasks. A worker
@@ -1049,16 +1065,22 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
         final long nowCompleted = target.completedTaskCount;
         if (nowCompleted == observedCompleted) {
-          if (target.waitingCrossSlotOffer)
-            // NO TASK COMPLETED IN A WHOLE WINDOW WHILE THE WORKER IS ITSELF PARKED ON ANOTHER QUEUE
-            throw new DatabaseOperationException("Asynchronous queue " + slot
-                + " is stalled. This could happen when an asynchronous task schedules more asynchronous tasks");
+          ++windowsWithoutProgress;
 
-          // #5062 review r2 (point 1): a worker wedged inside user code (infinite loop or blocking
-          // call in a task's execute()/callback) never sets waitingCrossSlotOffer, so without this
-          // backstop the producer would hang here forever. Much longer than the old 2-window
-          // head-identity detector and progress-gated, so a single slow task does not trip it.
-          if (++windowsWithoutProgress >= STALLED_NO_PROGRESS_WINDOWS)
+          if (target.waitingCrossSlotOffer) {
+            // NO TASK COMPLETED OVER N CONSECUTIVE WINDOWS WHILE THE WORKER IS ITSELF PARKED HANDING
+            // A TASK TO ANOTHER QUEUE. #5062 review r3 (point 1): a single flat window used to throw
+            // here, but a budget-exhausted worker whose peer is merely busy on one slow task shows
+            // exactly that signature for a moment: require enough windows to outlive a slow peer.
+            if (windowsWithoutProgress >= STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS)
+              throw new DatabaseOperationException("Asynchronous queue " + slot
+                  + " is stalled. This could happen when an asynchronous task schedules more asynchronous tasks");
+
+            // #5062 review r2 (point 1): a worker wedged inside user code (infinite loop or blocking
+            // call in a task's execute()/callback) never sets waitingCrossSlotOffer, so without this
+            // backstop the producer would hang here forever. Much longer than the old 2-window
+            // head-identity detector and progress-gated, so a single slow task does not trip it.
+          } else if (windowsWithoutProgress >= STALLED_NO_PROGRESS_WINDOWS)
             throw new DatabaseOperationException(
                 "Asynchronous queue " + slot + " is stalled: no task completed in the last " + (
                     STALLED_NO_PROGRESS_WINDOWS * checkForStalledQueuesMaxDelay)
