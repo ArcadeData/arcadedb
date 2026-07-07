@@ -71,6 +71,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private volatile boolean           transactionUseWAL             = true;
   private volatile WALFile.FlushType transactionSync               = WALFile.FlushType.NO;
   private volatile long              checkForStalledQueuesMaxDelay = 5_000;
+  // #5062 review r4 (point 1): grace period each worker gets to exit on its own before shutdown
+  // escalates to interrupt() and again before giving up with a WARNING. Package-private (and
+  // volatile: written by tests, read by the closing thread) so shutdown regression tests can shrink
+  // it instead of waiting the production 10s.
+  volatile         long              shutdownJoinTimeoutMs         = 10_000;
   private final AtomicLong           transactionCounter            = new AtomicLong();
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
   private final AtomicLong           tsAppendCounter               = new AtomicLong();
@@ -79,7 +84,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   // this many consecutive stall windows (checkForStalledQueuesMaxDelay each, 60s with the defaults)
   // in which the target worker completed NO task while its queue stayed full, offerWaiting throws
   // instead of letting the caller hang forever. Progress-gated so a single legitimately slow task
-  // does not trip it (the #4953 false positive); tune via setCheckForStalledQueuesMaxDelay().
+  // does not trip it (the #4953 false positive). Only the window DURATION is tunable, via the
+  // volatile setCheckForStalledQueuesMaxDelay(); this count and the cross-slot one below are fixed.
   private static final int STALLED_NO_PROGRESS_WINDOWS = 12;
 
   // #5062 review r3 (point 1): same progress gating for the cross-slot-park branch. A worker parked
@@ -338,6 +344,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     return checkForStalledQueuesMaxDelay;
   }
 
+  /**
+   * Sets the duration of one stall-detection window (default 5s). Producers blocked on a full queue
+   * throw after {@code STALLED_CROSS_SLOT_NO_PROGRESS_WINDOWS} (3) flat windows when the target
+   * worker is parked handing a task cross-slot, or after {@code STALLED_NO_PROGRESS_WINDOWS} (12)
+   * flat windows when it is not (wedged in user code). Only the window DURATION is tunable, the
+   * window counts are fixed. #5062 review r4 (point 2): scheduling chains deeper than two workers
+   * whose tail runs individual tasks longer than 3 windows (15s by default) can still trip the
+   * cross-slot detector even though the chain would resolve; raise this delay for such workloads.
+   */
   public void setCheckForStalledQueuesMaxDelay(final long checkForStalledQueuesMaxDelay) {
     this.checkForStalledQueuesMaxDelay = checkForStalledQueuesMaxDelay;
   }
@@ -905,14 +920,26 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (!toClose[i].queue.offer(FORCE_EXIT, 1, TimeUnit.SECONDS))
           toClose[i].interrupt();
 
-        // WAIT FOR SHUTDOWN, MAX 10S EACH
-        toClose[i].join(10_000);
+        // WAIT FOR SHUTDOWN, MAX shutdownJoinTimeoutMs EACH (10S BY DEFAULT)
+        toClose[i].join(shutdownJoinTimeoutMs);
+
+        if (toClose[i].isAlive()) {
+          // #5062 review r4 (point 1): a successful FORCE_EXIT offer sends no interrupt, but the
+          // marker may have been consumed inside offerHelping, which only sets forceShutdown and
+          // keeps looping to hand off the current follow-up: on a wedged peer's full queue the flag
+          // is not re-checked until the stall backstop fires (up to ~60s). Escalate after the grace
+          // period: the interrupt wakes the offer park, unwinds the task loudly (onError) and the
+          // run loop exits on the flag.
+          toClose[i].interrupt();
+          toClose[i].join(shutdownJoinTimeoutMs);
+        }
       } catch (final InterruptedException e) {
         interrupted = true;
       }
       if (toClose[i].isAlive())
         LogManager.instance()
-            .log(this, Level.WARNING, "AsyncThread %s did not stop within 10s after shutdown", toClose[i].getName());
+            .log(this, Level.WARNING, "AsyncThread %s did not stop within %dms after shutdown (escalated to interrupt)",
+                toClose[i].getName(), shutdownJoinTimeoutMs);
     }
     if (interrupted)
       Thread.currentThread().interrupt();
@@ -989,6 +1016,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           // scheduling attempt. #5062 review r3 (point 2): this recheck is best-effort, not total -
           // an offer landing after the final drain poll but before isAlive() flips to false passes
           // the guard and is orphaned; closing it would need a lock on this hot path.
+          // #5062 review r4 (point 4): completed() is deliberately NOT invoked on the removed task -
+          // unlike the shutdown drain, the scheduling caller is still on the stack and this
+          // exception informs it directly, so no waiter can be parked on the task yet.
           throw new DatabaseOperationException(
               "Async executor has been shut down; cannot schedule asynchronous task " + task);
         counterScheduledTasks.incrementAndGet();
