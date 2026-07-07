@@ -47,6 +47,15 @@ identical to the pre-existing API-token behavior this change mirrors. Accepted f
 scope ("like API tokens"); IP-scoped keying and operator-configurable threshold/window are the
 follow-up mitigations.
 
+A related, accidental variant: an automated caller (service account, HA/replication client) that
+authenticates frequently and occasionally supplies a stale credential could self-lock for up to 30s.
+Operators relying on such accounts should ensure credentials are kept current; a configurable
+threshold/window (follow-up) would let them tune this.
+
+Note on memory: hashing the key bounds the size of each map entry, not the total number of entries. An
+attacker spraying distinct user names still creates one entry per distinct name until the 30s cleanup
+timer purges stale entries - identical to the API-token path.
+
 ## Tests
 - `ServerSecurityAuthHardeningTest` (new): password lockout after N failures, throttle message,
   lockout does not apply to a different user, successful auth clears the counter, constant-time
@@ -61,6 +70,12 @@ constant-time. No change to the wire/HTTP contract beyond a stronger generated p
 corrected create-user error message.
 
 ## Review cycles
+PR: https://github.com/ArcadeData/arcadedb/pull/5088
+
+Gating reviewers: `claude` (responded every cycle) and `gemini-code-assist` (reviewed cycle 1 only; a
+known pattern for this repo - it re-reviews inconsistently). Final state: **max-cycles-reached** (4/4);
+remaining feedback is non-blocking / deferred with rationale below.
+
 - **Cycle 1** (`f327302e`): Gemini + Claude. Applied: safe-publish of the failure counter (return a
   fresh `long[]` per update instead of in-place mutation), bounded the failure-map key to a 64-bit
   SHA-256 prefix of the user name, and guarded `authenticate` against a null stored password.
@@ -69,7 +84,18 @@ corrected create-user error message.
   regression test asserting the server-command create-user rejects a 7-char password with 403 + "too
   short", extended the malformed-hash test, and removed the per-cycle `review-deferred-*.md` scratch
   file (it does not match the repo's durable `docs/` convention; its rationale is captured here).
-- **Deferred / not done (with rationale):** making `MAX_PASSWORD_FAILURES` / `PASSWORD_LOCKOUT_MS`
-  operator-configurable and IP-scoped keying are follow-ups (see the DoS tradeoff above); the issue
-  asks to mirror the hard-coded API-token path. Extracting a shared `recordFailure` helper unifying the
-  token and password paths was left out to avoid modifying the already-tested token code path.
+- **Cycle 3** (`95a15359`): Claude (non-blocking). Applied: comment documenting the
+  lockout-window-since-first-failure semantics.
+- **Cycle 4** (`b7c77845`): Claude (non-blocking, "nice work"). Applied: unknown-user lockout
+  regression test (locks in the non-enumeration property - unknown users get the same generic message
+  and are also throttled), a service-account self-lockout note and a total-vs-per-entry memory
+  clarification in this doc. PR description corrected to say the key is a SHA-256 prefix (not the raw
+  user name).
+- **Deferred / not done (with rationale):**
+  - Making `MAX_PASSWORD_FAILURES` / `PASSWORD_LOCKOUT_MS` operator-configurable and IP-scoped keying:
+    follow-ups (see the DoS tradeoff above); the issue asks to mirror the hard-coded API-token path.
+  - Extracting a shared `recordFailure` helper unifying the token and password paths (and back-porting
+    the safe-publish fix to the token path): left out to avoid modifying the already-tested token code
+    path; recorded as a future cleanup.
+  - A lockout-window-expiry test (auth succeeds again after 30s): needs a real 30s wait or a clock
+    seam; the reset-after-window branch is exercised indirectly by the counter-reset test.

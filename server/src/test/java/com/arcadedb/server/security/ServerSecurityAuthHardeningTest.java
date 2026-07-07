@@ -84,6 +84,23 @@ class ServerSecurityAuthHardeningTest {
   }
 
   @Test
+  void shouldLockOutUnknownUserWithGenericMessage() {
+    final ServerSecurity security = newSecurity();
+
+    // Attempts against a non-existent user must return the SAME generic message as a wrong password,
+    // so the lockout path does not reveal whether the principal exists.
+    for (int i = 0; i < 5; i++)
+      assertThatThrownBy(() -> security.authenticate("ghost", "whatever", null))
+          .isInstanceOf(ServerSecurityException.class)
+          .hasMessageContaining("User/Password not valid");
+
+    // Unknown users are also throttled after the threshold.
+    assertThatThrownBy(() -> security.authenticate("ghost", "whatever", null))
+        .isInstanceOf(ServerSecurityException.class)
+        .hasMessageContaining("Too many failed authentication attempts");
+  }
+
+  @Test
   void shouldClearFailureCounterOnSuccessfulAuthentication() {
     final ServerSecurity security = newSecurity();
 
