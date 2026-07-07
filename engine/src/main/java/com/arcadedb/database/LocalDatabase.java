@@ -2039,39 +2039,40 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   private void closeInternal(final boolean drop) {
-    if (async != null) {
-      try {
-        // EXECUTE OUTSIDE LOCK
-        // #5080: bound the graceful drain so a worker wedged inside a user task or callback cannot make
-        // close()/drop() hang forever. On expiry, fall through to async.close(), which is itself bounded
-        // (FORCE_EXIT offer + interrupt + a ~10s join per worker, escalated to a second interrupt+join)
-        // and notifies completion of the leftover tasks.
-        final long asyncCloseTimeout = configuration.getValueAsLong(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT);
-        if (!async.waitCompletion(asyncCloseTimeout)) {
-          // #5105 review: waitCompletion also returns false when the caller thread is interrupted (it
-          // re-sets the flag and returns), not only on timeout - distinguish the two so the message is
-          // accurate and never prints "within 0 ms" for the wait-forever (interrupt) case.
-          if (Thread.currentThread().isInterrupted())
-            LogManager.instance().log(this, Level.WARNING, """
-                Interrupted while draining the asynchronous tasks of database '%s' on close: forcing the \
-                async workers down. A task blocked inside user code may not have completed""", name);
-          else
-            LogManager.instance().log(this, Level.WARNING, """
-                Asynchronous tasks of database '%s' did not drain within %d ms on close: forcing the async \
-                workers down. A task blocked inside user code may not have completed""", name, asyncCloseTimeout);
-        }
-        // #5105 review: async.close()'s shutdown uses INTERRUPTIBLE steps (bounded FORCE_EXIT offer, join)
-        // - if the caller thread's interrupt flag is still set (waitCompletion re-set it above), those
-        // steps throw immediately and the wedged worker is never actually interrupted/joined. Clear the
-        // flag across the force-shutdown so it can do its job, then restore it for the caller.
-        final boolean wasInterrupted = Thread.interrupted();
+    // #5105 review: the caller's interrupt flag is cleared for the durable part of the close and restored
+    // only at the very END (finally below). async.close()'s shutdown AND the page flush in
+    // executeInWriteLock use INTERRUPTIBLE steps (bounded FORCE_EXIT offer/join; PageManager throws
+    // InterruptedIOException on a set flag), so leaving the flag set would both skip interrupting the
+    // wedged worker and truncate the durable flush into a needless crash-equivalent close. The flag is
+    // cleared AFTER the graceful async drain below, so an interrupted caller still bails that wait fast.
+    boolean callerWasInterrupted = false;
+    try {
+      if (async != null) {
         try {
+          // EXECUTE OUTSIDE LOCK
+          // #5080: bound the graceful drain so a worker wedged inside a user task or callback cannot make
+          // close()/drop() hang forever. On expiry, fall through to async.close(), which is itself bounded
+          // (FORCE_EXIT offer + interrupt + a ~10s join per worker, escalated to a second interrupt+join)
+          // and notifies completion of the leftover tasks.
+          final long asyncCloseTimeout = configuration.getValueAsLong(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT);
+          if (!async.waitCompletion(asyncCloseTimeout)) {
+            // #5105 review: waitCompletion also returns false when the caller thread is interrupted (it
+            // re-sets the flag and returns), not only on timeout - distinguish the two so the message is
+            // accurate and never prints "within 0 ms" for the wait-forever (interrupt) case.
+            if (Thread.currentThread().isInterrupted())
+              LogManager.instance().log(this, Level.WARNING, """
+                  Interrupted while draining the asynchronous tasks of database '%s' on close: forcing the \
+                  async workers down. A task blocked inside user code may not have completed""", name);
+            else
+              LogManager.instance().log(this, Level.WARNING, """
+                  Asynchronous tasks of database '%s' did not drain within %d ms on close: forcing the async \
+                  workers down. A task blocked inside user code may not have completed""", name, asyncCloseTimeout);
+          }
+          // Clear the flag here (see the method-level note): from now to the end of closeInternal the
+          // force-shutdown and the durable flush must run uninterrupted.
+          callerWasInterrupted = Thread.interrupted();
           async.close();
-        } finally {
-          if (wasInterrupted)
-            Thread.currentThread().interrupt();
-        }
-      } catch (final Throwable e) {
+        } catch (final Throwable e) {
         LogManager.instance()
             .log(this, Level.WARNING, """
                 Error on stopping asynchronous manager during closing operation for database \
@@ -2244,6 +2245,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // closes a same-path open race loser, the factory's catch sees the flag and does not release again.
     if (pageManagerReferenceReleased.compareAndSet(false, true))
       PageManager.INSTANCE.release();
+    } finally {
+      // #5105 review: restore the caller's interrupt now that the whole close (force-shutdown + durable
+      // flush) is done, so the interrupt is not lost but also never truncated the durable work above.
+      if (callerWasInterrupted)
+        Thread.currentThread().interrupt();
+    }
   }
 
   /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */

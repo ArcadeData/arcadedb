@@ -116,6 +116,9 @@ class AsyncShutdownDrainTest extends TestHelper {
       db.getConfiguration().setValue(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT, 1_000L);
       final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
       async.setParallelLevel(1);
+      // #5105 review: pin the join timeout small so the <15s bound is self-contained (not coupled to the
+      // 10s shutdownJoinTimeoutMs default) - the force-shutdown here is offer -> join -> interrupt -> join.
+      async.shutdownJoinTimeoutMs = 2_000;
       // Force thread re-creation so the parallel level above is picked up.
       async.setTransactionUseWAL(true);
 
@@ -160,6 +163,8 @@ class AsyncShutdownDrainTest extends TestHelper {
       db.getConfiguration().setValue(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT, 1_000L);
       final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
       async.setParallelLevel(1);
+      // #5105 review: pin the join timeout small so the assertion is not coupled to the 10s default.
+      async.shutdownJoinTimeoutMs = 2_000;
       async.setTransactionUseWAL(true);
 
       final CountDownLatch blockerStarted = new CountDownLatch(1);
