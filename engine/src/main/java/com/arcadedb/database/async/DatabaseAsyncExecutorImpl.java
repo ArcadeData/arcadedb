@@ -39,7 +39,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
+import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
 
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -156,7 +156,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final String cfgQueueImpl =
           database.getConfiguration().getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
       if ("fast".equalsIgnoreCase(cfgQueueImpl))
-        this.queue = new PushPullBlockingQueue<>(queueSize);
+        // #5066: DisruptorBlockingQueue (MPMC, lock-free CAS-claimed sequences) instead of
+        // PushPullBlockingQueue: the latter is an explicit single-producer/single-consumer design
+        // with no CAS on the tail, while this queue has many producers (any application thread,
+        // cross-scheduling workers, completion markers, the closing thread), so concurrent offers
+        // could silently lose tasks; it also lacks remove(Object), which scheduleTask's
+        // post-shutdown undo relies on. Same library, same jar, capacity rounded up to a power of 2.
+        this.queue = new DisruptorBlockingQueue<>(queueSize);
       else if ("standard".equalsIgnoreCase(cfgQueueImpl))
         this.queue = new ArrayBlockingQueue<>(queueSize);
       else {
@@ -1004,7 +1010,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final BlockingQueue<DatabaseAsyncTask> queue = target.queue;
 
       if (applyBackPressureOnPercentage > 0) {
-        final int queueFullAt = 100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
+        final int queueFullAt = queueFullPercentage(queue);
 
         if (queueFullAt >= applyBackPressureOnPercentage)
           // TODO: VARIABLE SLEEP TIME BASED ON HOW MUCH THE QUEUE IS FULL
@@ -1021,6 +1027,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         scheduled = false;
 
       if (scheduled) {
+        // NOTE (#5081 review): remove(Object) on the Disruptor queue is an O(n) whole-queue-locking scan.
+        // Acceptable ONLY because this undo runs on the rare dead-worker post-shutdown race - it must never
+        // migrate onto the steady-state scheduling path.
         if (!target.isAlive() && removeQuietly(queue, task))
           // The worker exited (shutdown) after its final queue drain but before this offer landed:
           // the task would sit unexecuted forever. Undo the offer and fail like any post-shutdown
@@ -1046,11 +1055,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     try {
       return queue.remove(task);
     } catch (final UnsupportedOperationException e) {
-      // THE "fast" QUEUE (PushPullBlockingQueue) DOES NOT SUPPORT remove(Object): the offer cannot
-      // be undone, so a task that landed right after a dead worker's final drain stays queued and
-      // its completed() never fires (#5062 review, point 4). Known gap, accepted: the impl is
-      // opt-in and the window (an offer racing the worker's exit) is a few instructions wide. The
-      // WARNING below gives operators the reason should a scanType()/waitCompletion() waiter hang.
+      // #5066: DEFENSIVE ONLY - both shipped queue impls ('standard' ArrayBlockingQueue and 'fast'
+      // DisruptorBlockingQueue) support remove(Object) now that 'fast' no longer maps to
+      // PushPullBlockingQueue. If a future impl lacks remove, the offer cannot be undone: a task
+      // that landed right after a dead worker's final drain stays queued with completed() never
+      // fired, and the WARNING below gives operators the reason should a waiter hang.
       LogManager.instance()
           .log(DatabaseAsyncExecutorImpl.class, Level.WARNING,
               "Asynchronous task %s was scheduled on a worker that already shut down and cannot be removed from its "
@@ -1058,6 +1067,26 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                   + "to close this window", task);
       return false;
     }
+  }
+
+  /**
+   * Back-pressure gauge: how full the queue is, as a 0-100 percentage.
+   * <p>
+   * #5081 review: {@code remainingCapacity()} and {@code size()} are read ONCE each into locals so the
+   * numerator and denominator are computed from the same pair - the previous inline form called each twice,
+   * and on the 'fast' {@link com.conversantmedia.util.concurrent.DisruptorBlockingQueue} the two are
+   * weakly-consistent estimates, so a full-then-drained race between the calls could yield a zero
+   * denominator ({@code ArithmeticException}). {@code Math.max(1, ...)} guards the divide regardless.
+   * <p>
+   * On the guarded {@code remaining=0, size=0} snapshot this returns 100 ("full"), not 0: an ambiguous
+   * estimate biases toward MORE back-pressure for that one iteration, self-correcting on the next re-read.
+   */
+  // Package-visible for AsyncFastQueueShutdownUndoTest, which feeds a fake queue reporting the racy 0/0
+  // snapshot the real TOCTOU cannot be forced to produce deterministically.
+  static int queueFullPercentage(final BlockingQueue<DatabaseAsyncTask> queue) {
+    final int remaining = queue.remainingCapacity();
+    final int size = queue.size();
+    return 100 - (remaining * 100 / Math.max(1, remaining + size));
   }
 
   /**
@@ -1132,8 +1161,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         }
 
         if (applyBackPressureOnPercentage > 0) {
-          final int queueFullAt =
-              100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
+          final int queueFullAt = queueFullPercentage(queue);
           Thread.sleep(100 + (4L * queueFullAt));
         }
       }

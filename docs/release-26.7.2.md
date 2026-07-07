@@ -335,11 +335,21 @@ that could starve the very snapshot resync meant to heal the node.
   your tasks legitimately run that long. Operators
   running scheduling chains deeper than two workers with individual tasks slower than 15s should
   raise `checkForStalledQueuesMaxDelay` (only the window duration is tunable, the counts are fixed),
-  or the cross-slot detector can fire on a chain that would have resolved. Known residual
-  gap: with the opt-in
-  `arcadedb.asyncOperationsQueueImpl=fast` queue, a task whose enqueue races the target worker's
-  exit cannot be removed (`remove(Object)` unsupported) and its completion is never notified; a
-  WARNING is logged when this happens, and the default `standard` queue is not affected. Shutdown no
+  or the cross-slot detector can fire on a chain that would have resolved. The formerly documented
+  `fast`-queue residual gap is fixed ([#5066](https://github.com/ArcadeData/arcadedb/issues/5066)):
+  `arcadedb.asyncOperationsQueueImpl=fast` (also selected by the `high-performance` profile) now maps
+  to Conversant's `DisruptorBlockingQueue` instead of `PushPullBlockingQueue`. The old class is an
+  explicit single-producer/single-consumer design, while every async worker queue has many
+  producers: a reproduction test showed concurrent offers silently LOSING tasks in normal
+  operation, and its missing `remove(Object)` degraded the post-shutdown scheduling undo to a
+  logged best-effort. The multi-producer replacement comes from the same library and jar, keeps the
+  lock-free fast path (CAS-claimed sequences; note `fast` trades CPU for latency - the Disruptor
+  queue busy-spins before parking, so idle workers cost more CPU than `standard`, same as the
+  previous `fast` implementation), supports `remove(Object)` (the shutdown undo now
+  works identically on both impls) and rounds capacities up to the next power of two (so for a
+  non-power-of-two configured `ASYNC_OPERATIONS_QUEUE_SIZE / parallelLevel`, `fast` applies
+  back-pressure at a slightly different real fill level than `standard`, which uses the exact size).
+  Shutdown no
   longer strands completion waiters: an interrupted or exiting worker now notifies `completed()` on every
   task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /
   `waitCompletion()` hung forever), and `close()` no longer blocks unbounded on `queue.put(FORCE_EXIT)`
