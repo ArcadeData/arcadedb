@@ -45,7 +45,10 @@ import io.undertow.util.StatusCodes;
 
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -655,15 +658,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping on a
-   * self-referential or repeated cause to avoid an infinite loop. Package-private for direct unit testing.
+   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping when a cause
+   * has already been seen to avoid an infinite loop on cyclic chains. Uses identity comparison so distinct exceptions
+   * with equal {@code equals}/{@code hashCode} are still walked. Package-private for direct unit testing.
    */
   static String buildDetailChain(final Throwable e) {
     final StringBuilder buffer = new StringBuilder();
     buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
 
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    visited.add(e);
     Throwable current = e.getCause();
-    while (current != null && current != current.getCause() && current != e) {
+    while (current != null && visited.add(current)) {
       buffer.append(" -> ");
       buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
       current = current.getCause();

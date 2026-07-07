@@ -86,6 +86,21 @@ class AbstractServerHttpHandlerErrorBodyTest {
     assertThat(json.has("detail")).isFalse();
   }
 
+  @Test
+  void buildDetailChainTerminatesOnDeepCycle() {
+    // e -> a -> b -> a : the cycle closes back on an intermediate cause, not on the root or a direct
+    // self-reference. The identity-based visited set must stop the walk instead of looping forever.
+    final Throwable a = new RuntimeException("a-msg");
+    final Throwable b = new RuntimeException("b-msg");
+    final Throwable e = new RuntimeException("e-msg", a);
+    a.initCause(b);
+    b.initCause(a);
+
+    final String chain = AbstractServerHttpHandler.buildDetailChain(e);
+
+    assertThat(chain).isEqualTo("e-msg -> a-msg -> b-msg");
+  }
+
   private static class TestHandler extends AbstractServerHttpHandler {
     TestHandler(final HttpServer httpServer) {
       super(httpServer);

@@ -52,5 +52,3 @@ Grab-bag of small, independent hardening items from the 2026-07 `server` module 
 ## Impact
 All changes are server-side and backward compatible. Default (`development`) mode error responses are unchanged
 except for an additive `requestId` field. Production mode now conceals internal exception details.
-</content>
-</invoke>
