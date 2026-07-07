@@ -112,27 +112,35 @@ class AsyncShutdownDrainTest extends TestHelper {
       factory.open().drop();
 
     final DatabaseInternal db = (DatabaseInternal) factory.create();
-    db.getConfiguration().setValue(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT, 1_000L);
-    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
-    async.setParallelLevel(1);
-    // Force thread re-creation so the parallel level above is picked up.
-    async.setTransactionUseWAL(true);
+    try {
+      db.getConfiguration().setValue(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT, 1_000L);
+      final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
+      async.setParallelLevel(1);
+      // Force thread re-creation so the parallel level above is picked up.
+      async.setTransactionUseWAL(true);
 
-    final CountDownLatch blockerStarted = new CountDownLatch(1);
-    // Wedged far longer than both the 1s close timeout and the 30s test timeout: pre-fix, the unbounded
-    // waitCompletion() would block close() until it finished (~60s), tripping @Timeout.
-    async.scheduleTask(0, blockerTask(blockerStarted, 60_000), true, 0);
-    assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
+      final CountDownLatch blockerStarted = new CountDownLatch(1);
+      // Wedged far longer than both the 1s close timeout and the 30s test timeout: pre-fix, the unbounded
+      // waitCompletion() would block close() until it finished (~60s), tripping @Timeout.
+      async.scheduleTask(0, blockerTask(blockerStarted, 60_000), true, 0);
+      assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
 
-    final long begin = System.currentTimeMillis();
-    db.close();
-    final long elapsed = System.currentTimeMillis() - begin;
+      final long begin = System.currentTimeMillis();
+      db.close();
+      final long elapsed = System.currentTimeMillis() - begin;
 
-    assertThat(elapsed)
-        .as("close() must give up the async drain after ASYNC_CLOSE_TIMEOUT instead of hanging on a wedged worker")
-        .isLessThan(15_000L);
-
-    new DatabaseFactory(dbPath).open().drop();
+      assertThat(elapsed)
+          .as("close() must give up the async drain after ASYNC_CLOSE_TIMEOUT instead of hanging on a wedged worker")
+          .isLessThan(15_000L);
+    } finally {
+      // #5105 review: drop even if the assertion failed, so a failure does not leak the wedged worker's
+      // 60s thread or the DB directory. The bounded close config above keeps this final close bounded too.
+      if (db.isOpen())
+        db.close();
+      final DatabaseFactory cleanup = new DatabaseFactory(dbPath);
+      if (cleanup.exists())
+        cleanup.open().drop();
+    }
   }
 
   private static DatabaseAsyncTask blockerTask(final CountDownLatch started, final long sleepMs) {

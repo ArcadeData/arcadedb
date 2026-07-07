@@ -2046,10 +2046,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // close()/drop() hang forever. On expiry, fall through to async.close(), which is itself already
         // bounded (interrupt + 1s join per worker) and notifies completion of the leftover tasks.
         final long asyncCloseTimeout = configuration.getValueAsLong(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT);
-        if (!async.waitCompletion(asyncCloseTimeout))
-          LogManager.instance().log(this, Level.WARNING, """
-              Asynchronous tasks of database '%s' did not drain within %d ms on close: forcing the async \
-              workers down. A task blocked inside user code may not have completed""", name, asyncCloseTimeout);
+        if (!async.waitCompletion(asyncCloseTimeout)) {
+          // #5105 review: waitCompletion also returns false when the caller thread is interrupted (it
+          // re-sets the flag and returns), not only on timeout - distinguish the two so the message is
+          // accurate and never prints "within 0 ms" for the wait-forever (interrupt) case.
+          if (Thread.currentThread().isInterrupted())
+            LogManager.instance().log(this, Level.WARNING, """
+                Interrupted while draining the asynchronous tasks of database '%s' on close: forcing the \
+                async workers down. A task blocked inside user code may not have completed""", name);
+          else
+            LogManager.instance().log(this, Level.WARNING, """
+                Asynchronous tasks of database '%s' did not drain within %d ms on close: forcing the async \
+                workers down. A task blocked inside user code may not have completed""", name, asyncCloseTimeout);
+        }
         async.close();
       } catch (final Throwable e) {
         LogManager.instance()
