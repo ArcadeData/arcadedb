@@ -43,6 +43,8 @@ public class WebSocketConnectionHandler extends AbstractServerHttpHandler {
     final var handler = new WebSocketProtocolHandshakeHandler((WebSocketConnectionCallback) (webSocketHttpExchange, channel) -> {
       channel.getReceiveSetter().set(new WebSocketReceiveListener(this.httpServer, webSocketEventBus));
       channel.setAttribute(WebSocketEventBus.CHANNEL_ID, UUID.randomUUID());
+      // Retain the authenticated identity so SUBSCRIBE can enforce per-database authorization.
+      channel.setAttribute(WebSocketEventBus.USER, user);
       channel.resumeReceives();
     });
     handler.handleRequest(exchange);

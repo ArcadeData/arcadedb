@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.AbstractReceiveListener;
 import io.undertow.websockets.core.BufferedTextMessage;
 import io.undertow.websockets.core.StreamSourceFrameChannel;
@@ -61,11 +62,17 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
       switch (action) {
       case SUBSCRIBE:
+        final var database = message.getString("database");
+        final var user = (ServerSecurityUser) channel.getAttribute(WebSocketEventBus.USER);
+        if (user == null || !user.canAccessToDatabase(database)) {
+          sendError(channel, "Security error", "User does not have access to database '%s'.".formatted(database), null);
+          break;
+        }
         final var jsonChangeTypes = !message.isNull("changeTypes") ? message.getJSONArray("changeTypes") : null;
         final var changeTypes = jsonChangeTypes == null ?
             null :
             jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase(Locale.ENGLISH))).collect(Collectors.toSet());
-        this.webSocketEventBus.subscribe(message.getString("database"), message.getString("type", null), changeTypes, channel);
+        this.webSocketEventBus.subscribe(database, message.getString("type", null), changeTypes, channel);
         this.sendAck(channel, action);
         break;
       case UNSUBSCRIBE:
