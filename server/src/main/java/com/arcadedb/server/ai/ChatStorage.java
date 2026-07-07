@@ -41,9 +41,11 @@ import java.util.logging.Level;
  * Chats are stored as JSON files under {serverRoot}/chats/{username}/.
  */
 public class ChatStorage {
-  // Fixed stripe of locks: a single write to a given (user, chatId) is serialized against other
-  // writes to the same chat so two concurrent saves never splice their JSON. Sized as a power of
-  // two so the index masks cleanly; collisions across unrelated chats are harmless (they just wait).
+  // Fixed stripe of locks giving concurrent writers to the same (user, chatId) a deterministic
+  // last-writer-wins ordering. The "never a partial/spliced file" guarantee actually comes from
+  // atomicWriteFile()'s atomic rename, not from this lock; the read-modify-write cycle in the
+  // handler reads outside the lock, so this stripe does not prevent lost updates. Sized as a power
+  // of two so the index masks cleanly; collisions across unrelated chats are harmless (they wait).
   private static final int            LOCK_STRIPES = 64;
   private final        ReentrantLock[] writeLocks   = new ReentrantLock[LOCK_STRIPES];
 
@@ -118,10 +120,8 @@ public class ChatStorage {
    * @throws IllegalStateException if the chat could not be persisted.
    */
   public void saveChat(final String username, final JSONObject chat) {
-    final File userDir = getUserDir(username);
-    if (!userDir.exists())
-      userDir.mkdirs();
-
+    // No explicit mkdirs here: atomicWriteFile() creates the target's parent directory (the user
+    // dir) before writing, so a separate mkdirs would be redundant.
     final String chatId = chat.getString("id");
     final File file = getChatFile(username, chatId);
     final String content = chat.toString(2);
