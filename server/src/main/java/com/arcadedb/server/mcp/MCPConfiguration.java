@@ -21,11 +21,10 @@ package com.arcadedb.server.mcp;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -88,12 +87,9 @@ public class MCPConfiguration {
   }
 
   public synchronized void save() {
-    final File configDir = Paths.get(rootPath, "config").toFile();
-    if (!configDir.exists())
-      configDir.mkdirs();
-
-    try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(getConfigFile()), StandardCharsets.UTF_8)) {
-      writer.write(toJSON().toString(2));
+    try {
+      // Atomic write so a crash mid-write leaves the previous valid config/mcp-config.json intact.
+      FileUtils.atomicWriteFile(getConfigFile(), toJSON().toString(2));
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error saving MCP configuration: %s", e.getMessage());
     }

@@ -26,10 +26,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ChatStorageTest {
   private static final String TEST_ROOT = "target/test-chat-storage";
@@ -146,6 +154,87 @@ class ChatStorageTest {
     assertThat(ChatStorage.sanitizeFilename("../../../etc/passwd")).isEqualTo("_________etc_passwd");
     assertThat(ChatStorage.sanitizeFilename(null)).isEqualTo("default");
     assertThat(ChatStorage.sanitizeFilename("")).isEqualTo("default");
+  }
+
+  @Test
+  void concurrentSavesNeverCorruptTheChatFile() throws Exception {
+    // Writers repeatedly persist a growing chat while readers repeatedly load it. With the atomic,
+    // per-(user, chatId) serialized write, a reader must always observe a complete, valid JSON file
+    // (never null / partial), and the final file must be readable.
+    final JSONObject chat = ChatStorage.createNewChat("db", "Concurrent chat");
+    final String chatId = chat.getString("id");
+    chatStorage.saveChat("root", chat);
+
+    final int threads = 8;
+    final int iterations = 200;
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    final CountDownLatch start = new CountDownLatch(1);
+    final AtomicBoolean corruption = new AtomicBoolean(false);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    for (int t = 0; t < threads; t++) {
+      final int threadId = t;
+      pool.submit(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < iterations; i++) {
+            if (threadId % 2 == 0) {
+              final JSONObject copy = new JSONObject(chat.toString());
+              final JSONArray messages = copy.getJSONArray("messages");
+              final JSONObject msg = new JSONObject();
+              msg.put("role", "user");
+              msg.put("content", "message " + threadId + "-" + i);
+              messages.put(msg);
+              copy.put("updated", Instant.now().toString());
+              chatStorage.saveChat("root", copy);
+            } else {
+              final JSONObject loaded = chatStorage.getChat("root", chatId);
+              // A partial/spliced write would surface as null (unparseable) or a wrong id.
+              if (loaded == null || !chatId.equals(loaded.getString("id", "")))
+                corruption.set(true);
+            }
+          }
+        } catch (final Throwable e) {
+          failure.set(e);
+        }
+      });
+    }
+
+    start.countDown();
+    pool.shutdown();
+    assertThat(pool.awaitTermination(60, TimeUnit.SECONDS)).isTrue();
+
+    assertThat(failure.get()).isNull();
+    assertThat(corruption.get()).isFalse();
+
+    // Final file is still valid and complete.
+    final JSONObject finalChat = chatStorage.getChat("root", chatId);
+    assertThat(finalChat).isNotNull();
+    assertThat(finalChat.getString("id")).isEqualTo(chatId);
+  }
+
+  @Test
+  void saveChatPropagatesWriteFailure() {
+    // Place a regular file where the user's chat directory should be so the write cannot create the
+    // target directory. The failure must surface (not be silently swallowed as a false success).
+    final File chatsDir = Paths.get(TEST_ROOT, "chats").toFile();
+    chatsDir.mkdirs();
+    final File blocker = Paths.get(TEST_ROOT, "chats", "blockeduser").toFile();
+    assertThat(writeEmptyFile(blocker)).isTrue();
+
+    final JSONObject chat = ChatStorage.createNewChat("db", "Will fail");
+
+    assertThatThrownBy(() -> chatStorage.saveChat("blockeduser", chat))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
+  private static boolean writeEmptyFile(final File file) {
+    try {
+      FileUtils.writeFile(file, "");
+      return file.isFile();
+    } catch (final Exception e) {
+      return false;
+    }
   }
 
   @Test

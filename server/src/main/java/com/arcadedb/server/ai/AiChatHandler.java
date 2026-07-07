@@ -369,7 +369,18 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       messages.put(assistantMsg);
       chat.put("messages", messages);
       chat.put("updated", Instant.now().toString());
-      chatStorage.saveChat(username, chat);
+      // The SSE response has already been fully streamed and the output closed above, so the
+      // exchange is committed: we can no longer turn a persistence failure into an HTTP error for
+      // the client. Unlike the non-streaming path (buildResponse), let saveChat's failure only be
+      // logged here - re-throwing would bubble up to execute()'s catch and attempt a second
+      // response on the already-committed exchange.
+      try {
+        chatStorage.saveChat(username, chat);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to persist chat history after streaming response (chatId=%s): %s",
+            chat.getString("id", null), e.getMessage());
+      }
     }
 
     return null; // response already sent

@@ -39,6 +39,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.FileUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -835,13 +836,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // Save configuration to file
     final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
 
-    // Ensure config directory exists
-    final Path configDir = configPath.getParent();
-    if (!Files.exists(configDir))
-      Files.createDirectories(configDir);
-
-    // Write configuration
-    Files.writeString(configPath, configJson.toString(2));
+    // Write configuration atomically so a crash mid-write leaves the previous valid file intact.
+    // atomicWriteFile also creates the parent config directory if needed.
+    FileUtils.atomicWriteFile(configPath.toFile(), configJson.toString(2));
 
     // Reload configuration in the plugin
     final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);

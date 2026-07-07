@@ -20,10 +20,9 @@ package com.arcadedb.server.ai;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -70,12 +69,9 @@ public class AiConfiguration {
   }
 
   public synchronized void save() {
-    final File configDir = Paths.get(rootPath, "config").toFile();
-    if (!configDir.exists())
-      configDir.mkdirs();
-
-    try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(getConfigFile()), StandardCharsets.UTF_8)) {
-      writer.write(toFullJSON().toString(2));
+    try {
+      // Atomic write so a crash mid-write leaves the previous valid config/ai.json intact.
+      FileUtils.atomicWriteFile(getConfigFile(), toFullJSON().toString(2));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error saving AI configuration: %s", e.getMessage());
     }

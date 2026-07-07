@@ -152,6 +152,37 @@ class AiServerTest extends BaseGraphServerTest {
   }
 
   @Test
+  void activateRejectsNonRootUser() throws Exception {
+    // A non-root, authenticated user must not be able to activate an AI subscription: activation
+    // pushes a subscription key to the gateway and overwrites server-wide config/ai.json.
+    if (!getServer(0).getSecurity().existsUser("aiuser"))
+      getServer(0).getSecurity().createUser("aiuser", "aipassword");
+
+    final String nonRootAuth = "Basic " + Base64.getEncoder()
+        .encodeToString("aiuser:aipassword".getBytes(StandardCharsets.UTF_8));
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getAiUrl("/activate")).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", nonRootAuth);
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject payload = new JSONObject().put("subscriptionKey", "some-key");
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(payload.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(403);
+      // The server-wide config must not have been activated by the non-root request.
+      assertThat(getServer(0).getAiConfiguration().isConfigured()).isFalse();
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
   void requiresAuthentication() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getAiUrl("/config")).toURL().openConnection();
     connection.setRequestMethod("GET");
