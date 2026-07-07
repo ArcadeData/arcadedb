@@ -389,13 +389,9 @@ that could starve the very snapshot resync meant to heal the node.
   instead of hardcoding 1, so auto-compaction is no longer deferred by up to a full threshold of new
   pages after every restart. Items deliberately left open on #4958/#4960 with reasoning on the issues:
   the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
-<<<<<<< fix/5067-audit-lows
   conflict-heavy file) and the descending duplicate-run cursor rescan (perf-only); the `createNewPage`
   rollback counter drift was subsequently fixed in
   [#5067](https://github.com/ArcadeData/arcadedb/issues/5067).
-=======
-  conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
-  cursor rescan (perf-only).
 - **Storage: flush suspension is refcounted - overlapping backup/verify/snapshot each own their window
   (2026-07 audit follow-up).** `suspendFlushAndExecute` ownership was first-caller-wins: with two
   concurrent suspenders on the same database (SQL `BACKUP DATABASE`, the HA verify endpoint, HA snapshot
@@ -410,7 +406,6 @@ that could starve the very snapshot resync meant to heal the node.
   serialization (no longer needed for correctness, retained to serialize same-database zip streams and
   keep each suspension window - and therefore the deferred backlog - short)
   ([#5068](https://github.com/ArcadeData/arcadedb/issues/5068)).
->>>>>>> main
 - **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
   transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
   records created in the failed transaction get their optimistically-assigned RID reset to provisional and
@@ -431,6 +426,32 @@ that could starve the very snapshot resync meant to heal the node.
   page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
   levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
   `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
+- **Parallel select no longer pins async workers at 100% CPU when the consumer stops draining (2026-07
+  audit follow-up).** The native-query `select().parallel()` iterator hands records from its per-bucket
+  async browse tasks to the consumer through a fixed 4,096-slot queue, and the producers offered into it
+  with an unbounded busy-spin: a consumer that stopped fetching (an exception in user code, an early
+  return, or plain abandonment) left one async worker per bucket spinning at 100% CPU forever, and the
+  next `Database.close()`/`drop()` hung indefinitely behind the async executor's unbounded
+  `waitCompletion()`. The offer is now bounded: producers park briefly between attempts and give up
+  cleanly - through the regular task-completion path, preserving the async executor contracts hardened
+  with #5062 - when the iterator is closed, the worker is interrupted (executor shutdown), the limit is
+  already satisfied, or the consumer makes no progress for the whole stall bound (the select timeout when
+  set, otherwise 60s, matching the async executor's zero-progress backstop). A consumer still alive after
+  the producers stall out gets a `TimeoutException` instead of a silently truncated result set (unless it
+  opted into truncation with a non-throwing timeout), and `SelectIterator` is now `AutoCloseable` so an
+  early-terminating consumer can release the producers deterministically. The rework also fixes three
+  latent defects in the parallel path: `limit` was accounted on the producer side, so the consumer could
+  receive fewer records than requested (down to zero on a fast producer); `skip` crashed with a
+  `NullPointerException` (the base constructor consumed the skipped records before the parallel machinery
+  existed); and a record published between the consumer's last poll and the final producer's countdown
+  could be silently dropped at end of stream. Review follow-ups on the same PR: the select `timeout` is
+  enforced on every fetch, including when records are immediately available (it was previously only
+  checked on an empty queue, so a slow consumer of an always-full queue could run unbounded past its
+  timeout); the consumer got the same spin-then-park backoff as the producers, so a slow producer (e.g. a
+  heavy WHERE scanning many non-matching rows) no longer pins the caller thread at 100% CPU; and
+  `skip(s).limit(n)` together now returns `n` records after the `s` skipped ones (standard semantics, like
+  the ORDER BY path) instead of `n - s` - this last fix is in the shared base iterator, so it corrects the
+  serial non-ordered path too ([#5065](https://github.com/ArcadeData/arcadedb/issues/5065)).
 - **Low-severity audit residuals (2026-07 audit).** Four small residuals collected from the audit
   follow-up PRs ([#5067](https://github.com/ArcadeData/arcadedb/issues/5067)):
   `TransactionContext.kill()` (test-only API) now releases the file locks acquired by a commit's 1st
