@@ -474,6 +474,9 @@ public class WALFile extends LockContext {
     buffer.rewind();
     // #4958: loop until the buffer is fully written. A single channel.write may write only part of the
     // record, leaving a torn entry that the #4508 gap detector would then flag as corruption.
+    // Single-writer assumption (same as the pre-loop code that wrote at channel.size() once): appends to a
+    // WALFile are externally serialized by acquire(); two concurrent appenders would both seed writePos from
+    // the same channel.size() and interleave. The local writePos only tolerates PARTIAL writes, not writers.
     long writePos = channel.size();
     while (buffer.hasRemaining())
       writePos += channel.write(buffer, writePos);
