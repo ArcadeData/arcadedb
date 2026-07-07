@@ -53,7 +53,7 @@ public class PageManager extends LockContext {
   volatile ConcurrentMap<PageId, CachedPage> readCache;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
-  private volatile          long                              maxRAM;
+  private volatile long                               maxRAM;
   final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
@@ -71,8 +71,8 @@ public class PageManager extends LockContext {
   // concurrently. volatile (three review rounds converged on it): the barrier cost is negligible next to the
   // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
   // database-publication happens-before for cross-thread visibility of the startup() writes.
-  private volatile PageManagerFlushThread            flushThread;
-  private volatile          int                               freePageRAM;
+  private volatile PageManagerFlushThread             flushThread;
+  private volatile int                                freePageRAM;
 
   @ExcludeFromJacocoGeneratedReport
   public interface ConcurrentPageAccessCallback {
@@ -182,6 +182,11 @@ public class PageManager extends LockContext {
     flushThread.start();
   }
 
+  /**
+   * INVARIANT (#5070 review): runs under LIFECYCLE_LOCK and joins the flush thread - the flush thread must
+   * therefore NEVER call acquire()/release()/configure()/close(), or this join becomes a deadlock (the
+   * flush thread blocking on the lock this thread holds while waiting for it to exit). Verified true today.
+   */
   private void shutdown() {
     if (flushThread != null) {
       try {
