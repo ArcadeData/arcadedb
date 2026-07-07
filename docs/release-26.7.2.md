@@ -387,6 +387,40 @@ that could starve the very snapshot resync meant to heal the node.
   profile change while databases are OPEN is refused with a warning (the page manager keeps its current
   sizing rather than being swapped live under running queries; set the profile before opening databases)
   ([#4927](https://github.com/ArcadeData/arcadedb/issues/4927)).
+- **Storage: flush suspension is refcounted - overlapping backup/verify/snapshot each own their window
+  (2026-07 audit follow-up).** `suspendFlushAndExecute` ownership was first-caller-wins: with two
+  concurrent suspenders on the same database (SQL `BACKUP DATABASE`, the HA verify endpoint, HA snapshot
+  serving - any combination), only the FIRST caller owned the suspend flag while the other still streamed
+  the database files. The non-owner skipped the wait for the in-flight flush batch (so it could read a
+  page mid-write) and, worse, kept streaming while the owner's exit synchronously flushed the deferred
+  batches to disk - torn reads either way. The suspension is now a per-database REFCOUNT: flushing stays
+  suspended while the count is above zero and resumes (deferred batches flushed) only when the LAST
+  suspender exits, so every caller legitimately owns its whole window; a new suspender arriving while the
+  last exit is mid-way through the deferred-batch writes waits until that resume completes. The #4728
+  deferred-RAM backpressure accounting is unchanged, and the HA snapshot endpoint keeps its per-database
+  serialization (no longer needed for correctness, retained to serialize same-database zip streams and
+  keep each suspension window - and therefore the deferred backlog - short)
+  ([#5068](https://github.com/ArcadeData/arcadedb/issues/5068)).
+- **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
+  transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
+  records created in the failed transaction get their optimistically-assigned RID reset to provisional and
+  modified records are reloaded to their committed content, so retrying with the same in-memory objects
+  re-inserts them instead of updating a record that was never persisted; a failure after the WAL append
+  still keeps the assigned RIDs, since the transaction is durable and recovery replays it
+  ([#4940](https://github.com/ArcadeData/arcadedb/issues/4940)). From the low-severity group
+  ([#4959](https://github.com/ArcadeData/arcadedb/issues/4959)): a deferred update whose record was deleted
+  by a concurrent transaction now fails the commit with a retryable `ConcurrentModificationException`
+  instead of being silently skipped while the rest of the transaction commits (silent partial commit);
+  `transaction()` no longer burns every retry attempt (plus retry delays) on a deterministic
+  `DuplicatedKeyException` - one retry disambiguates it from a concurrency-induced duplicate. **Behavioral
+  change:** `transaction(block, joinTx, attempts)` now caps duplicate-key retries at 2 attempts regardless
+  of the `attempts` argument (duplicates are detected against durable state only, so a duplicate that
+  survives one retry is deterministic and further attempts just burn time and retry delays);
+  `executeLockingFiles` now locks on behalf of the current transaction's requester (thread or session), so
+  a thread acting for a session no longer times out on locks its own session already holds; and the
+  page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
+  levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
+  `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
 
 ### Improvements
 

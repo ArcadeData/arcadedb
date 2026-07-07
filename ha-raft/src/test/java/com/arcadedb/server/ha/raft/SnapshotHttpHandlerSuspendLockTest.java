@@ -25,10 +25,10 @@ import java.util.concurrent.locks.ReentrantLock;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * #5063 (review round 5): {@code PageManagerFlushThread.setSuspended} is ownership-based, so only ONE
- * thread at a time may be inside {@code suspendFlushAndExecute} for a given database or the non-owner
- * can observe a resumed flush mid-read. {@link SnapshotHttpHandler#suspendLockFor} provides the
- * per-database lock that serializes the handler's snapshot and checksums paths; these tests pin its
+ * #5063 (review round 5) added {@link SnapshotHttpHandler#suspendLockFor}: the per-database lock that
+ * serializes the handler's snapshot and checksums paths. Originally required for correctness (the flush
+ * suspension was first-caller-wins); since the refcounted suspension of issue #5068 it is retained to
+ * serialize same-database zip streaming and keep each suspension window short. These tests pin its
  * identity contract: same database name, same lock instance; different names, independent locks.
  */
 class SnapshotHttpHandlerSuspendLockTest {
