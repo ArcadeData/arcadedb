@@ -58,7 +58,9 @@ public class PageManagerFlushThread extends Thread {
   // its suspension window can never overlap the resume's page writes (issue #5068).
   private final        Set<Database>                                            resumingDatabases   = ConcurrentHashMap.newKeySet();
   private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
-  private final        AtomicReference<PagesToFlush>                            nextPagesToFlush    = new AtomicReference<>();
+  // Package-private so the white-box regression test for issue #5068 can fabricate an in-flight batch and
+  // deterministically exercise an interrupt during waitForCurrentFlushToComplete.
+  final                AtomicReference<PagesToFlush>                            nextPagesToFlush    = new AtomicReference<>();
   private final        ConcurrentHashMap<Database, ConcurrentLinkedQueue<PagesToFlush>> deferredByDatabase = new ConcurrentHashMap<>();
   // Per-database lock serializing the suspend-flag check + defer in flushPagesFromQueueToDisk against the
   // flag-clear + deferred-detach in setSuspended(false). Without it a batch could be deferred AFTER the
@@ -363,6 +365,14 @@ public class PageManagerFlushThread extends Thread {
    * otherwise its freshly acquired window would overlap the resume's synchronous page writes, exactly the
    * torn-read overlap this refcount exists to prevent. The wait is uninterruptible (the interrupt flag is
    * preserved and restored) and timed, so a lost notification degrades to polling instead of a hang.
+   * <p>
+   * Parking here uninterruptibly is an ACCEPTED TRADEOFF (#5074 review): the wait is bounded by the
+   * resume's Phase 1, which writes at most {@code FLUSH_SUSPEND_MAX_DEFERRED_RAM} (the #4728 backpressure
+   * cap) of deferred pages, and the only suspenders are admin-path threads - SQL BACKUP DATABASE, database
+   * verify, and HA snapshot serving, the latter capped at {@code HA_SNAPSHOT_MAX_CONCURRENT} (default 2)
+   * of Undertow's 500 workers and serialized per database by {@code SnapshotHttpHandler}. No pool can be
+   * exhausted and shutdown is delayed by at most one bounded resume; a {@code flushPage} wedged on a dead
+   * disk stalls the flush thread itself first, so this wait is never the limiting factor.
    */
   public boolean setSuspended(final Database database, final boolean value) {
     final Object lock = suspendLock(database);
