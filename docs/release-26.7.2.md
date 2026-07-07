@@ -227,7 +227,11 @@ that could starve the very snapshot resync meant to heal the node.
   `TransactionManager.getStats()` no longer inflates its totals with polling frequency and no longer NPEs
   on read-only databases; the page cache-miss counter is actually incremented (it stayed at ~0 forever, so
   the hit/miss ratio was meaningless); a nested `suspendFlushAndExecute` (snapshot during backup) now runs
-  the inner callback under the outer suspension instead of silently skipping it; WAL files preserved by an
+  the inner callback under the outer suspension instead of silently skipping it, and the HA Raft
+  snapshot/checksums endpoint now serializes per database so a concurrent snapshot request can never
+  stream files without owning the flush suspension (the suspend flag is first-caller-owned; the owner's
+  exit would have resumed flushing mid-read for the other request, tearing the streamed files - reachable
+  with the default `HA_SNAPSHOT_MAX_CONCURRENT` of 2); WAL files preserved by an
   aborted recovery are renamed to `.wal.corrupt` and the WAL pool counter is seeded past existing files,
   so preserved content is never adopted as an active WAL (appending new transactions after corrupt bytes)
   nor replayed again (the HA Raft snapshot checksum skips the preserved `.corrupt` files like it already

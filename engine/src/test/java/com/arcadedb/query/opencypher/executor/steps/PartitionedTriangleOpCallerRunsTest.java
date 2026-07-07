@@ -27,11 +27,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression test for issue #4952: {@link PartitionedTriangleOp} submitted ALL chunks (including chunk 0)
@@ -206,34 +209,57 @@ class PartitionedTriangleOpCallerRunsTest {
    * 1..N-1 must still be awaited before the exception unwinds {@code execute()}, otherwise they keep
    * writing into {@code partialCounts} (and holding pool threads) after the caller has returned.
    * <p>
-   * The KNOWS view throws on every {@code offset()} call made by the calling thread (chunk 0 fails
-   * immediately) while background chunks sleep once before touching the view, so any background call
-   * observed after {@code execute()} has unwound proves the leak.
+   * #5063 review round 5: the leak detection is a pure latch handshake, no wall-clock sleeps. Every
+   * background chunk parks on {@code releaseBackground} at its FIRST view access, and chunk 0 throws
+   * only after at least one background chunk is provably parked. With the try/finally fix in place,
+   * {@code execute()} cannot unwind until the backgrounds finish, so a releaser thread frees them once
+   * it observes the calling thread parked in {@code awaitFutures} (an untimed {@code Future.get()},
+   * i.e. Java-level WAITING - a merely-descheduled thread still reports RUNNABLE, so CI load cannot
+   * fake this). Without the fix, {@code execute()} unwinds while every background chunk is still
+   * parked, so {@code backgroundDone} is provably still up when the caller captures it: the failure is
+   * deterministic in both directions, not a timing race.
    */
   @Test
   void chunkZeroFailureStillAwaitsBackgroundChunks() throws Exception {
-    // Empty adjacency: countRange still calls offset()/offsetEnd() for every node of every chunk.
+    // Empty adjacency: countRange calls offset() exactly once per node of every chunk (no neighbors,
+    // so no inner offset(v) calls), which makes the background call count exactly predictable.
     final int[] offsets = new int[NODE_COUNT + 1];
     final int[] neighbors = new int[0];
 
+    // Mirror the chunk layout of PartitionedTriangleOp.execute(): chunk 0 covers [0, chunkSize),
+    // background chunks cover [chunkSize, NODE_COUNT) with one offset() call per node.
+    final int threadCount = Math.max(1, Runtime.getRuntime().availableProcessors());
+    final int chunkSize = (NODE_COUNT + threadCount - 1) / threadCount;
+    final int expectedBackgroundCalls = NODE_COUNT - Math.min(chunkSize, NODE_COUNT);
+    assumeTrue(expectedBackgroundCalls > 0, "needs at least 2 processors to launch background chunks");
+
     final Thread caller = Thread.currentThread();
-    final AtomicLong lastBackgroundCall = new AtomicLong();
-    final Set<Thread> sleptThreads = ConcurrentHashMap.newKeySet();
+    final CountDownLatch backgroundStarted = new CountDownLatch(1);
+    final CountDownLatch releaseBackground = new CountDownLatch(1);
+    final CountDownLatch chunk0Throwing = new CountDownLatch(1);
+    final CountDownLatch backgroundDone = new CountDownLatch(1);
+    final CountDownLatch unwound = new CountDownLatch(1);
+    final AtomicInteger backgroundCalls = new AtomicInteger();
+    final Set<Thread> parkedOnce = ConcurrentHashMap.newKeySet();
 
     final NeighborView knowsView = new NeighborView(NODE_COUNT, offsets, neighbors) {
       @Override
       public int offset(final int nodeId) {
-        if (Thread.currentThread() == caller)
-          // Only countRange touches the KNOWS view, so this fails chunk 0 on its very first node.
+        if (Thread.currentThread() == caller) {
+          // Only countRange touches the KNOWS view, so this fails chunk 0 on its very first node -
+          // but only once at least one background chunk is provably in flight (and parked).
+          awaitHandshake(backgroundStarted);
+          chunk0Throwing.countDown();
           throw new IllegalStateException("simulated chunk-0 failure");
-        if (sleptThreads.add(Thread.currentThread()))
-          // Keep the background chunks provably in flight while chunk 0 fails.
-          try {
-            Thread.sleep(150);
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-          }
-        lastBackgroundCall.set(System.nanoTime());
+        }
+        if (parkedOnce.add(Thread.currentThread())) {
+          backgroundStarted.countDown();
+          // Park across chunk 0's failure: if execute() unwinds without awaiting the futures, every
+          // background chunk is still HERE, so backgroundDone cannot have been counted down yet.
+          awaitHandshake(releaseBackground);
+        }
+        if (backgroundCalls.incrementAndGet() == expectedBackgroundCalls)
+          backgroundDone.countDown();
         return super.offset(nodeId);
       }
     };
@@ -251,17 +277,57 @@ class PartitionedTriangleOpCallerRunsTest {
     final PartitionedTriangleOp op = new PartitionedTriangleOp(new String[] { "IN_CITY" },
         new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, "KNOWS");
 
+    // Fixed-path releaser: with the try/finally in place the caller blocks in awaitFutures while every
+    // background chunk is parked on releaseBackground, and nothing inside execute() can free them. Free
+    // them once the caller is genuinely parked AFTER chunk 0 threw (only awaitFutures parks there). On
+    // the broken path the caller never parks between the throw and the leak capture below, so this
+    // thread stays idle until `unwound` fires.
+    final Thread releaser = new Thread(() -> {
+      try {
+        while (!unwound.await(1, TimeUnit.MILLISECONDS)) {
+          final Thread.State state = caller.getState();
+          if (chunk0Throwing.getCount() == 0
+              && (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)) {
+            releaseBackground.countDown();
+            return;
+          }
+        }
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }, "chunk0-leak-test-releaser");
+    releaser.start();
+
     assertThatThrownBy(() -> op.execute(new StubProvider(knowsView, partitionView), null))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("simulated chunk-0 failure");
 
-    final long unwoundAt = System.nanoTime();
+    // Capture the evidence BEFORE releasing anything: on the fixed path the background chunks counted
+    // backgroundDone down strictly before execute() unwound (happens-before via Future.get()); on the
+    // broken path they are all still parked on releaseBackground, so the latch is provably still up.
+    final boolean backgroundDoneBeforeUnwind = backgroundDone.getCount() == 0;
 
-    // Give leaked chunks (pre-fix behavior) time to wake from their sleep and touch the view.
-    Thread.sleep(300);
+    unwound.countDown();
+    releaseBackground.countDown();
+    // Drain any leaked chunks (broken path) so they do not outlive this test, then reap the releaser.
+    assertThat(backgroundDone.await(30, TimeUnit.SECONDS))
+        .as("all background chunks must eventually complete")
+        .isTrue();
+    releaser.join(TimeUnit.SECONDS.toMillis(30));
 
-    assertThat(lastBackgroundCall.get())
-        .as("no background chunk may still be running after execute() has unwound")
-        .isLessThan(unwoundAt);
+    assertThat(backgroundDoneBeforeUnwind)
+        .as("background chunks must have completed before execute() unwound")
+        .isTrue();
+  }
+
+  /** Bounded await used by the handshake: a 30s timeout is a hang guard, not part of the detection. */
+  private static void awaitHandshake(final CountDownLatch latch) {
+    try {
+      if (!latch.await(30, TimeUnit.SECONDS))
+        throw new IllegalStateException("test handshake latch timed out");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("test handshake interrupted", e);
+    }
   }
 }
