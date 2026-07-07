@@ -42,3 +42,22 @@ GrpcAuthInterceptorTest = 29 tests) still pass.
 ## Impact
 Closes a critical privilege-escalation + data-destruction vulnerability on the gRPC admin plane.
 No behavior change for root/admin callers.
+
+## Pull request
+https://github.com/ArcadeData/arcadedb/pull/5101
+
+## Review cycles
+- cycle 1: `7b904a0` - initial fix (role gate on createDatabase/dropDatabase, PERMISSION_DENIED).
+  Gemini reviewed with one security-critical suggestion: fail closed if `ServerSecurity.authenticate`
+  returns `null` (defense-in-depth; the current impl throws, but the null path would otherwise map to
+  PERMISSION_DENIED instead of UNAUTHENTICATED and weaken the discarded-return RPCs). Claude bot did
+  not respond within the 15-minute per-iteration timeout.
+- cycle 2: `4f7ccae` - addressed Gemini: `authenticate(...)` now null-checks the returned user and
+  throws `SecurityException` (-> UNAUTHENTICATED), hardening all admin RPCs. All grpcw admin/auth
+  tests pass. Gemini re-posted the same (now already-applied) suggestion; no new actionable items.
+  Claude bot again did not respond within the timeout.
+
+## Final state
+timeout - the Claude bot reviewer never responded within the per-iteration budget across both cycles;
+Gemini's substantive feedback was fully addressed and the working tree is clean. Merge remains the
+developer's responsibility.
