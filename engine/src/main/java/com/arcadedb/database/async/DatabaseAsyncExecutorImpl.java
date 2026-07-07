@@ -39,7 +39,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
+import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
 
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -156,7 +156,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final String cfgQueueImpl =
           database.getConfiguration().getValueAsString(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL);
       if ("fast".equalsIgnoreCase(cfgQueueImpl))
-        this.queue = new PushPullBlockingQueue<>(queueSize);
+        // #5066: DisruptorBlockingQueue (MPMC, lock-free CAS-claimed sequences) instead of
+        // PushPullBlockingQueue: the latter is an explicit single-producer/single-consumer design
+        // with no CAS on the tail, while this queue has many producers (any application thread,
+        // cross-scheduling workers, completion markers, the closing thread), so concurrent offers
+        // could silently lose tasks; it also lacks remove(Object), which scheduleTask's
+        // post-shutdown undo relies on. Same library, same jar, capacity rounded up to a power of 2.
+        this.queue = new DisruptorBlockingQueue<>(queueSize);
       else if ("standard".equalsIgnoreCase(cfgQueueImpl))
         this.queue = new ArrayBlockingQueue<>(queueSize);
       else {
@@ -1046,11 +1052,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     try {
       return queue.remove(task);
     } catch (final UnsupportedOperationException e) {
-      // THE "fast" QUEUE (PushPullBlockingQueue) DOES NOT SUPPORT remove(Object): the offer cannot
-      // be undone, so a task that landed right after a dead worker's final drain stays queued and
-      // its completed() never fires (#5062 review, point 4). Known gap, accepted: the impl is
-      // opt-in and the window (an offer racing the worker's exit) is a few instructions wide. The
-      // WARNING below gives operators the reason should a scanType()/waitCompletion() waiter hang.
+      // #5066: DEFENSIVE ONLY - both shipped queue impls ('standard' ArrayBlockingQueue and 'fast'
+      // DisruptorBlockingQueue) support remove(Object) now that 'fast' no longer maps to
+      // PushPullBlockingQueue. If a future impl lacks remove, the offer cannot be undone: a task
+      // that landed right after a dead worker's final drain stays queued with completed() never
+      // fired, and the WARNING below gives operators the reason should a waiter hang.
       LogManager.instance()
           .log(DatabaseAsyncExecutorImpl.class, Level.WARNING,
               "Asynchronous task %s was scheduled on a worker that already shut down and cannot be removed from its "
