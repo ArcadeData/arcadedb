@@ -331,6 +331,18 @@ class CypherQueryStatisticsTest extends TestHelper {
   }
 
   @Test
+  void detachDeleteWithExplicitEdgeCountsRelationshipOnce() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:Dd {n:'a'})-[:LINK]->(b:Dd {n:'b'})");
+      final QueryStatistics s = statsOf(database,
+          "MATCH (a:Dd {n:'a'})-[r:LINK]->(b:Dd {n:'b'}) DETACH DELETE r, a, b");
+      assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
+      assertThat(s.getNodesDeleted()).isEqualTo(2);
+    });
+  }
+
+  @Test
   void callSubqueryWriteCountsPropagateToOuter() {
     database.transaction(() -> {
       final QueryStatistics s = statsOf(database,
