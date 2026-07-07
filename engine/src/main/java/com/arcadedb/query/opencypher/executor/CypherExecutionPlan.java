@@ -304,15 +304,14 @@ public class CypherExecutionPlan {
    * Used by CALL subqueries to inject outer scope variables into the inner query.
    * The seed row provides variables that the inner query's WITH clause can import.
    *
-   * @param seedRow the initial row providing outer scope variables
+   * @param seedRow      the initial row providing outer scope variables
+   * @param outerContext the outer command context whose QueryStatistics accumulator is shared
+   *                     with the inner query's context, so writes performed inside the CALL
+   *                     subquery are folded into the outer plan's statistics. May be {@code null}.
    *
    * @return result set from the inner query execution
    */
-  public ResultSet executeWithSeedRow(final Result seedRow) {
-    // Limitation: each branch/inner plan runs with its own BasicCommandContext, so QueryStatistics
-    // from writes performed inside this CALL subquery are not aggregated into the outer plan's
-    // statistics. The ResultSet returned to the caller only reflects top-level mutation steps.
-
+  public ResultSet executeWithSeedRow(final Result seedRow, final CommandContext outerContext) {
     // Handle UNION inside CALL subqueries: execute each branch with the seed row
     if (statement instanceof UnionStatement unionStmt) {
       final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
@@ -324,12 +323,14 @@ public class CypherExecutionPlan {
       ctx.setDatabase(database);
       ctx.setInputParameters(parameters);
       setupFunctionResolver(ctx);
+      if (outerContext != null)
+        ctx.setStatistics(outerContext.getStatistics());
 
       // Execute each branch with the seed row, collect all results
       final List<ResultInternal> allResults = new ArrayList<>();
       final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
       for (final CypherExecutionPlan branchPlan : branchPlans) {
-        final ResultSet rs = branchPlan.executeWithSeedRow(seedRow);
+        final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext);
         while (rs.hasNext()) {
           final Result row = rs.next();
           if (removeDuplicates) {
@@ -350,6 +351,8 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
+    if (outerContext != null)
+      context.setStatistics(outerContext.getStatistics());
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -404,10 +407,6 @@ public class CypherExecutionPlan {
    * @return combined result set
    */
   private ResultSet executeUnion() {
-    // Limitation: each UNION branch executes as its own sub-plan with its own QueryStatistics, so
-    // write statistics from inside a branch are not aggregated into the combined ResultSet's
-    // statistics; only top-level mutation steps outside the UNION are reflected there.
-
     // Use UnionStep to combine results from all subqueries
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
@@ -417,7 +416,21 @@ public class CypherExecutionPlan {
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
 
-    return unionStep.syncPull(context, 100);
+    // Read UNION: stay lazy/streaming, no statistics to surface.
+    if (statement.isReadOnly())
+      return unionStep.syncPull(context, 100);
+
+    // Write UNION: materialize to force each branch's mutation steps to execute (mirroring the
+    // non-union write path), then surface the summed per-branch statistics.
+    final ResultSet rs = unionStep.syncPull(context, 100);
+    final List<Result> rows = new ArrayList<>();
+    while (rs.hasNext())
+      rows.add(rs.next());
+    final IteratorResultSet out = new IteratorResultSet(rows.iterator());
+    final QueryStatistics aggregated = unionStep.getAggregatedStatistics();
+    if (aggregated.containsUpdates())
+      out.setStatistics(aggregated);
+    return out;
   }
 
   /**

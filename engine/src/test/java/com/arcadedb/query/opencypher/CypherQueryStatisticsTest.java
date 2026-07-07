@@ -329,4 +329,28 @@ class CypherQueryStatisticsTest extends TestHelper {
       assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
     });
   }
+
+  @Test
+  void callSubqueryWriteCountsPropagateToOuter() {
+    database.transaction(() -> {
+      final QueryStatistics s = statsOf(database,
+          "UNWIND [1,2] AS x CALL { WITH x CREATE (:CallNode {v:x}) } RETURN x");
+      assertThat(s.getNodesCreated()).isEqualTo(2);
+      assertThat(s.getPropertiesSet()).isEqualTo(2);
+      assertThat(s.getLabelsAdded()).isEqualTo(2);
+      assertThat(s.containsUpdates()).isTrue();
+    });
+  }
+
+  @Test
+  void topLevelUnionWriteCountsAreSummed() {
+    database.transaction(() -> {
+      final QueryStatistics s = statsOf(database,
+          "CREATE (:UnionA {n:1}) RETURN 1 AS r UNION ALL CREATE (:UnionB {n:2}) RETURN 2 AS r");
+      assertThat(s.getNodesCreated()).isEqualTo(2);
+      assertThat(s.getPropertiesSet()).isEqualTo(2);
+      assertThat(s.getLabelsAdded()).isEqualTo(2);
+      assertThat(s.containsUpdates()).isTrue();
+    });
+  }
 }

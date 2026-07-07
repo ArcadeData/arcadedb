@@ -460,6 +460,11 @@ public class BasicCommandContext implements CommandContext {
     return statistics;
   }
 
+  @Override
+  public void setStatistics(final QueryStatistics statistics) {
+    this.statistics = statistics;
+  }
+
   public CommandContext setDatabase(final Database database) {
     this.database = (DatabaseInternal) database;
     return this;
