@@ -310,7 +310,9 @@ that could starve the very snapshot resync meant to heal the node.
   producers: a reproduction test showed concurrent offers silently LOSING tasks in normal
   operation, and its missing `remove(Object)` degraded the post-shutdown scheduling undo to a
   logged best-effort. The multi-producer replacement comes from the same library and jar, keeps the
-  lock-free fast path (CAS-claimed sequences), supports `remove(Object)` (the shutdown undo now
+  lock-free fast path (CAS-claimed sequences; note `fast` trades CPU for latency - the Disruptor
+  queue busy-spins before parking, so idle workers cost more CPU than `standard`, same as the
+  previous `fast` implementation), supports `remove(Object)` (the shutdown undo now
   works identically on both impls) and rounds capacities up to the next power of two. Shutdown no
   longer strands completion waiters: an interrupted or exiting worker now notifies `completed()` on every
   task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /

@@ -126,4 +126,40 @@ class AsyncFastQueueShutdownUndoTest extends TestHelper {
         .filter(t -> t.getName().equals(name)).findFirst()
         .orElseThrow(() -> new IllegalStateException("Worker thread " + name + " not found"));
   }
+  @Test
+  @Timeout(60)
+  void fastQueueSupportsEffectiveCapacityOne() throws Exception {
+    // #5081 review: queueSize = ASYNC_OPERATIONS_QUEUE_SIZE / parallelLevel floors to 1 on large pools, so
+    // capacity 1 is production-reachable - and the Conversant ring's minimum-size rounding is
+    // library-version-specific. Pin the guarantee: offer/remove/reuse must behave on a 1-slot Disruptor
+    // queue so a future library bump cannot silently regress it.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL, "fast");
+    db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 1);
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
+    async.setParallelLevel(1);
+    async.recreateThreadsForTests();
+
+    final CountDownLatch blockerStarted = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    try {
+      // Park the worker so the queue keeps exactly its 1 slot for the probes below.
+      async.scheduleTask(0, awaitTask(blockerStarted, release), true, 0);
+      assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+      final DatabaseAsyncExecutorImpl.AsyncThread worker = findWorkerThread(db, 0);
+      final DatabaseAsyncTask first = noOpTask();
+      final DatabaseAsyncTask second = noOpTask();
+      assertThat(worker.queue.offer(first)).as("a 1-slot queue accepts the first task").isTrue();
+      assertThat(worker.queue.offer(second)).as("a full 1-slot queue rejects (not blocks/throws) the second").isFalse();
+      assertThat(worker.queue.remove(first))
+          .as("remove(Object) works at capacity 1 - the post-shutdown undo primitive").isTrue();
+      assertThat(worker.queue.offer(second)).as("the slot freed by remove is reusable").isTrue();
+    } finally {
+      release.countDown();
+    }
+
+    assertThat(async.waitCompletion(10_000)).isTrue();
+  }
+
 }
