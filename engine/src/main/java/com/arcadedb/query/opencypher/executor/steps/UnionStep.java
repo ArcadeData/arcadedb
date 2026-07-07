@@ -169,6 +169,8 @@ public class UnionStep extends AbstractExecutionStep {
 
   /**
    * Returns the write statistics summed across every branch that has completed execution so far.
+   * The accumulator fills in incrementally as branches are pulled, so the sum is only complete
+   * once the caller has fully drained the ResultSet returned by {@link #syncPull}.
    */
   public QueryStatistics getAggregatedStatistics() {
     return aggregatedStatistics;

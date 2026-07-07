@@ -353,4 +353,22 @@ class CypherQueryStatisticsTest extends TestHelper {
       assertThat(s.containsUpdates()).isTrue();
     });
   }
+
+  @Test
+  void zeroNetEffectWriteUnionStillReportsStatisticsPresent() {
+    // Presence of statistics on the result set signals "this was a write statement", independent
+    // of whether the write actually mutated anything. Both UNION branches are MERGE clauses that
+    // match the pre-existing node, so containsUpdates() is false, but getStatistics() must still
+    // be present.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:UnionMergeTarget {id:1})");
+      final ResultSet rs = database.command("opencypher",
+          "MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r UNION ALL "
+              + "MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r");
+      while (rs.hasNext())
+        rs.next();
+      assertThat(rs.getStatistics()).isPresent();
+      assertThat(rs.getStatistics().get().containsUpdates()).isFalse();
+    });
+  }
 }

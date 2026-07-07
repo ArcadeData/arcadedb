@@ -323,8 +323,6 @@ public class CypherExecutionPlan {
       ctx.setDatabase(database);
       ctx.setInputParameters(parameters);
       setupFunctionResolver(ctx);
-      if (outerContext != null)
-        ctx.setStatistics(outerContext.getStatistics());
 
       // Execute each branch with the seed row, collect all results
       final List<ResultInternal> allResults = new ArrayList<>();
@@ -351,7 +349,10 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
-    if (outerContext != null)
+    // Only share the outer statistics accumulator for a write CALL body: getStatistics() lazily
+    // allocates, so sharing it unconditionally would allocate a QueryStatistics even for a
+    // fully read-only CALL, violating the "read queries allocate nothing" constraint.
+    if (outerContext != null && !statement.isReadOnly())
       context.setStatistics(outerContext.getStatistics());
 
     // Create a seed step that returns the seed row
@@ -427,9 +428,10 @@ public class CypherExecutionPlan {
     while (rs.hasNext())
       rows.add(rs.next());
     final IteratorResultSet out = new IteratorResultSet(rows.iterator());
-    final QueryStatistics aggregated = unionStep.getAggregatedStatistics();
-    if (aggregated.containsUpdates())
-      out.setStatistics(aggregated);
+    // Always attach the accumulator for a write UNION, even when no branch actually mutated
+    // anything (aggregated.containsUpdates() false then): presence signals "this was a write",
+    // mirroring the non-union write path above.
+    out.setStatistics(unionStep.getAggregatedStatistics());
     return out;
   }
 
