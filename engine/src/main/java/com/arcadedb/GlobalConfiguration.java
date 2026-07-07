@@ -272,6 +272,15 @@ public enum GlobalConfiguration {
       (pre-26.7.2 behavior)""",
       Long.class, 60_000L),
 
+  ASYNC_CLOSE_TIMEOUT("arcadedb.asyncCloseTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds to wait for in-flight asynchronous tasks to drain when closing or dropping a database \
+      before giving up with a WARNING and forcing the async workers down. Without a bound, a worker wedged \
+      inside a user task or callback made close()/drop() hang forever (#5080). Giving up here is safe: the \
+      forced shutdown interrupts the workers and notifies completion, and any task that never ran is simply \
+      not applied. 0 waits forever (pre-26.7.2 behavior)""",
+      Long.class, 60_000L),
+
   PARALLEL_SCAN_ABANDONED_TIMEOUT("arcadedb.parallelScanAbandonedTimeout", SCOPE.DATABASE,
       """
       Milliseconds a parallel-scan producer keeps waiting on a full result queue with NO consumer \
