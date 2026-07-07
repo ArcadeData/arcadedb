@@ -611,9 +611,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Returns true when the server runs in {@code production} mode. In production the error responses must not
-   * leak internal exception details (class names, cause-chain messages, file paths); {@code development} and
-   * {@code test} keep the verbose body to aid debugging.
+   * Returns true when the server runs in {@code production} mode. In production the error responses conceal the
+   * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
+   * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
+   * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
    */
   private boolean isProductionMode() {
     return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
@@ -632,11 +633,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Builds the JSON error body sent to the client. When {@code verbose} is true (non-production modes) the full
-   * cause chain ({@code detail}), the exception class name ({@code exception}) and {@code exceptionArgs} are
-   * included to aid debugging. In production mode the body is limited to the generic {@code error} message plus a
-   * {@code requestId} correlation id, so internal class names, file paths and engine errors are never leaked to a
-   * client probing endpoints. Package-private for direct unit testing.
+   * Builds the JSON error body sent to the client. The exception class name ({@code exception}) and the structured
+   * {@code exceptionArgs} are a wire contract consumed by the remote Java driver
+   * ({@code RemoteHttpComponent.manageException}) and by HA leader-exception reconstruction
+   * ({@code RaftReplicatedDatabase.reconstructLeaderException}) to rebuild typed exceptions, leader-redirect hints and
+   * duplicate-key details; they are bounded, non-sensitive values and are therefore emitted in every mode. Only the
+   * free-form cause chain ({@code detail}), which can carry file paths and engine internals, is concealed in
+   * production ({@code verbose == false}) so it is never leaked to a client probing endpoints. Package-private for
+   * direct unit testing.
    */
   String buildErrorBody(final boolean verbose, final String errorMessage, final Throwable e, final String exceptionArgs,
                         final String correlationId) {
@@ -645,14 +649,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (correlationId != null && !correlationId.isEmpty())
       json.put("requestId", correlationId);
 
-    if (verbose) {
-      if (e != null) {
-        json.put("detail", encodeError(buildDetailChain(e)));
-        json.put("exception", e.getClass().getName());
-      }
-      if (exceptionArgs != null)
-        json.put("exceptionArgs", exceptionArgs);
-    }
+    if (e != null)
+      json.put("exception", e.getClass().getName());
+    if (exceptionArgs != null)
+      json.put("exceptionArgs", exceptionArgs);
+
+    // The cause chain is the only free-form field: conceal it outside development/test to avoid leaking
+    // internal file paths and engine errors to a client probing endpoints.
+    if (verbose && e != null)
+      json.put("detail", encodeError(buildDetailChain(e)));
 
     return json.toString();
   }

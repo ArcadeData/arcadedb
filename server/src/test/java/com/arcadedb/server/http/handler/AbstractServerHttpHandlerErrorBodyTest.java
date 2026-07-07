@@ -28,32 +28,35 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit test for issue #5037 item 1: production-mode HTTP error responses must not leak internal exception
- * details (class names, cause-chain messages). Development/test modes keep the verbose body for debugging.
+ * Unit test for issue #5037 item 1: production-mode HTTP error responses must not leak the free-form cause chain
+ * ({@code detail}), which can carry file paths and engine internals. The bounded {@code exception} class name and
+ * structured {@code exceptionArgs} are preserved in all modes because the remote driver and HA leader-exception
+ * reconstruction depend on them. Development/test modes additionally keep the verbose {@code detail} for debugging.
  */
 class AbstractServerHttpHandlerErrorBodyTest {
 
   private final TestHandler handler = new TestHandler(null);
 
   @Test
-  void productionModeConcealsExceptionDetails() {
+  void productionModeConcealsCauseChainButKeepsWireContract() {
     final IllegalArgumentException rootCause = new IllegalArgumentException("internal file path /var/lib/arcadedb/secret");
     final CommandExecutionException wrapped = new CommandExecutionException("Error executing internal command", rootCause);
 
     final String body = handler.buildErrorBody(false, "Cannot execute command", wrapped, "index|keys|#1:2", "req-1234");
     final JSONObject json = new JSONObject(body);
 
-    // Generic message + correlation id only.
+    // Generic message + correlation id.
     assertThat(json.getString("error")).isEqualTo("Cannot execute command");
     assertThat(json.getString("requestId")).isEqualTo("req-1234");
 
-    // No internal details leaked.
-    assertThat(json.has("exception")).isFalse();
+    // Wire contract preserved so the remote driver / HA can rebuild the typed exception and its structured args.
+    assertThat(json.getString("exception")).isEqualTo(CommandExecutionException.class.getName());
+    assertThat(json.getString("exceptionArgs")).isEqualTo("index|keys|#1:2");
+
+    // Free-form cause chain concealed: no detail field, no leaked file path from the nested cause.
     assertThat(json.has("detail")).isFalse();
-    assertThat(json.has("exceptionArgs")).isFalse();
-    assertThat(body).doesNotContain("CommandExecutionException");
     assertThat(body).doesNotContain("secret");
-    assertThat(body).doesNotContain("IllegalArgumentException");
+    assertThat(body).doesNotContain("/var/lib/arcadedb");
   }
 
   @Test

@@ -55,8 +55,8 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     DatabaseContext.INSTANCE.init((DatabaseInternal) database);
 
     // isolationLevel is optional: when a payload is present but omits it, fall back to the default isolation.
-    // getString(name, default) avoids the full recursive toMap() copy on this hot path and never throws on a
-    // non-string value.
+    // getString(name, default) avoids the full recursive toMap() copy on this hot path; a scalar value stringifies
+    // (no ClassCastException, unlike the old (String) cast), while a JSON object/array would still be rejected.
     final String isolationLevel = payload != null ? payload.getString("isolationLevel", null) : null;
     if (isolationLevel != null)
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel));
