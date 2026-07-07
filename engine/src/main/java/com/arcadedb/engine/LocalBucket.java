@@ -2114,7 +2114,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (availableSpace + delta == 0)
         freeSpaceInPages.remove(pageId, -1);
       else {
-        final int usableSpaceInPage = getPageSize() - contentHeaderSize;
+        // #5067: same usable-space base as gatherPageStatistics() (#4958): measure against the usable
+        // content region (physical page size minus the page header), not the physical page size, which
+        // overstated the space of every page and skewed the GATHER_STATS_MIN_SPACE_PERC threshold
+        final int usableSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
 
         final boolean hasEntry = freeSpaceInPages.containsKey(pageId);
         final int existingFreeSpace = hasEntry ? freeSpaceInPages.get(pageId, 0) : 0;

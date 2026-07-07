@@ -144,6 +144,16 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   @Override
   public void onAfterCommit() {
+    // #5067: createNewPage() increments currentMutablePages eagerly inside the transaction, so a rolled
+    // back transaction (e.g. a commit that failed in 1st phase after applying some index changes) discards
+    // the pages but not the increments, and the counter drifts above the real page count until the next
+    // reload (#5063's onAfterLoad re-derivation). The transaction's page counters are already published at
+    // this point of the commit, so clamp to the real total to keep the drift from scheduling a compaction
+    // early.
+    final int totalPages = getTotalPages();
+    if (currentMutablePages > totalPages)
+      currentMutablePages = totalPages;
+
     if (minPagesToScheduleACompaction > 1 && currentMutablePages >= minPagesToScheduleACompaction) {
       LogManager.instance()
           .log(this, Level.FINE, "Scheduled compaction of index '%s' (currentMutablePages=%d totalPages=%d)", null, componentName,
