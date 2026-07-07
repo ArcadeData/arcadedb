@@ -850,9 +850,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       reconciler.clearFollowerReconcileStatesOnBecomeLeader();
 
       // Issue #4147: drive offline cluster bootstrap if conditions match (commit index still 0,
-      // arcadedb.ha.bootstrapFromLocalDatabase=true). Runs on a background thread to keep the
-      // notifyLeaderChanged callback non-blocking; a slow peer or a bootstrap-state RPC timeout
-      // must not stall Raft's normal leader-change processing on this node.
+      // arcadedb.ha.bootstrapFromLocalDatabase=true). Runs on a background thread so a slow peer or a
+      // bootstrap-state RPC timeout does not stall Raft's normal leader-change processing on this node.
+      // Note: the background pass itself may park this single-threaded lifecycleExecutor briefly - it
+      // waits for the freshly-elected leader's Raft division to expose a readable commit index (~100 ms
+      // typically, up to commitIndexReadinessTimeoutMs on a broken read) - so tasks submitted afterward
+      // (e.g. the snapshot download below) queue behind it in that rare worst case.
       lifecycleExecutor.submit(() -> {
         try {
           raftHAServer.runBootstrapIfEligible();

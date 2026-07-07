@@ -114,11 +114,38 @@ class BootstrapElectionGateTest {
     when(mockHa.getCommitIndex()).thenReturn(-1L, -1L, 0L);
 
     final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    election.commitIndexReadinessPollMs = 0L; // spin without sleeping
     final BootstrapElection.Outcome outcome = election.runIfEligible();
 
     // Past the gate once the index resolved to 0: it tried to collect databases and found none.
     assertThat(outcome).isEqualTo(BootstrapElection.Outcome.SKIPPED_NO_DATABASES);
     verify(mockServer).getDatabaseNames();
+  }
+
+  /**
+   * The wait loop's third exit condition: if this node stops being the leader while the commit index
+   * is still unresolved (-1), the wait must break rather than spin out the full readiness budget, and
+   * the gate must skip. Proves the {@code haServer.isLeader()} guard inside the loop works.
+   */
+  @Test
+  void losingLeadershipWhileWaitingStopsTheWaitAndSkips() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
+
+    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    when(mockServer.getConfiguration()).thenReturn(config);
+    lenient().when(mockServer.getDatabaseNames()).thenReturn(Set.of("alpha"));
+
+    final RaftHAServer mockHa = mock(RaftHAServer.class);
+    // Leader at the entry guard and on the first loop check, then leadership is lost.
+    when(mockHa.isLeader()).thenReturn(true, true, false);
+    when(mockHa.getCommitIndex()).thenReturn(-1L); // never resolves
+
+    final BootstrapElection election = new BootstrapElection(mockHa, mockServer);
+    election.commitIndexReadinessPollMs = 0L; // spin without sleeping
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
+    verify(mockServer, never()).getDatabaseNames();
   }
 
   /**

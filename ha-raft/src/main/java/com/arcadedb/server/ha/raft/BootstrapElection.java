@@ -113,9 +113,6 @@ class BootstrapElection {
       .connectTimeout(Duration.ofSeconds(5))
       .build();
 
-  // Poll interval while waiting for the freshly-elected leader's Raft division to become readable.
-  private static final long             COMMIT_INDEX_READINESS_POLL_MS = 100L;
-
   private final RaftHAServer            haServer;
   private final ArcadeDBServer          server;
   // Tracks per-database whether the bootstrap protocol has been attempted in this leader's
@@ -125,8 +122,14 @@ class BootstrapElection {
   // this node becomes leader. The notifyLeaderChanged callback fires before the Raft division's log is
   // queryable, so the very first read returns the -1 UNKNOWN sentinel for a brief window (~100 ms in
   // practice); without waiting, the once-per-term bootstrap pass would skip on that transient -1 and
-  // never re-run. Package-private and non-final so tests can shorten it. See awaitReadableCommitIndex.
+  // never re-run. 10 s is deliberately generous versus the observed ~100 ms readiness gap: the wait
+  // ends as soon as the index resolves (or leadership is lost), so the full budget is only ever spent
+  // on a genuinely broken read - a rare case that does not warrant an operator-facing config knob.
+  // Package-private and non-final so tests can shorten it. See awaitReadableCommitIndex.
   long                                  commitIndexReadinessTimeoutMs = 10_000L;
+  // Poll interval while waiting for the division to become readable. Package-private and non-final so
+  // tests can set it to 0 and spin without sleeping.
+  long                                  commitIndexReadinessPollMs    = 100L;
 
   BootstrapElection(final RaftHAServer haServer, final ArcadeDBServer server) {
     this.haServer = haServer;
@@ -220,11 +223,14 @@ class BootstrapElection {
    * the issue #4800 "never bootstrap on an unconfirmed index" guarantee.
    */
   private long awaitReadableCommitIndex() {
-    final long deadline = System.currentTimeMillis() + commitIndexReadinessTimeoutMs;
+    // Monotonic deadline: nanoTime is immune to wall-clock steps/NTP adjustments and the
+    // (now - start) form is overflow-safe, unlike a currentTimeMillis-based absolute deadline.
+    final long start = System.nanoTime();
+    final long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(commitIndexReadinessTimeoutMs);
     long commitIndex = haServer.getCommitIndex();
-    while (commitIndex < 0 && System.currentTimeMillis() < deadline && haServer.isLeader()) {
+    while (commitIndex < 0 && (System.nanoTime() - start) < timeoutNanos && haServer.isLeader()) {
       try {
-        Thread.sleep(COMMIT_INDEX_READINESS_POLL_MS);
+        Thread.sleep(commitIndexReadinessPollMs);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         break;
