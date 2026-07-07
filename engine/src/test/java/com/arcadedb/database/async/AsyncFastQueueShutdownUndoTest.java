@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static com.arcadedb.database.async.AsyncTestTasks.awaitTask;
@@ -115,7 +116,7 @@ class AsyncFastQueueShutdownUndoTest extends TestHelper {
       t.join(30_000);
 
     assertThat(executed.await(30, TimeUnit.SECONDS))
-        .as("every task offered by concurrent producers must execute exactly once")
+        .as("every task offered by concurrent producers must all execute (the SPSC impl silently lost tasks)")
         .isTrue();
     assertThat(async.waitCompletion(10_000)).isTrue();
   }
@@ -156,11 +157,47 @@ class AsyncFastQueueShutdownUndoTest extends TestHelper {
     assertThat(async.waitCompletion(10_000)).isTrue();
   }
 
+  @Test
+  void backPressureGaugeSurvivesTheRacyZeroDenominatorSnapshot() {
+    // #5081 review point 2: remainingCapacity() and size() are separate reads, and on the 'fast'
+    // DisruptorBlockingQueue they are weakly-consistent estimates - a full-then-drained race between the
+    // two can present as remaining=0, size=0. Without the Math.max(1, ...) guard that is a divide by zero.
+    // The real race cannot be forced deterministically, so drive the gauge with a fake queue that reports
+    // exactly that snapshot; the guard must yield a sane 0-100 value instead of throwing.
+    assertThat(DatabaseAsyncExecutorImpl.queueFullPercentage(new FixedSnapshotQueue(0, 0)))
+        .as("a 0/0 estimate must not divide by zero").isBetween(0, 100);
+    // A normal half-full snapshot still reports ~50.
+    assertThat(DatabaseAsyncExecutorImpl.queueFullPercentage(new FixedSnapshotQueue(50, 50))).isEqualTo(50);
+    // A full queue reports 100.
+    assertThat(DatabaseAsyncExecutorImpl.queueFullPercentage(new FixedSnapshotQueue(0, 100))).isEqualTo(100);
+  }
+
   private static DatabaseAsyncExecutorImpl.AsyncThread findWorkerThread(final DatabaseInternal db, final int slot) {
     final String name = "AsyncExecutor-" + db.getName() + "-" + slot;
     return (DatabaseAsyncExecutorImpl.AsyncThread) Thread.getAllStackTraces().keySet().stream()
         .filter(t -> t.getName().equals(name)).findFirst()
         .orElseThrow(() -> new IllegalStateException("Worker thread " + name + " not found"));
+  }
+
+  /** A queue that reports a fixed (remainingCapacity, size) snapshot, standing in for the weakly-consistent estimates. */
+  private static final class FixedSnapshotQueue extends LinkedBlockingQueue<DatabaseAsyncTask> {
+    private final int remaining;
+    private final int size;
+
+    private FixedSnapshotQueue(final int remaining, final int size) {
+      this.remaining = remaining;
+      this.size = size;
+    }
+
+    @Override
+    public int remainingCapacity() {
+      return remaining;
+    }
+
+    @Override
+    public int size() {
+      return size;
+    }
   }
 
 }

@@ -1010,7 +1010,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final BlockingQueue<DatabaseAsyncTask> queue = target.queue;
 
       if (applyBackPressureOnPercentage > 0) {
-        final int queueFullAt = 100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
+        final int queueFullAt = queueFullPercentage(queue);
 
         if (queueFullAt >= applyBackPressureOnPercentage)
           // TODO: VARIABLE SLEEP TIME BASED ON HOW MUCH THE QUEUE IS FULL
@@ -1067,6 +1067,23 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                   + "to close this window", task);
       return false;
     }
+  }
+
+  /**
+   * Back-pressure gauge: how full the queue is, as a 0-100 percentage.
+   * <p>
+   * #5081 review: {@code remainingCapacity()} and {@code size()} are read ONCE each into locals so the
+   * numerator and denominator are computed from the same pair - the previous inline form called each twice,
+   * and on the 'fast' {@link com.conversantmedia.util.concurrent.DisruptorBlockingQueue} the two are
+   * weakly-consistent estimates, so a full-then-drained race between the calls could yield a zero
+   * denominator ({@code ArithmeticException}). {@code Math.max(1, ...)} guards the divide regardless.
+   */
+  // Package-visible for AsyncFastQueueShutdownUndoTest, which feeds a fake queue reporting the racy 0/0
+  // snapshot the real TOCTOU cannot be forced to produce deterministically.
+  static int queueFullPercentage(final BlockingQueue<DatabaseAsyncTask> queue) {
+    final int remaining = queue.remainingCapacity();
+    final int size = queue.size();
+    return 100 - (remaining * 100 / Math.max(1, remaining + size));
   }
 
   /**
@@ -1141,8 +1158,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         }
 
         if (applyBackPressureOnPercentage > 0) {
-          final int queueFullAt =
-              100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
+          final int queueFullAt = queueFullPercentage(queue);
           Thread.sleep(100 + (4L * queueFullAt));
         }
       }
