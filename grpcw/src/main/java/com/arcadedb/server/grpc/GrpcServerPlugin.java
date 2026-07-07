@@ -90,6 +90,13 @@ public class GrpcServerPlugin implements ServerPlugin {
   private static final String CONFIG_TX_MAX_IDLE_MS      = CONFIG_PREFIX + "tx.maxIdleMs";
   private static final String CONFIG_TX_MAX_AGE_MS       = CONFIG_PREFIX + "tx.maxAgeMs";
   private static final String CONFIG_TX_REAPER_PERIOD_MS = CONFIG_PREFIX + "tx.reaperPeriodMs";
+  private static final String CONFIG_MAX_CONCURRENT_TX   = CONFIG_PREFIX + "maxConcurrentTransactions";
+  private static final String CONFIG_MAX_CONCURRENT_TX_PER_PRINCIPAL = CONFIG_PREFIX + "maxConcurrentTransactionsPerPrincipal";
+
+  // Upper bound on inbound HTTP/2 header (metadata) bytes. Kept small on purpose: gRPC metadata carries only a
+  // handful of short ASCII headers (credentials, database name), so a multi-megabyte cap only serves to invite a
+  // memory-pressure DoS from crafted headers. 16 KiB is generous for legitimate callers (issue #5048, SEC-8).
+  private static final int MAX_INBOUND_METADATA_SIZE = 16 * 1024;
 
   @Override
   public void configure(ArcadeDBServer server, ContextConfiguration configuration) {
@@ -153,9 +160,10 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Configure the server
     configureServer(serverBuilder, config);
 
+    // Inbound message size is configured by configureServer() from grpc.maxMessageSize; do not override it here with
+    // a larger hardcoded value (SEC-8). Only cap the metadata size to a sane bound.
     grpcServer = serverBuilder
-        .maxInboundMessageSize(256 * 1024 * 1024)
-        .maxInboundMetadataSize(32 * 1024 * 1024)
+        .maxInboundMetadataSize(MAX_INBOUND_METADATA_SIZE)
         .build().start();
 
     // Build status message
@@ -185,19 +193,25 @@ public class GrpcServerPlugin implements ServerPlugin {
   private void startXdsServer(ContextConfiguration config) throws IOException {
     int port = getConfigInt(config, CONFIG_XDS_PORT, 50052);
 
-    // XDS server for service mesh integration
+    // XDS server for service mesh integration. Credentials MUST honor grpc.tls.* just like the standard server:
+    // previously this was hardcoded to InsecureServerCredentials, so an operator that enabled TLS still got
+    // cleartext (SEC-4). When TLS is enabled, configureTlsCredentials() fails closed (throws) on a bad config.
+    final boolean tlsEnabled = getConfigBoolean(config, CONFIG_TLS_ENABLED, false);
+    final ServerCredentials credentials = tlsEnabled ? configureTlsCredentials(config) : InsecureServerCredentials.create();
+
     // XdsServerBuilder requires ServerCredentials
-    XdsServerBuilder xdsBuilder = XdsServerBuilder.forPort(port, InsecureServerCredentials.create());
+    XdsServerBuilder xdsBuilder = XdsServerBuilder.forPort(port, credentials);
 
     // Configure the XDS server as a ServerBuilder
     configureServer(xdsBuilder, config);
 
+    // Inbound message size is configured by configureServer() from grpc.maxMessageSize (SEC-8).
     xdsServer = xdsBuilder
-        .maxInboundMessageSize(256 * 1024 * 1024)
-        .maxInboundMetadataSize(32 * 1024 * 1024)
+        .maxInboundMetadataSize(MAX_INBOUND_METADATA_SIZE)
         .build().start();
 
-    LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled)", port);
+    LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled, TLS %s)",
+        port, tlsEnabled ? "enabled" : "disabled");
   }
 
   private void configureServer(ServerBuilder<?> serverBuilder, ContextConfiguration config) {
@@ -212,8 +226,18 @@ public class GrpcServerPlugin implements ServerPlugin {
     final long txReaperPeriodMs = getConfigLong(config, CONFIG_TX_REAPER_PERIOD_MS,
         ArcadeDbGrpcService.DEFAULT_TX_REAPER_PERIOD_MS);
 
+    // Concurrent-transaction caps (issue #5048, SEC-7): a dedicated single-thread executor is allocated per open
+    // transaction, so an authenticated client that loops beginTransaction() without committing can exhaust threads
+    // and memory. Bound the number of simultaneously open transactions globally and per principal; excess
+    // beginTransaction() calls are rejected with RESOURCE_EXHAUSTED. A non-positive value disables that bound.
+    final int maxConcurrentTx = getConfigInt(config, CONFIG_MAX_CONCURRENT_TX,
+        ArcadeDbGrpcService.DEFAULT_MAX_CONCURRENT_TRANSACTIONS);
+    final int maxConcurrentTxPerPrincipal = getConfigInt(config, CONFIG_MAX_CONCURRENT_TX_PER_PRINCIPAL,
+        ArcadeDbGrpcService.DEFAULT_MAX_CONCURRENT_TRANSACTIONS_PER_PRINCIPAL);
+
     // Create the main service and store reference for cleanup
-    this.grpcService = new ArcadeDbGrpcService(databasePath, arcadeServer, txMaxIdleMs, txMaxAgeMs, txReaperPeriodMs);
+    this.grpcService = new ArcadeDbGrpcService(databasePath, arcadeServer, txMaxIdleMs, txMaxAgeMs, txReaperPeriodMs,
+        maxConcurrentTx, maxConcurrentTxPerPrincipal);
 
     // Add the main service
     serverBuilder.addService(grpcService);
@@ -277,22 +301,23 @@ public class GrpcServerPlugin implements ServerPlugin {
   }
 
   private NettyServerBuilder configureStandardTls(int port, ContextConfiguration config) {
+    // Fail closed (SEC-3): when TLS is requested but misconfigured we MUST NOT silently downgrade to plaintext,
+    // otherwise credentials and data travel in cleartext while the operator believes TLS is active. Refuse to start.
     String certPath = getConfigString(config, CONFIG_TLS_CERT, null);
     String keyPath = getConfigString(config, CONFIG_TLS_KEY, null);
 
-    if (certPath == null || keyPath == null) {
-      LogManager.instance()
-          .log(this, Level.WARNING, "TLS enabled but certificate or key path not provided. Falling back to insecure.");
-      return NettyServerBuilder.forPort(port);
-    }
+    if (certPath == null || keyPath == null)
+      throw new SecurityException(
+          "gRPC TLS is enabled (" + CONFIG_TLS_ENABLED + "=true) but " + CONFIG_TLS_CERT + " / " + CONFIG_TLS_KEY
+              + " is not set. Refusing to start with cleartext.");
 
     File certFile = new File(certPath);
     File keyFile = new File(keyPath);
 
-    if (!certFile.exists() || !keyFile.exists()) {
-      LogManager.instance().log(this, Level.WARNING, "TLS certificate or key file not found. Falling back to insecure.");
-      return NettyServerBuilder.forPort(port);
-    }
+    if (!certFile.exists() || !keyFile.exists())
+      throw new SecurityException(
+          "gRPC TLS is enabled but the certificate or key file was not found (cert=" + certPath + ", key=" + keyPath
+              + "). Refusing to start with cleartext.");
 
     try {
       // Configure Netty with TLS using SslContext
@@ -301,34 +326,32 @@ public class GrpcServerPlugin implements ServerPlugin {
               .forServer(certFile, keyFile)
               .build());
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Failed to configure TLS", e);
-      return NettyServerBuilder.forPort(port);
+      throw new SecurityException("Failed to configure gRPC TLS. Refusing to start with cleartext.", e);
     }
   }
 
   private ServerCredentials configureTlsCredentials(ContextConfiguration config) {
+    // Fail closed (SEC-3/SEC-4): mirror configureStandardTls - never fall back to InsecureServerCredentials.
     String certPath = getConfigString(config, CONFIG_TLS_CERT, null);
     String keyPath = getConfigString(config, CONFIG_TLS_KEY, null);
 
-    if (certPath == null || keyPath == null) {
-      LogManager.instance()
-          .log(this, Level.WARNING, "TLS enabled but certificate or key path not provided. Using insecure credentials.");
-      return InsecureServerCredentials.create();
-    }
+    if (certPath == null || keyPath == null)
+      throw new SecurityException(
+          "gRPC TLS is enabled (" + CONFIG_TLS_ENABLED + "=true) but " + CONFIG_TLS_CERT + " / " + CONFIG_TLS_KEY
+              + " is not set. Refusing to start with cleartext.");
 
     File certFile = new File(certPath);
     File keyFile = new File(keyPath);
 
-    if (!certFile.exists() || !keyFile.exists()) {
-      LogManager.instance().log(this, Level.WARNING, "TLS certificate or key file not found. Using insecure credentials.");
-      return InsecureServerCredentials.create();
-    }
+    if (!certFile.exists() || !keyFile.exists())
+      throw new SecurityException(
+          "gRPC TLS is enabled but the certificate or key file was not found (cert=" + certPath + ", key=" + keyPath
+              + "). Refusing to start with cleartext.");
 
     try {
       return TlsServerCredentials.create(certFile, keyFile);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Failed to configure TLS credentials", e);
-      return InsecureServerCredentials.create();
+      throw new SecurityException("Failed to configure gRPC TLS credentials. Refusing to start with cleartext.", e);
     }
   }
 

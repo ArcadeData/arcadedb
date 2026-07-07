@@ -69,6 +69,9 @@ public class RemoteGrpcServer implements AutoCloseable {
 
   private final List<ClientInterceptor> interceptors;
   private final boolean                 plaintext;
+  // When the channel is plaintext, attaching credentials to a call sends the username/password in cleartext on every
+  // RPC (issue #5048, SEC-5). Refuse to do that unless the caller explicitly opts in.
+  private final boolean                 allowInsecureCredentials;
 
   private ManagedChannel channel;
   private EventLoopGroup eventLoopGroup;
@@ -82,12 +85,19 @@ public class RemoteGrpcServer implements AutoCloseable {
 
   public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext,
       List<ClientInterceptor> interceptors, final long defaultTimeoutMs) {
+    // Backward-compatible overload: preserves the historical behavior of allowing credentials on plaintext channels.
+    this(host, port, user, pass, plaintext, interceptors, defaultTimeoutMs, true);
+  }
+
+  public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext,
+      List<ClientInterceptor> interceptors, final long defaultTimeoutMs, final boolean allowInsecureCredentials) {
 
     this.host = Objects.requireNonNull(host, "host");
 
     this.port = port;
 
     this.plaintext = plaintext;
+    this.allowInsecureCredentials = allowInsecureCredentials;
     this.interceptors = interceptors == null ? List.of() : List.copyOf(interceptors);
 
     this.userName = Objects.requireNonNull(user, "user");
@@ -95,6 +105,17 @@ public class RemoteGrpcServer implements AutoCloseable {
     this.userPassword = Objects.requireNonNull(pass, "pass");
 
     this.defaultTimeoutMs = defaultTimeoutMs > 0 ? defaultTimeoutMs : 30_000;
+  }
+
+  /**
+   * Fails closed when credentials would be attached to calls over a plaintext channel (issue #5048, SEC-5), unless
+   * the caller explicitly opted in with {@code allowInsecureCredentials=true}.
+   */
+  private void ensureCredentialTransportSecurity() {
+    if (plaintext && !allowInsecureCredentials)
+      throw new SecurityException(
+          "Refusing to send credentials over a plaintext gRPC channel: username/password would travel in cleartext. "
+              + "Enable TLS, or explicitly opt in with allowInsecureCredentials=true.");
   }
 
   public synchronized void start() {
@@ -278,6 +299,7 @@ public class RemoteGrpcServer implements AutoCloseable {
    * Creates call credentials for authentication
    */
   protected CallCredentials createCallCredentials(String userName, String userPassword) {
+    ensureCredentialTransportSecurity();
     return new CallCredentials() {
       @Override
       public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
@@ -297,6 +319,7 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   protected CallCredentials createCredentials() {
+    ensureCredentialTransportSecurity();
     return new CallCredentials() {
       @Override
       public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
