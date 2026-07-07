@@ -392,8 +392,6 @@ that could starve the very snapshot resync meant to heal the node.
   conflict-heavy file) and the descending duplicate-run cursor rescan (perf-only); the `createNewPage`
   rollback counter drift was subsequently fixed in
   [#5067](https://github.com/ArcadeData/arcadedb/issues/5067).
-  conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
-  cursor rescan (perf-only).
 - **Storage: flush suspension is refcounted - overlapping backup/verify/snapshot each own their window
   (2026-07 audit follow-up).** `suspendFlushAndExecute` ownership was first-caller-wins: with two
   concurrent suspenders on the same database (SQL `BACKUP DATABASE`, the HA verify endpoint, HA snapshot
@@ -446,8 +444,14 @@ that could starve the very snapshot resync meant to heal the node.
   receive fewer records than requested (down to zero on a fast producer); `skip` crashed with a
   `NullPointerException` (the base constructor consumed the skipped records before the parallel machinery
   existed); and a record published between the consumer's last poll and the final producer's countdown
-  could be silently dropped at end of stream
-  ([#5065](https://github.com/ArcadeData/arcadedb/issues/5065)).
+  could be silently dropped at end of stream. Review follow-ups on the same PR: the select `timeout` is
+  enforced on every fetch, including when records are immediately available (it was previously only
+  checked on an empty queue, so a slow consumer of an always-full queue could run unbounded past its
+  timeout); the consumer got the same spin-then-park backoff as the producers, so a slow producer (e.g. a
+  heavy WHERE scanning many non-matching rows) no longer pins the caller thread at 100% CPU; and
+  `skip(s).limit(n)` together now returns `n` records after the `s` skipped ones (standard semantics, like
+  the ORDER BY path) instead of `n - s` - this last fix is in the shared base iterator, so it corrects the
+  serial non-ordered path too ([#5065](https://github.com/ArcadeData/arcadedb/issues/5065)).
 - **Low-severity audit residuals (2026-07 audit).** Four small residuals collected from the audit
   follow-up PRs ([#5067](https://github.com/ArcadeData/arcadedb/issues/5067)):
   `TransactionContext.kill()` (test-only API) now releases the file locks acquired by a commit's 1st

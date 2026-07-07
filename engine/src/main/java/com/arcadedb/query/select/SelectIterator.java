@@ -82,7 +82,10 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
       return more;
     }
 
-    if (executor.select.limit > -1 && returned >= executor.select.limit)
+    // THE LIMIT COUNTS THE RECORDS RETURNED AFTER THE SKIPPED ONES (STANDARD SKIP/LIMIT SEMANTICS). `returned` IS
+    // ALREADY AT `skip` WHEN THE STREAMING STARTS BECAUSE THE CONSTRUCTOR CONSUMES THE SKIPPED RECORDS THROUGH
+    // hasNext()/next(), SO THE CAP IS skip + limit (THE ORDER BY PATH APPLIES THE SAME CAP ON THE SORTED RESULT SET)
+    if (executor.select.limit > -1 && returned >= (long) executor.select.limit + executor.select.skip)
       return false;
     if (next != null)
       return true;

@@ -52,15 +52,22 @@ import java.util.concurrent.locks.LockSupport;
  * gives up ends its task through the regular completion path, so the async executor contracts (completed() notification,
  * batch commit) are preserved.</p>
  *
+ * <p>
+ * The consumer mirrors the cooperative backoff: on an empty queue it spins briefly for low hand-off latency, then parks
+ * between polls. The select timeout is enforced on every fetch, including when records are immediately available, matching
+ * the serial path semantics.</p>
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SelectParallelIterator<T extends Document> extends SelectIterator<T> {
   // HOW LONG A PRODUCER WAITS ON A FULL QUEUE WITH ZERO CONSUMER PROGRESS BEFORE CONCLUDING THE CONSUMER IS GONE
   // (#5065). ALIGNED WITH THE ASYNC EXECUTOR ZERO-PROGRESS BACKSTOP INTRODUCED WITH #5062 (60 SECONDS BY DEFAULT).
   // A CONSUMER THAT POLLS NOTHING FOR THE WHOLE BOUND WHILE THE QUEUE IS FULL IS INDISTINGUISHABLE FROM A DEAD ONE
-  private static final long DEFAULT_STALL_TIMEOUT_MS = 60_000;
+  private static final long DEFAULT_STALL_TIMEOUT_MS   = 60_000;
   // PAUSE BETWEEN OFFER ATTEMPTS ON A FULL QUEUE: 0.1 MS KEEPS THE HAND-OFF LATENCY NEGLIGIBLE WITHOUT BURNING CPU
-  private static final long OFFER_PARK_NANOS         = 100_000;
+  private static final long OFFER_PARK_NANOS           = 100_000;
+  // EMPTY-QUEUE POLLS BEFORE THE CONSUMER SWITCHES FROM SPINNING TO PARKING (SEE fetchNext())
+  private static final int  CONSUMER_SPINS_BEFORE_PARK = 64;
 
   private final    CountDownLatch                       semaphore;
   private final    MultithreadConcurrentQueue<Document> queue;
@@ -103,25 +110,28 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
             return true;
 
           if (executor.select.rootTreeElement == null || executor.evaluateWhere(record)) {
-            if (filterOutRecords != null)
-              filterOutRecords.add(record.getIdentity());
-
             if (limit > -1 && produced.incrementAndGet() > limit)
               // ENOUGH RECORDS PRODUCED TO SATISFY THE LIMIT: THE CONSUMER CANNOT TAKE MORE, STOP THIS PRODUCER
+              // (BEFORE REGISTERING THE RECORD AMONG THE RETURNED ONES, SINCE IT IS NEVER HANDED OVER)
               return false;
+
+            if (filterOutRecords != null)
+              filterOutRecords.add(record.getIdentity());
 
             // BOUNDED OFFER (#5065): THE FORMER UNBOUNDED while(true) BUSY-SPIN PINNED AN ASYNC WORKER AT 100% CPU
             // FOREVER (AND HUNG Database.close() BEHIND ITS UNBOUNDED waitCompletion()) WHEN THE CONSUMER STOPPED
             // DRAINING BECAUSE OF AN EXCEPTION, AN EARLY CLOSE OR A SATISFIED LIMIT
+            boolean waiting = false;
             long waitStart = 0L;
             while (!queue.offer(record)) {
               if (closed || Thread.currentThread().isInterrupted())
                 return false;
 
               final long now = System.nanoTime();
-              if (waitStart == 0L)
+              if (!waiting) {
+                waiting = true;
                 waitStart = now;
-              else if (now - waitStart >= stallTimeoutNanos) {
+              } else if (now - waitStart >= stallTimeoutNanos) {
                 // THE CONSUMER MADE NO PROGRESS FOR THE WHOLE BOUND: GIVE UP INSTEAD OF SPINNING FOREVER. A CONSUMER
                 // STILL ALIVE IS TOLD THE RESULT SET WOULD BE INCOMPLETE (SEE fetchNext())
                 producerStalled = true;
@@ -155,12 +165,28 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
 
     final MultiIterator<? extends Identifiable> it = (MultiIterator<? extends Identifiable>) iterator;
 
+    int emptyPolls = 0;
     while (true) {
       if (producerStalled)
         return onProducerStalled();
 
       if (closed)
         return null;
+
+      // ENFORCE THE SELECT TIMEOUT ON EVERY FETCH, INCLUDING WHEN A RECORD IS IMMEDIATELY AVAILABLE: THE SERIAL PATH
+      // ALWAYS CHECKED IT AT THE TOP OF fetchNext(), SO A SLOW CONSUMER OF AN ALWAYS-READY QUEUE MUST STILL TIME OUT.
+      // THE CHECK IS A SHORT-CIRCUITED COMPARISON WHEN NO TIMEOUT IS SET, NEGLIGIBLE PER RECORD OTHERWISE
+      try {
+        if (it.checkForTimeout()) {
+          // TIMEOUT WITHOUT EXCEPTION REQUESTED: STOP THE PRODUCERS AND RETURN WHAT WAS FETCHED SO FAR
+          closed = true;
+          return null;
+        }
+      } catch (final TimeoutException e) {
+        // STOP THE PRODUCERS BEFORE SURFACING THE TIMEOUT TO THE CALLER
+        closed = true;
+        throw e;
+      }
 
       final T record = (T) queue.poll();
       if (record != null) {
@@ -179,19 +205,13 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
         return producerStalled ? onProducerStalled() : null;
       }
 
-      try {
-        if (it.checkForTimeout()) {
-          // TIMEOUT WITHOUT EXCEPTION REQUESTED: STOP THE PRODUCERS AND RETURN WHAT WAS FETCHED SO FAR
-          closed = true;
-          return null;
-        }
-      } catch (final TimeoutException e) {
-        // STOP THE PRODUCERS BEFORE SURFACING THE TIMEOUT TO THE CALLER
-        closed = true;
-        throw e;
-      }
-
-      Thread.onSpinWait();
+      // COOPERATIVE BACKOFF ON THE EMPTY QUEUE, MIRRORING THE PRODUCER SIDE: SPIN BRIEFLY TO KEEP THE HAND-OFF LATENCY
+      // LOW ON A TRANSIENT GAP, THEN PARK BETWEEN POLLS SO A SLOW PRODUCER (E.G. A HEAVY WHERE SCANNING MANY
+      // NON-MATCHING ROWS) DOES NOT PIN THE CALLER THREAD AT 100% CPU
+      if (++emptyPolls <= CONSUMER_SPINS_BEFORE_PARK)
+        Thread.onSpinWait();
+      else
+        LockSupport.parkNanos(OFFER_PARK_NANOS);
     }
   }
 

@@ -18,6 +18,7 @@ package com.arcadedb.query.select;/*
  */
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for #5065: the parallel select producers (async workers browsing one bucket each) must never
@@ -37,6 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class SelectParallelIteratorTest extends TestHelper {
   private static final int TOTAL_RECORDS = 10_000;
+  // FITS ENTIRELY IN THE 4,096-SLOT HAND-OFF QUEUE, SO THE PRODUCERS COMPLETE WITHOUT EVER STALLING ON A FULL QUEUE
+  // AND THE TIMEOUT TESTS EXERCISE THE STREAMING (NON-EMPTY QUEUE) PATH ONLY
+  private static final int SMALL_RECORDS = 1_000;
   private static final int BUCKETS       = 8;
 
   public SelectParallelIteratorTest() {
@@ -46,9 +51,12 @@ public class SelectParallelIteratorTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.getSchema().createVertexType("Big", BUCKETS);
+    database.getSchema().createVertexType("Small", BUCKETS);
     database.transaction(() -> {
       for (int i = 0; i < TOTAL_RECORDS; i++)
         database.newVertex("Big").set("id", i).save();
+      for (int i = 0; i < SMALL_RECORDS; i++)
+        database.newVertex("Small").set("id", i).save();
     });
   }
 
@@ -102,6 +110,76 @@ public class SelectParallelIteratorTest extends TestHelper {
   void skipIsAppliedOnParallelScan() {
     final List<Vertex> result = database.select().fromType("Big").skip(100).compile().parallel().<Vertex>vertices().toList();
     assertThat(result).hasSize(TOTAL_RECORDS - 100);
+    assertThat(database.async().waitCompletion(15_000)).isTrue();
+  }
+
+  @Test
+  void skipAndLimitTogetherReturnLimitRecordsOnParallelScan() {
+    // STANDARD SEMANTICS: SKIP s RECORDS, THEN RETURN UP TO n. A LIMIT SMALLER THAN THE SKIP MUST NOT TRUNCATE THE
+    // RESULT (THE INHERITED `returned` COUNTER ALREADY CONTAINS THE SKIPPED RECORDS WHEN THE STREAMING STARTS)
+    final List<Vertex> result = database.select().fromType("Big").skip(100).limit(50).compile().parallel().<Vertex>vertices()
+        .toList();
+    assertThat(result).hasSize(50);
+    assertThat(database.async().waitCompletion(15_000)).isTrue();
+
+    final List<Vertex> result2 = database.select().fromType("Big").skip(10).limit(50).compile().parallel().<Vertex>vertices()
+        .toList();
+    assertThat(result2).hasSize(50);
+    assertThat(database.async().waitCompletion(15_000)).isTrue();
+  }
+
+  @Test
+  void skipAndLimitTogetherReturnLimitRecordsOnSerialScan() {
+    // SAME SEMANTICS ON THE SERIAL PATH: THE LIMIT COUNTS THE RECORDS RETURNED AFTER THE SKIPPED ONES
+    final List<Vertex> result = database.select().fromType("Big").skip(100).limit(50).compile().<Vertex>vertices().toList();
+    assertThat(result).hasSize(50);
+
+    final List<Vertex> result2 = database.select().fromType("Big").skip(10).limit(50).compile().<Vertex>vertices().toList();
+    assertThat(result2).hasSize(50);
+  }
+
+  @Test
+  void timeoutIsEnforcedWhileStreaming() throws InterruptedException {
+    // THE DATASET FITS IN THE HAND-OFF QUEUE: THE PRODUCERS COMPLETE QUICKLY AND NEVER STALL, SO THE ONLY WAY THE
+    // TIMEOUT CAN FIRE IS THE PER-FETCH CHECK ON THE STREAMING PATH (REGRESSION: THE CHECK WAS ONLY REACHED WHEN THE
+    // QUEUE WAS EMPTY, SO A SLOW CONSUMER OF AN ALWAYS-READY QUEUE COULD RUN UNBOUNDED PAST ITS timeout())
+    final SelectIterator<Vertex> iterator = database.select().fromType("Small")//
+        .timeout(100, TimeUnit.MILLISECONDS, true)//
+        .compile().parallel().vertices();
+
+    assertThat(iterator.hasNext()).isTrue();
+    assertThat(iterator.next()).isNotNull();
+
+    // LET THE TIMEOUT EXPIRE WHILE THE QUEUE IS STILL FULL OF RECORDS
+    Thread.sleep(400);
+
+    assertThatThrownBy(() -> {
+      while (iterator.hasNext())
+        iterator.next();
+    }).isInstanceOf(TimeoutException.class);
+
+    assertThat(database.async().waitCompletion(15_000)).isTrue();
+  }
+
+  @Test
+  void nonThrowingTimeoutTruncatesWhileStreaming() throws InterruptedException {
+    // SAME SCENARIO WITH exceptionOnTimeout=false: THE ITERATION MUST END EARLY RETURNING WHAT WAS FETCHED SO FAR
+    final SelectIterator<Vertex> iterator = database.select().fromType("Small")//
+        .timeout(100, TimeUnit.MILLISECONDS, false)//
+        .compile().parallel().vertices();
+
+    assertThat(iterator.hasNext()).isTrue();
+    assertThat(iterator.next()).isNotNull();
+
+    Thread.sleep(400);
+
+    int fetchedAfterTimeout = 0;
+    while (iterator.hasNext()) {
+      iterator.next();
+      ++fetchedAfterTimeout;
+    }
+
+    assertThat(fetchedAfterTimeout).isZero();
     assertThat(database.async().waitCompletion(15_000)).isTrue();
   }
 }
