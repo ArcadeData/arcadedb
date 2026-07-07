@@ -10,6 +10,17 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: `shortestPath()`/`allShortestPaths()` now enforce inline edge property filters.** A pattern like
+  `shortestPath((a)-[:LINK*1..3 {w: 1}]->(b))` accepted the `{w: 1}` edge filter but silently ignored it,
+  traversing (and returning) paths that crossed edges with a different value
+  ([#5096](https://github.com/ArcadeData/arcadedb/issues/5096)). The vertex-only BFS and the reused
+  CSR-accelerated `SQLFunctionShortestPath` fast path could not see edge properties. When a relationship
+  carries inline properties, both functions now route through an edge-aware BFS that walks only matching
+  edges and keeps the concrete edge used to reach each vertex (so parallel edges with differing properties
+  stay disambiguated); matching mirrors the standard variable-length `MATCH` path, so the same
+  `{prop: value}` constraint behaves identically whether written as `shortestPath(...)` or as an inline
+  variable-length pattern. The no-filter case keeps the existing fast path unchanged.
+
 - **Cypher: `count(*)` after `OPTIONAL MATCH` no longer drops the null-preserving rows.** A query like
   `MATCH (n:BugNode) OPTIONAL MATCH (n)-[:LINK]->(m:BugNode) RETURN count(*)` returned only the number of
   rows where the optional pattern matched (i.e. `count(m)`) instead of counting every row, including those
