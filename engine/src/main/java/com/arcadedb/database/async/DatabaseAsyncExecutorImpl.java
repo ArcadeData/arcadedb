@@ -75,6 +75,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final AtomicLong           commandRoundRobinIndex        = new AtomicLong();
   private final AtomicLong           tsAppendCounter               = new AtomicLong();
 
+  // #5062 review r2 (point 1): producer-side backstop for a worker wedged inside user code. After
+  // this many consecutive stall windows (checkForStalledQueuesMaxDelay each, 60s with the defaults)
+  // in which the target worker completed NO task while its queue stayed full, offerWaiting throws
+  // instead of letting the caller hang forever. Progress-gated so a single legitimately slow task
+  // does not trip it (the #4953 false positive); tune via setCheckForStalledQueuesMaxDelay().
+  private static final int STALLED_NO_PROGRESS_WINDOWS = 12;
+
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
     @Override
@@ -986,7 +993,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // THE "fast" QUEUE (PushPullBlockingQueue) DOES NOT SUPPORT remove(Object): the offer cannot
       // be undone, so a task that landed right after a dead worker's final drain stays queued and
       // its completed() never fires (#5062 review, point 4). Known gap, accepted: the impl is
-      // opt-in and the window (an offer racing the worker's exit) is a few instructions wide.
+      // opt-in and the window (an offer racing the worker's exit) is a few instructions wide. The
+      // WARNING below gives operators the reason should a scanType()/waitCompletion() waiter hang.
+      LogManager.instance()
+          .log(DatabaseAsyncExecutorImpl.class, Level.WARNING,
+              "Asynchronous task %s was scheduled on a worker that already shut down and cannot be removed from its "
+                  + "'fast' queue: its completion will never be notified. Use the 'standard' async queue implementation "
+                  + "to close this window", task);
       return false;
     }
   }
@@ -1005,11 +1018,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    *   without throwing; if the deferral budget runs out the worker falls through to the bounded
    *   wait below.</li>
    *   <li><b>Any other producer:</b> waits in windows of {@code checkForStalledQueuesMaxDelay} and
-   *   throws only if the target worker completed no task over a whole window while itself being
-   *   parked handing a task to another queue (a genuine scheduling cycle beyond the helping budget)
-   *   or after the worker died. A worker merely busy on a single slow task no longer trips the
-   *   detector: the old code compared the identity of the queue head across two windows, so any
-   *   head task running longer than 2x the delay made innocent producers throw.</li>
+   *   throws if the target worker completed no task over a whole window while itself being
+   *   parked handing a task to another queue (a genuine scheduling cycle beyond the helping budget),
+   *   after the worker died, or - the backstop for a worker wedged inside user code - after
+   *   {@code STALLED_NO_PROGRESS_WINDOWS} consecutive windows with zero completed tasks. A worker
+   *   merely busy on a single slow task no longer trips the detector: the old code compared the
+   *   identity of the queue head across two windows, so any head task running longer than 2x the
+   *   delay made innocent producers throw.</li>
    * </ul>
    */
   private void offerWaiting(final AsyncThread target, final int slot, final DatabaseAsyncTask task,
@@ -1026,17 +1041,32 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       self.waitingCrossSlotOffer = true;
     try {
       long observedCompleted = target.completedTaskCount;
+      int windowsWithoutProgress = 0;
       while (!queue.offer(task, checkForStalledQueuesMaxDelay, TimeUnit.MILLISECONDS)) {
         if (!target.isAlive())
           throw new DatabaseOperationException(
               "Async executor has been shut down; cannot schedule asynchronous task " + task);
 
         final long nowCompleted = target.completedTaskCount;
-        if (nowCompleted == observedCompleted && target.waitingCrossSlotOffer)
-          // NO TASK COMPLETED IN A WHOLE WINDOW WHILE THE WORKER IS ITSELF PARKED ON ANOTHER QUEUE
-          throw new DatabaseOperationException("Asynchronous queue " + slot
-              + " is stalled. This could happen when an asynchronous task schedules more asynchronous tasks");
-        observedCompleted = nowCompleted;
+        if (nowCompleted == observedCompleted) {
+          if (target.waitingCrossSlotOffer)
+            // NO TASK COMPLETED IN A WHOLE WINDOW WHILE THE WORKER IS ITSELF PARKED ON ANOTHER QUEUE
+            throw new DatabaseOperationException("Asynchronous queue " + slot
+                + " is stalled. This could happen when an asynchronous task schedules more asynchronous tasks");
+
+          // #5062 review r2 (point 1): a worker wedged inside user code (infinite loop or blocking
+          // call in a task's execute()/callback) never sets waitingCrossSlotOffer, so without this
+          // backstop the producer would hang here forever. Much longer than the old 2-window
+          // head-identity detector and progress-gated, so a single slow task does not trip it.
+          if (++windowsWithoutProgress >= STALLED_NO_PROGRESS_WINDOWS)
+            throw new DatabaseOperationException(
+                "Asynchronous queue " + slot + " is stalled: no task completed in the last " + (
+                    STALLED_NO_PROGRESS_WINDOWS * checkForStalledQueuesMaxDelay)
+                    + " ms while its queue stayed full. The worker may be blocked inside a user task or callback");
+        } else {
+          windowsWithoutProgress = 0;
+          observedCompleted = nowCompleted;
+        }
 
         if (applyBackPressureOnPercentage > 0) {
           final int queueFullAt =
@@ -1078,7 +1108,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     self.waitingCrossSlotOffer = true;
     try {
       while (true) {
-        // SHORT WINDOW WHEN THERE IS OWN WORK TO DRAIN, LONGER WHEN IDLE TO AVOID SPINNING
+        // SHORT WINDOW WHEN THERE IS OWN WORK TO DRAIN, LONGER WHEN IDLE TO AVOID SPINNING. THE 1MS
+        // WINDOW IS INTENTIONALLY AGGRESSIVE: EVERY ITERATION FREES A SLOT THE PARKED PEER MAY BE
+        // WAITING ON, AND THE LOOP IS BOUNDED BY THE DEFERRAL BUDGET BELOW
         final long window = self.queue.isEmpty() ? 100 : 1;
         if (target.queue.offer(task, window, TimeUnit.MILLISECONDS))
           return true;

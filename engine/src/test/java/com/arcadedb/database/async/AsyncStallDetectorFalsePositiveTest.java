@@ -45,7 +45,10 @@ class AsyncStallDetectorFalsePositiveTest extends TestHelper {
     async.setParallelLevel(1);
     // Force thread re-creation so the queue size above is picked up regardless of the previous level.
     async.setTransactionUseWAL(true);
-    async.setCheckForStalledQueuesMaxDelay(100);
+    // 300ms window: the 1.2s head task is 4x the old 2-window false-positive bound, while staying
+    // well below the wedged-worker backstop (STALLED_NO_PROGRESS_WINDOWS x 300ms = 3.6s), which
+    // must not fire for a single legitimately slow task.
+    async.setCheckForStalledQueuesMaxDelay(300);
 
     final CountDownLatch slowTaskStarted = new CountDownLatch(1);
     final CountDownLatch executed = new CountDownLatch(4);

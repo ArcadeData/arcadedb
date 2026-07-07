@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -59,8 +60,10 @@ class AsyncHelpingAtomicityTest extends TestHelper {
     final CountDownLatch finish = new CountDownLatch(1);
     final CountDownLatch outerWrote = new CountDownLatch(1);
     final CountDownLatch proceed = new CountDownLatch(1);
+    final CountDownLatch outerDone = new CountDownLatch(1);
     final CountDownLatch helpedRan = new CountDownLatch(1);
     final CountDownLatch markerRan = new CountDownLatch(1);
+    final AtomicBoolean helpedRanBeforeOuterFinished = new AtomicBoolean(false);
 
     // Worker 1: busy until released, with a full queue behind it, so worker 0 has to help-wait.
     async.scheduleTask(1, awaitTask(blockerStarted, finish, errors), true, 0);
@@ -86,18 +89,45 @@ class AsyncHelpingAtomicityTest extends TestHelper {
         }
         async.scheduleTask(1, countingTask(markerRan), true, 0);
       }
+
+      @Override
+      public void completed() {
+        // FIRES IN executeTask'S finally, AFTER THE commitEvery BOUNDARY OF THIS TASK
+        outerDone.countDown();
+      }
     }, true, 0);
 
     assertThat(outerWrote.await(5, TimeUnit.SECONDS)).isTrue();
 
-    // A task sits in worker 0's own queue: the helping loop will poll it while parked.
-    assertThat(async.scheduleTask(0, countingTask(helpedRan), false, 0)).isTrue();
+    // A task sits in worker 0's own queue: the helping loop will poll it while parked. The task
+    // records deterministically whether it ran before the suspended task finished: any such
+    // execution is nested inside the suspended task and, with commitEvery=1, committed its partial
+    // write on the buggy code (#5062 review r2, point 4: ordering probe instead of a timed sleep).
+    assertThat(async.scheduleTask(0, new DatabaseAsyncTask() {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal database) {
+        helpedRanBeforeOuterFinished.set(outerDone.getCount() > 0);
+        helpedRan.countDown();
+      }
+
+      @Override
+      public boolean requiresActiveTx() {
+        return false;
+      }
+    }, false, 0)).isTrue();
 
     proceed.countDown();
 
-    // Give the parked worker ample time to poll its own queue. The buggy code executed the polled
-    // task inline: with commitEvery=1 that committed the suspended task's partial write.
-    Thread.sleep(800);
+    // Wait until the parked worker's helping loop polls the probe out of its own queue: the
+    // aggregate queue size drops from 2 (probe + filler) to 1 (filler). This pins the interleaving
+    // without a timed sleep: from here on the helping episode has provably engaged.
+    final long spinDeadline = System.currentTimeMillis() + 10_000;
+    while (async.getStats().queueSize > 1 && System.currentTimeMillis() < spinDeadline)
+      Thread.sleep(10);
+    assertThat(async.getStats().queueSize).as("the helping loop must drain the worker's own queue").isEqualTo(1L);
+
+    // Deterministic under the fix: the suspended task cannot complete (hence cannot commit) while
+    // worker 1's queue is still full, so no write of it may be visible here.
     database.transaction(
         () -> assertThat(database.countType("HelpAtomic", true))
             .as("the suspended task's partial write must not be committed by a helped task")
@@ -108,6 +138,9 @@ class AsyncHelpingAtomicityTest extends TestHelper {
 
     assertThat(async.waitCompletion(10_000)).isTrue();
     assertThat(helpedRan.await(5, TimeUnit.SECONDS)).as("the task polled while helping must still execute").isTrue();
+    assertThat(helpedRanBeforeOuterFinished.get())
+        .as("the task polled while helping must not run before the suspended task fully unwound")
+        .isFalse();
     assertThat(markerRan.await(5, TimeUnit.SECONDS)).as("the cross-slot follow-up must execute").isTrue();
     assertThat(errors).isEmpty();
     database.transaction(

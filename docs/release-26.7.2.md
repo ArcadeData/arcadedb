@@ -238,7 +238,15 @@ that could starve the very snapshot resync meant to heal the node.
   preserved), so two workers cross-scheduling into each other no longer deadlock - a cycle the
   old detector could only break by throwing inside the worker, rolling back the whole in-flight commit
   batch (up to `commitEvery - 1` already-executed operations silently discarded) and dropping the
-  follow-up (ghost half-edges) ([#4953](https://github.com/ArcadeData/arcadedb/issues/4953)). Shutdown no
+  follow-up (ghost half-edges) ([#4953](https://github.com/ArcadeData/arcadedb/issues/4953)). A
+  producer blocked on the full queue of a worker wedged inside user code (an infinite loop or a
+  blocking call in a task) still surfaces an error instead of hanging: a progress-gated backstop
+  throws after 12 consecutive stall windows with zero completed tasks (60s with the default
+  `checkForStalledQueuesMaxDelay` of 5s) - much longer than the old 10s false-positive-prone bound,
+  tunable via `setCheckForStalledQueuesMaxDelay()`. Known residual gap: with the opt-in
+  `arcadedb.asyncOperationsQueueImpl=fast` queue, a task whose enqueue races the target worker's
+  exit cannot be removed (`remove(Object)` unsupported) and its completion is never notified; a
+  WARNING is logged when this happens, and the default `standard` queue is not affected. Shutdown no
   longer strands completion waiters: an interrupted or exiting worker now notifies `completed()` on every
   task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /
   `waitCompletion()` hung forever), and `close()` no longer blocks unbounded on `queue.put(FORCE_EXIT)`
