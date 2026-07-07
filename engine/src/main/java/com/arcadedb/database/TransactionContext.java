@@ -971,7 +971,18 @@ public class TransactionContext implements Transaction {
         // a phase-1 failure does: reload the modified records to their committed content and reset the
         // identity of records created in this transaction to provisional, so a retry re-inserts them instead
         // of updating a record that was never persisted (#4562).
-        rollback();
+        try {
+          rollback();
+        } catch (final Throwable rollbackError) {
+          // #5061 review: the cleanup must never SUPPRESS the primary commit exception - e.g. a failed
+          // dictionary reload here would surface a retryable ConcurrentModificationException as a
+          // non-retryable SchemaException, breaking the caller's retry loop. Log the secondary failure and
+          // degrade to reset() so locks and status are still released (reset() is safe after a partial
+          // rollback: it null-guards the lock lists and only releases what is still held).
+          LogManager.instance().log(this, Level.WARNING,
+              "Error during phase-2 failure rollback (the primary commit error is propagated)", rollbackError);
+          reset();
+        }
     }
   }
 
