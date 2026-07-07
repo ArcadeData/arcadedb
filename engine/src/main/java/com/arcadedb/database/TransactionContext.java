@@ -670,6 +670,9 @@ public class TransactionContext implements Transaction {
     status = STATUS.COMMIT_1ST_PHASE;
 
     try {
+      // #4937 review: explicit-lock mode captured before checkExplicitLocks nulls explicitLockedFiles, so the
+      // late-joiner block below can still tell an explicit-lock transaction from an auto-locked one.
+      boolean explicitLockMode = false;
       if (isLeader) {
         // Determine files to lock — must include files from updatedRecords
         if (updatedRecords != null)
@@ -679,6 +682,11 @@ public class TransactionContext implements Transaction {
           }
 
         final IntHashSet modifiedFiles = lockFilesFromChanges();
+
+        // checkExplicitLocks nulls explicitLockedFiles on success, so remember the mode now for the
+        // late-joiner check further down (#4937 review): otherwise that check always sees null and would
+        // silently expand an explicit-lock transaction's lock set, defeating the explicit-locking contract.
+        explicitLockMode = explicitLockedFiles != null;
 
         if (explicitLockedFiles != null)
           checkExplicitLocks(modifiedFiles);
@@ -725,6 +733,54 @@ public class TransactionContext implements Transaction {
       if (isLeader)
         // COMMIT INDEX CHANGES (IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION)
         indexChanges.commit();
+
+      // #4937: the steps above (updateRecordNoLock, indexChanges.commit) can add pages of files that were
+      // NOT in the lock set computed at lock time - EXTERNAL-property buckets, indexes created inside this
+      // transaction, multi-file index components. Their pages would pass the version checks below WITHOUT
+      // their file lock held, which is what made a phase-2 failure after the WAL append reachable (#4936:
+      // an aborted transaction partially replayed by recovery). Verify coverage; on a late joiner, release
+      // and re-acquire the UNION in order (lock-ordering discipline forbids acquiring extra locks in
+      // place). The version checks below run after this block, so anything that changed while unlocked
+      // fails validation with the standard retriable ConcurrentModificationException.
+      if (isLeader && lockedFiles != null) {
+        // Fast path first: in the overwhelmingly common case every touched file is already locked, and this
+        // is one of the hottest paths in the engine - detect late joiners with a plain scan (no allocation,
+        // no boxing) and only build the union set when one is actually found.
+        boolean lateJoiners = false;
+        for (final PageId pid : modifiedPages.keySet())
+          if (!containsFileId(lockedFiles, pid.getFileId())) {
+            lateJoiners = true;
+            break;
+          }
+        if (!lateJoiners && newPages != null)
+          for (final PageId pid : newPages.keySet())
+            if (!containsFileId(lockedFiles, pid.getFileId())) {
+              lateJoiners = true;
+              break;
+            }
+
+        if (lateJoiners) {
+          final IntHashSet union = new IntHashSet(lockedFiles.size() + modifiedPages.size());
+          for (final int fileId : lockedFiles)
+            union.add(fileId);
+          for (final PageId pid : modifiedPages.keySet())
+            union.add(pid.getFileId());
+          if (newPages != null)
+            for (final PageId pid : newPages.keySet())
+              union.add(pid.getFileId());
+
+          if (explicitLockMode)
+            // The user's explicit lock list does not cover files this transaction actually modified:
+            // re-locking on their behalf would defeat the explicit-locking contract - surface it as the
+            // "not all the modified resources were locked" violation instead. (explicitLockedFiles was
+            // already nulled by the earlier checkExplicitLocks, so we branch on the captured mode.)
+            checkExplicitLocksForUnion(union);
+          else {
+            database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+            lockedFiles = lockFilesInOrder(union);
+          }
+        }
+      }
 
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
@@ -778,6 +834,11 @@ public class TransactionContext implements Transaction {
     } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       rollback();
       throw e;
+    } catch (final TransactionException e) {
+      // Already a first-class transaction error (e.g. the explicit-lock contract violation): rethrow as-is
+      // instead of double-wrapping it in a generic "Transaction error on commit" (#5053 review).
+      rollback();
+      throw e;
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
@@ -805,23 +866,43 @@ public class TransactionContext implements Transaction {
 
       status = STATUS.COMMIT_2ND_PHASE;
 
+      // #4936: validate the page versions and bump them BEFORE the WAL append, making the append the point
+      // of no return: a WAL record must only ever exist for a transaction that can no longer fail
+      // validation. Previously the order was WAL-then-validate, so a phase-2 ConcurrentModificationException
+      // (reachable through the late-joining-files hole, #4937) aborted the transaction while its record
+      // stayed in the WAL with no abort marker - crash recovery then replayed the aborted transaction's
+      // other pages (version == disk+1), a partial application: torn records, index entries pointing at
+      // data never committed. The bump below mutates only this transaction's private MutablePage instances,
+      // so a WAL-append failure still aborts cleanly with nothing observable. The in-between window is safe
+      // because every modified file's lock is held (#4937 guarantees coverage) until reset().
+      // #5053 review: refuse to commit on a fenced database, before doing any work. The file locks this
+      // transaction acquired in phase 1 give the happens-before edge: for any transaction sharing a page
+      // with the failed one, the fence write (made before the failed commit's reset() released those locks)
+      // is visible here - it cannot append a WAL record targeting the same page version the orphaned record
+      // already claims.
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+        throw new TransactionException(
+            "Cannot commit: the database is fenced after a failure past the WAL commit point, close and reopen it to run recovery");
+
+      final List<MutablePage> pagesToPublish = database.getPageManager().validateAndBumpVersions(newPages, modifiedPages);
+
       if (changes.result != null) {
-        // WRITE TO THE WAL FIRST
+        // WRITE TO THE WAL: THE POINT OF NO RETURN
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
-        // Only a REAL append is a durability point: with useWAL=false changes.result is null, nothing is durable
-        // and there is no WAL record for recovery to replay, so a publish failure below must still roll the
-        // transaction back like any other pre-durability failure (#4940). This also keeps the flag's meaning
-        // aligned with the point-of-no-return boundary #4936 formalizes.
+        // Only a REAL append crosses the point of no return (#5053/#4940): with useWAL=false (bulk loads)
+        // changes.result is null, nothing is durable and there is no WAL record for recovery to replay - a
+        // publish failure must then behave like any pre-durability failure (full rollback of user-held
+        // record state, no fence: fencing would promise a replay that cannot happen).
         walAppended = true;
       }
 
-      // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
-      // UPDATE PAGE COUNTER FIRST
       LogManager.instance()
           .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
               Thread.currentThread().threadId());
 
-      database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
+      // From here the transaction is durable in the WAL: a failure below is repaired by recovery replay,
+      // never by aborting.
+      database.getPageManager().publishPages(pagesToPublish, newPages, asyncFlush);
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
@@ -849,6 +930,10 @@ public class TransactionContext implements Transaction {
 
     } catch (final ConcurrentModificationException e) {
       throw e;
+    } catch (final TransactionException e) {
+      // Already a first-class transaction error (e.g. the recovery fence): rethrow as-is instead of
+      // double-wrapping it in a generic "Transaction error on commit" (#5053 review, same as phase 1).
+      throw e;
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
@@ -856,10 +941,30 @@ public class TransactionContext implements Transaction {
     } finally {
       if (committed)
         resetAndFireCallbacks();
-      else if (walAppended)
-        // The transaction reached the WAL: it is durable and recovery replays it, so the RIDs optimistically
-        // assigned to records created in this transaction remain valid. Release resources without touching
-        // user-held record state.
+      else if (walAppended) {
+        // #5053: the transaction IS durable (its WAL record survives and recovery will replay it) but its
+        // pages may not all be published - the live state and the WAL may diverge. Fence BEFORE reset()
+        // releases the file locks: the volatile write is then visible to any transaction that was blocked
+        // on these locks, so no conflicting WAL record for the same page versions can follow. The orphaned
+        // record's pages were never flush-acked, so the ack-gated close (#4928) preserves the WAL and the
+        // lock file, and reopening the database replays it.
+        //
+        // DELIBERATELY WIDE (covers every failure from the append to the end of the try, not just
+        // publishPages): a mid-publish failure can leave SOME pages visible and others not - a partial
+        // publication no boolean flag can distinguish from a complete one - and post-publish failures
+        // (page counters, onAfterCommit) leave component metadata that recovery replay also repairs.
+        // Under-fencing risks exactly the divergence this exists to prevent; the cost (a restart after an
+        // exceptional post-append failure) is the acceptable side.
+        if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+          localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append");
+        // The RIDs optimistically assigned to records created in this transaction remain valid (the replay
+        // makes them real): release resources WITHOUT touching user-held record state.
+        reset();
+      } else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+        // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
+        // roll back its record state: rollback()'s record reload would hit the fence choke point itself and
+        // replace the fence error with a confusing secondary failure. Release resources only - the database
+        // is unusable until close/reopen anyway, so user-held record state is moot.
         reset();
       else
         // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
@@ -968,6 +1073,18 @@ public class TransactionContext implements Transaction {
     explicitLockedFiles = lockFilesInOrder(filesToLock);
   }
 
+  /**
+   * Allocation-free containment scan for the late-joiner fast path (lockedFiles is small, typically < 10):
+   * get(i) == fileId unboxes the stored Integer but allocates nothing new. Assumes a RandomAccess list -
+   * lockFilesInOrder and checkExplicitLocks both produce ArrayLists; revisit the loop if that ever changes.
+   */
+  private static boolean containsFileId(final List<Integer> lockedFiles, final int fileId) {
+    for (int i = 0; i < lockedFiles.size(); i++)
+      if (lockedFiles.get(i) == fileId)
+        return true;
+    return false;
+  }
+
   private IntHashSet lockFilesFromChanges() {
     final IntHashSet modifiedFiles = new IntHashSet(modifiedPages.size() + 16);
 
@@ -1043,6 +1160,35 @@ public class TransactionContext implements Transaction {
       });
       next.add(migrated);
       filesToLock = next;
+    }
+  }
+
+  /**
+   * #4937 review: late-joiner coverage check for an EXPLICIT-lock transaction. By this point the earlier
+   * {@link #checkExplicitLocks} has moved the user's explicit lock set into {@code lockedFiles} (and nulled
+   * {@code explicitLockedFiles}), so a file in the transaction's page set that is NOT in {@code lockedFiles}
+   * is one the user did not lock. Surface it as the same contract violation a direct modification of an
+   * unlocked file raises, rather than silently expanding their lock set.
+   * <p>
+   * Unlike {@link #checkExplicitLocks}, no migrated-file (index compaction) translation is needed here: that
+   * race lives in the window between snapshotting the file ids and acquiring the locks, and by this point
+   * the locks have been held continuously since the user's {@code lock()} call. Compaction's splitIndex must
+   * {@code tryLockFile} the file it migrates, so no file in {@code lockedFiles} can have been migrated while
+   * this transaction runs - a missing file here is genuinely unlocked, never a stale id of a locked one.
+   */
+  private void checkExplicitLocksForUnion(final IntHashSet union) {
+    final Set<Integer> locked = new HashSet<>(lockedFiles);
+    final HashSet<Integer> left = new HashSet<>();
+    union.forEach(fid -> {
+      if (!locked.contains(fid))
+        left.add(fid);
+    });
+    if (!left.isEmpty()) {
+      // TreeSet: deterministic name ordering, so a multi-file violation always reads the same.
+      final Set<String> resourceNames = left.stream().map(fileId -> database.getSchema().getFileById(fileId).getName())
+          .collect(Collectors.toCollection(TreeSet::new));
+      throw new TransactionException(
+          "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
     }
   }
 
