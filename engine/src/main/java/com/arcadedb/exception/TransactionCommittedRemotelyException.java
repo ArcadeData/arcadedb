@@ -24,7 +24,8 @@ package com.arcadedb.exception;
  * reconciliation or restart.
  * <p>
  * <b>Do NOT retry the transaction</b>: a retry would apply the changes a second time (for inserts, creating
- * duplicates). Treat this as a commit that succeeded remotely: reload any records you hold and continue. The
+ * duplicates). Treat this as a commit that succeeded remotely and continue; reloading held records is
+ * optional (for freshness) - their in-memory content already matches what the cluster committed. The
  * identities of records created in the failed-locally transaction remain valid - they are the identities the
  * cluster committed.
  *
