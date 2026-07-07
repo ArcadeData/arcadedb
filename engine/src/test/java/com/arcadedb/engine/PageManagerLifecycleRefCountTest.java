@@ -18,10 +18,13 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -29,6 +32,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #4927: the JVM-wide PageManager lifecycle is refcounted instead of keyed on the racy
@@ -36,13 +40,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * original interleavings (a close nulling the flush thread under a mid-flight open on another thread, or two
  * opens double-starting it) are pure races, so the contract that makes them impossible is what is tested.
  */
-@org.junit.jupiter.api.parallel.ResourceLock("PageManager.INSTANCE")
+@ResourceLock("PageManager.INSTANCE")
 class PageManagerLifecycleRefCountTest {
 
   private static final String DB_A = "target/databases/PageManagerLifecycleRefCountTestA";
   private static final String DB_B = "target/databases/PageManagerLifecycleRefCountTestB";
 
-  @org.junit.jupiter.api.BeforeEach
+  @BeforeEach
   void normalizeGlobalState() {
     // #5070 review: PageManager.INSTANCE is process-global. Force-reset the refcount to a known zero
     // baseline so these assertions are not order-dependent on another test leaking an open database (or a
@@ -192,18 +196,18 @@ class PageManagerLifecycleRefCountTest {
   void startupFailureRollsBackTheAcquiredReference() {
     // #5070 review: startup() can throw (negative MAX_PAGE_RAM) AFTER the refcount increment; without the
     // rollback the counter wedged at 1 with no flush thread and every later open ran against a dead manager.
-    final Object previous = com.arcadedb.GlobalConfiguration.MAX_PAGE_RAM.getValue();
-    com.arcadedb.GlobalConfiguration.MAX_PAGE_RAM.setValue(-2);
+    final Object previous = GlobalConfiguration.MAX_PAGE_RAM.getValue();
+    GlobalConfiguration.MAX_PAGE_RAM.setValue(-2);
     try {
       final DatabaseFactory factory = new DatabaseFactory(DB_A);
       try {
-        org.assertj.core.api.Assertions.assertThatThrownBy(factory::create)
+        assertThatThrownBy(factory::create)
             .as("misconfigured startup must fail the open").hasMessageContaining("configuration is invalid");
       } finally {
         factory.close();
       }
     } finally {
-      com.arcadedb.GlobalConfiguration.MAX_PAGE_RAM.setValue(previous);
+      GlobalConfiguration.MAX_PAGE_RAM.setValue(previous);
     }
 
     // The failed acquire left no residue: a healthy open now starts the manager normally.
