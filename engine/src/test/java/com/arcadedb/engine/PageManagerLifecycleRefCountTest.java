@@ -41,6 +41,14 @@ class PageManagerLifecycleRefCountTest {
   private static final String DB_A = "target/databases/PageManagerLifecycleRefCountTestA";
   private static final String DB_B = "target/databases/PageManagerLifecycleRefCountTestB";
 
+  @org.junit.jupiter.api.BeforeEach
+  void normalizeGlobalState() {
+    // #5070 review: PageManager.INSTANCE is process-global. Force-reset the refcount to a known zero
+    // baseline so these assertions are not order-dependent on another test leaking an open database (or a
+    // kill() without the paired close()) in the same surefire fork.
+    PageManager.INSTANCE.close();
+  }
+
   @AfterEach
   void cleanup() {
     for (final String path : new String[] { DB_A, DB_B }) {

@@ -182,7 +182,9 @@ public class PageManager extends LockContext {
       }
     }
 
-    readCache.clear();
+    if (readCache != null)
+      // close() is a reachable test/emergency API and may run before any startup() (#5070 review).
+      readCache.clear();
     totalReadCacheRAM.set(0L);
   }
 

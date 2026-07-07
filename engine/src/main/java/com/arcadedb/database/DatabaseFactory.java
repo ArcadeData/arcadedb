@@ -108,8 +108,7 @@ public class DatabaseFactory implements AutoCloseable {
 
     LocalDatabase database = null;
     try {
-      database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
-          callbacks);
+      database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
       database.setAutoTransaction(autoTransaction);
       database.create();
 
