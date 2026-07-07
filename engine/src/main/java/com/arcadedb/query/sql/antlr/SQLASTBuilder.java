@@ -3155,13 +3155,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final BaseExpression baseExpr = new BaseExpression(-1);
 
     // Build identifier chain
-    if (CollectionUtils.isNotEmpty(ctx.identifier())) {
-      final SQLParser.IdentifierContext firstIdCtx = ctx.identifier(0);
+    if (ctx.identifier() != null) {
+      final SQLParser.IdentifierContext firstIdCtx = ctx.identifier();
 
       // Detect namespace-qualified function calls: geo.methodName(args)
       // Pattern: exactly one base identifier that is a known namespace, no additional DOT-identifiers,
       // and exactly one methodCall → rewrite as FunctionCall("namespace.methodName", args).
-      if (ctx.identifier().size() == 1 && CollectionUtils.isNotEmpty(ctx.methodCall()) && ctx.methodCall().size() == 1
+      if (ctx.propertyName().isEmpty() && CollectionUtils.isNotEmpty(ctx.methodCall()) && ctx.methodCall().size() == 1
           && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
           && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null) {
         final String baseIdText = firstIdCtx.getText();
@@ -3179,11 +3179,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       // Check for namespaced function call pattern: namespace.method(args)
       // e.g., ts.first(value, ts) → builds FunctionCall with name "ts.first"
-      if (ctx.identifier().size() == 1
+      if (ctx.propertyName().isEmpty()
           && ctx.methodCall() != null && ctx.methodCall().size() == 1
           && (ctx.arraySelector() == null || ctx.arraySelector().isEmpty())
           && (ctx.modifier() == null || ctx.modifier().isEmpty())) {
-        final String baseIdName = ctx.identifier(0).getText();
+        final String baseIdName = ctx.identifier().getText();
 
         if (FUNCTION_NAMESPACES.contains(baseIdName)) {
           final SQLParser.MethodCallContext methodCtx = ctx.methodCall(0);
@@ -3213,17 +3213,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       try {
 
-        // Process additional identifiers (DOT identifier)* - e.g., "custom.label"
-        if (ctx.identifier().size() > 1) {
-          for (int i = 1; i < ctx.identifier().size(); i++) {
+        // Process additional property names (DOT propertyName)* - e.g., "custom.label"
+        if (!ctx.propertyName().isEmpty()) {
+          for (final SQLParser.PropertyNameContext propCtx : ctx.propertyName()) {
             final Modifier modifier = new Modifier(-1);
-            final SQLParser.IdentifierContext idCtx = ctx.identifier(i);
-            final SuffixIdentifier suffix;
 
             // Check if this identifier is a record attribute (@rid, @type, @in, @out, @this)
-            suffix = buildSuffixForIdentifier(idCtx);
-
-            modifier.suffix = suffix;
+            modifier.suffix = buildSuffixForPropertyName(propCtx);
 
             if (firstModifier == null) {
               firstModifier = modifier;
@@ -3473,6 +3469,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Builds a SuffixIdentifier for a propertyName context: either a regular identifier (delegated to
+   * {@link #buildSuffixForIdentifier}) or the reserved keyword FROM used as a property name (issue #5092).
+   */
+  private SuffixIdentifier buildSuffixForPropertyName(final SQLParser.PropertyNameContext propCtx) {
+    if (propCtx.identifier() != null)
+      return buildSuffixForIdentifier(propCtx.identifier());
+    // Reserved keyword (FROM) used as a property name: keep the text as written
+    return new SuffixIdentifier(new Identifier(propCtx.getText()));
+  }
+
+  /**
    * Returns true if the given name matches a known internal record attribute
    * ({@code @rid}, {@code @type}, {@code @in}, {@code @out}, {@code @cat}, {@code @props}, {@code @this}).
    */
@@ -3504,12 +3511,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final SuffixIdentifier suffix = new SuffixIdentifier(-1);
         suffix.star = true;
         modifier.suffix = suffix;
-      } else if (ctx.identifier() != null) {
+      } else if (ctx.propertyName() != null) {
         // Check if this is a method call (has parentheses) or property access (no parentheses)
         if (ctx.LPAREN() != null) {
           // Method call: .identifier(args)
           final MethodCall methodCall = new MethodCall(-1);
-          methodCall.methodName = (Identifier) visit(ctx.identifier());
+          methodCall.methodName = (Identifier) visit(ctx.propertyName());
 
           // Add parameters if present
           if (ctx.expression() != null) {
@@ -3521,7 +3528,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           modifier.methodCall = methodCall;
         } else {
           // Property access: .identifier — may be a record attribute like @rid
-          modifier.suffix = buildSuffixForIdentifier(ctx.identifier());
+          modifier.suffix = buildSuffixForPropertyName(ctx.propertyName());
         }
       } else if (ctx.arraySelector() != null) {
         // Array selector modifier
@@ -3813,6 +3820,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     throw new CommandSQLParsingException("Unknown comparison operator: " + ctx.getText());
+  }
+
+  /**
+   * Visit propertyName (identifier or the reserved keyword FROM used as a property name, issue #5092)
+   * and create the Identifier AST object.
+   */
+  @Override
+  public Identifier visitPropertyName(final SQLParser.PropertyNameContext ctx) {
+    if (ctx.identifier() != null)
+      return (Identifier) visit(ctx.identifier());
+    // Reserved keyword (FROM) used as a property name: keep the text as written
+    return new Identifier(ctx.getText());
   }
 
   /**
@@ -4420,8 +4439,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // VALUES clause: (field1, field2) VALUES (val1, val2), (val3, val4)
     if (ctx.VALUES() != null) {
       body.identifierList = new ArrayList<>();
-      for (final SQLParser.IdentifierContext idCtx : ctx.identifier()) {
-        body.identifierList.add((Identifier) visit(idCtx));
+      for (final SQLParser.PropertyNameContext propCtx : ctx.propertyName()) {
+        body.identifierList.add((Identifier) visit(propCtx));
       }
 
       body.valueExpressions = new ArrayList<>();
@@ -4473,7 +4492,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public InsertSetExpression visitInsertSetItem(final SQLParser.InsertSetItemContext ctx) {
     final InsertSetExpression setExpr = new InsertSetExpression(-1);
-    setExpr.left = (Identifier) visit(ctx.identifier());
+    setExpr.left = (Identifier) visit(ctx.propertyName());
     setExpr.right = (Expression) visit(ctx.expression());
     return setExpr;
   }
@@ -4617,8 +4636,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public UpdateItem visitUpdateItem(final SQLParser.UpdateItemContext ctx) {
     final UpdateItem item = new UpdateItem(-1);
 
-    // Left side: identifier
-    item.left = (Identifier) visit(ctx.identifier());
+    // Left side: property name
+    item.left = (Identifier) visit(ctx.propertyName());
 
     // Left modifier (optional)
     if (ctx.modifier() != null) {
@@ -4666,7 +4685,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public UpdatePutItem visitUpdatePutItem(final SQLParser.UpdatePutItemContext ctx) {
     final UpdatePutItem item = new UpdatePutItem(-1);
-    item.setLeft((Identifier) visit(ctx.identifier()));
+    item.setLeft((Identifier) visit(ctx.propertyName()));
     item.setKey((Expression) visit(ctx.expression(0)));
     item.setValue((Expression) visit(ctx.expression(1)));
     return item;
@@ -4675,7 +4694,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public UpdateIncrementItem visitUpdateIncrementItem(final SQLParser.UpdateIncrementItemContext ctx) {
     final UpdateIncrementItem item = new UpdateIncrementItem(-1);
-    item.setLeft((Identifier) visit(ctx.identifier()));
+    item.setLeft((Identifier) visit(ctx.propertyName()));
     if (ctx.modifier() != null) {
       item.setLeftModifier((Modifier) visit(ctx.modifier()));
     }
@@ -5167,7 +5186,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           for (final SQLParser.UpdateItemContext updateItemCtx : bodyCtx.updateItem()) {
             // Create InsertSetExpression from updateItem
             final InsertSetExpression setExpr = new InsertSetExpression();
-            setExpr.left = (Identifier) visit(updateItemCtx.identifier());
+            setExpr.left = (Identifier) visit(updateItemCtx.propertyName());
             setExpr.right = (Expression) visit(updateItemCtx.expression());
             body.setExpressions.add(setExpr);
           }
@@ -5327,7 +5346,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         for (final SQLParser.UpdateItemContext updateItemCtx : bodyCtx.updateItem()) {
           // Manually create InsertSetExpression from updateItem
           final InsertSetExpression setExpr = new InsertSetExpression();
-          setExpr.left = (Identifier) visit(updateItemCtx.identifier());
+          setExpr.left = (Identifier) visit(updateItemCtx.propertyName());
           setExpr.right = (Expression) visit(updateItemCtx.expression());
           body.setExpressions.add(setExpr);
         }
@@ -5433,9 +5452,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final CreatePropertyStatement stmt = new CreatePropertyStatement(-1);
     final SQLParser.CreatePropertyBodyContext bodyCtx = ctx.createPropertyBody();
 
-    // Type.property names (identifier DOT identifier)
-    stmt.typeName = (Identifier) visit(bodyCtx.identifier(0));
-    stmt.propertyName = (Identifier) visit(bodyCtx.identifier(1));
+    // Type.property names (identifier DOT propertyName)
+    stmt.typeName = (Identifier) visit(bodyCtx.identifier());
+    stmt.propertyName = (Identifier) visit(bodyCtx.propertyName());
 
     // IF NOT EXISTS
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
@@ -5569,7 +5588,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Index properties
     for (final SQLParser.IndexPropertyContext propCtx : bodyCtx.indexProperty()) {
       final CreateIndexStatement.Property prop = new CreateIndexStatement.Property();
-      prop.name = (Identifier) visit(propCtx.identifier(0));
+      prop.name = (Identifier) visit(propCtx.propertyName());
 
       // Handle BY KEY/VALUE/ITEM syntax
       if (propCtx.BY() != null) {
@@ -5583,12 +5602,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       // Handle COLLATE CI syntax
-      if (propCtx.COLLATE() != null) {
-        final List<SQLParser.IdentifierContext> identifiers = propCtx.identifier();
-        // First identifier is the property name, second (if COLLATE is present) is the collation
-        if (identifiers.size() > 1)
-          prop.collate = (Identifier) visit(identifiers.get(1));
-      }
+      if (propCtx.COLLATE() != null && propCtx.identifier() != null)
+        prop.collate = (Identifier) visit(propCtx.identifier());
 
       stmt.propertyList.add(prop);
     }
@@ -5884,9 +5899,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.AlterPropertyBodyContext bodyCtx = ctx.alterPropertyBody();
 
     // Type.property
-    final List<SQLParser.IdentifierContext> identifiers = bodyCtx.identifier();
-    stmt.typeName = (Identifier) visit(identifiers.get(0));
-    stmt.propertyName = (Identifier) visit(identifiers.get(1));
+    stmt.typeName = (Identifier) visit(bodyCtx.identifier());
+    stmt.propertyName = (Identifier) visit(bodyCtx.propertyName());
 
     // Process all alter property items
     for (final SQLParser.AlterPropertyItemContext itemCtx : bodyCtx.alterPropertyItem()) {
@@ -6026,9 +6040,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.DropPropertyBodyContext bodyCtx = ctx.dropPropertyBody();
 
     // Type.property
-    final List<SQLParser.IdentifierContext> identifiers = bodyCtx.identifier();
-    stmt.typeName = (Identifier) visit(identifiers.get(0));
-    stmt.propertyName = (Identifier) visit(identifiers.get(1));
+    stmt.typeName = (Identifier) visit(bodyCtx.identifier());
+    stmt.propertyName = (Identifier) visit(bodyCtx.propertyName());
 
     // IF EXISTS
     stmt.ifExists = bodyCtx.IF() != null && bodyCtx.EXISTS() != null;

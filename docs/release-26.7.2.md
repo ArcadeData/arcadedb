@@ -10,6 +10,15 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **SQL: `FROM` can now be used as a property name.** `CREATE PROPERTY fulfilledBy.From STRING` failed with a
+  parsing exception while the symmetric `fulfilledBy.To` worked, because `FROM` was a fully reserved keyword and
+  `TO` a soft one ([#5092](https://github.com/ArcadeData/arcadedb/issues/5092)). The grammar now accepts `FROM`
+  in every position where a property name is unambiguous: `CREATE/ALTER/DROP PROPERTY Type.From`, `CREATE INDEX
+  ON Type (From)`, dotted access in expressions (`@this.From`, `chain.From`), `SET/ADD/PUT/INCREMENT From = ...`
+  in `UPDATE`/`CREATE VERTEX`/`CREATE EDGE`, and `INSERT INTO t (From, ...) VALUES (...)` / `INSERT ... SET
+  From = ...`. Bare references (`SELECT From`, `WHERE From = ...`) remain reserved - `SELECT FROM Type` without
+  a projection must keep parsing as before - and still require back-tick quoting, like any fully reserved keyword.
+
 - **Native `select()` API: `ORDER BY` on a non-index-served property no longer returns an empty result set.**
   When the fluent `database.select()...orderBy(...)` query could not be served directly by an index, the
   in-memory sort path built an empty `sortedResultSet` and never drained the underlying iterator (the
