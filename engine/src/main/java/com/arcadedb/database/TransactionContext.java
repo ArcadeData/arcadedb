@@ -984,6 +984,9 @@ public class TransactionContext implements Transaction {
           // The #4940 core must survive the degraded path too: rollback() can only throw at the dictionary
           // reload, which runs BEFORE its identity reset - without this, records created in the failed tx
           // would keep their dangling RID, the exact defect #4940 fixes. The loop is cheap and cannot throw.
+          // Documented asymmetry vs the happy rollback(): user-held MODIFIED records are NOT reloaded here
+          // (that loop also never ran) and keep their uncommitted in-memory content - the safest available
+          // degradation, since reloading is exactly what just failed.
           for (final Record newRecord : newRecords)
             ((RecordInternal) newRecord).setIdentity(null);
           reset();

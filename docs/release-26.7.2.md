@@ -238,7 +238,10 @@ that could starve the very snapshot resync meant to heal the node.
   by a concurrent transaction now fails the commit with a retryable `ConcurrentModificationException`
   instead of being silently skipped while the rest of the transaction commits (silent partial commit);
   `transaction()` no longer burns every retry attempt (plus retry delays) on a deterministic
-  `DuplicatedKeyException` - one retry disambiguates it from a concurrency-induced duplicate;
+  `DuplicatedKeyException` - one retry disambiguates it from a concurrency-induced duplicate. **Behavioral
+  change:** `transaction(block, joinTx, attempts)` now caps duplicate-key retries at 2 attempts regardless
+  of the `attempts` argument (duplicates are detected against durable state only, so a duplicate that
+  survives one retry is deterministic and further attempts just burn time and retry delays);
   `executeLockingFiles` now locks on behalf of the current transaction's requester (thread or session), so
   a thread acting for a session no longer times out on locks its own session already holds; and the
   page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
