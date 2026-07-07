@@ -47,6 +47,10 @@ public class CaseExpression implements Expression {
   private final List<CaseAlternative> alternatives;
   private final Expression elseExpression; // null if no ELSE clause
   private final String text;
+  // Extended form only: reuse the '=' comparison so a WHEN value matches under Cypher equality
+  // (numeric type folding, temporal, list, RID interop) instead of strict Object.equals(). Built once
+  // per CASE AST node, not per evaluated row.
+  private final ComparisonExpression whenEquality;
 
   /**
    * Constructor for simple CASE form (no case expression).
@@ -64,6 +68,9 @@ public class CaseExpression implements Expression {
     this.alternatives = alternatives;
     this.elseExpression = elseExpression;
     this.text = text;
+    this.whenEquality = caseExpression != null
+        ? new ComparisonExpression(null, ComparisonExpression.Operator.EQUALS, null)
+        : null;
   }
 
   @Override
@@ -75,8 +82,8 @@ public class CaseExpression implements Expression {
       for (final CaseAlternative alternative : alternatives) {
         final Object whenValue = alternative.getWhenExpression().evaluate(result, context);
 
-        // Check equality
-        if (valuesEqual(caseValue, whenValue)) {
+        // Check equality using Cypher '=' semantics (numeric folding, temporal, list, RID interop)
+        if (Boolean.TRUE.equals(whenEquality.evaluateWithValues(caseValue, whenValue))) {
           return alternative.getThenExpression().evaluate(result, context);
         }
       }
@@ -158,17 +165,6 @@ public class CaseExpression implements Expression {
 
   public Expression getElseExpression() {
     return elseExpression;
-  }
-
-  /**
-   * Check if two values are equal under Cypher's three-valued logic.
-   * Any comparison involving null yields null (treated as "not equal" here),
-   * so a WHEN branch never fires on a null operand.
-   */
-  private boolean valuesEqual(final Object a, final Object b) {
-    if (a == null || b == null)
-      return false;
-    return a.equals(b);
   }
 
   /**
