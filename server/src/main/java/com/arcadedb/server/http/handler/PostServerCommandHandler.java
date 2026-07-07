@@ -643,12 +643,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException("User name is null");
 
     final String userPassword = json.getString("password");
-    if (userPassword.length() < 4)
-      throw new ServerSecurityException("User password must be 5 minimum characters");
-    if (userPassword.length() > 256)
-      throw new ServerSecurityException("User password cannot be longer than 256 characters");
 
     final ArcadeDBServer server = httpServer.getServer();
+    // Enforce the single shared credentials policy (min length 8, correct message) used by the REST
+    // create-user path, instead of a divergent off-by-one length check.
+    server.getSecurity().getCredentialsValidator().validateCredentials(json.getString("name"), userPassword);
+
     json.put("password", server.getSecurity().encodePassword(userPassword));
 
     Metrics.counter("http.create-user").increment();
