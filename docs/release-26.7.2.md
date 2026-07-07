@@ -417,7 +417,11 @@ that could starve the very snapshot resync meant to heal the node.
   60000, 0 = wait forever) before logging a WARNING and forcing the async workers down; the forced
   shutdown is itself bounded (FORCE_EXIT offer + interrupt + a ~10s join per worker, escalated to a
   second interrupt and join) and notifies completion of the leftover
-  tasks ([#5080](https://github.com/ArcadeData/arcadedb/issues/5080)).
+  tasks ([#5080](https://github.com/ArcadeData/arcadedb/issues/5080)). Note for operators tuning a fast
+  shutdown: in the worst case these bounded stages run SEQUENTIALLY - the async drain
+  (`arcadedb.asyncCloseTimeout`), then the force-shutdown join, then the page-flush wait
+  (`arcadedb.flushAllPagesTimeout`) - so a pathological close can take the sum. Each stage is individually
+  bounded (shutdown always makes progress); lower the two timeouts if a tighter cap is needed.
 - **Pool discipline, TimeSeries threading and low-severity storage/WAL/LSM cleanups (2026-07 audit).**
   The partitioned triangle-count operator now runs chunk 0 on the calling thread instead of submitting
   every chunk to the shared query pool and blocking on all of them - the same caller-runs-chunk-0
