@@ -150,7 +150,11 @@ class DefaultCredentialsValidatorTest {
     final String password = validator.generateRandomPassword();
 
     assertThat(password).isNotNull();
-    assertThat(password).hasSize(8);
+    // Issue #5029: auto-generated passwords must carry >=128 bits of entropy. Drawn from a 62-char
+    // alphanumeric alphabet, 128 bits needs ceil(128 / log2(62)) = 22 characters; the generator
+    // produces at least that many. The previous 8-char (~32-bit) truncated UUID was too weak.
+    assertThat(password.length()).isGreaterThanOrEqualTo(22);
+    assertThat(password).matches("[A-Za-z0-9]+");
   }
 
   @Test

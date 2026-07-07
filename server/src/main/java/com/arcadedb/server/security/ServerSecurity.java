@@ -86,6 +86,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private static final long                               TOKEN_LOCKOUT_MS     = 30_000;
   private final        ConcurrentHashMap<String, long[]>  tokenFailures        = new ConcurrentHashMap<>();
   private              Timer                               tokenFailureCleanupTimer;
+  private static final int                                MAX_PASSWORD_FAILURES = 5;
+  private static final long                               PASSWORD_LOCKOUT_MS   = 30_000;
+  private final        ConcurrentHashMap<String, long[]>  passwordFailures      = new ConcurrentHashMap<>();
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -155,6 +158,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
           public void run() {
             final long now = System.currentTimeMillis();
             tokenFailures.entrySet().removeIf(e -> now - e.getValue()[1] > TOKEN_LOCKOUT_MS);
+            passwordFailures.entrySet().removeIf(e -> now - e.getValue()[1] > PASSWORD_LOCKOUT_MS);
           }
         }, TOKEN_LOCKOUT_MS, TOKEN_LOCKOUT_MS);
       }
@@ -193,13 +197,26 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
+    // Brute-force protection for password (Basic-auth / login) authentication, mirroring the API-token
+    // path: reject fast when a principal has exceeded the failure threshold within the lockout window.
+    // The failure map is keyed by a bounded hash prefix of the user name rather than the raw name, so an
+    // attacker flooding arbitrary-length user names cannot inflate per-entry memory, and plaintext user
+    // names are not retained as reachable heap keys.
+    final String failureKey = passwordFailureKey(userName);
+    final long[] existing = passwordFailures.get(failureKey);
+    if (existing != null && existing[0] >= MAX_PASSWORD_FAILURES && System.currentTimeMillis() - existing[1] < PASSWORD_LOCKOUT_MS)
+      throw new ServerSecurityException("Too many failed authentication attempts. Try again later.");
 
     final ServerSecurityUser su = users.get(userName);
-    if (su == null)
+    // A user with no stored password (e.g. before first-run root initialization) can never authenticate;
+    // guard here so passwordMatch is not handed a null hash to split.
+    if (su == null || su.getPassword() == null || !passwordMatch(userPassword, su.getPassword())) {
+      recordPasswordFailure(failureKey);
       throw new ServerSecurityException("User/Password not valid");
+    }
 
-    if (!passwordMatch(userPassword, su.getPassword()))
-      throw new ServerSecurityException("User/Password not valid");
+    // Successful authentication: clear the failure counter for this principal.
+    passwordFailures.remove(failureKey);
 
     if (databaseName != null) {
       final Set<String> allowedDatabases = su.getAuthorizedDatabases();
@@ -211,10 +228,46 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * Records a failed password authentication attempt for the given key, atomically incrementing the
+   * failure counter (or restarting it once the lockout window has elapsed). Each update publishes a
+   * fresh {@code long[]} instance rather than mutating the existing one in place, so concurrent readers
+   * in {@link #authenticate} always observe a safely-published, internally-consistent snapshot.
+   */
+  private void recordPasswordFailure(final String failureKey) {
+    passwordFailures.compute(failureKey, (k, entry) -> {
+      final long ts = System.currentTimeMillis();
+      if (entry == null || ts - entry[1] > PASSWORD_LOCKOUT_MS)
+        return new long[] { 1, ts };
+      // Preserve the FIRST-failure timestamp on increment (index 1). The lockout window is therefore
+      // measured from the first failure in the window, not the last - matching the API-token path.
+      return new long[] { entry[0] + 1, entry[1] };
+    });
+  }
+
+  /**
+   * Builds the brute-force failure-map key as a bounded (16 hex chars / 64-bit) SHA-256 prefix of the
+   * user name. Keeps per-entry memory constant regardless of user-name length and avoids retaining
+   * plaintext user names as reachable map keys, mirroring the salt-cache and API-token key strategy.
+   */
+  private static String passwordFailureKey(final String userName) {
+    final MessageDigest digest = SHA256_DIGEST.get();
+    final byte[] hash = digest.digest(userName.getBytes(StandardCharsets.UTF_8));
+    return HexFormat.of().formatHex(hash, 0, 8);
+  }
+
+  /**
    * Override the default @{@link CredentialsValidator} implementation (@{@link DefaultCredentialsValidator}) providing a custom one.
    */
   public void setCredentialsValidator(final CredentialsValidator credentialsValidator) {
     this.credentialsValidator = credentialsValidator;
+  }
+
+  /**
+   * Returns the active credentials validator so that all create-user paths can enforce a single
+   * password/username policy.
+   */
+  public CredentialsValidator getCredentialsValidator() {
+    return credentialsValidator;
   }
 
   public boolean existsUser(final String userName) {
@@ -338,11 +391,18 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // wrong hash format
       return false;
 
-    final int iterations = Integer.parseInt(parts[1]);
+    final int iterations;
+    try {
+      iterations = Integer.parseInt(parts[1]);
+    } catch (final NumberFormatException e) {
+      // malformed iteration count in the stored hash: treat as a non-match rather than throwing
+      return false;
+    }
     final String salt = parts[2];
     final String hash = encodePassword(password, salt, iterations);
 
-    return hash.equals(hashedPassword);
+    // Constant-time comparison to avoid leaking how many leading bytes matched via timing.
+    return MessageDigest.isEqual(hash.getBytes(StandardCharsets.UTF_8), hashedPassword.getBytes(StandardCharsets.UTF_8));
   }
 
   protected static String generateRandomSalt() {

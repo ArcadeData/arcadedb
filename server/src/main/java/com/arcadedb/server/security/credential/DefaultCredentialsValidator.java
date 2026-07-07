@@ -20,8 +20,7 @@ package com.arcadedb.server.security.credential;
 
 import com.arcadedb.server.security.ServerSecurityException;
 
-import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
+import java.security.SecureRandom;
 
 /**
  * Default implementation for validating users. The requirements are quite minimalistic: user name must be between 4 and 256 character and the password between 8 and 256.
@@ -29,6 +28,12 @@ import java.util.concurrent.ThreadLocalRandom;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DefaultCredentialsValidator implements CredentialsValidator {
+  // 62-char alphanumeric alphabet: log2(62) ~= 5.954 bits/char. 24 chars ~= 142 bits, well above the
+  // 128-bit minimum required for an auto-generated credential.
+  private static final char[]       PASSWORD_ALPHABET         = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".toCharArray();
+  private static final int          GENERATED_PASSWORD_LENGTH = 24;
+  private static final SecureRandom SECURE_RANDOM             = new SecureRandom();
+
   protected int userMinLength     = 4;
   protected int userMaxLength     = 256;
   protected int passwordMinLength = 8;
@@ -53,15 +58,10 @@ public class DefaultCredentialsValidator implements CredentialsValidator {
 
   @Override
   public String generateRandomPassword() {
-    String password = UUID.randomUUID().toString().substring(0, 8);
-    for (int i = 0; i < password.length() - 1; i++) {
-      final char c = password.charAt(i);
-      if (Character.isLetter(c)) {
-        if (ThreadLocalRandom.current().nextInt(2) == 0)
-          password = password.substring(0, i) + Character.toUpperCase(c) + password.substring(i + 1);
-      }
-    }
+    final StringBuilder password = new StringBuilder(GENERATED_PASSWORD_LENGTH);
+    for (int i = 0; i < GENERATED_PASSWORD_LENGTH; i++)
+      password.append(PASSWORD_ALPHABET[SECURE_RANDOM.nextInt(PASSWORD_ALPHABET.length)]);
 
-    return password;
+    return password.toString();
   }
 }
