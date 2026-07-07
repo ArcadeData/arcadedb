@@ -322,6 +322,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
    */
   @Override
+  /**
+   * Test-only crash simulation. NOTE (#4927): kill() deliberately does NOT release this instance's
+   * PageManager lifecycle reference - the documented kill-then-close contract relies on the following
+   * {@code close()} releasing it (closeInternal's release runs with {@code open == false} too, exactly
+   * once via its CAS). A kill() never followed by close() pins the page manager open for the JVM's life.
+   */
   public void kill() {
     if (async != null)
       async.kill();
