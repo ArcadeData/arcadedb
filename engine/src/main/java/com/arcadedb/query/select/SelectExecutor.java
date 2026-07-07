@@ -230,16 +230,10 @@ public class SelectExecutor {
 
     final String propertyName = ((SelectPropertyValue) node.left).propertyName;
 
-    boolean ascendingOrder = true; // DEFAULT
-
-    if (select.orderBy != null)
-      for (Pair<String, Boolean> entry : select.orderBy) {
-        if (propertyName.equals(entry.getFirst())) {
-          if (!entry.getSecond())
-            ascendingOrder = false;
-          break;
-        }
-      }
+    // ALWAYS SCAN THE INDEX IN ASCENDING ORDER TO SELECT THE MATCHING ROWS. THE SCAN DIRECTION IS DELIBERATELY DECOUPLED FROM
+    // THE ORDER BY DIRECTION: A DESCENDING ORDER BY IS SERVED BY THE IN-MEMORY SORT IN SelectIterator (SEE ISSUE #5079). A
+    // DESCENDING INDEX SCAN WITH AN OPEN (null) BOUND IS NOT A SUPPORTED CURSOR SHAPE HERE AND USED TO RETURN AN EMPTY RESULT.
+    final boolean ascendingOrder = true;
 
     final IndexCursor cursor;
     if (node.operator == SelectOperator.eq)
