@@ -1850,13 +1850,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   private Path getAppliedIndexFile() {
+    final Path raftDir = getRaftDir();
+    return raftDir != null ? raftDir.resolve("applied-index") : null;
+  }
+
+  /**
+   * The {@code .raft} state directory under the server database directory, or {@code null} when it
+   * cannot yet be resolved (no server wired or no configured database directory). Shared by the
+   * applied-index and bootstrap-baseline files so the two are guaranteed to be co-located.
+   */
+  private Path getRaftDir() {
     if (server == null)
       return null;
     final String dbDir = server.getConfiguration().getValueAsString(
         GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
     if (dbDir == null)
       return null;
-    return Path.of(dbDir, ".raft", "applied-index");
+    return Path.of(dbDir, ".raft");
   }
 
   /**
@@ -1950,18 +1960,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       FileUtils.atomicWriteFile(file.toFile(), json.toString());
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Could not write persisted bootstrap baselines: %s", e.getMessage());
+      // WARNING, not FINE: unlike the applied-index file (whose loss merely re-runs an idempotent
+      // verification), a lost bootstrap baseline silently re-introduces #5100 - the baseline would be
+      // invisible after the next restart. Surface a breadcrumb so an operator can notice.
+      LogManager.instance().log(this, Level.WARNING, "Could not write persisted bootstrap baselines: %s", e.getMessage());
     }
   }
 
   private Path getBootstrapBaselinesFile() {
-    if (server == null)
-      return null;
-    final String dbDir = server.getConfiguration().getValueAsString(
-        GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
-    if (dbDir == null)
-      return null;
-    return Path.of(dbDir, ".raft", "bootstrap-baselines");
+    final Path raftDir = getRaftDir();
+    return raftDir != null ? raftDir.resolve("bootstrap-baselines") : null;
   }
 
   private void triggerSnapshotDownload() {
