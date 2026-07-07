@@ -124,8 +124,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public          long                             count         = 0;
     // #4953: monotonic count of tasks this worker has finished (successfully or not). Producers
     // blocked on this worker's full queue use it as a progress probe: only written by the worker,
-    // read by any thread, hence volatile.
-    private volatile long                            completedTaskCount    = 0;
+    // read by any thread, hence volatile. Package-private (instead of private) so the backstop
+    // progress-reset regression test can simulate a slow-but-progressing peer deterministically (a
+    // real progressing peer frees queue slots, ending the park before enough windows elapse).
+    volatile         long                            completedTaskCount    = 0;
     // #4953: true while this worker is parked in scheduleTask waiting to hand a task to a queue.
     // Combined with a flat completedTaskCount it identifies a genuine cross-scheduling stall.
     private volatile boolean                         waitingCrossSlotOffer = false;
@@ -869,6 +871,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public static class DBAsyncStats {
     public long queueSize;
     public long scheduledTasks;
+  }
+
+  // Package-private test hook (#5072 review, point 4): rebuilds the worker pool so configuration
+  // changes (e.g. ASYNC_OPERATIONS_QUEUE_SIZE) are picked up deterministically, instead of the
+  // tests relying on setTransactionUseWAL()'s createThreads() side effect.
+  void recreateThreadsForTests() {
+    createThreads(parallelLevel);
   }
 
   private void createThreads(int parallelLevel) {

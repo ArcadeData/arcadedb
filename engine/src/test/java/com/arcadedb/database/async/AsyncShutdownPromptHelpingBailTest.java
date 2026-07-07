@@ -27,6 +27,8 @@ import org.junit.jupiter.api.Timeout;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import static com.arcadedb.database.async.AsyncTestTasks.awaitTask;
+import static com.arcadedb.database.async.AsyncTestTasks.noOpTask;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -47,8 +49,8 @@ class AsyncShutdownPromptHelpingBailTest extends TestHelper {
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2); // CAPACITY 1 PER WORKER
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
     async.setParallelLevel(2);
-    // Force thread re-creation so the queue size above is picked up regardless of the previous level.
-    async.setTransactionUseWAL(true);
+    // Rebuild the pool so the queue size above is picked up (dedicated hook, #5072 review point 4).
+    async.recreateThreadsForTests();
     // Large grace period: without the prompt bail, close() pays it in full on the helping worker
     // before the interrupt escalation kicks in.
     async.shutdownJoinTimeoutMs = 8_000;
@@ -106,38 +108,5 @@ class AsyncShutdownPromptHelpingBailTest extends TestHelper {
       releaseWedge.countDown();
       proceed.countDown();
     }
-  }
-
-  private static DatabaseAsyncTask awaitTask(final CountDownLatch started, final CountDownLatch release) {
-    return new DatabaseAsyncTask() {
-      @Override
-      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal database) {
-        started.countDown();
-        try {
-          release.await(20, TimeUnit.SECONDS);
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
-      }
-
-      @Override
-      public boolean requiresActiveTx() {
-        return false;
-      }
-    };
-  }
-
-  private static DatabaseAsyncTask noOpTask() {
-    return new DatabaseAsyncTask() {
-      @Override
-      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal database) {
-        // NO ACTIONS
-      }
-
-      @Override
-      public boolean requiresActiveTx() {
-        return false;
-      }
-    };
   }
 }

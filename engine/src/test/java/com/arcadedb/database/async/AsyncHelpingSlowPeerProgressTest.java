@@ -24,8 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -35,18 +33,22 @@ import static com.arcadedb.database.async.AsyncTestTasks.noOpTask;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for the #5062 review, round 6 (point 1): a worker help-waiting on a wedged-alive
- * peer with an EMPTY own queue had no backstop at all - the loop spun forever (offer fails, peer
- * alive, deferral budget never grows because there is nothing to poll), losing both workers during
- * normal operation with no error surfaced. The producer path already failed loudly after
- * {@code STALLED_NO_PROGRESS_WINDOWS}; the helping loop now applies the same progress-gated bound,
- * aborting the hand-off (onError + batch rollback, worker survives) instead of hanging forever.
+ * Positive-case guard for the helping-loop backstop (#5072 review round 1, point 2): a peer that
+ * keeps COMPLETING tasks while its queue stays full must never trip the backstop, however long the
+ * hand-off takes - the no-progress window counter must reset on every progress tick, or any
+ * saturated-but-progressing pipeline would be falsely aborted once the bound elapses. The peer's
+ * progress is simulated white-box (ticking its package-private {@code completedTaskCount}) because
+ * a genuinely progressing peer frees queue slots and ends the park long before enough windows
+ * elapse; the tick keeps the queue full while showing steady progress, which is exactly the
+ * signature of a saturated pipeline refilled by faster producers.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class AsyncHelpingEmptyQueueBackstopTest extends TestHelper {
+class AsyncHelpingSlowPeerProgressTest extends TestHelper {
 
   @Test
   @Timeout(60)
-  void helpWaitingWorkerWithEmptyQueueSurfacesWedgedPeerInsteadOfSpinningForever() throws Exception {
+  void progressingPeerNeverTripsHelpingBackstop() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2); // CAPACITY 1 PER WORKER
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
@@ -55,10 +57,8 @@ class AsyncHelpingEmptyQueueBackstopTest extends TestHelper {
     async.recreateThreadsForTests();
     async.setCheckForStalledQueuesMaxDelay(50); // BACKSTOP = 12 x 50ms = 600ms
 
-    final List<Throwable> errors = new CopyOnWriteArrayList<>();
     final CountDownLatch stallReported = new CountDownLatch(1);
     async.onError(e -> {
-      errors.add(e);
       if (String.valueOf(e.getMessage()).contains("stalled"))
         stallReported.countDown();
     });
@@ -67,14 +67,16 @@ class AsyncHelpingEmptyQueueBackstopTest extends TestHelper {
     final CountDownLatch releaseWedge = new CountDownLatch(1);
     final CountDownLatch outerStarted = new CountDownLatch(1);
     final CountDownLatch proceed = new CountDownLatch(1);
+    final CountDownLatch markerRan = new CountDownLatch(1);
     try {
-      // Worker 1: wedged in user code (alive, completing nothing) behind a full queue.
+      // Worker 1: parked in user code behind a full queue, so the hand-off below stays blocked; its
+      // "progress" is injected below without freeing queue slots.
       async.scheduleTask(1, awaitTask(wedgeStarted, releaseWedge), true, 0);
       assertThat(wedgeStarted.await(5, TimeUnit.SECONDS)).isTrue();
       assertThat(async.scheduleTask(1, noOpTask(), false, 0)).isTrue();
 
-      // Worker 0: hands a follow-up to worker 1's full queue with its OWN queue empty, so the
-      // deferral budget can never grow and only the backstop can end the wait.
+      // Worker 0: hands off to worker 1's full queue with an empty own queue - the exact backstop
+      // scenario of AsyncHelpingEmptyQueueBackstopTest, except the peer now shows progress.
       async.scheduleTask(0, new DatabaseAsyncTask() {
         @Override
         public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal database) {
@@ -86,7 +88,7 @@ class AsyncHelpingEmptyQueueBackstopTest extends TestHelper {
             Thread.currentThread().interrupt();
             return;
           }
-          async.scheduleTask(1, noOpTask(), true, 0);
+          async.scheduleTask(1, countingTask(markerRan), true, 0);
         }
 
         @Override
@@ -97,16 +99,25 @@ class AsyncHelpingEmptyQueueBackstopTest extends TestHelper {
       assertThat(outerStarted.await(5, TimeUnit.SECONDS)).isTrue();
       proceed.countDown();
 
-      // The buggy loop spun forever with no error: the backstop must surface the stall.
-      assertThat(stallReported.await(10, TimeUnit.SECONDS))
-          .as("the help-waiting worker must report the wedged peer instead of spinning forever")
-          .isTrue();
+      // Tick the peer's completed-task counter every 100ms (a progress event every ~2 windows) for
+      // 2s = ~40 elapsed windows, far beyond the 12-window bound. The counter is only written by
+      // the (currently parked) peer, so the test thread is the single writer during this phase.
+      final DatabaseAsyncExecutorImpl.AsyncThread peer = findWorkerThread(db, 1);
+      final long tickUntil = System.currentTimeMillis() + 2_000;
+      while (System.currentTimeMillis() < tickUntil) {
+        peer.completedTaskCount++;
+        Thread.sleep(100);
+      }
 
-      // The worker must survive the aborted hand-off and keep serving its queue.
-      final CountDownLatch survived = new CountDownLatch(1);
-      async.scheduleTask(0, countingTask(survived), true, 0);
-      assertThat(survived.await(5, TimeUnit.SECONDS))
-          .as("the worker must stay serviceable after the aborted hand-off")
+      assertThat(stallReported.getCount())
+          .as("a progressing peer must keep resetting the backstop, not trip it")
+          .isEqualTo(1L);
+      assertThat(markerRan.getCount()).as("the hand-off must still be parked (queue never freed)").isEqualTo(1L);
+
+      // With the progress stopped, the backstop must resume counting from the last reset and fire:
+      // proves the counter was resetting (not merely never reaching the bound) during the ticks.
+      assertThat(stallReported.await(10, TimeUnit.SECONDS))
+          .as("once progress stops, the wedged peer must surface at the backstop")
           .isTrue();
     } finally {
       releaseWedge.countDown();
@@ -114,5 +125,12 @@ class AsyncHelpingEmptyQueueBackstopTest extends TestHelper {
     }
 
     assertThat(async.waitCompletion(10_000)).isTrue();
+  }
+
+  private static DatabaseAsyncExecutorImpl.AsyncThread findWorkerThread(final DatabaseInternal db, final int slot) {
+    final String name = "AsyncExecutor-" + db.getName() + "-" + slot;
+    return (DatabaseAsyncExecutorImpl.AsyncThread) Thread.getAllStackTraces().keySet().stream()
+        .filter(t -> t.getName().equals(name)).findFirst()
+        .orElseThrow(() -> new IllegalStateException("Worker thread " + name + " not found"));
   }
 }
