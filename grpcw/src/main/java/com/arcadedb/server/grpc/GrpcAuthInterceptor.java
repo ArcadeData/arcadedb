@@ -82,8 +82,8 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     // trusting every RPC to authenticate itself. This is the central authentication choke point: a
     // missing, malformed or invalid credential closes the call before the request reaches the
     // handler, so an admin method that forgets its own authenticate() call cannot expose a side
-    // effect. Note this enforces authentication only, not admin-role authorization (the handlers
-    // behave the same way today).
+    // effect. This choke point enforces authentication only; admin-role authorization for mutating
+    // operations (create/drop database) is enforced by the handlers themselves.
     if (methodName.startsWith("com.arcadedb.grpc.ArcadeDbAdminService/")) {
       // If security is not enabled, allow all requests (consistent with the data-plane methods below)
       if (!securityEnabled)
