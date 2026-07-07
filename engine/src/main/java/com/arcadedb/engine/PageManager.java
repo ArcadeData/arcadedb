@@ -264,8 +264,29 @@ public class PageManager extends LockContext {
     }
   }
 
+  /**
+   * Atomic convenience form of {@link #validateAndBumpVersions} + {@link #publishPages}. NOTE: since #4936
+   * the engine commit path no longer calls this - commit2ndPhase invokes the two halves separately with the
+   * WAL append in between, so validate+publish are NOT atomic under one lock there. Kept as public API for
+   * embedded users and backward compatibility; new engine code should call the halves explicitly and state
+   * what serializes the gap.
+   */
   public void updatePages(final Map<PageId, MutablePage> newPages, final Map<PageId, MutablePage> modifiedPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    publishPages(validateAndBumpVersions(newPages, modifiedPages), newPages, asyncFlush);
+  }
+
+  /**
+   * First half of {@link #updatePages}: validates every page against the most recent committed version and
+   * bumps the (transaction-private) page versions, WITHOUT publishing anything. #4936: the commit calls this
+   * BEFORE appending the transaction to the WAL, so the append is the point of no return - a WAL record can
+   * only ever exist for a transaction that already passed validation. Any {@link ConcurrentModificationException}
+   * fires before anything durable exists, so crash recovery can never partially replay an aborted transaction.
+   * The bump only mutates the transaction's own MutablePage instances: if the WAL append still fails
+   * (e.g. interrupt), the reset() discards them and nothing observable happened.
+   */
+  public List<MutablePage> validateAndBumpVersions(final Map<PageId, MutablePage> newPages,
+      final Map<PageId, MutablePage> modifiedPages) throws IOException, InterruptedException {
     lock();
     try {
       final List<MutablePage> pagesToWrite = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
@@ -277,6 +298,26 @@ public class PageManager extends LockContext {
       for (final MutablePage p : modifiedPages.values())
         pagesToWrite.add(updatePageVersion(p, false));
 
+      return pagesToWrite;
+    } finally {
+      unlock();
+    }
+  }
+
+  /**
+   * Second half of {@link #updatePages}: publishes the validated pages (read cache + flush scheduling).
+   * Runs AFTER the WAL append (#4936): from the caller's perspective the transaction is committed once the
+   * WAL is durable, and a failure here leaves the WAL to replay the pages on recovery. Releasing the global
+   * PageManager lock between the two halves is safe only because the caller serializes committers per page
+   * by other means. Two regimes exist: on a leader (commit1stPhase(true)) the per-file commit locks are held
+   * until reset(), so no other transaction can validate, bump or publish these pages in the gap; on an HA
+   * follower (commit1stPhase(false)) lockedFiles is EMPTY and it is the single-threaded Raft apply in
+   * RaftReplicatedDatabase that provides the serialization - do not rely on file locks being held there.
+   */
+  public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
+      final boolean asyncFlush) throws IOException, InterruptedException {
+    lock();
+    try {
       // Write pages (and put in readCache) BEFORE updating pageCount, otherwise concurrent
       // transactions can observe pageCount > readCache state and treat the new page as a
       // pre-existing empty page (sparse-file semantics), allowing two records' chunk chains

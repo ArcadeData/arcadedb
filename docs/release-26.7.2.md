@@ -181,6 +181,25 @@ that could starve the very snapshot resync meant to heal the node.
   database close now fails with the intended "Async executor has been shut down" error instead of a raw
   NullPointerException ([#4955](https://github.com/ArcadeData/arcadedb/issues/4955)).
 
+- **Commit: the WAL append is now the point of no return.** Page versions are validated and bumped BEFORE
+  the transaction is appended to the WAL, so a WAL record can only exist for a transaction that can no
+  longer fail validation - previously a phase-2 validation failure left the aborted transaction in the WAL
+  with no abort marker, and crash recovery partially replayed it
+  ([#4936](https://github.com/ArcadeData/arcadedb/issues/4936)). Enabling that guarantee, the commit lock
+  set is verified AFTER all page-set mutation and extended when files joined late (EXTERNAL-property
+  buckets, indexes created inside the transaction, and the vector index's companion graph file, which now
+  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)). **Behavioral
+  change for explicit locking:** a transaction using explicit locks that writes a file absent from its lock
+  list - including files it could not have locked up front, such as an index created inside the same
+  transaction or an EXTERNAL property's paired bucket - now fails with the "not all the modified resources
+  were locked" error instead of committing without the lock (which was unsafe). Lock the type after
+  creating its indexes, or create indexes outside explicit-lock transactions. Note the commit
+  boundary this makes explicit: a failure AFTER the WAL append (e.g. while publishing pages) is resolved by
+  recovery replay, never by abort - the caller may see an error for a transaction that becomes durable on
+  restart. If that post-append failure ever happens, the database is FENCED: every further operation fails
+  with a "close and reopen to run recovery" error, preventing new transactions from appending conflicting
+  WAL records for the same page versions, and the ack-gated close preserves the WAL so the reopen replays
+  the orphaned transaction.
 - **WAL/recovery correctness (2026-07 audit).** Recovery now RE-APPLIES a WAL delta whose version equals
   the on-disk page version, repairing a torn page write (a 64KB flush spans many sectors; a power loss can
   persist the new version header while the delta sectors still hold the previous content - the old `<=`
@@ -250,6 +269,26 @@ that could starve the very snapshot resync meant to heal the node.
   the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
   conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
   cursor rescan (perf-only).
+- **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
+  transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
+  records created in the failed transaction get their optimistically-assigned RID reset to provisional and
+  modified records are reloaded to their committed content, so retrying with the same in-memory objects
+  re-inserts them instead of updating a record that was never persisted; a failure after the WAL append
+  still keeps the assigned RIDs, since the transaction is durable and recovery replays it
+  ([#4940](https://github.com/ArcadeData/arcadedb/issues/4940)). From the low-severity group
+  ([#4959](https://github.com/ArcadeData/arcadedb/issues/4959)): a deferred update whose record was deleted
+  by a concurrent transaction now fails the commit with a retryable `ConcurrentModificationException`
+  instead of being silently skipped while the rest of the transaction commits (silent partial commit);
+  `transaction()` no longer burns every retry attempt (plus retry delays) on a deterministic
+  `DuplicatedKeyException` - one retry disambiguates it from a concurrency-induced duplicate. **Behavioral
+  change:** `transaction(block, joinTx, attempts)` now caps duplicate-key retries at 2 attempts regardless
+  of the `attempts` argument (duplicates are detected against durable state only, so a duplicate that
+  survives one retry is deterministic and further attempts just burn time and retry delays);
+  `executeLockingFiles` now locks on behalf of the current transaction's requester (thread or session), so
+  a thread acting for a session no longer times out on locks its own session already holds; and the
+  page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
+  levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
+  `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
 
 ### Improvements
 
