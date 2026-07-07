@@ -56,6 +56,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
@@ -928,8 +929,14 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    // For single-server setup, return this server as the only endpoint
-    final String address = getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger());
+    if (state != State.READY) {
+      // ROUTE enumerates every peer's Bolt endpoint, so it must not run for an unauthenticated caller.
+      // Require an authenticated (READY) session, matching the other request handlers. A Bolt driver
+      // always sends ROUTE after HELLO/LOGON, so this does not affect legitimate routing.
+      sendFailure(BoltException.PROTOCOL_ERROR, "ROUTE not expected in state: " + state);
+      state = State.FAILED;
+      return;
+    }
 
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong());
@@ -937,27 +944,55 @@ public class BoltNetworkExecutor extends Thread {
 
     final List<Map<String, Object>> servers = new ArrayList<>();
 
-    // Writer server
-    final Map<String, Object> writer = new LinkedHashMap<>();
-    writer.put("addresses", List.of(address));
-    writer.put("role", "WRITE");
-    servers.add(writer);
+    final HAServerPlugin ha = server.getHA();
+    final HAServerPlugin.BoltRoutingTable table = ha != null ? ha.getBoltRoutingTable() : null;
 
-    // Reader server (same as writer for single-server)
-    final Map<String, Object> reader = new LinkedHashMap<>();
-    reader.put("addresses", List.of(address));
-    reader.put("role", "READ");
-    servers.add(reader);
+    if (table != null) {
+      // HA cluster with a known leader: the leader is the writer and a router, followers are readers and
+      // routers. Writer and readers come from one leader snapshot, so they cannot disagree about the leader.
+      final String writer = table.writer();
+      final List<String> readers = table.readers();
 
-    // Route server
-    final Map<String, Object> router = new LinkedHashMap<>();
-    router.put("addresses", List.of(address));
-    router.put("role", "ROUTE");
-    servers.add(router);
+      final List<String> routers = new ArrayList<>();
+      routers.add(writer);
+      routers.addAll(readers);
+
+      servers.add(roleEntry(List.of(writer), "WRITE"));
+      servers.add(roleEntry(readers.isEmpty() ? List.of(writer) : readers, "READ"));
+      servers.add(roleEntry(routers, "ROUTE"));
+    } else {
+      // No known leader. Advertise this node using the actual bound Bolt port of this connection rather
+      // than the global default.
+      final String address = getBoltAddress(socket.getLocalPort());
+      if (ha != null) {
+        // HA is active but the leader is not known yet (e.g. mid-election): advertise this node as reader
+        // and router only - never writer, since it may be a follower. The driver keeps reading and
+        // re-routes after the TTL, receiving a writer once the leader is known, instead of sending a write
+        // to a follower and getting an error.
+        servers.add(roleEntry(List.of(address), "READ"));
+        servers.add(roleEntry(List.of(address), "ROUTE"));
+      } else {
+        // True single-node deployment: this node is writer, reader, and router.
+        servers.add(roleEntry(List.of(address), "WRITE"));
+        servers.add(roleEntry(List.of(address), "READ"));
+        servers.add(roleEntry(List.of(address), "ROUTE"));
+      }
+    }
 
     rt.put("servers", servers);
 
     sendSuccess(CollectionUtils.singletonMap("rt", rt));
+  }
+
+  /**
+   * Builds a single ROUTE routing-table server entry pairing a list of client-reachable addresses with
+   * a Bolt routing role (WRITE, READ, or ROUTE).
+   */
+  private static Map<String, Object> roleEntry(final List<String> addresses, final String role) {
+    final Map<String, Object> entry = new LinkedHashMap<>();
+    entry.put("addresses", addresses);
+    entry.put("role", role);
+    return entry;
   }
 
   /**
