@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseFactory;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.nio.file.Files;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,6 +76,43 @@ class ReservedInternalDatabaseTest extends StaticBaseServerTest {
 
       // The directory must still exist on disk: it is skipped, not deleted.
       assertThat(raftDir.isDirectory()).isTrue();
+    } finally {
+      server.stop();
+    }
+  }
+
+  /**
+   * Regression test for issue #5027: a temp directory left behind by a restore/import that crashed
+   * before its atomic swap must be reclaimed at startup instead of accumulating on disk.
+   */
+  @Test
+  void orphanedRestoreTempDirectoryIsSweptAtStartup() throws Exception {
+    final String databaseDirectory = "./target/databases";
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue(databaseDirectory);
+
+    // A real user database that must survive the sweep.
+    try (final Database db = new DatabaseFactory(databaseDirectory + File.separator + "KeepDB").create()) {
+      db.getSchema().createDocumentType("Doc");
+    }
+
+    // Simulate a restore temp directory orphaned by a crash before the swap completed.
+    final File orphan = new File(databaseDirectory, ArcadeDBServer.RESTORE_TEMP_DIRECTORY_PREFIX + "KeepDB-123");
+    assertThat(orphan.mkdirs()).isTrue();
+    Files.writeString(new File(orphan, "leftover.tmp").toPath(), "x");
+
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_NAME, "ArcadeDB_0");
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory);
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
+
+    final ArcadeDBServer server = new ArcadeDBServer(config);
+    server.start();
+    try {
+      // The user database must be loaded and the orphaned temp directory swept from disk.
+      assertThat(server.getDatabaseNames()).contains("KeepDB");
+      assertThat(orphan.exists()).as("orphaned restore temp dir must be swept at startup").isFalse();
     } finally {
       server.stop();
     }

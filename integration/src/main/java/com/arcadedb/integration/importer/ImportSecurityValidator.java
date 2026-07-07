@@ -19,6 +19,7 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.SsrfProtectionUtils;
 
 import java.io.File;
 import java.io.IOException;
@@ -128,26 +129,10 @@ public class ImportSecurityValidator {
 
   /**
    * Returns {@code true} if the address belongs to a network range that must not be reachable through
-   * {@code IMPORT DATABASE} (loopback, link-local, site-local/private, wildcard, multicast, IPv6 ULA
-   * or IPv4 CGNAT).
-   * <p>
-   * The blocked-range logic mirrors {@code PostServerCommandHandler.isBlockedHost} in the server
-   * module; keep the two in sync when adding ranges.
+   * {@code IMPORT DATABASE}. Delegates to the shared {@link SsrfProtectionUtils} so the blocked-range
+   * classification stays identical across all URL-fetch call sites.
    */
   static boolean isBlockedAddress(final InetAddress address) {
-    if (address.isLoopbackAddress()         // 127.0.0.0/8, ::1
-        || address.isLinkLocalAddress()     // 169.254.0.0/16 (cloud metadata), fe80::/10
-        || address.isSiteLocalAddress()     // 10/8, 172.16/12, 192.168/16
-        || address.isAnyLocalAddress()      // 0.0.0.0, ::
-        || address.isMulticastAddress())    // 224.0.0.0/4, ff00::/8
-      return true;
-
-    // InetAddress flags miss two modern private ranges, so check the raw bytes explicitly.
-    final byte[] bytes = address.getAddress();
-    // IPv6 Unique Local Addresses (ULA) fc00::/7 (RFC 4193).
-    if (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc)
-      return true;
-    // IPv4 Carrier-Grade NAT (CGNAT) 100.64.0.0/10 (RFC 6598).
-    return bytes.length == 4 && (bytes[0] & 0xff) == 100 && (bytes[1] & 0xc0) == 64;
+    return SsrfProtectionUtils.isPrivateOrLocalAddress(address);
   }
 }

@@ -96,6 +96,12 @@ public class ArcadeDBServer {
    * must not be registered at startup, nor exposed through the server/cluster status APIs.
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
+  /**
+   * Prefix of the transient directory a restore/import writes into before atomically swapping it into
+   * place. It starts with {@link #RESERVED_DATABASE_PREFIX} so {@link #loadDatabases()} never opens
+   * one as a user database, and any crash-orphaned instance is swept at startup.
+   */
+  public static final String                                RESTORE_TEMP_DIRECTORY_PREFIX        = RESERVED_DATABASE_PREFIX + "restore-tmp-";
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
@@ -783,11 +789,18 @@ public class ArcadeDBServer {
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
-        for (final File f : databaseDirectories)
+        for (final File f : databaseDirectories) {
+          // Reclaim a temp directory orphaned by a restore/import that crashed before its swap.
+          if (f.getName().startsWith(RESTORE_TEMP_DIRECTORY_PREFIX)) {
+            LogManager.instance().log(this, Level.WARNING, "Removing orphaned restore temp directory '%s'", f.getAbsolutePath());
+            FileUtils.deleteRecursively(f);
+            continue;
+          }
           // Skip reserved internal databases (e.g. the Raft control directory '.raft'): they are not
           // user databases and must not be registered nor leak into the server/cluster status APIs.
           if (!isReservedDatabaseName(f.getName()))
             getDatabase(f.getName());
+        }
       }
     }
   }

@@ -64,6 +64,18 @@ https://github.com/ArcadeData/arcadedb/pull/5090
   - Cross-reference comments linking the duplicated blocked-range logic in the two modules.
   - Removed the committed `review-deferred-*.md` scratch file (repo convention keeps this rationale
     in the tracking doc instead).
+- **Cycle 3 (head `4fe991cd`)** - `claude` re-reviewed (Gemini again did not re-review the head).
+  Applied:
+  - Consolidated the duplicated blocked-range logic into a shared `SsrfProtectionUtils` in the
+    `engine` module; both the server guard and `ImportSecurityValidator` now delegate to it (removes
+    the drift hazard flagged across all three reviews).
+  - Startup sweep: `loadDatabases()` now reclaims crash-orphaned `.restore-tmp-*` directories instead
+    of letting them accumulate; new `ReservedInternalDatabaseTest` case covers it.
+  - The swap no longer deletes the temp directory on a swap-phase failure (it may be the only
+    surviving copy); the error now reports its path for recovery, and the startup sweep reclaims a
+    genuinely-orphaned one. `REPLACE_EXISTING` added to the non-atomic move fallback.
+  - Softened the `restoreImportAllowLocalUrls` config description so operators do not over-trust the
+    HTTP(S) check (redirect/DNS-rebinding caveat spelled out).
 
 ## Deferred (rationale)
 - **Full consolidation with `ImportSecurityValidator` / unify on `importBlockLocalNetworks`.**

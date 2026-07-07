@@ -636,7 +636,7 @@ public enum GlobalConfiguration {
       "${arcadedb.server.rootPath}/backups"),
 
   SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS("arcadedb.server.restoreImportAllowLocalUrls", SCOPE.SERVER,
-      "Allow the 'restore database' and 'import database' server commands to fetch from local-file ('file://') URLs and from private, loopback or link-local network hosts. Disabled by default to prevent SSRF and local-file-read via a client-supplied URL; enable only when the operator explicitly trusts these sources",
+      "Allow the 'restore database' and 'import database' server commands to fetch from local-file ('file://') URLs and from private, loopback or link-local network hosts. Disabled by default to reduce the risk of SSRF and to block local-file reads via a client-supplied URL; note the HTTP(S) check validates only the initial host, so it does not fully protect against redirect-following or DNS-rebinding. Enable only when the operator explicitly trusts these sources",
       Boolean.class, false),
 
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,

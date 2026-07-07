@@ -40,6 +40,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SsrfProtectionUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -400,37 +401,43 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // to open it as a user database.
     final File finalDir = new File(dbPath);
     final File tempDir = new File(finalDir.getParentFile(),
-        ArcadeDBServer.RESERVED_DATABASE_PREFIX + "restore-tmp-" + databaseName + "-" + System.nanoTime());
+        ArcadeDBServer.RESTORE_TEMP_DIRECTORY_PREFIX + databaseName + "-" + System.nanoTime());
 
     if (isSSERequested(exchange)) {
       startSSE(exchange);
       final OutputStream out = exchange.getOutputStream();
 
       try {
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-        final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
+        try {
+          final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+          final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
 
-        // Set a logger with SSE callback for progress
-        final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
-        final Class<?> listenerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger$LogListener");
-        final Object listener = java.lang.reflect.Proxy.newProxyInstance(
-            listenerClass.getClassLoader(), new Class<?>[]{ listenerClass },
-            (proxy, method, methodArgs) -> {
-              if ("onLogLine".equals(method.getName()))
-                sendSSE(out, new JSONObject().put("status", "progress").put("message", (String) methodArgs[0]));
-              return null;
-            });
-        final Object logger = loggerClass.getConstructor(int.class, listenerClass).newInstance(2, listener);
-        clazz.getMethod("setLogger", loggerClass).invoke(restorer, logger);
+          // Set a logger with SSE callback for progress
+          final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
+          final Class<?> listenerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger$LogListener");
+          final Object listener = java.lang.reflect.Proxy.newProxyInstance(
+              listenerClass.getClassLoader(), new Class<?>[]{ listenerClass },
+              (proxy, method, methodArgs) -> {
+                if ("onLogLine".equals(method.getName()))
+                  sendSSE(out, new JSONObject().put("status", "progress").put("message", (String) methodArgs[0]));
+                return null;
+              });
+          final Object logger = loggerClass.getConstructor(int.class, listenerClass).newInstance(2, listener);
+          clazz.getMethod("setLogger", loggerClass).invoke(restorer, logger);
 
-        sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
-        clazz.getMethod("restoreDatabase").invoke(restorer);
+          sendSSE(out, new JSONObject().put("status", "progress").put("message", "Downloading and restoring " + databaseName + "..."));
+          clazz.getMethod("restoreDatabase").invoke(restorer);
+        } catch (final Exception restoreError) {
+          // The restore into tempDir failed: tempDir is garbage and the original target is untouched.
+          FileUtils.deleteRecursively(tempDir);
+          throw restoreError;
+        }
+        // From here tempDir holds the restored data; swapRestoredDatabase preserves it on failure.
         swapRestoredDatabase(server, databaseName, finalDir, tempDir);
         final ServerDatabase restoredSse = server.getDatabase(databaseName);
         replicateRestoredDatabase(server, restoredSse, databaseName);
         sendSSE(out, new JSONObject().put("status", "completed").put("message", databaseName + " restored successfully"));
       } catch (final Exception e) {
-        FileUtils.deleteRecursively(tempDir);
         final Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
         sendSSE(out, new JSONObject().put("status", "error").put("message", cause.getMessage()));
       } finally {
@@ -466,6 +473,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    */
   private void swapRestoredDatabase(final ArcadeDBServer server, final String databaseName, final File finalDir,
       final File tempDir) {
+    // Once we start dropping/replacing the existing target, tempDir may be the only surviving copy of
+    // the data. A failure here therefore does NOT delete tempDir: it is preserved (and reported) so the
+    // operator can recover from it, and a genuinely-orphaned temp dir is reclaimed at next startup.
+    // The residual window is a same-parent ATOMIC_MOVE that should effectively never fail.
     try {
       // Drop the previous target (HA-aware) BEFORE taking the registry lock and only after a
       // successful restore into tempDir. In HA mode dropDatabase() round-trips through Raft and the
@@ -487,11 +498,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         }
       }
     } catch (final CommandExecutionException e) {
-      FileUtils.deleteRecursively(tempDir);
       throw e;
     } catch (final Exception e) {
-      FileUtils.deleteRecursively(tempDir);
-      throw new CommandExecutionException("Error activating restored database '" + databaseName + "'", e);
+      throw new CommandExecutionException("Error activating restored database '" + databaseName
+          + "'. The restored copy is preserved at '" + tempDir.getAbsolutePath() + "' for recovery", e);
     }
   }
 
@@ -534,27 +544,14 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * Returns true when {@code host} resolves to (or is) an address in a range that must not be reached
    * from a client-supplied restore/import URL. Every resolved address is checked so a hostname that
    * resolves to a mix of public and private addresses is still rejected. An unresolvable host is
-   * treated as blocked.
-   * <p>
-   * The blocked-range logic mirrors {@code ImportSecurityValidator.isBlockedAddress} in the
-   * (test-scoped, reflectively-loaded) integration module; keep the two in sync when adding ranges.
+   * treated as blocked. The range classification is shared with the importer via
+   * {@link SsrfProtectionUtils}.
    */
   private static boolean isBlockedHost(final String host) {
     try {
-      for (final InetAddress addr : InetAddress.getAllByName(host)) {
-        if (addr.isLoopbackAddress() || addr.isAnyLocalAddress() || addr.isLinkLocalAddress()
-            || addr.isSiteLocalAddress() || addr.isMulticastAddress())
+      for (final InetAddress addr : InetAddress.getAllByName(host))
+        if (SsrfProtectionUtils.isPrivateOrLocalAddress(addr))
           return true;
-
-        // InetAddress flags miss two modern private ranges, so check the raw bytes explicitly.
-        final byte[] bytes = addr.getAddress();
-        // IPv6 Unique Local Addresses (ULA) fc00::/7 (RFC 4193).
-        if (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc)
-          return true;
-        // IPv4 Carrier-Grade NAT (CGNAT) 100.64.0.0/10 (RFC 6598).
-        if (bytes.length == 4 && (bytes[0] & 0xff) == 100 && (bytes[1] & 0xc0) == 64)
-          return true;
-      }
       return false;
     } catch (final UnknownHostException e) {
       return true;
