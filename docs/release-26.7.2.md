@@ -329,6 +329,14 @@ that could starve the very snapshot resync meant to heal the node.
   the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
   conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
   cursor rescan (perf-only).
+- **PageManager lifecycle is refcounted.** The JVM-wide page manager was started and stopped on a racy
+  "is the active-database map empty" check-then-act spanning factory instances: closing the last instance
+  of one database could null the shared flush thread under a database whose open was still in flight
+  (NPE on the first cache miss, or scheduled pages never flushed), and two concurrent opens could start two
+  flush threads, leaking one with queued pages. Every open/create now acquires a reference and every close
+  releases it under one global lock, with startup on the first acquire and teardown on the last release;
+  `configure()` (the PROFILE setter hook) no longer starts a flush thread when no database is open
+  ([#4927](https://github.com/ArcadeData/arcadedb/issues/4927)).
 
 ### Improvements
 

@@ -92,7 +92,62 @@ public class PageManager extends LockContext {
   private PageManager() {
   }
 
+  /**
+   * #4927: the JVM-wide PageManager is REFCOUNTED. Every DatabaseFactory open/create acquires one reference
+   * (starting the flush machinery on 0 -> 1) and every database close releases it (tearing down on 1 -> 0),
+   * all under one global lock. The previous lifecycle keyed on ACTIVE_INSTANCES.isEmpty() was a
+   * check-then-act racing across factory instances (open/create synchronize on the factory, the map is
+   * static, and registration happens only AFTER database.open() completes): closing the last instance of
+   * one database could null the flush thread under a database whose open was mid-flight (NPE on the first
+   * cache miss, or scheduled pages never flushed), and two opens could both see the map empty and start two
+   * flush threads, leaking one with queued pages.
+   */
+  private static final Object LIFECYCLE_LOCK = new Object();
+  private       int    lifecycleRefCount = 0; // guarded by LIFECYCLE_LOCK
+
+  /** Acquires one lifecycle reference; the flush machinery starts on the 0 -> 1 transition. Pair with {@link #release()}. */
+  public void acquire() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (++lifecycleRefCount == 1)
+        startup();
+    }
+  }
+
+  /** Releases one lifecycle reference; the flush machinery is torn down on the 1 -> 0 transition. Over-releases are clamped. */
+  public void release() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (lifecycleRefCount == 0)
+        // Over-release (e.g. a test calling close() directly followed by a paired release): clamp instead of
+        // going negative and tearing down a manager a later acquire believes it owns.
+        return;
+      if (--lifecycleRefCount == 0)
+        shutdown();
+    }
+  }
+
+  /**
+   * Re-applies the current configuration (used by the GlobalConfiguration PROFILE setter). A no-op when no
+   * database is open: the next {@link #acquire()} reads the fresh settings anyway, and starting a flush
+   * thread with zero databases (the old behavior) leaked it until the next lifecycle transition.
+   */
   public void configure() {
+    synchronized (LIFECYCLE_LOCK) {
+      if (lifecycleRefCount == 0)
+        return;
+      shutdown();
+      startup();
+    }
+  }
+
+  /** Force teardown regardless of refcount (test/emergency API): the counter resets so the next acquire starts fresh. */
+  public void close() {
+    synchronized (LIFECYCLE_LOCK) {
+      lifecycleRefCount = 0;
+      shutdown();
+    }
+  }
+
+  private void startup() {
     final ContextConfiguration configuration = new ContextConfiguration();
     this.freePageRAM = configuration.getValueAsInteger(GlobalConfiguration.FREE_PAGE_RAM);
     this.readCache = new ConcurrentHashMap<>(configuration.getValueAsInteger(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE));
@@ -101,14 +156,11 @@ public class PageManager extends LockContext {
     if (this.maxRAM < 0)
       throw new ConfigurationException(GlobalConfiguration.MAX_PAGE_RAM.getKey() + " configuration is invalid (" + maxRAM + " MB)");
 
-    if (flushThread != null)
-      close();
-
     flushThread = new PageManagerFlushThread(this, configuration);
     flushThread.start();
   }
 
-  public void close() {
+  private void shutdown() {
     if (flushThread != null) {
       try {
         flushThread.closeAndJoin();
