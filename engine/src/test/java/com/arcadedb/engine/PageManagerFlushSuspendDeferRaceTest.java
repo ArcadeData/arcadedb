@@ -45,8 +45,14 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * flushed all pages.
  * <p>
  * The fix holds a per-database lock across the suspended-check + defer and across the unsuspend's
- * flag-clear + deferred-detach, so a batch deferred during the unsuspend window is always handed back to
- * the main queue. The blocking re-enqueue runs outside the lock to avoid deadlocking the flush thread.
+ * flag-clear + deferred-detach, so a batch deferred during the unsuspend window is always either flushed
+ * by the unsuspend itself or handed back to the main queue - never stranded. The blocking re-enqueue runs
+ * outside the lock to avoid deadlocking the flush thread.
+ * <p>
+ * Since the refcounted suspension of issue #5068, the unsuspend's initial count-check takes the same
+ * per-database lock, so it serializes BEHIND the paused suspended-check of the flush thread: the batch is
+ * then already deferred when Phase 1 runs and is flushed synchronously rather than re-enqueued. Both
+ * outcomes are valid; the assertion below accepts either and only rejects the stranded case.
  */
 class PageManagerFlushSuspendDeferRaceTest extends TestHelper {
 
@@ -80,7 +86,9 @@ class PageManagerFlushSuspendDeferRaceTest extends TestHelper {
     final Database db = (Database) database;
     flush.setSuspended(db, true);
 
-    final PageId pageId = new PageId(database, 9, 1);
+    // Non-existent file id: if the unsuspend flushes the deferred batch synchronously (see class javadoc),
+    // the flush of this page is a silent skip - no real I/O on the test database.
+    final PageId pageId = new PageId(database, 999_888, 1);
     final MutablePage page = new MutablePage(pageId, 1024, new byte[1024], 0, 0);
     final PagesToFlush batch = new PagesToFlush(List.of(page));
     flush.pageIndex.put(pageId, page);
@@ -112,8 +120,12 @@ class PageManagerFlushSuspendDeferRaceTest extends TestHelper {
       unsuspender.join();
     });
 
-    // The batch deferred during the unsuspend window must have been re-enqueued for flushing, not stranded
-    // in the internal deferred map. queue.contains uses identity (same batch instance re-enqueued).
-    assertThat(flush.queue).contains(batch);
+    // The batch deferred during the unsuspend window must have been either re-enqueued for flushing
+    // (queue.contains uses identity: same batch instance) or flushed synchronously by the unsuspend
+    // itself (its pageIndex entry released) - never stranded in the internal deferred map, where its
+    // pageIndex entry would survive without the batch ever reaching the queue again.
+    final boolean reEnqueued = flush.queue.contains(batch);
+    final boolean flushedByUnsuspend = flush.getCachedPageFromMutablePageInQueue(pageId) == null;
+    assertThat(reEnqueued || flushedByUnsuspend).isTrue();
   }
 }

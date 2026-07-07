@@ -60,6 +60,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
@@ -121,8 +122,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /**
    * Carries transaction state between Phase 1 (WAL capture under lock) and
    * Replication (without lock) and Phase 2 (local apply under lock).
+   * Package-private so unit tests can build one for {@link #applyLocallyAfterMajorityCommit}.
    */
-  private record ReplicationPayload(
+  record ReplicationPayload(
       TransactionContext tx,
       TransactionContext.TransactionPhase1 phase1,
       byte[] walData,
@@ -178,6 +180,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
       Map.entry(TransactionException.class.getName(), TransactionException::new),
+      // #5064: preserves the 'committed cluster-wide, do NOT retry' contract when a follower forwards a
+      // write to the leader - without this entry the 409 body would collapse to a generic
+      // TransactionException on the follower and the client would lose the do-not-retry signal.
+      Map.entry(TransactionCommittedRemotelyException.class.getName(), TransactionCommittedRemotelyException::new),
       Map.entry(CommandExecutionException.class.getName(), CommandExecutionException::new),
       Map.entry(CommandParsingException.class.getName(), CommandParsingException::new),
       Map.entry(CommandSQLParsingException.class.getName(), CommandSQLParsingException::new),
@@ -423,6 +429,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // #5064: from here the transaction is durably committed CLUSTER-WIDE (the quorum accepted it) -
+        // shift the transaction's durability boundary so a local phase-2 failure below releases resources
+        // without rolling back user-held record identities (a retry would insert duplicates of records the
+        // cluster already committed) and without fencing (no orphaned local WAL record; pages are
+        // reconciled from the replicated payload in the catch).
+        payload.tx().setRemotelyCommitted(true);
+
         // Test-only fault injection: simulate a phase-2 commit failure while followers are ahead.
         final Consumer<String> phase2Fault = TEST_PHASE2_COMMIT_FAULT;
         if (phase2Fault != null)
@@ -434,9 +447,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(e), getName(), payload.tx(), e.getMessage());
-        reconcileLeaderPagesAfterPhase2Failure(payload);
+        // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
+        // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
+        // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
+        // the same absolute bytes (idempotent), a lower-version one is skipped.
+        final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
-        throw e;
+        // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
+        // The generic rethrow here told applications the commit FAILED while the data was durably committed
+        // on the quorum - and an application-level retry of the same records would insert duplicates.
+        final String reconcileOutcome = reconciled ? " (local pages reconciled from the replicated payload)"
+            : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)";
+        throw new TransactionCommittedRemotelyException(
+            "Transaction " + payload.tx() + " is committed cluster-wide but the local apply failed"
+                + reconcileOutcome + ". Do NOT retry: reload the records and continue", e);
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -448,11 +472,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Applies phase 2 locally when ALL-quorum watch fails after MAJORITY commit.
    * The Raft entry is durably committed (MAJORITY applied it, including origin-skip on the leader),
    * so we must write the local pages to prevent permanent divergence.
+   * Package-private for direct unit testing (the real trigger needs an ALL-quorum cluster whose
+   * watch fails after MAJORITY commit, which depends on Ratis watch timeouts).
    */
-  private void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
+  void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // #5064: MAJORITY already committed - same durability-boundary shift as the main phase-2 path.
+        // Unlike that path, a failure here is NOT surfaced as TransactionCommittedRemotelyException: this is
+        // background ALL-quorum recovery with no user caller waiting on this commit - the reconcile +
+        // step-down below are the whole remedy, and the flag only steers the finally away from the
+        // identity rollback.
+        payload.tx().setRemotelyCommitted(true);
         payload.tx().commit2ndPhase(payload.phase1());
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
@@ -549,16 +581,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * is applied; any page it cannot is left for the normal follower-side WAL-gap path to resync once
    * this node steps down (issue #4740 Fix 2 makes that recoverable instead of fatal).
    */
-  private void reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
+  private boolean reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
+    // #5075 review: this also runs when the post-append failure FENCED the database. applyChanges operates
+    // at the FileManager/PageManager level and never passes through checkDatabaseIsOpen (the fence's only
+    // choke point besides the pre-append guard), so reconciliation works on a fenced database - it is the
+    // same page-level machinery recovery replay uses on reopen.
     try {
       final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
       proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), true);
       LogManager.instance().log(this, Level.INFO,
           "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());
+      return true;
     } catch (final Exception reconcileEx) {
       LogManager.instance().log(this, Level.SEVERE,
           "Phase 2 failure: leader page reconciliation also failed (db=%s, tx=%s): %s",
           getName(), payload.tx(), reconcileEx.getMessage());
+      return false;
     }
   }
 

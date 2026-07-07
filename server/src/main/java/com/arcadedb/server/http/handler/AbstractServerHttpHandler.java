@@ -45,7 +45,10 @@ import io.undertow.util.StatusCodes;
 
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -288,6 +291,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       LogManager.instance()
               .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
+    } catch (final TransactionCommittedRemotelyException e) {
+      LogManager.instance()
+              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
+      // 409 Conflict, NOT 5xx (#5064/#5075 review): the transaction IS durably committed cluster-wide -
+      // only the local apply failed. A 5xx would invite HTTP clients and load balancers to RETRY, which
+      // would apply the changes a second time (duplicate inserts) - the exact hazard the distinct
+      // exception type exists to prevent. Same rationale as the DuplicatedKeyException 409 below (#4350).
+      sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry", e, null);
     } catch (final DuplicatedKeyException e) {
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -326,6 +338,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else if (realException instanceof TransactionCommittedRemotelyException committedRemotely) {
+        // Symmetric with the un-wrapped arm (#5064/#5075): a wrapped committed-remotely outcome must keep
+        // its non-retryable 409 - degrading to 500 invites the client retry that inserts duplicates of
+        // records the cluster already committed. Same defense-in-depth as the DuplicatedKeyException
+        // branch below.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
+                committedRemotely, null);
       } else if (realException instanceof DuplicatedKeyException dup) {
         // Symmetric with the un-wrapped DuplicatedKeyException catch arm. Some code paths
         // (e.g. script execution, command planners) wrap DuplicatedKeyException in
@@ -365,6 +387,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
+      } else if (realException instanceof TransactionCommittedRemotelyException committedRemotely) {
+        // Same as the un-wrapped committed-remotely arm above (#5064/#5075), reached when the auto-commit
+        // wrapper re-wrapped it: the non-retryable 409 must survive the wrapping.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
+                committedRemotely, null);
       } else if (realException instanceof DuplicatedKeyException dup) {
         // Same as the un-wrapped DuplicatedKeyException arm above, but reached when the
         // exception was thrown inside the auto-commit transaction wrapper in
@@ -607,25 +637,75 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             Level.FINE;
   }
 
+  /**
+   * Returns true when the server runs in {@code production} mode. In production the error responses conceal the
+   * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
+   * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
+   * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
+   */
+  private boolean isProductionMode() {
+    return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
+  }
+
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
                                  final String exceptionArgs) {
     if (!exchange.isResponseStarted())
       exchange.setStatusCode(code);
 
-    String detail = "";
-    if (e != null) {
-      final StringBuilder buffer = new StringBuilder();
-      buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+    // Reuse the correlation id already echoed in the response header so operators can cross-reference a
+    // concealed production error with the detailed server log entry.
+    final String correlationId = exchange.getResponseHeaders().getFirst(REQUEST_ID_HEADER);
 
-      Throwable current = e.getCause();
-      while (current != null && current != current.getCause() && current != e) {
-        buffer.append(" -> ");
-        buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
-        current = current.getCause();
-      }
-      detail = buffer.toString();
+    exchange.getResponseSender().send(buildErrorBody(!isProductionMode(), errorMessage, e, exceptionArgs, correlationId));
+  }
+
+  /**
+   * Builds the JSON error body sent to the client. The exception class name ({@code exception}) and the structured
+   * {@code exceptionArgs} are a wire contract consumed by the remote Java driver
+   * ({@code RemoteHttpComponent.manageException}) and by HA leader-exception reconstruction
+   * ({@code RaftReplicatedDatabase.reconstructLeaderException}) to rebuild typed exceptions, leader-redirect hints and
+   * duplicate-key details; they are bounded, non-sensitive values and are therefore emitted in every mode. Only the
+   * free-form cause chain ({@code detail}), which can carry file paths and engine internals, is concealed in
+   * production ({@code verbose == false}) so it is never leaked to a client probing endpoints. Package-private for
+   * direct unit testing.
+   */
+  String buildErrorBody(final boolean verbose, final String errorMessage, final Throwable e, final String exceptionArgs,
+                        final String correlationId) {
+    final JSONObject json = new JSONObject();
+    json.put("error", errorMessage);
+    if (correlationId != null && !correlationId.isEmpty())
+      json.put("requestId", correlationId);
+
+    if (e != null)
+      json.put("exception", e.getClass().getName());
+    if (exceptionArgs != null)
+      json.put("exceptionArgs", exceptionArgs);
+
+    // The cause chain is the only free-form field: conceal it outside development/test to avoid leaking
+    // internal file paths and engine errors to a client probing endpoints.
+    if (verbose && e != null)
+      json.put("detail", encodeError(buildDetailChain(e)));
+
+    return json.toString();
+  }
+
+  /**
+   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping when a cause
+   * has already been seen to avoid an infinite loop on cyclic chains. Uses identity comparison so distinct exceptions
+   * with equal {@code equals}/{@code hashCode} are still walked. Package-private for direct unit testing.
+   */
+  static String buildDetailChain(final Throwable e) {
+    final StringBuilder buffer = new StringBuilder();
+    buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    visited.add(e);
+    Throwable current = e.getCause();
+    while (current != null && visited.add(current)) {
+      buffer.append(" -> ");
+      buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
+      current = current.getCause();
     }
-
-    exchange.getResponseSender().send(error2json(errorMessage, detail, e, exceptionArgs, null));
+    return buffer.toString();
   }
 }

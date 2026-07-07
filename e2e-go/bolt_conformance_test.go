@@ -20,15 +20,14 @@
 // for cross-language traceability, matching the e2e-python (#4885) and
 // e2e-csharp (#4886) suites.
 //
-// ArcadeDB negotiates Bolt 4.4/4.0/3.0 at most (see PROTO-002 - it never
-// advertises 5.x). This suite depends on the pinned neo4j-go-driver continuing
-// to silently downgrade to 4.4; a future driver major that drops legacy
-// negotiation would break the suite, not just PROTO-002.
+// Since #5001 ArcadeDB advertises Bolt 5.0-5.4 (and still 4.4/4.0/3.0), so the
+// pinned neo4j-go-driver negotiates 5.x (see PROTO-002).
 package e2e_go
 
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -65,10 +64,15 @@ func Test_CONN_001_ConnectBolt(t *testing.T) {
 // 172.17.0.x). On the Linux CI runner the default Docker bridge subnet is
 // routable from the host, so the driver reaches that address and the scenario
 // passes - identical to the e2e-python/e2e-csharp suites. On Docker Desktop
-// (macOS/Windows) container IPs are not host-routable, so this scenario can
-// only be fully verified in CI; bolt:// scenarios are unaffected because they
-// use the mapped host port.
+// (macOS/Windows) container IPs are not host-routable, so the driver times
+// out; the scenario is skipped there and verified only on Linux. bolt://
+// scenarios are unaffected because they use the mapped host port.
 func Test_CONN_003_Neo4jRoutingSingleNode(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("neo4j:// routing needs the advertised container IP to be " +
+			"host-routable, which holds on Linux CI's native Docker bridge " +
+			"but not on Docker Desktop (macOS/Windows)")
+	}
 	d := newDriver(t, boltURI(plainContainer, "neo4j"))
 	require.NoError(t, d.VerifyConnectivity(ctx))
 	rec := runSingle(t, d, "beer", "MATCH (b:Beer) RETURN b.name AS name LIMIT 1", nil)
@@ -620,28 +624,19 @@ func Test_PROTO_001_VersionNegotiationSucceeds(t *testing.T) {
 	require.Equal(t, int64(1), v)
 }
 
-func Test_PROTO_002_Bolt5xNegotiationIsDocumented(t *testing.T) {
+func Test_PROTO_002_Bolt5xNegotiationIsSupported(t *testing.T) {
+	// Since #5001 the server advertises Bolt 5.0-5.4, so a 5.x-capable driver
+	// negotiates a 5.x protocol version instead of downgrading to 4.4.
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	assertStillFails(t,
-		"BoltNetworkExecutor.SUPPORTED_VERSIONS never advertises Bolt 5.x; "+
-			"drivers only work by silently downgrading to 4.4; see #4890",
-		func() error {
-			sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "beer"})
-			defer sess.Close(ctx)
-			res, err := sess.Run(ctx, "RETURN 1 AS value", nil)
-			if err != nil {
-				return err
-			}
-			summary, err := res.Consume(ctx)
-			if err != nil {
-				return err
-			}
-			ver := summary.Server().ProtocolVersion()
-			if ver.Major >= 5 {
-				return nil // gap fixed: 5.x negotiated
-			}
-			return fmt.Errorf("driver negotiated Bolt %d.%d, not 5.x", ver.Major, ver.Minor)
-		})
+	sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "beer"})
+	t.Cleanup(func() { _ = sess.Close(ctx) })
+	res, err := sess.Run(ctx, "RETURN 1 AS value", nil)
+	require.NoError(t, err)
+	summary, err := res.Consume(ctx)
+	require.NoError(t, err)
+	ver := summary.Server().ProtocolVersion()
+	require.GreaterOrEqualf(t, ver.Major, 5,
+		"driver negotiated Bolt %d.%d, not 5.x", ver.Major, ver.Minor)
 }
 
 func Test_PROTO_003_ResetMidStream(t *testing.T) {

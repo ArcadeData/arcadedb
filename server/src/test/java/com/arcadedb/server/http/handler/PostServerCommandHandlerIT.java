@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class PostServerCommandHandlerIT extends BaseGraphServerTest {
   private final HttpClient client = HttpClient.newHttpClient();
+
+  @Override
+  protected void onServerConfiguration(final ContextConfiguration config) {
+    super.onServerConfiguration(config);
+    // The 'restore database ... file://<local-backup>' happy path below is a legitimate operator
+    // action that, since issue #5027, requires explicitly opting into local-file/private-host URLs.
+    config.setValue(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS, true);
+  }
 
   @Test
   void setDatabaseSettingCommand() throws Exception {
@@ -154,6 +164,23 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
 
     response = executeServerCommand("Drop User testuser3");
     assertThat(response.statusCode()).isEqualTo(200);
+  }
+
+  /**
+   * Issue #5029: the server-command create-user path must enforce the same minimum password length (8)
+   * as the REST create-user path, routed through the shared credentials validator. Passwords of 4-7
+   * characters, previously accepted here, must now be rejected with the correct message.
+   */
+  @Test
+  void createUserRejectsShortPassword() throws Exception {
+    executeServerCommand("DROP USER shortpwuser");
+
+    final HttpResponse<String> response = executeServerCommand("""
+        CREATE USER {"name":"shortpwuser","password":"short"}
+        """);
+
+    assertThat(response.statusCode()).isEqualTo(403);
+    assertThat(response.body()).contains("User password too short");
   }
 
   /**

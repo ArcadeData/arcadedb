@@ -48,6 +48,7 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
   protected       long                             returned   = 0;
   private         List<Document>                   sortedResultSet;
   private         int                              orderIndex = 0;
+  private         boolean                          orderByMaterialized;
 
   protected SelectIterator(final SelectExecutor executor, final Iterator<? extends Identifiable> iterator,
       final boolean enforceUniqueReturn) {
@@ -58,8 +59,8 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
     else
       this.filterOutRecords = null;
 
-    fetchResultInCaseOfOrderBy();
-
+    // NOTE: THE ORDER BY MATERIALIZATION IS TRIGGERED LAZILY FROM hasNext()/next() (SEE materializeOrderBy()) AND NOT HERE,
+    // BECAUSE SUBCLASSES (e.g. SelectParallelIterator) FINISH INITIALIZING THEIR FETCH MACHINERY ONLY AFTER super() RETURNS.
     for (int i = 0; i < executor.select.skip; i++) {
       // CONSUME UNTIL THE SKIP THRESHOLD HITS
       if (hasNext())
@@ -71,6 +72,7 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
 
   @Override
   public boolean hasNext() {
+    materializeOrderBy();
     if (sortedResultSet != null) {
       // RETURN FROM THE ORDERED RESULT SET
       final boolean more = orderIndex < sortedResultSet.size();
@@ -91,6 +93,7 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
 
   @Override
   public T next() {
+    materializeOrderBy();
     if (sortedResultSet != null)
       // RETURN FROM THE ORDERED RESULT SET
       return (T) sortedResultSet.get(orderIndex++);
@@ -189,6 +192,13 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
     return executor.metrics();
   }
 
+  private void materializeOrderBy() {
+    if (orderByMaterialized)
+      return;
+    orderByMaterialized = true;
+    fetchResultInCaseOfOrderBy();
+  }
+
   private void fetchResultInCaseOfOrderBy() {
     if (executor.select.orderBy == null)
       return;
@@ -199,18 +209,19 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
       final SelectExecutor.IndexInfo usedIndex = executor.usedIndexes.getFirst();
 
       if (orderBy.getFirst().equals(usedIndex.property) &&//
-          orderBy.getSecond() == usedIndex.order) {
+          orderBy.getSecond() == usedIndex.order)
         // ORDER BY THE INDEX USED, RESULTSET IS ALREADY ORDERED
         return;
-      }
     }
 
-    sortedResultSet = new ArrayList<>();
-    while (orderIndex < sortedResultSet.size())
-      sortedResultSet.add(next().asDocument(true));
+    // MATERIALIZE THE FULL RESULT SET DRAINING THE UNDERLYING ITERATOR VIA fetchNext() (NOT next(), WHICH WOULD READ BACK
+    // FROM sortedResultSet), THEN SORT IT IN MEMORY.
+    final List<Document> materialized = new ArrayList<>();
+    for (T record = fetchNext(); record != null; record = fetchNext())
+      materialized.add(record.asDocument(true));
 
-    Collections.sort(sortedResultSet, (a, b) -> {
-      for (Pair<String, Boolean> orderBy : executor.select.orderBy) {
+    materialized.sort((a, b) -> {
+      for (final Pair<String, Boolean> orderBy : executor.select.orderBy) {
         final Object aVal = a.get(orderBy.getFirst());
         final Object bVal = b.get(orderBy.getFirst());
         int comp = BinaryComparator.compareTo(aVal, bVal);
@@ -222,5 +233,12 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
       }
       return 0;
     });
+
+    // APPLY THE LIMIT HERE (SKIP IS APPLIED BY THE CONSTRUCTOR CONSUMING THE FIRST `skip` ELEMENTS OF sortedResultSet).
+    if (executor.select.limit > -1) {
+      final int end = (int) Math.min((long) materialized.size(), (long) executor.select.skip + executor.select.limit);
+      sortedResultSet = new ArrayList<>(materialized.subList(0, end));
+    } else
+      sortedResultSet = materialized;
   }
 }

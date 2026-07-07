@@ -10,6 +10,28 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Native `select()` API: `ORDER BY` on a non-index-served property no longer returns an empty result set.**
+  When the fluent `database.select()...orderBy(...)` query could not be served directly by an index, the
+  in-memory sort path built an empty `sortedResultSet` and never drained the underlying iterator (the
+  materialization loop condition was `orderIndex < sortedResultSet.size()`, i.e. `0 < 0`, so it never ran).
+  Every such query silently returned zero rows. The same executor also built a **descending** index range scan
+  with an open (`null`) bound - an unsupported cursor shape that likewise returned empty - so `ORDER BY ...
+  descending` on an indexed property was affected too ([#5079](https://github.com/ArcadeData/arcadedb/issues/5079)).
+  The iterator now materializes the full result set via the internal fetch loop, sorts it, and honors `SKIP`
+  and `LIMIT`; the index scan direction is decoupled from `ORDER BY` (always ascending selection, descending
+  order served by the in-memory sort). Materialization is now lazy so it composes with the parallel iterator.
+
+- **Transactions: in-transaction iteration on a non-unique index no longer drops a committed RID that shares
+  its key with an uncommitted entry.** On a non-unique index, when an uncommitted row had the SAME composite
+  key as an already-committed row, in-transaction index iteration emitted only ONE row for that key: the
+  transaction overlay was treated as authoritative and shadowed the disk cursor's equal-key entries instead
+  of merging the distinct RIDs. Both RIDs became visible again only after commit
+  ([#5055](https://github.com/ArcadeData/arcadedb/issues/5055)). `LSMTreeIndexCursor` now UNIONs the disk and
+  overlay RIDs at a colliding key. While fixing this, a related direction bug surfaced: the overlay range
+  filter always used the ascending sense of the far bound, so a **descending** in-transaction range scan
+  dropped uncommitted overlay entries sitting above the range's lower bound (the top of the scan) even with no
+  collision; the filter is now order-aware.
+
 - **Import/Export: `IMPORT DATABASE` no longer crashes on a JSONL dump that contains an `LSM_VECTOR` index.**
   Exporting a database with a vector index produced a valid JSONL dump, but re-importing it failed with
   `CommandExecutionException: Error on importing database` (root cause: `JSONObject[unique] not found`),
@@ -300,10 +322,16 @@ that could starve the very snapshot resync meant to heal the node.
   task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /
   `waitCompletion()` hung forever), and `close()` no longer blocks unbounded on `queue.put(FORCE_EXIT)`
   under the lifecycle lock when a busy worker's queue is full - the marker is offered with a timeout,
-  the worker is interrupted on failure, and a worker still alive after the 10s grace period (e.g. one
-  that consumed the marker while help-waiting on a wedged peer's full queue) is escalated to an
-  interrupt and re-joined instead of being left running behind a returned `close()`
-  ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)).
+  the worker is interrupted on failure, and a worker still alive after the 10s grace period is
+  escalated to an interrupt and re-joined instead of being left running behind a returned `close()`
+  ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)). Follow-up hardening on the helping
+  loop itself: a worker handing off a cross-slot task to a wedged-alive peer while its OWN queue is
+  empty (so the deferral budget cannot grow) no longer spins forever - the same 60s progress-gated
+  backstop aborts the hand-off loudly via `onError` and the worker keeps serving its queue (failure mode
+  when this trips on a bidirectional-edge follow-up: the outgoing direction is already persisted while the
+  dropped follow-up carried the incoming link - a PARTIAL edge until the operation is repeated); and a
+  worker that consumed the shutdown marker while help-waiting now abandons the hand-off immediately,
+  so `close()` returns within one offer window on that path instead of waiting out the grace period.
   Low-severity cleanups from the same audit: async executor settings (`parallelLevel`, `commitEvery`,
   back-pressure, callbacks) are now `volatile` so post-startup changes reach the workers,
   `setCommitEvery(0)` is rejected instead of making every task fail on `count % 0`, the JVM-wide query
@@ -361,8 +389,25 @@ that could starve the very snapshot resync meant to heal the node.
   instead of hardcoding 1, so auto-compaction is no longer deferred by up to a full threshold of new
   pages after every restart. Items deliberately left open on #4958/#4960 with reasoning on the issues:
   the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
+  conflict-heavy file) and the descending duplicate-run cursor rescan (perf-only); the `createNewPage`
+  rollback counter drift was subsequently fixed in
+  [#5067](https://github.com/ArcadeData/arcadedb/issues/5067).
   conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
   cursor rescan (perf-only).
+- **Storage: flush suspension is refcounted - overlapping backup/verify/snapshot each own their window
+  (2026-07 audit follow-up).** `suspendFlushAndExecute` ownership was first-caller-wins: with two
+  concurrent suspenders on the same database (SQL `BACKUP DATABASE`, the HA verify endpoint, HA snapshot
+  serving - any combination), only the FIRST caller owned the suspend flag while the other still streamed
+  the database files. The non-owner skipped the wait for the in-flight flush batch (so it could read a
+  page mid-write) and, worse, kept streaming while the owner's exit synchronously flushed the deferred
+  batches to disk - torn reads either way. The suspension is now a per-database REFCOUNT: flushing stays
+  suspended while the count is above zero and resumes (deferred batches flushed) only when the LAST
+  suspender exits, so every caller legitimately owns its whole window; a new suspender arriving while the
+  last exit is mid-way through the deferred-batch writes waits until that resume completes. The #4728
+  deferred-RAM backpressure accounting is unchanged, and the HA snapshot endpoint keeps its per-database
+  serialization (no longer needed for correctness, retained to serialize same-database zip streams and
+  keep each suspension window - and therefore the deferred backlog - short)
+  ([#5068](https://github.com/ArcadeData/arcadedb/issues/5068)).
 - **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
   transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
   records created in the failed transaction get their optimistically-assigned RID reset to provisional and
@@ -403,6 +448,31 @@ that could starve the very snapshot resync meant to heal the node.
   existed); and a record published between the consumer's last poll and the final producer's countdown
   could be silently dropped at end of stream
   ([#5065](https://github.com/ArcadeData/arcadedb/issues/5065)).
+- **Low-severity audit residuals (2026-07 audit).** Four small residuals collected from the audit
+  follow-up PRs ([#5067](https://github.com/ArcadeData/arcadedb/issues/5067)):
+  `TransactionContext.kill()` (test-only API) now releases the file locks acquired by a commit's 1st
+  phase instead of leaking the `LockManager` entries until the whole lock manager is torn down (symmetry
+  with `reset()`); `LocalBucket.updatePageStatistics` now measures free space against the usable page
+  content region like `gatherPageStatistics` does (#4958), instead of the physical page size that
+  overstated every page by the page header and skewed the reuse-space threshold; the LSM mutable index
+  re-aligns its uncompacted-pages counter with the real page count at commit time, so page creations
+  discarded by a rolled-back transaction can no longer inflate the counter and schedule auto-compaction
+  early; and the periodic thread-context sweep now opportunistically drops the empty per-thread entries a
+  foreign database close leaves behind (a claim/re-check protocol closes the #4939 re-registration race),
+  so open/close churn on large long-lived thread pools no longer accumulates them. A file-enumeration
+  audit of backup, snapshot and resync paths against the `.wal.corrupt` evidence files confirmed all
+  sites use extension allowlists (report on the issue); no changes needed.
+
+- **HA: a distinct error for "committed cluster-wide, local apply failed".** When the replication quorum
+  durably commits a transaction but the leader's local phase-2 apply then fails, the application now
+  receives `TransactionCommittedRemotelyException` - stating the transaction IS committed on the cluster,
+  whether the local pages were reconciled, and that it must NOT be retried - instead of a generic commit
+  failure that invited retries. The identities of records created in such a transaction are no longer reset
+  to provisional (they are the identities the cluster committed), so an application-level retry no longer
+  inserts duplicates of already-committed records. The contract also survives the wire: the HTTP command
+  endpoint maps it to 409 Conflict (not a retry-worthy 5xx), and a follower forwarding a write to the
+  leader reconstructs the same exception type instead of a generic commit failure
+  ([#5064](https://github.com/ArcadeData/arcadedb/issues/5064)).
 
 ### Improvements
 

@@ -110,12 +110,13 @@ scenarios:
       - "When the driver connects to neo4j://<any-node>:7687 and requests a routing table"
       - "Then the routing table should list the true leader as writer and the true followers as readers"
     applicable_driver_versions: all
-    current_status: expected-fail
+    current_status: passing
     known_limitation: >
-      BoltNetworkExecutor.handleRoute (bolt/src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java:903-939)
-      always returns the local node's own address as WRITE, READ, and ROUTE
-      roles, regardless of actual cluster topology - single-node only.
-    tracking_issue: "#4890"
+      For clusters with heterogeneous Bolt ports, each node's client-reachable
+      Bolt address must be declared with the object-form 'bolt:' field in
+      HA_SERVER_LIST (host:{raft:..,http:..,bolt:..}). When omitted, the address
+      is derived from each peer's Raft host plus this node's Bolt port, which is
+      correct only for homogeneous deployments (e.g. a Kubernetes StatefulSet).
   - id: CONN-005
     area: connection
     title: "TLS OPTIONAL mode falls back to plaintext bolt://"
@@ -550,13 +551,7 @@ scenarios:
       - "When a driver's handshake proposes only Bolt 5.x version ranges"
       - "Then the server should either negotiate a 5.x version, or the negotiation failure/fallback behavior should be documented and intentional"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltNetworkExecutor.SUPPORTED_VERSIONS (line 96) never advertises
-      any Bolt 5.x version; current drivers that support 5.x only work
-      today by silently downgrading to 4.4, which is undocumented and
-      untested as a deliberate compatibility stance.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: PROTO-003
     area: protocol
     title: "RESET returns the connection to a clean state mid-stream"

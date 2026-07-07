@@ -38,10 +38,13 @@ import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.net.URLEncoder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.logging.Level;
@@ -350,6 +353,41 @@ public class FileUtils {
   public static void writeContentToStream(final File file, final byte[] content) throws IOException {
     try (final FileOutputStream fos = new FileOutputStream(file)) {
       fos.write(content);
+    }
+  }
+
+  /**
+   * Writes {@code content} to {@code file} atomically: the bytes are first written to a sibling
+   * temporary file (flushed and fsync'd), then moved onto the target with {@code ATOMIC_MOVE} so a
+   * concurrent reader always sees either the previous complete file or the new complete file, never a
+   * partial/spliced one. If a crash happens mid-write, the previous valid file is left untouched.
+   * When the underlying filesystem cannot perform an atomic move, it falls back to a
+   * {@code REPLACE_EXISTING} move (still a single rename, just without the cross-crash guarantee).
+   */
+  public static void atomicWriteFile(final File file, final String content) throws IOException {
+    // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
+    // File("ai.json")); this keeps the temp file on the same file store as the target, which is
+    // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
+    final Path target = file.toPath().toAbsolutePath();
+    final Path dir = target.getParent();
+    Files.createDirectories(dir);
+
+    final Path tmp = Files.createTempFile(dir, file.getName() + ".", ".tmp");
+    try {
+      try (final FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
+        fos.write(content.getBytes(StandardCharsets.UTF_8));
+        fos.flush();
+        fos.getFD().sync();
+      }
+      try {
+        // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some
+        // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.
+        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } finally {
+      Files.deleteIfExists(tmp);
     }
   }
 

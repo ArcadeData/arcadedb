@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
+import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltPointStructure;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
@@ -75,7 +76,10 @@ class BoltTypeRoundTripTest {
   void type010_offsetDateTimeNative() {
     final Object out = BoltStructureMapper.toPackStreamValue(
         OffsetDateTime.of(2026, 1, 15, 14, 30, 0, 0, ZoneOffset.ofHours(2)));
-    assertThat(out).isInstanceOf(BoltTemporalStructure.class);
+    // DateTime/DateTimeZoneId now carry both epoch bases and pick their wire signature at writeTo()
+    // time from the negotiated Bolt major version (see BoltDateTimeStructure), so this is no longer a
+    // BoltTemporalStructure - it is still a native Bolt structure though, just a version-aware one.
+    assertThat(out).isInstanceOf(PackStreamStructure.class);
   }
 
   @Test

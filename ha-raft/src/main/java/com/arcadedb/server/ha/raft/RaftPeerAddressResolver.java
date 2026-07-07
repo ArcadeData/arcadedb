@@ -43,9 +43,12 @@ final class RaftPeerAddressResolver {
    * it is used for encrypted peer-to-peer transfers (e.g. snapshot download) when SSL is enabled.
    * The {@code peerNames} map contains user-provided peer names from the optional {@code name@}
    * prefix and is empty when no entry uses that syntax.
+   * The {@code boltAddresses} map is empty when no entry declares the object-form {@code bolt} field;
+   * it holds the client-reachable Bolt address advertised in the ROUTE routing table.
    */
   public record ParsedPeerList(List<RaftPeer> peers, Map<RaftPeerId, String> httpAddresses,
-                               Map<RaftPeerId, String> httpsAddresses, Map<RaftPeerId, String> peerNames) {
+                               Map<RaftPeerId, String> httpsAddresses, Map<RaftPeerId, String> peerNames,
+                               Map<RaftPeerId, String> boltAddresses) {
   }
 
   private RaftPeerAddressResolver() {
@@ -56,11 +59,13 @@ final class RaftPeerAddressResolver {
    * <p>
    * Each entry supports two interchangeable syntaxes.
    * <p>
-   * <b>1. Object form</b> (recommended for readability): {@code host:{raft:2434,http:2480,https:2490,priority:10}}.
+   * <b>1. Object form</b> (recommended for readability): {@code host:{raft:2434,http:2480,https:2490,bolt:7687,priority:10}}.
    * The fields are unordered and all optional except that {@code raft} defaults to {@code defaultPort}
-   * when omitted ({@code http}/{@code https} are simply not stored when absent, {@code priority} defaults
-   * to 0). This avoids the positional ambiguity of the colon form. Example:
-   * {@code frankfurt@db1:{raft:2434,http:2480,https:2490}}.
+   * when omitted ({@code http}/{@code https}/{@code bolt} are simply not stored when absent, {@code priority}
+   * defaults to 0). This avoids the positional ambiguity of the colon form. Example:
+   * {@code frankfurt@db1:{raft:2434,http:2480,https:2490,bolt:7687}}. The {@code bolt} field is the
+   * client-reachable Bolt address advertised in the ROUTE routing table and is available only in the object
+   * form (the positional colon form has no Bolt field).
    * <p>
    * <b>2. Positional (colon) form</b>:
    * <ul>
@@ -107,6 +112,7 @@ final class RaftPeerAddressResolver {
     final List<RaftPeer> peers = new ArrayList<>(entries.size());
     final Map<RaftPeerId, String> httpAddresses = new HashMap<>(entries.size());
     final Map<RaftPeerId, String> httpsAddresses = new HashMap<>(entries.size());
+    final Map<RaftPeerId, String> boltAddresses = new HashMap<>(entries.size());
     final Map<RaftPeerId, String> peerNames = new HashMap<>(entries.size());
     final Map<String, String> nameToEntry = new HashMap<>(entries.size());
 
@@ -131,6 +137,7 @@ final class RaftPeerAddressResolver {
       final String raftAddress;
       String httpAddress = null;
       String httpsAddress = null;
+      String boltAddress = null;
       int priority = 0;
 
       final int braceIdx = entry.indexOf('{');
@@ -143,6 +150,8 @@ final class RaftPeerAddressResolver {
           httpAddress = host + ":" + spec.httpPort;
         if (spec.httpsPort != null)
           httpsAddress = host + ":" + spec.httpsPort;
+        if (spec.boltPort != null)
+          boltAddress = host + ":" + spec.boltPort;
         priority = spec.priority;
       } else {
         final String[] parts = entry.split(":");
@@ -192,6 +201,8 @@ final class RaftPeerAddressResolver {
         httpAddresses.put(peer.getId(), httpAddress);
       if (httpsAddress != null)
         httpsAddresses.put(peer.getId(), httpsAddress);
+      if (boltAddress != null)
+        boltAddresses.put(peer.getId(), boltAddress);
       if (peerName != null)
         peerNames.put(peer.getId(), peerName);
     }
@@ -216,7 +227,8 @@ final class RaftPeerAddressResolver {
         Collections.unmodifiableList(peers),
         Collections.unmodifiableMap(httpAddresses),
         Collections.unmodifiableMap(httpsAddresses),
-        Collections.unmodifiableMap(peerNames));
+        Collections.unmodifiableMap(peerNames),
+        Collections.unmodifiableMap(boltAddresses));
   }
 
   /** Resolved ports for a single peer entry, regardless of the syntax it was written in. */
@@ -225,19 +237,22 @@ final class RaftPeerAddressResolver {
     final int     raftPort;
     final Integer httpPort;  // null when not specified
     final Integer httpsPort; // null when not specified
+    final Integer boltPort;  // null when not specified
     final int     priority;
 
-    PeerSpec(final String host, final int raftPort, final Integer httpPort, final Integer httpsPort, final int priority) {
+    PeerSpec(final String host, final int raftPort, final Integer httpPort, final Integer httpsPort, final Integer boltPort,
+        final int priority) {
       this.host = host;
       this.raftPort = raftPort;
       this.httpPort = httpPort;
       this.httpsPort = httpsPort;
+      this.boltPort = boltPort;
       this.priority = priority;
     }
   }
 
   /**
-   * Parses the object form {@code host:{raft:..,http:..,https:..,priority:..}} into a {@link PeerSpec}.
+   * Parses the object form {@code host:{raft:..,http:..,https:..,bolt:..,priority:..}} into a {@link PeerSpec}.
    * Fields are unordered and all optional; {@code raft} defaults to {@code defaultPort}. Unknown or
    * duplicated keys throw {@link ServerException}.
    */
@@ -256,6 +271,7 @@ final class RaftPeerAddressResolver {
     int raftPort = defaultPort;
     Integer httpPort = null;
     Integer httpsPort = null;
+    Integer boltPort = null;
     int priority = 0;
     final Map<String, String> seen = new HashMap<>();
 
@@ -276,13 +292,14 @@ final class RaftPeerAddressResolver {
         case "raft" -> raftPort = parseIntField(value, "raft", entry);
         case "http" -> httpPort = parseIntField(value, "http", entry);
         case "https" -> httpsPort = parseIntField(value, "https", entry);
+        case "bolt" -> boltPort = parseIntField(value, "bolt", entry);
         case "priority" -> priority = parseIntField(value, "priority", entry);
         default -> throw new ServerException(
-            "Unknown key '" + key + "' in peer address '" + entry + "'. Supported keys: raft, http, https, priority");
+            "Unknown key '" + key + "' in peer address '" + entry + "'. Supported keys: raft, http, https, bolt, priority");
         }
       }
     }
-    return new PeerSpec(host, raftPort, httpPort, httpsPort, priority);
+    return new PeerSpec(host, raftPort, httpPort, httpsPort, boltPort, priority);
   }
 
   /**

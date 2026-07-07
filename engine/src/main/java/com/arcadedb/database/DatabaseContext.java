@@ -163,8 +163,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       // DO NOT PRUNE THE CONTEXTS ENTRY HERE EVEN WHEN THE MAP BECAME EMPTY: THIS RUNS ON THE CLOSING THREAD AND
       // WOULD RACE THE OWNER THREAD'S init() RE-REGISTRATION, UNREGISTERING A LIVE CONTEXT (ISSUE #4939). AN
       // EMPTY ENTRY LINGERS UNTIL ITS OWNER NEXT TOUCHES THE CONTEXT API (removeContext/
-      // removeCurrentThreadContexts) OR DIES (DEAD-THREAD SWEEP): AN IDLE LIVE THREAD KEEPS A TINY EMPTY-MAP
-      // ENTRY MEANWHILE, BOUNDED BY THE LIVE-THREAD COUNT
+      // removeCurrentThreadContexts), DIES (DEAD-THREAD SWEEP) OR THE PERIODIC SWEEP OPPORTUNISTICALLY DROPS
+      // IT WITH ITS CLAIM/RE-CHECK PROTOCOL (#5067): AN IDLE LIVE THREAD KEEPS A TINY EMPTY-MAP ENTRY
+      // MEANWHILE, BOUNDED BY THE LIVE-THREAD COUNT
     }
     return result;
   }
@@ -228,7 +229,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
 
   /**
    * Scans CONTEXTS and removes the entries whose owning thread is no longer alive, rolling back any transaction
-   * they abandoned. Called periodically as a safety net. Liveness is checked per entry via the thread weak
+   * they abandoned. Also opportunistically drops the empty entries of LIVE threads left behind by a foreign
+   * database close ({@code removeAllContexts} cannot prune them without racing the owner, see #4939/#5067);
+   * that prune is allocation-free and never rolls anything back. Called periodically as a safety net. Liveness is checked per entry via the thread weak
    * reference ({@link ThreadContexts}), which is virtual-thread-correct and safepoint-free (issue #4956).
    * Rolling back the abandoned transactions releases their file locks: before this, the sweep dropped the map
    * entries only, so the {@code LockManager} files locked by a thread that died with an open transaction (for
@@ -296,6 +299,21 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
                     .append("' transactions=").append(rolled);
               }
             }
+      } else if (threadContexts.contexts.isEmpty()) {
+        // #5067: A LIVE THREAD'S ENTRY WHOSE PER-DATABASE MAP IS NOW EMPTY, LEFT BEHIND BY A FOREIGN CLOSE
+        // (removeAllContexts DELIBERATELY DOES NOT PRUNE, SEE THE #4939 NOTE THERE). DROP IT SO OPEN/CLOSE
+        // CHURN ON LARGE LONG-LIVED POOLS (E.G. THE ~500 UNDERTOW WORKERS) DOES NOT ACCUMULATE EMPTY
+        // ENTRIES. THE HAZARD IS THE #4939 RACE: THE OWNER'S init() MAY HAVE JUST REPOPULATED THE MAP AND
+        // SKIPPED ITS RE-PUT ON THE IDENTITY FAST-PATH, SO A BARE REMOVE COULD UNREGISTER A LIVE CONTEXT.
+        // THE CLAIM/RE-CHECK PROTOCOL CLOSES IT: CLAIM THE EXACT ENTRY (VALUE-KEYED REMOVE), RE-CHECK
+        // EMPTINESS, AND RESTORE THE SAME ENTRY IF THE OWNER REPOPULATED MEANWHILE. ORDERING ARGUMENT: IN
+        // init() THE OWNER'S map.put ALWAYS PRECEDES ITS CONTEXTS REGISTRATION CHECK. IF THAT map.put
+        // LINEARIZES BEFORE THE RE-CHECK, THE RE-CHECK SEES NON-EMPTY AND RESTORES (putIfAbsent, SO A
+        // REGISTRATION THE OWNER ALREADY REFRESHED WINS); IF AFTER, THE OWNER'S SUBSEQUENT CHECK SEES THE
+        // ENTRY GONE AND RE-REGISTERS ITSELF. EITHER WAY NO LIVE REGISTRATION IS LOST. NO ROLLBACKS RUN
+        // HERE (THE MAP IS EMPTY), SO THE TWO-LEVEL CLAIM DISCIPLINE ABOVE IS UNTOUCHED; ALLOCATION-FREE
+        if (CONTEXTS.remove(entry.getKey(), threadContexts) && !threadContexts.contexts.isEmpty())
+          CONTEXTS.putIfAbsent(entry.getKey(), threadContexts);
       }
     }
 

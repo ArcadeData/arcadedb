@@ -30,6 +30,13 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.logging.Level;
@@ -58,13 +65,31 @@ public class SecurityGroupFileRepository {
   }
 
   public synchronized void save(final JSONObject configuration) throws IOException {
-    if (!file.exists())
-      file.getParentFile().mkdirs();
+    final File dir = file.getParentFile();
+    if (dir != null && !dir.exists())
+      dir.mkdirs();
 
-    try (final FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
-      writer.write(configuration.toString(2));
-      latestGroupConfiguration = configuration;
+    final byte[] bytes = configuration.toString(2).getBytes(DatabaseFactory.getDefaultCharset());
+    final Path target = file.toPath();
+    // Write to a sibling temp file, fsync it, then atomically rename over the target so a crash mid-write
+    // can only damage the throwaway temp file. The live group file stays the previous complete version and
+    // restart never falls back to createDefault(), which would silently widen permissions to the default.
+    final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
+    try {
+      try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
+        channel.write(ByteBuffer.wrap(bytes));
+        channel.force(true);
+      }
+      try {
+        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } finally {
+      Files.deleteIfExists(tmp);
     }
+
+    latestGroupConfiguration = configuration;
   }
 
   public synchronized void saveInError(final Exception e) {
@@ -93,16 +118,25 @@ public class SecurityGroupFileRepository {
   }
 
   public JSONObject getGroups() {
-    if (latestGroupConfiguration == null) {
-      try {
-        load();
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on loading file '%s', using default configuration", e, FILE_NAME);
-        saveInError(e);
-        latestGroupConfiguration = createDefault();
+    // Double-checked locking on the volatile field: the hot read path stays lock-free, while a concurrent
+    // first-time lazy init cannot race two threads both running load()/createDefault().
+    JSONObject cfg = latestGroupConfiguration;
+    if (cfg == null) {
+      synchronized (this) {
+        cfg = latestGroupConfiguration;
+        if (cfg == null) {
+          try {
+            load();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on loading file '%s', using default configuration", e, FILE_NAME);
+            saveInError(e);
+            latestGroupConfiguration = createDefault();
+          }
+          cfg = latestGroupConfiguration;
+        }
       }
     }
-    return latestGroupConfiguration;
+    return cfg;
   }
 
   protected synchronized JSONObject load() throws IOException {
