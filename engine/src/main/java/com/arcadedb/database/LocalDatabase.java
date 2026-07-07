@@ -1329,6 +1329,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // #4959: a genuine duplicate is deterministic and fails identically on every attempt. Only a
           // concurrency-induced duplicate can succeed on retry, and one retry is enough to disambiguate:
           // fail fast instead of burning all the remaining attempts plus their retry delays.
+          //
+          // #5061 review: a TRANSIENT duplicate from an in-flight sibling transaction that later rolls back
+          // is unreachable - checkUniqueIndexKeys reads committed pages plus THIS transaction's own overlay
+          // (TransactionIndexContext is per-transaction), so uncommitted sibling entries are invisible and a
+          // detected duplicate is always against durable state (or this same transaction). The one retry
+          // covers the only nondeterministic case: racing a COMMIT that lands between attempts.
           if (duplicatedKeyRetried)
             throw e;
           duplicatedKeyRetried = true;

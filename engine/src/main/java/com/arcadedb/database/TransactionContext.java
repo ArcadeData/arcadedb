@@ -981,6 +981,11 @@ public class TransactionContext implements Transaction {
           // rollback: it null-guards the lock lists and only releases what is still held).
           LogManager.instance().log(this, Level.WARNING,
               "Error during phase-2 failure rollback (the primary commit error is propagated)", rollbackError);
+          // The #4940 core must survive the degraded path too: rollback() can only throw at the dictionary
+          // reload, which runs BEFORE its identity reset - without this, records created in the failed tx
+          // would keep their dangling RID, the exact defect #4940 fixes. The loop is cheap and cannot throw.
+          for (final Record newRecord : newRecords)
+            ((RecordInternal) newRecord).setIdentity(null);
           reset();
         }
     }
