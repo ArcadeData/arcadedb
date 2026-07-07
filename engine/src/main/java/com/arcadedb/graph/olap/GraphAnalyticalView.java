@@ -1482,6 +1482,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             }
             // #4956: drop this worker's DatabaseContext entry (see buildAsync). Last statement because
             // applyDelta() above may touch the database on this thread and re-register a context.
+            // NOTE: this ordering deliberately DIFFERS from buildAsync/rebuild (which unregister FIRST): here
+            // applyDelta(forced) runs synchronously after taskCompleted() and can re-register a context on this
+            // same thread, so the unregister must be the true last statement.
             DatabaseContext.INSTANCE.removeCurrentThreadContexts();
           }
         });
