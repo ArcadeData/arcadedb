@@ -260,7 +260,9 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
   }
 
   @Test
-  void errorMissingIsolationLevel() throws Exception {
+  void beginWithPayloadWithoutIsolationLevelSucceeds() throws Exception {
+    // Issue #5037 item 2: isolationLevel is optional. A payload that omits it must begin a transaction with
+    // the default isolation and return 204, not fail with 400.
     testEachServer(serverIndex -> {
       // BEGIN
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -273,9 +275,8 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       connection.connect();
 
       try {
-        assertThatThrownBy(() -> readResponse(connection))
-            .isInstanceOf(Exception.class)
-            .hasMessageContaining("400");
+        assertThat(connection.getResponseCode()).isEqualTo(204);
+        assertThat(connection.getHeaderField(ARCADEDB_SESSION_ID)).isNotNull();
       } finally {
         connection.disconnect();
       }
