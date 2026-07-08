@@ -1452,10 +1452,21 @@ public class CypherExecutionPlan {
       return currentStep;
     }
 
-    final List<PathPattern> pathPatterns = matchClause.getPathPatterns();
     final AbstractExecutionStep stepBeforeMatch = currentStep;
     final Set<String> matchVariables = new HashSet<>();
     final boolean isOptional = matchClause.isOptional();
+
+    // Reorder independent (disconnected) comma-separated pattern parts so the expensive edge-bearing
+    // component drives the Cartesian product as the outer loop regardless of the written order
+    // (issue #5117). The legacy path chains parts left-deep and re-executes every later part once per
+    // outer row; writing a cheap standalone node first would otherwise re-run an expensive traversal
+    // once per node. Scoped to a leading, non-optional MATCH (no prior input row) so it never
+    // interacts with input-driven reverse-traversal or OPTIONAL null semantics. Cartesian product is
+    // commutative, so the result set is unchanged.
+    final List<PathPattern> pathPatterns = (!isOptional && stepBeforeMatch == null
+        && matchClause.getPathPatterns().size() > 1)
+        ? reorderIndependentComponents(matchClause.getPathPatterns())
+        : matchClause.getPathPatterns();
 
     // Extract ID filters from WHERE clause (if present) for pushdown optimization
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
@@ -1816,6 +1827,120 @@ public class CypherExecutionPlan {
     boundVariables.addAll(matchVariables);
 
     return currentStep;
+  }
+
+  /**
+   * Reorders the comma-separated pattern parts of a MATCH so that independent (disconnected)
+   * components are evaluated cheapest-to-recompute last (issue #5117).
+   * <p>
+   * Parts that share at least one node variable belong to the same connected component and keep
+   * their written order (intra-component order drives the reverse-traversal / bound-variable
+   * optimizations and must be preserved). Independent components are stable-sorted by descending
+   * relationship count: an edge-bearing component is more expensive to re-execute and typically more
+   * selective, so it must drive the left-deep nested-loop Cartesian product as the outer loop, while
+   * cheap standalone-node components become the inner loop that is re-scanned per outer row.
+   * <p>
+   * The Cartesian product of disconnected parts is commutative, so the returned order yields the same
+   * result set. When there is a single connected component the input list is returned unchanged.
+   * <p>
+   * Safety gate: reordering is only attempted when every part is <i>structurally pure</i> - it has no
+   * inline node/relationship properties, no dynamic labels, and no inline relationship WHERE. Those
+   * are the only places one part can reference a variable defined by another part (e.g. the
+   * correlated {@code MATCH (person), (p:Person {name: person.name})...} rewrite emitted by
+   * {@code COUNT { ... }}). Such a reference is a data dependency that forbids moving the referencing
+   * part ahead of its producer; when any part is impure we conservatively keep the written order. The
+   * top-level WHERE is intentionally ignored here because it is re-applied by a filter step after the
+   * whole match chain, so it never constrains the safe ordering.
+   */
+  private static List<PathPattern> reorderIndependentComponents(final List<PathPattern> pathPatterns) {
+    final int n = pathPatterns.size();
+
+    // Node variables per pattern part (anonymous nodes never bridge two parts). Bail out entirely if
+    // any part is impure, since an inline expression could reference another part's variable.
+    final List<Set<String>> partVars = new ArrayList<>(n);
+    for (final PathPattern part : pathPatterns) {
+      if (!isStructurallyPure(part))
+        return pathPatterns;
+      final Set<String> vars = new HashSet<>();
+      for (final NodePattern node : part.getNodes())
+        if (node.getVariable() != null)
+          vars.add(node.getVariable());
+      partVars.add(vars);
+    }
+
+    // Union-find: connect parts sharing at least one node variable.
+    final int[] parent = new int[n];
+    for (int i = 0; i < n; i++)
+      parent[i] = i;
+    for (int i = 0; i < n; i++)
+      for (int j = i + 1; j < n; j++)
+        if (!Collections.disjoint(partVars.get(i), partVars.get(j)))
+          parent[find(parent, i)] = find(parent, j);
+
+    // Group parts by component root, preserving first-appearance order within each component.
+    final LinkedHashMap<Integer, List<Integer>> components = new LinkedHashMap<>();
+    for (int i = 0; i < n; i++)
+      components.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(i);
+
+    if (components.size() < 2)
+      return pathPatterns; // single connected component - nothing to reorder
+
+    // Stable sort components by descending relationship count (ties keep earliest original index).
+    final List<List<Integer>> ordered = new ArrayList<>(components.values());
+    ordered.sort((a, b) -> {
+      final int wa = componentRelationshipCount(pathPatterns, a);
+      final int wb = componentRelationshipCount(pathPatterns, b);
+      if (wa != wb)
+        return Integer.compare(wb, wa);
+      return Integer.compare(a.get(0), b.get(0));
+    });
+
+    final List<PathPattern> result = new ArrayList<>(n);
+    for (final List<Integer> component : ordered)
+      for (final int idx : component)
+        result.add(pathPatterns.get(idx));
+    return result;
+  }
+
+  /**
+   * A pattern part is <i>structurally pure</i> when it carries no inline node/relationship properties,
+   * no dynamic labels, and no inline relationship WHERE. Only these constructs can embed an expression
+   * that references another part's variable, so a pure part can never depend on a sibling part and is
+   * always safe to reorder. Static labels, relationship types, direction and variable-length bounds do
+   * not reference row variables and are ignored.
+   */
+  private static boolean isStructurallyPure(final PathPattern part) {
+    for (final NodePattern node : part.getNodes()) {
+      if (node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels())
+        return false;
+    }
+    for (int i = 0; i < part.getRelationshipCount(); i++) {
+      final RelationshipPattern rel = part.getRelationship(i);
+      if (rel.hasProperties() || rel.getPropertiesParameterName() != null || rel.hasWhereExpression())
+        return false;
+    }
+    return true;
+  }
+
+  private static int componentRelationshipCount(final List<PathPattern> pathPatterns, final List<Integer> component) {
+    int count = 0;
+    for (final int idx : component)
+      count += pathPatterns.get(idx).getRelationshipCount();
+    return count;
+  }
+
+  private static int find(final int[] parent, final int x) {
+    int root = x;
+    while (parent[root] != root)
+      root = parent[root];
+    // Path compression.
+    int node = x;
+    while (parent[node] != root) {
+      final int next = parent[node];
+      parent[node] = root;
+      node = next;
+    }
+    return root;
   }
 
   /**
