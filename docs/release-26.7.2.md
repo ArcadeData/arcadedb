@@ -631,6 +631,22 @@ that could starve the very snapshot resync meant to heal the node.
   own quantization code), so already-built indexes are unaffected. The Java API exposes the same knob
   via `TypeLSMSparseVectorIndexBuilder.withWeightQuantization(...)`.
 
+- **Graph: concurrent edge insertion into a "super-node" (hot vertex) no longer triggers a retry storm.**
+  When many transactions append edges to the SAME vertex at once - a payments graph funnelling every
+  transaction into a central account, a popular product, a star-schema hub - they all collide on that
+  vertex's single edge-list head chunk under ArcadeDB's page-level MVCC. Previously each collision aborted
+  the whole transaction with a `ConcurrentModificationException` and retried it; under HA every retry re-ran
+  the entire Raft replication round, so contention piled up into multi-second (occasionally over a minute)
+  leader latencies that could breach application timeouts. Because appends to an edge list commute (order is
+  irrelevant), the engine now replays the conflicting appends on top of the newer committed page instead of
+  failing the transaction. In a 3-node HA benchmark this cut the worst-case commit latency from ~67s to
+  ~0.4s and full-transaction retries from ~350% to ~0.7% of commits for the same workload, with 4x less
+  leader/replication work. The optimization is on by default and transparent (all edges still land; the
+  leader replicates the merged result, so replicas stay identical). It adds ~0.7% allocation overhead on the
+  non-contended path and can be disabled with `arcadedb.graph.edgeAppendMerge=false`. Raw write throughput on
+  a single hot vertex is unchanged (a follow-up shards the edge list itself); this release removes the retry
+  cascade and the latency spikes.
+
 ## Breaking Changes (migration notes)
 
 ### 1. `raftPersistStorage` now defaults to `true` (durable Raft storage)
