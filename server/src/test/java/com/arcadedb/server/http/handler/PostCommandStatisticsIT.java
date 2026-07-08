@@ -61,6 +61,13 @@ class PostCommandStatisticsIT extends BaseGraphServerTest {
     assertThat(stats.getBoolean("containsUpdates")).isTrue();
   }
 
+  @Test
+  void readCommandWithDetailedProfileOmitsStats() throws Exception {
+    command("opencypher", "CREATE (:HttpStatReadProfiled {id:1})");
+    final JSONObject response = command("opencypher", "MATCH (n:HttpStatReadProfiled) RETURN n", true);
+    assertThat(response.has("stats")).isFalse();
+  }
+
   private JSONObject command(final String language, final String cmd) throws Exception {
     return command(language, cmd, false);
   }
