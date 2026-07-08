@@ -7,6 +7,7 @@ from junit_to_matrix import parse_junit, build_matrix
 HERE = os.path.dirname(__file__)
 SAMPLE = os.path.join(HERE, "testdata", "sample-junit.xml")
 UNKNOWN = os.path.join(HERE, "testdata", "unknown-id-junit.xml")
+GO_STYLE = os.path.join(HERE, "testdata", "go-junit.xml")
 KNOWN = {"CONN-001", "AUTH-003", "TYPE-007", "ERR-002"}
 
 
@@ -21,6 +22,11 @@ class ParseJunitTest(unittest.TestCase):
     def test_extracts_id_from_testcase_name_prefix(self):
         result = parse_junit(SAMPLE)
         self.assertEqual(set(result.keys()), KNOWN)
+
+    def test_underscore_separated_id_normalizes_to_hyphen(self):
+        # Go test funcs are named Test_CONN_001_...; the id must normalize to CONN-001.
+        result = parse_junit(GO_STYLE)
+        self.assertEqual(result, {"CONN-001": "pass"})
 
 
 class BuildMatrixTest(unittest.TestCase):

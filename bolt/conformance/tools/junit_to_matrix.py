@@ -11,7 +11,12 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-ID_RE = re.compile(r"\b([A-Z]+-\d{3})\b")
+# Suites encode the scenario id in test names with either a hyphen
+# (js/csharp/java "CONN-001") or an underscore (Go func "Test_CONN_001_...");
+# both normalize to the hyphenated spec id. A plain \b word boundary can't be
+# used because the underscore in "Test_CONN_001" is itself a word character, so
+# letter/digit lookarounds delimit the id instead.
+ID_RE = re.compile(r"(?<![A-Za-z])([A-Z]{2,})[-_](\d{3})(?!\d)")
 
 
 def parse_junit(xml_path):
@@ -28,7 +33,7 @@ def parse_junit(xml_path):
         match = ID_RE.search(name)
         if not match:
             continue
-        scenario = match.group(1)
+        scenario = f"{match.group(1)}-{match.group(2)}"
         status = "pass"
         for child in tc:
             tag = child.tag.split("}")[-1]
