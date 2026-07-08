@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.text.TextLevenshteinDistance;
 import com.arcadedb.index.IndexCursor;
@@ -456,8 +457,11 @@ public class FullTextQueryExecutor {
   private void collectAllIndexedRids(final Map<RID, AtomicInteger> scoreMap) {
     final IndexCursor cursor = index.iterateUnderlying(true, null, true);
     while (cursor.hasNext()) {
-      final RID rid = cursor.next().getIdentity();
-      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(1));
+      // next() may return null after hasNext()==true (deleted/tombstoned entry, issue #5118); skip it.
+      final Identifiable record = cursor.next();
+      if (record == null)
+        continue;
+      scoreMap.computeIfAbsent(record.getIdentity(), k -> new AtomicInteger(1));
     }
     // A pure-negative query (only MUST_NOT clauses) has no candidate set, so the whole index must be materialized to subtract the
     // excluded RIDs and form the complement. This is O(index) in time and memory; warn (throttled) when the materialized universe
@@ -482,8 +486,11 @@ public class FullTextQueryExecutor {
     // going through index.get() would run (and then discard) the full scoring pipeline for every term.
     final IndexCursor cursor = index.getPostings(searchKey);
     while (cursor.hasNext()) {
-      final RID rid = cursor.next().getIdentity();
-      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+      // next() may return null after hasNext()==true (deleted/tombstoned entry, issue #5118); skip it.
+      final Identifiable record = cursor.next();
+      if (record == null)
+        continue;
+      scoreMap.computeIfAbsent(record.getIdentity(), k -> new AtomicInteger(0)).incrementAndGet();
     }
   }
 
@@ -509,7 +516,11 @@ public class FullTextQueryExecutor {
       final Map<RID, AtomicInteger> termMatches = new HashMap<>();
       final IndexCursor cursor = index.getPostings(term.text());
       while (cursor.hasNext()) {
-        termMatches.put(cursor.next().getIdentity(), new AtomicInteger(1));
+        // next() may return null after hasNext()==true (deleted/tombstoned entry, issue #5118); skip it.
+        final Identifiable record = cursor.next();
+        if (record == null)
+          continue;
+        termMatches.put(record.getIdentity(), new AtomicInteger(1));
       }
 
       if (intersection == null) {
@@ -631,7 +642,12 @@ public class FullTextQueryExecutor {
     final IndexCursor cursor = index.iterateUnderlying(true,
         rangeScan ? new String[] { startKey } : null, true);
     while (cursor.hasNext()) {
-      final RID rid = cursor.next().getIdentity();
+      // LSMTreeIndexCursor.next() can legitimately return null after hasNext()==true (a full-key tombstone / deleted entry it
+      // steps over while its internal iterators are still considered alive - issue #5118). Skip it instead of dereferencing.
+      final Identifiable record = cursor.next();
+      if (record == null)
+        continue;
+      final RID rid = record.getIdentity();
       final Object[] keys = cursor.getKeys();
       if (keys == null || keys.length == 0 || keys[0] == null)
         continue;
