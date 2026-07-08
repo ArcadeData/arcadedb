@@ -603,6 +603,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
     }
 
+    if (fix)
+      // #5149: reconcile the cached record counter that count(*) relies on. Invalidating forces the next
+      // count() to rescan authoritatively. We invalidate rather than write the freshly scanned value here
+      // because check(fix=true) runs inside a transaction that the caller commits, and commit folds this
+      // bucket's record delta into the counter only when it is > -1 (TransactionContext); leaving -1 makes
+      // that fold skip so a fix that deleted corrupt records cannot double-apply its delta.
+      cachedRecordCount.set(-1);
+
     final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
 
     if (verboseLevel > 1)
