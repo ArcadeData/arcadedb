@@ -1,0 +1,38 @@
+# Resolved Bolt driver-version matrix
+
+Concrete driver versions consumed by `.github/workflows/bolt-nightly.yml`. The
+band names come from `spec.yaml` `driver_version_bands`; the versions below were
+resolved against each package registry. The newest patch of each maintained
+minor line is chosen; the `latest`/`latest-6.x` band tracks the newest release
+so a driver-side release that breaks compatibility is caught by the nightly run.
+
+When a driver publishes a new release that shifts a band, update the version
+here and in the matching workflow matrix.
+
+| Language   | Band                  | Version  |
+|------------|-----------------------|----------|
+| java       | oldest-supported-4.x  | 4.4.20   |
+| java       | latest-5.x            | 5.28.5   |
+| java       | latest-6.x            | 6.2.0    |
+| javascript | oldest-supported-4.x  | 4.4.11   |
+| javascript | latest-5.x            | 5.28.3   |
+| javascript | latest-6.x            | 6.2.0    |
+| python     | lts                   | 5.28.4   |
+| python     | current               | 6.1.0    |
+| python     | latest                | 6.2.0    |
+| csharp     | lts                   | 4.4.0    |
+| csharp     | current               | 5.28.4   |
+| csharp     | latest                | 6.2.1    |
+| go         | lts                   | 5.27.0   |
+| go         | current               | 5.28.0   |
+| go         | latest                | 5.28.4   |
+
+Notes:
+- Java `oldest-supported-4.x` (4.4.20) runs through the `e2e`
+  `bolt-driver-legacy` Maven profile (`RemoteBoltLegacyDriverIT`); the other two
+  Java bands run `RemoteBoltDatabaseIT` with `-Dneo4j-driver.version=`.
+- The Go driver ships a single current major line (`neo4j-go-driver/v5`); its
+  three bands are three points along that line.
+- Repo PR-run pins (single version each): java 6.2.0, javascript 6.0.1,
+  python 6.2.0, csharp 6.2.1, go 5.28.4. The nightly widens each to the full
+  band set above.
