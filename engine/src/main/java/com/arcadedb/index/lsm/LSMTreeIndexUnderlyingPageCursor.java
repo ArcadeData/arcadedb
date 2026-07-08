@@ -81,7 +81,7 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
       for (int k = 0; k < keyTypes.length; ++k) {
         final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
         if (notNull)
-          currentKey[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+          currentKey[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null, false);
         else
           currentKey[k] = null;
       }
@@ -94,7 +94,7 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
         for (int k = 0; k < keyTypes.length; ++k) {
           final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
           if (notNull)
-            adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+            adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null, false);
           else
             adjacentKeys[k] = null;
         }
@@ -113,7 +113,7 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
     for (int k = 0; k < keyTypes.length; ++k) {
       final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
       if (notNull)
-        nextKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+        nextKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null, false);
       else
         nextKeys[k] = null;
     }
@@ -131,7 +131,7 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
       for (int k = 0; k < keyTypes.length; ++k) {
         final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
         if (notNull)
-          adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+          adjacentKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null, false);
         else
           adjacentKeys[k] = null;
       }

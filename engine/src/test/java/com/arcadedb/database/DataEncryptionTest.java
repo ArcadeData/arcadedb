@@ -156,6 +156,51 @@ class DataEncryptionTest extends TestHelper {
     });
   }
 
+  // Regression coverage for issue #5142: the #4137 fix (unencrypted deterministic index keys) was only wired into the HASH
+  // bucket. LSM_TREE index keys - which the FULL_TEXT index is built on - were still serialized with encryption enabled, so
+  // the random-IV ciphertext broke the ordered byte comparison and every lookup returned no result.
+  @Test
+  void lsmTreeStringIndexLookupWorksWithEncryption() throws Exception {
+    enableRandomEncryption();
+
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType("EntryLsm");
+      t.createProperty("name", Type.STRING).setMandatory(true).setNotNull(true);
+      t.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    });
+    database.transaction(() ->
+      database.newDocument("EntryLsm").set("name", "alice").save());
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM EntryLsm WHERE name = :name", Map.of("name", "alice"))) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("alice");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  @Test
+  void fullTextIndexLookupWorksWithEncryption() throws Exception {
+    enableRandomEncryption();
+
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType("Entry");
+      t.createProperty("payload", Type.STRING).setMandatory(true).setNotNull(true);
+      database.command("sql", "CREATE INDEX ON Entry (payload) FULL_TEXT");
+    });
+    database.transaction(() ->
+      database.newDocument("Entry").set("payload", "Hello World").save());
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Entry WHERE SEARCH_FIELDS(['payload'], 'hello')")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<String>getProperty("payload")).isEqualTo("Hello World");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
   private void enableRandomEncryption() throws Exception {
     final KeyGenerator keyGenerator = KeyGenerator.getInstance("AES");
     keyGenerator.init(256);
