@@ -10,6 +10,15 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: `COUNT { ... }` (and other block subqueries) inside a pattern-comprehension `WHERE` no longer swallow a
+  trailing comparison.** A filter such as `[(a)-[:E]->(b) WHERE COUNT { MATCH (b)-[:E]->() } = 0 | b.name]` was parsed
+  as just the `COUNT { ... }` block, dropping the `= 0`, so the predicate evaluated to a non-boolean count and every
+  candidate passed the filter ([#5140](https://github.com/ArcadeData/arcadedb/issues/5140)). The special-function
+  detector (`COUNT`/`COLLECT`/`EXISTS`/`CASE`/`shortestPath`) guarded its "does this cover the whole expression?" check
+  with a 2-character text-length tolerance, which a short trailing operator like `= 0` or `> 0` slipped through. The
+  guard now uses exact parse-tree token boundaries, so the surrounding comparison is retained and the comprehension
+  filters correctly, matching Neo4j.
+
 - **Encryption: `FULL_TEXT` (and every `LSM_TREE`) index now returns results on an encrypted database.** With
   data encryption enabled, a `SELECT ... WHERE SEARCH_FIELDS([...], '...')` (or any equality/range lookup on an
   `LSM_TREE`-indexed property) returned an empty result set ([#5142](https://github.com/ArcadeData/arcadedb/issues/5142)).

@@ -22,6 +22,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
+import org.antlr.v4.runtime.ParserRuleContext;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,16 +46,16 @@ class ExpressionTypeDetector {
    * Returns null if not a special function.
    */
   Expression tryParseSpecialFunctions(final Cypher25Parser.ExpressionContext ctx) {
-    // All recursive searches below use a length guard: only match when the found
-    // context covers (almost) the full expression text.  Without this, expressions
-    // like sum(CASE WHEN ... END) would be mis-parsed as just the inner special
-    // expression, losing the outer function wrapper.  The - 2 tolerance allows for
-    // whitespace that ANTLR's getText() strips from tokens.
-    final String exprText = ctx.getText();
+    // All recursive searches below use a span guard: only match when the found context spans the
+    // ENTIRE expression (same start and stop tokens). Without this, expressions like
+    // sum(CASE WHEN ... END) would be mis-parsed as just the inner special expression, losing the
+    // outer function wrapper, and COUNT { ... } = 0 would be mis-parsed as just the COUNT block,
+    // dropping the trailing comparison (issue #5140). Token-boundary checks are exact and, unlike a
+    // text-length tolerance, never swallow a short trailing operator such as "= 0".
 
     // count(*) - special grammar rule
     final Cypher25Parser.CountStarContext countStarCtx = builder.findCountStarRecursive(ctx);
-    if (countStarCtx != null && countStarCtx.getText().length() >= exprText.length() - 2) {
+    if (spansFullExpression(countStarCtx, ctx)) {
       final List<Expression> args = new ArrayList<>();
       args.add(new StarExpression());
       return new FunctionCallExpression("count", args, false);
@@ -62,34 +63,45 @@ class ExpressionTypeDetector {
 
     // EXISTS expression
     final Cypher25Parser.ExistsExpressionContext existsCtx = builder.findExistsExpressionRecursive(ctx);
-    if (existsCtx != null && existsCtx.getText().length() >= exprText.length() - 2)
+    if (spansFullExpression(existsCtx, ctx))
       return builder.parseExistsExpression(existsCtx);
 
     // COLLECT { ... } subquery expression
     final Cypher25Parser.CollectExpressionContext collectCtx = builder.findCollectExpressionRecursive(ctx);
-    if (collectCtx != null && collectCtx.getText().length() >= exprText.length() - 2)
+    if (spansFullExpression(collectCtx, ctx))
       return builder.parseCollectExpression(collectCtx);
 
     // COUNT { ... } subquery expression
     final Cypher25Parser.CountExpressionContext countCtx = builder.findCountExpressionRecursive(ctx);
-    if (countCtx != null && countCtx.getText().length() >= exprText.length() - 2)
+    if (spansFullExpression(countCtx, ctx))
       return builder.parseCountExpression(countCtx);
 
     // CASE expressions (both forms)
     final Cypher25Parser.CaseExpressionContext caseCtx = builder.findCaseExpressionRecursive(ctx);
-    if (caseCtx != null && caseCtx.getText().length() >= exprText.length() - 2)
+    if (spansFullExpression(caseCtx, ctx))
       return builder.parseCaseExpression(caseCtx);
 
     final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = builder.findExtendedCaseExpressionRecursive(ctx);
-    if (extCaseCtx != null && extCaseCtx.getText().length() >= exprText.length() - 2)
+    if (spansFullExpression(extCaseCtx, ctx))
       return builder.parseExtendedCaseExpression(extCaseCtx);
 
     // shortestPath expressions
     final Cypher25Parser.ShortestPathExpressionContext shortestPathCtx = builder.findShortestPathExpressionRecursive(ctx);
-    if (shortestPathCtx != null && shortestPathCtx.getText().length() >= exprText.length() - 2)
+    if (spansFullExpression(shortestPathCtx, ctx))
       return builder.parseShortestPathExpression(shortestPathCtx);
 
     return null;
+  }
+
+  /**
+   * Returns true when {@code sub} covers the whole {@code full} expression, i.e. they share the
+   * same first and last tokens. Using token boundaries (rather than a text-length tolerance) is
+   * exact: a trailing operator such as {@code = 0} shifts {@code full}'s stop token past
+   * {@code sub}'s, so the special-function context is correctly recognized as only a sub-part of a
+   * larger comparison/arithmetic expression (issue #5140).
+   */
+  private static boolean spansFullExpression(final ParserRuleContext sub, final ParserRuleContext full) {
+    return sub != null && sub.getStart() == full.getStart() && sub.getStop() == full.getStop();
   }
 
   /**
