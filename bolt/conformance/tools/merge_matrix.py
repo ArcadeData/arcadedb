@@ -48,6 +48,9 @@ def merge(matrices, expected_cells=None):
         key = f"{lang}:{ver}"
         languages.add(lang)
         present_cells.add(key)
+        # "Empty" means no scenario id was recognized at all (the coverage floor).
+        # An all-skipped suite is NOT empty - it has scenarios with "skip" status -
+        # so a legitimately fully-skipped cell does not trip the floor.
         if not cell["scenarios"]:
             empty.append(key)
         for scenario, status in cell["scenarios"].items():

@@ -46,13 +46,13 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          key: docker-image-${{ github.run_id }}
 
       - name: Cache Maven artifacts
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          key: maven-repo-${{ github.run_id }}
 
   bolt-nightly-java:
     needs: build-image
@@ -82,12 +82,12 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.m2/repository
-          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+          key: maven-repo-${{ github.run_id }}
       - name: Restore Docker image
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          key: docker-image-${{ github.run_id }}
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python
@@ -132,7 +132,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          key: docker-image-${{ github.run_id }}
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python
@@ -183,7 +183,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          key: docker-image-${{ github.run_id }}
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Run Bolt suite against pinned driver
@@ -229,7 +229,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          key: docker-image-${{ github.run_id }}
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python
@@ -279,7 +279,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/arcadedb-image.tar
-          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          key: docker-image-${{ github.run_id }}
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
       - name: Set up Python

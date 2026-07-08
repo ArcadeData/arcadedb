@@ -10,6 +10,7 @@ UNKNOWN = os.path.join(HERE, "testdata", "unknown-id-junit.xml")
 GO_STYLE = os.path.join(HERE, "testdata", "go-junit.xml")
 PY_STYLE = os.path.join(HERE, "testdata", "py-junit.xml")
 NS_STYLE = os.path.join(HERE, "testdata", "ns-junit.xml")
+JAVA_STYLE = os.path.join(HERE, "testdata", "java-junit.xml")
 KNOWN = {"CONN-001", "AUTH-003", "TYPE-007", "ERR-002"}
 
 
@@ -34,6 +35,12 @@ class ParseJunitTest(unittest.TestCase):
         # pytest emits name="test_CONN_001_connect"; the id must still resolve.
         result = parse_junit(PY_STYLE)
         self.assertEqual(result, {"CONN-001": "pass"})
+
+    def test_java_failsafe_method_name_form(self):
+        # Maven Failsafe writes the method name (conn001_boltScheme), not the
+        # @DisplayName, so the id must be recovered from the lowercase form.
+        result = parse_junit(JAVA_STYLE)
+        self.assertEqual(result, {"CONN-001": "pass", "AUTH-003": "skip"})
 
     def test_namespaced_junit_document(self):
         result = parse_junit(NS_STYLE)

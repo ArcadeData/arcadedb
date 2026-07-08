@@ -13,13 +13,20 @@ import sys
 # apply on this trust boundary.
 import xml.etree.ElementTree as ET  # nosec B405
 
-# Suites encode the scenario id in test names with either a hyphen
-# (js/csharp/java "CONN-001") or an underscore (Go func "Test_CONN_001_...");
-# both normalize to the hyphenated spec id. A plain \b word boundary can't be
-# used because the underscore in "Test_CONN_001" is itself a word character, so
-# letter/digit lookarounds delimit the id instead. The prefix is 1+ letters to
-# match SPEC_ID_RE and the documented [A-Z]+-\d{3} pattern.
-ID_RE = re.compile(r"(?<![A-Za-z])([A-Z]+)[-_](\d{3})(?!\d)")
+# Suites embed the scenario id in test names in several shapes, and the id must
+# be recovered from all of them:
+#   JS      it("[CONN-001] ...")                 -> bracketed, hyphen
+#   Go      func Test_CONN_001_...               -> underscore
+#   Python  def test_CONN_001_...                -> underscore, lowercase prefix
+#   C#      [Fact(DisplayName = "CONN-001: ...")] -> hyphen (via the JUnit logger)
+#   Java    void conn001_boltScheme()            -> Maven Failsafe writes the
+#           method name (not @DisplayName) by default: lowercase, no separator
+# So the prefix is matched case-insensitively, the separator is optional, and the
+# result is normalized to the uppercase hyphenated spec id. A plain \b can't be
+# used (the surrounding "_" is a word char); alnum lookarounds delimit the id and
+# the exact 3-digit + (?!\d) guard avoids swallowing 4-digit runs (e.g. year2024).
+# Tokens that resolve to an id absent from the spec are dropped in build_matrix.
+ID_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{2,})[-_]?(\d{3})(?!\d)")
 SPEC_ID_RE = re.compile(r"^\s*-\s*id:\s*([A-Z]+-\d{3})\b")
 
 
@@ -43,7 +50,7 @@ def parse_junit(xml_path):
         match = ID_RE.search(name)
         if not match:
             continue
-        scenario = f"{match.group(1)}-{match.group(2)}"
+        scenario = f"{match.group(1).upper()}-{match.group(2)}"
         status = "pass"
         for child in tc:
             tag = _local_name(child.tag)
