@@ -41,6 +41,8 @@ import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
 import io.grpc.stub.AbstractStub;
 
 import javax.annotation.PreDestroy;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executor;
@@ -69,6 +71,11 @@ public class RemoteGrpcServer implements AutoCloseable {
 
   private final List<ClientInterceptor> interceptors;
   private final boolean                 plaintext;
+  private final boolean                 allowInsecureCredentials;
+  // Whole decision is fixed at construction (host/plaintext/opt-in are all final): true means credentials would
+  // travel in cleartext to a non-loopback host and must be refused. Resolving it once keeps the credential-attach
+  // path off any DNS lookup.
+  private final boolean                 refuseCredentialsOverChannel;
 
   private ManagedChannel channel;
   private EventLoopGroup eventLoopGroup;
@@ -82,12 +89,19 @@ public class RemoteGrpcServer implements AutoCloseable {
 
   public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext,
       List<ClientInterceptor> interceptors, final long defaultTimeoutMs) {
+    this(host, port, user, pass, plaintext, interceptors, defaultTimeoutMs, false);
+  }
+
+  public RemoteGrpcServer(final String host, final int port, final String user, final String pass, boolean plaintext,
+      List<ClientInterceptor> interceptors, final long defaultTimeoutMs, final boolean allowInsecureCredentials) {
 
     this.host = Objects.requireNonNull(host, "host");
 
     this.port = port;
 
     this.plaintext = plaintext;
+    this.allowInsecureCredentials = allowInsecureCredentials;
+    this.refuseCredentialsOverChannel = plaintext && !allowInsecureCredentials && !isLoopbackHost(this.host);
     this.interceptors = interceptors == null ? List.of() : List.copyOf(interceptors);
 
     this.userName = Objects.requireNonNull(user, "user");
@@ -275,9 +289,36 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   /**
+   * Refuses to attach credentials when they would travel in cleartext. Sending username/password over a
+   * {@code usePlaintext()} channel to a non-loopback host exposes them on the wire on every RPC. Loopback targets
+   * (no wire exposure) and an explicit {@code allowInsecureCredentials} opt-in are still permitted; otherwise this
+   * throws so the caller enables TLS instead of leaking credentials.
+   */
+  private void ensureCredentialsAllowedOverChannel() {
+    if (refuseCredentialsOverChannel)
+      throw new SecurityException("Refusing to send credentials over a plaintext gRPC channel to non-loopback host '"
+          + host + "'. Enable TLS, or explicitly opt in with allowInsecureCredentials=true.");
+  }
+
+  private static boolean isLoopbackHost(final String host) {
+    if (host == null || host.isBlank())
+      return false;
+    final String h = host.trim();
+    if (h.equalsIgnoreCase("localhost"))
+      return true;
+    try {
+      return InetAddress.getByName(h).isLoopbackAddress();
+    } catch (final UnknownHostException e) {
+      // Unresolvable host: treat as non-loopback and fail closed.
+      return false;
+    }
+  }
+
+  /**
    * Creates call credentials for authentication
    */
   protected CallCredentials createCallCredentials(String userName, String userPassword) {
+    ensureCredentialsAllowedOverChannel();
     return new CallCredentials() {
       @Override
       public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
@@ -297,6 +338,7 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   protected CallCredentials createCredentials() {
+    ensureCredentialsAllowedOverChannel();
     return new CallCredentials() {
       @Override
       public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {

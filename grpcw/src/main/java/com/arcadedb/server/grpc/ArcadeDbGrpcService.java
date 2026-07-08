@@ -191,9 +191,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   static final long DEFAULT_TX_MAX_AGE_MS       = 0L;       // disabled by default
   static final long DEFAULT_TX_REAPER_PERIOD_MS = 30_000L;  // 30 seconds
 
+  // Concurrent-transaction caps (issue #5048). Each open transaction owns a dedicated executor thread, so an
+  // unbounded number of concurrent transactions is a thread/memory-exhaustion DoS vector for an authenticated
+  // client. A non-positive value disables the corresponding bound.
+  static final int DEFAULT_MAX_CONCURRENT_TX               = 1_000;
+  static final int DEFAULT_MAX_CONCURRENT_TX_PER_PRINCIPAL = 100;
+
+  // Sentinel used as the per-principal counter key when a transaction is opened on a security-disabled server
+  // (no authenticated identity to bind to).
+  private static final String ANONYMOUS_PRINCIPAL = "";
+
   private final long                     txMaxIdleMs;
   private final long                     txMaxAgeMs;
   private final ScheduledExecutorService txReaper;
+
+  private final int                            maxConcurrentTransactions;
+  private final int                            maxConcurrentTransactionsPerPrincipal;
+  private final AtomicInteger                  globalTransactionCount     = new AtomicInteger();
+  private final Map<String, AtomicInteger>     perPrincipalTransactionCount = new ConcurrentHashMap<>();
 
   public ArcadeDbGrpcService(String databasePath, ArcadeDBServer server) {
     this(databasePath, server, DEFAULT_TX_MAX_IDLE_MS, DEFAULT_TX_MAX_AGE_MS, DEFAULT_TX_REAPER_PERIOD_MS);
@@ -201,10 +216,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   public ArcadeDbGrpcService(String databasePath, ArcadeDBServer server, final long txMaxIdleMs, final long txMaxAgeMs,
       final long txReaperPeriodMs) {
+    this(databasePath, server, txMaxIdleMs, txMaxAgeMs, txReaperPeriodMs, DEFAULT_MAX_CONCURRENT_TX,
+        DEFAULT_MAX_CONCURRENT_TX_PER_PRINCIPAL);
+  }
+
+  public ArcadeDbGrpcService(String databasePath, ArcadeDBServer server, final long txMaxIdleMs, final long txMaxAgeMs,
+      final long txReaperPeriodMs, final int maxConcurrentTransactions, final int maxConcurrentTransactionsPerPrincipal) {
     this.databasePath = databasePath;
     this.arcadeServer = server;
     this.txMaxIdleMs = txMaxIdleMs;
     this.txMaxAgeMs = txMaxAgeMs;
+    this.maxConcurrentTransactions = maxConcurrentTransactions;
+    this.maxConcurrentTransactionsPerPrincipal = maxConcurrentTransactionsPerPrincipal;
 
     // Start the reaper only when at least one expiry bound is active and a positive period is configured.
     // A non-positive maxIdleMs/maxAgeMs disables that individual bound; non-positive for both (or a non-positive
@@ -234,6 +257,65 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   boolean isIdleReaperActive() {
     return txReaper != null;
+  }
+
+  /**
+   * Returns the number of open transactions currently attributed to the given principal. Exposed for testing the
+   * per-principal concurrency cap.
+   */
+  int getTransactionCountForPrincipal(final String owner) {
+    final AtomicInteger counter = perPrincipalTransactionCount.get(owner == null ? ANONYMOUS_PRINCIPAL : owner);
+    return counter == null ? 0 : counter.get();
+  }
+
+  /**
+   * Atomically reserves a slot for a new transaction against the global and per-principal caps. Returns {@code true}
+   * when both bounds admit the transaction; on rejection no counter is left incremented. A non-positive cap disables
+   * that bound. Reserving before the dedicated executor thread is created is what makes the cap effective against a
+   * beginTransaction flood: the thread is never allocated for a rejected request.
+   */
+  boolean tryReserveTransactionSlot(final String owner) {
+    final int global = globalTransactionCount.incrementAndGet();
+    if (maxConcurrentTransactions > 0 && global > maxConcurrentTransactions) {
+      globalTransactionCount.decrementAndGet();
+      return false;
+    }
+
+    // Reserve the per-principal slot under an atomic compute so admission and the counter mutation happen as one
+    // step per key; this also lets releaseTransactionSlot remove the entry at zero without racing a concurrent
+    // reserve, keeping perPrincipalTransactionCount from growing unbounded across many distinct principals.
+    // The per-principal cap does not apply to the anonymous principal (security-disabled server): a single shared
+    // identity is not a fairness boundary, so only the global cap bounds it. The count is still tracked for metrics.
+    final String key = owner == null ? ANONYMOUS_PRINCIPAL : owner;
+    final int perPrincipalCap = owner == null ? 0 : maxConcurrentTransactionsPerPrincipal;
+    final boolean[] admitted = { true };
+    perPrincipalTransactionCount.compute(key, (k, counter) -> {
+      if (counter == null)
+        return new AtomicInteger(1);
+      if (perPrincipalCap > 0 && counter.get() >= perPrincipalCap) {
+        admitted[0] = false;
+        return counter;
+      }
+      counter.incrementAndGet();
+      return counter;
+    });
+
+    if (!admitted[0]) {
+      globalTransactionCount.decrementAndGet();
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Releases a previously reserved transaction slot. Called exactly once per successful reservation when the
+   * transaction is torn down (commit, rollback, reap, or a failed begin) so the caps track live transactions. The
+   * per-principal entry is dropped when its count returns to zero so the map does not accumulate stale keys.
+   */
+  void releaseTransactionSlot(final String owner) {
+    globalTransactionCount.decrementAndGet();
+    final String key = owner == null ? ANONYMOUS_PRINCIPAL : owner;
+    perPrincipalTransactionCount.computeIfPresent(key, (k, counter) -> counter.decrementAndGet() <= 0 ? null : counter);
   }
 
   /**
@@ -307,6 +389,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (activeTransactions.remove(entry.getKey(), ctx)) {
           LogManager.instance().log(this, Level.FINE,
               "Reaping abandoned gRPC transaction txId=%s (idleMs=%s ageMs=%s)", entry.getKey(), idleMs, ageMs);
+          releaseTransactionSlot(ctx.owner);
           reapTransaction(ctx);
           reaped++;
         }
@@ -1335,6 +1418,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Declare txCtx outside try block so we can clean it up on failure
     TransactionContext txCtx = null;
+    // Track whether we hold a reserved concurrency slot so the failure path releases it exactly once.
+    boolean reserved = false;
+    String owner = null;
 
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
@@ -1351,7 +1437,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Bind the transaction to the authenticated principal so a transaction-scoped RPC can later reject
       // any caller other than the owner (getDatabase() above already authenticated/authorized this user).
-      final String owner = resolvedUsername(request.getCredentials());
+      owner = resolvedUsername(request.getCredentials());
+
+      // Enforce the concurrent-transaction caps BEFORE allocating the dedicated executor thread, so a
+      // beginTransaction flood is rejected without ever creating the thread it is trying to exhaust.
+      if (!tryReserveTransactionSlot(owner)) {
+        // Report the configured caps rather than live counts: tryReserveTransactionSlot has already rolled back its
+        // increments on rejection, so a live read here would be post-decrement and misleadingly below the cap.
+        LogManager.instance().log(this, Level.WARNING,
+            "beginTransaction(): rejected for principal=%s - concurrent transaction limit reached (caps: global=%s, perPrincipal=%s)",
+            owner != null ? owner : "<anonymous>", maxConcurrentTransactions, maxConcurrentTransactionsPerPrincipal);
+        responseObserver.onError(Status.RESOURCE_EXHAUSTED
+            .withDescription("Too many concurrent transactions; retry after committing or rolling back open transactions")
+            .asException());
+        return;
+      }
+      reserved = true;
 
       // Create transaction context with dedicated executor thread
       txCtx = new TransactionContext(database, transactionId, owner);
@@ -1390,6 +1491,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw new IllegalStateException("Transaction id collision for id=" + transactionId);
       }
 
+      // Registration succeeded: the reserved slot and the executor now belong to the live transaction, which is
+      // torn down (and its slot released) by commit/rollback/reap. Clear the local cleanup handles so the catch
+      // block below cannot double-release the slot or shut down the live transaction's executor.
+      txCtx = null;
+      reserved = false;
+
       LogManager.instance()
           .log(this, Level.FINE, "beginTransaction(): started txId=%s for db=%s activeTxCount(after)=%s", transactionId,
               database != null ? database.getName() : "<null>", activeTransactions.size());
@@ -1403,6 +1510,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Shutdown the executor if it was created but not registered (prevents thread leak)
       if (txCtx != null) {
         txCtx.shutdown();
+      }
+      // Release the reserved concurrency slot if the transaction never became live.
+      if (reserved) {
+        releaseTransactionSlot(owner);
       }
       Throwable cause = t instanceof ExecutionException && t.getCause() != null ? t.getCause() : t;
       LogManager.instance()
@@ -1481,7 +1592,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // tx is unusable; do not reinsert into the map
       rsp.onError(Status.ABORTED.withDescription("Commit failed: " + cause.getMessage()).asException());
     } finally {
-      // Always shutdown the executor
+      // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
+      // shut the executor down exactly once here.
+      releaseTransactionSlot(txCtx.owner);
       txCtx.shutdown();
     }
   }
@@ -1550,7 +1663,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           cause.toString(), cause);
       rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + cause.getMessage()).asException());
     } finally {
-      // Always shutdown the executor
+      // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
+      // shut the executor down exactly once here.
+      releaseTransactionSlot(txCtx.owner);
       txCtx.shutdown();
     }
   }
