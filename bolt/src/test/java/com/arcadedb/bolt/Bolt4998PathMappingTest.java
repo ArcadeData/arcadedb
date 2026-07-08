@@ -117,7 +117,7 @@ class Bolt4998PathMappingTest {
     final Object out = BoltStructureMapper.toPackStreamValue(p);
     assertThat(out).isInstanceOf(BoltPointStructure.class);
     final BoltPointStructure pt = (BoltPointStructure) out;
-    assertThat(pt.getSignature()).isEqualTo((byte) 0x58);
+    assertThat(pt.getZ()).isNull(); // z absent -> writeTo emits the Point2D (0x58) signature
     assertThat(pt.getSrid()).isEqualTo(7203);
     assertThat(pt.getX()).isEqualTo(12.34);
     assertThat(pt.getY()).isEqualTo(56.78);

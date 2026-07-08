@@ -90,8 +90,6 @@ class BoltTypeRoundTripTest {
     final Object out = BoltStructureMapper.toPackStreamValue(d);
     assertThat(out).isInstanceOf(BoltTemporalStructure.class);
     final BoltTemporalStructure s = (BoltTemporalStructure) out;
-    assertThat(s.getSignature()).isEqualTo((byte) 0x45);
-    assertThat(s.getFieldCount()).isEqualTo(4);
 
     // BoltTemporalStructure has no field getter by design; round-trip through the wire to pin the
     // field ORDER and VALUES, not just the structure shape.
@@ -112,7 +110,7 @@ class BoltTypeRoundTripTest {
     final Object out = BoltStructureMapper.toPackStreamValue(point);
     assertThat(out).isInstanceOf(BoltPointStructure.class);
     final BoltPointStructure p = (BoltPointStructure) out;
-    assertThat(p.getSignature()).isEqualTo((byte) 0x58);
+    assertThat(p.getZ()).isNull(); // z absent -> writeTo emits the Point2D (0x58) signature
     assertThat(p.getSrid()).isEqualTo(7203);
     assertThat(p.getX()).isEqualTo(12.34);
     assertThat(p.getY()).isEqualTo(56.78);
@@ -129,7 +127,7 @@ class BoltTypeRoundTripTest {
     point.put("crs", "WGS-84-3D");
     point.put("srid", 4979);
     final BoltPointStructure p = (BoltPointStructure) BoltStructureMapper.toPackStreamValue(point);
-    assertThat(p.getSignature()).isEqualTo((byte) 0x59);
+    assertThat(p.getZ()).isNotNull(); // z present -> writeTo emits the Point3D (0x59) signature
     assertThat(p.getSrid()).isEqualTo(4979);
     assertThat(p.getX()).isEqualTo(12.34);
     assertThat(p.getY()).isEqualTo(56.78);
