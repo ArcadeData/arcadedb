@@ -68,8 +68,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # -Dneo4j-driver.version overrides the bolt-driver-legacy profile's
+          # default so the oldest band actually loads the 4.4.20 driver.
           - version: "4.4.20"
-            args: "-Pbolt-driver-legacy -Dit.test=RemoteBoltLegacyDriverIT"
+            args: "-Pbolt-driver-legacy -Dit.test=RemoteBoltLegacyDriverIT -Dneo4j-driver.version=4.4.20"
             report: RemoteBoltLegacyDriverIT
           - version: "5.28.5"
             args: "-Dit.test=RemoteBoltDatabaseIT -Dneo4j-driver.version=5.28.5"
@@ -108,9 +110,13 @@ jobs:
           ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
       - name: Convert to matrix JSON
         if: success() || failure()
+        # Glob (with nullglob) so both a single aggregate report and any
+        # per-@Nested-class split files (TEST-...RemoteBoltDatabaseIT$Connection.xml)
+        # are folded together; an empty match yields an empty cell, not a crash.
         run: |
-          python3 bolt/conformance/tools/junit_to_matrix.py \
-            "e2e/target/failsafe-reports/TEST-com.arcadedb.e2e.${{ matrix.report }}.xml" \
+          shopt -s nullglob
+          reports=(e2e/target/failsafe-reports/TEST-com.arcadedb.e2e.${{ matrix.report }}*.xml)
+          python3 bolt/conformance/tools/junit_to_matrix.py "${reports[@]}" \
             --language java --driver-version "${{ matrix.version }}" \
             --spec bolt/conformance/spec.yaml \
             -o "bolt-matrix-java-${{ matrix.version }}.json"

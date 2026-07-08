@@ -35,6 +35,17 @@ def _local_name(tag):
     return tag.split("}")[-1]
 
 
+def _fold(results, scenario, status):
+    """Merge a scenario status into results: any fail wins, else any pass, else skip."""
+    prev = results.get(scenario)
+    if prev == "fail" or status == "fail":
+        results[scenario] = "fail"
+    elif prev == "pass" or status == "pass":
+        results[scenario] = "pass"
+    else:
+        results[scenario] = status
+
+
 def parse_junit(xml_path):
     """Return a {scenario-id: "pass"|"fail"|"skip"} map from a JUnit report."""
     # A scenario asserted by several testcases fails if any of them fails, and is
@@ -60,14 +71,22 @@ def parse_junit(xml_path):
             if tag == "skipped":
                 status = "skip"
                 break
-        prev = results.get(scenario)
-        if prev == "fail" or status == "fail":
-            results[scenario] = "fail"
-        elif prev == "pass" or status == "pass":
-            results[scenario] = "pass"
-        else:
-            results[scenario] = status
+        _fold(results, scenario, status)
     return results
+
+
+def parse_junit_files(paths):
+    """Parse and fold several JUnit reports into one scenario map.
+
+    Maven Failsafe can split a @Nested test class across per-nested-class report
+    files, so the Java cells pass a glob; folding across files keeps the merge
+    robust whether the runner emits one aggregate file or several.
+    """
+    combined = {}
+    for path in paths:
+        for scenario, status in parse_junit(path).items():
+            _fold(combined, scenario, status)
+    return combined
 
 
 def load_known_ids(spec_path):
@@ -81,13 +100,13 @@ def load_known_ids(spec_path):
     return ids
 
 
-def build_matrix(xml_path, language, driver_version, known_ids):
-    """Build the per-cell record, dropping scenario ids absent from the spec."""
+def build_matrix(xml_paths, language, driver_version, known_ids):
+    """Build the per-cell record from one or more reports, dropping ids absent from the spec."""
     # Unknown ids are warned about and skipped rather than raised: this tool runs
     # inside a monitoring workflow where hard-failing the conversion would drop
     # the whole cell and hide the scenarios that did run. A cell that ends up with
     # zero recognized scenarios is caught downstream by merge_matrix's empty check.
-    scenarios = parse_junit(xml_path)
+    scenarios = parse_junit_files(xml_paths)
     unknown = sorted(set(scenarios) - set(known_ids))
     if unknown:
         print(f"warning: dropping scenario IDs not in spec.yaml: {unknown}", file=sys.stderr)
@@ -98,7 +117,7 @@ def build_matrix(xml_path, language, driver_version, known_ids):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("junit_xml")
+    parser.add_argument("junit_xml", nargs="*", help="one or more JUnit report files")
     parser.add_argument("--language", required=True)
     parser.add_argument("--driver-version", required=True)
     parser.add_argument("--spec", required=True, help="path to spec.yaml")

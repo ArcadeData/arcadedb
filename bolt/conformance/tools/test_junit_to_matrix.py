@@ -2,7 +2,7 @@
 import os
 import unittest
 
-from junit_to_matrix import parse_junit, build_matrix
+from junit_to_matrix import parse_junit, parse_junit_files, build_matrix
 
 HERE = os.path.dirname(__file__)
 SAMPLE = os.path.join(HERE, "testdata", "sample-junit.xml")
@@ -56,15 +56,29 @@ class ParseJunitTest(unittest.TestCase):
 
 class BuildMatrixTest(unittest.TestCase):
     def test_shape_and_metadata(self):
-        m = build_matrix(SAMPLE, "python", "6.2.0", KNOWN)
+        m = build_matrix([SAMPLE], "python", "6.2.0", KNOWN)
         self.assertEqual(m["language"], "python")
         self.assertEqual(m["driver_version"], "6.2.0")
         self.assertEqual(m["scenarios"]["CONN-001"], "pass")
 
     def test_unknown_scenario_id_dropped_not_raised(self):
         # A monitoring workflow must not lose a whole cell over one stray id.
-        m = build_matrix(UNKNOWN, "python", "6.2.0", KNOWN)
+        m = build_matrix([UNKNOWN], "python", "6.2.0", KNOWN)
         self.assertEqual(m["scenarios"], {})
+
+    def test_no_files_yields_empty_scenarios(self):
+        # A glob that matched nothing (test produced no reports) must not crash.
+        m = build_matrix([], "java", "5.28.5", KNOWN)
+        self.assertEqual(m["scenarios"], {})
+
+
+class ParseJunitFilesTest(unittest.TestCase):
+    def test_folds_split_nested_class_reports(self):
+        # Failsafe may split @Nested classes into per-class files; folding the
+        # Go fixture (CONN-001 pass) with the Java fixture (CONN-001 pass,
+        # AUTH-003 skip) keeps every scenario and applies fail-dominates.
+        combined = parse_junit_files([GO_STYLE, JAVA_STYLE])
+        self.assertEqual(combined, {"CONN-001": "pass", "AUTH-003": "skip"})
 
 
 if __name__ == "__main__":
