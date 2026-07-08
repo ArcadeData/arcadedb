@@ -26,7 +26,7 @@ reported as an unexpected cell, and vice versa as a missing cell.
 | python     | lts                   | 5.28.4   |
 | python     | current               | 6.1.0    |
 | python     | latest                | 6.2.0    |
-| csharp     | lts                   | 4.4.0    |
+| csharp     | lts                   | 5.26.2   |
 | csharp     | current               | 5.28.4   |
 | csharp     | latest                | 6.2.1    |
 | go         | lts                   | 5.27.0   |
@@ -39,6 +39,11 @@ Notes:
   Java bands run `RemoteBoltDatabaseIT` with `-Dneo4j-driver.version=`.
 - The Go driver ships a single current major line (`neo4j-go-driver/v5`); its
   three bands are three points along that line.
+- The C# `lts` band floors at 5.26.2, not a 4.x line: the .NET `Neo4j.Driver`
+  made breaking API changes in 5.0 (`ExecuteWriteAsync`, `Bookmarks`,
+  `LastBookmarks`, `INode.Get<T>`, `IAsyncDisposable`), so the shared test suite
+  cannot compile against 4.4.x. Do not lower this band below 5.0 without a
+  dual-API rewrite of `e2e-csharp`.
 - Repo PR-run pins (single version each): java 6.2.0, javascript 6.0.1,
   python 6.2.0, csharp 6.2.1, go 5.28.4. The nightly widens each to the full
   band set above.
