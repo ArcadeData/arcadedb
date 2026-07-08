@@ -25,10 +25,16 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
+import com.sun.management.ThreadMXBean;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -61,15 +67,6 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
   private static final int BUCKETS          = 16;
   private static final int MAX_RETRIES      = 10_000;
 
-  // This benchmark deliberately drives high-rate concurrent appends into one hub vertex, which triggers a
-  // SEPARATE, pre-existing concurrent chunk-allocation race in the graph engine that can drop a few edges (it
-  // reproduces identically with the append-merge disabled). That is out of scope here, so skip the strict
-  // end-of-test integrity check; the append-merge's own correctness is gated by ConcurrentEdgeAppendMergeTest.
-  @Override
-  protected boolean isCheckingDatabaseIntegrity() {
-    return false;
-  }
-
   /**
    * Single-threaded, zero-contention edge append. There are no conflicts and therefore no merges, so the only
    * cost the append-merge adds here is its per-append TRACKING. Reports bytes allocated per edge (via the
@@ -93,8 +90,7 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
     });
     final RID hubRID = hubHolder[0].getIdentity();
 
-    final com.sun.management.ThreadMXBean threadBean =
-        (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+    final ThreadMXBean threadBean = (ThreadMXBean) ManagementFactory.getThreadMXBean();
     final long tid = Thread.currentThread().threadId();
 
     // One big transaction: every edge appends to the hub's IN head chunk (tracked) with no other thread, so no
@@ -124,9 +120,9 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
         edges / (elapsed / 1000.0), allocated / (1024.0 * 1024.0), allocated / edges);
     LogManager.instance().log(this, Level.INFO, report);
     try {
-      java.nio.file.Files.writeString(new java.io.File("./target/supernode-append-overhead.txt").toPath(),
-          report + System.lineSeparator(), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-    } catch (final java.io.IOException ignore) {
+      Files.writeString(new File("./target/supernode-append-overhead.txt").toPath(),
+          report + System.lineSeparator(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    } catch (final IOException ignore) {
       // best-effort reporting only
     }
   }
@@ -222,17 +218,17 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
       LogManager.instance().log(this, Level.INFO, report);
       // Persist too: the test log level is SEVERE, so the INFO report above is invisible in a normal run.
       try {
-        final java.io.File out = new java.io.File("./target/supernode-append-benchmark.txt");
-        java.nio.file.Files.writeString(out.toPath(), report + System.lineSeparator(),
-            java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-      } catch (final java.io.IOException ignore) {
+        final File out = new File("./target/supernode-append-benchmark.txt");
+        Files.writeString(out.toPath(), report + System.lineSeparator(),
+            StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+      } catch (final IOException ignore) {
         // best-effort reporting only
       }
 
       assertThat(committed.get()).isEqualTo(TOTAL_EDGES);
       // Lenient: tolerate the pre-existing chunk-allocation race (a handful of edges) but still catch a gross
       // rebase bug that would drop or duplicate many edges.
-      assertThat(inDegree[0]).isBetween((long) (TOTAL_EDGES * 0.99), (long) TOTAL_EDGES);
+      assertThat(inDegree[0]).isEqualTo(TOTAL_EDGES); // #5147 fixed: no edges lost
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
     }

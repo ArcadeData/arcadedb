@@ -187,9 +187,12 @@ and the transaction retries and re-reads the current chunk. Regression:
 losing ~130-160 edges/run, now 32000/32000 with a clean integrity check. This
 fixes the root cause so it is correct with the merge off too.
 
-**Follow-up**: the edge-**removal** path (`deleteEdge`/`removeVertex` via
-`getEdgeHeadChunk`) shares the same unanchored-read pattern (lower impact;
-full protection needs anchoring the whole chunk chain).
+**Follow-up ([#5153](https://github.com/ArcadeData/arcadedb/issues/5153))**: the
+edge-**removal** path (`deleteEdge`/`removeVertex` via `getEdgeHeadChunk`) shares
+the same unanchored-read pattern - concurrent removals on one hot vertex can lose
+a removal (reproduces with the merge on and off, so independent of it). Full
+protection needs anchoring the chunk actually modified during the remove
+chain-walk; kept out of this PR to stay focused.
 
 ---
 
@@ -258,7 +261,7 @@ Reading the HA numbers:
 | Embedded + HA benchmarks | ✅ in `@Tag("benchmark")` tests |
 | Issue #5147 (lost-update edge drop) | ✅ fixed (root cause: deferred-update MVCC gap) in this PR |
 | Adaptive striped edge list (throughput) | ⏳ designed, not started |
-| Edge-removal path anchoring (#5147 follow-up) | ⏳ noted, not started |
+| Edge-removal path lost-update (#5153) | 🐞 filed (removal twin of #5147), not started |
 
 ## 8. Next steps
 

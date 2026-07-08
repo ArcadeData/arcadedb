@@ -71,10 +71,10 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
     return 3;
   }
 
-  // Note: the base class still runs checkDatabasesAreIdentical() at teardown, verifying the three replicas
-  // converged to the SAME state (the leader replicates its merged pages, so any edge dropped by the separate
-  // pre-existing chunk-allocation race is dropped identically on every node). The merge's own correctness is
-  // gated by the embedded ConcurrentEdgeAppendMergeTest.
+  // Note: the base class also runs checkDatabasesAreIdentical() at teardown, verifying the three replicas
+  // converged to the SAME state (the leader replicates its merged pages, so followers apply them verbatim).
+  // The merge's own correctness is gated by the embedded ConcurrentEdgeAppendMergeTest; the #5147 lost-update
+  // fix (folded into this PR) means the super-node workload now keeps every committed edge.
 
   @Test
   void concurrentAppendToSuperNodeUnderHA() throws InterruptedException {
@@ -169,8 +169,7 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
 
       waitForReplicationIsCompleted(leaderIndex);
 
-      // Every replica must converge to the same hub degree (leader-side loss from the separate chunk race is
-      // tolerated by comparing replicas to each other rather than to the exact target).
+      // Every replica must converge to the same hub degree, and to the exact committed total (#5147 fixed).
       final long[] perServerDegree = new long[getServerCount()];
       if (superNode)
         for (int s = 0; s < getServerCount(); s++) {
@@ -215,8 +214,8 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
         // All replicas agree (replication is consistent) ...
         for (int s = 1; s < getServerCount(); s++)
           assertThat(perServerDegree[s]).as("server %d degree vs leader", s).isEqualTo(perServerDegree[0]);
-        // ... and the leader kept nearly all edges (lenient for the separate pre-existing chunk race).
-        assertThat(perServerDegree[0]).isBetween((long) (TOTAL_EDGES * 0.99), (long) TOTAL_EDGES);
+        // ... and every committed edge survived (#5147 fixed: no lost update on the hub head chunk).
+        assertThat(perServerDegree[0]).isEqualTo(TOTAL_EDGES);
       }
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
