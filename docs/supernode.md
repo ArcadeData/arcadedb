@@ -154,8 +154,14 @@ Design guidance (from the initial review):
   unchanged.
 - **Per-bucket granularity** because MVCC conflicts are page-level: stripe across
   distinct files/pages so appends never false-share.
-- **Deterministic hash by edge RID** so delete/lookup goes straight to the owning
-  stripe.
+- **Deterministic hash by the NEIGHBOUR vertex RID** (the second element of each
+  `(edgeRID, vertexRID)` entry), NOT the edge RID. The connectivity/existence/
+  remove operations (`isConnectedTo`, `containsVertex`, `getFirstEdgeConnectedToVertex`,
+  `removeVertex`) all key on the neighbour vertex, so hashing by it localises them
+  to one stripe (O(degree/N)); appends still spread because a hub's edges come from
+  many distinct neighbours; and `deleteEdge` still resolves the stripe from the
+  edge's endpoints. Hashing by edge RID would give zero read benefit on those hot
+  paths. (Only a bare `containsEdge(edgeRID)` can't localise - uncommon.)
 - Read order changes (per-stripe order, merged) - confirm nothing guarantees edge
   iteration order and doc the change.
 - Composes with the merge: merge kills the retry storm today; striping unlocks
@@ -271,10 +277,16 @@ Reading the HA numbers:
 ## 8. Next steps
 
 1. Prototype the **adaptive striped edge list** (promote-on-hot, per-bucket
-   stripes, hash by edge RID) and re-run the HA benchmark to measure the
-   throughput half.
-2. Fix **#5147** (serialise the concurrent chunk-full transition; replace the
-   silent "chunk not found → create new" fallback with fail-loud/retry).
+   stripes, hash by the neighbour vertex RID - see §4) and re-run the HA benchmark
+   to measure the throughput half. This is the remaining super-node lever now that
+   the retry storm and the two lost-update races are closed.
+2. **Remove-path anchoring cost** (from code review): `loadChunkForWrite`
+   materialises a mutable page for every chunk the remove walk visits, including
+   read-only ones (bounded - a 32k-edge hub is ~8 pages - and unmodified pages are
+   dropped at commit, so not a correctness issue). `removeVertex` genuinely
+   modifies many chunks, but `removeEdge`/`removeEdgeRID` modify only one; a
+   possible optimisation is to traverse read-only and anchor just the chunk about
+   to be modified. Measure on a large super-node before optimising.
 3. Consider group-committing multiple pending hub appends into one replicated
    round (reduces the per-commit HA cost further).
 

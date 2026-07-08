@@ -226,9 +226,8 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
       }
 
       assertThat(committed.get()).isEqualTo(TOTAL_EDGES);
-      // Lenient: tolerate the pre-existing chunk-allocation race (a handful of edges) but still catch a gross
-      // rebase bug that would drop or duplicate many edges.
-      assertThat(inDegree[0]).isEqualTo(TOTAL_EDGES); // #5147 fixed: no edges lost
+      // Every committed edge survives (#5147/#5153 fixed: no lost update on the hub head chunk).
+      assertThat(inDegree[0]).isEqualTo(TOTAL_EDGES);
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
     }
