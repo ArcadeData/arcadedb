@@ -3,7 +3,7 @@ import os
 import unittest
 
 from render_matrix import (Cell, Column, compute_badge, load_columns,
-                           load_scenarios, resolve_cell)
+                           load_scenarios, render_page, resolve_cell)
 
 HERE = os.path.dirname(__file__)
 DRIVER_VERSIONS_MD = os.path.join(HERE, "..", "driver-versions.md")
@@ -149,6 +149,49 @@ class ComputeBadgeTest(unittest.TestCase):
         badge = compute_badge([{"current_status": "passing"}], None)
         self.assertEqual(badge["color"], "brightgreen")
         self.assertEqual(badge["message"], "5/5 passing")
+
+
+class RenderPageTest(unittest.TestCase):
+    REPO = "ArcadeData/arcadedb"
+
+    def _cols(self):
+        return [Column("java", "latest-6.x", "6.2.0"),
+                Column("go", "latest", "5.28.4")]
+
+    def _scen(self):
+        return [
+            {"id": "CONN-001", "area": "connection", "title": "bolt:// connects",
+             "current_status": "passing", "tracking_issue": None,
+             "known_limitation": None, "applicable_driver_versions": "all"},
+            {"id": "ERR-003", "area": "errors", "title": "unauth forbidden",
+             "current_status": "not-applicable", "tracking_issue": None,
+             "known_limitation": "Not reachable via any official driver API.",
+             "applicable_driver_versions": "all"},
+        ]
+
+    def test_page_has_header_columns_and_cells(self):
+        matrix = {"scenarios": {"CONN-001": {"java": {"6.2.0": "pass"},
+                                             "go": {"5.28.4": "pass"}}},
+                  "missing_cells": [], "empty_cells": [], "unexpected_cells": [],
+                  "languages": ["java", "go"], "has_failures": False}
+        page = render_page(self._scen(), self._cols(), matrix, repo=self.REPO,
+                           run_url="https://example/run/1", timestamp="2026-07-08 03:00 UTC")
+        self.assertIn("# Bolt Driver Compatibility Matrix", page)
+        self.assertIn("**Last verified:** 2026-07-08 03:00 UTC", page)
+        self.assertIn("https://example/run/1", page)
+        self.assertIn("java<br>6.2.0", page)
+        self.assertIn("go<br>5.28.4", page)
+        self.assertIn("## connection", page)
+        self.assertIn("**CONN-001** bolt:// connects", page)
+        self.assertIn("✅", page)
+        self.assertIn("➖", page)                      # ERR-003 not-applicable
+        self.assertIn("Not reachable via any official driver API.", page)  # footnote
+        self.assertTrue(page.endswith("\n"))
+
+    def test_fallback_page_marks_pending(self):
+        page = render_page(self._scen(), self._cols(), None, repo=self.REPO,
+                           run_url="", timestamp="")
+        self.assertIn("pending first nightly", page)
 
 
 if __name__ == "__main__":
