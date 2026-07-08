@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="bolt" tests="4" failures="1" skipped="1" errors="0">
+    <testcase name="CONN-001 Connect via bolt:// scheme" classname="conn"/>
+    <testcase name="AUTH-003 none auth rejected" classname="auth">
+      <failure message="expected rejection">boom</failure>
+    </testcase>
+    <testcase name="TYPE-007 Duration round-trip" classname="type">
+      <skipped message="known gap"/>
+    </testcase>
+    <testcase name="ERR-002 syntax error code" classname="err">
+      <error message="unexpected">stacktrace</error>
+    </testcase>
+  </testsuite>
+</testsuites>

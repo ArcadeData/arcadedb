@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.arcadedb.e2e.RemoteBoltLegacyDriverIT" tests="3" failures="0" skipped="0">
+  <testcase name="conn001_legacyConnectAndRead" classname="com.arcadedb.e2e.RemoteBoltLegacyDriverIT" time="0.5"/>
+  <testcase name="proto001_legacyParameterized" classname="com.arcadedb.e2e.RemoteBoltLegacyDriverIT" time="0.2"/>
+  <testcase name="err001_legacySyntaxErrorCode" classname="com.arcadedb.e2e.RemoteBoltLegacyDriverIT" time="0.1"/>
+</testsuite>

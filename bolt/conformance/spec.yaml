@@ -13,23 +13,31 @@ driver_version_bands:
       default e2e RemoteBoltDatabaseIT); oldest-supported-4.x = 4.4.20 via the
       e2e `bolt-driver-legacy` Maven profile running RemoteBoltLegacyDriverIT.
       latest-5.x is exercised in CI's driver-version matrix (#4891).
+      Concrete nightly versions: see bolt/conformance/driver-versions.md (#4891).
   javascript:
     band_names: [oldest-supported-4.x, latest-5.x, latest-6.x]
     driver_artifact: "neo4j-driver (npm)"
     resolution_note: >
       Resolved by #4888; current repo baseline is ^6.0.1 (e2e-js/package.json).
+      Concrete nightly versions: see bolt/conformance/driver-versions.md (#4891).
   python:
     band_names: [lts, current, latest]
     driver_artifact: "neo4j (PyPI)"
-    resolution_note: "Resolved by #4885 - no existing pin in this repo today."
+    resolution_note: >
+      Resolved by #4885 - no existing pin in this repo today.
+      Concrete nightly versions: see bolt/conformance/driver-versions.md (#4891).
   csharp:
     band_names: [lts, current, latest]
     driver_artifact: "Neo4j.Driver (NuGet)"
-    resolution_note: "Resolved by #4886 - no existing pin in this repo today."
+    resolution_note: >
+      Resolved by #4886 - no existing pin in this repo today.
+      Concrete nightly versions: see bolt/conformance/driver-versions.md (#4891).
   go:
     band_names: [lts, current, latest]
     driver_artifact: "github.com/neo4j/neo4j-go-driver"
-    resolution_note: "Resolved by #4887 - new module, no existing pin."
+    resolution_note: >
+      Resolved by #4887 - new module, no existing pin.
+      Concrete nightly versions: see bolt/conformance/driver-versions.md (#4891).
 
 fixtures:
   beer:

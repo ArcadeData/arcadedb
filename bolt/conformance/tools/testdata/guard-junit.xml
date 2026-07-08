@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="guard" tests="2" failures="0" skipped="0">
+  <testcase name="test_upgrade_2024_bolt" classname="guard"/>
+  <testcase name="base64_roundtrip" classname="guard"/>
+</testsuite>

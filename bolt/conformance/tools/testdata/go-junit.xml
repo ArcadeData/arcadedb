@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="arcadedb.com/e2e-go" tests="1" failures="0" skipped="0">
+    <testcase name="Test_CONN_001_ConnectBolt" classname="arcadedb.com/e2e-go"/>
+  </testsuite>
+</testsuites>

@@ -31,5 +31,6 @@
     <PackageReference Include="Testcontainers" Version="4.11.0" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="Neo4j.Driver" Version="6.2.1" />
+    <PackageReference Include="JunitXml.TestLogger" Version="8.0.0" />
   </ItemGroup>
 </Project>

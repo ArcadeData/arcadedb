@@ -53,7 +53,7 @@ class RemoteBoltLegacyDriverIT extends ArcadeContainerTemplate {
 
   @Test
   @DisplayName("[CONN-001] Connect and read on the 4.4 driver band")
-  void legacy_connectAndRead() {
+  void conn001_legacyConnectAndRead() {
     try (final Driver d = newDriver()) {
       d.verifyConnectivity();
       try (final Session s = d.session(SessionConfig.forDatabase("beer"))) {
@@ -65,7 +65,7 @@ class RemoteBoltLegacyDriverIT extends ArcadeContainerTemplate {
 
   @Test
   @DisplayName("[PROTO-001] Parameterized read negotiates on the 4.4 driver band")
-  void legacy_parameterized() {
+  void proto001_legacyParameterized() {
     try (final Driver d = newDriver();
         final Session s = d.session(SessionConfig.forDatabase("beer"))) {
       assertThat(s.run("RETURN $v AS v", Map.of("v", 7L)).single().get("v").asLong()).isEqualTo(7L);
@@ -74,7 +74,7 @@ class RemoteBoltLegacyDriverIT extends ArcadeContainerTemplate {
 
   @Test
   @DisplayName("[ERR-001] Syntax error code on the 4.4 driver band")
-  void legacy_syntaxErrorCode() {
+  void err001_legacySyntaxErrorCode() {
     try (final Driver d = newDriver();
         final Session s = d.session(SessionConfig.forDatabase("beer"))) {
       assertThatThrownBy(() -> s.run("MATCH (n RETURN n").consume())
