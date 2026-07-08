@@ -497,9 +497,8 @@ jobs:
             --timestamp "$(date -u +'%Y-%m-%d %H:%M UTC')" \
             --out-page bolt/conformance/COMPATIBILITY.md \
             --out-badge bolt/conformance/badge.json
-          if git diff --quiet -I'^\*\*Last verified:\*\*' -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json; then
-            git checkout -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json
-            echo "No matrix content change (only the timestamp differs); skipping."
+          if git diff --quiet -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json; then
+            echo "Rendered matrix is byte-identical to the committed one; nothing to publish."
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -514,5 +513,8 @@ jobs:
             echo "push rejected (attempt ${attempt}); rebasing onto main and retrying."
             git pull --rebase -X theirs origin main || git rebase --abort || true
           done
-          echo "Failed to push matrix refresh after retries." >&2
-          exit 1
+          # A publish that cannot land (e.g. new branch protection on main) must
+          # not red the nightly - the driver-compatibility signal itself is
+          # unaffected, and report-regression already alarms on real red cells.
+          echo "::warning::Could not push the refreshed Bolt compatibility matrix to main after retries; the published page is stale."
+          exit 0
