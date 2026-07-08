@@ -145,8 +145,14 @@ def compute_badge(scenarios, matrix):
         fails += len(matrix.get("missing_cells") or [])
         fails += len(matrix.get("empty_cells") or [])
         fails += len(matrix.get("unexpected_cells") or [])
-        return _badge(f"{fails} failing", "red")
-    if any(s["current_status"] == "expected-fail" for s in scenarios):
+        if fails:
+            return _badge(f"{fails} failing", "red")
+        # has_failures was set only by excluded not-applicable cells; fall
+        # through so the badge never shows a contradictory red "0 failing".
+    # A scenario that is a known limitation (expected-fail) or not yet confirmed
+    # (unverified) means the suite is not fully green, so do not claim "all
+    # passing" - surface it as partial.
+    if any(s["current_status"] in ("expected-fail", "unverified") for s in scenarios):
         return _badge("partial", "yellow")
     return _badge("all passing", "brightgreen")
 

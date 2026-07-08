@@ -185,17 +185,45 @@ class ComputeBadgeTest(unittest.TestCase):
         self.assertEqual(badge["message"], "all passing")
 
     def test_null_valued_keys_do_not_crash(self):
+        # Every container key explicitly null must not raise. The exact color is
+        # not asserted: a has_failures matrix with no countable fails legitimately
+        # falls through rather than reading a contradictory red "0 failing".
         m = {"has_failures": True, "scenarios": None, "missing_cells": None,
              "empty_cells": None, "unexpected_cells": None, "languages": None}
         badge = compute_badge([{"current_status": "passing"}], m)
-        self.assertEqual(badge["color"], "red")
+        self.assertEqual(badge["schemaVersion"], 1)
+        self.assertIn(badge["color"], ("red", "yellow", "brightgreen"))
 
-    def test_not_applicable_scenario_excluded_from_fail_count(self):
+    def test_real_fail_with_null_sibling_keys_is_red(self):
+        # A genuine fail cell still counts to red even when the other container
+        # keys are null (exercises the or-{}/or-[] guards alongside a real fail).
+        m = {"has_failures": True,
+             "scenarios": {"CONN-001": {"java": {"6.2.0": "fail"}}},
+             "missing_cells": None, "empty_cells": None,
+             "unexpected_cells": None, "languages": None}
+        badge = compute_badge([{"current_status": "passing"}], m)
+        self.assertEqual(badge["color"], "red")
+        self.assertEqual(badge["message"], "1 failing")
+
+    def test_not_applicable_only_fail_does_not_read_red_zero(self):
+        # If the only fail cell belongs to a not-applicable scenario it is
+        # excluded from the count, and a count of 0 must not render a
+        # contradictory red "0 failing" - it falls through to green.
         m = self._matrix({"ERR-003": {"java": {"6.2.0": "fail"}}},
                          has_failures=True)
         badge = compute_badge([{"id": "ERR-003",
                                 "current_status": "not-applicable"}], m)
-        self.assertEqual(badge["message"], "0 failing")
+        self.assertEqual(badge["color"], "brightgreen")
+        self.assertEqual(badge["message"], "all passing")
+
+    def test_unverified_scenario_is_partial(self):
+        m = self._matrix({"CONN-001": {"java": {"6.2.0": "pass"}}})
+        badge = compute_badge([{"current_status": "unverified"}], m)
+        self.assertEqual(badge["color"], "yellow")
+        self.assertEqual(badge["message"], "partial")
+        # also in the no-matrix fallback path
+        fallback = compute_badge([{"current_status": "unverified"}], None)
+        self.assertEqual(fallback["color"], "yellow")
 
     def test_empty_and_unexpected_cells_count_toward_red_total(self):
         m = self._matrix({"CONN-001": {"java": {"6.2.0": "fail"}}},
