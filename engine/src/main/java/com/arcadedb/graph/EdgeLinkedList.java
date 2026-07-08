@@ -24,11 +24,14 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
+import java.io.IOException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -261,7 +264,7 @@ public class EdgeLinkedList {
 
   public void removeEdge(final Edge edge) {
     EdgeSegment prevBrowsed = null;
-    EdgeSegment current = lastSegment;
+    EdgeSegment current = loadChunkForWrite(lastSegment.getIdentity());
     while (current != null) {
       final RID rid = edge.getIdentity();
 
@@ -279,13 +282,14 @@ public class EdgeLinkedList {
       }
 
       prevBrowsed = current;
-      current = current.getPrevious();
+      final RID prevRID = current.getPreviousRID();
+      current = prevRID == null ? null : loadChunkForWrite(prevRID);
     }
   }
 
   public void removeEdgeRID(final RID edge) {
     EdgeSegment prevBrowsed = null;
-    EdgeSegment current = lastSegment;
+    EdgeSegment current = loadChunkForWrite(lastSegment.getIdentity());
     while (current != null) {
       final int deleted = current.removeEdge(edge);
       if (deleted > 0) {
@@ -293,27 +297,46 @@ public class EdgeLinkedList {
         break;
       }
       prevBrowsed = current;
-      current = current.getPrevious();
+      final RID prevRID = current.getPreviousRID();
+      current = prevRID == null ? null : loadChunkForWrite(prevRID);
     }
   }
 
   public void removeVertex(final RID vertexRID) {
     EdgeSegment prevBrowsed = null;
-    EdgeSegment current = lastSegment;
+    EdgeSegment current = loadChunkForWrite(lastSegment.getIdentity());
     while (current != null) {
-      final EdgeSegment next = current.getPrevious();
+      final RID nextRID = current.getPreviousRID();
       boolean deleted = false;
       while (current.removeVertex(vertexRID) > 0)
         deleted = true;
       if (deleted) {
-        final boolean segmentWillBeDeleted = prevBrowsed != null && current.isEmpty() && next != null;
+        final boolean segmentWillBeDeleted = prevBrowsed != null && current.isEmpty() && nextRID != null;
         updateSegment(current, prevBrowsed);
         if (!segmentWillBeDeleted)
           prevBrowsed = current;
       } else
         prevBrowsed = current;
-      current = next;
+      current = nextRID == null ? null : loadChunkForWrite(nextRID);
     }
+  }
+
+  /**
+   * #5147/#5153: loads an edge-list chunk for a WRITE (remove/relink), anchoring its page in the transaction at
+   * the version it is read - and reading its content from that anchored page. Without the anchor the chunk is
+   * read via an immutable lookup that (under READ_COMMITTED) does not retain the page, and the deferred
+   * updateRecord captures the page only later, at the newer version if a concurrent transaction modified the
+   * same chunk in between. The commit-time MVCC check would then compare matching versions, miss the conflict,
+   * and let the stale chunk buffer silently overwrite the concurrent change (a lost update / dropped edge).
+   */
+  private EdgeSegment loadChunkForWrite(final RID chunkRID) {
+    final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
+    try {
+      ((LocalBucket) database.getSchema().getBucketById(chunkRID.getBucketId())).fetchPageInTransaction(chunkRID);
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on loading edge chunk page " + chunkRID, e);
+    }
+    return (EdgeSegment) database.lookupByRID(chunkRID, true);
   }
 
   private int computeBestSize() {

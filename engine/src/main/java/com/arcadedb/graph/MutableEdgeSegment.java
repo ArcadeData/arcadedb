@@ -401,6 +401,12 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public EdgeSegment getPrevious() {
+    final RID nextRID = getPreviousRID();
+    return nextRID == null ? null : (EdgeSegment) database.lookupByRID(nextRID, true);
+  }
+
+  @Override
+  public RID getPreviousRID() {
     buffer.position(Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE);
 
     final RID nextRID = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_RID, null); // NEXT
@@ -408,7 +414,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     if (nextRID.getBucketId() == -1 && nextRID.getPosition() == -1)
       return null;
 
-    return (EdgeSegment) database.lookupByRID(nextRID, true);
+    return nextRID;
   }
 
   @Override
