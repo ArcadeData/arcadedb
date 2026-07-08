@@ -110,11 +110,10 @@ class BoltTypeRoundTripTest {
     final Object out = BoltStructureMapper.toPackStreamValue(point);
     assertThat(out).isInstanceOf(BoltPointStructure.class);
     final BoltPointStructure p = (BoltPointStructure) out;
-    assertThat(p.getZ()).isNull(); // z absent -> writeTo emits the Point2D (0x58) signature
     assertThat(p.getSrid()).isEqualTo(7203);
     assertThat(p.getX()).isEqualTo(12.34);
     assertThat(p.getY()).isEqualTo(56.78);
-    assertThat(p.getZ()).isNull();
+    assertThat(p.getZ()).isNull(); // z absent -> writeTo emits the Point2D (0x58) signature
   }
 
   @Test
@@ -127,11 +126,10 @@ class BoltTypeRoundTripTest {
     point.put("crs", "WGS-84-3D");
     point.put("srid", 4979);
     final BoltPointStructure p = (BoltPointStructure) BoltStructureMapper.toPackStreamValue(point);
-    assertThat(p.getZ()).isNotNull(); // z present -> writeTo emits the Point3D (0x59) signature
     assertThat(p.getSrid()).isEqualTo(4979);
     assertThat(p.getX()).isEqualTo(12.34);
     assertThat(p.getY()).isEqualTo(56.78);
-    assertThat(p.getZ()).isEqualTo(100.0);
+    assertThat(p.getZ()).isEqualTo(100.0); // z present -> writeTo emits the Point3D (0x59) signature
   }
 
   @Test
