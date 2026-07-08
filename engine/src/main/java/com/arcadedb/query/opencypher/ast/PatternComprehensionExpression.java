@@ -140,7 +140,7 @@ public class PatternComprehensionExpression implements Expression {
       final int maxHops = relPattern.getEffectiveMaxHops();
 
       // Zero-length path: start and end are the same vertex (only valid if matches end pattern)
-      if (minHops == 0 && matchesEndPattern(startVertex, endNodePattern, baseResult)) {
+      if (minHops == 0 && matchesEndPattern(startVertex, endNodePattern, baseResult, context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, null);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, startVertex);
       }
@@ -194,7 +194,7 @@ public class PatternComprehensionExpression implements Expression {
     for (final Record record : candidates) {
       if (!(record instanceof Vertex candidate))
         continue;
-      if (!matchesStartPattern(candidate, startNodePattern))
+      if (!matchesStartPattern(candidate, startNodePattern, context))
         continue;
 
       final ResultInternal candidateResult = new ResultInternal();
@@ -214,7 +214,7 @@ public class PatternComprehensionExpression implements Expression {
   /**
    * Returns true if a vertex matches the start node pattern's labels and inline properties.
    */
-  private boolean matchesStartPattern(final Vertex vertex, final NodePattern startNodePattern) {
+  private boolean matchesStartPattern(final Vertex vertex, final NodePattern startNodePattern, final CommandContext context) {
     if (startNodePattern.hasLabels()) {
       for (final String label : startNodePattern.getLabels()) {
         if (!Labels.hasLabel(vertex, label))
@@ -223,8 +223,7 @@ public class PatternComprehensionExpression implements Expression {
     }
     if (startNodePattern.hasProperties()) {
       for (final Map.Entry<String, Object> entry : startNodePattern.getProperties().entrySet()) {
-        final Object actual = vertex.get(entry.getKey());
-        if (!entry.getValue().equals(actual))
+        if (!valueMatches(vertex.get(entry.getKey()), entry.getValue(), context))
           return false;
       }
     }
@@ -290,7 +289,7 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.add(nextVertex);
       }
 
-      if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult)) {
+      if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult, context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern, edge);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, nextVertex);
       }
@@ -307,7 +306,8 @@ public class PatternComprehensionExpression implements Expression {
     }
   }
 
-  private boolean matchesEndPattern(final Vertex vertex, final NodePattern endNodePattern, final Result baseResult) {
+  private boolean matchesEndPattern(final Vertex vertex, final NodePattern endNodePattern, final Result baseResult,
+      final CommandContext context) {
     if (endNodePattern.hasLabels()) {
       for (final String label : endNodePattern.getLabels()) {
         if (!Labels.hasLabel(vertex, label))
@@ -316,8 +316,7 @@ public class PatternComprehensionExpression implements Expression {
     }
     if (endNodePattern.hasProperties()) {
       for (final Map.Entry<String, Object> entry : endNodePattern.getProperties().entrySet()) {
-        final Object actual = vertex.get(entry.getKey());
-        if (!entry.getValue().equals(actual))
+        if (!valueMatches(vertex.get(entry.getKey()), entry.getValue(), context))
           return false;
       }
     }
@@ -346,33 +345,43 @@ public class PatternComprehensionExpression implements Expression {
       return true;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final Object actual = edge.get(entry.getKey());
-      Object expected = entry.getValue();
-
-      // Resolve parameter references (e.g., $param -> actual value from context)
-      if (expected instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
-        if (context.getInputParameters() != null)
-          expected = context.getInputParameters().get(paramName);
-      } else if (expected instanceof final String s && s.startsWith("$") && s.length() > 1) {
-        // Legacy parameter reference encoded as "$name"
-        final String paramName = s.substring(1);
-        if (context.getInputParameters() != null) {
-          final Object paramValue = context.getInputParameters().get(paramName);
-          if (paramValue != null)
-            expected = paramValue;
-        }
-      }
-
-      if (actual == null || !actual.equals(expected)) {
-        if (actual instanceof Number && expected instanceof Number) {
-          if (((Number) actual).longValue() != ((Number) expected).longValue())
-            return false;
-        } else
-          return false;
-      }
+      if (!valueMatches(edge.get(entry.getKey()), entry.getValue(), context))
+        return false;
     }
     return true;
+  }
+
+  /**
+   * Compares an inline pattern property value against the stored value, mirroring the regular MATCH
+   * path (MatchNodeStep.matchesProperties): resolves {@code $param} references and applies numeric
+   * coercion so an inline literal (parsed as {@code Long}) matches a stored {@code Integer} and vice
+   * versa. Without the coercion the combined relationship + node inline filter in a pattern
+   * comprehension silently lost valid matches (issue #5146).
+   */
+  private boolean valueMatches(final Object actual, Object expected, final CommandContext context) {
+    // Resolve parameter references (e.g., $param -> actual value from context)
+    if (expected instanceof CypherASTBuilder.ParameterReference) {
+      final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
+      if (context.getInputParameters() != null)
+        expected = context.getInputParameters().get(paramName);
+    } else if (expected instanceof final String s && s.startsWith("$") && s.length() > 1) {
+      // Legacy parameter reference encoded as "$name"
+      final String paramName = s.substring(1);
+      if (context.getInputParameters() != null) {
+        final Object paramValue = context.getInputParameters().get(paramName);
+        if (paramValue != null)
+          expected = paramValue;
+      }
+    }
+
+    if (actual == null)
+      return expected == null;
+    if (actual.equals(expected))
+      return true;
+    // Numeric type-safe comparison (e.g. Integer stored value vs Long inline literal)
+    if (actual instanceof Number && expected instanceof Number)
+      return ((Number) actual).longValue() == ((Number) expected).longValue();
+    return false;
   }
 
   private ResultInternal buildHopResult(final Result currentResult, final NodePattern endNodePattern, final Vertex targetVertex,
@@ -414,7 +423,7 @@ public class PatternComprehensionExpression implements Expression {
         continue;
       }
 
-      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult))
+      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult, context))
         continue;
 
       // Build result with matched variables
