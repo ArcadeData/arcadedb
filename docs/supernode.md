@@ -109,6 +109,24 @@ modification in this transaction was a tracked in-chunk edge append, the page is
   `EdgeLinkedList.add` chunk-full branch in one place.
 - Tracking is lazy (only allocated when the feature is on and an append happens)
   and cleared on `reset()`/`kill()`.
+- **Bulk import (`GraphBatch.addManyAtEndDirect`) neither tracks nor poisons**, and
+  that is safe because of an implicit invariant: a `GraphBatch` transaction builds
+  edge chunks through its own path and never also drives `EdgeLinkedList.add` on the
+  same page, so a bulk-written (untracked, unpoisoned) chunk page can never coexist
+  with a tracked append in one transaction - which is the only thing that could make
+  a poisoned-but-untracked page wrongly rebasable. `GraphBatch` is also
+  single-threaded per its own contract. Any future change that mixes the bulk and
+  the `EdgeLinkedList.add` paths in one transaction must poison the bulk pages.
+- **Slot reuse during rebase.** `rebaseEdgeAppends` reloads the chunk by segment RID
+  and handles a concurrent delete via `RecordNotFoundException` -> retry. The only
+  way an appended-to HEAD chunk is deleted is a concurrent deletion of the vertex
+  itself (`deleteAll`); the head is never empty-collapsed (`updateSegment` only
+  drops non-head empty chunks). Appending edges to a vertex being concurrently
+  deleted is an application-level conflict with already-undefined semantics; the
+  common case is covered by the `RecordNotFoundException` fallback. The residual
+  theoretical case - the freed head-chunk slot being recycled by another chunk
+  before this commit acquires the lock - is not currently guarded beyond that, and
+  is noted here rather than claimed impossible.
 - **Allocation-free hot path.** Appends are keyed by *segment* RID (a super-node
   is one segment however many edges it receives) with the (edge, vertex) pairs
   packed into growable primitive arrays (`EdgeAppendBuffer`), not one object per

@@ -28,6 +28,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -140,7 +141,7 @@ class ConcurrentEdgeAppendMergeTest extends TestHelper {
       final RID hubRID = hubHolder[0].getIdentity();
 
       // Pre-create the removable pool: `pool` edges into the hub, collecting their RIDs.
-      final java.util.concurrent.ConcurrentLinkedQueue<RID> removable = new java.util.concurrent.ConcurrentLinkedQueue<>();
+      final ConcurrentLinkedQueue<RID> removable = new ConcurrentLinkedQueue<>();
       for (int i = 0; i < pool; i++) {
         final RID[] edgeHolder = new RID[1];
         database.transaction(() -> {
