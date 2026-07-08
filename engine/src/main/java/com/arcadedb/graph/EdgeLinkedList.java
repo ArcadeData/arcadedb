@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -179,17 +180,22 @@ public class EdgeLinkedList {
   }
 
   public void add(final RID edgeRID, final RID vertexRID) {
-    if (lastSegment.add(edgeRID, vertexRID))
-      ((DatabaseInternal) vertex.getDatabase()).updateRecord(lastSegment);
-    else {
+    final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
+    if (lastSegment.add(edgeRID, vertexRID)) {
+      database.updateRecord(lastSegment);
+      // Record the in-chunk append as commutative: at commit, a page-version conflict on this chunk caused only
+      // by concurrent appends can be resolved by replaying the append instead of retrying the whole transaction.
+      final TransactionContext tx = database.getTransactionIfExists();
+      if (tx != null)
+        tx.trackEdgeAppend(lastSegment.getIdentity(), edgeRID, vertexRID);
+    } else {
       // CHUNK FULL, ALLOCATE A NEW ONE
-      final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
-
       final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
 
       newChunk.add(edgeRID, vertexRID);
       newChunk.setPrevious(lastSegment);
 
+      // createRecord poisons the new chunk's page for the append-merge (a new chunk cannot be rebased).
       database.createRecord(newChunk, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
       final MutableVertex modifiableV = vertex.modify();
@@ -243,8 +249,14 @@ public class EdgeLinkedList {
       }
     }
 
-    for (final Record r : recordsToUpdate)
+    // addAll batches its updateRecord calls and does not register individual appends: exclude every touched
+    // edge page from the append-merge so a concurrent-append rebase can never lose these edges.
+    final TransactionContext tx = database.getTransactionIfExists();
+    for (final Record r : recordsToUpdate) {
       database.updateRecord(r);
+      if (tx != null && r instanceof MutableEdgeSegment segment)
+        tx.poisonEdgeAppendPage(segment.getIdentity());
+    }
   }
 
   public void removeEdge(final Edge edge) {
@@ -309,13 +321,23 @@ public class EdgeLinkedList {
   }
 
   private void updateSegment(final EdgeSegment current, final EdgeSegment prevBrowsed) {
+    final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
+    // Edge removal/relink does not commute with a concurrent append: exclude the touched pages from the merge.
+    final TransactionContext tx = database.getTransactionIfExists();
     if (prevBrowsed != null && current.isEmpty() && current.getPrevious() != null) {
       // SEGMENT EMPTY: DELETE ONLY IF IT IS NOT THE FIRST SEGMENT. DELETE CURRENT SEGMENT AND REATTACH THE LINKED LIST
       prevBrowsed.setPrevious(current.getPrevious());
-      ((DatabaseInternal) vertex.getDatabase()).updateRecord(prevBrowsed);
+      database.updateRecord(prevBrowsed);
+      if (tx != null) {
+        tx.poisonEdgeAppendPage(prevBrowsed.getIdentity());
+        tx.poisonEdgeAppendPage(current.getIdentity());
+      }
       current.delete();
-    } else
-      ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
+    } else {
+      database.updateRecord(current);
+      if (tx != null)
+        tx.poisonEdgeAppendPage(current.getIdentity());
+    }
   }
 
   public void deleteAll() {
