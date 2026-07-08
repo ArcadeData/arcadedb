@@ -21,6 +21,14 @@ that could starve the very snapshot resync meant to heal the node.
   fix must rebuild its `LSM_TREE`/`FULL_TEXT` indexes (`REBUILD INDEX *`), since their on-disk keys were written
   with the old encrypted layout.
 
+- **Cypher: parenthesized `IN` predicate against a variable no longer misparses as an invalid node pattern.**
+  A `WHERE` predicate such as `(friend IN inactive_nodes)` (typically injected around the body of a correlated
+  `EXISTS { ... }` subquery) was flattened by the parser to `friendINinactive_nodes`, which spuriously matched
+  the bare-identifier check and was rejected as a single-node pattern. Because `EXISTS` swallows subquery
+  parse errors as `false`, patterns like `EXISTS { MATCH (u)-[:FRIEND]->(friend) WHERE friend IN inactive_nodes }`
+  never matched an outer-scope collected node list ([#5138](https://github.com/ArcadeData/arcadedb/issues/5138)).
+  The bare-variable detection now inspects the whitespace-preserving source text, matching Neo4j and Memgraph.
+
 - **Remote API: `RemoteVertex.isConnectedTo()` now accepts a `Vertex` object, not only a `RID`.** Calling
   `vertex.isConnectedTo(otherVertex, ...)` from a remote database threw a `SQL syntax error at ... mismatched
   input '@'` because the argument was inlined into the generated SQL via its full `toString()` (e.g.
