@@ -3,7 +3,7 @@
 Living design + development log for improving ArcadeDB's behaviour when many
 transactions concurrently write edges into the **same hot vertex** (a
 "super-node": a treasury/float account, a popular product, a hub in a
-star schema). Target release: **26.8.1**.
+star schema). Target release: **26.7.2** (edge-append merge; striping + #5147 follow-ups target a later release).
 
 Keep this document updated as the work progresses (design decisions, benchmarks,
 follow-ups). Sections at the bottom track status and next steps.
@@ -120,7 +120,7 @@ modification in this transaction was a tracked in-chunk edge append, the page is
   overhead on a single-threaded 200k-edge insert: **+39 bytes/edge** vs
   feature-off (~0.7% on top of the ~5.3 KB/edge that edge creation already
   allocates), throughput within noise. This makes always-on cheap; the flag is
-  kept for 26.8.1 purely as an operational kill-switch for new commit-path code.
+  kept purely as an operational kill-switch for new commit-path code.
 
 ### Touched files
 
