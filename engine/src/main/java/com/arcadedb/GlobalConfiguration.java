@@ -395,6 +395,10 @@ public enum GlobalConfiguration {
       "Maximum amount of milliseconds to compute a random number to wait for the next retry. This setting is helpful in case of high concurrency on the same pages (multi-thread insertion over the same bucket)",
       Integer.class, 100),
 
+  GRAPH_EDGE_APPEND_MERGE("arcadedb.graph.edgeAppendMerge", SCOPE.DATABASE,
+      "At commit, when the only conflict on an edge-list page is concurrent in-chunk edge appends (which commute), re-apply the appends on top of the newer page version instead of failing the whole transaction with a ConcurrentModificationException. Removes the retry storm on super-node (hot vertex) edge insertion",
+      Boolean.class, true),
+
   BACKUP_ENABLED("arcadedb.backup.enabled", SCOPE.DATABASE,
       "Allow a database to be backup. Disabling backup gives a huge boost in performance because no lock will be used for every operations",
       Boolean.class, true),

@@ -10,6 +10,18 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Graph: concurrent edge insertion into the same super-node (hot) vertex no longer silently drops edges.**
+  Under many transactions appending edges to one vertex at once, an edge record could commit with **no
+  back-reference** in the target vertex's edge list - the edge count came up short and `CHECK DATABASE` reported
+  `missingReferenceBack` ([#5147](https://github.com/ArcadeData/arcadedb/issues/5147)). Root cause was a
+  deferred-update MVCC gap: the edge-list head chunk was read via an immutable lookup that (under
+  `READ_COMMITTED`) did not retain the page in the transaction, and the page was only captured later by the
+  deferred record update - at the newer version if a concurrent append committed in between. The commit-time
+  page-version check then compared the newer version against itself, found no conflict, and the stale chunk
+  buffer overwrote the concurrent append (a lost update). The head chunk's page is now anchored in the
+  transaction at read time, so a concurrent commit is detected and the transaction retries. Pre-existing and
+  independent of the new edge-append merge (it reproduced with that feature disabled).
+
 - **Cypher: `COUNT { ... }` (and other block subqueries) inside a pattern-comprehension `WHERE` no longer swallow a
   trailing comparison.** A filter such as `[(a)-[:E]->(b) WHERE COUNT { MATCH (b)-[:E]->() } = 0 | b.name]` was parsed
   as just the `COUNT { ... }` block, dropping the `= 0`, so the predicate evaluated to a non-boolean count and every
@@ -641,6 +653,22 @@ that could starve the very snapshot resync meant to heal the node.
   governs how new segments are written; existing segments remain self-describing (each stores its
   own quantization code), so already-built indexes are unaffected. The Java API exposes the same knob
   via `TypeLSMSparseVectorIndexBuilder.withWeightQuantization(...)`.
+
+- **Graph: concurrent edge insertion into a "super-node" (hot vertex) no longer triggers a retry storm.**
+  When many transactions append edges to the SAME vertex at once - a payments graph funnelling every
+  transaction into a central account, a popular product, a star-schema hub - they all collide on that
+  vertex's single edge-list head chunk under ArcadeDB's page-level MVCC. Previously each collision aborted
+  the whole transaction with a `ConcurrentModificationException` and retried it; under HA every retry re-ran
+  the entire Raft replication round, so contention piled up into multi-second (occasionally over a minute)
+  leader latencies that could breach application timeouts. Because appends to an edge list commute (order is
+  irrelevant), the engine now replays the conflicting appends on top of the newer committed page instead of
+  failing the transaction. In a 3-node HA benchmark this cut the worst-case commit latency from ~67s to
+  ~0.4s and full-transaction retries from ~350% to ~0.7% of commits for the same workload, with 4x less
+  leader/replication work. The optimization is on by default and transparent (all edges still land; the
+  leader replicates the merged result, so replicas stay identical). It adds ~0.7% allocation overhead on the
+  non-contended path and can be disabled with `arcadedb.graph.edgeAppendMerge=false`. Raw write throughput on
+  a single hot vertex is unchanged (a follow-up shards the edge list itself); this release removes the retry
+  cascade and the latency spikes.
 
 ## Breaking Changes (migration notes)
 

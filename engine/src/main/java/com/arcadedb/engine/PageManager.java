@@ -62,6 +62,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        cacheHits                             = new AtomicLong();
   private final    AtomicLong                        cacheMiss                             = new AtomicLong();
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
+  private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
@@ -90,6 +91,7 @@ public class PageManager extends LockContext {
     public long cacheHits;
     public long cacheMiss;
     public long concurrentModificationExceptions;
+    public long edgeAppendMerges;
     public long evictionRuns;
     public long pagesEvicted;
     public int  readCachePages;
@@ -306,6 +308,14 @@ public class PageManager extends LockContext {
     return null;
   }
 
+  /**
+   * Counts a resolved commutative edge-append merge: a commit-time page conflict avoided by replaying appends
+   * on the newer version instead of failing the whole transaction. Surfaced via {@link #getStats()}.
+   */
+  public void incrementEdgeAppendMerges() {
+    totalEdgeAppendMerges.incrementAndGet();
+  }
+
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
     final PageId pageId = page.getPageId();
 
@@ -494,6 +504,7 @@ public class PageManager extends LockContext {
     stats.cacheHits = cacheHits.get();
     stats.cacheMiss = cacheMiss.get();
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
+    stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.evictionRuns = evictionRuns.get();
     stats.pagesEvicted = pagesEvicted.get();
     return stats;
