@@ -154,13 +154,16 @@ jobs:
           python-version: "3.12"
       - name: Run Bolt suite against pinned driver
         working-directory: e2e-js
-        # npm ci rebuilds the tree deterministically from the lockfile so the
-        # jest-junit reporter is always present; --no-save overrides only the
-        # driver without a save-triggered re-resolution that can prune dev tooling.
+        # jest's --reporters is an array option, so a trailing positional test
+        # path is swallowed as another reporter and jest dies with "Could not
+        # resolve a module for a custom reporter". The reporters (and jest-junit's
+        # output path) are already declared in e2e-js/package.json's jest config,
+        # so pass only the test path on the CLI. npm ci + --no-save pins the
+        # driver deterministically without rewriting the lockfile.
         run: |
           npm ci
           npm install --no-save neo4j-driver@${{ matrix.driver-version }}
-          NODE_OPTIONS=--experimental-vm-modules npx jest --runInBand --ci --reporters=default --reporters=jest-junit src/js-bolt-conformance.test.js
+          NODE_OPTIONS=--experimental-vm-modules npx jest --runInBand --ci src/js-bolt-conformance.test.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
