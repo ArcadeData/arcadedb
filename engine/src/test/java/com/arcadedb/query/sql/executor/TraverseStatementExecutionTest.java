@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -140,6 +141,65 @@ class TraverseStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isFalse();
       result.close();
     });
+  }
+
+  @Disabled("KNOWN BUG (not fixed on this branch): TRAVERSE ... MAXDEPTH returns a non-monotonic under-approximation of the d-hop ball -- on the graph below it "
+      + "yields 16 nodes at MAXDEPTH 3, 6 at MAXDEPTH 4, then 16 again at MAXDEPTH 5. Remove @Disabled to reproduce the failure. Root cause: DepthFirstTraverseStep "
+      + "records depth at first arrival with no relaxation and gates subtree expansion on it.")
+  @Test
+  void maxDepthReturnsMonotonicBallOnMultiPathGraph() {
+    // Contract: TRAVERSE ... MAXDEPTH d must return the nodes reachable within d hops (the d-hop ball). That set is monotonically non-decreasing in d -- raising
+    // the bound can only add nodes, never remove them -- and once d reaches the root's eccentricity the set is the whole reachable graph. This must hold
+    // irrespective of edge-insertion order or of multiple paths to the same node.
+    //
+    // Graph (a DAG -- cycles are NOT needed to trigger the bug): R reaches X by a short path R->a->X (X at true depth 2) and a long path R->b->c->d->X (depth 4),
+    // and X fans out to s1..s10. 16 nodes total. True d-hop ball sizes: d2 = 5; d>=3 = 16 (every node). The two R out-edges are created long-branch-first
+    // (R->b before R->a) so the depth-first walk pops the long path first and first-reaches X at depth 4.
+    //
+    // This is left as a FAILING test documenting a defect (not fixed here). DepthFirstTraverseStep records a node's depth on FIRST arrival with no relaxation
+    // when a shorter path arrives later, and gates subtree expansion on that recorded depth. So at MAXDEPTH 4, X is stamped depth 4 (via the long path), the
+    // gate 4 > 4 is false, and X's 10-node subtree is never expanded -> 6 nodes; at MAXDEPTH 3 the long path is cut before X, so X is reached via the short path
+    // at depth 2, expanded, and all 16 appear. The result thus DROPS from 16 (d3) to 6 (d4) before returning to 16 (d5): a non-monotonic under-approximation.
+    database.transaction(() -> {
+      final String v = "MaxDepthBallV";
+      final String e = "MaxDepthBallE";
+      database.getSchema().createVertexType(v);
+      database.getSchema().createEdgeType(e);
+
+      final Map<String, RID> ids = new HashMap<>();
+      final String[] names = { "R", "a", "b", "c", "d", "X", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10" };
+      for (final String name : names)
+        ids.put(name, database.command("sql", "create vertex " + v + " set name = '" + name + "'").next().getIdentity().get());
+
+      // Order matters: R->b (long branch) is created before R->a (short branch) so the DFS pops the long path to X first. If a future build changes adjacency
+      // iteration order, swap these two to keep the long branch first.
+      final String[][] edges = { { "R", "b" }, { "R", "a" }, { "a", "X" }, { "b", "c" }, { "c", "d" }, { "d", "X" }, //
+          { "X", "s1" }, { "X", "s2" }, { "X", "s3" }, { "X", "s4" }, { "X", "s5" }, { "X", "s6" }, { "X", "s7" }, { "X", "s8" }, { "X", "s9" }, { "X", "s10" } };
+      final Map<String, Object> params = new HashMap<>();
+      for (final String[] edge : edges) {
+        params.put("from", ids.get(edge[0]));
+        params.put("to", ids.get(edge[1]));
+        database.command("sql", "create edge " + e + " from :from to :to", params).close();
+      }
+
+      final int d3 = countWithinDepth(ids.get("R"), e, 3);
+      final int d4 = countWithinDepth(ids.get("R"), e, 4);
+      final int d5 = countWithinDepth(ids.get("R"), e, 5);
+
+      // Every one of MAXDEPTH 3/4/5 must return the full 16-node graph. The bug yields [16, 6, 16] -- MAXDEPTH 4 loses X's whole subtree.
+      assertThat(new int[] { d3, d4, d5 })
+          .as("d-hop ball sizes at MAXDEPTH 3,4,5 must all be 16; a dip means raising the bound dropped reachable nodes")
+          .containsExactly(16, 16, 16);
+    });
+  }
+
+  private int countWithinDepth(final RID root, final String edgeType, final int maxDepth) {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("root", root);
+    try (final ResultSet rs = database.query("sql",
+        "select count(*) as c from (traverse out('" + edgeType + "') from :root MAXDEPTH " + maxDepth + ")", params)) {
+      return ((Number) rs.next().getProperty("c")).intValue();
+    }
   }
 
   @Test
