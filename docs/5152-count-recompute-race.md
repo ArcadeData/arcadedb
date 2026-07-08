@@ -14,8 +14,9 @@ Vulnerable windows (counter `== -1` with concurrent load): first `count(*)` afte
 In `LocalBucket.count()`, the recompute path (scan + `set`) now acquires the bucket's own file lock (via `TransactionManager.tryLockFile`, `COMMIT_LOCK_TIMEOUT`) - the same lock a commit holds across `publishPages` + fold - making the recompute mutually exclusive with commits on that bucket. Details:
 - Taken only on the rare recompute path (counter unknown, or no active transaction); the O(1) cached fast-path is untouched.
 - Requester mirrors the current transaction's (`getRequester()`) so a recompute invoked while the same transaction already holds the lock re-enters (`ALREADY_ACQUIRED`) instead of self-deadlocking; the lock is released only when this call actually acquired it (`YES`).
-- On lock-acquire timeout (`NO`) it falls back to the previous lock-free scan - degraded but no worse than before, and bounded.
+- On lock-acquire timeout (`NO`) it falls back to a lock-free scan and returns a best-effort value but does **not** cache it (leaves the counter at `-1`), so a possibly-drifted value is never persisted and a later call recomputes cleanly.
 - No deadlock: a recompute locks a single file and does no further lock acquisition, so it cannot form a cycle with the ordered multi-file locks commits take; both acquire the shared DB read lock first.
+- The cached fast-path now returns the counter directly whenever it is known (`> -1`), for both transactional and non-transactional calls (adding the transaction delta only when a transaction is active). Previously a call with no active transaction always did a full O(N) scan, contradicting the O(1) contract relied on by cardinality estimation (`StatisticsProvider`) and external-bucket cleanup; the recompute path is now entered only when the counter is genuinely unknown.
 
 ## Verification
 - New stress regression `Issue5152CountRecomputeRaceTest` (`@Tag("slow")`): large single bucket forced to `-1`, a reader triggers a long recompute while a writer commits concurrently; asserts `count(*) == count(@rid)`. Red before the fix (e.g. 52998 vs 53000), green after (repeated runs).

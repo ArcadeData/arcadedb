@@ -419,8 +419,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext transaction = database.getTransactionIfExists();
 
     final long cached = cachedRecordCount.get();
-    if (cached > -1 && transaction != null)
-      return cached + transaction.getBucketRecordDelta(fileId);
+    if (cached > -1)
+      // O(1) fast path: the counter is kept up to date on every commit, so return it directly. With an active
+      // transaction add its uncommitted delta; without one there is nothing pending, so the cached value is the
+      // committed count. Only a still-unknown (-1) counter falls through to the full recompute below.
+      return cached + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
 
     // #5152: the recompute below (scan + publish of cachedRecordCount) must be mutually exclusive with a
     // commit's publishPages + record-count fold on this bucket. A commit holds this bucket's file lock across
@@ -428,9 +431,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // recompute with commits. Without it a commit could publish a record and then, seeing the still-(-1)
     // counter, drop its delta at the fold while our scan misses that just-published record (lost update), or
     // conversely our scan counts a published record whose delta the fold then re-adds (double count). The lock
-    // is taken only on this rare recompute path (counter unknown, or no active transaction) - never on the
-    // O(1) cached fast-path returned above. The requester mirrors the transaction's so a recompute invoked
-    // while the same transaction already holds the lock re-enters instead of self-deadlocking.
+    // is taken only on this rare recompute path (counter unknown) - never on the O(1) cached fast-path returned
+    // above. The requester mirrors the transaction's so a recompute invoked while the same transaction already
+    // holds the lock re-enters instead of self-deadlocking.
     final TransactionManager txManager = database.getTransactionManager();
     final Object requester = transaction != null && transaction.getRequester() != null ?
             transaction.getRequester() : Thread.currentThread();
@@ -467,7 +470,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       }
 
-      cachedRecordCount.set(total);
+      // Publish the recomputed value only when this scan ran under the lock (acquired now, or already held by
+      // an enclosing transaction). On a lock-acquisition timeout (NO) the scan ran lock-free and may be drifted,
+      // so leave the counter at -1 and return a best-effort value: a later call recomputes cleanly.
+      if (lockStatus != LockManager.LOCK_STATUS.NO)
+        cachedRecordCount.set(total);
       return total;
 
     } catch (final IOException e) {
