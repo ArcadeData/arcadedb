@@ -61,6 +61,9 @@ public interface EdgeSegment extends Record {
 
   EdgeSegment getPrevious();
 
+  /** Returns the RID of the previous chunk in the list without loading it, or {@code null} if this is the tail. */
+  RID getPreviousRID();
+
   void setPrevious(EdgeSegment next);
 
   Binary getContent();

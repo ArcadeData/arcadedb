@@ -187,12 +187,16 @@ and the transaction retries and re-reads the current chunk. Regression:
 losing ~130-160 edges/run, now 32000/32000 with a clean integrity check. This
 fixes the root cause so it is correct with the merge off too.
 
-**Follow-up ([#5153](https://github.com/ArcadeData/arcadedb/issues/5153))**: the
-edge-**removal** path (`deleteEdge`/`removeVertex` via `getEdgeHeadChunk`) shares
-the same unanchored-read pattern - concurrent removals on one hot vertex can lose
-a removal (reproduces with the merge on and off, so independent of it). Full
-protection needs anchoring the chunk actually modified during the remove
-chain-walk; kept out of this PR to stay focused.
+**Also fixed ([#5153](https://github.com/ArcadeData/arcadedb/issues/5153))**: the
+edge-**removal** path (`deleteEdge`/`removeVertex` via `getEdgeHeadChunk`) shared
+the same unanchored-read pattern - concurrent removals on one hot vertex could
+lose a removal (reproduced with the merge on and off, so independent of it).
+`EdgeLinkedList` now loads each chunk it will modify during the remove chain-walk
+through `loadChunkForWrite` (anchors the page at read time, reads content from it,
+via the new `EdgeSegment.getPreviousRID()` to walk without a stray load), so a
+concurrent modification of the same chunk is caught by the MVCC check. Regression:
+`ConcurrentEdgeAppendMergeTest.concurrentAppendsAndRemovesStayConsistent` (mixed
+concurrent append+delete on one hub, net-zero degree, integrity clean).
 
 ---
 
@@ -261,7 +265,8 @@ Reading the HA numbers:
 | Embedded + HA benchmarks | ✅ in `@Tag("benchmark")` tests |
 | Issue #5147 (lost-update edge drop) | ✅ fixed (root cause: deferred-update MVCC gap) in this PR |
 | Adaptive striped edge list (throughput) | ⏳ designed, not started |
-| Edge-removal path lost-update (#5153) | 🐞 filed (removal twin of #5147), not started |
+| Edge-removal path lost-update (#5153) | ✅ fixed (removal twin of #5147) in this PR |
+| Deterministic 3-node HA correctness gate | ✅ added (`SuperNodeAppendHAConsistencyIT`) |
 
 ## 8. Next steps
 
@@ -290,3 +295,10 @@ Reading the HA numbers:
   a chunk-allocation race): head-chunk page now anchored in the tx at read time in
   `GraphEngine.createIn/OutEdgeChunk`. Added `Issue5147SuperNodeChunkRaceTest`.
   Folded into this PR.
+- **2026-07-08** - Code-review round: hardened the rebase (retryable on missing
+  segment/bucket), `@Tag("slow")` on the correctness test, tightened both
+  benchmarks to strict counts now that #5147 is fixed, benchmark imports cleanup.
+  Fixed the removal-direction twin **#5153** (`EdgeLinkedList` now anchors each
+  chunk it modifies during the remove walk via `loadChunkForWrite` +
+  `EdgeSegment.getPreviousRID()`); regression = the mixed append+delete test. Added
+  the deterministic 3-node HA correctness gate `SuperNodeAppendHAConsistencyIT`.
