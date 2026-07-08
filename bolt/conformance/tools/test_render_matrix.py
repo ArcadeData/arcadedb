@@ -4,9 +4,9 @@ import os
 import tempfile
 import unittest
 
-from render_matrix import (Cell, Column, compute_badge, load_columns,
-                           load_scenarios, main, render_page, resolve_cell,
-                           unavailable_columns)
+from render_matrix import (Column, compute_badge, issue_url,
+                           load_columns, load_scenarios, main, regression_url,
+                           render_page, resolve_cell, unavailable_columns)
 
 HERE = os.path.dirname(__file__)
 DRIVER_VERSIONS_MD = os.path.join(HERE, "..", "driver-versions.md")
@@ -40,6 +40,15 @@ class LoadScenariosTest(unittest.TestCase):
         # No scenario carries a tracking_issue today; default is None.
         self.assertTrue(all(s["tracking_issue"] is None for s in scen))
         self.assertTrue(all(s["applicable_driver_versions"] == "all" for s in scen))
+
+    def test_empty_spec_file_returns_no_scenarios(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml",
+                                          delete=False) as fh:
+            path = fh.name
+        try:
+            self.assertEqual(load_scenarios(path), [])
+        finally:
+            os.remove(path)
 
 
 class ResolveCellTest(unittest.TestCase):
@@ -112,6 +121,28 @@ class ResolveCellTest(unittest.TestCase):
         cell = resolve_cell(scen, self._col(), None, set(), self.REPO)
         self.assertEqual(cell.glyph, "➖")
 
+    def test_explicit_null_intermediate_does_not_crash(self):
+        matrix = {"scenarios": {"TYPE-011": None}, "missing_cells": [],
+                  "empty_cells": [], "unexpected_cells": [], "languages": ["java"],
+                  "has_failures": False}
+        cell = resolve_cell(self._scen(), self._col(), matrix, set(), self.REPO)
+        self.assertEqual(cell.glyph, "·")
+
+    def test_applicable_driver_versions_restricts_to_band(self):
+        scen = self._scen(applicable_driver_versions=["java:latest-6.x"])
+        matrix = {"scenarios": {"TYPE-011": {"java": {"6.2.0": "pass"},
+                                             "go": {"5.28.4": "pass"}}},
+                  "missing_cells": [], "empty_cells": [], "unexpected_cells": [],
+                  "languages": ["java", "go"], "has_failures": False}
+        out_of_band = resolve_cell(scen, self._col(lang="go", band="latest",
+                                                    ver="5.28.4"),
+                                   matrix, set(), self.REPO)
+        self.assertEqual(out_of_band.glyph, "➖")
+        in_band = resolve_cell(scen, self._col(lang="java", band="latest-6.x",
+                                                ver="6.2.0"),
+                               matrix, set(), self.REPO)
+        self.assertEqual(in_band.glyph, "✅")
+
 
 class ComputeBadgeTest(unittest.TestCase):
     def _matrix(self, scenarios, **extra):
@@ -125,7 +156,7 @@ class ComputeBadgeTest(unittest.TestCase):
         m = self._matrix({"CONN-001": {"java": {"6.2.0": "pass"}}})
         badge = compute_badge([{"current_status": "passing"}], m)
         self.assertEqual(badge["color"], "brightgreen")
-        self.assertEqual(badge["message"], "5/5 passing")
+        self.assertEqual(badge["message"], "all passing")
         self.assertEqual(badge["label"], "bolt drivers")
         self.assertEqual(badge["schemaVersion"], 1)
 
@@ -151,7 +182,39 @@ class ComputeBadgeTest(unittest.TestCase):
     def test_fallback_no_matrix_is_green(self):
         badge = compute_badge([{"current_status": "passing"}], None)
         self.assertEqual(badge["color"], "brightgreen")
-        self.assertEqual(badge["message"], "5/5 passing")
+        self.assertEqual(badge["message"], "all passing")
+
+    def test_null_valued_keys_do_not_crash(self):
+        m = {"has_failures": True, "scenarios": None, "missing_cells": None,
+             "empty_cells": None, "unexpected_cells": None, "languages": None}
+        badge = compute_badge([{"current_status": "passing"}], m)
+        self.assertEqual(badge["color"], "red")
+
+    def test_not_applicable_scenario_excluded_from_fail_count(self):
+        m = self._matrix({"ERR-003": {"java": {"6.2.0": "fail"}}},
+                         has_failures=True)
+        badge = compute_badge([{"id": "ERR-003",
+                                "current_status": "not-applicable"}], m)
+        self.assertEqual(badge["message"], "0 failing")
+
+    def test_empty_and_unexpected_cells_count_toward_red_total(self):
+        m = self._matrix({"CONN-001": {"java": {"6.2.0": "fail"}}},
+                         has_failures=True, empty_cells=["python:6.2.0"],
+                         unexpected_cells=["csharp:6.2.0"])
+        badge = compute_badge([{"current_status": "passing"}], m)
+        self.assertEqual(badge["message"], "3 failing")
+
+
+class IssueUrlTest(unittest.TestCase):
+    REPO = "ArcadeData/arcadedb"
+
+    def test_full_url_passed_through_unchanged(self):
+        url = "https://github.com/x/y/issues/9"
+        self.assertEqual(issue_url(self.REPO, url), url)
+
+    def test_regression_url_contains_label(self):
+        self.assertIn("label%3Abolt-compat-regression",
+                      regression_url(self.REPO))
 
 
 class UnavailableColumnsTest(unittest.TestCase):
@@ -232,6 +295,16 @@ class RenderPageTest(unittest.TestCase):
         # cells: ['', 'scenario', 'java column', 'go column', '']
         self.assertEqual(cells[2], "✅")
         self.assertEqual(cells[3], "·")
+
+    def test_coverage_gaps_section_lists_missing_cell(self):
+        matrix = {"scenarios": {"CONN-001": {"java": {"6.2.0": "pass"}}},
+                  "missing_cells": ["go:5.28.4"], "empty_cells": [],
+                  "unexpected_cells": [], "languages": ["java", "go"],
+                  "has_failures": False}
+        page = render_page(self._scen(), self._cols(), matrix, repo=self.REPO,
+                           run_url="", timestamp="2026-07-08 03:00 UTC")
+        self.assertIn("## Coverage gaps", page)
+        self.assertIn("missing (job produced no result): go:5.28.4", page)
 
 
 class MainTest(unittest.TestCase):

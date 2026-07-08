@@ -497,8 +497,9 @@ jobs:
             --timestamp "$(date -u +'%Y-%m-%d %H:%M UTC')" \
             --out-page bolt/conformance/COMPATIBILITY.md \
             --out-badge bolt/conformance/badge.json
-          if git diff --quiet -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json; then
-            echo "No matrix changes to publish."
+          if git diff --quiet -I'^\*\*Last verified:\*\*' -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json; then
+            git checkout -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json
+            echo "No matrix content change (only the timestamp differs); skipping."
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -511,7 +512,7 @@ jobs:
               exit 0
             fi
             echo "push rejected (attempt ${attempt}); rebasing onto main and retrying."
-            git pull --rebase origin main
+            git pull --rebase -X theirs origin main || git rebase --abort || true
           done
           echo "Failed to push matrix refresh after retries." >&2
           exit 1

@@ -36,7 +36,7 @@ def load_columns(md_path):
 def load_scenarios(spec_path):
     """Ordered scenario dicts from spec.yaml, with defaulted optional fields."""
     with open(spec_path, encoding="utf-8") as fh:
-        spec = yaml.safe_load(fh)
+        spec = yaml.safe_load(fh) or {}
     scenarios = []
     for entry in spec.get("scenarios", []):
         scenarios.append({
@@ -110,8 +110,8 @@ def resolve_cell(scenario, column, matrix, unavailable, repo):
         return _baseline_cell(scenario, repo)
     if f"{column.language}:{column.version}" in unavailable:
         return Cell(GLYPH["unavailable"], "unavailable", None)
-    runtime = (matrix.get("scenarios", {}).get(scenario["id"], {})
-               .get(column.language, {}).get(column.version))
+    runtime = (((matrix.get("scenarios") or {}).get(scenario["id"]) or {})
+               .get(column.language) or {}).get(column.version)
     if runtime == "pass":
         return Cell(GLYPH["pass"], "pass", None)
     if runtime == "fail":
@@ -133,22 +133,22 @@ def _badge(message, color):
 
 def compute_badge(scenarios, matrix):
     """shields.io endpoint dict summarizing the whole matrix."""
-    languages = 5
-    if matrix is not None:
-        languages = len(matrix.get("languages", [])) or 5
-        if matrix.get("has_failures"):
-            fails = 0
-            for langs in matrix.get("scenarios", {}).values():
-                for versions in langs.values():
-                    fails += sum(1 for status in versions.values()
-                                 if status == "fail")
-            fails += len(matrix.get("missing_cells", []))
-            fails += len(matrix.get("empty_cells", []))
-            fails += len(matrix.get("unexpected_cells", []))
-            return _badge(f"{fails} failing", "red")
+    if matrix is not None and matrix.get("has_failures"):
+        na = {s["id"] for s in scenarios if s["current_status"] == "not-applicable"}
+        fails = 0
+        for sid, langs in (matrix.get("scenarios") or {}).items():
+            if sid in na:
+                continue
+            for versions in (langs or {}).values():
+                fails += sum(1 for status in (versions or {}).values()
+                             if status == "fail")
+        fails += len(matrix.get("missing_cells") or [])
+        fails += len(matrix.get("empty_cells") or [])
+        fails += len(matrix.get("unexpected_cells") or [])
+        return _badge(f"{fails} failing", "red")
     if any(s["current_status"] == "expected-fail" for s in scenarios):
         return _badge("partial", "yellow")
-    return _badge(f"{languages}/{languages} passing", "brightgreen")
+    return _badge("all passing", "brightgreen")
 
 
 AREAS = ["connection", "auth", "transactions", "causal-consistency",
@@ -156,7 +156,8 @@ AREAS = ["connection", "auth", "transactions", "causal-consistency",
          "protocol"]
 
 LEGEND = ("Legend: ✅ pass, ❌ fail, ⚠️ expected-fail / known limitation, "
-          "➖ not applicable, ⚪ skipped, `·` not reported.")
+          "➖ not applicable, ⚪ skipped, `·` not reported. A `·` in a listed "
+          "Coverage-gaps column means no result for that driver:version.")
 
 
 def _cell_md(cell):
@@ -185,6 +186,25 @@ def render_page(scenarios, columns, matrix, *, repo, run_url, timestamp):
         suffix = f" ([run]({run_url}))" if run_url else ""
         lines.append(f"**Last verified:** {timestamp}{suffix}")
     lines += ["", LEGEND, ""]
+
+    if matrix is not None:
+        missing = matrix.get("missing_cells") or []
+        empty = matrix.get("empty_cells") or []
+        unexpected = matrix.get("unexpected_cells") or []
+        if missing or empty or unexpected:
+            lines += ["## Coverage gaps", "",
+                      "These driver:version cells produced no usable result "
+                      "this run and count against the badge:", ""]
+            if missing:
+                lines.append(
+                    f"- missing (job produced no result): {', '.join(missing)}")
+            if empty:
+                lines.append(
+                    f"- empty (ran, no recognized scenarios): {', '.join(empty)}")
+            if unexpected:
+                lines.append(
+                    f"- unexpected (ran, not in driver-versions.md): {', '.join(unexpected)}")
+            lines.append("")
 
     header = "| Scenario | " + " | ".join(
         f"{c.language}<br>{c.version}" for c in columns) + " |"
