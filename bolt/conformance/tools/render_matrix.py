@@ -124,3 +124,28 @@ def resolve_cell(scenario, column, matrix, unavailable, repo):
         return Cell(GLYPH["skip"], "skip",
                     issue_url(repo, scenario["tracking_issue"]))
     return Cell(GLYPH["unreported"], "unreported", None)
+
+
+def _badge(message, color):
+    return {"schemaVersion": 1, "label": "bolt drivers",
+            "message": message, "color": color}
+
+
+def compute_badge(scenarios, matrix):
+    """shields.io endpoint dict summarizing the whole matrix."""
+    languages = 5
+    if matrix is not None:
+        languages = len(matrix.get("languages", [])) or 5
+        if matrix.get("has_failures"):
+            fails = 0
+            for langs in matrix.get("scenarios", {}).values():
+                for versions in langs.values():
+                    fails += sum(1 for status in versions.values()
+                                 if status == "fail")
+            fails += len(matrix.get("missing_cells", []))
+            fails += len(matrix.get("empty_cells", []))
+            fails += len(matrix.get("unexpected_cells", []))
+            return _badge(f"{fails} failing", "red")
+    if any(s["current_status"] == "expected-fail" for s in scenarios):
+        return _badge("partial", "yellow")
+    return _badge(f"{languages}/{languages} passing", "brightgreen")

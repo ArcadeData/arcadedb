@@ -2,8 +2,8 @@
 import os
 import unittest
 
-from render_matrix import (Cell, Column, load_columns, load_scenarios,
-                           resolve_cell)
+from render_matrix import (Cell, Column, compute_badge, load_columns,
+                           load_scenarios, resolve_cell)
 
 HERE = os.path.dirname(__file__)
 DRIVER_VERSIONS_MD = os.path.join(HERE, "..", "driver-versions.md")
@@ -108,6 +108,47 @@ class ResolveCellTest(unittest.TestCase):
         scen = self._scen(current_status="not-applicable")
         cell = resolve_cell(scen, self._col(), None, set(), self.REPO)
         self.assertEqual(cell.glyph, "➖")
+
+
+class ComputeBadgeTest(unittest.TestCase):
+    def _matrix(self, scenarios, **extra):
+        base = {"scenarios": scenarios, "missing_cells": [], "empty_cells": [],
+                "unexpected_cells": [], "languages": ["java", "javascript",
+                "python", "csharp", "go"], "has_failures": False}
+        base.update(extra)
+        return base
+
+    def test_all_pass_is_green(self):
+        m = self._matrix({"CONN-001": {"java": {"6.2.0": "pass"}}})
+        badge = compute_badge([{"current_status": "passing"}], m)
+        self.assertEqual(badge["color"], "brightgreen")
+        self.assertEqual(badge["message"], "5/5 passing")
+        self.assertEqual(badge["label"], "bolt drivers")
+        self.assertEqual(badge["schemaVersion"], 1)
+
+    def test_not_applicable_stays_green(self):
+        m = self._matrix({"CONN-001": {"java": {"6.2.0": "pass"}}})
+        badge = compute_badge(
+            [{"current_status": "passing"}, {"current_status": "not-applicable"}], m)
+        self.assertEqual(badge["color"], "brightgreen")
+
+    def test_expected_fail_is_yellow(self):
+        m = self._matrix({"CONN-001": {"java": {"6.2.0": "pass"}}})
+        badge = compute_badge([{"current_status": "expected-fail"}], m)
+        self.assertEqual(badge["color"], "yellow")
+        self.assertEqual(badge["message"], "partial")
+
+    def test_failures_are_red_with_count(self):
+        m = self._matrix({"CONN-001": {"java": {"6.2.0": "fail"}}},
+                         has_failures=True, missing_cells=["go:5.28.4"])
+        badge = compute_badge([{"current_status": "passing"}], m)
+        self.assertEqual(badge["color"], "red")
+        self.assertEqual(badge["message"], "2 failing")
+
+    def test_fallback_no_matrix_is_green(self):
+        badge = compute_badge([{"current_status": "passing"}], None)
+        self.assertEqual(badge["color"], "brightgreen")
+        self.assertEqual(badge["message"], "5/5 passing")
 
 
 if __name__ == "__main__":
