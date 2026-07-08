@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-r"""Convert a suite's JUnit XML into a normalized scenario-id -> status map.
+r"""
+Convert a suite's JUnit XML into a normalized scenario-id -> status map.
 
 Scenario IDs (pattern ``[A-Z]+-\d{3}``) are embedded in every suite's test
 names; this reduces a language/driver-version run to a comparable map keyed by
@@ -30,7 +31,8 @@ def _local_name(tag):
 
 
 def parse_junit(xml_path):
-    """Return a {scenario-id: "pass"|"fail"|"skip"} map from a JUnit report.
+    """
+    Return a {scenario-id: "pass"|"fail"|"skip"} map from a JUnit report.
 
     A scenario asserted by several testcases fails if any of them fails, and is
     considered a pass if at least one passes and none fail. Tags are matched by
@@ -78,7 +80,8 @@ def load_known_ids(spec_path):
 
 
 def build_matrix(xml_path, language, driver_version, known_ids):
-    """Build the per-cell record, dropping scenario ids absent from the spec.
+    """
+    Build the per-cell record, dropping scenario ids absent from the spec.
 
     Unknown ids are warned about and skipped rather than raised: this tool runs
     inside a monitoring workflow where hard-failing the conversion would drop the

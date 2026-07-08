@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Merge per-language/-version scenario maps into one compatibility matrix.
+"""
+Merge per-language/-version scenario maps into one compatibility matrix.
 
 Output is keyed scenario -> language -> driver_version -> status, plus a
 ``has_failures`` flag consumed by the nightly report job.
@@ -10,7 +11,8 @@ import sys
 
 
 def merge(matrices, expected_languages=None):
-    """Combine per-cell records into one scenario-keyed compatibility matrix.
+    """
+    Combine per-cell records into one scenario-keyed compatibility matrix.
 
     A language listed in ``expected_languages`` but absent from every cell (its
     whole job died before producing any result) is reported in
