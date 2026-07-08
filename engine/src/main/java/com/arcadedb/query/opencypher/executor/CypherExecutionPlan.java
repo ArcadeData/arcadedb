@@ -425,8 +425,12 @@ public class CypherExecutionPlan {
     // non-union write path), then surface the summed per-branch statistics.
     final ResultSet rs = unionStep.syncPull(context, 100);
     final List<Result> rows = new ArrayList<>();
-    while (rs.hasNext())
-      rows.add(rs.next());
+    try {
+      while (rs.hasNext())
+        rows.add(rs.next());
+    } finally {
+      rs.close();
+    }
     final IteratorResultSet out = new IteratorResultSet(rows.iterator());
     // Always attach the accumulator for a write UNION, even when no branch actually mutated
     // anything (aggregated.containsUpdates() false then): presence signals "this was a write",
