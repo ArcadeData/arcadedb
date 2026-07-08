@@ -3504,10 +3504,20 @@ public class CypherExecutionPlan {
           break;
         }
         case SET: {
+          // The edge variable can be the assignment target (SET r.prop = ...) or appear inside the
+          // value/target expression (SET u.x = CASE WHEN r IS NOT NULL ...). Checking only the target
+          // variable dropped the edge binding when it was used solely on the right-hand side (issue #5137).
           final SetClause sc = entry.getTypedClause();
-          for (final SetClause.SetItem item : sc.getItems())
+          for (final SetClause.SetItem item : sc.getItems()) {
             if (variable.equals(item.getVariable()))
               return true;
+            if (item.getValueExpression() != null
+                && expressionReferencesVariable(item.getValueExpression().getText(), variable))
+              return true;
+            if (item.getTargetExpression() != null
+                && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
+              return true;
+          }
           break;
         }
         case REMOVE: {

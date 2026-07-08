@@ -1920,7 +1920,7 @@ class CypherExpressionBuilder {
       elseExpr = parseExpression(ctx.expression());
     }
 
-    return new CaseExpression(alternatives, elseExpr, ctx.getText());
+    return new CaseExpression(alternatives, elseExpr);
   }
 
   /**
@@ -1949,7 +1949,7 @@ class CypherExpressionBuilder {
       elseExpr = parseExpression(ctx.elseExp);
     }
 
-    return new CaseExpression(caseExpr, alternatives, elseExpr, ctx.getText());
+    return new CaseExpression(caseExpr, alternatives, elseExpr);
   }
 
   /**

@@ -46,7 +46,6 @@ public class CaseExpression implements Expression {
   private final Expression caseExpression; // null for simple form
   private final List<CaseAlternative> alternatives;
   private final Expression elseExpression; // null if no ELSE clause
-  private final String text;
   // Extended form only: reuse the '=' comparison so a WHEN value matches under Cypher equality
   // (numeric type folding, temporal, list, RID interop) instead of strict Object.equals(). Built once
   // per CASE AST node, not per evaluated row.
@@ -55,19 +54,18 @@ public class CaseExpression implements Expression {
   /**
    * Constructor for simple CASE form (no case expression).
    */
-  public CaseExpression(final List<CaseAlternative> alternatives, final Expression elseExpression, final String text) {
-    this(null, alternatives, elseExpression, text);
+  public CaseExpression(final List<CaseAlternative> alternatives, final Expression elseExpression) {
+    this(null, alternatives, elseExpression);
   }
 
   /**
    * Constructor for extended CASE form (with case expression).
    */
   public CaseExpression(final Expression caseExpression, final List<CaseAlternative> alternatives,
-                        final Expression elseExpression, final String text) {
+                        final Expression elseExpression) {
     this.caseExpression = caseExpression;
     this.alternatives = alternatives;
     this.elseExpression = elseExpression;
-    this.text = text;
     this.whenEquality = caseExpression != null
         ? new ComparisonExpression(null, ComparisonExpression.Operator.EQUALS, null)
         : null;
@@ -152,7 +150,21 @@ public class CaseExpression implements Expression {
 
   @Override
   public String getText() {
-    return text;
+    // Reconstruct a properly spaced representation instead of returning the raw ANTLR text, whose
+    // getText() concatenates tokens with no whitespace (e.g. "CASEWHENrISNOTNULLTHEN1ELSE0END").
+    // The glued form hides variable references from downstream word-boundary analysis such as
+    // CypherExecutionPlan.isEdgeVariableReferenced, which then wrongly dropped an OPTIONAL MATCH edge
+    // variable used only inside a CASE (issue #5137).
+    final StringBuilder sb = new StringBuilder("CASE");
+    if (caseExpression != null)
+      sb.append(' ').append(caseExpression.getText());
+    for (final CaseAlternative alternative : alternatives)
+      sb.append(" WHEN ").append(alternative.getWhenExpression().getText())
+          .append(" THEN ").append(alternative.getThenExpression().getText());
+    if (elseExpression != null)
+      sb.append(" ELSE ").append(elseExpression.getText());
+    sb.append(" END");
+    return sb.toString();
   }
 
   public Expression getCaseExpression() {
