@@ -31,3 +31,21 @@ def load_columns(md_path):
             if match and match.group(1) in LANGUAGES:
                 columns.append(Column(match.group(1), match.group(2), match.group(3)))
     return columns
+
+
+def load_scenarios(spec_path):
+    """Ordered scenario dicts from spec.yaml, with defaulted optional fields."""
+    with open(spec_path, encoding="utf-8") as fh:
+        spec = yaml.safe_load(fh)
+    scenarios = []
+    for entry in spec.get("scenarios", []):
+        scenarios.append({
+            "id": entry["id"],
+            "area": entry["area"],
+            "title": entry["title"],
+            "current_status": entry.get("current_status", "unverified"),
+            "tracking_issue": entry.get("tracking_issue"),
+            "known_limitation": entry.get("known_limitation"),
+            "applicable_driver_versions": entry.get("applicable_driver_versions", "all"),
+        })
+    return scenarios
