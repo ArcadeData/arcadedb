@@ -1326,7 +1326,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (parenExpr != null && compCtx == null) {
       // Check if the parenthesized expression contains just a bare variable (e.g., WHERE (n)).
       // A single-node pattern without relationships is invalid as a boolean predicate.
-      final String innerText = parenExpr.expression().getText().trim();
+      // Use getOriginalText (whitespace-preserving) rather than getText(): getText() strips all
+      // whitespace, so a genuine predicate such as (friend IN inactive_nodes) collapses to
+      // "friendINinactive_nodes" and spuriously matches the bare-identifier regex, getting
+      // misparsed as an invalid single-node pattern (issue #5138).
+      final String innerText = getOriginalText(parenExpr.expression()).trim();
       if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$")) {
         final NodePattern nodePattern = new NodePattern(innerText, null, null);
         final PathPattern singleNodePath = new PathPattern(List.of(nodePattern), List.of(), null);
