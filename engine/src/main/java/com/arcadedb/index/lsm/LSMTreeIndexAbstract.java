@@ -387,7 +387,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     for (int keyIndex = 0; keyIndex < keyLength; ++keyIndex) {
       final boolean notNull = version < 1 || buffer.getByte() == 1;
       if (notNull)
-        serializer.deserializeValue(database, buffer, binaryKeyTypes[keyIndex], null);
+        // Keys are serialized in clear (see writeKeys): read them back without decryption.
+        serializer.deserializeValue(database, buffer, binaryKeyTypes[keyIndex], null, false);
     }
 
     return buffer.position() - startsAt;
@@ -437,7 +438,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     for (int keyIndex = 0; keyIndex < binaryKeyTypes.length; ++keyIndex) {
       final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
       if (notNull)
-        key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, binaryKeyTypes[keyIndex], null);
+        // Keys are serialized in clear (see writeKeys): read them back without decryption.
+        key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, binaryKeyTypes[keyIndex], null, false);
       else
         key[keyIndex] = null;
     }
@@ -475,7 +477,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
         result = comparator.compareBytes((byte[]) key, currentPageBuffer);
       } else {
-        final Object keyValue = serializer.deserializeValue(database, currentPageBuffer, binaryKeyTypes[keyIndex], null);
+        // Keys are serialized in clear (see writeKeys): read them back without decryption.
+        final Object keyValue = serializer.deserializeValue(database, currentPageBuffer, binaryKeyTypes[keyIndex], null, false);
         result = comparator.compare(key, binaryKeyTypes[keyIndex], keyValue, binaryKeyTypes[keyIndex]);
       }
 
@@ -739,7 +742,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
           result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
         } else {
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
+          // Keys are serialized in clear (see writeKeys): read them back without decryption.
+          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null, false);
           result = comparator.compare(keys[keyIndex], keyType, key, keyType);
         }
 
@@ -776,7 +780,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       else {
         // WRITE 1 + THE ACTUAL VALUE
         buffer.putByte((byte) 1);
-        serializer.serializeValue(database, buffer, binaryKeyTypes[i], value);
+        // Index keys must be deterministic (issue #5142/#4137): encryption uses a fresh random IV per call, so encrypting
+        // keys would yield different ciphertext each time and break the ordered key comparison. Keys are always serialized
+        // in clear; the record content they point to remains encrypted.
+        serializer.serializeValue(database, buffer, binaryKeyTypes[i], value, false);
       }
     }
   }

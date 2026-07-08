@@ -17,6 +17,25 @@ that could starve the very snapshot resync meant to heal the node.
   (`SET d['propA'] = 'hello'`) and computed-key (`SET d[k] = 'world'`) variants now behave like their
   dot-syntax equivalents, matching Neo4j. As with `SET n.key`, assigning `null` removes the property.
 
+- **Encryption: `FULL_TEXT` (and every `LSM_TREE`) index now returns results on an encrypted database.** With
+  data encryption enabled, a `SELECT ... WHERE SEARCH_FIELDS([...], '...')` (or any equality/range lookup on an
+  `LSM_TREE`-indexed property) returned an empty result set ([#5142](https://github.com/ArcadeData/arcadedb/issues/5142)).
+  The #4137 fix that keeps index keys deterministic (encryption uses a fresh random IV per call, so encrypted
+  keys never match on lookup) had only been wired into the `HASH` index bucket; `LSM_TREE` index keys - which
+  the `FULL_TEXT` index is built on - were still serialized encrypted, so the random-IV ciphertext broke the
+  ordered key comparison. `LSM_TREE` keys are now serialized and read back in clear, exactly like `HASH` keys;
+  the record content they point to stays encrypted. **Note:** an already-encrypted database created before this
+  fix must rebuild its `LSM_TREE`/`FULL_TEXT` indexes (`REBUILD INDEX *`), since their on-disk keys were written
+  with the old encrypted layout.
+
+- **Cypher: parenthesized `IN` predicate against a variable no longer misparses as an invalid node pattern.**
+  A `WHERE` predicate such as `(friend IN inactive_nodes)` (typically injected around the body of a correlated
+  `EXISTS { ... }` subquery) was flattened by the parser to `friendINinactive_nodes`, which spuriously matched
+  the bare-identifier check and was rejected as a single-node pattern. Because `EXISTS` swallows subquery
+  parse errors as `false`, patterns like `EXISTS { MATCH (u)-[:FRIEND]->(friend) WHERE friend IN inactive_nodes }`
+  never matched an outer-scope collected node list ([#5138](https://github.com/ArcadeData/arcadedb/issues/5138)).
+  The bare-variable detection now inspects the whitespace-preserving source text, matching Neo4j and Memgraph.
+
 - **Remote API: `RemoteVertex.isConnectedTo()` now accepts a `Vertex` object, not only a `RID`.** Calling
   `vertex.isConnectedTo(otherVertex, ...)` from a remote database threw a `SQL syntax error at ... mismatched
   input '@'` because the argument was inlined into the generated SQL via its full `toString()` (e.g.
