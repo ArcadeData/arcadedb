@@ -5682,18 +5682,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Function name (second identifier)
     stmt.functionName = (Identifier) visit(ctx.identifier(1));
 
-    // Code (quoted string)
-    stmt.codeQuoted = ctx.STRING_LITERAL().getText();
+    // Code (quoted string). Kept verbatim (quotes + escapes) for statement re-serialization in toString().
+    final String codeText = ctx.STRING_LITERAL().getText();
+    stmt.codeQuoted = codeText;
 
-    // Code (unquoted - remove surrounding quotes)
-    String codeText = ctx.STRING_LITERAL().getText();
-    if (codeText.startsWith("\"") && codeText.endsWith("\"")) {
-      stmt.code = codeText.substring(1, codeText.length() - 1);
-    } else if (codeText.startsWith("'") && codeText.endsWith("'")) {
-      stmt.code = codeText.substring(1, codeText.length() - 1);
-    } else {
+    // Code (unquoted): strip the surrounding quotes AND decode the escape sequences (backslash-quote to a
+    // quote, double-backslash to a single one, backslash-n to a newline, unicode escapes, ...) the same way
+    // every other SQL string literal is decoded. Without this the raw escapes were stored verbatim, so a body
+    // containing an escaped quote or newline produced an invalid function declaration (issue #5121).
+    if ((codeText.startsWith("\"") && codeText.endsWith("\"")) || (codeText.startsWith("'") && codeText.endsWith("'")))
+      stmt.code = BaseExpression.decode(codeText.substring(1, codeText.length() - 1));
+    else
       stmt.code = codeText;
-    }
 
     // Parameters (optional)
     if (ctx.parameterList() != null) {

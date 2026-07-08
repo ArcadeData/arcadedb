@@ -104,6 +104,30 @@ class SQLDefinedFunctionPersistenceTest extends TestHelper {
     assertThat((Integer) database.getSchema().getFunction("t", "f1").execute()).isEqualTo(1);
   }
 
+  // ---------------------------------------------------------------- Escaped characters in the body (issue #5121)
+
+  @Test
+  void bodyWithEscapedQuotesAndNewlines() {
+    // \" must become a real double quote and \n a real newline inside the stored body.
+    database.command("sql", "define function t.q \"var s = \\\"x\\\";\\nreturn s;\" language js");
+    assertThat(database.getSchema().getFunction("t", "q").execute()).isEqualTo("x");
+
+    // The escapes must survive a restart too (persisted body is the decoded form, re-declared cleanly).
+    reopenDatabase();
+    assertThat(database.getSchema().getFunction("t", "q").execute()).isEqualTo("x");
+  }
+
+  @Test
+  void bodyWithBackslash() {
+    // SQL \\\\ (4 backslashes) decodes to \\ (2), so the JS body becomes `return '\\'.charCodeAt(0);`
+    // i.e. a single backslash char whose code point is 92.
+    database.command("sql", "define function t.bs \"return '\\\\\\\\'.charCodeAt(0);\" language js");
+    assertThat((Integer) database.getSchema().getFunction("t", "bs").execute()).isEqualTo(92);
+
+    reopenDatabase();
+    assertThat((Integer) database.getSchema().getFunction("t", "bs").execute()).isEqualTo(92);
+  }
+
   @Test
   void brokenDefinitionIsNotPersisted() {
     database.command("sql", "define function t.f1 \"return 1;\" language js");
