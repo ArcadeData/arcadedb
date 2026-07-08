@@ -1672,9 +1672,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Both indices are consulted: the in-memory one for the current session, and the persisted one so
    * a restarted, already-bootstrapped cluster - whose {@code BOOTSTRAP_FINGERPRINT_ENTRY} has been
    * compacted below the Ratis snapshot and is not replayed - is never mistaken for a fresh one.
+   * <p>
+   * Defense in depth against a degraded read: the persisted {@code .raft/applied-index} file is
+   * created only after at least one application entry has been applied (see
+   * {@link #writePersistedAppliedIndex} and the snapshot-install path), so its mere presence proves
+   * this node is not fresh. {@link #readPersistedAppliedIndex()} degrades a momentarily-unreadable or
+   * corrupt file to {@code -1}; keying solely on that value could re-open the gate on a running
+   * cluster whose file is transiently unreadable. We therefore treat an existing file as "already
+   * applied" regardless of whether its contents parse, so a transient I/O error can never re-trigger
+   * bootstrap on a cluster that already holds data.
    */
   public boolean hasNeverAppliedApplicationEntry() {
     if (lastAppliedIndex.get() >= 0)
+      return false;
+    final Path appliedIndexFile = getAppliedIndexFile();
+    if (appliedIndexFile != null && Files.exists(appliedIndexFile))
       return false;
     return readPersistedAppliedIndex() < 0;
   }

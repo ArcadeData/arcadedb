@@ -24,6 +24,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,6 +100,29 @@ class ArcadeStateMachineFirstFormationSignalTest {
     final ArcadeStateMachine reopened = newStateMachine();
     assertThat(reopened.hasNeverAppliedApplicationEntry())
         .as("a persisted applied index survives a restart and keeps the gate closed")
+        .isFalse();
+  }
+
+  /**
+   * Defense in depth: a present-but-corrupt {@code .raft/applied-index} file (a transient read
+   * failure would degrade {@code readPersistedAppliedIndex()} to -1) must still keep the gate closed.
+   * The file exists only after an application entry was applied, so its presence alone proves the node
+   * is not fresh - a degraded read must never re-open bootstrap on a running cluster.
+   */
+  @Test
+  void presentButCorruptAppliedIndexFileKeepsTheSignalClosed() throws Exception {
+    final Path raftDir = serverDir.resolve(".raft");
+    Files.createDirectories(raftDir);
+    // Leading '{' looks like the JSON document but is truncated, so parsing fails and the read
+    // degrades to -1 (mirrors ArcadeStateMachineAppliedIndexPerDatabaseTest.corruptFileDegradesToMinusOne).
+    Files.writeString(raftDir.resolve("applied-index"), "{\"global\": 42, \"db\": {\"db-a\":");
+
+    final ArcadeStateMachine sm = newStateMachine();
+    assertThat(sm.readPersistedAppliedIndex())
+        .as("the corrupt file degrades the persisted read to -1")
+        .isEqualTo(-1L);
+    assertThat(sm.hasNeverAppliedApplicationEntry())
+        .as("but the file's existence keeps the gate closed despite the degraded read")
         .isFalse();
   }
 }

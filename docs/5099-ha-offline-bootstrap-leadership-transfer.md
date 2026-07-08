@@ -40,6 +40,23 @@ negative (unready/failed) commit index still never opens the gate (#4800 preserv
   machine it skips.
 - `RaftBootstrapLeadershipTransferIT` (existing IT) - end-to-end reproduction, now passes.
 
+## Review hardening (cycle 1)
+Both bot reviewers flagged the same failure mode: `hasNeverAppliedApplicationEntry()` could falsely
+report first formation on a running cluster if the persisted `.raft/applied-index` read degrades to
+`-1` (a transient I/O error or corrupt file). Added a defense-in-depth guard: the file is created
+only after an application entry is applied, so its mere presence proves the node is not fresh -
+`hasNeverAppliedApplicationEntry()` now returns `false` when the file exists, regardless of whether
+its contents parse. New unit case
+`ArcadeStateMachineFirstFormationSignalTest.presentButCorruptAppliedIndexFileKeepsTheSignalClosed`.
+
+The reviewer's alternative "require `lastAppliedIndex >= commitIndex`" is infeasible: internal
+no-op/config entries advance the commit index but never flow through `applyTransaction`, so applied
+can never catch up to commit in the transfer case (that is the whole reason the exact-`0` gate had to
+be replaced). The residual "never-applied node with committed-but-unapplied application entries wins
+an election" window is bounded by Raft's election restriction (a lagging node cannot win leadership
+until its log is up to date) and backstopped by the existing `localLastTxId > baseline`
+refusing-to-overwrite guard.
+
 ## Related
 - #4147 (offline bootstrap protocol), #4800 (first-formation gate), #5098 (transient `-1` fix,
   prerequisite), #5100/#5104 (restart baseline persistence).
