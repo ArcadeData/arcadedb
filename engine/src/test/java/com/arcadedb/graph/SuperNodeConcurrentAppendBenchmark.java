@@ -70,6 +70,67 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
     return false;
   }
 
+  /**
+   * Single-threaded, zero-contention edge append. There are no conflicts and therefore no merges, so the only
+   * cost the append-merge adds here is its per-append TRACKING. Reports bytes allocated per edge (via the
+   * HotSpot per-thread allocation counter) so the tracking overhead can be compared on vs off:
+   * {@code -Darcadedb.graph.edgeAppendMerge=false}. After the allocation-free rework (segment-keyed, primitive
+   * buffers, lazy PageId) the on/off allocation-per-edge should be essentially identical.
+   */
+  @Test
+  void singleThreadedAppendTrackingOverhead() {
+    final int edges = 200_000;
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Hub", 1);
+      database.getSchema().createVertexType("Src", BUCKETS);
+      database.getSchema().createEdgeType("LINK", BUCKETS);
+    });
+    final MutableVertex[] hubHolder = new MutableVertex[1];
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("Hub");
+      hub.save();
+      hubHolder[0] = hub;
+    });
+    final RID hubRID = hubHolder[0].getIdentity();
+
+    final com.sun.management.ThreadMXBean threadBean =
+        (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+    final long tid = Thread.currentThread().threadId();
+
+    // One big transaction: every edge appends to the hub's IN head chunk (tracked) with no other thread, so no
+    // conflict, no merge - pure tracking cost.
+    final long allocBefore = threadBean.getThreadAllocatedBytes(tid);
+    final long begin = System.currentTimeMillis();
+    database.transaction(() -> {
+      for (int i = 0; i < edges; i++) {
+        final MutableVertex src = database.newVertex("Src");
+        src.save();
+        src.newEdge("LINK", hubRID);
+      }
+    });
+    final long elapsed = System.currentTimeMillis() - begin;
+    final long allocated = threadBean.getThreadAllocatedBytes(tid) - allocBefore;
+
+    final String report = """
+        ======== Single-threaded append tracking overhead ========
+        append-merge enabled : %b
+        edges                : %d
+        elapsed              : %d ms
+        throughput           : %.0f edges/s
+        allocated total      : %.1f MB
+        allocated / edge     : %d bytes
+        ==========================================================""".formatted(
+        GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean(), edges, elapsed,
+        edges / (elapsed / 1000.0), allocated / (1024.0 * 1024.0), allocated / edges);
+    LogManager.instance().log(this, Level.INFO, report);
+    try {
+      java.nio.file.Files.writeString(new java.io.File("./target/supernode-append-overhead.txt").toPath(),
+          report + System.lineSeparator(), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+    } catch (final java.io.IOException ignore) {
+      // best-effort reporting only
+    }
+  }
+
   @Test
   void concurrentAppendToSuperNode() throws InterruptedException {
     // Keep retry back-off tiny so the measurement reflects wasted work (conflicts), not sleep time.
