@@ -12,6 +12,7 @@ PY_STYLE = os.path.join(HERE, "testdata", "py-junit.xml")
 NS_STYLE = os.path.join(HERE, "testdata", "ns-junit.xml")
 JAVA_STYLE = os.path.join(HERE, "testdata", "java-junit.xml")
 LEGACY_STYLE = os.path.join(HERE, "testdata", "legacy-junit.xml")
+GUARD_STYLE = os.path.join(HERE, "testdata", "guard-junit.xml")
 KNOWN = {"CONN-001", "AUTH-003", "TYPE-007", "ERR-002"}
 
 
@@ -52,6 +53,11 @@ class ParseJunitTest(unittest.TestCase):
     def test_namespaced_junit_document(self):
         result = parse_junit(NS_STYLE)
         self.assertEqual(result, {"CONN-001": "pass"})
+
+    def test_four_digit_and_two_digit_runs_are_not_ids(self):
+        # Locks the (?!\d)/3-digit guards: a 4-digit year or a 2-digit token
+        # must not be misread as a scenario id.
+        self.assertEqual(parse_junit(GUARD_STYLE), {})
 
 
 class BuildMatrixTest(unittest.TestCase):
