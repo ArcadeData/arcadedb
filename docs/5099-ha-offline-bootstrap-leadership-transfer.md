@@ -57,6 +57,29 @@ an election" window is bounded by Raft's election restriction (a lagging node ca
 until its log is up to date) and backstopped by the existing `localLastTxId > baseline`
 refusing-to-overwrite guard.
 
+## PR
+https://github.com/ArcadeData/arcadedb/pull/5113
+
+## Review cycles
+- **Cycle 1** (`3f558b8`) - both bots flagged the same failure mode: a degraded/corrupt read of the
+  persisted `.raft/applied-index` file degrading to `-1` could re-open bootstrap on a running
+  cluster. Applied the file-existence guard (`8fba97a0`): the file exists only after an application
+  entry is applied, so its presence proves the node is not fresh regardless of parse result. Added
+  `presentButCorruptAppliedIndexFileKeepsTheSignalClosed`. Declined the alternative
+  `lastAppliedIndex >= commitIndex` guard (infeasible: internal entries advance commit but never
+  applied).
+- **Cycle 2** (`8fba97a0`) - claude LGTM; applied its clarifying comment on the fallthrough line
+  (`b723394e`). Gemini re-posted its already-applied suggestion.
+- **Cycle 3** (`b723394e`) - claude LGTM; applied all three polish items (`167a5be3`): residual-window
+  reasoning moved into the `isFirstFormation` code comment, `unwiredStateMachineReportsFirstFormation`
+  null-path test, and narrowed `hasNeverAppliedApplicationEntry()` to package-private. Gemini re-posted
+  the already-applied suggestion again.
+- **Cycle 4** (`167a5be3`) - claude verdict "looks good to merge"; all observations non-blocking and
+  already covered, no code changes. Gemini did not re-review this head.
+
+**Final state:** clean-approval (claude LGTM, no actionable items outstanding; working tree clean).
+Merge is the maintainer's decision - this workflow does not merge.
+
 ## Related
 - #4147 (offline bootstrap protocol), #4800 (first-formation gate), #5098 (transient `-1` fix,
   prerequisite), #5100/#5104 (restart baseline persistence).
