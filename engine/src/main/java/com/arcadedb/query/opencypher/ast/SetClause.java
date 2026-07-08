@@ -58,6 +58,7 @@ public class SetClause {
   public static class SetItem {
     private final String variable;
     private final String property;
+    private final Expression keyExpression;
     private final Expression valueExpression;
     private final Expression targetExpression;
     private final SetType type;
@@ -67,6 +68,7 @@ public class SetClause {
     public SetItem(final String variable, final String property, final Expression valueExpression) {
       this.variable = variable;
       this.property = property;
+      this.keyExpression = null;
       this.valueExpression = valueExpression;
       this.targetExpression = null;
       this.type = SetType.PROPERTY;
@@ -77,6 +79,7 @@ public class SetClause {
     public SetItem(final Expression targetExpression, final String property, final Expression valueExpression) {
       this.variable = null;
       this.property = property;
+      this.keyExpression = null;
       this.targetExpression = targetExpression;
       this.valueExpression = valueExpression;
       this.type = SetType.PROPERTY;
@@ -87,6 +90,7 @@ public class SetClause {
     public SetItem(final String variable, final Expression valueExpression, final SetType type) {
       this.variable = variable;
       this.property = null;
+      this.keyExpression = null;
       this.valueExpression = valueExpression;
       this.targetExpression = null;
       this.type = type;
@@ -97,10 +101,28 @@ public class SetClause {
     public SetItem(final String variable, final List<String> labels) {
       this.variable = variable;
       this.property = null;
+      this.keyExpression = null;
       this.valueExpression = null;
       this.targetExpression = null;
       this.type = SetType.LABELS;
       this.labels = labels;
+    }
+
+    /**
+     * Dynamic property assignment: SET n[keyExpr] = value. The property name is computed at
+     * runtime by evaluating {@code keyExpression}. When {@code targetExpression} is null the
+     * base is the plain variable {@code variable}; otherwise the base is the evaluated
+     * {@code targetExpression} (e.g. SET (CASE ... END)[k] = value).
+     */
+    public SetItem(final String variable, final Expression targetExpression, final Expression keyExpression,
+        final Expression valueExpression) {
+      this.variable = variable;
+      this.property = null;
+      this.keyExpression = keyExpression;
+      this.valueExpression = valueExpression;
+      this.targetExpression = targetExpression;
+      this.type = SetType.PROPERTY;
+      this.labels = null;
     }
 
     public String getVariable() {
@@ -109,6 +131,10 @@ public class SetClause {
 
     public String getProperty() {
       return property;
+    }
+
+    public Expression getKeyExpression() {
+      return keyExpression;
     }
 
     public Expression getValueExpression() {
