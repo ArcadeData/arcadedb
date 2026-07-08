@@ -19,6 +19,8 @@ package com.arcadedb.function.sql;/*
 
 import com.arcadedb.database.Database;
 import com.arcadedb.function.FunctionLibraryDefinition;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,6 +54,27 @@ public class SQLFunctionLibraryDefinition implements FunctionLibraryDefinition<S
   @Override
   public String getName() {
     return libraryName;
+  }
+
+  @Override
+  public String getLanguage() {
+    return "sql";
+  }
+
+  @Override
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("language", getLanguage());
+
+    final JSONObject functionsJSON = new JSONObject();
+    for (final SQLFunctionDefinition f : functions.values()) {
+      final JSONObject fJSON = new JSONObject();
+      fJSON.put("code", f.getImplementation());
+      fJSON.put("parameters", new JSONArray(f.getParameters()));
+      functionsJSON.put(f.getName(), fJSON);
+    }
+    json.put("functions", functionsJSON);
+    return json;
   }
 
   @Override

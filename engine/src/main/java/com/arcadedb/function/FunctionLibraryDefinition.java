@@ -17,6 +17,7 @@ package com.arcadedb.function;/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
@@ -30,6 +31,22 @@ public interface FunctionLibraryDefinition<T extends FunctionDefinition> {
    * Returns the name of the library.
    */
   String getName();
+
+  /**
+   * Returns the language of the library (e.g. "js", "sql", "opencypher"), or {@code null} if the library is not
+   * persistable in the schema (e.g. libraries backed by native Java code registered programmatically at startup).
+   */
+  default String getLanguage() {
+    return null;
+  }
+
+  /**
+   * Serializes the library and its functions so they can be persisted in the schema and restored after a restart.
+   * Returns {@code null} when the library is not persistable (see {@link #getLanguage()}).
+   */
+  default JSONObject toJSON() {
+    return null;
+  }
 
   /**
    * Returns an iterable of the defined functions.

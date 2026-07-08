@@ -6,16 +6,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
-import com.arcadedb.function.cypher.CypherFunctionDefinition;
-import com.arcadedb.function.cypher.CypherFunctionLibraryDefinition;
-import com.arcadedb.function.polyglot.JavascriptFunctionDefinition;
-import com.arcadedb.function.polyglot.JavascriptFunctionLibraryDefinition;
-import com.arcadedb.function.sql.SQLFunctionDefinition;
-import com.arcadedb.function.sql.SQLFunctionLibraryDefinition;
+import com.arcadedb.function.FunctionLibraryFactory;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalSchema;
 
 import java.util.List;
 import java.util.Map;
@@ -40,25 +36,11 @@ public class DefineFunctionStatement extends SimpleExecStatement {
 
     final FunctionLibraryDefinition fLib;
     if (!database.getSchema().hasFunctionLibrary(libraryName.getStringValue())) {
-      switch (language.getStringValue()) {
-      case "js":
-        fLib = new JavascriptFunctionLibraryDefinition(database, libraryName.getStringValue());
-        break;
-
-      case "sql":
-        fLib = new SQLFunctionLibraryDefinition(database, libraryName.getStringValue());
-        break;
-
-      case "opencypher":
-      case "cypher":
-        fLib = new CypherFunctionLibraryDefinition(database, libraryName.getStringValue());
-        break;
-
-      default:
-        throw new CommandSQLParsingException(
-            "Error on function creation: language '" + language.getStringValue() + "' not supported");
+      try {
+        fLib = FunctionLibraryFactory.createLibrary(database, libraryName.getStringValue(), language.getStringValue());
+      } catch (final IllegalArgumentException e) {
+        throw new CommandSQLParsingException(e.getMessage());
       }
-
       database.getSchema().registerFunctionLibrary(fLib);
     } else
       fLib = database.getSchema().getFunctionLibrary(libraryName.getStringValue());
@@ -73,26 +55,18 @@ public class DefineFunctionStatement extends SimpleExecStatement {
       parameterArray = new String[] {};
 
     final FunctionDefinition f;
-    switch (language.getStringValue()) {
-    case "js":
-      f = new JavascriptFunctionDefinition(functionName.getStringValue(), code, parameterArray);
-      break;
-
-    case "sql":
-      f = new SQLFunctionDefinition(database, functionName.getStringValue(), code, parameterArray);
-      break;
-
-    case "opencypher":
-    case "cypher":
-      f = new CypherFunctionDefinition(database, functionName.getStringValue(), code, parameterArray);
-      break;
-
-    default:
-      throw new CommandSQLParsingException(
-          "Error on function creation: language '" + language.getStringValue() + "' not supported");
+    try {
+      f = FunctionLibraryFactory.createFunction(database, language.getStringValue(), functionName.getStringValue(), code,
+          parameterArray);
+    } catch (final IllegalArgumentException e) {
+      throw new CommandSQLParsingException(e.getMessage());
     }
 
     fLib.registerFunction(f);
+
+    // Persist the definition so it survives a restart (issue #5121). Only reached after a successful (validated)
+    // registration, so a broken definition is never written to the schema.
+    ((LocalSchema) database.getSchema()).saveConfiguration();
 
     return new InternalResultSet().add(
         new ResultInternal(context.getDatabase()).setProperty("operation", "create function").setProperty("libraryName", libraryName.getStringValue())
