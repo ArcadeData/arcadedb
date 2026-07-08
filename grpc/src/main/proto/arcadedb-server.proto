@@ -272,6 +272,23 @@ message ExecuteCommandResponse {
   int64 execution_time_ms = 4;
 
   repeated GrpcRecord records = 5; // optional row payload if return_rows=true
+
+  QueryUpdateStats stats = 6; // present only for write commands that mutated data
+}
+
+message QueryUpdateStats {
+  int32 nodes_created = 1;
+  int32 nodes_deleted = 2;
+  int32 relationships_created = 3;
+  int32 relationships_deleted = 4;
+  int32 properties_set = 5;
+  int32 labels_added = 6;
+  int32 labels_removed = 7;
+  int32 indexes_added = 8;
+  int32 indexes_removed = 9;
+  int32 constraints_added = 10;
+  int32 constraints_removed = 11;
+  bool contains_updates = 12;
 }
 
 // -----------------------------------------------------------------------------
