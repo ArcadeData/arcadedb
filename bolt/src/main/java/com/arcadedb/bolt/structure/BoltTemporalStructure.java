@@ -43,16 +43,6 @@ public class BoltTemporalStructure implements PackStreamStructure {
   }
 
   @Override
-  public byte getSignature() {
-    return signature;
-  }
-
-  @Override
-  public int getFieldCount() {
-    return fields.length;
-  }
-
-  @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
     writer.writeStructureHeader(signature, fields.length);
     for (final Object field : fields)

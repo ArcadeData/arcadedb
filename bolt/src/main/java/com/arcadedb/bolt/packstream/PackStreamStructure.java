@@ -26,17 +26,9 @@ import java.io.IOException;
 public interface PackStreamStructure {
 
   /**
-   * Get the structure signature byte.
-   */
-  byte getSignature();
-
-  /**
-   * Get the number of fields in this structure.
-   */
-  int getFieldCount();
-
-  /**
-   * Write this structure to a PackStream writer.
+   * Write this structure to a PackStream writer. This is the sole authority for the structure's wire
+   * header (marker + signature) and body; there is no separate accessor for signature or field count,
+   * because the header can be version-dependent and only the writer carries the negotiated Bolt version.
    */
   void writeTo(PackStreamWriter writer) throws IOException;
 }
