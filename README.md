@@ -17,6 +17,8 @@
   &nbsp;
   <a href="https://deepwiki.com/ArcadeData/arcadedb"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
   &nbsp;
+  <a href="bolt/conformance/COMPATIBILITY.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ArcadeData/arcadedb/main/bolt/conformance/badge.json" alt="Bolt drivers"></a>
+  &nbsp;
   <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml">
     <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg">
   </a>

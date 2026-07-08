@@ -459,3 +459,62 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number, state: 'closed',
               });
             }
+
+  publish-matrix:
+    needs: merge-matrix
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install conformance tooling deps
+        run: pip install -r bolt/conformance/requirements.txt
+      - name: Download compatibility matrix
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: bolt-compat-matrix
+      - name: Render and publish if the matrix artifact is present
+        run: |
+          if [ ! -f bolt-compat-matrix.json ]; then
+            echo "No bolt-compat-matrix.json artifact (merge-matrix produced none); leaving the last published matrix in place."
+            exit 0
+          fi
+          python3 bolt/conformance/tools/render_matrix.py \
+            --matrix bolt-compat-matrix.json \
+            --spec bolt/conformance/spec.yaml \
+            --versions bolt/conformance/driver-versions.md \
+            --repo "${{ github.repository }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --timestamp "$(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --out-page bolt/conformance/COMPATIBILITY.md \
+            --out-badge bolt/conformance/badge.json
+          if git diff --quiet -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json; then
+            echo "Rendered matrix is byte-identical to the committed one; nothing to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json
+          git commit -m "docs(bolt): refresh driver compatibility matrix [skip ci]"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Published matrix refresh."
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); rebasing onto main and retrying."
+            git pull --rebase -X theirs origin main || git rebase --abort || true
+          done
+          # A publish that cannot land (e.g. new branch protection on main) must
+          # not red the nightly - the driver-compatibility signal itself is
+          # unaffected, and report-regression already alarms on real red cells.
+          echo "::warning::Could not push the refreshed Bolt compatibility matrix to main after retries; the published page is stale."
+          exit 0
