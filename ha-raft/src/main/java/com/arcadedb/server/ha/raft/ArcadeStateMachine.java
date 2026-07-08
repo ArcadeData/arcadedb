@@ -1654,6 +1654,48 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return bootstrapBaselines.get(dbName);
   }
 
+  /**
+   * True iff this state machine has never applied an application-level Raft log entry - in this
+   * session or any prior one. This is the durable first-formation signal used by the offline
+   * bootstrap protocol (issue #5099).
+   * <p>
+   * The raw Ratis commit index is not a reliable first-formation signal on its own: a leadership
+   * transfer during bootstrap makes the new leader append internal no-op / configuration entries
+   * that push its commit index above {@code 0} without committing any application data. Those
+   * internal entries never flow through {@link #applyTransaction}, so neither the in-memory
+   * {@link #lastAppliedIndex} nor the persisted applied index advances for them - while every real
+   * mutation (TX / SCHEMA / INSTALL / DROP / SECURITY / BOOTSTRAP entry) advances both. The signal
+   * therefore survives the internal term bump yet still turns {@code false} the instant any
+   * application entry commits, preserving the issue #4800 guarantee that bootstrap can never
+   * re-engage on a cluster that already holds data.
+   * <p>
+   * Both indices are consulted: the in-memory one for the current session, and the persisted one so
+   * a restarted, already-bootstrapped cluster - whose {@code BOOTSTRAP_FINGERPRINT_ENTRY} has been
+   * compacted below the Ratis snapshot and is not replayed - is never mistaken for a fresh one.
+   * <p>
+   * Defense in depth against a degraded read: the persisted {@code .raft/applied-index} file is
+   * created only after at least one application entry has been applied (see
+   * {@link #writePersistedAppliedIndex} and the snapshot-install path), so its mere presence proves
+   * this node is not fresh. {@link #readPersistedAppliedIndex()} degrades a momentarily-unreadable or
+   * corrupt file to {@code -1}; keying solely on that value could re-open the gate on a running
+   * cluster whose file is transiently unreadable. We therefore treat an existing file as "already
+   * applied" regardless of whether its contents parse, so a transient I/O error can never re-trigger
+   * bootstrap on a cluster that already holds data.
+   * <p>
+   * Package-private: the sole caller is {@link BootstrapElection} in this package.
+   */
+  boolean hasNeverAppliedApplicationEntry() {
+    if (lastAppliedIndex.get() >= 0)
+      return false;
+    final Path appliedIndexFile = getAppliedIndexFile();
+    if (appliedIndexFile != null && Files.exists(appliedIndexFile))
+      return false;
+    // Reached only when the file path is unresolvable (server not wired yet, getAppliedIndexFile()
+    // == null) or the file did not exist at the check above: read the persisted value as the final
+    // signal. It is -1 for a genuinely fresh node.
+    return readPersistedAppliedIndex() < 0;
+  }
+
   // @VisibleForTesting
   void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String databaseName = decoded.databaseName();
