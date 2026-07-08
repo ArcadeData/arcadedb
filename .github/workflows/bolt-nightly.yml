@@ -11,6 +11,7 @@ permissions:
 jobs:
   build-image:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -238,9 +239,12 @@ jobs:
           python-version: "3.12"
       - name: Run Bolt suite against pinned driver
         working-directory: e2e-csharp/ArcadeDB.E2ETests
+        # Absolute LogFilePath: the JUnit logger resolves a relative path against
+        # the results directory in some versions, which would miss the reader below.
         run: |
           dotnet add package Neo4j.Driver --version ${{ matrix.driver-version }}
-          dotnet test --filter FullyQualifiedName~Bolt --logger "junit;LogFilePath=reports/csharp-junit.xml"
+          mkdir -p reports
+          dotnet test --filter FullyQualifiedName~Bolt --logger "junit;LogFilePath=${{ github.workspace }}/e2e-csharp/ArcadeDB.E2ETests/reports/csharp-junit.xml"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest

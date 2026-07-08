@@ -81,8 +81,14 @@ def main(argv=None):
     expected = load_expected_cells(args.expect_from) if args.expect_from else []
     matrices = []
     for path in args.cells:
-        with open(path, encoding="utf-8") as fh:
-            matrices.append(json.load(fh))
+        # A malformed cell file must not crash the merge: that would leave the
+        # nightly's has-failures output unset and silence both the report and
+        # resolve jobs. Skip it with a warning - the cell then counts as missing.
+        try:
+            with open(path, encoding="utf-8") as fh:
+                matrices.append(json.load(fh))
+        except (OSError, ValueError) as err:
+            print(f"warning: skipping unreadable cell {path}: {err}", file=sys.stderr)
     merged = merge(matrices, expected)
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump(merged, fh, indent=2, sort_keys=True)

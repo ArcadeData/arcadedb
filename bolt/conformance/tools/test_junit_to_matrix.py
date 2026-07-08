@@ -11,6 +11,7 @@ GO_STYLE = os.path.join(HERE, "testdata", "go-junit.xml")
 PY_STYLE = os.path.join(HERE, "testdata", "py-junit.xml")
 NS_STYLE = os.path.join(HERE, "testdata", "ns-junit.xml")
 JAVA_STYLE = os.path.join(HERE, "testdata", "java-junit.xml")
+LEGACY_STYLE = os.path.join(HERE, "testdata", "legacy-junit.xml")
 KNOWN = {"CONN-001", "AUTH-003", "TYPE-007", "ERR-002"}
 
 
@@ -41,6 +42,12 @@ class ParseJunitTest(unittest.TestCase):
         # @DisplayName, so the id must be recovered from the lowercase form.
         result = parse_junit(JAVA_STYLE)
         self.assertEqual(result, {"CONN-001": "pass", "AUTH-003": "skip"})
+
+    def test_java_legacy_method_names_embed_id(self):
+        # RemoteBoltLegacyDriverIT methods must embed the id (conn001_legacy...)
+        # so the java/4.4.20 cell is not permanently empty.
+        result = parse_junit(LEGACY_STYLE)
+        self.assertEqual(result, {"CONN-001": "pass", "PROTO-001": "pass", "ERR-001": "pass"})
 
     def test_namespaced_junit_document(self):
         result = parse_junit(NS_STYLE)

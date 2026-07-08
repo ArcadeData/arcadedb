@@ -542,7 +542,12 @@ jobs:
 
       - name: E2E C# Tests
         working-directory: e2e-csharp/ArcadeDB.E2ETests
-        run: dotnet test --logger "trx;LogFileName=test-results.trx" --logger "junit;LogFilePath=reports/csharp-junit.xml"
+        # Absolute LogFilePath: JunitXml.TestLogger resolves a relative path
+        # against the results directory in some versions, which would land the
+        # file where the reporter/convert step does not look.
+        run: |
+          mkdir -p reports
+          dotnet test --logger "trx;LogFileName=test-results.trx" --logger "junit;LogFilePath=${{ github.workspace }}/e2e-csharp/ArcadeDB.E2ETests/reports/csharp-junit.xml"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
