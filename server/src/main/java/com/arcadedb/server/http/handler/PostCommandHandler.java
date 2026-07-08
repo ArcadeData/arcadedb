@@ -23,6 +23,7 @@ import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
@@ -265,12 +266,15 @@ public class PostCommandHandler extends AbstractQueryHandler {
         rows.add(source.next());
 
       final Optional<ExecutionPlan> plan = source.getExecutionPlan();
-      return new IteratorResultSet(rows.iterator()) {
+      final Optional<QueryStatistics> stats = source.getStatistics();
+      final IteratorResultSet materialized = new IteratorResultSet(rows.iterator()) {
         @Override
         public Optional<ExecutionPlan> getExecutionPlan() {
           return plan;
         }
       };
+      stats.ifPresent(materialized::setStatistics);
+      return materialized;
     } finally {
       source.close();
     }

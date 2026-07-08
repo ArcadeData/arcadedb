@@ -49,7 +49,23 @@ class PostCommandStatisticsIT extends BaseGraphServerTest {
     assertThat(response.has("stats")).isFalse();
   }
 
+  @Test
+  void writeCommandWithDetailedProfileStillReturnsStats() throws Exception {
+    final JSONObject response = command("opencypher",
+        "CREATE (:HttpStatProfiled {name:'x'})-[:REL]->(:HttpStatProfiled2 {name:'y'})", true);
+    assertThat(response.has("stats")).isTrue();
+    final JSONObject stats = response.getJSONObject("stats");
+    assertThat(stats.getInt("nodesCreated")).isEqualTo(2);
+    assertThat(stats.getInt("relationshipsCreated")).isEqualTo(1);
+    assertThat(stats.getInt("propertiesSet")).isEqualTo(2);
+    assertThat(stats.getBoolean("containsUpdates")).isTrue();
+  }
+
   private JSONObject command(final String language, final String cmd) throws Exception {
+    return command(language, cmd, false);
+  }
+
+  private JSONObject command(final String language, final String cmd, final boolean detailedProfile) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:2480/api/v1/command/graph").toURL().openConnection();
     connection.setRequestMethod("POST");
@@ -59,6 +75,8 @@ class PostCommandStatisticsIT extends BaseGraphServerTest {
     payload.put("language", language);
     payload.put("command", cmd);
     payload.put("serializer", "studio");
+    if (detailedProfile)
+      payload.put("profileExecution", "detailed");
     formatPayload(connection, payload);
     connection.connect();
     try {

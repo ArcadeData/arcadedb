@@ -592,6 +592,9 @@ public class CypherExecutionPlan {
     }
 
     results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, endTime - startTime));
+    // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
+    // mirroring execute()'s write path so a profiled write still reports its counters.
+    results.setStatistics(context.getStatistics());
     return results;
   }
 
