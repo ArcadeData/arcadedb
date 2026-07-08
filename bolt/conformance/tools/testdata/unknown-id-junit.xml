@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="bolt" tests="1" failures="0" skipped="0">
+    <testcase name="ZZZ-999 not a real scenario" classname="x"/>
+  </testsuite>
+</testsuites>
