@@ -1,0 +1,317 @@
+name: Bolt nightly driver-version matrix
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+
+      - name: Cache local Maven repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build and package with Maven Docker profile
+        run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors --show-version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save docker image
+        run: docker save arcadedata/arcadedb:latest > /tmp/arcadedb-image.tar
+
+      - name: Cache Docker image
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Cache Maven artifacts
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+
+  bolt-nightly-java:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "4.4.20"
+            args: "-Pbolt-driver-legacy -Dit.test=RemoteBoltLegacyDriverIT"
+            report: RemoteBoltLegacyDriverIT
+          - version: "5.28.5"
+            args: "-Dit.test=RemoteBoltDatabaseIT -Dneo4j-driver.version=5.28.5"
+            report: RemoteBoltDatabaseIT
+          - version: "6.2.0"
+            args: "-Dit.test=RemoteBoltDatabaseIT -Dneo4j-driver.version=6.2.0"
+            report: RemoteBoltDatabaseIT
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+      - name: Restore Maven artifacts
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Run Bolt suite against pinned driver
+        run: ./mvnw verify -Pintegration -pl e2e ${{ matrix.args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            "e2e/target/failsafe-reports/TEST-com.arcadedb.e2e.${{ matrix.report }}.xml" \
+            --language java --driver-version "${{ matrix.version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-java-${{ matrix.version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-java-${{ matrix.version }}
+          path: bolt-matrix-java-*.json
+          retention-days: 7
+
+  bolt-nightly-js:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["4.4.11", "5.28.3", "6.2.0"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-js
+        run: |
+          npm install
+          npm install neo4j-driver@${{ matrix.driver-version }}
+          NODE_OPTIONS=--experimental-vm-modules npx jest --runInBand --ci --reporters=default --reporters=jest-junit src/js-bolt-conformance.test.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-js/reports/jest-junit.xml \
+            --language javascript --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-javascript-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-javascript-${{ matrix.driver-version }}
+          path: bolt-matrix-javascript-*.json
+          retention-days: 7
+
+  bolt-nightly-python:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["5.28.4", "6.1.0", "6.2.0"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.0"
+      - name: Setup UV package manager
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-python
+        run: |
+          uv pip install --system -e .
+          uv pip install --system pytest "neo4j==${{ matrix.driver-version }}"
+          mkdir -p reports
+          pytest tests/test_bolt.py --junitxml=reports/python-junit.xml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-python/reports/python-junit.xml \
+            --language python --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-python-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-python-${{ matrix.driver-version }}
+          path: bolt-matrix-python-*.json
+          retention-days: 7
+
+  bolt-nightly-csharp:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["4.4.0", "5.28.4", "6.2.1"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: "10.0"
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-csharp/ArcadeDB.E2ETests
+        run: |
+          dotnet add package Neo4j.Driver --version ${{ matrix.driver-version }}
+          dotnet test --filter FullyQualifiedName~Bolt --logger "junit;LogFilePath=reports/csharp-junit.xml"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-csharp/ArcadeDB.E2ETests/reports/csharp-junit.xml \
+            --language csharp --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-csharp-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-csharp-${{ matrix.driver-version }}
+          path: bolt-matrix-csharp-*.json
+          retention-days: 7
+
+  bolt-nightly-go:
+    needs: build-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["5.27.0", "5.28.0", "5.28.4"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "e2e-go/go.mod"
+          cache-dependency-path: "e2e-go/go.sum"
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Verify keytool is available (required by TLS scenarios)
+        run: command -v keytool
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@v1.12.0
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-go
+        run: |
+          go get github.com/neo4j/neo4j-go-driver/v5@v${{ matrix.driver-version }}
+          go mod tidy
+          mkdir -p reports
+          gotestsum --junitfile reports/go-junit.xml --format standard-verbose -- -timeout 20m ./...
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-go/reports/go-junit.xml \
+            --language go --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-go-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-go-${{ matrix.driver-version }}
+          path: bolt-matrix-go-*.json
+          retention-days: 7
