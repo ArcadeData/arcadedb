@@ -10,6 +10,16 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Bolt: a single failed TLS handshake no longer wedges the shared listener (DoS).** With Bolt-over-TLS
+  (`arcadedb.bolt.ssl=OPTIONAL`/`REQUIRED`), one aborted or untrusted-certificate handshake could pin a CPU
+  core at ~100% and stop the listener from completing handshakes for *all* subsequent clients until the server
+  was restarted ([#5106](https://github.com/ArcadeData/arcadedb/issues/5106)). Two defects on the accept path
+  caused it: the TLS-detection peek re-read a closed socket in a tight loop when a client closed early
+  (busy-spin), and the blocking TLS handshake ran on the single accept thread, so a slow/stalled/failed
+  handshake blocked every other connection. Transport detection and the TLS handshake now run on the
+  per-connection thread (never on the accept thread) with a bounded read timeout, so a hostile or broken
+  handshake only affects its own connection and the shared listener stays available.
+
 - **Cypher: `exists()` now enforces multi-label constraints on an already-bound start variable.** A predicate
   like `exists((n:A:B)-->(:Node))` accepted the `A:B` label conjunction but silently ignored it on the bound
   variable `n`, so nodes lacking one of the labels (but with a matching outgoing edge) still passed

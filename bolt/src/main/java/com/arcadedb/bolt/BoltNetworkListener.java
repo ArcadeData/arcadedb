@@ -26,7 +26,6 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.network.ServerSocketFactory;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -91,43 +90,11 @@ public class BoltNetworkListener extends Thread {
           socket.setPerformancePreferences(0, 2, 1);
           socket.setTcpNoDelay(true);
 
-          // TLS detection: peek at first bytes to decide TLS vs plaintext
-          Socket connectionSocket = socket;
-          byte[] preReadBytes = null;
-
-          if (sslHelper.getTlsMode() != BoltSslHelper.TlsMode.DISABLED) {
-            final byte[] header = new byte[4];
-            final InputStream rawIn = socket.getInputStream();
-            int bytesRead = 0;
-            while (bytesRead < 4) {
-              final int n = rawIn.read(header, bytesRead, 4 - bytesRead);
-              if (n == -1) {
-                socket.close();
-                continue;
-              }
-              bytesRead += n;
-            }
-
-            final boolean isTls = header[0] == 0x16 && header[1] == 0x03;
-
-            if (isTls) {
-              connectionSocket = sslHelper.wrapWithTls(socket, header);
-            } else if (sslHelper.getTlsMode() == BoltSslHelper.TlsMode.REQUIRED) {
-              LogManager.instance().log(this, Level.WARNING,
-                  """
-                  BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). \
-                  Configure the client to use bolt+s:// or bolt+ssc://""",
-                  socket.getRemoteSocketAddress());
-              socket.close();
-              continue;
-            } else {
-              // OPTIONAL mode with plaintext connection: replay the peeked bytes
-              preReadBytes = header;
-            }
-          }
-
-          // Create a new executor for this connection
-          final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, connectionSocket, this, preReadBytes);
+          // Hand the raw socket to a dedicated per-connection thread. Transport (TLS) detection and the
+          // blocking TLS handshake are performed on that thread, never here on the accept path, so a slow,
+          // aborted or untrusted handshake can only affect its own connection and never wedges the shared
+          // listener for other clients (issue #5106).
+          final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, socket, this, sslHelper);
           activeConnections.add(connection);
           connection.start();
 

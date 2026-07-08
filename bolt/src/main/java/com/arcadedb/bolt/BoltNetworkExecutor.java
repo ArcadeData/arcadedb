@@ -61,6 +61,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
 
+import javax.net.ssl.SSLSocket;
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;
 import java.io.IOException;
@@ -118,7 +119,8 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   private final ArcadeDBServer      server;
-  private final Socket              socket;
+  private volatile Socket           socket; // Reassigned to the SSLSocket once TLS negotiation completes
+  private final BoltSslHelper       sslHelper;
   private       BoltChunkedInput    input;
   private       BoltChunkedOutput   output;
   private final boolean             debug;
@@ -154,29 +156,30 @@ public class BoltNetworkExecutor extends Thread {
   private Map<String, Object> currentPlanMetadata;
   private String              currentPlanMetadataKey; // "plan" for EXPLAIN, "profile" for PROFILE
 
-  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener)
-      throws IOException {
+  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener) {
     this(server, socket, listener, null);
   }
 
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener,
-      final byte[] preReadBytes) throws IOException {
+      final BoltSslHelper sslHelper) {
     super("BOLT-" + socket.getRemoteSocketAddress());
     this.server = server;
     this.socket = socket;
     this.listener = listener;
-    final InputStream inputStream = preReadBytes != null
-        ? new SequenceInputStream(new ByteArrayInputStream(preReadBytes), socket.getInputStream())
-        : socket.getInputStream();
-    this.input = new BoltChunkedInput(inputStream);
-    this.output = new BoltChunkedOutput(socket.getOutputStream());
+    this.sslHelper = sslHelper;
     this.debug = GlobalConfiguration.BOLT_DEBUG.getValueAsBoolean();
+    // NOTE: transport (TLS) negotiation and the socket I/O streams are intentionally set up in run(), on this
+    // per-connection thread, so a slow/failed/hostile TLS handshake can never block the shared accept thread.
   }
 
   @Override
   public void run() {
     ProtocolContext.set("bolt");
     try {
+      // Detect plaintext vs TLS and, if TLS, complete the handshake here (never on the listener accept thread).
+      if (!negotiateTransport())
+        return;
+
       state = State.NEGOTIATION;
 
       // Perform handshake
@@ -234,6 +237,79 @@ public class BoltNetworkExecutor extends Thread {
     } finally {
       ProtocolContext.clear();
       cleanup();
+    }
+  }
+
+  /**
+   * Negotiates the transport for this connection on the per-connection thread: peeks the first bytes to tell
+   * plaintext from TLS and, when TLS is used, completes the (blocking) handshake here. Running this off the
+   * listener accept thread is what prevents a single slow, aborted or untrusted TLS handshake from wedging the
+   * shared BOLT listener for all other clients (issue #5106).
+   *
+   * @return {@code true} if the transport is ready and the BOLT handshake can proceed; {@code false} if the
+   * connection was rejected or closed (the caller must stop).
+   */
+  private boolean negotiateTransport() {
+    try {
+      Socket connectionSocket = socket;
+      byte[] preReadBytes = null;
+
+      if (sslHelper != null && sslHelper.getTlsMode() != BoltSslHelper.TlsMode.DISABLED) {
+        // Bound transport detection and the TLS handshake with a read timeout so a stalled/hostile client
+        // cannot hold this connection thread (and its file descriptors) open forever.
+        final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+        if (handshakeTimeout > 0)
+          socket.setSoTimeout(handshakeTimeout);
+
+        final byte[] header = new byte[4];
+        final InputStream rawIn = socket.getInputStream();
+        int bytesRead = 0;
+        while (bytesRead < 4) {
+          final int n = rawIn.read(header, bytesRead, 4 - bytesRead);
+          if (n == -1) {
+            // Client closed before sending the 4 transport-detection bytes: abandon this connection cleanly
+            // instead of re-reading a closed stream (the previous busy-spin that pinned a CPU core).
+            return false;
+          }
+          bytesRead += n;
+        }
+
+        final boolean isTls = header[0] == 0x16 && header[1] == 0x03;
+
+        if (isTls) {
+          // Handshake happens here, on this per-connection thread. A failure throws and only affects us.
+          final SSLSocket sslSocket = sslHelper.wrapWithTls(socket, header);
+          this.socket = sslSocket; // route all subsequent I/O and cleanup through the TLS socket
+          connectionSocket = sslSocket;
+        } else if (sslHelper.getTlsMode() == BoltSslHelper.TlsMode.REQUIRED) {
+          LogManager.instance().log(this, Level.WARNING,
+              """
+              BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). \
+              Configure the client to use bolt+s:// or bolt+ssc://""",
+              socket.getRemoteSocketAddress());
+          return false;
+        } else {
+          // OPTIONAL mode with a plaintext connection: replay the peeked bytes into the BOLT handshake.
+          preReadBytes = header;
+        }
+
+        // Restore blocking semantics for the long-lived BOLT session.
+        connectionSocket.setSoTimeout(0);
+      }
+
+      final InputStream inputStream = preReadBytes != null
+          ? new SequenceInputStream(new ByteArrayInputStream(preReadBytes), connectionSocket.getInputStream())
+          : connectionSocket.getInputStream();
+      this.input = new BoltChunkedInput(inputStream);
+      this.output = new BoltChunkedOutput(connectionSocket.getOutputStream());
+      return true;
+
+    } catch (final Exception e) {
+      // Any failure here (aborted/untrusted TLS handshake, I/O error, handshake timeout) is scoped to THIS
+      // connection. Logging at FINE keeps a hostile client from flooding the log; the shared listener is fine.
+      if (debug)
+        LogManager.instance().log(this, Level.FINE, "BOLT transport negotiation failed: %s", e.getMessage());
+      return false;
     }
   }
 
