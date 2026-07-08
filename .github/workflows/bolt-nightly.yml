@@ -346,3 +346,44 @@ jobs:
           name: bolt-compat-matrix
           path: bolt-compat-matrix.json
           retention-days: 30
+
+  report-regression:
+    needs: merge-matrix
+    if: ${{ always() && needs.merge-matrix.outputs.has-failures == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Download compatibility matrix
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bolt-compat-matrix
+      - name: Open or update regression issue
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const matrix = JSON.parse(fs.readFileSync('bolt-compat-matrix.json', 'utf8'));
+            const failing = [];
+            for (const [scen, langs] of Object.entries(matrix.scenarios)) {
+              for (const [lang, vers] of Object.entries(langs)) {
+                for (const [ver, status] of Object.entries(vers)) {
+                  if (status === 'fail') failing.push(`- ${scen} / ${lang} / ${ver}`);
+                }
+              }
+            }
+            const title = 'Bolt driver compatibility regression (nightly)';
+            const label = 'bolt-compat-regression';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `Nightly Bolt matrix reported failing cells.\n\nRun: ${runUrl}\n\n${failing.sort().join('\n')}`;
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: label,
+            });
+            const hit = existing.data.find(i => i.title === title);
+            if (hit) {
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: [label] });
+            }
