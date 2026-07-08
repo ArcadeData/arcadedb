@@ -40,6 +40,7 @@ jobs:
         run: |
           python3 -m unittest test_junit_to_matrix.py -v
           python3 -m unittest test_merge_matrix.py -v
+          python3 -m unittest test_render_matrix.py -v
 
       - name: Validate spec.yaml
         working-directory: bolt/conformance
