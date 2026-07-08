@@ -498,8 +498,9 @@ public class DeleteStep extends AbstractExecutionStep {
    * Deletes all edges connected to a vertex.
    *
    * @param vertex  vertex whose edges should be deleted
-   * @param deleted shared set of already-deleted objects; edges already removed and counted by an
-   *                explicit DELETE elsewhere in the same statement are skipped here
+   * @param deleted shared set of already-deleted objects; edges already removed and counted earlier
+   *                in the same statement (by an explicit DELETE or another vertex's DETACH pass) are
+   *                skipped here
    */
   private void deleteAllEdges(final Vertex vertex, final Set<Object> deleted) {
     // Collect connected edges in both directions, de-duplicating self-loops (which appear in both
