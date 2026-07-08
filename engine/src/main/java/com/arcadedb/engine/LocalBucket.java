@@ -603,6 +603,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
     }
 
+    if (fix)
+      // #5149: reconcile the cached record counter that count(*) relies on. Invalidating forces the next
+      // count() to rescan authoritatively, and reusing the existing -1 sentinel means the value is
+      // repopulated by count()'s own scan logic (no risk of a rule mismatch with this method's tallies) and
+      // survives a rollback of the enclosing transaction. We invalidate rather than write the freshly scanned
+      // value because check(fix=true) may run inside a caller-managed transaction: at commit TransactionContext
+      // folds that transaction's accumulated bucket delta into the counter, but only when it is > -1. Writing a
+      // scanned value would let unrelated inserts/deletes in that same transaction be double-counted on top of
+      // it; leaving -1 makes the fold skip. (check()'s own corrupt-record deletions go through
+      // deleteRecordInternal, which does not register a bucket delta, so they are not the concern here.)
+      // Caveat: no count() must run on this bucket between here and the checker's commit - not from this caller
+      // (DatabaseChecker does not) nor from a concurrent transaction. count() would repopulate the counter
+      // (> -1) and let the commit-time fold re-apply the delta, reintroducing drift. That window (publishPages
+      // then the fold in TransactionContext) is inherent to the incremental counter; CHECK FIX is an admin
+      // operation, so it is expected to run without concurrent counts on the same bucket.
+      cachedRecordCount.set(-1);
+
     final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
 
     if (verboseLevel > 1)
