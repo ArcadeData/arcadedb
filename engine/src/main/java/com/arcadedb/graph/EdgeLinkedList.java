@@ -364,9 +364,15 @@ public class EdgeLinkedList {
   }
 
   public void deleteAll() {
+    final TransactionContext tx = ((DatabaseInternal) vertex.getDatabase()).getTransactionIfExists();
     EdgeSegment current = lastSegment;
     while (current != null) {
       final EdgeSegment prev = current.getPrevious();
+      // Deleting a chunk does not commute with a concurrent append on its page: exclude the page from the
+      // append-merge so a rebase can never re-derive it from committed-state + appends and lose the deletion
+      // (uniformly enforces the "every non-append edge-list write poisons its page" invariant).
+      if (tx != null)
+        tx.poisonEdgeAppendPage(current.getIdentity());
       current.delete();
       current = prev;
     }
