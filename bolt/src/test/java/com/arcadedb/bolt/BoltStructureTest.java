@@ -55,7 +55,12 @@ class BoltStructureTest {
   // Serializes a structure at the default (Bolt 4.x) negotiated version and returns the raw PackStream
   // bytes. The first byte is the TINY_STRUCT marker (0xB0 | fieldCount); the second is the signature.
   private static byte[] wireHeader(final PackStreamStructure s) throws IOException {
-    final PackStreamWriter writer = new PackStreamWriter();
+    return wireHeader(s, 4);
+  }
+
+  // Serializes a structure at the given negotiated Bolt major version.
+  private static byte[] wireHeader(final PackStreamStructure s, final int boltMajorVersion) throws IOException {
+    final PackStreamWriter writer = new PackStreamWriter().boltMajorVersion(boltMajorVersion);
     s.writeTo(writer);
     return writer.toByteArray();
   }
@@ -218,6 +223,26 @@ class BoltStructureTest {
     assertThat(path.getNodes()).hasSize(2);
     assertThat(path.getRelationships()).hasSize(1);
     assertThat(path.getIndices()).containsExactly(1L, 1L);
+  }
+
+  @Test
+  void versionGatedStructuresEmitBolt5HeaderShape() throws IOException {
+    // On Bolt >= 5 the version-gated structs append element_id fields, so writeTo() must emit a wider
+    // header than the 4.x base: Node 3 -> 4, Relationship 5 -> 8, UnboundRelationship 3 -> 4. This is
+    // the exact case the removed accessors got wrong (they returned the 4.x count on a 5.x connection);
+    // pin the 5.x header shape at the unit level so a regression in the version gate fails fast here.
+    final byte[] node = wireHeader(new BoltNode(1L, List.of("Label"), Map.of("k", "v"), "#1:0"), 5);
+    assertThat(node[0]).isEqualTo((byte) (0xB0 | 4)); // TINY_STRUCT, 4 fields (adds element_id)
+    assertThat(node[1]).isEqualTo(BoltNode.SIGNATURE);
+
+    final byte[] rel = wireHeader(
+        new BoltRelationship(10L, 1L, 2L, "KNOWS", Map.of(), "#10:0", "#1:0", "#2:0"), 5);
+    assertThat(rel[0]).isEqualTo((byte) (0xB0 | 8)); // TINY_STRUCT, 8 fields (adds element ids)
+    assertThat(rel[1]).isEqualTo(BoltRelationship.SIGNATURE);
+
+    final byte[] unbound = wireHeader(new BoltUnboundRelationship(5L, "REL", Map.of(), "#5:0"), 5);
+    assertThat(unbound[0]).isEqualTo((byte) (0xB0 | 4)); // TINY_STRUCT, 4 fields (adds element_id)
+    assertThat(unbound[1]).isEqualTo(BoltUnboundRelationship.SIGNATURE);
   }
 
   @Test
