@@ -604,7 +604,7 @@ jobs:
         run: command -v keytool
 
       - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@v1.12.0
+        run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: E2E Go Tests
         working-directory: e2e-go
