@@ -41,6 +41,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
+import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.RidHashSet;
 
 import java.io.IOException;
@@ -85,12 +86,15 @@ public class TransactionContext implements Transaction {
   // GRAPH_EDGE_APPEND_MERGE (super-node write contention): appends to an edge-list chunk commute, so a
   // commit-time page-version conflict whose ONLY cause is concurrent in-chunk edge appends can be resolved by
   // re-applying THIS transaction's appends on top of the newer committed page, instead of failing the whole
-  // transaction with a ConcurrentModificationException and retrying. Both maps are lazily allocated only when
-  // the feature is on and an append actually happens. A page stays eligible only while EVERY modification this
-  // transaction made to it is a tracked append; the first non-append write to it (edge removal, new-chunk
-  // allocation, bulk addAll) poisons it so it can never be rebased.
-  private       Map<PageId, List<EdgeAppend>>        edgeAppendsByPage;
-  private       Set<PageId>                          edgeAppendPoisonedPages;
+  // transaction with a ConcurrentModificationException and retrying. Tracked per SEGMENT rid with the appended
+  // pairs packed into primitive arrays (see EdgeAppendBuffer) so the append hot path allocates nothing per
+  // edge; segment page ids are resolved lazily only on the rare commit conflict. A page stays eligible only
+  // while EVERY modification this transaction made to it is a tracked append; the first non-append write to it
+  // (edge removal, new-chunk allocation, bulk addAll) poisons its page so it can never be rebased.
+  private       Map<RID, EdgeAppendBuffer>           edgeAppendsBySegment;
+  // Poisoned edge-list pages, keyed by a packed (fileId, pageNumber) long so poisoning and the hot-path skip
+  // check allocate nothing (no PageId objects).
+  private       LongHashSet                          edgeAppendPoisonedPages;
   private       boolean                              edgeAppendMerge;
   private       boolean                              useWAL;
   // #5064: set by the HA layer AFTER the replication quorum durably committed this transaction and BEFORE
@@ -540,10 +544,33 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * A single in-chunk edge append that can be replayed on a newer version of its edge-segment page. See
-   * {@link #edgeAppendsByPage}.
+   * Allocation-light store of the in-chunk appends made to ONE edge segment in this transaction: the (edge,
+   * vertex) RID pairs are packed into growable primitive arrays instead of one object per appended edge, so a
+   * hot vertex receiving thousands of edges costs a handful of array growths, not thousands of allocations.
+   * The RID objects are rebuilt only at rebase time (on the rare commit conflict). See {@link
+   * #edgeAppendsBySegment}.
    */
-  private record EdgeAppend(RID segment, RID edge, RID vertex) {
+  private static final class EdgeAppendBuffer {
+    private int[]  edgeBucket   = new int[8];
+    private long[] edgePosition = new long[8];
+    private int[]  vertexBucket = new int[8];
+    private long[] vertexPosition = new long[8];
+    private int    size;
+
+    void add(final RID edge, final RID vertex) {
+      if (size == edgeBucket.length) {
+        final int n = size << 1;
+        edgeBucket = Arrays.copyOf(edgeBucket, n);
+        edgePosition = Arrays.copyOf(edgePosition, n);
+        vertexBucket = Arrays.copyOf(vertexBucket, n);
+        vertexPosition = Arrays.copyOf(vertexPosition, n);
+      }
+      edgeBucket[size] = edge.getBucketId();
+      edgePosition[size] = edge.getPosition();
+      vertexBucket[size] = vertex.getBucketId();
+      vertexPosition[size] = vertex.getPosition();
+      ++size;
+    }
   }
 
   /**
@@ -556,52 +583,70 @@ public class TransactionContext implements Transaction {
   /**
    * Records an in-place edge append (from {@link com.arcadedb.graph.EdgeLinkedList#add}) as rebasable: if the
    * segment's page loses the commit-time version check because another transaction appended to the same head
-   * chunk, the append can be replayed on top of the newer page instead of failing the whole transaction. No-op
-   * when the feature is off or the page was already poisoned by a non-append modification.
+   * chunk, the append can be replayed on top of the newer page instead of failing the whole transaction.
+   * <p>
+   * Hot path: keyed by SEGMENT rid (a super-node is one segment no matter how many edges land on it), the pair
+   * is packed into primitive arrays, and the segment's {@link PageId} is NOT computed here - it is resolved
+   * lazily only when a page actually conflicts at commit (rare). So the common no-contention append costs a
+   * map lookup on an existing key, nothing allocated per edge. No-op when the feature is off.
    */
   public void trackEdgeAppend(final RID segmentRID, final RID edgeRID, final RID vertexRID) {
     if (!edgeAppendMerge)
       return;
 
-    final PageId pageId = edgeSegmentPageId(segmentRID);
-    if (edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(pageId))
+    // Skip pages already poisoned (a brand-new chunk - e.g. a just-created source vertex's edge list - poisons
+    // its own page at createRecord). Those can never be rebased, so tracking them would only waste a buffer.
+    // The page key is packed arithmetic, no allocation.
+    if (edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(edgeSegmentPageKey(segmentRID)))
       return;
 
-    if (edgeAppendsByPage == null)
-      edgeAppendsByPage = new HashMap<>();
+    if (edgeAppendsBySegment == null)
+      edgeAppendsBySegment = new HashMap<>();
 
-    edgeAppendsByPage.computeIfAbsent(pageId, k -> new ArrayList<>(8)).add(new EdgeAppend(segmentRID, edgeRID, vertexRID));
+    EdgeAppendBuffer buffer = edgeAppendsBySegment.get(segmentRID);
+    if (buffer == null)
+      edgeAppendsBySegment.put(segmentRID, buffer = new EdgeAppendBuffer());
+    buffer.add(edgeRID, vertexRID);
   }
 
   /**
    * Marks the edge-segment page holding {@code segmentRID} as NOT rebasable: this transaction changed it in a
-   * way that does not commute with a concurrent append (edge removal, new-chunk allocation, bulk load). Any
-   * appends previously tracked for that page are dropped so it can never be silently re-derived from
-   * committed-state + appends. No-op when the feature is off.
+   * way that does not commute with a concurrent append (edge removal, new-chunk allocation, bulk load). Tracked
+   * appends on that page are ignored at commit (the conflict check below excludes poisoned pages), so a rebase
+   * can never silently re-derive the page from committed-state + appends. No-op when the feature is off.
    */
   public void poisonEdgeAppendPage(final RID segmentRID) {
     if (!edgeAppendMerge)
       return;
 
-    final PageId pageId = edgeSegmentPageId(segmentRID);
     if (edgeAppendPoisonedPages == null)
-      edgeAppendPoisonedPages = new HashSet<>();
-    edgeAppendPoisonedPages.add(pageId);
-
-    if (edgeAppendsByPage != null)
-      edgeAppendsByPage.remove(pageId);
+      edgeAppendPoisonedPages = new LongHashSet();
+    edgeAppendPoisonedPages.add(edgeSegmentPageKey(segmentRID));
   }
 
-  private PageId edgeSegmentPageId(final RID segmentRID) {
+  /** Packs the (fileId, pageNumber) of the page holding {@code segmentRID} into a long key (no allocation). */
+  private long edgeSegmentPageKey(final RID segmentRID) {
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
     final int pageNumber = (int) (segmentRID.getPosition() / bucket.getMaxRecordsInPage());
-    return new PageId(database, segmentRID.getBucketId(), pageNumber);
+    return packPageKey(segmentRID.getBucketId(), pageNumber);
+  }
+
+  private static long packPageKey(final int fileId, final int pageNumber) {
+    return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
   }
 
   private boolean isRebasableEdgeAppendPage(final PageId pageId) {
-    return edgeAppendMerge //
-        && edgeAppendsByPage != null && edgeAppendsByPage.containsKey(pageId) //
-        && (edgeAppendPoisonedPages == null || !edgeAppendPoisonedPages.contains(pageId));
+    if (!edgeAppendMerge || edgeAppendsBySegment == null)
+      return false;
+    final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
+    if (edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(key))
+      return false;
+    // Is at least one tracked segment on this (conflicting) page? Computing the segment page keys here, on the
+    // rare conflict path, is what keeps the append hot path free of allocation.
+    for (final RID segmentRID : edgeAppendsBySegment.keySet())
+      if (edgeSegmentPageKey(segmentRID) == key)
+        return true;
+    return false;
   }
 
   /**
@@ -621,13 +666,14 @@ public class TransactionContext implements Transaction {
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
-    // Group the appends by segment: one reload + one write-back per chunk, even with several appends.
-    final Map<RID, List<EdgeAppend>> bySegment = new LinkedHashMap<>();
-    for (final EdgeAppend a : edgeAppendsByPage.get(pageId))
-      bySegment.computeIfAbsent(a.segment(), k -> new ArrayList<>(8)).add(a);
+    final long pageKey = packPageKey(pageId.getFileId(), pageId.getPageNumber());
 
-    for (final Map.Entry<RID, List<EdgeAppend>> entry : bySegment.entrySet()) {
+    // Re-apply every tracked segment that lives on this page (usually one: the hot vertex's head chunk).
+    for (final Map.Entry<RID, EdgeAppendBuffer> entry : edgeAppendsBySegment.entrySet()) {
       final RID segmentRID = entry.getKey();
+      if (edgeSegmentPageKey(segmentRID) != pageKey)
+        continue;
+
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
       // Load the chunk fresh from the (now current) page, bypassing the tx record cache which still holds the
@@ -635,8 +681,10 @@ public class TransactionContext implements Transaction {
       final MutableEdgeSegment segment = new MutableEdgeSegment(database, segmentRID,
           bucket.getRecord(segmentRID).copyOfContent());
 
-      for (final EdgeAppend a : entry.getValue())
-        if (!segment.add(a.edge(), a.vertex()))
+      final EdgeAppendBuffer buffer = entry.getValue();
+      for (int i = 0; i < buffer.size; ++i)
+        if (!segment.add(new RID(buffer.edgeBucket[i], buffer.edgePosition[i]),
+            new RID(buffer.vertexBucket[i], buffer.vertexPosition[i])))
           throw new ConcurrentModificationException(
               "Edge-append rebase not possible: chunk " + segmentRID + " filled up concurrently. Please retry the operation");
 
@@ -710,7 +758,7 @@ public class TransactionContext implements Transaction {
     }
     modifiedPages = null;
     newPages = null;
-    edgeAppendsByPage = null;
+    edgeAppendsBySegment = null;
     edgeAppendPoisonedPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
@@ -1258,7 +1306,7 @@ public class TransactionContext implements Transaction {
 
     modifiedPages = null;
     newPages = null;
-    edgeAppendsByPage = null;
+    edgeAppendsBySegment = null;
     edgeAppendPoisonedPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;

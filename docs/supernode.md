@@ -109,6 +109,18 @@ modification in this transaction was a tracked in-chunk edge append, the page is
   `EdgeLinkedList.add` chunk-full branch in one place.
 - Tracking is lazy (only allocated when the feature is on and an append happens)
   and cleared on `reset()`/`kill()`.
+- **Allocation-free hot path.** Appends are keyed by *segment* RID (a super-node
+  is one segment however many edges it receives) with the (edge, vertex) pairs
+  packed into growable primitive arrays (`EdgeAppendBuffer`), not one object per
+  edge. Poisoned pages are held in a `LongHashSet` of packed `(fileId,
+  pageNumber)` keys, so poisoning and the per-append skip check allocate nothing
+  (no `PageId` objects); `PageId`s are materialised only on the rare commit
+  conflict. A just-created chunk (e.g. a new source vertex's edge list) poisons
+  its own page, so its appends are skipped and never cost a buffer. Measured
+  overhead on a single-threaded 200k-edge insert: **+39 bytes/edge** vs
+  feature-off (~0.7% on top of the ~5.3 KB/edge that edge creation already
+  allocates), throughput within noise. This makes always-on cheap; the flag is
+  kept for 26.8.1 purely as an operational kill-switch for new commit-path code.
 
 ### Touched files
 
@@ -249,3 +261,8 @@ Reading the HA numbers:
   benchmarks. Filed #5147 for the separate chunk-allocation race. Established via
   the HA control run that the remaining throughput ceiling is the single hot
   chunk, motivating the striped-edge-list follow-up.
+- **2026-07-08** - Allocation-free rework of the append tracking (segment-keyed,
+  primitive `EdgeAppendBuffer`, `LongHashSet` poison keyed by packed page id,
+  lazy `PageId`). Per-append overhead dropped from ~+504 to **+39 bytes/edge**;
+  merge behaviour and correctness unchanged. Added the single-threaded overhead
+  micro-benchmark.
