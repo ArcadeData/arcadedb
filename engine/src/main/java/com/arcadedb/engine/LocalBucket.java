@@ -40,6 +40,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntIntHashMap;
+import com.arcadedb.utility.LockManager;
 
 import java.io.IOException;
 import java.util.*;
@@ -421,11 +422,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (cached > -1 && transaction != null)
       return cached + transaction.getBucketRecordDelta(fileId);
 
-    long total = 0;
+    // #5152: the recompute below (scan + publish of cachedRecordCount) must be mutually exclusive with a
+    // commit's publishPages + record-count fold on this bucket. A commit holds this bucket's file lock across
+    // both (TransactionContext.commit2ndPhase, until reset()), so acquiring the same lock here serializes the
+    // recompute with commits. Without it a commit could publish a record and then, seeing the still-(-1)
+    // counter, drop its delta at the fold while our scan misses that just-published record (lost update), or
+    // conversely our scan counts a published record whose delta the fold then re-adds (double count). The lock
+    // is taken only on this rare recompute path (counter unknown, or no active transaction) - never on the
+    // O(1) cached fast-path returned above. The requester mirrors the transaction's so a recompute invoked
+    // while the same transaction already holds the lock re-enters instead of self-deadlocking.
+    final TransactionManager txManager = database.getTransactionManager();
+    final Object requester = transaction != null && transaction.getRequester() != null ?
+            transaction.getRequester() : Thread.currentThread();
+    final long lockTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
-    final int txPageCount = getTotalPages();
-
+    LockManager.LOCK_STATUS lockStatus = LockManager.LOCK_STATUS.NO;
     try {
+      lockStatus = txManager.tryLockFile(fileId, lockTimeout, requester);
+
+      long total = 0;
+
+      final int txPageCount = getTotalPages();
+
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final PageId pageIdToLoad = new PageId(database, file.getFileId(), pageId);
         final BasePage page = transaction != null ?
@@ -450,11 +468,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       cachedRecordCount.set(total);
+      return total;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot count bucket '" + componentName + "'", e);
+    } finally {
+      // Release only if WE acquired it. ALREADY_ACQUIRED means an enclosing transaction owns the lock and is
+      // responsible for releasing it; NO means the acquisition timed out and we ran the scan lock-free.
+      if (lockStatus == LockManager.LOCK_STATUS.YES)
+        txManager.unlockFile(fileId, requester);
     }
-    return total;
   }
 
   public Map<String, Object> check(final int verboseLevel, final boolean fix) {
