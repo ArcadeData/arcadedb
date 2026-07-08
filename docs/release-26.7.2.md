@@ -10,6 +10,13 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Remote API: `RemoteVertex.isConnectedTo()` now accepts a `Vertex` object, not only a `RID`.** Calling
+  `vertex.isConnectedTo(otherVertex, ...)` from a remote database threw a `SQL syntax error at ... mismatched
+  input '@'` because the argument was inlined into the generated SQL via its full `toString()` (e.g.
+  `#4:0@Person[name=Jane]`) instead of just its identity ([#5122](https://github.com/ArcadeData/arcadedb/issues/5122)).
+  All three `isConnectedTo` overloads now embed `argument.getIdentity()`, so passing a `Vertex` behaves exactly
+  like passing its `RID`.
+
 - **Bolt: a single failed TLS handshake no longer wedges the shared listener (DoS).** With Bolt-over-TLS
   (`arcadedb.bolt.ssl=OPTIONAL`/`REQUIRED`), one aborted or untrusted-certificate handshake could pin a CPU
   core at ~100% and stop the listener from completing handshakes for *all* subsequent clients until the server

@@ -269,7 +269,7 @@ public class RemoteVertex {
 
   public boolean isConnectedTo(final Identifiable toVertex) {
     final String query =
-        "select from ( select both() as vertices from " + vertex.getIdentity() + " ) where vertices contains " + toVertex;
+        "select from ( select both() as vertices from " + vertex.getIdentity() + " ) where vertices contains " + toVertex.getIdentity();
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }
@@ -277,7 +277,7 @@ public class RemoteVertex {
   public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction) {
     final String query =
         "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "() as vertices from " + vertex.getIdentity()
-            + " ) where vertices contains " + toVertex;
+            + " ) where vertices contains " + toVertex.getIdentity();
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }
@@ -285,7 +285,7 @@ public class RemoteVertex {
   public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction, final String edgeType) {
     final String query =
         "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "('" + edgeType + "') as vertices from "
-            + vertex.getIdentity() + " ) where vertices contains " + toVertex;
+            + vertex.getIdentity() + " ) where vertices contains " + toVertex.getIdentity();
     final ResultSet resultSet = remoteDatabase.query("sql", query);
     return resultSet.hasNext();
   }
