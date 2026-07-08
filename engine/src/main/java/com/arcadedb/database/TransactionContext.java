@@ -34,6 +34,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -81,6 +82,16 @@ public class TransactionContext implements Transaction {
   private final RidHashSet                            deletedRecordsInTx    = new RidHashSet();
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
+  // GRAPH_EDGE_APPEND_MERGE (super-node write contention): appends to an edge-list chunk commute, so a
+  // commit-time page-version conflict whose ONLY cause is concurrent in-chunk edge appends can be resolved by
+  // re-applying THIS transaction's appends on top of the newer committed page, instead of failing the whole
+  // transaction with a ConcurrentModificationException and retrying. Both maps are lazily allocated only when
+  // the feature is on and an append actually happens. A page stays eligible only while EVERY modification this
+  // transaction made to it is a tracked append; the first non-append write to it (edge removal, new-chunk
+  // allocation, bulk addAll) poisons it so it can never be rebased.
+  private       Map<PageId, List<EdgeAppend>>        edgeAppendsByPage;
+  private       Set<PageId>                          edgeAppendPoisonedPages;
+  private       boolean                              edgeAppendMerge;
   private       boolean                              useWAL;
   // #5064: set by the HA layer AFTER the replication quorum durably committed this transaction and BEFORE
   // the local phase-2 apply. Shifts the durability boundary for the failure regimes in commit2ndPhase's
@@ -155,6 +166,10 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+
+    // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
+    // to a plain field read instead of a configuration lookup.
+    edgeAppendMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE);
 
     // Optimized: initial capacity 32 for typical transaction page count
     modifiedPages = new HashMap<>(32);
@@ -524,6 +539,119 @@ public class TransactionContext implements Transaction {
     return newPageCounters.get(indexFileId);
   }
 
+  /**
+   * A single in-chunk edge append that can be replayed on a newer version of its edge-segment page. See
+   * {@link #edgeAppendsByPage}.
+   */
+  private record EdgeAppend(RID segment, RID edge, RID vertex) {
+  }
+
+  /**
+   * Tells whether the commutative edge-append merge is enabled for this transaction.
+   */
+  public boolean isEdgeAppendMergeEnabled() {
+    return edgeAppendMerge;
+  }
+
+  /**
+   * Records an in-place edge append (from {@link com.arcadedb.graph.EdgeLinkedList#add}) as rebasable: if the
+   * segment's page loses the commit-time version check because another transaction appended to the same head
+   * chunk, the append can be replayed on top of the newer page instead of failing the whole transaction. No-op
+   * when the feature is off or the page was already poisoned by a non-append modification.
+   */
+  public void trackEdgeAppend(final RID segmentRID, final RID edgeRID, final RID vertexRID) {
+    if (!edgeAppendMerge)
+      return;
+
+    final PageId pageId = edgeSegmentPageId(segmentRID);
+    if (edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(pageId))
+      return;
+
+    if (edgeAppendsByPage == null)
+      edgeAppendsByPage = new HashMap<>();
+
+    edgeAppendsByPage.computeIfAbsent(pageId, k -> new ArrayList<>(8)).add(new EdgeAppend(segmentRID, edgeRID, vertexRID));
+  }
+
+  /**
+   * Marks the edge-segment page holding {@code segmentRID} as NOT rebasable: this transaction changed it in a
+   * way that does not commute with a concurrent append (edge removal, new-chunk allocation, bulk load). Any
+   * appends previously tracked for that page are dropped so it can never be silently re-derived from
+   * committed-state + appends. No-op when the feature is off.
+   */
+  public void poisonEdgeAppendPage(final RID segmentRID) {
+    if (!edgeAppendMerge)
+      return;
+
+    final PageId pageId = edgeSegmentPageId(segmentRID);
+    if (edgeAppendPoisonedPages == null)
+      edgeAppendPoisonedPages = new HashSet<>();
+    edgeAppendPoisonedPages.add(pageId);
+
+    if (edgeAppendsByPage != null)
+      edgeAppendsByPage.remove(pageId);
+  }
+
+  private PageId edgeSegmentPageId(final RID segmentRID) {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
+    final int pageNumber = (int) (segmentRID.getPosition() / bucket.getMaxRecordsInPage());
+    return new PageId(database, segmentRID.getBucketId(), pageNumber);
+  }
+
+  private boolean isRebasableEdgeAppendPage(final PageId pageId) {
+    return edgeAppendMerge //
+        && edgeAppendsByPage != null && edgeAppendsByPage.containsKey(pageId) //
+        && (edgeAppendPoisonedPages == null || !edgeAppendPoisonedPages.contains(pageId));
+  }
+
+  /**
+   * Replays this transaction's tracked in-chunk appends for {@code pageId} on top of the current committed
+   * version of that page, resolving a version conflict that was caused solely by concurrent appends to the
+   * same edge-list chunk(s). Runs only on the leader/embedded commit, while the edge file's commit lock is
+   * held (so the current version is stable), and only for pages whose every modification was a tracked append.
+   *
+   * @return the freshly rebased page, ready to be version-checked and committed.
+   *
+   * @throws ConcurrentModificationException if a targeted chunk filled up in the meantime (a pure in-chunk
+   *                                         rebase is no longer possible): the caller falls back to a normal
+   *                                         full-transaction retry.
+   */
+  private MutablePage rebaseEdgeAppends(final PageId pageId) throws IOException {
+    // Drop the stale copies so the reload observes the current committed version of the page.
+    modifiedPages.remove(pageId);
+    immutablePages.remove(pageId);
+
+    // Group the appends by segment: one reload + one write-back per chunk, even with several appends.
+    final Map<RID, List<EdgeAppend>> bySegment = new LinkedHashMap<>();
+    for (final EdgeAppend a : edgeAppendsByPage.get(pageId))
+      bySegment.computeIfAbsent(a.segment(), k -> new ArrayList<>(8)).add(a);
+
+    for (final Map.Entry<RID, List<EdgeAppend>> entry : bySegment.entrySet()) {
+      final RID segmentRID = entry.getKey();
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
+
+      // Load the chunk fresh from the (now current) page, bypassing the tx record cache which still holds the
+      // stale, already-appended instance.
+      final MutableEdgeSegment segment = new MutableEdgeSegment(database, segmentRID,
+          bucket.getRecord(segmentRID).copyOfContent());
+
+      for (final EdgeAppend a : entry.getValue())
+        if (!segment.add(a.edge(), a.vertex()))
+          throw new ConcurrentModificationException(
+              "Edge-append rebase not possible: chunk " + segmentRID + " filled up concurrently. Please retry the operation");
+
+      // Immediate synchronous page write: updatedRecords was already drained earlier in commit1stPhase, so the
+      // deferred updateRecord path would never be flushed.
+      database.updateRecordNoLock(segment, false);
+    }
+
+    final MutablePage rebased = modifiedPages.get(pageId);
+    if (rebased == null)
+      throw new ConcurrentModificationException("Edge-append rebase produced no page for " + pageId + ". Please retry the operation");
+    database.getPageManager().incrementEdgeAppendMerges();
+    return rebased;
+  }
+
   @Override
   public boolean isActive() {
     return status != STATUS.INACTIVE;
@@ -582,6 +710,8 @@ public class TransactionContext implements Transaction {
     }
     modifiedPages = null;
     newPages = null;
+    edgeAppendsByPage = null;
+    edgeAppendPoisonedPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
@@ -860,17 +990,45 @@ public class TransactionContext implements Transaction {
           bucket.compressPage(page, false);
       }
 
+      List<PageId> pagesToRebase = null;
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
         final MutablePage p = it.next();
 
         final int[] range = p.getModifiedRange();
-        if (range[1] > 0) {
-          pageManager.checkPageVersion(p, false);
-          pages.add(p);
-        } else
+        if (range[1] <= 0) {
           // PAGE NOT MODIFIED, REMOVE IT
           it.remove();
+          continue;
+        }
+
+        try {
+          pageManager.checkPageVersion(p, false);
+          pages.add(p);
+        } catch (final ConcurrentModificationException e) {
+          // Commutative edge-append merge: when the ONLY change this (leader/embedded) transaction made to the
+          // conflicting page was appending edges to their chunk(s), the appends can be replayed on the newer
+          // committed version instead of failing the whole transaction. The edge file's commit lock is held
+          // here, so the current version stays stable across the rebase performed after the loop (rebasing here
+          // would structurally modify modifiedPages while iterating it).
+          if (isLeader && isRebasableEdgeAppendPage(p.getPageId())) {
+            if (pagesToRebase == null)
+              pagesToRebase = new ArrayList<>();
+            pagesToRebase.add(p.getPageId());
+            it.remove();
+          } else
+            throw e;
+        }
       }
+
+      if (pagesToRebase != null)
+        for (final PageId pageId : pagesToRebase) {
+          final MutablePage rebased = rebaseEdgeAppends(pageId);
+          final LocalBucket bucket = localSchema.getBucketById(rebased.getPageId().getFileId(), false);
+          if (bucket != null)
+            bucket.compressPage(rebased, false);
+          pageManager.checkPageVersion(rebased, false);
+          pages.add(rebased);
+        }
 
       if (newPages != null)
         for (final MutablePage p : newPages.values()) {
@@ -1100,6 +1258,8 @@ public class TransactionContext implements Transaction {
 
     modifiedPages = null;
     newPages = null;
+    edgeAppendsByPage = null;
+    edgeAppendPoisonedPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
