@@ -1,6 +1,6 @@
 {
-  "color": "red",
+  "color": "brightgreen",
   "label": "bolt drivers",
-  "message": "7 failing",
+  "message": "all passing",
   "schemaVersion": 1
 }
