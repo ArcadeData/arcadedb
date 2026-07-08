@@ -22,9 +22,11 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
@@ -247,6 +249,99 @@ class LSMSparseVectorIndexTest extends TestHelper {
     assertThat(rids).hasSize(2);
     assertThat(scores.get(0)).isCloseTo(0.6f, Offset.offset(1e-4f));
     assertThat(scores.get(1)).isCloseTo(0.3f, Offset.offset(1e-4f));
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Issue #5143: expose weightQuantization in the index METADATA (FP32/FP16/INT8).
+  // ---------------------------------------------------------------------------------------------
+
+  private WeightQuantization engineQuantization(final String indexName) {
+    final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName(indexName);
+    return ((LSMSparseVectorIndex) idx.getIndexesOnBuckets()[0]).getEngine().parameters().weightQuantization();
+  }
+
+  @Test
+  void defaultWeightQuantizationIsInt8() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tokens ARRAY_OF_INTEGERS");
+      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".weights ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX ON %s (tokens, weights) LSM_SPARSE_VECTOR
+          METADATA { "dimensions": 100 }
+          """.formatted(TYPE_NAME));
+    });
+    assertThat(engineQuantization(IDX_NAME)).isEqualTo(WeightQuantization.INT8);
+  }
+
+  @Test
+  void createIndexWithFp32WeightQuantizationViaSqlPersistsAndScoresExactly() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tokens ARRAY_OF_INTEGERS");
+      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".weights ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX ON %s (tokens, weights) LSM_SPARSE_VECTOR
+          METADATA { "dimensions": 100, "weightQuantization": "FP32" }
+          """.formatted(TYPE_NAME));
+
+      // A weight that INT8 cannot represent exactly: 0.5731 would round to the nearest of 254 levels.
+      final MutableDocument d1 = database.newDocument(TYPE_NAME);
+      d1.set("tokens", new int[] { 5 });
+      d1.set("weights", new float[] { 0.5731f });
+      d1.save();
+    });
+
+    assertThat(engineQuantization(IDX_NAME)).isEqualTo(WeightQuantization.FP32);
+
+    // FP32 postings preserve the exact weight, so a query of (dim 5, w 1.0) returns exactly 0.5731.
+    final ResultSet rs = database.query("sql",
+        "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?))",
+        IDX_NAME, new int[] { 5 }, new float[] { 1.0f }, 5);
+    assertThat(rs.hasNext()).isTrue();
+    final float score = ((Number) rs.next().getProperty("score")).floatValue();
+    assertThat(score).isCloseTo(0.5731f, Offset.offset(1e-6f));
+
+    // The choice must survive a close/open cycle (persisted in schema.json and rehydrated on load).
+    reopenDatabase();
+    assertThat(engineQuantization(IDX_NAME)).isEqualTo(WeightQuantization.FP32);
+  }
+
+  @Test
+  void createIndexWithFp16WeightQuantizationViaJavaApi() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME);
+      type.createProperty("tokens", Type.ARRAY_OF_INTEGERS);
+      type.createProperty("weights", Type.ARRAY_OF_FLOATS);
+
+      database.getSchema()
+          .buildTypeIndex(TYPE_NAME, new String[] { "tokens", "weights" })
+          .withSparseVectorType()
+          .withDimensions(100)
+          .withWeightQuantization("FP16")
+          .create();
+    });
+    assertThat(engineQuantization(IDX_NAME)).isEqualTo(WeightQuantization.FP16);
+
+    final LSMSparseVectorIndexMetadata meta =
+        ((LSMSparseVectorIndex) ((TypeIndex) database.getSchema().getIndexByName(IDX_NAME))
+            .getIndexesOnBuckets()[0]).getSparseMetadata();
+    assertThat(meta.weightQuantization).isEqualTo(WeightQuantization.FP16);
+  }
+
+  @Test
+  void invalidWeightQuantizationThrows() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tokens ARRAY_OF_INTEGERS");
+      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".weights ARRAY_OF_FLOATS");
+
+      Assertions.assertThatThrownBy(() -> database.command("sql", """
+              CREATE INDEX ON %s (tokens, weights) LSM_SPARSE_VECTOR
+              METADATA { "dimensions": 100, "weightQuantization": "FP8" }
+              """.formatted(TYPE_NAME)))
+          .hasMessageContaining("weightQuantization");
+    });
   }
 
   @Test

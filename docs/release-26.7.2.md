@@ -570,6 +570,23 @@ that could starve the very snapshot resync meant to heal the node.
   quarantined. Genuine (non-diverged) replication errors still log loudly. Recovery behaviour is
   otherwise unchanged.
 
+- **`LSM_SPARSE_VECTOR`: configurable posting-weight quantization.** The sparse vector index now
+  exposes the posting-weight quantization through index `METADATA`, bringing it to parity with the
+  dense vector index's `quantization` knob. The segment format already supported `FP32`, `FP16` and
+  `INT8`; previously the choice was hard-wired to `INT8`. Users who need exact scoring can now opt
+  into `FP32`, or trade off recall/latency/disk on their own workload
+  ([#5143](https://github.com/ArcadeData/arcadedb/issues/5143)).
+
+  ```sql
+  CREATE INDEX ON Doc (tokens, weights) LSM_SPARSE_VECTOR
+  METADATA { "dimensions": 30000, "weightQuantization": "FP32" }
+  ```
+
+  The default stays `INT8` (compact, near-exact recall). The choice is persisted in the schema and
+  governs how new segments are written; existing segments remain self-describing (each stores its
+  own quantization code), so already-built indexes are unaffected. The Java API exposes the same knob
+  via `TypeLSMSparseVectorIndexBuilder.withWeightQuantization(...)`.
+
 ## Breaking Changes (migration notes)
 
 ### 1. `raftPersistStorage` now defaults to `true` (durable Raft storage)
