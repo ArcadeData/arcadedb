@@ -166,10 +166,25 @@ class ArcadeDbGrpcServiceTransactionLimitTest {
   }
 
   @Test
-  void anonymousPrincipalIsCappedUnderNullOwner() {
+  void anonymousPrincipalBypassesPerPrincipalCap() {
+    // Security-disabled server: every transaction maps to the anonymous principal, which is not a fairness boundary,
+    // so the per-principal cap (1 here) must not apply - only the global cap bounds it.
     final ArcadeDbGrpcService service = service(0, 1);
     try {
       assertThat(service.tryReserveTransactionSlot(null)).isTrue();
+      assertThat(service.tryReserveTransactionSlot(null)).isTrue();
+      assertThat(service.getTransactionCountForPrincipal(null)).isEqualTo(2);
+    } finally {
+      service.close();
+    }
+  }
+
+  @Test
+  void anonymousPrincipalStillBoundedByGlobalCap() {
+    final ArcadeDbGrpcService service = service(1, 1);
+    try {
+      assertThat(service.tryReserveTransactionSlot(null)).isTrue();
+      // Global cap (1) still rejects the anonymous principal even though the per-principal cap is bypassed.
       assertThat(service.tryReserveTransactionSlot(null)).isFalse();
       assertThat(service.getTransactionCountForPrincipal(null)).isEqualTo(1);
     } finally {

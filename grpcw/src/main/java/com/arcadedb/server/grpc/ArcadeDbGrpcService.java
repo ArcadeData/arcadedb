@@ -284,12 +284,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Reserve the per-principal slot under an atomic compute so admission and the counter mutation happen as one
     // step per key; this also lets releaseTransactionSlot remove the entry at zero without racing a concurrent
     // reserve, keeping perPrincipalTransactionCount from growing unbounded across many distinct principals.
+    // The per-principal cap does not apply to the anonymous principal (security-disabled server): a single shared
+    // identity is not a fairness boundary, so only the global cap bounds it. The count is still tracked for metrics.
     final String key = owner == null ? ANONYMOUS_PRINCIPAL : owner;
+    final int perPrincipalCap = owner == null ? 0 : maxConcurrentTransactionsPerPrincipal;
     final boolean[] admitted = { true };
     perPrincipalTransactionCount.compute(key, (k, counter) -> {
       if (counter == null)
         return new AtomicInteger(1);
-      if (maxConcurrentTransactionsPerPrincipal > 0 && counter.get() >= maxConcurrentTransactionsPerPrincipal) {
+      if (perPrincipalCap > 0 && counter.get() >= perPrincipalCap) {
         admitted[0] = false;
         return counter;
       }
