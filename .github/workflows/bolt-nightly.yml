@@ -482,14 +482,14 @@ jobs:
         continue-on-error: true
         with:
           name: bolt-compat-matrix
-      - name: Render page and badge
+      - name: Render and publish if the matrix artifact is present
         run: |
-          matrix_args=()
-          if [ -f bolt-compat-matrix.json ]; then
-            matrix_args=(--matrix bolt-compat-matrix.json)
+          if [ ! -f bolt-compat-matrix.json ]; then
+            echo "No bolt-compat-matrix.json artifact (merge-matrix produced none); leaving the last published matrix in place."
+            exit 0
           fi
           python3 bolt/conformance/tools/render_matrix.py \
-            "${matrix_args[@]}" \
+            --matrix bolt-compat-matrix.json \
             --spec bolt/conformance/spec.yaml \
             --versions bolt/conformance/driver-versions.md \
             --repo "${{ github.repository }}" \
@@ -497,8 +497,6 @@ jobs:
             --timestamp "$(date -u +'%Y-%m-%d %H:%M UTC')" \
             --out-page bolt/conformance/COMPATIBILITY.md \
             --out-badge bolt/conformance/badge.json
-      - name: Commit refreshed matrix if changed
-        run: |
           if git diff --quiet -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json; then
             echo "No matrix changes to publish."
             exit 0
@@ -507,4 +505,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json
           git commit -m "docs(bolt): refresh driver compatibility matrix [skip ci]"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Published matrix refresh."
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); rebasing onto main and retrying."
+            git pull --rebase origin main
+          done
+          echo "Failed to push matrix refresh after retries." >&2
+          exit 1
