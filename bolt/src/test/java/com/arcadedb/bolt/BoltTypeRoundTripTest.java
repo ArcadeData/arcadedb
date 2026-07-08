@@ -102,7 +102,7 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-012] cartesian Point serializes as a native Bolt Point2D structure")
-  void type012_cartesianPointNative() {
+  void type012_cartesianPointNative() throws IOException {
     final Map<String, Object> point = new LinkedHashMap<>();
     point.put("x", 12.34);
     point.put("y", 56.78);
@@ -113,12 +113,19 @@ class BoltTypeRoundTripTest {
     assertThat(p.getSrid()).isEqualTo(7203);
     assertThat(p.getX()).isEqualTo(12.34);
     assertThat(p.getY()).isEqualTo(56.78);
-    assertThat(p.getZ()).isNull(); // z absent -> writeTo emits the Point2D (0x58) signature
+    assertThat(p.getZ()).isNull();
+
+    // Pin the header the inlined BoltPointStructure.writeTo emits for a 2D point (z absent).
+    final PackStreamWriter writer = new PackStreamWriter();
+    p.writeTo(writer);
+    final byte[] bytes = writer.toByteArray();
+    assertThat(bytes[0]).isEqualTo((byte) (0xB0 | 3)); // TINY_STRUCT, 3 fields
+    assertThat(bytes[1]).isEqualTo(BoltPointStructure.SIGNATURE_2D);
   }
 
   @Test
   @DisplayName("[TYPE-012] WGS-84 3D Point serializes as a native Bolt Point3D structure")
-  void type012_wgs84Point3DNative() {
+  void type012_wgs84Point3DNative() throws IOException {
     final Map<String, Object> point = new LinkedHashMap<>();
     point.put("longitude", 12.34);
     point.put("latitude", 56.78);
@@ -129,7 +136,14 @@ class BoltTypeRoundTripTest {
     assertThat(p.getSrid()).isEqualTo(4979);
     assertThat(p.getX()).isEqualTo(12.34);
     assertThat(p.getY()).isEqualTo(56.78);
-    assertThat(p.getZ()).isEqualTo(100.0); // z present -> writeTo emits the Point3D (0x59) signature
+    assertThat(p.getZ()).isEqualTo(100.0);
+
+    // Pin the header the inlined BoltPointStructure.writeTo emits for a 3D point (z present).
+    final PackStreamWriter writer = new PackStreamWriter();
+    p.writeTo(writer);
+    final byte[] bytes = writer.toByteArray();
+    assertThat(bytes[0]).isEqualTo((byte) (0xB0 | 4)); // TINY_STRUCT, 4 fields
+    assertThat(bytes[1]).isEqualTo(BoltPointStructure.SIGNATURE_3D);
   }
 
   @Test
