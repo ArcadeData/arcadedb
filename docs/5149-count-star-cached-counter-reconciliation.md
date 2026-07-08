@@ -22,4 +22,17 @@ A narrow caveat remains: no `count()` may run on the bucket between the invalida
 - Related suites: `CheckDatabaseExtendedTest`, `CRUDTest`.
 
 ## Impact
-`CHECK DATABASE FIX` / `CHECK DATABASE TYPE <t> FIX` now repairs a drifted `count(*)`. No hot-path behavior changes; the invalidation only runs under an explicit fix.
+`CHECK DATABASE FIX` / `CHECK DATABASE TYPE <t> FIX` now repairs a drifted `count(*)`. No hot-path behavior changes; the invalidation only runs under an explicit fix. Operator note: because every in-scope bucket is invalidated (we cannot know which drifted), the first `count(*)` after a FIX triggers a one-time full rescan of those buckets - a noticeable but bounded one-off cost on very large datasets.
+
+## PR and review history
+- PR: https://github.com/ArcadeData/arcadedb/pull/5150
+- Review cycles (bots: `claude`, `gemini-code-assist`):
+  - cycle 1 (`12f63561`): gemini no actionable feedback; claude LGTM + 3 non-blocking suggestions. Applied: persist/reopen round-trip test, `count()`-during-fix caveat comment.
+  - cycle 2 (`b7844628`): claude LGTM; gemini did not re-review (known unreliable). Applied: concurrency-window note (real race = `publishPages`->fold window in `TransactionContext`).
+  - cycle 3 (`6c18e9d0`): claude LGTM with one substantive catch - the comment's rationale was inaccurate (`deleteRecordInternal` registers no bucket delta; the real reason is deltas from other ops in a caller-managed enclosing tx). Verified in-source and corrected the comment, this doc, and the PR body; marked all 4 tests in the test plan.
+  - cycle 4 (`1bc42f6e`): claude verdict "Correct, safe, and well-tested"; confirmed the corrected rationale is accurate. gemini did not re-review.
+- Final state: `max-cycles-reached` (converged - every cycle LGTM; only non-blocking polish remained).
+
+## Deferred (non-blocking) follow-ups for the developer
+1. Optional: add a test that corrupts a real record so `check(fix=true)` deletes it, then asserts `count(*)` == `count(@rid)` == `(TOTAL - deleted)` - locks in the delete-no-delta -> invalidate -> rescan path directly (currently covered indirectly by `CheckDatabaseTest` et al.).
+2. Possible follow-up issue: root-cause why the incremental counter drifts in the first place (dropped delta vs. unclean-shutdown edge) so users need not run FIX repeatedly. This PR is a reactive reconciliation tool by design.
