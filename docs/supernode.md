@@ -163,17 +163,33 @@ Design guidance (from the initial review):
 
 ---
 
-## 5. Related pre-existing bug (separate)
+## 5. Related pre-existing bug: #5147 (FIXED, in this PR)
 
-**Issue #5147** - concurrent edge insertion into one super-node can **drop edges**
-and occasionally orphan an edge-list chunk (`inEdgesHeadChunk not found` SEVERE at
-`GraphEngine.createInEdgeChunk`). It reproduces with the append-merge **disabled**,
-so it is pre-existing and independent; the merge actually *mitigates* it (fewer
-retries = smaller race window). Hypothesis: the concurrent chunk-full transition
-(new chunk + `previous` relink + vertex head-pointer update in
-`EdgeLinkedList.add`) is not serialised as one MVCC unit. Needs its own fix. The
-benchmarks below tolerate this with lenient assertions; the merge's own
-correctness is gated by the deterministic `ConcurrentEdgeAppendMergeTest`.
+**Issue #5147** - concurrent edge insertion into one super-node could **drop
+edges**: an edge record committed with no back-reference from the target's edge
+list (`check database` -> `missingReferenceBack`; the edge count came up short).
+Pre-existing and independent of the merge (reproduces with the merge **disabled**;
+the merge only *masked* it by re-reading and re-applying at commit).
+
+**Root cause** (not the original chunk-full hypothesis): a deferred-update MVCC
+gap. The head chunk was read via an immutable `lookupByRID` which, under
+READ_COMMITTED, does not retain the page in the transaction. The page was only
+captured later by the deferred `updateRecord` - at the NEWER version if a
+concurrent append committed in between. The commit-time version check then
+compared the newer version against itself, found no conflict, and the stale chunk
+buffer overwrote the concurrent append (a lost update).
+
+**Fix**: `GraphEngine.createInEdgeChunk`/`createOutEdgeChunk` now anchor the head
+chunk's page in the transaction at read time (`fetchPageInTransaction`), so the
+append is bound to that version; a concurrent commit is caught by the MVCC check
+and the transaction retries and re-reads the current chunk. Regression:
+`Issue5147SuperNodeChunkRaceTest` (8 threads x 4000 edges into one vertex) - was
+losing ~130-160 edges/run, now 32000/32000 with a clean integrity check. This
+fixes the root cause so it is correct with the merge off too.
+
+**Follow-up**: the edge-**removal** path (`deleteEdge`/`removeVertex` via
+`getEdgeHeadChunk`) shares the same unanchored-read pattern (lower impact;
+full protection needs anchoring the whole chunk chain).
 
 ---
 
@@ -240,8 +256,9 @@ Reading the HA numbers:
 |---|---|
 | Commutative edge-append merge (engine) | ✅ implemented, tested, benchmarked |
 | Embedded + HA benchmarks | ✅ in `@Tag("benchmark")` tests |
-| Issue #5147 (chunk-allocation race) | 🐞 filed, not started |
+| Issue #5147 (lost-update edge drop) | ✅ fixed (root cause: deferred-update MVCC gap) in this PR |
 | Adaptive striped edge list (throughput) | ⏳ designed, not started |
+| Edge-removal path anchoring (#5147 follow-up) | ⏳ noted, not started |
 
 ## 8. Next steps
 
@@ -266,3 +283,7 @@ Reading the HA numbers:
   lazy `PageId`). Per-append overhead dropped from ~+504 to **+39 bytes/edge**;
   merge behaviour and correctness unchanged. Added the single-threaded overhead
   micro-benchmark.
+- **2026-07-08** - Fixed **#5147** (root-caused as a deferred-update MVCC gap, not
+  a chunk-allocation race): head-chunk page now anchored in the tx at read time in
+  `GraphEngine.createIn/OutEdgeChunk`. Added `Issue5147SuperNodeChunkRaceTest`.
+  Folded into this PR.
