@@ -70,22 +70,27 @@ import java.util.logging.Level;
  *   <li>If the elected source is the local peer, commit one
  *       {@link RaftLogEntryType#BOOTSTRAP_FINGERPRINT_ENTRY} per database via the existing
  *       transaction broker, all from the local copies. If the elected source is a different peer,
- *       transfer Raft leadership to that peer <em>without committing anything</em> (so the cluster
- *       commit index stays 0); the new leader re-enters this protocol on its own
- *       {@code notifyLeaderChanged} callback, elects itself, and commits every database then.</li>
+ *       transfer Raft leadership to that peer <em>without committing anything</em>; the new leader
+ *       re-enters this protocol on its own {@code notifyLeaderChanged} callback, elects itself, and
+ *       commits every database then.</li>
  * </ol>
  * <p>
- * Because the protocol never commits a baseline before transferring leadership, the single
- * transfer-then-commit-all sequence keeps the {@code commitIndex == 0} first-formation gate valid
- * and converges in at most one leadership move. A database whose freshest copy happens to live on a
+ * The protocol never commits a baseline before transferring leadership, so no <em>application</em>
+ * entry is committed until the elected source commits the whole cluster's fingerprints. The
+ * leadership transfer itself, however, makes Ratis append internal no-op / configuration entries, so
+ * the new leader's raw commit index is <em>not</em> 0 by the time it re-runs (issue #5099). The
+ * first-formation gate therefore keys on "the state machine has never applied an application entry"
+ * rather than an exact {@code commitIndex == 0}: that signal survives the transfer's internal term
+ * bump yet still closes the instant any real data commits, converging in at most one leadership
+ * move. See {@link #isFirstFormation(long)}. A database whose freshest copy happens to live on a
  * node <em>other</em> than the elected source (only reachable by an operator manually staging
  * mismatched backups, never by normal single-leader replication) is protected by the
  * {@code localLastTxId > baseline} "refusing to overwrite" guard in
  * {@code ArcadeStateMachine.applyBootstrapFingerprintEntry}, which surfaces a SEVERE for the
  * operator instead of silently discarding the fresher data.
  * <p>
- * The protocol is idempotent across leader changes: each newly-elected leader checks whether the
- * cluster's commit index is still 0 and, if so, re-runs. A leader transfer triggered by a previous
+ * The protocol is idempotent across leader changes: each newly-elected leader re-checks the
+ * first-formation gate and, if it still holds, re-runs. A leader transfer triggered by a previous
  * bootstrap pass is therefore safe even if the new leader doesn't know it was selected as the
  * source - it picks itself again from its own state.
  * <p>
@@ -101,7 +106,7 @@ class BootstrapElection {
    */
   enum Outcome {
     SKIPPED_DISABLED,           // bootstrapFromLocalDatabase=false
-    SKIPPED_NOT_FIRST_FORMATION,// commit index not a confirmed 0 (cluster running, or index unknown)
+    SKIPPED_NOT_FIRST_FORMATION,// not first formation (application data already committed, or index unknown)
     SKIPPED_NO_DATABASES,       // nothing to bootstrap
     NOT_LEADER,                 // we're not the leader anymore by the time we ran
     TRANSFERRED,                // leadership transferred to the source peer; new leader will retry
@@ -157,22 +162,24 @@ class BootstrapElection {
     if (!haServer.isLeader())
       return Outcome.NOT_LEADER;
 
-    // The bootstrap path is gated on first cluster formation: every peer's Raft log empty, i.e. a
-    // commit index of exactly 0. The leader's commit index is the only piece of cluster-wide state
-    // we have to check; once any entry has been committed, we never re-engage. See section 8
-    // ("Gating") in #4147. A negative value means the index is UNKNOWN (the Raft division is not
-    // ready, or getCommitIndex() hit a transient IOException) and must NOT be mistaken for an empty
-    // log - see isConfirmedFirstFormation and issue #4800.
+    // The bootstrap path is gated on first cluster formation: the cluster has never committed any
+    // application data. See section 8 ("Gating") in #4147. A commit index of exactly 0 is the fast,
+    // unambiguous case (empty Raft log, no leadership transfer). But a bootstrap that transfers
+    // leadership to the elected source makes Ratis append internal no-op / configuration entries, so
+    // the new leader's commit index is above 0 even though no application entry has committed (issue
+    // #5099); the exact-0 test alone would wrongly reject it. isFirstFormation therefore also accepts
+    // a positive commit index when the state machine has never applied an application entry - a signal
+    // that survives the internal term bump yet still closes the instant any real data commits, keeping
+    // the issue #4800 guarantee that bootstrap never re-engages on a running cluster.
     //
     // The notifyLeaderChanged callback that drives this runs before the freshly-elected leader's Raft
     // division exposes its committed index, so the very first read returns the -1 UNKNOWN sentinel for
     // a brief window. Since bootstrap runs at most once per term, skipping on that transient -1 would
-    // leave the baseline uncommitted forever. Wait a bounded time for a definitive reading: on genuine
-    // first formation it resolves to 0 and the gate opens; on an already-running cluster it resolves
-    // to a positive index and the gate stays closed; if it never resolves (persistent read failure) we
-    // conservatively skip, exactly as issue #4800 requires.
+    // leave the baseline uncommitted forever. Wait a bounded time for a definitive reading: a negative
+    // value never opens the gate (division not ready / transient IOException, exactly as #4800
+    // requires); a non-negative value is then judged by isFirstFormation.
     final long commitIndex = awaitReadableCommitIndex();
-    if (!isConfirmedFirstFormation(commitIndex))
+    if (!isFirstFormation(commitIndex))
       return Outcome.SKIPPED_NOT_FIRST_FORMATION;
 
     final List<String> dbNames = collectLocalDatabaseNames();
@@ -200,13 +207,39 @@ class BootstrapElection {
   }
 
   /**
-   * The first-formation gate. Bootstrap may only engage on a positively-confirmed empty cluster,
-   * i.e. a commit index of exactly {@code 0}. A negative value means the commit index is UNKNOWN -
-   * {@link RaftHAServer#getCommitIndex()} returns {@code -1} when the Raft division is not ready yet
-   * or a transient {@code IOException} is thrown while reading it - and MUST be treated as "skip" so
-   * a transient read failure during a leader-change callback can never re-trigger bootstrap on a
-   * live cluster (issue #4800). Any positive value means the cluster has already committed entries
-   * and the first-formation window is long past.
+   * The first-formation gate. Bootstrap may only engage on a cluster that has never committed any
+   * application data, evaluated in two steps:
+   * <ol>
+   *   <li>A commit index of exactly {@code 0} - a positively-confirmed empty Raft log - opens the
+   *       gate immediately. This is the no-transfer path and is unchanged from #4800
+   *       (see {@link #isConfirmedFirstFormation}).</li>
+   *   <li>A positive commit index opens the gate only when the state machine reports it has never
+   *       applied an application entry ({@link ArcadeStateMachine#hasNeverAppliedApplicationEntry()}).
+   *       This is the leadership-transfer path (issue #5099): the transfer appends internal
+   *       no-op / configuration entries that raise the commit index above {@code 0} without
+   *       committing any application data. The durable no-application-entry signal survives that
+   *       internal term bump yet still closes the instant any real mutation commits, so #4800's
+   *       "never re-engage on a running cluster" guarantee is preserved.</li>
+   * </ol>
+   * A negative commit index means the index is UNKNOWN - {@link RaftHAServer#getCommitIndex()}
+   * returns {@code -1} when the Raft division is not ready yet or a transient {@code IOException} is
+   * thrown while reading it - and MUST be treated as "skip" so a transient read failure during a
+   * leader-change callback can never re-trigger bootstrap on a live cluster (issue #4800).
+   */
+  private boolean isFirstFormation(final long commitIndex) {
+    if (isConfirmedFirstFormation(commitIndex))
+      return true;
+    if (commitIndex < 0L)
+      return false; // division not ready / transient read failure: never treat as an empty log (#4800)
+    final ArcadeStateMachine stateMachine = haServer.getStateMachine();
+    return stateMachine != null && stateMachine.hasNeverAppliedApplicationEntry();
+  }
+
+  /**
+   * The exact-{@code 0} empty-log test: {@code true} only for a positively-confirmed empty Raft log.
+   * Kept as a distinct static helper (issue #4800) that {@link #isFirstFormation(long)} layers the
+   * leadership-transfer signal on top of; a negative or positive commit index both return
+   * {@code false} here.
    */
   static boolean isConfirmedFirstFormation(final long commitIndex) {
     return commitIndex == 0L;
