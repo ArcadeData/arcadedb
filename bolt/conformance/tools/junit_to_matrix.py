@@ -81,10 +81,22 @@ def parse_junit_files(paths):
     Maven Failsafe can split a @Nested test class across per-nested-class report
     files, so the Java cells pass a glob; folding across files keeps the merge
     robust whether the runner emits one aggregate file or several.
+
+    A report that is absent or unparseable (its suite's test step failed before
+    writing valid JUnit - a build, install, or reporter error) is skipped with a
+    warning rather than raised: hard-failing here would drop the whole cell so it
+    reads as "missing" (job never ran) instead of the accurate empty cell (ran,
+    produced no recognized scenarios), and would hide any sibling report that did
+    parse. merge_matrix still flags the resulting empty cell as a failure.
     """
     combined = {}
     for path in paths:
-        for scenario, status in parse_junit(path).items():
+        try:
+            scenarios = parse_junit(path)
+        except (OSError, ET.ParseError) as err:
+            print(f"warning: skipping unreadable JUnit report {path}: {err}", file=sys.stderr)
+            continue
+        for scenario, status in scenarios.items():
             _fold(combined, scenario, status)
     return combined
 

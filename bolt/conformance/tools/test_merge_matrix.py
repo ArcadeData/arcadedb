@@ -65,7 +65,11 @@ class LoadExpectedCellsTest(unittest.TestCase):
         # the header/separator rows are not misread as cells.
         self.assertIn("java:4.4.20", cells)
         self.assertIn("go:5.28.4", cells)
-        self.assertEqual(len(cells), 15)
+        # JavaScript has no 4.x band (its suite needs driver-5.x client APIs);
+        # only java carries the 4.4 line.
+        self.assertNotIn("javascript:4.4.11", cells)
+        self.assertIn("javascript:5.28.3", cells)
+        self.assertEqual(len(cells), 14)
         self.assertTrue(all(":" in c for c in cells))
 
 

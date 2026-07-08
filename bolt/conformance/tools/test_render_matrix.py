@@ -14,12 +14,15 @@ SPEC_YAML = os.path.join(HERE, "..", "spec.yaml")
 
 
 class LoadColumnsTest(unittest.TestCase):
-    def test_parses_all_fifteen_columns_in_order(self):
+    def test_parses_all_columns_in_order(self):
         cols = load_columns(DRIVER_VERSIONS_MD)
-        self.assertEqual(len(cols), 15)
+        # 14 cells: 3 bands each for java/python/csharp/go + 2 for javascript
+        # (no 4.x band - its suite needs driver-5.x client APIs).
+        self.assertEqual(len(cols), 14)
         # File order: java first, go last; header/separator rows ignored.
         self.assertEqual(cols[0], Column("java", "oldest-supported-4.x", "4.4.20"))
         self.assertEqual(cols[-1], Column("go", "latest", "5.28.4"))
+        self.assertNotIn(Column("javascript", "oldest-supported-4.x", "4.4.11"), cols)
         self.assertTrue(all(c.language in
             {"java", "javascript", "python", "csharp", "go"} for c in cols))
 
