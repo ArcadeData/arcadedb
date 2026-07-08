@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
@@ -79,6 +80,23 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
     return this;
   }
 
+  /**
+   * Sets the posting-weight quantization: INT8 (default, 1 byte/weight), FP16 (2 bytes) or FP32
+   * (4 bytes, exact scoring). Mirrors the dense vector index's {@code quantization} knob.
+   */
+  public TypeLSMSparseVectorIndexBuilder withWeightQuantization(final WeightQuantization weightQuantization) {
+    ((LSMSparseVectorIndexMetadata) metadata).weightQuantization =
+        weightQuantization == null ? LSMSparseVectorIndexMetadata.DEFAULT_WEIGHT_QUANTIZATION : weightQuantization;
+    return this;
+  }
+
+  /**
+   * Sets the posting-weight quantization from its name (FP32, FP16 or INT8), case-insensitive.
+   */
+  public TypeLSMSparseVectorIndexBuilder withWeightQuantization(final String weightQuantization) {
+    return withWeightQuantization(LSMSparseVectorIndexMetadata.parseWeightQuantization(weightQuantization));
+  }
+
   @Override
   public TypeLSMSparseVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     this.metadata = (LSMSparseVectorIndexMetadata) metadata;
@@ -89,6 +107,8 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
     final LSMSparseVectorIndexMetadata meta = (LSMSparseVectorIndexMetadata) metadata;
     meta.dimensions = json.getInt("dimensions", meta.dimensions);
     meta.modifier = json.getString("modifier", meta.modifier).toUpperCase();
+    if (json.has("weightQuantization"))
+      meta.weightQuantization = LSMSparseVectorIndexMetadata.parseWeightQuantization(json.getString("weightQuantization"));
     return this;
   }
 }

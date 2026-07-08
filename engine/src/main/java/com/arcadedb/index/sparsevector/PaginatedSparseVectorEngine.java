@@ -220,6 +220,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
+   * The encoding parameters new segments are written with (posting-weight quantization, block/skip
+   * layout, RID compression). Frozen at engine-open time from the index metadata.
+   */
+  public SegmentParameters parameters() {
+    return params;
+  }
+
+  /**
    * Flush the memtable iff its posting count is at or above the configured threshold; cheap no-op
    * otherwise. Called from the wrapper's post-commit callback so a long bulk-load amortizes
    * memtable cost into a few sealed segments instead of growing unbounded toward OOM.

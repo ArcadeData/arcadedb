@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
@@ -30,8 +31,16 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
   public static final String MODIFIER_NONE = "NONE";
   public static final String MODIFIER_IDF  = "IDF";
 
-  public int    dimensions;
-  public String modifier = MODIFIER_NONE;
+  /**
+   * Default posting-weight quantization. INT8 keeps segments compact (1 byte/weight) with
+   * near-exact recall; FP16 (2 bytes) and FP32 (4 bytes, exact) are available for workloads that
+   * need higher fidelity. This mirrors the dense index's {@code quantization} knob.
+   */
+  public static final WeightQuantization DEFAULT_WEIGHT_QUANTIZATION = WeightQuantization.INT8;
+
+  public int                dimensions;
+  public String             modifier           = MODIFIER_NONE;
+  public WeightQuantization weightQuantization = DEFAULT_WEIGHT_QUANTIZATION;
 
   public LSMSparseVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
@@ -58,5 +67,24 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
       super.fromJSON(metadata);
     this.dimensions = metadata.getInt("dimensions", 0);
     this.modifier = metadata.getString("modifier", MODIFIER_NONE).toUpperCase();
+    this.weightQuantization = parseWeightQuantization(
+        metadata.getString("weightQuantization", DEFAULT_WEIGHT_QUANTIZATION.name()));
+  }
+
+  /**
+   * Parses a user-supplied quantization name into a {@link WeightQuantization}, tolerating case and
+   * surrounding whitespace, and producing a clear error listing the supported values instead of the
+   * bare {@code IllegalArgumentException} from {@code valueOf}.
+   */
+  public static WeightQuantization parseWeightQuantization(final String value) {
+    if (value == null)
+      return DEFAULT_WEIGHT_QUANTIZATION;
+    final String normalized = value.trim().toUpperCase();
+    try {
+      return WeightQuantization.valueOf(normalized);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid sparse vector index weightQuantization: '" + value + "'. Supported values: FP32, FP16, INT8");
+    }
   }
 }

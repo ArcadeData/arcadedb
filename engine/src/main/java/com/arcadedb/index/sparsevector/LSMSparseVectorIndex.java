@@ -122,7 +122,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public LSMSparseVectorIndex(final LSMTreeIndex index, final LSMSparseVectorIndexMetadata metadata) {
     this.underlyingIndex = index;
     this.sparseMetadata = metadata;
-    this.engine = openEngine(index);
+    this.engine = openEngine(index, metadata);
   }
 
   /**
@@ -139,7 +139,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // shell from before the v2 swap remain readable.
     this.underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode,
         new Type[] { Type.INTEGER, Type.LINK, Type.FLOAT }, pageSize, nullStrategy);
-    this.engine = openEngine(this.underlyingIndex);
+    this.engine = openEngine(this.underlyingIndex, metadata);
   }
 
   @Override
@@ -448,8 +448,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   // --------------------------- internals ---------------------------
 
-  private static PaginatedSparseVectorEngine openEngine(final LSMTreeIndex shell) {
-    return new PaginatedSparseVectorEngine(shell.getMutableIndex().getDatabase(), shell.getName(), SegmentParameters.defaults());
+  private static PaginatedSparseVectorEngine openEngine(final LSMTreeIndex shell,
+      final LSMSparseVectorIndexMetadata metadata) {
+    // Already-written segments are self-describing (each header stores its own quantization code), so
+    // the metadata quantization only governs how NEW segments (memtable flushes and compactions) are
+    // encoded. A null metadata (legacy load path) falls back to the INT8 default.
+    final SegmentParameters params = metadata == null ?
+        SegmentParameters.defaults() :
+        SegmentParameters.builder().weightQuantization(metadata.weightQuantization).build();
+    return new PaginatedSparseVectorEngine(shell.getMutableIndex().getDatabase(), shell.getName(), params);
   }
 
   /**
@@ -714,6 +721,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (sparseMetadata != null) {
       json.put("dimensions", sparseMetadata.dimensions);
       json.put("modifier", sparseMetadata.modifier);
+      json.put("weightQuantization", sparseMetadata.weightQuantization.name());
     }
     return json;
   }
