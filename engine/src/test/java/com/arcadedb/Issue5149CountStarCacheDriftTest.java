@@ -90,6 +90,23 @@ class Issue5149CountStarCacheDriftTest extends TestHelper {
   }
 
   @Test
+  void driftSurvivesCleanReopenAndIsRepairedByFix() {
+    // Mirrors the real-world trigger from the issue: a drifted counter is persisted to statistics.json on a
+    // clean close and reloaded on reopen (a clean shutdown does NOT reset counters), so count(*) stays wrong
+    // across restarts until reconciled.
+    driftCachedCounter();
+    reopenDatabase();
+
+    assertThat(countStar()).isEqualTo(0L); // drifted value reloaded from statistics.json (no recompute on clean open)
+    assertThat(countScan()).isEqualTo((long) TOTAL);
+
+    database.command("sql", "CHECK DATABASE TYPE Customer FIX");
+
+    assertThat(countStar()).isEqualTo((long) TOTAL);
+    assertThat(countStar()).isEqualTo(countScan());
+  }
+
+  @Test
   void checkDatabaseWithoutFixDoesNotMutateCachedCounter() {
     driftCachedCounter();
 

@@ -609,6 +609,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // because check(fix=true) runs inside a transaction that the caller commits, and commit folds this
       // bucket's record delta into the counter only when it is > -1 (TransactionContext); leaving -1 makes
       // that fold skip so a fix that deleted corrupt records cannot double-apply its delta.
+      // Caveat: the caller must NOT trigger count() on this bucket between here and commit - that would
+      // repopulate the counter (> -1) and let the commit-time fold re-apply the delta. DatabaseChecker does not.
       cachedRecordCount.set(-1);
 
     final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
