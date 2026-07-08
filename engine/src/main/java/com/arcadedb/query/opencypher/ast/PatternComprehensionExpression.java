@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -264,6 +265,10 @@ public class PatternComprehensionExpression implements Expression {
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
+      // Inline relationship property filter, e.g. [p = (a)-[:VE*1..4 {w:1}]->(c) | ...] (issue #5139).
+      // Every relationship in the path must satisfy the map, so skip non-matching edges before recursing.
+      if (!matchesEdgeProperties(edge, relPattern, context))
+        continue;
       final RID edgeRid = edge.getIdentity();
       // Trail semantics: do not repeat the same edge in a single path
       if (!visitedEdges.add(edgeRid))
@@ -326,6 +331,50 @@ public class PatternComprehensionExpression implements Expression {
     return true;
   }
 
+  /**
+   * Returns true if an edge satisfies the relationship pattern's inline property map
+   * (e.g. the {@code {w:1}} in {@code -[:VE {w:1}]->}). Mirrors the enforcement done by the
+   * regular MATCH path (MatchRelationshipStep), so pattern comprehensions apply the same
+   * required-property semantics (issue #5139).
+   */
+  private boolean matchesEdgeProperties(final Edge edge, final RelationshipPattern relPattern, final CommandContext context) {
+    if (!relPattern.hasProperties())
+      return true;
+
+    final Map<String, Object> properties = relPattern.getProperties();
+    if (properties == null)
+      return true;
+
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      final Object actual = edge.get(entry.getKey());
+      Object expected = entry.getValue();
+
+      // Resolve parameter references (e.g., $param -> actual value from context)
+      if (expected instanceof CypherASTBuilder.ParameterReference) {
+        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
+        if (context.getInputParameters() != null)
+          expected = context.getInputParameters().get(paramName);
+      } else if (expected instanceof final String s && s.startsWith("$") && s.length() > 1) {
+        // Legacy parameter reference encoded as "$name"
+        final String paramName = s.substring(1);
+        if (context.getInputParameters() != null) {
+          final Object paramValue = context.getInputParameters().get(paramName);
+          if (paramValue != null)
+            expected = paramValue;
+        }
+      }
+
+      if (actual == null || !actual.equals(expected)) {
+        if (actual instanceof Number && expected instanceof Number) {
+          if (((Number) actual).longValue() != ((Number) expected).longValue())
+            return false;
+        } else
+          return false;
+      }
+    }
+    return true;
+  }
+
   private ResultInternal buildHopResult(final Result currentResult, final NodePattern endNodePattern, final Vertex targetVertex,
       final RelationshipPattern relPattern, final Edge edge) {
     final ResultInternal hopResult = new ResultInternal();
@@ -353,6 +402,10 @@ public class PatternComprehensionExpression implements Expression {
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
+      // Inline relationship property filter, e.g. [(a)-[:VE {w:1}]->(x) | ...] (issue #5139).
+      if (!matchesEdgeProperties(edge, relPattern, context))
+        continue;
+
       final Vertex targetVertex;
       try {
         targetVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
