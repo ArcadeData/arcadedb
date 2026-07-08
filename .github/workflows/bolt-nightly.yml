@@ -337,7 +337,11 @@ jobs:
       - name: Merge into compatibility matrix
         id: merge
         run: |
-          python3 bolt/conformance/tools/merge_matrix.py cells/*.json -o bolt-compat-matrix.json
+          shopt -s nullglob
+          cells=(cells/*.json)
+          python3 bolt/conformance/tools/merge_matrix.py "${cells[@]}" \
+            --expect-languages java,javascript,python,csharp,go \
+            -o bolt-compat-matrix.json
           has_failures=$(python3 -c "import json; print(str(json.load(open('bolt-compat-matrix.json'))['has_failures']).lower())")
           echo "has-failures=${has_failures}" >> "$GITHUB_OUTPUT"
       - name: Upload compatibility matrix
@@ -373,10 +377,14 @@ jobs:
                 }
               }
             }
+            const missing = (matrix.missing_languages || []).map(l => `- ${l} (whole suite produced no result)`);
             const title = 'Bolt driver compatibility regression (nightly)';
             const label = 'bolt-compat-regression';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `Nightly Bolt matrix reported failing cells.\n\nRun: ${runUrl}\n\n${failing.sort().join('\n')}`;
+            const sections = [`Nightly Bolt matrix reported problems.\n\nRun: ${runUrl}`];
+            if (failing.length) sections.push(`### Failing cells\n${failing.sort().join('\n')}`);
+            if (missing.length) sections.push(`### Missing suites\n${missing.join('\n')}`);
+            const body = sections.join('\n\n');
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
               state: 'open', labels: label,
