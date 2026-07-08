@@ -627,6 +627,11 @@ public class TransactionContext implements Transaction {
   /** Packs the (fileId, pageNumber) of the page holding {@code segmentRID} into a long key (no allocation). */
   private long edgeSegmentPageKey(final RID segmentRID) {
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
+    if (bucket == null)
+      // The edge bucket cannot vanish under the held commit lock; treat a missing one as a retryable conflict
+      // rather than NPE.
+      throw new ConcurrentModificationException("Edge-append: bucket " + segmentRID.getBucketId()
+          + " for segment " + segmentRID + " not found. Please retry the operation");
     final int pageNumber = (int) (segmentRID.getPosition() / bucket.getMaxRecordsInPage());
     return packPageKey(segmentRID.getBucketId(), pageNumber);
   }
@@ -677,9 +682,15 @@ public class TransactionContext implements Transaction {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
       // Load the chunk fresh from the (now current) page, bypassing the tx record cache which still holds the
-      // stale, already-appended instance.
-      final MutableEdgeSegment segment = new MutableEdgeSegment(database, segmentRID,
-          bucket.getRecord(segmentRID).copyOfContent());
+      // stale, already-appended instance. A concurrently-vanished chunk (RecordNotFoundException) cannot happen
+      // under the held commit lock; if it ever did, fall back to a full retry rather than aborting the tx.
+      final MutableEdgeSegment segment;
+      try {
+        segment = new MutableEdgeSegment(database, segmentRID, bucket.getRecord(segmentRID).copyOfContent());
+      } catch (final RecordNotFoundException e) {
+        throw new ConcurrentModificationException(
+            "Edge-append rebase not possible: chunk " + segmentRID + " no longer exists. Please retry the operation");
+      }
 
       final EdgeAppendBuffer buffer = entry.getValue();
       for (int i = 0; i < buffer.size; ++i)
