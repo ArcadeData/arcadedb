@@ -1688,6 +1688,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final Path appliedIndexFile = getAppliedIndexFile();
     if (appliedIndexFile != null && Files.exists(appliedIndexFile))
       return false;
+    // Reached only when the file path is unresolvable (server not wired yet, getAppliedIndexFile()
+    // == null) or the file did not exist at the check above: read the persisted value as the final
+    // signal. It is -1 for a genuinely fresh node.
     return readPersistedAppliedIndex() < 0;
   }
 
