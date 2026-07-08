@@ -1439,10 +1439,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Enforce the concurrent-transaction caps BEFORE allocating the dedicated executor thread, so a
       // beginTransaction flood is rejected without ever creating the thread it is trying to exhaust.
       if (!tryReserveTransactionSlot(owner)) {
+        // Report the configured caps rather than live counts: tryReserveTransactionSlot has already rolled back its
+        // increments on rejection, so a live read here would be post-decrement and misleadingly below the cap.
         LogManager.instance().log(this, Level.WARNING,
-            "beginTransaction(): rejected - concurrent transaction limit reached (global=%s/%s, principal=%s owns %s/%s)",
-            globalTransactionCount.get(), maxConcurrentTransactions, owner != null ? owner : "<anonymous>",
-            getTransactionCountForPrincipal(owner), maxConcurrentTransactionsPerPrincipal);
+            "beginTransaction(): rejected for principal=%s - concurrent transaction limit reached (caps: global=%s, perPrincipal=%s)",
+            owner != null ? owner : "<anonymous>", maxConcurrentTransactions, maxConcurrentTransactionsPerPrincipal);
         responseObserver.onError(Status.RESOURCE_EXHAUSTED
             .withDescription("Too many concurrent transactions; retry after committing or rolling back open transactions")
             .asException());

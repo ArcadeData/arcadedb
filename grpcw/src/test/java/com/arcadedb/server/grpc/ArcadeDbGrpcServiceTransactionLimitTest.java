@@ -20,6 +20,9 @@ package com.arcadedb.server.grpc;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -109,6 +112,54 @@ class ArcadeDbGrpcServiceTransactionLimitTest {
       for (int i = 0; i < 50; i++)
         assertThat(service.tryReserveTransactionSlot("flooder")).isTrue();
       assertThat(service.getTransactionCountForPrincipal("flooder")).isEqualTo(50);
+    } finally {
+      service.close();
+    }
+  }
+
+  @Test
+  void concurrentReservationsNeverExceedPerPrincipalCapAndReleaseCleanly() throws InterruptedException {
+    final int cap = 10;
+    final int threads = 64;
+    final ArcadeDbGrpcService service = service(0, cap);
+    try {
+      final AtomicInteger admitted = new AtomicInteger();
+      final CountDownLatch startGate = new CountDownLatch(1);
+      final CountDownLatch doneGate = new CountDownLatch(threads);
+      final boolean[] reserved = new boolean[threads];
+      final Thread[] pool = new Thread[threads];
+
+      for (int i = 0; i < threads; i++) {
+        final int idx = i;
+        pool[i] = new Thread(() -> {
+          try {
+            startGate.await();
+            if (service.tryReserveTransactionSlot("p")) {
+              reserved[idx] = true;
+              admitted.incrementAndGet();
+            }
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          } finally {
+            doneGate.countDown();
+          }
+        });
+        pool[i].start();
+      }
+
+      startGate.countDown();       // release all threads at once to maximize contention
+      doneGate.await();
+
+      // The atomic compute admission guarantees exactly the cap is admitted, never more.
+      assertThat(admitted.get()).isEqualTo(cap);
+      assertThat(service.getTransactionCountForPrincipal("p")).isEqualTo(cap);
+
+      // Release every admitted slot; the per-principal entry must return to zero (and be dropped).
+      for (int i = 0; i < threads; i++)
+        if (reserved[i])
+          service.releaseTransactionSlot("p");
+      assertThat(service.getTransactionCountForPrincipal("p")).isZero();
+      assertThat(service.tryReserveTransactionSlot("p")).isTrue();
     } finally {
       service.close();
     }
