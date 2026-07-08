@@ -103,13 +103,7 @@ class ConcurrentEdgeAppendMergeTest extends TestHelper {
       assertThat(inDegree[0]).isEqualTo(TOTAL);
 
       // Integrity check must be clean: no auto-fixed problems and no detected errors on any bucket.
-      try (final ResultSet rs = database.command("sql", "check database")) {
-        while (rs.hasNext()) {
-          final Result row = rs.next();
-          assertThat((Long) row.getProperty("autoFix")).as("check database: " + row.toJSON()).isEqualTo(0L);
-          assertThat((Long) row.getProperty("totalErrors")).as("check database: " + row.toJSON()).isEqualTo(0L);
-        }
-      }
+      assertIntegrityClean();
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
     }
@@ -195,15 +189,90 @@ class ConcurrentEdgeAppendMergeTest extends TestHelper {
       database.transaction(() -> inDegree[0] = hubRID.asVertex().countEdges(Vertex.DIRECTION.IN, "LINK"));
       assertThat(inDegree[0]).isEqualTo(pool);
 
-      try (final ResultSet rs = database.command("sql", "check database")) {
-        while (rs.hasNext()) {
-          final Result row = rs.next();
-          assertThat((Long) row.getProperty("autoFix")).as("check database: " + row.toJSON()).isEqualTo(0L);
-          assertThat((Long) row.getProperty("totalErrors")).as("check database: " + row.toJSON()).isEqualTo(0L);
-        }
-      }
+      assertIntegrityClean();
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
     }
+  }
+
+  /**
+   * Locks in that the #5147/#5153 lost-update fixes hold INDEPENDENTLY of the commutative merge: with
+   * {@code arcadedb.graph.edgeAppendMerge=false} the read-time page anchoring still makes concurrent
+   * super-node appends conflict-and-retry rather than lose edges. (Before the fix this dropped ~130-160
+   * edges per run with the merge off.)
+   */
+  @Test
+  void edgeDropFixHoldsWithMergeDisabled() throws InterruptedException {
+    final boolean savedMerge = GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean();
+    final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+    GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.setValue(false);
+    GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
+    try {
+      database.transaction(() -> {
+        database.getSchema().createVertexType("Hub", 1);
+        database.getSchema().createVertexType("Src", 16);
+        database.getSchema().createEdgeType("LINK", 16);
+      });
+      final MutableVertex[] hubHolder = new MutableVertex[1];
+      database.transaction(() -> {
+        hubHolder[0] = database.newVertex("Hub");
+        hubHolder[0].save();
+      });
+      final RID hubRID = hubHolder[0].getIdentity();
+
+      final AtomicLong failures = new AtomicLong();
+      final CountDownLatch start = new CountDownLatch(1);
+      final CountDownLatch done = new CountDownLatch(THREADS);
+      for (int t = 0; t < THREADS; t++) {
+        new Thread(() -> {
+          try {
+            start.await();
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            done.countDown();
+            return;
+          }
+          for (int i = 0; i < EDGES_PER_THREAD; i++) {
+            try {
+              database.transaction(() -> {
+                final MutableVertex src = database.newVertex("Src");
+                src.save();
+                src.newEdge("LINK", hubRID);
+              }, false, 10_000);
+            } catch (final Exception e) {
+              failures.incrementAndGet();
+            }
+          }
+          done.countDown();
+        }).start();
+      }
+      start.countDown();
+      done.await();
+
+      assertThat(failures.get()).isEqualTo(0);
+      final long[] inDegree = new long[1];
+      database.transaction(() -> inDegree[0] = hubRID.asVertex().countEdges(Vertex.DIRECTION.IN, "LINK"));
+      assertThat(inDegree[0]).as("no edges lost even with the merge disabled").isEqualTo(TOTAL);
+      assertIntegrityClean();
+    } finally {
+      GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
+      GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.setValue(savedMerge);
+    }
+  }
+
+  private void assertIntegrityClean() {
+    try (final ResultSet rs = database.command("sql", "check database")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(longProperty(row, "autoFix")).as("check database autoFix: " + row.toJSON()).isEqualTo(0L);
+        assertThat(longProperty(row, "totalErrors")).as("check database totalErrors: " + row.toJSON()).isEqualTo(0L);
+      }
+    }
+  }
+
+  /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */
+  private static long longProperty(final Result row, final String name) {
+    final Object value = row.getProperty(name);
+    return value == null ? 0L : ((Number) value).longValue();
   }
 }
