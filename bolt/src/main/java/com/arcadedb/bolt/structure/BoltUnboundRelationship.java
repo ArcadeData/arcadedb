@@ -47,17 +47,6 @@ public class BoltUnboundRelationship implements PackStreamStructure {
   }
 
   @Override
-  public byte getSignature() {
-    return SIGNATURE;
-  }
-
-  @Override
-  public int getFieldCount() {
-    // v4.x base count; writeTo is authoritative and emits 4 fields (adds element_id) when the writer negotiated Bolt >= 5.
-    return 3;
-  }
-
-  @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
     if (writer.getBoltMajorVersion() >= 5) {
       writer.writeStructureHeader(SIGNATURE, 4);

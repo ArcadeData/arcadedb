@@ -48,18 +48,10 @@ public class BoltPointStructure implements PackStreamStructure {
   }
 
   @Override
-  public byte getSignature() {
-    return z == null ? SIGNATURE_2D : SIGNATURE_3D;
-  }
-
-  @Override
-  public int getFieldCount() {
-    return z == null ? 3 : 4;
-  }
-
-  @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
-    writer.writeStructureHeader(getSignature(), getFieldCount());
+    final byte signature = z == null ? SIGNATURE_2D : SIGNATURE_3D;
+    final int fieldCount = z == null ? 3 : 4;
+    writer.writeStructureHeader(signature, fieldCount);
     writer.writeValue((long) srid);
     writer.writeValue(x);
     writer.writeValue(y);
