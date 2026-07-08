@@ -435,8 +435,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // above. The requester mirrors the transaction's so a recompute invoked while the same transaction already
     // holds the lock re-enters instead of self-deadlocking.
     final TransactionManager txManager = database.getTransactionManager();
-    final Object requester = transaction != null && transaction.getRequester() != null ?
-            transaction.getRequester() : Thread.currentThread();
+    final Object requester = transaction != null ? transaction.getRequester() : Thread.currentThread();
     final long lockTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
     LockManager.LOCK_STATUS lockStatus = LockManager.LOCK_STATUS.NO;
@@ -474,7 +473,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // an enclosing transaction). On a lock-acquisition timeout (NO) the scan ran lock-free and may be drifted,
       // so leave the counter at -1 and return a best-effort value: a later call recomputes cleanly.
       if (lockStatus != LockManager.LOCK_STATUS.NO)
-        cachedRecordCount.set(total);
+        // The scan reads the transaction's view (getPage returns its uncommitted pages first), so `total`
+        // already includes this transaction's pending delta. Cache the COMMITTED base (total - pending) so the
+        // commit-time fold adds the delta exactly once instead of double-counting it; the caller still gets the
+        // transaction-visible `total` below.
+        cachedRecordCount.set(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total);
+      else
+        LogManager.instance().log(this, Level.FINE,
+                "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
+                lockTimeout);
       return total;
 
     } catch (final IOException e) {

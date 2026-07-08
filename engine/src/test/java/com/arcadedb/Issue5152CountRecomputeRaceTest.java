@@ -41,7 +41,6 @@ import static org.assertj.core.api.Assertions.fail;
  * (long) recompute while a writer commits new records concurrently. Afterwards the cached {@code count(*)}
  * must equal the authoritative scan {@code count(@rid)}.
  */
-@Tag("slow")
 class Issue5152CountRecomputeRaceTest extends TestHelper {
   private static final int BASE   = 50000;
   private static final int EXTRA  = 3000;
@@ -82,6 +81,39 @@ class Issue5152CountRecomputeRaceTest extends TestHelper {
   }
 
   @Test
+  void recomputeInsideTransactionDoesNotDoubleCountOnCommit() {
+    insert(0, 10);
+    bucket().setCachedRecordCount(-1); // force a recompute on the next count()
+
+    database.begin();
+    try {
+      database.command("sql", "INSERT INTO Doc SET n = 999"); // pending, uncommitted insert in this transaction
+      // The recompute scans the transaction view (11) but must cache only the committed base (10) so the
+      // commit-time fold does not add the pending delta a second time.
+      assertThat(countStar()).isEqualTo(11L);
+    } finally {
+      database.commit();
+    }
+
+    // After commit the counter must be exactly 11, not 12 (no double count of the pending insert).
+    assertThat(countStar()).isEqualTo(11L);
+    assertThat(countScan()).isEqualTo(11L);
+  }
+
+  @Test
+  void nonTransactionalCountReturnsCachedValueWithoutScanning() {
+    insert(0, 5);
+    final LocalBucket b = bucket();
+    b.count(); // prime the cached counter
+
+    // Poison the cache with a value that disagrees with the real records. A non-transactional count() must
+    // return the cached value directly (O(1)) rather than rescanning, which is the restored fast-path contract.
+    b.setCachedRecordCount(42L);
+    assertThat(b.count()).isEqualTo(42L);
+  }
+
+  @Test
+  @Tag("slow")
   void cachedCounterStaysConsistentUnderConcurrentRecomputeAndCommits() throws InterruptedException {
     insert(0, BASE);
     int expected = BASE;
