@@ -21,6 +21,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
 import com.arcadedb.query.polyglot.PolyglotEngineManager;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
 import java.util.List;
@@ -52,14 +54,35 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
     if (functions.putIfAbsent(function.getName(), function) != null)
       throw new IllegalArgumentException("Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
 
+    try {
+      reloadEngine();
+    } catch (final RuntimeException e) {
+      // A broken definition (e.g. invalid JS) must not poison the whole library (issue #5121). Roll back the
+      // just-added function and rebuild the engine with the remaining (already valid) functions so they keep working
+      // and no map entry is ever left with a null library back-reference.
+      functions.remove(function.getName());
+      try {
+        reloadEngine();
+      } catch (final RuntimeException ignore) {
+        // best effort: the remaining functions were already valid, so this rebuild is expected to succeed
+      }
+      throw e;
+    }
+
+    return this;
+  }
+
+  /**
+   * Rebuilds the polyglot engine and (re)declares every registered function into it. Any invalid definition makes this
+   * method throw, leaving the caller to decide how to recover.
+   */
+  private void reloadEngine() {
     // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
     this.polyglotEngine.close();
     this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
         .setLanguage(language).setAllowedPackages(allowedPackages).build();
     for (final T f : functions.values())
       f.init(this);
-
-    return this;
   }
 
   @Override
@@ -71,6 +94,27 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   @Override
   public String getName() {
     return libraryName;
+  }
+
+  @Override
+  public String getLanguage() {
+    return language;
+  }
+
+  @Override
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("language", language);
+
+    final JSONObject functionsJSON = new JSONObject();
+    for (final T f : functions.values()) {
+      final JSONObject fJSON = new JSONObject();
+      fJSON.put("code", f.getImplementation());
+      fJSON.put("parameters", new JSONArray(f.getParameters()));
+      functionsJSON.put(f.getName(), fJSON);
+    }
+    json.put("functions", functionsJSON);
+    return json;
   }
 
   @Override

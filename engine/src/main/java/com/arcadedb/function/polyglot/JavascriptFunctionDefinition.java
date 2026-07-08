@@ -85,6 +85,16 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   }
 
   @Override
+  public String getImplementation() {
+    return implementation;
+  }
+
+  @Override
+  public String[] getParameters() {
+    return parameters;
+  }
+
+  @Override
   public Object execute(final Object... parameters) {
     return library.execute(polyglotEngine -> {
       try {

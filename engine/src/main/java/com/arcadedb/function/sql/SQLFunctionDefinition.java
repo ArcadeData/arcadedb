@@ -54,6 +54,14 @@ public class SQLFunctionDefinition implements FunctionDefinition {
     return functionName;
   }
 
+  public String getImplementation() {
+    return implementation;
+  }
+
+  public String[] getParameters() {
+    return parameterNames;
+  }
+
   @Override
   public Object execute(final Object... parameters) {
     // Bind parameters to a Map with their names

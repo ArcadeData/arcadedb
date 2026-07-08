@@ -28,4 +28,14 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 @ExcludeFromJacocoGeneratedReport
 public interface PolyglotFunctionDefinition extends FunctionDefinition {
   void init(PolyglotFunctionLibraryDefinition library);
+
+  /**
+   * Returns the source code of the function. Used to persist the definition in the schema.
+   */
+  String getImplementation();
+
+  /**
+   * Returns the positional parameter names of the function. Used to persist the definition in the schema.
+   */
+  String[] getParameters();
 }
