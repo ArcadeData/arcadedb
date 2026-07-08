@@ -604,6 +604,17 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Improvements
 
+- **OpenCypher: pattern-part order no longer affects MATCH performance.** For a leading `MATCH` with
+  several comma-separated pattern parts, the legacy execution path chained them left-deep as a
+  nested-loop Cartesian product and re-executed every later part once per outer row, so writing a cheap
+  standalone node (e.g. `(n4:L3)`) *before* an expensive multi-hop traversal re-ran that traversal once
+  per node - a ~33x slowdown versus the reverse order. The planner now reorders independent
+  (disconnected) pattern components so the edge-bearing, more-selective component always drives as the
+  outer loop, making both formulations equally fast. Reordering is applied only when every part is
+  structurally pure (no inline properties/labels/relationship WHERE that could reference a sibling
+  part's variable), and the Cartesian product is commutative, so results are unchanged
+  ([#5117](https://github.com/ArcadeData/arcadedb/issues/5117)).
+
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it
   quarantines the affected database and downloads a fresh snapshot from the leader. Previously every
   subsequent committed entry for that database re-logged a full `SEVERE` stack trace (observed in the
