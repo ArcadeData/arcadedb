@@ -10,6 +10,13 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: dynamic bracket property mutations (`SET n[key] = value`, `REMOVE n[key]`) are now applied
+  instead of being silently ignored.** ArcadeDB parsed these forms but never lowered them into a property
+  write, so the query succeeded while doing nothing; only dot-syntax (`SET n.key`) and reads (`RETURN n['key']`)
+  worked ([#5141](https://github.com/ArcadeData/arcadedb/issues/5141)). Both the literal-key
+  (`SET d['propA'] = 'hello'`) and computed-key (`SET d[k] = 'world'`) variants now behave like their
+  dot-syntax equivalents, matching Neo4j. As with `SET n.key`, assigning `null` removes the property.
+
 - **Remote API: `RemoteVertex.isConnectedTo()` now accepts a `Vertex` object, not only a `RID`.** Calling
   `vertex.isConnectedTo(otherVertex, ...)` from a remote database threw a `SQL syntax error at ... mismatched
   input '@'` because the argument was inlined into the generated SQL via its full `toString()` (e.g.

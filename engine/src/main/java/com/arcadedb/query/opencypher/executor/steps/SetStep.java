@@ -213,17 +213,28 @@ public class SetStep extends AbstractExecutionStep {
     if (mutableDoc != doc && variableToUpdate != null)
       ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
 
+    // Resolve the property name. For dynamic bracket syntax (SET n[keyExpr] = value) the name is
+    // computed at runtime; otherwise it is the static dot-syntax property name.
+    final String propertyName;
+    if (item.getKeyExpression() != null) {
+      final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
+      if (keyValue == null)
+        return; // null key is a no-op
+      propertyName = keyValue.toString();
+    } else
+      propertyName = item.getProperty();
+
     Object value = evaluator.evaluate(item.getValueExpression(), result, context);
     final boolean propertyExisted;
     if (value == null) {
       // Removing an absent property is a no-op for Neo4j-compatible statistics: only count it
       // when the property actually existed before the removal.
-      propertyExisted = mutableDoc.has(item.getProperty());
-      mutableDoc.remove(item.getProperty());
+      propertyExisted = mutableDoc.has(propertyName);
+      mutableDoc.remove(propertyName);
     } else {
       value = TemporalUtil.toCoreJavaType(value);
       validatePropertyValue(value);
-      mutableDoc.set(item.getProperty(), value);
+      mutableDoc.set(propertyName, value);
       propertyExisted = true;
     }
     mutableDoc.save();

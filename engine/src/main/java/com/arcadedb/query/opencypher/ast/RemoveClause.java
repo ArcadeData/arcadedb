@@ -59,6 +59,7 @@ public class RemoveClause {
     private final RemoveType type;
     private final String variable;
     private final String property;  // For PROPERTY type
+    private final Expression keyExpression;  // For dynamic PROPERTY type: REMOVE n[keyExpr]
     private final List<String> labels;  // For LABELS type
 
     /**
@@ -71,6 +72,22 @@ public class RemoveClause {
       this.type = RemoveType.PROPERTY;
       this.variable = variable;
       this.property = property;
+      this.keyExpression = null;
+      this.labels = null;
+    }
+
+    /**
+     * Constructor for dynamic property removal: REMOVE n[keyExpr]. The property name is computed
+     * at runtime by evaluating {@code keyExpression}.
+     *
+     * @param variable      the variable name (node or edge)
+     * @param keyExpression the expression that yields the property name to remove
+     */
+    public RemoveItem(final String variable, final Expression keyExpression) {
+      this.type = RemoveType.PROPERTY;
+      this.variable = variable;
+      this.property = null;
+      this.keyExpression = keyExpression;
       this.labels = null;
     }
 
@@ -84,6 +101,7 @@ public class RemoveClause {
       this.type = RemoveType.LABELS;
       this.variable = variable;
       this.property = null;
+      this.keyExpression = null;
       this.labels = labels;
     }
 
@@ -99,6 +117,10 @@ public class RemoveClause {
       return property;
     }
 
+    public Expression getKeyExpression() {
+      return keyExpression;
+    }
+
     public List<String> getLabels() {
       return labels;
     }
@@ -106,7 +128,7 @@ public class RemoveClause {
     @Override
     public String toString() {
       if (type == RemoveType.PROPERTY) {
-        return variable + "." + property;
+        return keyExpression != null ? variable + "[" + keyExpression + "]" : variable + "." + property;
       } else {
         return variable + ":" + String.join(":", labels);
       }
