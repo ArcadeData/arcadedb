@@ -213,3 +213,44 @@ def render_page(scenarios, columns, matrix, *, repo, run_url, timestamp):
         if notes:
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--matrix", default="",
+                        help="bolt-compat-matrix.json; omit for spec.yaml baseline")
+    parser.add_argument("--spec", required=True, help="path to spec.yaml")
+    parser.add_argument("--versions", required=True, help="path to driver-versions.md")
+    parser.add_argument("--repo", default="ArcadeData/arcadedb")
+    parser.add_argument("--run-url", default="")
+    parser.add_argument("--timestamp", default="")
+    parser.add_argument("--out-page", required=True)
+    parser.add_argument("--out-badge", required=True)
+    args = parser.parse_args(argv)
+
+    matrix = None
+    if args.matrix:
+        try:
+            with open(args.matrix, encoding="utf-8") as fh:
+                matrix = json.load(fh)
+        except (OSError, ValueError) as err:
+            print(f"warning: matrix unreadable ({err}); using spec.yaml baseline",
+                  file=sys.stderr)
+            matrix = None
+
+    scenarios = load_scenarios(args.spec)
+    columns = load_columns(args.versions)
+    page = render_page(scenarios, columns, matrix, repo=args.repo,
+                       run_url=args.run_url,
+                       timestamp=args.timestamp or "unknown")
+    badge = compute_badge(scenarios, matrix)
+    with open(args.out_page, "w", encoding="utf-8") as fh:
+        fh.write(page)
+    with open(args.out_badge, "w", encoding="utf-8") as fh:
+        json.dump(badge, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

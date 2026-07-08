@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+import json
 import os
+import tempfile
 import unittest
 
 from render_matrix import (Cell, Column, compute_badge, load_columns,
-                           load_scenarios, render_page, resolve_cell)
+                           load_scenarios, main, render_page, resolve_cell)
 
 HERE = os.path.dirname(__file__)
 DRIVER_VERSIONS_MD = os.path.join(HERE, "..", "driver-versions.md")
@@ -192,6 +194,25 @@ class RenderPageTest(unittest.TestCase):
         page = render_page(self._scen(), self._cols(), None, repo=self.REPO,
                            run_url="", timestamp="")
         self.assertIn("pending first nightly", page)
+
+
+class MainTest(unittest.TestCase):
+    def test_writes_page_and_badge_in_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            page = os.path.join(tmp, "COMPATIBILITY.md")
+            badge = os.path.join(tmp, "badge.json")
+            rc = main(["--spec", SPEC_YAML, "--versions", DRIVER_VERSIONS_MD,
+                       "--out-page", page, "--out-badge", badge])
+            self.assertEqual(rc, 0)
+            with open(page, encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn("# Bolt Driver Compatibility Matrix", text)
+            self.assertIn("pending first nightly", text)
+            with open(badge, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(data["label"], "bolt drivers")
+            self.assertEqual(data["color"], "brightgreen")   # today: all passing
+            self.assertTrue(open(badge, encoding="utf-8").read().endswith("\n"))
 
 
 if __name__ == "__main__":
