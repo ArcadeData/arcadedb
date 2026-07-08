@@ -10,6 +10,31 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: `COUNT { ... }` (and other block subqueries) inside a pattern-comprehension `WHERE` no longer swallow a
+  trailing comparison.** A filter such as `[(a)-[:E]->(b) WHERE COUNT { MATCH (b)-[:E]->() } = 0 | b.name]` was parsed
+  as just the `COUNT { ... }` block, dropping the `= 0`, so the predicate evaluated to a non-boolean count and every
+  candidate passed the filter ([#5140](https://github.com/ArcadeData/arcadedb/issues/5140)). The special-function
+  detector (`COUNT`/`COLLECT`/`EXISTS`/`CASE`/`shortestPath`) guarded its "does this cover the whole expression?" check
+  with a 2-character text-length tolerance, which a short trailing operator like `= 0` or `> 0` slipped through. The
+  guard now uses exact parse-tree token boundaries, so the surrounding comparison is retained and the comprehension
+  filters correctly, matching Neo4j.
+
+- **Cypher: dynamic bracket property mutations (`SET n[key] = value`, `REMOVE n[key]`) are now applied
+  instead of being silently ignored.** ArcadeDB parsed these forms but never lowered them into a property
+  write, so the query succeeded while doing nothing; only dot-syntax (`SET n.key`) and reads (`RETURN n['key']`)
+  worked ([#5141](https://github.com/ArcadeData/arcadedb/issues/5141)). Both the literal-key
+  (`SET d['propA'] = 'hello'`) and computed-key (`SET d[k] = 'world'`) variants now behave like their
+  dot-syntax equivalents, matching Neo4j. As with `SET n.key`, assigning `null` removes the property.
+
+- **Cypher: pattern comprehension with a target-node inline property filter no longer loses valid matches.**
+  A pattern comprehension such as `[(a)-[:QE {w: 1}]->(b:A {v: 10}) | b.name]` returned an empty list even when
+  exactly one target satisfied both filters ([#5146](https://github.com/ArcadeData/arcadedb/issues/5146)). The
+  node inline map literal (`{v: 10}`) is parsed as a `Long`, but the stored property is an `Integer`, and the
+  pattern-comprehension node matcher compared them with a strict `equals()` that fails across numeric types.
+  The start-node, end-node, and relationship inline-property comparisons now share the same numeric-tolerant,
+  parameter-aware value matching used by regular `MATCH` (`MatchNodeStep`), so a `Long` literal matches an
+  `Integer` value and vice versa. The equivalent explicit `WHERE` form and regular `MATCH` already worked.
+
 - **Encryption: `FULL_TEXT` (and every `LSM_TREE`) index now returns results on an encrypted database.** With
   data encryption enabled, a `SELECT ... WHERE SEARCH_FIELDS([...], '...')` (or any equality/range lookup on an
   `LSM_TREE`-indexed property) returned an empty result set ([#5142](https://github.com/ArcadeData/arcadedb/issues/5142)).

@@ -252,7 +252,7 @@ public class ForeachStep extends AbstractExecutionStep {
         return new MergeStep(mergeClause, context, functionFactory);
       case REMOVE:
         final RemoveClause removeClause = clauseEntry.getTypedClause();
-        return new RemoveStep(removeClause, context);
+        return new RemoveStep(removeClause, context, functionFactory);
       case FOREACH:
         final ForeachClause nestedForeach = clauseEntry.getTypedClause();
         return new ForeachStep(nestedForeach, context, functionFactory);

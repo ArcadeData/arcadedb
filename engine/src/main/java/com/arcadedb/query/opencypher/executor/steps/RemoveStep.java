@@ -26,6 +26,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -49,10 +51,12 @@ import java.util.NoSuchElementException;
  */
 public class RemoveStep extends AbstractExecutionStep {
   private final RemoveClause removeClause;
+  private final ExpressionEvaluator evaluator;
 
-  public RemoveStep(final RemoveClause removeClause, final CommandContext context) {
+  public RemoveStep(final RemoveClause removeClause, final CommandContext context, final CypherFunctionFactory functionFactory) {
     super(context);
     this.removeClause = removeClause;
+    this.evaluator = new ExpressionEvaluator(functionFactory);
   }
 
   @Override
@@ -175,7 +179,6 @@ public class RemoveStep extends AbstractExecutionStep {
    */
   private void removeProperty(final RemoveClause.RemoveItem item, final Result result) {
     final String variable = item.getVariable();
-    final String property = item.getProperty();
 
     // Get the object from the result
     final Object obj = result.getProperty(variable);
@@ -188,6 +191,17 @@ public class RemoveStep extends AbstractExecutionStep {
       // Not a document - skip
       return;
     }
+
+    // Resolve the property name. For dynamic bracket syntax (REMOVE n[keyExpr]) the name is
+    // computed at runtime; otherwise it is the static dot-syntax property name.
+    final String property;
+    if (item.getKeyExpression() != null) {
+      final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
+      if (keyValue == null)
+        return; // null key is a no-op
+      property = keyValue.toString();
+    } else
+      property = item.getProperty();
 
     final Document doc = (Document) obj;
 
