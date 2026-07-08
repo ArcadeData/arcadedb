@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.arcadedb.e2e.RemoteBoltDatabaseIT" tests="2" failures="0" skipped="0">
+  <testcase name="conn001_boltScheme" classname="com.arcadedb.e2e.RemoteBoltDatabaseIT$Connection" time="0.4"/>
+  <testcase name="auth003_authSchemeNone" classname="com.arcadedb.e2e.RemoteBoltDatabaseIT$Auth" time="0.1">
+    <skipped/>
+  </testcase>
+</testsuite>
