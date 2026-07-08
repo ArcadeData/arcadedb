@@ -339,8 +339,10 @@ jobs:
         run: |
           shopt -s nullglob
           cells=(cells/*.json)
+          # The full expected (language:version) set from bolt/conformance/driver-versions.md;
+          # any of these absent means that cell's job died before emitting a result.
           python3 bolt/conformance/tools/merge_matrix.py "${cells[@]}" \
-            --expect-languages java,javascript,python,csharp,go \
+            --expect-cells java:4.4.20,java:5.28.5,java:6.2.0,javascript:4.4.11,javascript:5.28.3,javascript:6.2.0,python:5.28.4,python:6.1.0,python:6.2.0,csharp:4.4.0,csharp:5.28.4,csharp:6.2.1,go:5.27.0,go:5.28.0,go:5.28.4 \
             -o bolt-compat-matrix.json
           has_failures=$(python3 -c "import json; print(str(json.load(open('bolt-compat-matrix.json'))['has_failures']).lower())")
           echo "has-failures=${has_failures}" >> "$GITHUB_OUTPUT"
@@ -377,13 +379,13 @@ jobs:
                 }
               }
             }
-            const missing = (matrix.missing_languages || []).map(l => `- ${l} (whole suite produced no result)`);
+            const missing = (matrix.missing_cells || []).map(c => `- ${c} (job produced no result)`);
             const title = 'Bolt driver compatibility regression (nightly)';
             const label = 'bolt-compat-regression';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const sections = [`Nightly Bolt matrix reported problems.\n\nRun: ${runUrl}`];
             if (failing.length) sections.push(`### Failing cells\n${failing.sort().join('\n')}`);
-            if (missing.length) sections.push(`### Missing suites\n${missing.join('\n')}`);
+            if (missing.length) sections.push(`### Missing cells\n${missing.join('\n')}`);
             const body = sections.join('\n\n');
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -394,4 +396,34 @@ jobs:
               await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number, body });
             } else {
               await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: [label] });
+            }
+
+  resolve-regression:
+    needs: merge-matrix
+    if: ${{ always() && needs.merge-matrix.outputs.has-failures == 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Close the regression issue on a green night
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const title = 'Bolt driver compatibility regression (nightly)';
+            const label = 'bolt-compat-regression';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: label,
+            });
+            const hit = existing.data.find(i => i.title === title);
+            if (hit) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number,
+                body: `Nightly Bolt matrix is green again. Run: ${runUrl}`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number, state: 'closed',
+              });
             }

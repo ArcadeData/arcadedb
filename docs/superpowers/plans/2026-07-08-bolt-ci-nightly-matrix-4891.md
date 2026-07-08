@@ -479,7 +479,7 @@ git commit -m "ci(#4891): emit + aggregate Python e2e JUnit report"
 
 In `ArcadeDB.E2ETests.csproj`, add inside the existing `<ItemGroup>` that holds `PackageReference`s:
 ```xml
-    <PackageReference Include="JunitXml.TestLogger" Version="6.1.0" />
+    <PackageReference Include="JunitXml.TestLogger" Version="8.0.0" />
 ```
 
 - [ ] **Step 2: Emit JUnit + add reporter/artifact in CI**

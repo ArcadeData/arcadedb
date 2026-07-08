@@ -20,8 +20,9 @@ import xml.etree.ElementTree as ET  # nosec B405
 # (js/csharp/java "CONN-001") or an underscore (Go func "Test_CONN_001_...");
 # both normalize to the hyphenated spec id. A plain \b word boundary can't be
 # used because the underscore in "Test_CONN_001" is itself a word character, so
-# letter/digit lookarounds delimit the id instead.
-ID_RE = re.compile(r"(?<![A-Za-z])([A-Z]{2,})[-_](\d{3})(?!\d)")
+# letter/digit lookarounds delimit the id instead. The prefix is 1+ letters to
+# match SPEC_ID_RE and the documented [A-Z]+-\d{3} pattern.
+ID_RE = re.compile(r"(?<![A-Za-z])([A-Z]+)[-_](\d{3})(?!\d)")
 SPEC_ID_RE = re.compile(r"^\s*-\s*id:\s*([A-Z]+-\d{3})\b")
 
 

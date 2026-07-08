@@ -25,15 +25,17 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(merge([self._cell("py", "1", {"X-001": "pass"})])["has_failures"])
         self.assertFalse(merge([self._cell("py", "1", {"X-001": "skip"})])["has_failures"])
 
-    def test_missing_expected_language_flags_failure(self):
+    def test_missing_version_cell_flags_failure(self):
+        # python:6.2.0 ran, python:5.28.4 died with no artifact -> still flagged
+        # even though the python language is present via its other version.
         out = merge([self._cell("python", "6.2.0", {"CONN-001": "pass"})],
-                    expected_languages=["python", "go"])
-        self.assertEqual(out["missing_languages"], ["go"])
+                    expected_cells=["python:6.2.0", "python:5.28.4", "go:5.28.4"])
+        self.assertEqual(out["missing_cells"], ["go:5.28.4", "python:5.28.4"])
         self.assertTrue(out["has_failures"])
 
     def test_no_cells_with_expectations_is_all_missing(self):
-        out = merge([], expected_languages=["python", "go"])
-        self.assertEqual(out["missing_languages"], ["go", "python"])
+        out = merge([], expected_cells=["python:6.2.0", "go:5.28.4"])
+        self.assertEqual(out["missing_cells"], ["go:5.28.4", "python:6.2.0"])
         self.assertTrue(out["has_failures"])
         self.assertEqual(out["scenarios"], {})
 
