@@ -256,9 +256,9 @@ public class GrpcServerPlugin implements ServerPlugin {
     serverBuilder.compressorRegistry(CompressorRegistry.getDefaultInstance())
         .decompressorRegistry(DecompressorRegistry.getDefaultInstance());
 
-    // Configure max message size. Compute in long and clamp so a large MB value (>= 2048) does not overflow int
-    // and wrap negative.
-    int maxMessageSizeMB = getConfigInt(config, CONFIG_MAX_MESSAGE_SIZE, 100);
+    // Configure max message size. Clamp the lower bound to 1 MB (a non-positive value would be rejected by gRPC at
+    // startup) and compute in long so a large MB value (>= 2048) does not overflow int and wrap negative.
+    final int maxMessageSizeMB = Math.max(1, getConfigInt(config, CONFIG_MAX_MESSAGE_SIZE, 100));
     final long maxMessageSizeBytes = (long) maxMessageSizeMB * 1024 * 1024;
 
     serverBuilder.maxInboundMessageSize((int) Math.min(maxMessageSizeBytes, Integer.MAX_VALUE));

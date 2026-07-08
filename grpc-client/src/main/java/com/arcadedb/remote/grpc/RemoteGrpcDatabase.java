@@ -85,8 +85,6 @@ import com.arcadedb.server.grpc.TransactionIsolation;
 import com.arcadedb.server.grpc.UpdateRecordRequest;
 import com.arcadedb.server.grpc.UpdateRecordResponse;
 import com.google.protobuf.Int32Value;
-import io.grpc.CallCredentials;
-import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
@@ -105,7 +103,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -162,33 +159,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     this.blockingStub = createBlockingStub();
     this.asyncStub = createAsyncStub();
     this.schema = new RemoteSchema(this);
-  }
-
-  /**
-   * Creates call credentials for authentication
-   */
-  protected CallCredentials createCallCredentials(String userName, String userPassword) {
-    return new CallCredentials() {
-      @Override
-      public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier) {
-        Metadata headers = new Metadata();
-        headers.put(Metadata.Key.of("username", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        headers.put(Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER), userName);
-        headers.put(Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER), userPassword);
-        headers.put(Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER), databaseName);
-        applier.apply(headers);
-      }
-
-      @Override
-      public void thisUsesUnstableApi() {
-        // Required by the interface
-      }
-    };
-  }
-
-  protected CallCredentials createCredentials() {
-    return createCallCredentials(userName, userPassword);
   }
 
   /**
