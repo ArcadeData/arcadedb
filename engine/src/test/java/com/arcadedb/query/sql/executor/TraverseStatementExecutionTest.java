@@ -22,7 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -143,36 +145,94 @@ class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  void breadthFirst() {
+  void breadthFirstOrder() {
+    // Contract: STRATEGY BREADTH_FIRST must visit the graph level by level -- every node at depth d is emitted before any node at depth d+1. That level-ordering
+    // is the definition of a breadth-first traversal and the only observable difference from DEPTH_FIRST. (Sibling order *within* a level is intentionally not
+    // asserted: TRAVERSE has no clause to control expansion order -- SQLParser.g4:217, only MAXDEPTH/WHILE/LIMIT/STRATEGY -- and BFS does not guarantee it.) On
+    // the balanced binary tree below (1 -> {2,3}; 2 -> {4,5}; 3 -> {6,7}) the emitted $depth sequence of a correct BFS is therefore exactly [0,1,1,2,2,2,2] for
+    // any sibling order. A linear chain cannot catch a violation because BFS and DFS emit identically on it; distinguishing the two strategies requires two
+    // branches of equal depth. depthFirstOrder() is the DFS counterpart on the same tree -- the two together pin the strategies apart.
     database.transaction(() -> {
-      final String classPrefix = "testBreadthFirst_";
-      database.getSchema().createVertexType(classPrefix + "V");
-      database.getSchema().createEdgeType(classPrefix + "E");
-      database.command("sql", "create vertex " + classPrefix + "V set name = 'a'").close();
-      database.command("sql", "create vertex " + classPrefix + "V set name = 'b'").close();
-      database.command("sql", "create vertex " + classPrefix + "V set name = 'c'").close();
-      database.command("sql", "create vertex " + classPrefix + "V set name = 'd'").close();
+      final String v = "BfsLevelV";
+      final String e = "BfsLevelE";
+      database.getSchema().createVertexType(v);
+      database.getSchema().createEdgeType(e);
 
-      database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'a') to (select from " + classPrefix
-              + "V where name = 'b')").close();
-      database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'b') to (select from " + classPrefix
-              + "V where name = 'c')").close();
-      database.command("sql",
-          "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix
-              + "V where name = 'd')").close();
+      final Map<String, RID> ids = new HashMap<>();
+      for (int n = 1; n <= 7; n++)
+        ids.put("" + n, database.command("sql", "create vertex " + v + " set name = '" + n + "'").next().getIdentity().get());
 
-      final ResultSet result = database.query("sql",
-          "traverse out() from (select from " + classPrefix + "V where name = 'a') STRATEGY BREADTH_FIRST");
-
-      for (int i = 0; i < 4; i++) {
-        assertThat(result.hasNext()).isTrue();
-        final Result item = result.next();
-        assertThat(item.getMetadata("$depth")).isEqualTo(i);
+      final int[][] edges = { { 1, 2 }, { 1, 3 }, { 2, 4 }, { 2, 5 }, { 3, 6 }, { 3, 7 } };
+      final Map<String, Object> params = new HashMap<>();
+      for (final int[] edge : edges) {
+        params.put("from", ids.get("" + edge[0]));
+        params.put("to", ids.get("" + edge[1]));
+        database.command("sql", "create edge " + e + " from :from to :to", params).close();
       }
-      assertThat(result.hasNext()).isFalse();
-      result.close();
+
+      params.clear();
+      params.put("root", ids.get("1"));
+      final List<String> names = new ArrayList<>();
+      final List<Integer> depths = new ArrayList<>();
+      try (final ResultSet result = database.query("sql",
+          "traverse out('" + e + "') from :root STRATEGY BREADTH_FIRST", params)) {
+        while (result.hasNext()) {
+          final Result item = result.next();
+          names.add(item.getProperty("name"));
+          depths.add((Integer) item.getMetadata("$depth"));
+        }
+      }
+
+      // Completeness: every node is visited exactly once (the defect is order, not which nodes are reached).
+      assertThat(names).containsExactlyInAnyOrder("1", "2", "3", "4", "5", "6", "7");
+      // Level ordering: the depth sequence rises monotonically by level. The DFS stack underlying BREADTH_FIRST instead emits [0,1,2,2,1,2,2], diving into node
+      // 2's children before visiting node 3.
+      assertThat(depths).containsExactly(0, 1, 1, 2, 2, 2, 2);
+    });
+  }
+
+  @Test
+  void depthFirstOrder() {
+    // Contract: STRATEGY DEPTH_FIRST (also the default when no STRATEGY is given) must fully explore one child's subtree before moving to the next sibling -- so
+    // it descends to depth 2 and back up before visiting the second depth-1 node. This is the mirror of breadthFirstOrder() on the same balanced binary tree
+    // (1 -> {2,3}; 2 -> {4,5}; 3 -> {6,7}): a correct DFS emits the $depth sequence [0,1,2,2,1,2,2] (one subtree drained fully, then the other) for any sibling
+    // order, versus BFS's [0,1,1,2,2,2,2]. It is exactly this dive-before-breadth shape that BREADTH_FIRST was wrongly producing before the fix. As in the BFS
+    // test, sibling order within the tree is not asserted (TRAVERSE exposes no expansion-order clause).
+    database.transaction(() -> {
+      final String v = "DfsLevelV";
+      final String e = "DfsLevelE";
+      database.getSchema().createVertexType(v);
+      database.getSchema().createEdgeType(e);
+
+      final Map<String, RID> ids = new HashMap<>();
+      for (int n = 1; n <= 7; n++)
+        ids.put("" + n, database.command("sql", "create vertex " + v + " set name = '" + n + "'").next().getIdentity().get());
+
+      final int[][] edges = { { 1, 2 }, { 1, 3 }, { 2, 4 }, { 2, 5 }, { 3, 6 }, { 3, 7 } };
+      final Map<String, Object> params = new HashMap<>();
+      for (final int[] edge : edges) {
+        params.put("from", ids.get("" + edge[0]));
+        params.put("to", ids.get("" + edge[1]));
+        database.command("sql", "create edge " + e + " from :from to :to", params).close();
+      }
+
+      params.clear();
+      params.put("root", ids.get("1"));
+      final List<String> names = new ArrayList<>();
+      final List<Integer> depths = new ArrayList<>();
+      try (final ResultSet result = database.query("sql",
+          "traverse out('" + e + "') from :root STRATEGY DEPTH_FIRST", params)) {
+        while (result.hasNext()) {
+          final Result item = result.next();
+          names.add(item.getProperty("name"));
+          depths.add((Integer) item.getMetadata("$depth"));
+        }
+      }
+
+      // Completeness: every node visited exactly once.
+      assertThat(names).containsExactlyInAnyOrder("1", "2", "3", "4", "5", "6", "7");
+      // Depth-first ordering: one level-1 subtree is drained to depth 2 before the other level-1 node is visited.
+      assertThat(depths).containsExactly(0, 1, 2, 2, 1, 2, 2);
     });
   }
 
