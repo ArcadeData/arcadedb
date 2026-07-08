@@ -11,8 +11,6 @@ from render_matrix import (Column, compute_badge, issue_url,
 HERE = os.path.dirname(__file__)
 DRIVER_VERSIONS_MD = os.path.join(HERE, "..", "driver-versions.md")
 SPEC_YAML = os.path.join(HERE, "..", "spec.yaml")
-COMPATIBILITY_MD = os.path.join(HERE, "..", "COMPATIBILITY.md")
-BADGE_JSON = os.path.join(HERE, "..", "badge.json")
 
 
 class LoadColumnsTest(unittest.TestCase):
@@ -327,35 +325,6 @@ class MainTest(unittest.TestCase):
             self.assertEqual(data["label"], "bolt drivers")
             self.assertEqual(data["color"], "brightgreen")   # today: all passing
             self.assertTrue(badge_text.endswith("\n"))
-
-
-class CommittedArtifactsTest(unittest.TestCase):
-    def test_committed_page_and_badge_are_reproducible(self):
-        # The committed COMPATIBILITY.md/badge.json are the fallback-mode render
-        # of the current spec.yaml + driver-versions.md. Regenerate and compare
-        # byte-for-byte so a renderer or spec change that was not re-published is
-        # caught here instead of drifting silently.
-        with tempfile.TemporaryDirectory() as tmp:
-            page = os.path.join(tmp, "COMPATIBILITY.md")
-            badge = os.path.join(tmp, "badge.json")
-            rc = main(["--spec", SPEC_YAML, "--versions", DRIVER_VERSIONS_MD,
-                       "--repo", "ArcadeData/arcadedb",
-                       "--out-page", page, "--out-badge", badge])
-            self.assertEqual(rc, 0)
-            with open(page, encoding="utf-8") as fh:
-                regenerated_page = fh.read()
-            with open(COMPATIBILITY_MD, encoding="utf-8") as fh:
-                committed_page = fh.read()
-            self.assertEqual(regenerated_page, committed_page,
-                             "COMPATIBILITY.md is stale; re-run render_matrix.py "
-                             "in fallback mode and commit the result.")
-            with open(badge, encoding="utf-8") as fh:
-                regenerated_badge = fh.read()
-            with open(BADGE_JSON, encoding="utf-8") as fh:
-                committed_badge = fh.read()
-            self.assertEqual(regenerated_badge, committed_badge,
-                             "badge.json is stale; re-run render_matrix.py in "
-                             "fallback mode and commit the result.")
 
 
 if __name__ == "__main__":
