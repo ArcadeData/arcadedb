@@ -18,6 +18,8 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -98,6 +100,49 @@ class Issue5152CountRecomputeRaceTest extends TestHelper {
     // After commit the counter must be exactly 11, not 12 (no double count of the pending insert).
     assertThat(countStar()).isEqualTo(11L);
     assertThat(countScan()).isEqualTo(11L);
+  }
+
+  @Test
+  void recomputeInsideTransactionWithPendingDeleteDoesNotDoubleSubtractOnCommit() {
+    insert(0, 10);
+    bucket().setCachedRecordCount(-1); // force a recompute on the next count()
+
+    database.begin();
+    try {
+      database.command("sql", "DELETE FROM Doc WHERE n = 0"); // pending, uncommitted delete in this transaction
+      // The recompute scans the transaction view (9) but must cache the committed base (10) so the commit-time
+      // fold applies the negative delta only once.
+      assertThat(countStar()).isEqualTo(9L);
+    } finally {
+      database.commit();
+    }
+
+    // After commit the counter must be exactly 9, not 8 (no double subtraction of the pending delete).
+    assertThat(countStar()).isEqualTo(9L);
+    assertThat(countScan()).isEqualTo(9L);
+  }
+
+  @Test
+  void lockAcquisitionTimeoutRunsLockFreeAndLeavesCounterUnset() {
+    insert(0, 5);
+    final LocalBucket b = bucket();
+    b.setCachedRecordCount(-1);
+
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final Object foreign = new Object();
+    final long savedTimeout = db.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 100L);
+
+    // Hold the bucket's file lock from a foreign requester so the recompute cannot acquire it.
+    db.getTransactionManager().tryLockFile(b.getFileId(), 5000, foreign);
+    try {
+      // The recompute times out on the lock, runs a lock-free best-effort scan, returns it, but must NOT cache.
+      assertThat(b.count()).isEqualTo(5L);
+      assertThat(b.getCachedRecordCount()).isEqualTo(-1L);
+    } finally {
+      db.getTransactionManager().unlockFile(b.getFileId(), foreign);
+      db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, savedTimeout);
+    }
   }
 
   @Test

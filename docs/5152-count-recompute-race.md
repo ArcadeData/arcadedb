@@ -22,5 +22,8 @@ In `LocalBucket.count()`, the recompute path (scan + `set`) now acquires the buc
 - New stress regression `Issue5152CountRecomputeRaceTest` (`@Tag("slow")`): large single bucket forced to `-1`, a reader triggers a long recompute while a writer commits concurrently; asserts `count(*) == count(@rid)`. Red before the fix (e.g. 52998 vs 53000), green after (repeated runs).
 - Regressions green: `Issue5149CountStarCacheDriftTest`, `CheckDatabaseTest`, `CheckDatabaseExtendedTest`, `CRUDTest`, `ConcurrentWriteTest`, `MVCCTest`, `ReusingSpaceTest`, `TransactionTypeTest`, plus `RandomTestMultiThreadsTest` (32 concurrent workers) and `PolymorphicTest` - no deadlock or perf regression.
 
+## Operational note
+The recompute holds the bucket's file lock for the duration of its O(N) page scan, so while a recompute runs, commits touching that bucket wait on the lock (and, on a very large bucket whose scan approaches `COMMIT_LOCK_TIMEOUT`, could hit a lock-acquisition timeout and retry). This is the intended correctness tradeoff and is confined to the rare `-1` recompute path (fresh open with no `statistics.json`, post-unclean-shutdown, post-`CHECK ... FIX`); steady-state `count(*)` uses the O(1) cached fast-path and takes no lock. A recompute that loses the race for the lock falls back to a lock-free best-effort scan without caching, and a concurrent recompute that already repopulated the counter short-circuits the duplicate scan.
+
 ## Impact
 Eliminates the source of `count(*)` drift. Combined with #5150 (which repairs already-drifted databases and now recomputes race-free), `count(*)` stays consistent under concurrent load. No change to the read fast-path; the file lock is engaged only during a rare full recompute.

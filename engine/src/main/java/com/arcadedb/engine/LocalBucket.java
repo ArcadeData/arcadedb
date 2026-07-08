@@ -442,6 +442,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     try {
       lockStatus = txManager.tryLockFile(fileId, lockTimeout, requester);
 
+      // Another thread may have recomputed the counter while we were queued on the lock. Re-check now that we
+      // hold it (or timed out) and skip the duplicate O(N) scan, which also shortens how long we hold the lock.
+      final long recomputed = cachedRecordCount.get();
+      if (recomputed > -1)
+        return recomputed + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
+
       long total = 0;
 
       final int txPageCount = getTotalPages();
