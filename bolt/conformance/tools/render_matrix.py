@@ -194,7 +194,8 @@ def render_page(scenarios, columns, matrix, *, repo, run_url, timestamp):
     for scenario in scenarios:
         by_area.setdefault(scenario["area"], []).append(scenario)
 
-    for area in AREAS:
+    ordered_areas = list(AREAS) + sorted(set(by_area) - set(AREAS))
+    for area in ordered_areas:
         rows = by_area.get(area, [])
         if not rows:
             continue

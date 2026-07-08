@@ -5,7 +5,8 @@ import tempfile
 import unittest
 
 from render_matrix import (Cell, Column, compute_badge, load_columns,
-                           load_scenarios, main, render_page, resolve_cell)
+                           load_scenarios, main, render_page, resolve_cell,
+                           unavailable_columns)
 
 HERE = os.path.dirname(__file__)
 DRIVER_VERSIONS_MD = os.path.join(HERE, "..", "driver-versions.md")
@@ -153,6 +154,16 @@ class ComputeBadgeTest(unittest.TestCase):
         self.assertEqual(badge["message"], "5/5 passing")
 
 
+class UnavailableColumnsTest(unittest.TestCase):
+    def test_combines_missing_and_empty_cells(self):
+        result = unavailable_columns(
+            {"missing_cells": ["go:5.28.4"], "empty_cells": ["python:6.2.0"]})
+        self.assertEqual(result, {"go:5.28.4", "python:6.2.0"})
+
+    def test_no_matrix_is_empty_set(self):
+        self.assertEqual(unavailable_columns(None), set())
+
+
 class RenderPageTest(unittest.TestCase):
     REPO = "ArcadeData/arcadedb"
 
@@ -195,6 +206,33 @@ class RenderPageTest(unittest.TestCase):
                            run_url="", timestamp="")
         self.assertIn("pending first nightly", page)
 
+    def test_unknown_area_is_still_rendered(self):
+        scenarios = self._scen() + [
+            {"id": "FUT-001", "area": "future-area", "title": "new capability",
+             "current_status": "passing", "tracking_issue": None,
+             "known_limitation": None, "applicable_driver_versions": "all"},
+        ]
+        page = render_page(scenarios, self._cols(), None, repo=self.REPO,
+                           run_url="", timestamp="")
+        self.assertIn("## future-area", page)
+        self.assertIn("**FUT-001** new capability", page)
+
+    def test_missing_cell_column_renders_dot(self):
+        matrix = {"scenarios": {"CONN-001": {"java": {"6.2.0": "pass"},
+                                             "go": {"5.28.4": "pass"}}},
+                  "missing_cells": ["go:5.28.4"], "empty_cells": [],
+                  "unexpected_cells": [], "languages": ["java", "go"],
+                  "has_failures": False}
+        page = render_page(self._scen(), self._cols(), matrix, repo=self.REPO,
+                           run_url="", timestamp="2026-07-08 03:00 UTC")
+        lines = [line for line in page.splitlines()
+                 if line.startswith("| **CONN-001**")]
+        self.assertEqual(len(lines), 1)
+        cells = [cell.strip() for cell in lines[0].split("|")]
+        # cells: ['', 'scenario', 'java column', 'go column', '']
+        self.assertEqual(cells[2], "✅")
+        self.assertEqual(cells[3], "·")
+
 
 class MainTest(unittest.TestCase):
     def test_writes_page_and_badge_in_fallback(self):
@@ -209,10 +247,11 @@ class MainTest(unittest.TestCase):
             self.assertIn("# Bolt Driver Compatibility Matrix", text)
             self.assertIn("pending first nightly", text)
             with open(badge, encoding="utf-8") as fh:
-                data = json.load(fh)
+                badge_text = fh.read()
+            data = json.loads(badge_text)
             self.assertEqual(data["label"], "bolt drivers")
             self.assertEqual(data["color"], "brightgreen")   # today: all passing
-            self.assertTrue(open(badge, encoding="utf-8").read().endswith("\n"))
+            self.assertTrue(badge_text.endswith("\n"))
 
 
 if __name__ == "__main__":
