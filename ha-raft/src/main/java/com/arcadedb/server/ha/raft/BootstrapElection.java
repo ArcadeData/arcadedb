@@ -225,6 +225,17 @@ class BootstrapElection {
    * returns {@code -1} when the Raft division is not ready yet or a transient {@code IOException} is
    * thrown while reading it - and MUST be treated as "skip" so a transient read failure during a
    * leader-change callback can never re-trigger bootstrap on a live cluster (issue #4800).
+   * <p>
+   * <b>Residual window (do not weaken the backstops without accounting for it):</b> the
+   * no-application-entry signal is strictly weaker than the exact-{@code 0} test in one narrow case -
+   * a node whose Raft log holds application entries that are committed but not yet run through
+   * {@code applyTransaction} reads no applied index and no persisted file, so it reports first
+   * formation. That state is essentially unreachable after normal operation (any prior apply writes
+   * the {@code .raft/applied-index} file, and Raft's election restriction stops a node from winning
+   * leadership until its log is up to date), and if it were ever hit, the elected source's commit is
+   * still refused by the {@code localLastTxId > baseline} overwrite guard in
+   * {@code ArcadeStateMachine.applyBootstrapFingerprintEntry} - so the worst case is a spurious,
+   * refused bootstrap attempt, never data loss.
    */
   private boolean isFirstFormation(final long commitIndex) {
     if (isConfirmedFirstFormation(commitIndex))

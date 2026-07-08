@@ -125,4 +125,19 @@ class ArcadeStateMachineFirstFormationSignalTest {
         .as("but the file's existence keeps the gate closed despite the degraded read")
         .isFalse();
   }
+
+  /**
+   * The unwired fallthrough: a state machine whose server (and hence applied-index file path) is not
+   * resolvable falls through the file-existence guard to {@code readPersistedAppliedIndex() < 0},
+   * which returns {@code -1}, so the node reports first formation. In production
+   * {@code BootstrapElection.isFirstFormation} only reaches this method with a non-null state machine
+   * and a readable commit index (the server is wired by then), but this pins the null-path branch.
+   */
+  @Test
+  void unwiredStateMachineReportsFirstFormation() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine(); // no setServer(): path is unresolvable
+    assertThat(sm.hasNeverAppliedApplicationEntry())
+        .as("an unwired state machine has no applied index and reports first formation")
+        .isTrue();
+  }
 }

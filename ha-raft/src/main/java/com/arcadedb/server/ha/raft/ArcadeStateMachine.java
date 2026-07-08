@@ -1681,8 +1681,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * cluster whose file is transiently unreadable. We therefore treat an existing file as "already
    * applied" regardless of whether its contents parse, so a transient I/O error can never re-trigger
    * bootstrap on a cluster that already holds data.
+   * <p>
+   * Package-private: the sole caller is {@link BootstrapElection} in this package.
    */
-  public boolean hasNeverAppliedApplicationEntry() {
+  boolean hasNeverAppliedApplicationEntry() {
     if (lastAppliedIndex.get() >= 0)
       return false;
     final Path appliedIndexFile = getAppliedIndexFile();
