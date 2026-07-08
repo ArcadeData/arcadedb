@@ -435,6 +435,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // above. The requester mirrors the transaction's so a recompute invoked while the same transaction already
     // holds the lock re-enters instead of self-deadlocking.
     final TransactionManager txManager = database.getTransactionManager();
+    // Deliberately the pure getRequester() read (not captureRequester()): this call acquires and releases the
+    // lock symmetrically on one thread, so there is nothing to capture, and reading avoids mutating the
+    // transaction's requester field from a possibly-foreign counting thread. Falls back to the current thread.
     final Object requester = transaction != null ? transaction.getRequester() : Thread.currentThread();
     final long lockTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 

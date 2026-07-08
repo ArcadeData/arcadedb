@@ -27,3 +27,16 @@ The recompute holds the bucket's file lock for the duration of its O(N) page sca
 
 ## Impact
 Eliminates the source of `count(*)` drift. Combined with #5150 (which repairs already-drifted databases and now recomputes race-free), `count(*)` stays consistent under concurrent load. No change to the read fast-path; the file lock is engaged only during a rare full recompute.
+
+## PR and review history
+- PR: https://github.com/ArcadeData/arcadedb/pull/5154
+- Review cycles (bots: `claude`, `gemini-code-assist`):
+  - cycle 1 (`9abf9569`): both bots. gemini raised (critical) don't cache the lock-free timeout scan, and (high) return the cached counter for non-transactional callers instead of a full scan. Both verified and applied.
+  - cycle 2 (`4aa2aa4c`): claude found a real, pre-existing over-count - an in-transaction recompute scans the tx view, so it now caches the committed base (`total - delta`); also simplified the requester (never null), added a `FINE` log on the timeout fallback, and added deterministic in-tx + non-tx tests (moved `@Tag("slow")` to the stress method only). gemini did not re-review.
+  - cycle 3 (`5bc1ba08`): claude LGTM with one substantive ask (document the commit-latency tradeoff). Added the operational note, a recheck-after-lock short-circuit to skip a duplicate scan, and timeout + delete-in-tx tests. gemini did not re-review.
+  - cycle 4 (`166c359c`): claude LGTM ("correct, carefully scoped, well-tested, and clearly documented"); all remaining points non-blocking. Applied the one cheap clarity item (comment on the pure `getRequester()` acquisition-path usage).
+- Final state: `max-cycles-reached` (converged - claude LGTM; gemini reviewed only cycle 1, its known re-review behavior).
+
+## Deferred (non-blocking) follow-ups
+1. Optional focused unit test for the concurrent-recompute short-circuit (two recomputes racing for the lock, the loser skipping the scan) - currently exercised indirectly by the stress test.
+2. The `LocalBucket.check(... fix)` caveat comment added by #5150 may now be overly conservative: this PR's lock serializes a concurrent `count()` against the CHECK-FIX commit fold (and CHECK-FIX deletions register no bucket delta anyway). Left untouched here as out of scope.
