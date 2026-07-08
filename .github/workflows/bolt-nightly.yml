@@ -339,10 +339,11 @@ jobs:
         run: |
           shopt -s nullglob
           cells=(cells/*.json)
-          # The full expected (language:version) set from bolt/conformance/driver-versions.md;
-          # any of these absent means that cell's job died before emitting a result.
+          # driver-versions.md is the single source of truth for the expected
+          # cell set; a cell missing from it, present but undocumented, or empty
+          # of scenarios all force has_failures.
           python3 bolt/conformance/tools/merge_matrix.py "${cells[@]}" \
-            --expect-cells java:4.4.20,java:5.28.5,java:6.2.0,javascript:4.4.11,javascript:5.28.3,javascript:6.2.0,python:5.28.4,python:6.1.0,python:6.2.0,csharp:4.4.0,csharp:5.28.4,csharp:6.2.1,go:5.27.0,go:5.28.0,go:5.28.4 \
+            --expect-from bolt/conformance/driver-versions.md \
             -o bolt-compat-matrix.json
           has_failures=$(python3 -c "import json; print(str(json.load(open('bolt-compat-matrix.json'))['has_failures']).lower())")
           echo "has-failures=${has_failures}" >> "$GITHUB_OUTPUT"
@@ -380,12 +381,16 @@ jobs:
               }
             }
             const missing = (matrix.missing_cells || []).map(c => `- ${c} (job produced no result)`);
+            const unexpected = (matrix.unexpected_cells || []).map(c => `- ${c} (ran but not in driver-versions.md)`);
+            const empty = (matrix.empty_cells || []).map(c => `- ${c} (ran but produced no recognized scenarios)`);
             const title = 'Bolt driver compatibility regression (nightly)';
             const label = 'bolt-compat-regression';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const sections = [`Nightly Bolt matrix reported problems.\n\nRun: ${runUrl}`];
             if (failing.length) sections.push(`### Failing cells\n${failing.sort().join('\n')}`);
             if (missing.length) sections.push(`### Missing cells\n${missing.join('\n')}`);
+            if (unexpected.length) sections.push(`### Unexpected cells\n${unexpected.join('\n')}`);
+            if (empty.length) sections.push(`### Empty cells (no scenarios)\n${empty.join('\n')}`);
             const body = sections.join('\n\n');
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,

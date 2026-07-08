@@ -9,6 +9,12 @@ so a driver-side release that breaks compatibility is caught by the nightly run.
 When a driver publishes a new release that shifts a band, update the version
 here and in the matching workflow matrix.
 
+This table is the single source of truth for the expected cell set: the nightly
+`merge-matrix` step parses these rows (`merge_matrix.py --expect-from`) as the
+`language:version` cells that must be present. Keep the `| language | band |
+version |` column order intact - a cell in the job matrices but absent here is
+reported as an unexpected cell, and vice versa as a missing cell.
+
 | Language   | Band                  | Version  |
 |------------|-----------------------|----------|
 | java       | oldest-supported-4.x  | 4.4.20   |

@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-r"""
-Convert a suite's JUnit XML into a normalized scenario-id -> status map.
-
-Scenario IDs (pattern ``[A-Z]+-\d{3}``) are embedded in every suite's test
-names; this reduces a language/driver-version run to a comparable map keyed by
-those IDs so runs can be merged across languages.
-"""
+# Scenario IDs (pattern [A-Z]+-\d{3}) are embedded in every suite's test names;
+# this reduces a language/driver-version run to a comparable map keyed by those
+# IDs so runs can be merged across languages.
+r"""Convert a suite's JUnit XML into a normalized scenario-id -> status map."""
 import argparse
 import json
 import re
@@ -32,13 +29,10 @@ def _local_name(tag):
 
 
 def parse_junit(xml_path):
-    """
-    Return a {scenario-id: "pass"|"fail"|"skip"} map from a JUnit report.
-
-    A scenario asserted by several testcases fails if any of them fails, and is
-    considered a pass if at least one passes and none fail. Tags are matched by
-    local name so a namespaced JUnit document is handled the same as a plain one.
-    """
+    """Return a {scenario-id: "pass"|"fail"|"skip"} map from a JUnit report."""
+    # A scenario asserted by several testcases fails if any of them fails, and is
+    # considered a pass if at least one passes and none fail. Tags are matched by
+    # local name so a namespaced JUnit document is handled the same as a plain one.
     tree = ET.parse(xml_path)  # nosec B314 - trusted CI-generated JUnit (see import note)
     root = tree.getroot()
     results = {}
@@ -81,13 +75,11 @@ def load_known_ids(spec_path):
 
 
 def build_matrix(xml_path, language, driver_version, known_ids):
-    """
-    Build the per-cell record, dropping scenario ids absent from the spec.
-
-    Unknown ids are warned about and skipped rather than raised: this tool runs
-    inside a monitoring workflow where hard-failing the conversion would drop the
-    whole cell and hide the scenarios that did run.
-    """
+    """Build the per-cell record, dropping scenario ids absent from the spec."""
+    # Unknown ids are warned about and skipped rather than raised: this tool runs
+    # inside a monitoring workflow where hard-failing the conversion would drop
+    # the whole cell and hide the scenarios that did run. A cell that ends up with
+    # zero recognized scenarios is caught downstream by merge_matrix's empty check.
     scenarios = parse_junit(xml_path)
     unknown = sorted(set(scenarios) - set(known_ids))
     if unknown:

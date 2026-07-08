@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
+import os
 import unittest
 
-from merge_matrix import merge
+from merge_matrix import merge, load_expected_cells
+
+HERE = os.path.dirname(__file__)
+DRIVER_VERSIONS_MD = os.path.join(HERE, "..", "driver-versions.md")
 
 
 class MergeTest(unittest.TestCase):
@@ -38,6 +42,31 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(out["missing_cells"], ["go:5.28.4", "python:6.2.0"])
         self.assertTrue(out["has_failures"])
         self.assertEqual(out["scenarios"], {})
+
+    def test_empty_cell_is_coverage_floor(self):
+        # A cell that ran but yielded zero recognized scenarios (e.g. the id
+        # never reached the JUnit test name) must not read as a pass.
+        out = merge([self._cell("csharp", "6.2.1", {})],
+                    expected_cells=["csharp:6.2.1"])
+        self.assertEqual(out["empty_cells"], ["csharp:6.2.1"])
+        self.assertTrue(out["has_failures"])
+
+    def test_unexpected_cell_flags_drift(self):
+        out = merge([self._cell("go", "9.9.9", {"CONN-001": "pass"})],
+                    expected_cells=["go:5.28.4"])
+        self.assertEqual(out["unexpected_cells"], ["go:9.9.9"])
+        self.assertTrue(out["has_failures"])
+
+
+class LoadExpectedCellsTest(unittest.TestCase):
+    def test_parses_driver_versions_md(self):
+        cells = load_expected_cells(DRIVER_VERSIONS_MD)
+        # Sanity: the five languages and a couple of known pins are present, and
+        # the header/separator rows are not misread as cells.
+        self.assertIn("java:4.4.20", cells)
+        self.assertIn("go:5.28.4", cells)
+        self.assertEqual(len(cells), 15)
+        self.assertTrue(all(":" in c for c in cells))
 
 
 if __name__ == "__main__":
