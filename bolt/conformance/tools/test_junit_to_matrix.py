@@ -8,6 +8,8 @@ HERE = os.path.dirname(__file__)
 SAMPLE = os.path.join(HERE, "testdata", "sample-junit.xml")
 UNKNOWN = os.path.join(HERE, "testdata", "unknown-id-junit.xml")
 GO_STYLE = os.path.join(HERE, "testdata", "go-junit.xml")
+PY_STYLE = os.path.join(HERE, "testdata", "py-junit.xml")
+NS_STYLE = os.path.join(HERE, "testdata", "ns-junit.xml")
 KNOWN = {"CONN-001", "AUTH-003", "TYPE-007", "ERR-002"}
 
 
@@ -28,6 +30,15 @@ class ParseJunitTest(unittest.TestCase):
         result = parse_junit(GO_STYLE)
         self.assertEqual(result, {"CONN-001": "pass"})
 
+    def test_python_lowercase_prefix_id(self):
+        # pytest emits name="test_CONN_001_connect"; the id must still resolve.
+        result = parse_junit(PY_STYLE)
+        self.assertEqual(result, {"CONN-001": "pass"})
+
+    def test_namespaced_junit_document(self):
+        result = parse_junit(NS_STYLE)
+        self.assertEqual(result, {"CONN-001": "pass"})
+
 
 class BuildMatrixTest(unittest.TestCase):
     def test_shape_and_metadata(self):
@@ -36,9 +47,10 @@ class BuildMatrixTest(unittest.TestCase):
         self.assertEqual(m["driver_version"], "6.2.0")
         self.assertEqual(m["scenarios"]["CONN-001"], "pass")
 
-    def test_unknown_scenario_id_raises(self):
-        with self.assertRaises(ValueError):
-            build_matrix(UNKNOWN, "python", "6.2.0", KNOWN)
+    def test_unknown_scenario_id_dropped_not_raised(self):
+        # A monitoring workflow must not lose a whole cell over one stray id.
+        m = build_matrix(UNKNOWN, "python", "6.2.0", KNOWN)
+        self.assertEqual(m["scenarios"], {})
 
 
 if __name__ == "__main__":

@@ -25,6 +25,18 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(merge([self._cell("py", "1", {"X-001": "pass"})])["has_failures"])
         self.assertFalse(merge([self._cell("py", "1", {"X-001": "skip"})])["has_failures"])
 
+    def test_missing_expected_language_flags_failure(self):
+        out = merge([self._cell("python", "6.2.0", {"CONN-001": "pass"})],
+                    expected_languages=["python", "go"])
+        self.assertEqual(out["missing_languages"], ["go"])
+        self.assertTrue(out["has_failures"])
+
+    def test_no_cells_with_expectations_is_all_missing(self):
+        out = merge([], expected_languages=["python", "go"])
+        self.assertEqual(out["missing_languages"], ["go", "python"])
+        self.assertTrue(out["has_failures"])
+        self.assertEqual(out["scenarios"], {})
+
 
 if __name__ == "__main__":
     unittest.main()
