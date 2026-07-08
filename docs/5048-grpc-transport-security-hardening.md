@@ -34,3 +34,8 @@ The gRPC modules downgrade or leak transport security and allow resource-exhaust
 ## Impact
 
 gRPC modules only. TLS misconfiguration now prevents startup (both modes). Local plaintext clients are unaffected; remote plaintext clients must opt in to send credentials. Concurrent transactions are bounded. Inbound message size honors config; metadata cap lowered.
+
+## Operator notes
+
+- **Per-principal cap vs. single-user deployments.** `grpc.maxConcurrentTransactionsPerPrincipal` defaults to 100 while the global cap defaults to 1000. Deployments that connect every client as the same user (commonly `root`) attribute all transactions to one principal, so the per-principal cap is the effective limit and a high-concurrency connection pool holding more than 100 open transactions will receive `RESOURCE_EXHAUSTED` before reaching the global cap. Raise `grpc.maxConcurrentTransactionsPerPrincipal` (or set it to `0` to disable the per-principal bound) for such workloads.
+- **Metadata cap behavioral change.** The inbound metadata cap drops from 32 MB to a 16 KB default (`grpc.maxMetadataSize`). Clients that send unusually large headers (big bearer/JWT tokens, tracing baggage) may be rejected; raise `grpc.maxMetadataSize` (KB) if needed.

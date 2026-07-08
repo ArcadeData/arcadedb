@@ -281,11 +281,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return false;
     }
 
+    // Reserve the per-principal slot under an atomic compute so admission and the counter mutation happen as one
+    // step per key; this also lets releaseTransactionSlot remove the entry at zero without racing a concurrent
+    // reserve, keeping perPrincipalTransactionCount from growing unbounded across many distinct principals.
     final String key = owner == null ? ANONYMOUS_PRINCIPAL : owner;
-    final AtomicInteger perPrincipal = perPrincipalTransactionCount.computeIfAbsent(key, k -> new AtomicInteger());
-    final int principal = perPrincipal.incrementAndGet();
-    if (maxConcurrentTransactionsPerPrincipal > 0 && principal > maxConcurrentTransactionsPerPrincipal) {
-      perPrincipal.decrementAndGet();
+    final boolean[] admitted = { true };
+    perPrincipalTransactionCount.compute(key, (k, counter) -> {
+      if (counter == null)
+        return new AtomicInteger(1);
+      if (maxConcurrentTransactionsPerPrincipal > 0 && counter.get() >= maxConcurrentTransactionsPerPrincipal) {
+        admitted[0] = false;
+        return counter;
+      }
+      counter.incrementAndGet();
+      return counter;
+    });
+
+    if (!admitted[0]) {
       globalTransactionCount.decrementAndGet();
       return false;
     }
@@ -294,13 +306,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /**
    * Releases a previously reserved transaction slot. Called exactly once per successful reservation when the
-   * transaction is torn down (commit, rollback, reap, or a failed begin) so the caps track live transactions.
+   * transaction is torn down (commit, rollback, reap, or a failed begin) so the caps track live transactions. The
+   * per-principal entry is dropped when its count returns to zero so the map does not accumulate stale keys.
    */
   void releaseTransactionSlot(final String owner) {
     globalTransactionCount.decrementAndGet();
-    final AtomicInteger perPrincipal = perPrincipalTransactionCount.get(owner == null ? ANONYMOUS_PRINCIPAL : owner);
-    if (perPrincipal != null)
-      perPrincipal.decrementAndGet();
+    final String key = owner == null ? ANONYMOUS_PRINCIPAL : owner;
+    perPrincipalTransactionCount.computeIfPresent(key, (k, counter) -> counter.decrementAndGet() <= 0 ? null : counter);
   }
 
   /**

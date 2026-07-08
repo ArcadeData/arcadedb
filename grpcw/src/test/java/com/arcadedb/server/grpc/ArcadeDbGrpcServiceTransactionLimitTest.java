@@ -88,6 +88,21 @@ class ArcadeDbGrpcServiceTransactionLimitTest {
   }
 
   @Test
+  void releasingLastSlotFreesPrincipalAndAllowsReuse() {
+    final ArcadeDbGrpcService service = service(0, 2);
+    try {
+      service.tryReserveTransactionSlot("carol");
+      service.releaseTransactionSlot("carol");
+      // Entry dropped at zero: the count is back to 0 and a fresh reservation is admitted.
+      assertThat(service.getTransactionCountForPrincipal("carol")).isZero();
+      assertThat(service.tryReserveTransactionSlot("carol")).isTrue();
+      assertThat(service.getTransactionCountForPrincipal("carol")).isEqualTo(1);
+    } finally {
+      service.close();
+    }
+  }
+
+  @Test
   void nonPositiveCapsDisableBounds() {
     final ArcadeDbGrpcService service = service(0, 0);
     try {

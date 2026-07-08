@@ -72,6 +72,8 @@ public class RemoteGrpcServer implements AutoCloseable {
   private final List<ClientInterceptor> interceptors;
   private final boolean                 plaintext;
   private final boolean                 allowInsecureCredentials;
+  // Resolved once at construction so the credential-attach path never blocks on a DNS lookup.
+  private final boolean                 loopback;
 
   private ManagedChannel channel;
   private EventLoopGroup eventLoopGroup;
@@ -97,6 +99,7 @@ public class RemoteGrpcServer implements AutoCloseable {
 
     this.plaintext = plaintext;
     this.allowInsecureCredentials = allowInsecureCredentials;
+    this.loopback = isLoopbackHost(this.host);
     this.interceptors = interceptors == null ? List.of() : List.copyOf(interceptors);
 
     this.userName = Objects.requireNonNull(user, "user");
@@ -290,7 +293,7 @@ public class RemoteGrpcServer implements AutoCloseable {
    * throws so the caller enables TLS instead of leaking credentials.
    */
   private void ensureCredentialsAllowedOverChannel() {
-    if (plaintext && !allowInsecureCredentials && !isLoopbackHost(host))
+    if (plaintext && !allowInsecureCredentials && !loopback)
       throw new SecurityException("Refusing to send credentials over a plaintext gRPC channel to non-loopback host '"
           + host + "'. Enable TLS, or explicitly opt in with allowInsecureCredentials=true.");
   }

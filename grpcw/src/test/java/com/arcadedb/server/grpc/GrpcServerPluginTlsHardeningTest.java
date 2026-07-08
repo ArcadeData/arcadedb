@@ -128,4 +128,12 @@ class GrpcServerPluginTlsHardeningTest {
     final GrpcServerPlugin plugin = new GrpcServerPlugin();
     assertThat(plugin.getMaxMetadataSizeBytes(config)).isEqualTo(1024);
   }
+
+  @Test
+  void metadataCapDoesNotOverflowForHugeValue() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue("arcadedb.grpc.maxMetadataSize", String.valueOf(Integer.MAX_VALUE));
+    final GrpcServerPlugin plugin = new GrpcServerPlugin();
+    assertThat(plugin.getMaxMetadataSizeBytes(config)).isEqualTo(Integer.MAX_VALUE);
+  }
 }
