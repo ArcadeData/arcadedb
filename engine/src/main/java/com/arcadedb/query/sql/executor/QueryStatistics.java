@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.serializer.json.JSONObject;
+
 /**
  * Mutable, allocation-light accumulator of CRUD and schema mutation counts produced while executing
  * a single command. Held on the {@link CommandContext} and read once when the result set is
@@ -103,5 +105,46 @@ public class QueryStatistics {
     indexesRemoved = snapshot.indexesRemoved;
     constraintsAdded = snapshot.constraintsAdded;
     constraintsRemoved = snapshot.constraintsRemoved;
+  }
+
+  /**
+   * Adds every counter from {@code other} into this accumulator. A {@code null} argument is a no-op.
+   * Used to aggregate the statistics of UNION branches and CALL subqueries into the outer result.
+   */
+  public void add(final QueryStatistics other) {
+    if (other == null)
+      return;
+    nodesCreated += other.nodesCreated;
+    nodesDeleted += other.nodesDeleted;
+    relationshipsCreated += other.relationshipsCreated;
+    relationshipsDeleted += other.relationshipsDeleted;
+    propertiesSet += other.propertiesSet;
+    labelsAdded += other.labelsAdded;
+    labelsRemoved += other.labelsRemoved;
+    indexesAdded += other.indexesAdded;
+    indexesRemoved += other.indexesRemoved;
+    constraintsAdded += other.constraintsAdded;
+    constraintsRemoved += other.constraintsRemoved;
+  }
+
+  /**
+   * Serializes the counters into an ArcadeDB-native camelCase JSON object. All eleven counters are
+   * always present (zero when unset) plus a {@code containsUpdates} flag, giving a stable shape.
+   */
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("nodesCreated", nodesCreated);
+    json.put("nodesDeleted", nodesDeleted);
+    json.put("relationshipsCreated", relationshipsCreated);
+    json.put("relationshipsDeleted", relationshipsDeleted);
+    json.put("propertiesSet", propertiesSet);
+    json.put("labelsAdded", labelsAdded);
+    json.put("labelsRemoved", labelsRemoved);
+    json.put("indexesAdded", indexesAdded);
+    json.put("indexesRemoved", indexesRemoved);
+    json.put("constraintsAdded", constraintsAdded);
+    json.put("constraintsRemoved", constraintsRemoved);
+    json.put("containsUpdates", containsUpdates());
+    return json;
   }
 }

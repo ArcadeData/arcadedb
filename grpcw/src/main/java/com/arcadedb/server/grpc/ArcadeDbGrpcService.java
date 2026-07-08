@@ -40,6 +40,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -506,6 +507,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       long serializationAccum = 0L;
       final long engineStart = System.nanoTime();
+      QueryStatistics writeStats = null;
 
       try (ResultSet rs = db.command(language, req.getCommand(), params)) {
 
@@ -565,6 +567,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               }
             }
           }
+
+          writeStats = rs.getStatistics().orElse(null);
         }
       }
 
@@ -610,6 +614,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final long ms = (System.nanoTime() - t0) / 1_000_000L;
       final long serFinalStart = System.nanoTime();
       out.setAffectedRecords(affected).setExecutionTimeMs(ms);
+      if (writeStats != null && writeStats.containsUpdates())
+        out.setStats(QueryUpdateStats.newBuilder()
+            .setNodesCreated(writeStats.getNodesCreated())
+            .setNodesDeleted(writeStats.getNodesDeleted())
+            .setRelationshipsCreated(writeStats.getRelationshipsCreated())
+            .setRelationshipsDeleted(writeStats.getRelationshipsDeleted())
+            .setPropertiesSet(writeStats.getPropertiesSet())
+            .setLabelsAdded(writeStats.getLabelsAdded())
+            .setLabelsRemoved(writeStats.getLabelsRemoved())
+            .setIndexesAdded(writeStats.getIndexesAdded())
+            .setIndexesRemoved(writeStats.getIndexesRemoved())
+            .setConstraintsAdded(writeStats.getConstraintsAdded())
+            .setConstraintsRemoved(writeStats.getConstraintsRemoved())
+            .setContainsUpdates(true)
+            .build());
       final ExecuteCommandResponse response = out.build();
       profile.addSerializationNanos(System.nanoTime() - serFinalStart);
       return response;

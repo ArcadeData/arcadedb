@@ -421,7 +421,7 @@ public class SubqueryStep extends AbstractExecutionStep {
     final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
         database, innerStatement, parameters, database.getConfiguration(), null, expressionEvaluator);
 
-    final ResultSet resultSet = innerPlan.executeWithSeedRow(filterSeedRow(outerRow));
+    final ResultSet resultSet = innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context);
 
     try {
       // Unit subquery: no RETURN clause — consume all inner rows for side effects only.

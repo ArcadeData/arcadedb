@@ -22,6 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -50,6 +51,7 @@ import java.util.Set;
 public class UnionStep extends AbstractExecutionStep {
   private final List<CypherExecutionPlan> queryPlans;
   private final boolean removeDuplicates;
+  private final QueryStatistics aggregatedStatistics = new QueryStatistics();
 
   /**
    * Creates a UnionStep.
@@ -102,6 +104,7 @@ public class UnionStep extends AbstractExecutionStep {
           // Initialize or advance to next query's result set
           if (currentResultSet == null || !currentResultSet.hasNext()) {
             if (currentResultSet != null) {
+              aggregatedStatistics.add(currentResultSet.getStatistics().orElse(null));
               currentResultSet.close();
             }
 
@@ -162,6 +165,15 @@ public class UnionStep extends AbstractExecutionStep {
           currentResultSet.close();
       }
     };
+  }
+
+  /**
+   * Returns the write statistics summed across every branch that has completed execution so far.
+   * The accumulator fills in incrementally as branches are pulled, so the sum is only complete
+   * once the caller has fully drained the ResultSet returned by {@link #syncPull}.
+   */
+  public QueryStatistics getAggregatedStatistics() {
+    return aggregatedStatistics;
   }
 
   @Override

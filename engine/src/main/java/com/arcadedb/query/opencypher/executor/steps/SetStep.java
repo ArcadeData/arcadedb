@@ -278,9 +278,7 @@ public class SetStep extends AbstractExecutionStep {
 
     // Neo4j counts both the properties written and the pre-existing properties removed by the
     // replace (i.e. not re-set with a non-null value), matching applyPropertySet/applyMergeMap.
-    for (final String prop : existingProps)
-      if (!prop.startsWith("@") && map.get(prop) == null)
-        propertiesSet++;
+    propertiesSet += CypherStatisticsHelper.countRemovedProperties(existingProps, map);
 
     mutableDoc.save();
     final QueryStatistics stats = context.getStatistics();

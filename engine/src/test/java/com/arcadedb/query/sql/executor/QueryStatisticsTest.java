@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,5 +84,41 @@ class QueryStatisticsTest {
     copy.getStatistics().incNodesCreated();
     assertThat(copy.getStatistics()).isSameAs(ctx.getStatistics());
     assertThat(ctx.getStatistics().getNodesCreated()).isEqualTo(2);
+  }
+
+  @Test
+  void addMergesCountersFieldWise() {
+    final QueryStatistics a = new QueryStatistics();
+    a.incNodesCreated();
+    a.addPropertiesSet(2);
+    final QueryStatistics b = new QueryStatistics();
+    b.incNodesCreated();
+    b.incRelationshipsCreated();
+    b.addPropertiesSet(3);
+    a.add(b);
+    assertThat(a.getNodesCreated()).isEqualTo(2);
+    assertThat(a.getRelationshipsCreated()).isEqualTo(1);
+    assertThat(a.getPropertiesSet()).isEqualTo(5);
+    assertThat(a.containsUpdates()).isTrue();
+  }
+
+  @Test
+  void addNullIsNoOp() {
+    final QueryStatistics a = new QueryStatistics();
+    a.incNodesCreated();
+    a.add(null);
+    assertThat(a.getNodesCreated()).isEqualTo(1);
+  }
+
+  @Test
+  void toJSONEmitsAllCamelCaseCountersAndContainsUpdates() {
+    final QueryStatistics s = new QueryStatistics();
+    s.incNodesCreated();
+    s.addPropertiesSet(2);
+    final JSONObject json = s.toJSON();
+    assertThat(json.getInt("nodesCreated")).isEqualTo(1);
+    assertThat(json.getInt("propertiesSet")).isEqualTo(2);
+    assertThat(json.getInt("relationshipsCreated")).isEqualTo(0);
+    assertThat(json.getBoolean("containsUpdates")).isTrue();
   }
 }
