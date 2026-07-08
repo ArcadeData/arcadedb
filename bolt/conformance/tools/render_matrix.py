@@ -49,3 +49,78 @@ def load_scenarios(spec_path):
             "applicable_driver_versions": entry.get("applicable_driver_versions", "all"),
         })
     return scenarios
+
+
+GLYPH = {
+    "pass": "✅",
+    "fail": "❌",
+    "expected-fail": "⚠️",
+    "not-applicable": "➖",
+    "skip": "⚪",
+    "unavailable": "·",
+    "unreported": "·",
+}
+
+
+def issue_url(repo, tracking_issue):
+    """Normalize a tracking_issue (#NNN / NNN / full URL) to a GitHub issue URL."""
+    if not tracking_issue:
+        return None
+    text = str(tracking_issue).strip()
+    if text.startswith("http"):
+        return text
+    return f"https://github.com/{repo}/issues/{text.lstrip('#')}"
+
+
+def regression_url(repo):
+    """Stable link to the nightly regression issue, matched by its label."""
+    return (f"https://github.com/{repo}/issues?q=is%3Aissue+is%3Aopen"
+            "+label%3Abolt-compat-regression")
+
+
+def unavailable_columns(matrix):
+    """The 'lang:version' columns with no usable data (missing or empty cells)."""
+    if not matrix:
+        return set()
+    return set(matrix.get("missing_cells", [])) | set(matrix.get("empty_cells", []))
+
+
+def _baseline_cell(scenario, repo):
+    """Fallback cell derived purely from spec.yaml current_status."""
+    status = scenario["current_status"]
+    if status == "passing":
+        return Cell(GLYPH["pass"], "baseline-pass", None)
+    if status == "expected-fail":
+        return Cell(GLYPH["expected-fail"], "expected-fail",
+                    issue_url(repo, scenario["tracking_issue"]))
+    if status == "not-applicable":
+        return Cell(GLYPH["not-applicable"], "not-applicable", None)
+    return Cell(GLYPH["skip"], "unverified", None)
+
+
+def resolve_cell(scenario, column, matrix, unavailable, repo):
+    """Resolve one scenario x column into a display Cell (glyph, kind, link)."""
+    status = scenario["current_status"]
+    applicable = scenario["applicable_driver_versions"]
+    if status == "not-applicable":
+        return Cell(GLYPH["not-applicable"], "not-applicable", None)
+    if applicable != "all" and f"{column.language}:{column.band}" not in applicable:
+        return Cell(GLYPH["not-applicable"], "not-applicable", None)
+    if matrix is None:
+        return _baseline_cell(scenario, repo)
+    if f"{column.language}:{column.version}" in unavailable:
+        return Cell(GLYPH["unavailable"], "unavailable", None)
+    runtime = (matrix.get("scenarios", {}).get(scenario["id"], {})
+               .get(column.language, {}).get(column.version))
+    if runtime == "pass":
+        return Cell(GLYPH["pass"], "pass", None)
+    if runtime == "fail":
+        link = issue_url(repo, scenario["tracking_issue"]) or regression_url(repo)
+        return Cell(GLYPH["fail"], "fail", link)
+    if runtime == "skip":
+        if status == "expected-fail":
+            return Cell(GLYPH["expected-fail"], "expected-fail",
+                        issue_url(repo, scenario["tracking_issue"]))
+        return Cell(GLYPH["skip"], "skip",
+                    issue_url(repo, scenario["tracking_issue"]))
+    return Cell(GLYPH["unreported"], "unreported", None)
