@@ -47,16 +47,6 @@ public class BoltPath implements PackStreamStructure {
   }
 
   @Override
-  public byte getSignature() {
-    return SIGNATURE;
-  }
-
-  @Override
-  public int getFieldCount() {
-    return 3;
-  }
-
-  @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
     writer.writeStructureHeader(SIGNATURE, 3);
 
