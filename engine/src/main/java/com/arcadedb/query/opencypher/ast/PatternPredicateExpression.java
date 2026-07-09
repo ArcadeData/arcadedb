@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -124,11 +125,11 @@ public class PatternPredicateExpression implements BooleanExpression {
       // Also verify target labels and inline properties if specified (e.g., (a)-[:T]->(b:Label {k:v}))
       if (!matchesNodePattern(endVertex, endNodePattern, context))
         return false;
-      return checkRelationshipExists(startVertex, endVertex, relationshipTypes, isOutgoing, isIncoming);
+      return checkRelationshipExists(startVertex, endVertex, relPattern, relationshipTypes, isOutgoing, isIncoming, context);
     } else {
       // No specific end node - check if any relationship of the specified type exists
       // Also filter by target node labels and inline properties if specified
-      return checkAnyRelationshipExists(startVertex, relationshipTypes, endNodePattern, isOutgoing, isIncoming, context);
+      return checkAnyRelationshipExists(startVertex, relPattern, relationshipTypes, endNodePattern, isOutgoing, isIncoming, context);
     }
   }
 
@@ -196,9 +197,11 @@ public class PatternPredicateExpression implements BooleanExpression {
   private boolean checkRelationshipExists(
       final Vertex startVertex,
       final Vertex endVertex,
+      final RelationshipPattern relPattern,
       final String[] relationshipTypes,
       final boolean isOutgoing,
-      final boolean isIncoming
+      final boolean isIncoming,
+      final CommandContext context
   ) {
     // Check outgoing edges: startVertex -> endVertex
     if (isOutgoing) {
@@ -212,7 +215,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
         try {
-          if (edge.getIn().equals(endVertex))
+          if (edge.getIn().equals(endVertex) && matchesRelationshipProperties(edge, relPattern, context))
             return true;
         } catch (final RecordNotFoundException e) {
           // Ghost edge: segment pointer exists but the backing edge record is gone (e.g. an HA
@@ -234,7 +237,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
         try {
-          if (edge.getOut().equals(endVertex))
+          if (edge.getOut().equals(endVertex) && matchesRelationshipProperties(edge, relPattern, context))
             return true;
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
@@ -251,6 +254,7 @@ public class PatternPredicateExpression implements BooleanExpression {
    */
   private boolean checkAnyRelationshipExists(
       final Vertex startVertex,
+      final RelationshipPattern relPattern,
       final String[] relationshipTypes,
       final NodePattern endNodePattern,
       final boolean isOutgoing,
@@ -269,7 +273,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
         try {
-          if (matchesNodePattern(edge.getInVertex(), endNodePattern, context))
+          if (matchesRelationshipProperties(edge, relPattern, context) && matchesNodePattern(edge.getInVertex(), endNodePattern, context))
             return true;
         } catch (final RecordNotFoundException e) {
           // Ghost edge: segment pointer exists but the backing edge/target record is gone. Skip it.
@@ -290,7 +294,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
         try {
-          if (matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
+          if (matchesRelationshipProperties(edge, relPattern, context) && matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
             return true;
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
@@ -337,7 +341,36 @@ public class PatternPredicateExpression implements BooleanExpression {
     if (nodePattern == null || !nodePattern.hasProperties())
       return true;
 
-    final Map<String, Object> properties = nodePattern.getProperties();
+    return matchesInlineProperties(vertex, nodePattern.getProperties(), context);
+  }
+
+  /**
+   * Check if an edge matches the inline relationship property constraints on a relationship pattern,
+   * e.g. {@code -[:R {w: 999}]->}. If no property constraints are specified, returns true.
+   * Enforces the {@code {k: v}} filter inside {@code exists()} patterns (issue #5109).
+   */
+  private boolean matchesRelationshipProperties(final Edge edge, final RelationshipPattern relPattern, final CommandContext context) {
+    if (relPattern == null || !relPattern.hasProperties())
+      return true;
+
+    Map<String, Object> properties = relPattern.getProperties();
+    final String paramName = relPattern.getPropertiesParameterName();
+    if ((properties == null || properties.isEmpty()) && paramName != null && context != null && context.getInputParameters() != null) {
+      // Properties supplied as a bare parameter, e.g. -[:R $props]->
+      final Object paramValue = context.getInputParameters().get(paramName);
+      if (paramValue instanceof Map)
+        properties = (Map<String, Object>) paramValue;
+    }
+
+    return matchesInlineProperties(edge, properties, context);
+  }
+
+  /**
+   * Check if a record (vertex or edge) matches a map of inline property constraints.
+   * If no property constraints are specified, returns true.
+   */
+  private boolean matchesInlineProperties(final Document record, final Map<String, Object> properties,
+      final CommandContext context) {
     if (properties == null || properties.isEmpty())
       return true;
 
@@ -367,7 +400,7 @@ public class PatternPredicateExpression implements BooleanExpression {
         }
       }
 
-      final Object actualValue = vertex.get(key);
+      final Object actualValue = record.get(key);
       if (actualValue == null)
         return false;
       if (!actualValue.equals(expectedValue)) {
