@@ -37,6 +37,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.arcadedb.log.LogManager;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.Instant;
@@ -353,10 +354,24 @@ public class ProtoUtils {
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
     }
 
+    // Java arrays (e.g. float[]/double[] vectors, int[], long[], Object[]) are not Collections, so
+    // without this branch they would fall through to the String.valueOf(...) fallback below and
+    // corrupt the value (e.g. "[F@6d03e736"). byte[] keeps its dedicated BYTES branch above.
+    if (value.getClass().isArray()) {
+      GrpcList.Builder lb = GrpcList.newBuilder();
+      final int len = Array.getLength(value);
+      for (int i = 0; i < len; i++)
+        lb.addValues(toGrpcValue(Array.get(value, i)));
+      return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
+    }
+
     return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(String.valueOf(value)).build());
   }
 
   public static Object fromGrpcValue(GrpcValue v) {
+
+    if (v == null)
+      return dbgDec("fromGrpcValue", v, null);
 
     switch (v.getKindCase()) {
     case BOOL_VALUE:
