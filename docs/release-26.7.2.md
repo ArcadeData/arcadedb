@@ -10,6 +10,17 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **OpenCypher: repeating a node variable across single-node MATCH parts is no longer order-sensitive.**
+  A query such as `MATCH (n0:L1:L5), (n0), (n1)` ran up to ~16x slower when the parts were written in a
+  different order, e.g. `MATCH (n1), (n0), (n0:L1:L5)` ([#5116](https://github.com/ArcadeData/arcadedb/issues/5116)).
+  The multi-label conjunction `(n0:L1:L5)` disqualifies the cost-based optimizer, so the query runs on the
+  legacy step-chain path, which chained comma-separated pattern parts in textual order as a nested-loop
+  Cartesian product. When the bare `(n0)` was chained before the labeled `(n0:L1:L5)`, `n0` was first bound to
+  every node (full scan) and only afterwards filtered by the labels. The legacy planner now orders the parts of
+  each independent component so the most selective (labeled) occurrence of a shared variable binds first, and
+  breaks ties between disconnected node components by descending label count, making the plan independent of the
+  written order. Extends the pattern-part reordering introduced for [#5117](https://github.com/ArcadeData/arcadedb/issues/5117).
+
 - **Graph: concurrent edge insertion into the same super-node (hot) vertex no longer silently drops edges.**
   Under many transactions appending edges to one vertex at once, an edge record could commit with **no
   back-reference** in the target vertex's edge list - the edge count came up short and `CHECK DATABASE` reported
