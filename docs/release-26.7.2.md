@@ -10,6 +10,16 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **OpenCypher: `FOREACH ... CREATE` writes are no longer silently lost when followed directly by `RETURN count(var)`.**
+  A query such as `MATCH (a:A) FOREACH (x IN [1] | CREATE (:FB {id: x})) RETURN count(a) AS c` returned the correct
+  count but never persisted the `FB` nodes created inside the `FOREACH`; inserting a `WITH` between the `FOREACH` and
+  the `RETURN` worked around it ([#5166](https://github.com/ArcadeData/arcadedb/issues/5166)). The O(1) `count(var)`
+  optimization (`TypeCountStep`, which answers `MATCH (a:A) RETURN count(a)` with a direct `countType()` instead of
+  iterating) matched the query by checking only for a handful of clause types via typed accessors and missed `FOREACH`
+  (also `CALL`, `SUBQUERY`, `LOAD CSV`), so it replaced the whole plan and discarded the write side effects. The
+  optimization now applies only when the statement is made of exactly the single `MATCH` and the `RETURN`, so any other
+  clause (including `FOREACH`) falls back to the regular execution path that runs the writes.
+
 - **OpenCypher: repeating a node variable across single-node MATCH parts is no longer order-sensitive.**
   A query such as `MATCH (n0:L1:L5), (n0), (n1)` ran up to ~16x slower when the parts were written in a
   different order, e.g. `MATCH (n1), (n0), (n0:L1:L5)` ([#5116](https://github.com/ArcadeData/arcadedb/issues/5116)).
