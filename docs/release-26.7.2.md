@@ -10,6 +10,17 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **SQL: a combined `FULL_TEXT` (or any) index over two `BY ITEM` properties now indexes every property, not just the last one.**
+  An index such as `CREATE INDEX combo ON Doc (obj.hd BY ITEM, obj.tl BY ITEM) FULL_TEXT` only indexed the second
+  property, so `search_index('combo', <hd value>)` returned nothing while the `tl` values matched
+  ([#5181](https://github.com/ArcadeData/arcadedb/issues/5181)). The document indexer tracked a single `BY ITEM`
+  expansion per index, so with two `BY ITEM` properties the loop kept only the last one and resolved the other as a
+  scalar nested lookup that always yielded `null`. The indexer now detects a per-property expansion: when several
+  `BY ITEM` properties share the same root list it walks the list once and builds one compound key per element, zipping
+  each property's nested value from the same element (element-wise, not a cross-product). The fix covers the create,
+  build, update, and delete index paths. Multiple `BY ITEM` properties that reference different lists are rejected with a
+  clear error rather than silently mis-indexed.
+
 - **OpenCypher: `FOREACH ... CREATE` writes are no longer silently lost when followed directly by `RETURN count(var)`.**
   A query such as `MATCH (a:A) FOREACH (x IN [1] | CREATE (:FB {id: x})) RETURN count(a) AS c` returned the correct
   count but never persisted the `FB` nodes created inside the `FOREACH`; inserting a `WITH` between the `FOREACH` and
