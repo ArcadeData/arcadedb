@@ -66,12 +66,21 @@ final public class DatabaseEventWatcherThread extends Thread {
 
   /**
    * Sends the shutdown signal to the thread and waits for termination.
+   * <p>
+   * When invoked from the watcher thread itself (e.g. {@code publish()} cleans up the last subscriber as a zombie and
+   * ends up stopping its own watcher), the wait is skipped: the {@code run()} loop unwinds and unregisters the database
+   * listeners on its own as soon as it observes {@code running == false}. Awaiting here would park the thread on a latch
+   * that only its own {@code run()} finally-block can count down, deadlocking it forever.
    */
   public void shutdown() {
     if (!running)
       return;
 
     this.running = false;
+
+    if (Thread.currentThread() == this)
+      return;
+
     try {
       runningLock.await();
     } catch (final InterruptedException e) {
