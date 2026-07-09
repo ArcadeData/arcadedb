@@ -41,6 +41,18 @@ Three related defects in server-side HTTP transaction-session lifecycle:
   stale-session follow-up write is rejected, retried commit/rollback idempotent,
   recreated-same-name user cannot adopt.
 
+## Behavior changes (for the changelog)
+- A stale/unresolved session id now surfaces differently by handler kind. Write-capable
+  handlers (e.g. `POST /command`) return an explicit **404** (previously the code intended
+  401 but fell through to 500) instead of silently auto-committing. Read handlers
+  (`GET /query`) and the transaction endpoints (`/begin`, `/commit`, `/rollback`) degrade
+  to a session-less request: a read returns 200 against committed data (read-after-commit
+  preserved) and a retried commit/rollback is an idempotent 204. A client that passed an
+  expired session id to a read no longer learns it expired - the read simply runs outside
+  the session.
+- Dropping a user or changing its password rolls back and removes that principal's live HTTP
+  transaction sessions. A plain metadata/grant update (`updateUser`) does NOT - per-request
+  authorization is still re-checked on every command.
+
 ## Impact
-Server module only. No wire-format change. Read-after-commit and existing session-mgmt
-(#4141) semantics preserved.
+Server module only. No wire-format change. Existing session-mgmt (#4141) semantics preserved.

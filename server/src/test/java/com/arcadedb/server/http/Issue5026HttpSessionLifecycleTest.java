@@ -179,6 +179,12 @@ class Issue5026HttpSessionLifecycleTest {
     final ServerSecurityUser alice = createUser("alice");
     final HttpSession aliceSession = sessionManager.createSession(alice, beginTx());
 
+    // Ownership is by name, so BEFORE invalidation a same-name principal WOULD resolve the session. This
+    // pins the invariant that invalidation-on-drop (removing the session), not the identity check, is the
+    // real guard against same-name adoption.
+    assertThat(sessionManager.getSessionById(createUser("alice"), aliceSession.id))
+        .as("a same-name principal resolves the session until it is invalidated").isSameAs(aliceSession);
+
     // User is dropped: invalidate its live sessions.
     sessionManager.removeSessionsForUser("alice");
 

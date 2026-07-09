@@ -315,20 +315,24 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return user;
   }
 
-  public synchronized boolean dropUser(final String userName) {
-    if (users.remove(userName) != null) {
+  public boolean dropUser(final String userName) {
+    synchronized (this) {
+      if (users.remove(userName) == null)
+        return false;
       saveUsers();
-      // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
-      // cannot adopt (and commit) the prior principal's still-open session.
-      invalidateHttpSessions(userName);
-      return true;
     }
-    return false;
+    // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
+    // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
+    // session.cancel() waits (unbounded, by design) on the per-session lock for any in-flight command, and
+    // holding this monitor across that wait would stall every other admin op serialized on it.
+    invalidateHttpSessions(userName);
+    return true;
   }
 
   /**
    * Invalidates every live HTTP transaction session owned by the named principal (rolling back its open
-   * transaction). No-op when the HTTP server is not running (e.g. embedded use).
+   * transaction). No-op when the HTTP server is not running (e.g. embedded use). Must be called OUTSIDE the
+   * {@code ServerSecurity} monitor: it can block on a session's in-flight command via {@code cancel()}.
    */
   private void invalidateHttpSessions(final String userName) {
     final HttpServer httpServer = server != null ? server.getHttpServer() : null;
