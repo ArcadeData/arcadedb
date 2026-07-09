@@ -464,8 +464,11 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
     final Field writeIndexField = ServerQueryProfiler.class.getDeclaredField("writeIndex");
     writeIndexField.setAccessible(true);
     final Object writeIndex = writeIndexField.get(profiler);
+    // Seed each counter type at its own overflow boundary: a long wraps at Long.MAX_VALUE, while the
+    // pre-fix int counter wrapped at Integer.MAX_VALUE. Either way the next getAndIncrement produces a
+    // negative sequence value and, without an overflow-safe modulo, a negative array index.
     if (writeIndex instanceof AtomicLong al)
-      al.set(Integer.MAX_VALUE);
+      al.set(Long.MAX_VALUE);
     else if (writeIndex instanceof AtomicInteger ai)
       ai.set(Integer.MAX_VALUE);
     else
