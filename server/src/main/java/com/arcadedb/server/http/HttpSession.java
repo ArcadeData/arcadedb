@@ -165,6 +165,13 @@ public class HttpSession implements QuerySession {
 
     if (lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS)) {
       try {
+        // RE-VALIDATE UNDER THE LOCK: THE IDLE-TIMEOUT SWEEP (OR A commit/rollback/close) COULD HAVE ROLLED BACK
+        // AND REMOVED THIS SESSION IN THE GAP BETWEEN THE MANAGER LOOKUP AND ACQUIRING THIS LOCK. RUNNING THE
+        // CALLBACK NOW WOULD OPERATE ON A ROLLED-BACK TRANSACTION AND LEAK A FRESH ONE (NOTHING WOULD EVER
+        // COMMIT/ROLL IT BACK, SINCE THE SESSION IS ALREADY UNTRACKED)
+        if (!manager.isSessionRegistered(id))
+          throw new HttpSessionException("Remote transaction '" + id + "' not found or expired");
+
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
         callback.call();
         // REFRESH WHILE STILL HOLDING THE LOCK: OTHERWISE THE IDLE-TIMEOUT SWEEP COULD tryLock() SUCCESSFULLY
