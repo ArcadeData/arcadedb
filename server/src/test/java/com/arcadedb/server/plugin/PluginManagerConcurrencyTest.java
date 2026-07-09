@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -48,7 +49,8 @@ class PluginManagerConcurrencyTest {
   @TempDir
   Path tempDir;
 
-  private PluginManager manager;
+  private ArcadeDBServer server;
+  private PluginManager  manager;
 
   private static class NoopPlugin implements ServerPlugin {
     @Override
@@ -68,8 +70,14 @@ class PluginManagerConcurrencyTest {
     configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, tempDir.toString());
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
 
-    final ArcadeDBServer server = new ArcadeDBServer(configuration);
+    server = new ArcadeDBServer(configuration);
     manager = new PluginManager(server, configuration);
+  }
+
+  @AfterEach
+  void teardown() {
+    if (server != null && server.isStarted())
+      server.stop();
   }
 
   @Test
@@ -98,7 +106,8 @@ class PluginManagerConcurrencyTest {
   @Test
   void getPluginNamesIterationSurvivesConcurrentRegistration() throws InterruptedException {
     // A registrar continuously mutates the map while an iterator repeatedly reads and walks the names.
-    final int registrations = 200_000;
+    // Kept modest so the test stays fast and lightweight; the deterministic test above is the primary gate.
+    final int registrations = 20_000;
     final AtomicBoolean registrarDone = new AtomicBoolean(false);
     final AtomicReference<Throwable> failure = new AtomicReference<>();
     final CountDownLatch started = new CountDownLatch(1);

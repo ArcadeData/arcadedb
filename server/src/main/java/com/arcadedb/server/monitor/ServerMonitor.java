@@ -53,7 +53,8 @@ public class ServerMonitor {
 	// JMX related fields
 	private MBeanServer mBeanServer;
 	private ObjectName hotspotRuntimeMBean;
-	private boolean safepointMonitoringAvailable = false;
+	// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY.
+	private volatile boolean safepointMonitoringAvailable = false;
 	private MemoryMXBean memoryMXBean;
 
 	public ServerMonitor(final ArcadeDBServer server) {

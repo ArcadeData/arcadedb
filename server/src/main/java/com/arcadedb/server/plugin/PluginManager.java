@@ -144,11 +144,16 @@ public class PluginManager {
       }
     }
 
-    // Warn about configured plugins that were not discovered
+    // Warn about configured plugins that were not discovered. Snapshot the descriptors under the map
+    // monitor so a concurrent registerPlugin cannot invalidate the iteration below.
+    final List<PluginDescriptor> discovered;
+    synchronized (plugins) {
+      discovered = new ArrayList<>(plugins.values());
+    }
     for (final String name : configuredPluginNames) {
       if (!plugins.containsKey(name)) {
         boolean found = false;
-        for (final PluginDescriptor desc : plugins.values()) {
+        for (final PluginDescriptor desc : discovered) {
           final ServerPlugin instance = desc.getPluginInstance();
           if (instance != null && (name.equals(instance.getName()) || name.equals(instance.getClass().getSimpleName())
               || name.equals(instance.getClass().getName()))) {
@@ -221,7 +226,13 @@ public class PluginManager {
    * Start plugins based on their installation priority.
    */
   public void startPlugins(final ServerPlugin.PluginInstallationPriority priority) {
-    for (final Map.Entry<String, PluginDescriptor> entry : plugins.entrySet()) {
+    // Snapshot under the map monitor: the plugin lifecycle calls below must not run while holding the
+    // monitor (they can block), so we iterate a private copy instead of a live synchronized-map view.
+    final List<Map.Entry<String, PluginDescriptor>> entries;
+    synchronized (plugins) {
+      entries = new ArrayList<>(plugins.entrySet());
+    }
+    for (final Map.Entry<String, PluginDescriptor> entry : entries) {
       final String pluginName = entry.getKey();
       final PluginDescriptor descriptor = entry.getValue();
       final ServerPlugin plugin = descriptor.getPluginInstance();
@@ -264,7 +275,10 @@ public class PluginManager {
    * Stop all plugins in reverse order of registration.
    */
   public void stopPlugins() {
-    final List<Map.Entry<String, PluginDescriptor>> pluginList = new ArrayList<>(plugins.entrySet());
+    final List<Map.Entry<String, PluginDescriptor>> pluginList;
+    synchronized (plugins) {
+      pluginList = new ArrayList<>(plugins.entrySet());
+    }
     Collections.reverse(pluginList);
 
     for (final Map.Entry<String, PluginDescriptor> entry : pluginList) {
@@ -290,8 +304,9 @@ public class PluginManager {
       }
     }
 
-    // Close class loaders
-    for (final PluginDescriptor descriptor : plugins.values()) {
+    // Close class loaders (iterate the same snapshot taken above, not a live map view)
+    for (final Map.Entry<String, PluginDescriptor> entry : pluginList) {
+      final PluginDescriptor descriptor = entry.getValue();
       final ClassLoader classLoader = descriptor.getClassLoader();
       if (classLoader instanceof PluginClassLoader) {
         try {
@@ -312,9 +327,13 @@ public class PluginManager {
    */
   public Collection<ServerPlugin> getPlugins() {
     final List<ServerPlugin> result = new ArrayList<>();
-    for (final PluginDescriptor descriptor : plugins.values()) {
-      if (descriptor.getPluginInstance() != null) {
-        result.add(descriptor.getPluginInstance());
+    // Iterate under the map monitor: this is called from the HA metrics thread while registerPlugin may
+    // still be mutating the map at startup, so a live synchronized-map view would throw CME.
+    synchronized (plugins) {
+      for (final PluginDescriptor descriptor : plugins.values()) {
+        if (descriptor.getPluginInstance() != null) {
+          result.add(descriptor.getPluginInstance());
+        }
       }
     }
     return Collections.unmodifiableCollection(result);
