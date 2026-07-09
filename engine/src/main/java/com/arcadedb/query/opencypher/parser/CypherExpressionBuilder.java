@@ -560,11 +560,11 @@ class CypherExpressionBuilder {
     // Check for property access: variable.property
     if (text.contains(".") && !text.contains("(")) {
       final String[] parts = text.split("\\.", 2);
-      return new PropertyAccessExpression(parts[0], CypherASTBuilder.stripBackticks(parts[1]));
+      return new PropertyAccessExpression(CypherASTBuilder.stripBackticks(parts[0]), CypherASTBuilder.stripBackticks(parts[1]));
     }
 
-    // Simple variable
-    return new VariableExpression(text);
+    // Simple variable (strip backticks so escaped keywords like `match` match the name bound by the pattern)
+    return new VariableExpression(CypherASTBuilder.stripBackticks(text));
   }
 
   /**
