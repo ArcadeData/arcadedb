@@ -20,9 +20,11 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
 
@@ -32,6 +34,14 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 26/10/16.
  */
 public class DepthFirstTraverseStep extends AbstractTraverseStep {
+
+  // Relaxation state so TRAVERSE ... MAXDEPTH d returns the correct d-hop ball. A depth-first walk can reach a node through a long path before a short one; the
+  // legacy code recorded only that first-arrival depth and gated subtree expansion on it, so when MAXDEPTH fell between the two path lengths a whole subtree was
+  // wrongly pruned and the result became non-monotonic in d (issue #5159). We instead keep the smallest depth seen per node and re-expand it whenever a strictly
+  // shorter path arrives, so every node reachable within d hops is expanded. Nodes are still emitted once. On single-path graphs no relaxation fires, so the walk
+  // is byte-for-byte identical to before.
+  private final Map<RID, Integer> bestDepthByRid = new HashMap<>();
+  private final RidHashSet        emitted        = new RidHashSet();
 
   public DepthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth,
       final CommandContext context) {
@@ -66,11 +76,15 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       ((ResultInternal) item).setMetadata("$path", path);
 
       if (item.isElement() && !traversed.contains(item.getElement().get().getIdentity())) {
+        final RID rid = item.getElement().get().getIdentity();
         tryAddEntryPointAtTheEnd(item, context);
-        traversed.add(item.getElement().get().getIdentity());
+        traversed.add(rid);
+        bestDepthByRid.put(rid, 0);
       } else if (item.getProperty(RID_PROPERTY) instanceof Identifiable) {
+        final RID rid = ((Identifiable) item.getProperty(RID_PROPERTY)).getIdentity();
         tryAddEntryPointAtTheEnd(item, context);
-        traversed.add(((Identifiable) item.getProperty(RID_PROPERTY)).getIdentity());
+        traversed.add(rid);
+        bestDepthByRid.put(rid, 0);
       }
     }
   }
@@ -105,11 +119,23 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
   protected void fetchNextResults(final CommandContext context, final int nRecords) {
     if (!this.entryPoints.isEmpty()) {
       final TraverseResult item = (TraverseResult) this.entryPoints.removeFirst();
-      if (postFilter == null || postFilter.matchesFilters(item, context))
+      final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
+      final RID rid = item.getIdentity().orElse(null);
+
+      // A strictly shorter path to this node was found after this copy was queued: a better-depth copy is (or was) in the queue, so this one is stale. Skipping it
+      // avoids both a duplicate emission and a redundant (deeper) expansion; the better copy carries the correct depth and re-expands the subtree.
+      if (rid != null) {
+        final Integer best = bestDepthByRid.get(rid);
+        if (best != null && depth > best)
+          return;
+      }
+
+      // Emit each node at most once (its first non-stale visit). Non-element results carry no RID and keep the historical emit-always behavior.
+      if ((rid == null || emitted.add(rid)) && (postFilter == null || postFilter.matchesFilters(item, context)))
         this.results.add(item);
+
       for (final TraverseProjectionItem proj : projections) {
         final Object nextStep = proj.execute(item, context);
-        final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
         if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth)
           addNextEntryPoints(nextStep, depth + 1, (List) item.getMetadata("$path"), (List) item.getMetadata("$stack"), context);
       }
@@ -136,7 +162,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   private void addNextEntryPoint(final Identifiable nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
       final CommandContext context) {
-    if (this.traversed.contains(nextStep.getIdentity()))
+    if (!improvesDepth(nextStep.getIdentity(), depth))
       return;
 
     final TraverseResult res = new TraverseResult((Document) nextStep);
@@ -163,7 +189,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     if (!nextStep.isElement())
       return;
 
-    if (this.traversed.contains(nextStep.getElement().get().getIdentity()))
+    if (!improvesDepth(nextStep.getElement().get().getIdentity(), depth))
       return;
 
     if (nextStep instanceof TraverseResult result) {
@@ -193,6 +219,19 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       res.setMetadata("$stack", newStack);
       tryAddEntryPoint(res, context);
     }
+  }
+
+  /**
+   * Records {@code depth} as the new best (smallest) depth for {@code rid} when it strictly improves on any previously seen depth, returning true so the caller
+   * queues the node for (re-)expansion. Returns false when a path of equal or smaller depth was already recorded, leaving the queue untouched. This relaxation is
+   * what keeps MAXDEPTH monotonic: a node first reached through a long path is re-queued (and its subtree re-expanded) once a shorter path arrives.
+   */
+  private boolean improvesDepth(final RID rid, final int depth) {
+    final Integer prev = bestDepthByRid.get(rid);
+    if (prev != null && prev <= depth)
+      return false;
+    bestDepthByRid.put(rid, depth);
+    return true;
   }
 
   private void tryAddEntryPoint(final Result res, final CommandContext context) {
