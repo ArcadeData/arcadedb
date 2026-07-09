@@ -142,19 +142,8 @@ public class ArithmeticExpression implements Expression {
     // Determine result type (preserve integer if possible)
     final boolean useInteger = isInteger(leftNum) && isInteger(rightNum) && operator != Operator.POWER;
 
-    if (useInteger) {
-      final long l = leftNum.longValue();
-      final long r = rightNum.longValue();
-
-      return switch (operator) {
-        case ADD -> l + r;
-        case SUBTRACT -> l - r;
-        case MULTIPLY -> l * r;
-        case DIVIDE -> { checkIntegerDivisorNotZero(operator, r); yield l / r; } // Integer division (truncation)
-        case MODULO -> { checkIntegerDivisorNotZero(operator, r); yield l % r; }
-        default -> null; // POWER handled below
-      };
-    }
+    if (useInteger)
+      return integerArithmetic(operator, leftNum.longValue(), rightNum.longValue());
 
     // Use double for division, power, and mixed types
     final double l = leftNum.doubleValue();
@@ -179,6 +168,31 @@ public class ArithmeticExpression implements Expression {
   public static void checkIntegerDivisorNotZero(final Operator op, final long divisor) {
     if (divisor == 0)
       throw new CommandExecutionException(op == Operator.MODULO ? "% by zero" : "/ by zero");
+  }
+
+  /**
+   * Perform integer (64-bit) arithmetic that fails the query on overflow instead of silently wrapping around with
+   * two's-complement semantics (issue #5164). Neo4j (the OpenCypher reference implementation) raises an arithmetic
+   * error - {@code long overflow} - for {@code +}, {@code -} and {@code *} that exceed the {@code long} range, and
+   * also for the single division overflow case {@code Long.MIN_VALUE / -1}. Silent wraparound produces
+   * mathematically wrong results that look valid and can be persisted to storage, so we match Neo4j and throw.
+   * <p>
+   * Only pure-integer operations are checked here; mixed or floating-point arithmetic keeps IEEE 754 semantics
+   * (overflow becomes {@code ±Infinity}), matching Neo4j.
+   */
+  public static long integerArithmetic(final Operator op, final long l, final long r) {
+    try {
+      return switch (op) {
+        case ADD -> Math.addExact(l, r);
+        case SUBTRACT -> Math.subtractExact(l, r);
+        case MULTIPLY -> Math.multiplyExact(l, r);
+        case DIVIDE -> { checkIntegerDivisorNotZero(op, r); yield Math.divideExact(l, r); } // truncates toward zero, guards Long.MIN_VALUE / -1
+        case MODULO -> { checkIntegerDivisorNotZero(op, r); yield l % r; }
+        case POWER -> throw new IllegalStateException("POWER is not an integer operation");
+      };
+    } catch (final ArithmeticException e) {
+      throw new CommandExecutionException("long overflow", e);
+    }
   }
 
   /**
