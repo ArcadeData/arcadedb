@@ -135,6 +135,94 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Regression for issue #5036: when a batch fails mid-stream (here an edge that references an unknown
+   * temporary id after its vertices were already flushed), the error response must report how many
+   * records were persisted so far and flag the partial commit, so a client can reconcile instead of
+   * blindly retrying the whole file (which would duplicate the already-committed vertices).
+   */
+  @Test
+  void partialCommitErrorReportsPersistedCounts() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          {"@type":"vertex","@class":"V1","@id":"pcA","id":900}
+          {"@type":"vertex","@class":"V1","@id":"pcB","id":901}
+          {"@type":"edge","@class":"E1","@from":"pcA","@to":"ghostNode"}
+          """;
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "commitEvery=1");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(conn));
+      assertThat(error.getInt("verticesCreated")).isEqualTo(2);
+      assertThat(error.getInt("edgesCreated")).isEqualTo(0);
+      assertThat(error.getBoolean("partialCommit")).isTrue();
+      assertThat(error.getString("error")).contains("ghostNode");
+      conn.disconnect();
+    });
+  }
+
+  /**
+   * Regression for issue #5036: when the very first record fails (nothing committed yet) the error
+   * body must report {@code partialCommit=false} with zero counts, so a client knows no reconciliation
+   * is needed and a full retry is safe.
+   */
+  @Test
+  void partialCommitFalseWhenFirstRecordFails() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          {"@type":"edge","@class":"E1","@from":"noVertexA","@to":"noVertexB"}
+          """;
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(conn));
+      assertThat(error.getInt("verticesCreated")).isEqualTo(0);
+      assertThat(error.getInt("edgesCreated")).isEqualTo(0);
+      assertThat(error.getBoolean("partialCommit")).isFalse();
+      conn.disconnect();
+    });
+  }
+
+  /**
+   * Regression for issue #5036: the partial-commit contract must hold for the CSV
+   * {@link com.arcadedb.server.http.handler.batch.CsvBatchRecordStream} path too, not just JSONL -
+   * the counters live in {@code execute}, independent of the stream format.
+   */
+  @Test
+  void partialCommitErrorReportsPersistedCountsCsv() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          @type,@class,@id,id
+          vertex,V1,pccA,910
+          vertex,V1,pccB,911
+          ---
+          @type,@class,@from,@to
+          edge,E1,pccA,ghostCsvNode
+          """;
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "text/csv", "commitEvery=1");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(conn));
+      assertThat(error.getInt("verticesCreated")).isEqualTo(2);
+      assertThat(error.getInt("edgesCreated")).isEqualTo(0);
+      assertThat(error.getBoolean("partialCommit")).isTrue();
+      assertThat(error.getString("error")).contains("ghostCsvNode");
+      conn.disconnect();
+    });
+  }
+
+  /**
    * Regression for discussion #4040: posting a JSONL line that omits the {@code @type} meta key
    * must return a clear HTTP 400 error, not bubble up a raw {@code JSONObject[@type] not found}
    * JSONException as HTTP 500.

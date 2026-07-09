@@ -58,6 +58,16 @@ import java.util.logging.Level;
  * Input must contain vertices first, then edges. Vertices can have temporary IDs (@id) that
  * edges reference via @from/@to. Edges can also reference existing database RIDs (#bucket:pos).
  * <p>
+ * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
+ * failure mid-stream leaves earlier chunks durably committed. On a client-input error the response
+ * carries {@code verticesCreated} / {@code edgesCreated} and a {@code partialCommit} flag; because
+ * temporary {@code @id}s are not keys, blindly retrying the whole payload duplicates the
+ * already-committed vertices. Those counts are the records <em>attempted</em> before the failure, an
+ * upper bound on what is durable: records handled since the last {@code commitEvery} boundary are
+ * rolled back, so a client reconciling against them should treat them as "at most this many". Only
+ * the client-input (HTTP 400) path is enriched with counts; engine/cluster failures keep their
+ * base-handler status (409/503/403/404/500) and are best-effort for partial-commit reporting.
+ * <p>
  * Query parameters (all optional, map to GraphBatch.Builder):
  * - batchSize (int, default 100000)
  * - lightEdges (boolean, default false)
@@ -199,6 +209,41 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
 
       // batch.close() is called by try-with-resources: flushes edges, connects incoming edges
+    } catch (final IllegalArgumentException e) {
+      // Client-input failure mid-stream (malformed line, unknown temporary id, bad RID): a batch load
+      // is NOT atomic - GraphBatch commits every commitEvery records, so records handled before the
+      // failure may already be durable on disk. Surface how many vertices and edges were attempted so
+      // far (plus a partialCommit flag) so a client can reconcile rather than blindly re-POSTing the
+      // whole payload - a retry would duplicate the already-committed vertices, whose temporary @id
+      // values are not keys (issue #5036).
+      //
+      // Only IllegalArgumentException (HTTP 400) is enriched here. Engine/cluster exceptions
+      // (DuplicatedKeyException -> 409, TransactionCommittedRemotelyException -> 409,
+      // NeedRetryException -> 503, security -> 403, RecordNotFoundException -> 404, ...) are left to
+      // propagate so AbstractServerHttpHandler keeps its status mapping and logs the full stack trace.
+      // Downgrading a "do not retry" outcome to a retry-inviting 500 here would duplicate the very
+      // committed chunks this change protects.
+      final String message = e.getMessage() != null ? e.getMessage() : e.toString();
+      LogManager.instance().log(this, Level.WARNING,
+          "Batch load on database '%s' failed after %d vertices and %d edges: %s",
+          null, databaseName, verticesCreated, edgesCreated, message);
+
+      // Bespoke body (not the shared sendErrorResponse envelope) because the partial-commit counts must
+      // be machine-parsable by the client. The message is emitted in `error` even in production on
+      // purpose: batch IllegalArgumentExceptions echo client input (line numbers, temp ids, malformed
+      // RIDs), so there is nothing engine-internal to conceal, and the client needs the offending
+      // location to reconcile. The correlation id is carried through so the 400 stays cross-referenceable
+      // with the server log, matching every other endpoint (issue #5036 review).
+      final JSONObject error = new JSONObject();
+      error.put("error", message);
+      error.put("exception", e.getClass().getName());
+      final String correlationId = getCorrelationId(exchange);
+      if (correlationId != null && !correlationId.isEmpty())
+        error.put("requestId", correlationId);
+      error.put("verticesCreated", verticesCreated);
+      error.put("edgesCreated", edgesCreated);
+      error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
+      return new ExecutionResponse(400, error.toString());
     }
 
     final long elapsed = System.currentTimeMillis() - startTime;
@@ -250,9 +295,15 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final int colonIdx = ref.indexOf(':');
       if (colonIdx < 0)
         throw new IllegalArgumentException("Malformed RID '" + ref + "' at line " + lineNumber);
-      final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
-      final long position = Long.parseLong(ref.substring(colonIdx + 1));
-      return new RID(bucketId, position);
+      try {
+        final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
+        final long position = Long.parseLong(ref.substring(colonIdx + 1));
+        return new RID(bucketId, position);
+      } catch (final NumberFormatException e) {
+        // Surface the handler's clear "Malformed RID" message instead of the raw JDK
+        // "For input string: ..." NumberFormatException text (issue #5036 review).
+        throw new IllegalArgumentException("Malformed RID '" + ref + "' at line " + lineNumber, e);
+      }
     }
 
     // Temporary ID reference
