@@ -165,6 +165,38 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Regression for issue #5036: the partial-commit contract must hold for the CSV
+   * {@link com.arcadedb.server.http.handler.batch.CsvBatchRecordStream} path too, not just JSONL -
+   * the counters live in {@code execute}, independent of the stream format.
+   */
+  @Test
+  void partialCommitErrorReportsPersistedCountsCsv() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          @type,@class,@id,id
+          vertex,V1,pccA,910
+          vertex,V1,pccB,911
+          ---
+          @type,@class,@from,@to
+          edge,E1,pccA,ghostCsvNode
+          """;
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "text/csv", "commitEvery=1");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(conn));
+      assertThat(error.getInt("verticesCreated")).isEqualTo(2);
+      assertThat(error.getInt("edgesCreated")).isEqualTo(0);
+      assertThat(error.getBoolean("partialCommit")).isTrue();
+      assertThat(error.getString("error")).contains("ghostCsvNode");
+      conn.disconnect();
+    });
+  }
+
+  /**
    * Regression for discussion #4040: posting a JSONL line that omits the {@code @type} meta key
    * must return a clear HTTP 400 error, not bubble up a raw {@code JSONObject[@type] not found}
    * JSONException as HTTP 500.

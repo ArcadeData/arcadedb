@@ -33,4 +33,17 @@
 ## Impact
 - Batch and line-protocol clients can now detect partial writes and reconcile instead of blindly
   retrying. Existing full-success paths and all-dropped error paths keep their previous status codes.
-</content>
+
+## PR
+- https://github.com/ArcadeData/arcadedb/pull/5167
+
+## Review cycles
+- Cycle 1 (`fd975bea6`) - addressed claude + gemini high/medium items: batch handler now only enriches
+  `IllegalArgumentException` (400) with counts and lets engine/cluster exceptions propagate to
+  `AbstractServerHttpHandler` (409/503/403/404 + stack logging) instead of masking them as 500;
+  time-series `dropped` now counts samples (`samples.size() - inserted`), not distinct type names;
+  Javadoc notes counts are an attempted upper bound; removed unused test helper param.
+- Cycle 2 (`<next>`) - claude must-fix: removed a stray `</content>` line from this doc. Optional items
+  applied: added `exception` class name to the batch 400 body for envelope consistency, a Javadoc note
+  that non-400 paths are best-effort for partial-commit reporting, and a CSV partial-commit regression
+  test (`partialCommitErrorReportsPersistedCountsCsv`) to lock the contract for both stream formats.

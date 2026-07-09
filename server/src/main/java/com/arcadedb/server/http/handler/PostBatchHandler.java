@@ -64,7 +64,9 @@ import java.util.logging.Level;
  * temporary {@code @id}s are not keys, blindly retrying the whole payload duplicates the
  * already-committed vertices. Those counts are the records <em>attempted</em> before the failure, an
  * upper bound on what is durable: records handled since the last {@code commitEvery} boundary are
- * rolled back, so a client reconciling against them should treat them as "at most this many".
+ * rolled back, so a client reconciling against them should treat them as "at most this many". Only
+ * the client-input (HTTP 400) path is enriched with counts; engine/cluster failures keep their
+ * base-handler status (409/503/403/404/500) and are best-effort for partial-commit reporting.
  * <p>
  * Query parameters (all optional, map to GraphBatch.Builder):
  * - batchSize (int, default 100000)
@@ -228,6 +230,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
       final JSONObject error = new JSONObject();
       error.put("error", message);
+      error.put("exception", e.getClass().getName());
       error.put("verticesCreated", verticesCreated);
       error.put("edgesCreated", edgesCreated);
       error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
