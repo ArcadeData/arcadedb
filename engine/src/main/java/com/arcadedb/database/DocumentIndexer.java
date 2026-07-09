@@ -99,24 +99,15 @@ public class DocumentIndexer {
   public void addToIndex(final Index entry, final RID rid, final Document record) {
     final List<String> keyNames = entry.getPropertyNames();
 
-    // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP)
-    KeyExpansion expansion = KeyExpansion.NONE;
-    int expansionIndex = -1;
+    // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP) on each property.
     final String[] propertyNamesArray = new String[keyNames.size()];
-
-    for (int i = 0; i < keyNames.size(); ++i) {
-      final String keyName = keyNames.get(i);
-      final KeyExpansion e = detectExpansion(keyName);
-      if (e != KeyExpansion.NONE) {
-        expansion = e;
-        expansionIndex = i;
-        propertyNamesArray[i] = stripModifier(keyName, e);
-      } else {
-        propertyNamesArray[i] = keyName;
-      }
-    }
-
-    if (expansion == KeyExpansion.NONE) {
+    final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNamesArray);
+    final KeyExpansion expansion = classify(expansions);
+    final int expansionIndex = lastExpansionIndex(expansions);
+    if (countListExpansions(expansions) > 1) {
+      // Multiple BY ITEM properties sharing the same root list - one entry per list element (issue #5181)
+      addMultiListItemsToIndex(entry, rid, record, propertyNamesArray, expansions);
+    } else if (expansion == KeyExpansion.NONE) {
       // Standard indexing - single entry per document
       final Object[] keyValues = new Object[keyNames.size()];
       for (int i = 0; i < keyValues.length; ++i)
@@ -129,6 +120,54 @@ public class DocumentIndexer {
       // Map indexing - one entry per key or per value
       addMapEntriesToIndex(entry, rid, record, propertyNamesArray, expansionIndex, expansion);
     }
+  }
+
+  /**
+   * Detects the collection modifier of every index property, filling {@code propertyNamesArray} with the modifier-stripped
+   * property names, and returns the per-property {@link KeyExpansion}.
+   */
+  private static KeyExpansion[] detectExpansions(final List<String> keyNames, final String[] propertyNamesArray) {
+    final KeyExpansion[] expansions = new KeyExpansion[keyNames.size()];
+    for (int i = 0; i < keyNames.size(); ++i) {
+      final String keyName = keyNames.get(i);
+      final KeyExpansion e = detectExpansion(keyName);
+      expansions[i] = e;
+      propertyNamesArray[i] = e != KeyExpansion.NONE ? stripModifier(keyName, e) : keyName;
+    }
+    return expansions;
+  }
+
+  /**
+   * Returns the single non-NONE expansion (last one wins, preserving the historical single-modifier behavior) or
+   * {@link KeyExpansion#NONE} when there is none. Only meaningful when there is at most one list expansion; the multi-list case
+   * is routed before this is consulted.
+   */
+  private static KeyExpansion classify(final KeyExpansion[] expansions) {
+    KeyExpansion result = KeyExpansion.NONE;
+    for (final KeyExpansion e : expansions)
+      if (e != KeyExpansion.NONE)
+        result = e;
+    return result;
+  }
+
+  /**
+   * Returns the index of the expansion selected by {@link #classify} (the last non-NONE modifier), or {@code -1} when there is
+   * none, so the single-modifier fast paths address the same property that {@code classify} describes.
+   */
+  private static int lastExpansionIndex(final KeyExpansion[] expansions) {
+    int result = -1;
+    for (int i = 0; i < expansions.length; ++i)
+      if (expansions[i] != KeyExpansion.NONE)
+        result = i;
+    return result;
+  }
+
+  private static int countListExpansions(final KeyExpansion[] expansions) {
+    int count = 0;
+    for (final KeyExpansion e : expansions)
+      if (e == KeyExpansion.LIST_ITEM)
+        ++count;
+    return count;
   }
 
   private void addMapEntriesToIndex(final Index entry, final RID rid, final Document record,
@@ -238,6 +277,135 @@ public class DocumentIndexer {
   }
 
   /**
+   * Indexes a document for an index with MULTIPLE {@code BY ITEM} properties (issue #5181), e.g.
+   * {@code (obj.hd BY ITEM, obj.tl BY ITEM)}. All list properties must share the same root list; the list is walked once and one
+   * compound key is produced per element, zipping the nested value of every list property from the SAME element (element-wise, not
+   * cross-product). Non-list properties are resolved as scalars from the record.
+   */
+  private void addMultiListItemsToIndex(final Index entry, final RID rid, final Document record,
+      final String[] propertyNames, final KeyExpansion[] expansions) {
+    for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNames, expansions))
+      entry.put(keyValues, new RID[] { rid });
+  }
+
+  /**
+   * Builds one compound key tuple per element of the shared root list for a multi-{@code BY ITEM} index. Each list property
+   * contributes the nested value extracted from the current element; non-list properties contribute their scalar record value. An
+   * element is skipped only when every list-derived value is null (mirrors the single-property behavior of not indexing a null
+   * list value).
+   */
+  private List<Object[]> buildMultiListItemTuples(final Document record, final String[] propertyNames,
+      final KeyExpansion[] expansions) {
+    final String root = requireSharedListRoot(propertyNames, expansions);
+
+    final Object listValue = record.get(root);
+    if (listValue == null)
+      return List.of();
+    if (!(listValue instanceof List<?> list))
+      throw new IndexException("Property '" + root + "' is indexed with BY ITEM but is not a LIST type");
+    if (list.isEmpty())
+      return List.of();
+
+    // Precompute the path parts of each list property (relative to the shared root element).
+    final String[][] pathParts = new String[propertyNames.length][];
+    for (int i = 0; i < propertyNames.length; ++i)
+      if (expansions[i] == KeyExpansion.LIST_ITEM)
+        pathParts[i] = propertyNames[i].split("\\.");
+
+    final List<Object[]> tuples = new ArrayList<>(list.size());
+    for (final Object element : list) {
+      final Object[] keyValues = new Object[propertyNames.length];
+      boolean allListNull = true;
+      for (int i = 0; i < propertyNames.length; ++i) {
+        if (expansions[i] == KeyExpansion.LIST_ITEM) {
+          final Object value = extractNestedFromElement(element, pathParts[i]);
+          keyValues[i] = value;
+          if (value != null)
+            allListNull = false;
+        } else {
+          keyValues[i] = getPropertyValue(record, propertyNames[i]);
+        }
+      }
+      if (!allListNull)
+        tuples.add(keyValues);
+    }
+    return tuples;
+  }
+
+  /**
+   * Returns the common root list property shared by every {@code BY ITEM} property, or throws when they do not all descend from
+   * the same list (a cross-product of independent lists is ambiguous and not supported).
+   */
+  private static String requireSharedListRoot(final String[] propertyNames, final KeyExpansion[] expansions) {
+    String root = null;
+    for (int i = 0; i < propertyNames.length; ++i) {
+      if (expansions[i] != KeyExpansion.LIST_ITEM)
+        continue;
+      final int dot = propertyNames[i].indexOf('.');
+      final String r = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
+      if (root == null)
+        root = r;
+      else if (!root.equals(r))
+        throw new IndexException(
+            "Multiple BY ITEM properties in the same index must reference the same list; found '" + root + "' and '" + r + "'");
+    }
+    return root;
+  }
+
+  /**
+   * Extracts a nested value from a single list element following {@code pathParts[1..]} (index 0 is the root list property).
+   * Returns the element itself for a simple list ({@code pathParts.length == 1}).
+   */
+  private static Object extractNestedFromElement(final Object element, final String[] pathParts) {
+    Object value = element;
+    for (int j = 1; j < pathParts.length; ++j) {
+      if (value == null)
+        break;
+      if (value instanceof Document doc)
+        value = doc.get(pathParts[j]);
+      else if (value instanceof Map<?, ?> map)
+        value = map.get(pathParts[j]);
+      else
+        return null;
+    }
+    return value;
+  }
+
+  /**
+   * Updates a multi-{@code BY ITEM} index (issue #5181) by diffing the compound tuples produced from the shared list before and
+   * after the change: tuples no longer present are removed, new tuples are added, and unchanged tuples are left untouched.
+   *
+   * @return {@code true} if at least one index entry was removed or added.
+   */
+  private boolean updateMultiListItemsInIndex(final Index index, final RID rid, final Document originalRecord,
+      final Document modifiedRecord, final String[] propertyNames, final KeyExpansion[] expansions) {
+    final List<Object[]> oldTuples = buildMultiListItemTuples(originalRecord, propertyNames, expansions);
+    final List<Object[]> newTuples = buildMultiListItemTuples(modifiedRecord, propertyNames, expansions);
+
+    boolean changed = false;
+    for (final Object[] oldTuple : oldTuples) {
+      if (!containsTuple(newTuples, oldTuple)) {
+        index.remove(oldTuple, rid);
+        changed = true;
+      }
+    }
+    for (final Object[] newTuple : newTuples) {
+      if (!containsTuple(oldTuples, newTuple)) {
+        index.put(newTuple, new RID[] { rid });
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private static boolean containsTuple(final List<Object[]> tuples, final Object[] tuple) {
+    for (final Object[] t : tuples)
+      if (Arrays.equals(t, tuple))
+        return true;
+    return false;
+  }
+
+  /**
    * Defensive copy for a snapshot value: scalar values are immutable and stored as-is; containers are
    * shallow-copied and embedded documents detached, so a later in-place mutation of the live value cannot
    * retroactively change the snapshot and hide an index delta.
@@ -309,36 +477,26 @@ public class DocumentIndexer {
     // Retained per index for the snapshot build below, so the values extracted for the diff are reused.
     final String[][] indexPropertyNames = new String[totalIndexes][];
     final Object[][] indexNewKeyValues = new Object[totalIndexes][];
-    final KeyExpansion[] indexExpansions = new KeyExpansion[totalIndexes];
-    final int[] indexExpansionPositions = new int[totalIndexes];
+    final KeyExpansion[][] indexExpansions = new KeyExpansion[totalIndexes][];
 
     boolean anyIndexModified = false;
     for (int indexPos = 0; indexPos < totalIndexes; ++indexPos) {
       final Index index = indexes.get(indexPos);
       final List<String> keyNames = index.getPropertyNames();
 
-      // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP)
-      KeyExpansion expansion = KeyExpansion.NONE;
-      int expansionIndex = -1;
+      // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP) on each property.
       final String[] propertyNamesArray = new String[keyNames.size()];
-
-      for (int i = 0; i < keyNames.size(); ++i) {
-        final String keyName = keyNames.get(i);
-        final KeyExpansion e = detectExpansion(keyName);
-        if (e != KeyExpansion.NONE) {
-          expansion = e;
-          expansionIndex = i;
-          propertyNamesArray[i] = stripModifier(keyName, e);
-        } else {
-          propertyNamesArray[i] = keyName;
-        }
-      }
+      final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNamesArray);
+      final KeyExpansion expansion = classify(expansions);
+      final int expansionIndex = lastExpansionIndex(expansions);
 
       indexPropertyNames[indexPos] = propertyNamesArray;
-      indexExpansions[indexPos] = expansion;
-      indexExpansionPositions[indexPos] = expansionIndex;
+      indexExpansions[indexPos] = expansions;
 
-      if (expansion == KeyExpansion.NONE) {
+      if (countListExpansions(expansions) > 1) {
+        // Multi-BY ITEM index: diff the compound tuples produced from the shared list (issue #5181)
+        anyIndexModified |= updateMultiListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
+      } else if (expansion == KeyExpansion.NONE) {
         // Standard update logic (existing code)
         final Object[] oldKeyValues = new Object[keyNames.size()];
         final Object[] newKeyValues = new Object[keyNames.size()];
@@ -392,20 +550,19 @@ public class DocumentIndexer {
     final Map<String, Object> values = new LinkedHashMap<>();
     for (int indexPos = 0; indexPos < totalIndexes; ++indexPos) {
       final String[] propertyNames = indexPropertyNames[indexPos];
-      final KeyExpansion expansion = indexExpansions[indexPos];
-      final int expansionIndex = indexExpansionPositions[indexPos];
+      final KeyExpansion[] expansions = indexExpansions[indexPos];
       final Object[] newKeyValues = indexNewKeyValues[indexPos];
 
       for (int i = 0; i < propertyNames.length; ++i) {
-        if (expansion != KeyExpansion.NONE && i == expansionIndex) {
-          if (expansion == KeyExpansion.LIST_ITEM) {
-            // The list delta logic reads the ROOT property directly (nested paths descend per element).
-            final int dot = propertyNames[i].indexOf('.');
-            final String root = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
-            if (!values.containsKey(root))
-              values.put(root, copyForSnapshot(modifiedRecord.get(root)));
-          } else if (!values.containsKey(propertyNames[i]))
-            // The map delta logic reads the stripped map property directly.
+        if (expansions[i] == KeyExpansion.LIST_ITEM) {
+          // The list delta logic reads the ROOT property directly (nested paths descend per element).
+          final int dot = propertyNames[i].indexOf('.');
+          final String root = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
+          if (!values.containsKey(root))
+            values.put(root, copyForSnapshot(modifiedRecord.get(root)));
+        } else if (expansions[i] == KeyExpansion.MAP_KEY || expansions[i] == KeyExpansion.MAP_VALUE) {
+          // The map delta logic reads the stripped map property directly.
+          if (!values.containsKey(propertyNames[i]))
             values.put(propertyNames[i], copyForSnapshot(modifiedRecord.get(propertyNames[i])));
         } else if (!values.containsKey(propertyNames[i]))
           values.put(propertyNames[i], copyForSnapshot(
@@ -593,24 +750,17 @@ public class DocumentIndexer {
       for (final IndexInternal index : allIndexes) {
         final List<String> keyNames = index.getPropertyNames();
 
-        // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP)
-        KeyExpansion expansion = KeyExpansion.NONE;
-        int expansionIndex = -1;
+        // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP) on each property.
         final String[] propertyNamesArray = new String[keyNames.size()];
+        final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNamesArray);
+        final KeyExpansion expansion = classify(expansions);
+        final int expansionIndex = lastExpansionIndex(expansions);
 
-        for (int i = 0; i < keyNames.size(); ++i) {
-          final String keyName = keyNames.get(i);
-          final KeyExpansion e = detectExpansion(keyName);
-          if (e != KeyExpansion.NONE) {
-            expansion = e;
-            expansionIndex = i;
-            propertyNamesArray[i] = stripModifier(keyName, e);
-          } else {
-            propertyNamesArray[i] = keyName;
-          }
-        }
-
-        if (expansion == KeyExpansion.NONE) {
+        if (countListExpansions(expansions) > 1) {
+          // Delete all entries of a multi-BY ITEM index (issue #5181)
+          for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNamesArray, expansions))
+            index.remove(keyValues, record.getIdentity());
+        } else if (expansion == KeyExpansion.NONE) {
           // Standard deletion
           final Object[] keyValues = new Object[keyNames.size()];
           for (int i = 0; i < keyNames.size(); ++i) {
