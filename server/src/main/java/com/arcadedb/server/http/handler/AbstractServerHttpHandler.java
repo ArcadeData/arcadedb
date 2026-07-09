@@ -27,6 +27,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -43,7 +44,10 @@ import io.undertow.util.HttpString;
 import io.undertow.util.PathTemplateMatch;
 import io.undertow.util.StatusCodes;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Deque;
@@ -61,6 +65,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BEARER = "Bearer";
   // Cached once: tryFromString scans/validates the header name, wasteful to repeat on every request.
   private static final HttpString REQUEST_ID_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID);
+  // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
+  // is session-scoped and must not be replayed from the idempotency cache (the session id would be lost).
+  private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
+  // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
+  // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
+  private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
+  // Per-thread SHA-256 for the idempotency key: reused (reset) each call so the request hot path avoids the
+  // JCA provider lookup of MessageDigest.getInstance() per request. SHA-256 is JCA-mandated, so init cannot
+  // fail in practice; if it ever did the digest would be unusable, so we fail fast.
+  private static final ThreadLocal<MessageDigest> SHA_256_DIGEST = ThreadLocal.withInitial(() -> {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (final NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is a JCA-mandated algorithm but was not found", e);
+    }
+  });
   // Upper bound on a client-supplied X-Request-Id we echo and log, to keep a hostile value bounded.
   private static final int        MAX_REQUEST_ID_LENGTH = 128;
   // Process-wide monotonic counter used, together with a per-thread random, to mint cheap correlation ids
@@ -113,6 +133,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // An idempotent POST may block briefly on IdempotencyCache await() while a concurrent identical retry
+    // is in flight; that must never happen on an Undertow IO thread (blocking IO threads starves the
+    // server). Dispatch to a worker thread first for handlers that would otherwise run on the IO thread.
+    // A blank X-Request-Id is not treated as idempotent (matches the gating below).
+    final String dispatchRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
+    if (exchange.isInIoThread()
+        && "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())
+        && dispatchRequestId != null && !dispatchRequestId.isBlank()
+        && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null) {
+      exchange.dispatch(this);
+      return;
+    }
+
     // Return 503 during snapshot installation to prevent cryptic errors
     if (httpServer.getServer().isSnapshotInstallInProgress()) {
       exchange.setStatusCode(503);
@@ -151,6 +184,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // catch/finally still runs: the observation is stopped (not leaked) and the request is answered
     // with an error rather than propagating an uncaught exception.
     Observation.Scope observationScope = null;
+
+    // Idempotency reservation bookkeeping, visible to the finally block: when this request owns a PENDING
+    // marker and execution throws, the finally clears exactly that marker so a concurrent identical retry
+    // is released instead of blocking until the marker's TTL expires.
+    String                       idempotencyKey         = null;
+    IdempotencyCache.Reservation idempotencyReservation = null;
 
     try {
       observationScope = observation.openScope();
@@ -255,8 +294,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       JSONObject payload = null;
+      String payloadAsString = null;
       if (mustExecuteOnWorkerThread()) {
-        final String payloadAsString = parseRequestPayload(exchange);
+        payloadAsString = parseRequestPayload(exchange);
         if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank())
           try {
             payload = new JSONObject(payloadAsString.trim());
@@ -265,27 +305,53 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           }
       }
 
-      final String requestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
-      if (requestId != null && "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())) {
-        final IdempotencyCache.CachedEntry cached = httpServer.getIdempotencyCache().get(requestId);
-        if (cached != null) {
-          final String currentPrincipal = user != null ? user.getName() : null;
-          if (cached.principal == null || cached.principal.equals(currentPrincipal)) {
-            exchange.setStatusCode(cached.statusCode);
-            exchange.getResponseSender().send(cached.body != null ? cached.body : "");
+      // Idempotency applies only to POST requests that carry a non-blank X-Request-Id and are NOT part of
+      // an open, client-managed session transaction (a session-scoped request's outcome is not settled
+      // until the client commits, so it must never be cached/replayed). A blank id is ignored: distinct
+      // clients sending an empty header would otherwise collide on the same composite key.
+      final String rawRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
+      final boolean idempotentPost = "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())
+          && rawRequestId != null && !rawRequestId.isBlank()
+          && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null;
+
+      if (idempotentPost) {
+        // Bind the key to method/path/database/body so a reused correlation id cannot replay a different
+        // request's response (the core defect: same X-Request-Id across distinct writes).
+        idempotencyKey = buildIdempotencyKey(rawRequestId, exchange.getRequestMethod().toString(),
+            exchange.getRelativePath(), databaseTag(exchange), payloadAsString);
+        final String currentPrincipal = user != null ? user.getName() : null;
+
+        final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(idempotencyKey);
+        if (reservation.isHit()) {
+          if (replayCachedResponse(exchange, reservation.entry(), currentPrincipal))
             return;
-          }
-        }
+          // Principal mismatch: fall through and execute as this caller, without owning the reservation.
+        } else if (reservation.isInFlight()) {
+          // A concurrent identical retry is already executing. Wait briefly for its result rather than
+          // running the write a second time; if it does not settle in time, fall through and execute uncached.
+          if (reservation.entry().await(IN_FLIGHT_WAIT_MS)
+              && replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(idempotencyKey), currentPrincipal))
+            return;
+        } else if (reservation.isReserved())
+          idempotencyReservation = reservation;
       }
 
       final ExecutionResponse response = execute(exchange, user, payload);
       if (response != null) {
         response.send(exchange);
-        if (requestId != null && "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())) {
-          final String currentPrincipal = user != null ? user.getName() : null;
-          httpServer.getIdempotencyCache().putSuccess(requestId, response.getCode(), response.getResponse(), response.getBinary(),
-              currentPrincipal);
+        if (idempotencyReservation != null) {
+          // Do not cache a response that established a client session (e.g. /begin): replaying it would
+          // return the body without the arcadedb-session-id header, orphaning the real session.
+          if (exchange.getResponseHeaders().contains(SESSION_ID_HEADER))
+            httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
+          else
+            httpServer.getIdempotencyCache().complete(idempotencyKey, idempotencyReservation, response.getCode(),
+                response.getResponse(), response.getBinary(), user != null ? user.getName() : null);
+          idempotencyReservation = null;
         }
+      } else if (idempotencyReservation != null) {
+        httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
+        idempotencyReservation = null;
       }
 
     } catch (final ServerSecurityException e) {
@@ -442,6 +508,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
+      // If execution threw after this request reserved the idempotency key, clear the PENDING marker so a
+      // concurrent identical retry is released immediately instead of blocking until the marker's TTL.
+      if (idempotencyReservation != null) {
+        try {
+          httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.WARNING, "Error aborting idempotency reservation", t);
+        }
+      }
+
       // Finalize the optional tracing span. Each step is isolated so a failure in the optional
       // tracing layer can never skip the core cleanup or the RED timer below; closing the scope is
       // attempted independently to avoid thread-local context leaking across pooled worker threads.
@@ -509,6 +585,61 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (match != null)
       return match.getMatchedTemplate();
     return UNMATCHED_PATH_TAG;
+  }
+
+  /**
+   * Replays a cached idempotent response onto {@code exchange}, honoring the stored principal so a
+   * different user cannot replay another caller's response merely by guessing the request id. Returns
+   * false (nothing written) when there is no usable entry or the principal does not match, so the caller
+   * can fall back to executing the request.
+   */
+  private boolean replayCachedResponse(final HttpServerExchange exchange, final IdempotencyCache.CachedEntry cached,
+      final String currentPrincipal) {
+    if (cached == null)
+      return false;
+    if (cached.principal != null && !cached.principal.equals(currentPrincipal))
+      return false;
+    exchange.setStatusCode(cached.statusCode);
+    // Replay a binary body faithfully; falling back to the string body would send an empty response for a
+    // cached binary export/backup and silently lose data.
+    if (cached.binary != null)
+      exchange.getResponseSender().send(ByteBuffer.wrap(cached.binary));
+    else
+      exchange.getResponseSender().send(cached.body != null ? cached.body : "");
+    return true;
+  }
+
+  /**
+   * Builds the idempotency cache key for a POST request. The key is a SHA-256 over the client
+   * {@code X-Request-Id} joined with the HTTP method, path, database and request body, so two unrelated
+   * requests that reuse the same correlation id (a common proxy / client practice) never collide and
+   * replay each other's response. Package-private for direct unit testing.
+   */
+  static String buildIdempotencyKey(final String requestId, final String method, final String path,
+      final String database, final String body) {
+    final MessageDigest md = SHA_256_DIGEST.get();
+    md.reset();
+    final Charset cs = DatabaseFactory.getDefaultCharset();
+    updateDigest(md, requestId, cs);
+    updateDigest(md, method, cs);
+    updateDigest(md, path, cs);
+    updateDigest(md, database, cs);
+    if (body != null)
+      md.update(body.getBytes(cs));
+    final byte[] digest = md.digest();
+    final StringBuilder sb = new StringBuilder(digest.length * 2);
+    for (final byte b : digest) {
+      sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+      sb.append(Character.forDigit(b & 0xF, 16));
+    }
+    return sb.toString();
+  }
+
+  private static void updateDigest(final MessageDigest md, final String value, final Charset cs) {
+    if (value != null)
+      md.update(value.getBytes(cs));
+    // NUL separator delimits fields so ("a","b") and ("ab","") cannot produce the same digest.
+    md.update((byte) 0);
   }
 
   /**

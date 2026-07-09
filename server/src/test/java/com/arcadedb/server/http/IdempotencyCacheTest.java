@@ -111,4 +111,170 @@ class IdempotencyCacheTest {
   void headerConstant() {
     assertThat(IdempotencyCache.HEADER_REQUEST_ID).isEqualTo("X-Request-Id");
   }
+
+  @Test
+  void reserveDedupsConcurrentRetries() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+
+    // First caller owns execution.
+    final IdempotencyCache.Reservation first = cache.reserve("k");
+    assertThat(first.isReserved()).isTrue();
+    assertThat(first.isHit()).isFalse();
+    assertThat(first.isInFlight()).isFalse();
+
+    // A concurrent identical retry does NOT get a reservation: it sees the in-flight marker instead, so it
+    // will not execute the write a second time.
+    final IdempotencyCache.Reservation second = cache.reserve("k");
+    assertThat(second.isReserved()).isFalse();
+    assertThat(second.isInFlight()).isTrue();
+    assertThat(second.entry()).isNotNull();
+
+    // While pending, get() must not surface the incomplete marker as a replayable response.
+    assertThat(cache.get("k")).isNull();
+
+    // Winner settles the reservation; the retry can now replay the completed response.
+    cache.complete("k", first, 200, "{\"ok\":true}", null, "alice");
+    final IdempotencyCache.Reservation third = cache.reserve("k");
+    assertThat(third.isHit()).isTrue();
+    assertThat(third.entry().body).isEqualTo("{\"ok\":true}");
+    assertThat(cache.get("k")).isNotNull();
+  }
+
+  @Test
+  void awaitReleasedByComplete() throws Exception {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+    final IdempotencyCache.Reservation owner = cache.reserve("k");
+    assertThat(owner.isReserved()).isTrue();
+
+    final IdempotencyCache.Reservation waiter = cache.reserve("k");
+    assertThat(waiter.isInFlight()).isTrue();
+
+    final Thread completer = new Thread(() -> {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException ignore) {
+        Thread.currentThread().interrupt();
+      }
+      cache.complete("k", owner, 200, "done", null, "alice");
+    });
+    completer.start();
+
+    assertThat(waiter.entry().await(5_000)).isTrue();
+    completer.join();
+    assertThat(cache.get("k")).isNotNull();
+    assertThat(cache.get("k").body).isEqualTo("done");
+  }
+
+  @Test
+  void abortClearsReservationAndReleasesWaiters() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+    final IdempotencyCache.Reservation owner = cache.reserve("k");
+    assertThat(owner.isReserved()).isTrue();
+
+    final IdempotencyCache.Reservation waiter = cache.reserve("k");
+    assertThat(waiter.isInFlight()).isTrue();
+
+    cache.abort("k", owner);
+    // Waiter is released immediately even though nothing was cached.
+    assertThat(waiter.entry().await(5_000)).isTrue();
+    assertThat(cache.get("k")).isNull();
+
+    // After an abort the key is free again: a fresh retry can reserve it.
+    assertThat(cache.reserve("k").isReserved()).isTrue();
+  }
+
+  @Test
+  void completeIgnoresNon2xx() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+    final IdempotencyCache.Reservation r = cache.reserve("k");
+    assertThat(r.isReserved()).isTrue();
+    cache.complete("k", r, 500, "boom", null, "alice");
+    assertThat(cache.get("k")).isNull();
+    // The marker is gone, so a retry may execute again.
+    assertThat(cache.reserve("k").isReserved()).isTrue();
+  }
+
+  @Test
+  void staleReservationDoesNotClobberReplacement() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+
+    // First request reserves, then its marker is cleared (simulating eviction/expiry).
+    final IdempotencyCache.Reservation first = cache.reserve("k");
+    assertThat(first.isReserved()).isTrue();
+    cache.abort("k", first);
+
+    // A second request reserves the same key and installs a fresh marker.
+    final IdempotencyCache.Reservation second = cache.reserve("k");
+    assertThat(second.isReserved()).isTrue();
+
+    // The slow first request finally settles: it must NOT touch the second request's marker.
+    cache.complete("k", first, 200, "stale", null, "alice");
+    assertThat(cache.get("k")).isNull();                        // second still pending, not a HIT
+    assertThat(cache.reserve("k").isInFlight()).isTrue();       // waiters still see it in flight
+
+    // The second request settles correctly and its response wins.
+    cache.complete("k", second, 200, "fresh", null, "alice");
+    assertThat(cache.get("k")).isNotNull();
+    assertThat(cache.get("k").body).isEqualTo("fresh");
+  }
+
+  @Test
+  void byteBoundEvictsOldestEntries() {
+    // maxEntries is large; the 10-byte total budget is the binding constraint.
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 1_000, 10, 1_000);
+    cache.putSuccess("a", 200, "12345", null, "u"); // 5 bytes
+    cache.putSuccess("b", 200, "12345", null, "u"); // +5 = 10 (at limit)
+    assertThat(cache.size()).isEqualTo(2);
+    assertThat(cache.bytes()).isEqualTo(10);
+
+    cache.putSuccess("c", 200, "12345", null, "u"); // would be 15 -> evict oldest until <= 10
+    assertThat(cache.bytes()).isLessThanOrEqualTo(10);
+    assertThat(cache.get("a")).isNull();       // oldest evicted
+    assertThat(cache.get("c")).isNotNull();    // newest retained
+  }
+
+  @Test
+  void perBodyCapSkipsOversizedResponse() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 1_000, 1_000_000, 4);
+    cache.putSuccess("big", 200, "12345", null, "u"); // 5 bytes > 4 -> not cached
+    assertThat(cache.get("big")).isNull();
+
+    cache.putSuccess("ok", 200, "1234", null, "u");   // 4 bytes -> cached
+    assertThat(cache.get("ok")).isNotNull();
+  }
+
+  @Test
+  void completeRetainsBinaryBodyForReplay() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+    final IdempotencyCache.Reservation r = cache.reserve("bin");
+    assertThat(r.isReserved()).isTrue();
+    final byte[] data = new byte[] { 9, 8, 7, 6 };
+    cache.complete("bin", r, 200, null, data, "bob");
+
+    final IdempotencyCache.CachedEntry entry = cache.get("bin");
+    assertThat(entry).isNotNull();
+    assertThat(entry.binary).isEqualTo(data);
+    assertThat(entry.body).isNull();
+  }
+
+  @Test
+  void cleanupExpiredStopsAtFirstLiveEntry() throws Exception {
+    final IdempotencyCache cache = new IdempotencyCache(80, 100);
+    cache.putSuccess("old", 200, "old", null, "u");
+    Thread.sleep(100); // "old" now past its 80ms TTL
+    cache.putSuccess("fresh", 200, "fresh", null, "u");
+
+    cache.cleanupExpired();
+    assertThat(cache.get("old")).isNull();
+    assertThat(cache.get("fresh")).isNotNull();
+  }
+
+  @Test
+  void reserveAfterCompleteReturnsHitWithinTtl() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+    cache.putSuccess("k", 200, "body", null, "alice");
+    final IdempotencyCache.Reservation r = cache.reserve("k");
+    assertThat(r.isHit()).isTrue();
+    assertThat(r.isReserved()).isFalse();
+  }
 }

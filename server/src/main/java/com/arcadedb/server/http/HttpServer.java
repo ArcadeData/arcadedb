@@ -137,7 +137,9 @@ public class HttpServer implements ServerPlugin {
     this.webSocketEventBus = new WebSocketEventBus(this.server);
     final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
     final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);
-    this.idempotencyCache = new IdempotencyCache(ttlMs, maxEntries);
+    final long maxBytes = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BYTES);
+    final long maxBodyBytes = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BODY_BYTES);
+    this.idempotencyCache = new IdempotencyCache(ttlMs, maxEntries, maxBytes, maxBodyBytes);
     this.idempotencyCleanupExecutor = Executors.newSingleThreadScheduledExecutor(
         r -> new Thread(r, "IdempotencyCache-cleanup"));
     this.idempotencyCleanupExecutor.scheduleAtFixedRate(idempotencyCache::cleanupExpired, 30, 30, TimeUnit.SECONDS);

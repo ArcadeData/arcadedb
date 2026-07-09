@@ -1179,6 +1179,14 @@ public enum GlobalConfiguration {
       "Maximum number of entries in the HTTP idempotency cache. Oldest entry is evicted when full.",
       Integer.class, 10_000),
 
+  HA_IDEMPOTENCY_CACHE_MAX_BYTES("arcadedb.ha.idempotencyCacheMaxBytes", SCOPE.SERVER,
+      "Maximum total size in bytes of the cached response bodies in the HTTP idempotency cache. Oldest entries are evicted when exceeded.",
+      Long.class, 67_108_864L),
+
+  HA_IDEMPOTENCY_CACHE_MAX_BODY_BYTES("arcadedb.ha.idempotencyCacheMaxBodyBytes", SCOPE.SERVER,
+      "Maximum size in bytes of a single response body eligible for caching in the HTTP idempotency cache. Larger responses are not cached.",
+      Long.class, 1_048_576L),
+
   HA_PEER_ALLOWLIST_ENABLED("arcadedb.ha.peerAllowlist.enabled", SCOPE.SERVER,
       """
       Reject inbound Raft gRPC connections whose remote address does not resolve to a host in \
