@@ -228,9 +228,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           "Batch load on database '%s' failed after %d vertices and %d edges: %s",
           null, databaseName, verticesCreated, edgesCreated, message);
 
+      // Bespoke body (not the shared sendErrorResponse envelope) because the partial-commit counts must
+      // be machine-parsable by the client. The message is emitted in `error` even in production on
+      // purpose: batch IllegalArgumentExceptions echo client input (line numbers, temp ids, malformed
+      // RIDs), so there is nothing engine-internal to conceal, and the client needs the offending
+      // location to reconcile. The correlation id is carried through so the 400 stays cross-referenceable
+      // with the server log, matching every other endpoint (issue #5036 review).
       final JSONObject error = new JSONObject();
       error.put("error", message);
       error.put("exception", e.getClass().getName());
+      final String correlationId = getCorrelationId(exchange);
+      if (correlationId != null && !correlationId.isEmpty())
+        error.put("requestId", correlationId);
       error.put("verticesCreated", verticesCreated);
       error.put("edgesCreated", edgesCreated);
       error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);

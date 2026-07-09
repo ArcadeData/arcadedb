@@ -149,6 +149,28 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
+  void allDroppedReportsPartialWritePayloadShape() throws Exception {
+    // Regression for issue #5036: the all-dropped case (written=0) keeps returning 400 and now carries
+    // the same partial-write payload shape (written/dropped/unknownTypes) as the mixed case.
+    testEachServer(serverIndex -> {
+      final String lineProtocol = "ghost_only,host=srv1 value=1.0 1000\n";
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getInt("written")).isEqualTo(0);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+      assertThat(error.getJSONArray("unknownTypes").getString(0)).isEqualTo("ghost_only");
+    });
+  }
+
+  @Test
   void gzipCompressedBodyIsAccepted() throws Exception {
     // Telegraf's [[outputs.influxdb]] plugin sends Content-Encoding: gzip by default.
     // The write handler must decompress the body before parsing it.

@@ -213,6 +213,9 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
 
       final JSONObject error = new JSONObject();
       error.put("error", msg.toString());
+      final String correlationId = getCorrelationId(exchange);
+      if (correlationId != null && !correlationId.isEmpty())
+        error.put("requestId", correlationId);
       error.put("written", inserted);
       error.put("dropped", dropped);
       if (!unknownTypes.isEmpty())
