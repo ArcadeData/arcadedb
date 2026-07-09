@@ -109,6 +109,10 @@ public final class GrpcErrorMapper {
     } else if (cause instanceof TimeoutException) {
       code = Status.Code.DEADLINE_EXCEEDED;
     } else if (cause instanceof SecurityException) {
+      // Matches java.lang.SecurityException. ArcadeDB's ServerSecurityException does NOT extend it, but
+      // security failures are already pre-mapped to a StatusRuntimeException by getDatabase and returned
+      // via the pass-through branch above, so they never reach here as a raw exception. If a future
+      // onError path hands a raw ServerSecurityException to this mapper it would fall through to INTERNAL.
       code = Status.Code.PERMISSION_DENIED;
     } else if (cause instanceof IllegalArgumentException) {
       code = Status.Code.INVALID_ARGUMENT;
