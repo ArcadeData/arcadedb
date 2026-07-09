@@ -20,9 +20,12 @@ assertions across the suite. Both are called out as follow-ups. This PR fixes th
 type preservation is both correct and non-breaking:
 
 - **COR-3** `commitTransaction` no longer blanket-maps every commit failure to `ABORTED`. It routes the
-  cause through a central `GrpcErrorMapper` so a commit-time `DuplicatedKeyException` becomes
-  `ALREADY_EXISTS` (non-retryable) while genuine `ConcurrentModificationException`/`NeedRetryException`
-  stay `ABORTED` (retryable).
+  cause through a central `GrpcErrorMapper` so a commit-time `DuplicatedKeyException` maps to
+  `ALREADY_EXISTS` while genuine `ConcurrentModificationException`/`NeedRetryException` stay `ABORTED`.
+  Note: `RemoteDatabase.transaction()` retries on BOTH `NeedRetryException` and `DuplicatedKeyException`,
+  so the status/type distinction does NOT gate the retry loop - the win is type fidelity: a user
+  `catch (DuplicatedKeyException)` (outside `transaction()`) and the reconstructed `indexName`/`keys` now
+  work over gRPC exactly as over HTTP, instead of surfacing as a generic `ConcurrentModificationException`.
 - **COR-2** `DuplicatedKeyException` is mapped to `ALREADY_EXISTS` carrying the real index name + keys in
   status trailers (`createRecord` and commit paths); the client reconstructs a proper
   `DuplicatedKeyException` with correct `indexName`/`keys` instead of `DuplicatedKeyException(msg,msg,null)`.
@@ -46,6 +49,39 @@ standard gRPC out-of-band error-detail channel.
   trailer, incl. duplicate-key index/keys, and CME stays retryable while duplicate-key does not.
 
 ## Impact
-Retry-on-`NeedRetryException` now behaves over gRPC as over HTTP; permanent conflicts are no longer
-retried forever; security failures surface as security exceptions; duplicate keys surface with correct
-index/key details. Backward compatible: a server without the trailer still maps by status code.
+Retry-on-`NeedRetryException` now behaves over gRPC as over HTTP; engine exception TYPES are preserved
+across the wire (a duplicate key reconstructs as `DuplicatedKeyException` with correct `indexName`/`keys`
+rather than a generic `ConcurrentModificationException`); security failures surface as security
+exceptions. Backward compatible: a server without the trailer still maps by status code.
+
+## PR
+https://github.com/ArcadeData/arcadedb/pull/5184 (closes #5043)
+
+## Review cycles
+Reviewers: `claude` (gating, responded every cycle) and `gemini-code-assist` (gating; errored on the base
+commit, COMMENTED with no feedback on cycle 2, then absent within the 15-min window on cycles 3-4).
+
+- **Base 9a3fd4c** - claude flagged: (1) trailer-less `ALREADY_EXISTS` dropped the server message,
+  (2) dup-key trailers used ASCII marshaller for arbitrary user data, (3) unused `NeedRetryException`
+  import. All three fixed.
+- **115340123** (cycle 1 fix) - client falls back to the server `msg` when dup trailers are absent;
+  dup-index/dup-keys trailers are Base64-encoded (server) / decoded (client) so non-ASCII keys survive the
+  ASCII-only metadata channel; unused import removed. Tests updated to the Base64 contract + non-ASCII
+  round-trip coverage on both sides.
+- **0122826a** (cycle 2 fix) - added `Issue5043GrpcDuplicatedKeyRoundTripTest` (server-backed, real wire
+  round-trip: commit-time duplicate reconstructs as non-retryable `DuplicatedKeyException`); documented the
+  `SecurityException`-branch reliance on `getDatabase` pre-mapping. claude review: "none blocking", only
+  pre-merge item was the class-name sync guard.
+- **da0ba2a7** (cycle 3 fix) - added `reconstructFromClassName_literalsMatchActualClassNames` guard test
+  locking the FQ class-name string literals to the actual class names. claude cycle-4 review: "none
+  blocking"; last nit (unused `ConcurrentModificationException` import) removed.
+
+Deferred / skipped items are recorded in the local `docs/review-deferred-*.md` notes (not committed):
+repointing the PRE-EXISTING `GrpcExceptionMappingTest` is deferred (constraint: never modify existing
+tests); `IllegalArgumentException`/`UNAUTHENTICATED` client reconstruction, the cosmetic trailer-less dup
+message, the fixed test port, and SEC-6 message sanitization are documented follow-ups.
+
+## Final state
+`max-cycles-reached` (4 cycles). claude converged to a non-blocking review with the fix and tests intact;
+`gemini-code-assist` did not post within the 15-min window on the final head. Merge remains with the
+developer.
