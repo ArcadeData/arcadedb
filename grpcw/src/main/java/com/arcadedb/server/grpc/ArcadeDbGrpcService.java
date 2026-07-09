@@ -784,10 +784,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
         LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
-        if (cause instanceof IllegalArgumentException)
-          resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + cause.getMessage()).asException());
-        else
-          resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + cause.getMessage()).asException());
+        // Preserve the engine exception type (e.g. DuplicatedKeyException -> ALREADY_EXISTS with index/keys)
+        // so the client can reconstruct it instead of receiving an opaque INTERNAL.
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "CreateRecord"));
       }
       return;
     }
@@ -797,11 +796,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final Database db = getDatabase(req.getDatabase(), req.getCredentials());
       resp.onNext(createRecordInternal(req, db));
       resp.onCompleted();
-    } catch (IllegalArgumentException e) {
-      resp.onError(Status.INVALID_ARGUMENT.withDescription("CreateRecord: " + e.getMessage()).asException());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
-      resp.onError(Status.INTERNAL.withDescription("CreateRecord: " + e.getMessage()).asException());
+      resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "CreateRecord"));
     }
   }
 
@@ -1213,7 +1210,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
       }
       if (txCtx == null) {
-        responseObserver.onError(Status.INTERNAL
+        // Unknown/expired transaction id is a client-side precondition failure, not a server fault, so the
+        // client can tell a programming error apart from an INTERNAL error.
+        responseObserver.onError(Status.FAILED_PRECONDITION
             .withDescription("Query execution failed: Invalid transaction ID").asException());
         return;
       }
@@ -1521,7 +1520,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   "<none>",
               cause.toString(), cause);
       LogManager.instance().log(this, Level.SEVERE, "Error beginning transaction: %s", cause, cause.getMessage());
-      responseObserver.onError(Status.INTERNAL.withDescription("Failed to begin transaction: " + cause.getMessage()).asException());
+      // Pass through an already-mapped status (e.g. UNAUTHENTICATED/PERMISSION_DENIED from getDatabase)
+      // instead of masking it as INTERNAL, and preserve the exception type for everything else.
+      responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Failed to begin transaction"));
     }
   }
 
@@ -1589,8 +1590,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       Throwable cause = t instanceof ExecutionException && t.getCause() != null ? t.getCause() : t;
       LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit FAILED txId=%s err=%s", txId,
           cause.toString(), cause);
-      // tx is unusable; do not reinsert into the map
-      rsp.onError(Status.ABORTED.withDescription("Commit failed: " + cause.getMessage()).asException());
+      // tx is unusable; do not reinsert into the map. Map by the real cause type so a retryable
+      // ConcurrentModificationException/NeedRetryException stays ABORTED while a permanent commit-time
+      // DuplicatedKeyException becomes ALREADY_EXISTS (not retried forever), carrying the exception class
+      // name so the client rebuilds the exact type.
+      rsp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Commit failed"));
     } finally {
       // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
       // shut the executor down exactly once here.

@@ -23,9 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -1940,26 +1938,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   void handleGrpcException(Throwable e) {
-    // Works for StatusException, StatusRuntimeException, and anything else
-    Status status = Status.fromThrowable(e);
-    String msg = status.getDescription() != null ? status.getDescription() : status.getCode().name();
-
-    switch (status.getCode()) {
-      case NOT_FOUND:
-        throw new RecordNotFoundException(msg, null);
-      case ALREADY_EXISTS:
-        throw new DuplicatedKeyException(msg, msg, null);
-      case ABORTED:
-        throw new ConcurrentModificationException(msg);
-      case DEADLINE_EXCEEDED:
-        throw new TimeoutException(msg);
-      case PERMISSION_DENIED:
-        throw new SecurityException(msg);
-      case UNAVAILABLE:
-        throw new NeedRetryException(msg);
-      default:
-        throw new RemoteException("gRPC error: " + msg, e);
-    }
+    // Reconstruct the exact engine exception type from the server's status + trailers so type-driven
+    // behavior (e.g. RemoteDatabase.transaction() retry on NeedRetryException) works over gRPC exactly as
+    // over HTTP. Falls back to status-code-only mapping when the server did not ship the class-name trailer.
+    throw GrpcClientErrorMapper.toException(e);
   }
 
   // Add the missing RemoteGrpcTransactionExplicitLock class reference
