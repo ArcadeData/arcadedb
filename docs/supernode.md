@@ -1,23 +1,118 @@
 # Super-node write contention
 
-Living design + development log for improving ArcadeDB's behaviour when many
-transactions concurrently write edges into the **same hot vertex** (a
-"super-node": a treasury/float account, a popular product, a hub in a
-star schema). Target release: **26.7.2** (edge-append merge; striping + #5147 follow-ups target a later release).
+Living design + development log for ArcadeDB's behaviour when many transactions
+concurrently write edges into the **same hot vertex** (a "super-node": a
+treasury/float account, a popular product, a hub in a star schema).
 
-Keep this document updated as the work progresses (design decisions, benchmarks,
-follow-ups). Sections at the bottom track status and next steps.
+**The retry-storm and data-loss halves shipped in 26.7.2** (PR #5148: commutative
+edge-append merge + the #5147/#5153 lost-update fixes + a deterministic HA gate).
+This document now leads with **what is left to do** (section A); the shipped work
+is kept below as **reference** (section B).
+
+## Status
+
+| Item | Status |
+|---|---|
+| Commutative edge-append merge (`arcadedb.graph.edgeAppendMerge`, default on) | ✅ shipped 26.7.2 (#5148) |
+| #5147 insertion lost-update (deferred-update MVCC gap) | ✅ fixed 26.7.2 (#5148) |
+| #5153 removal-direction lost-update twin | ✅ fixed 26.7.2 (#5148) |
+| Deterministic 3-node HA correctness gate | ✅ `SuperNodeAppendHAConsistencyIT` |
+| **Adaptive striped/sharded edge list (throughput)** | ⏳ **TODO - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** |
+| **Remove-path anchoring cost optimisation** | ⏳ **TODO - [#5155](https://github.com/ArcadeData/arcadedb/issues/5155)** |
 
 ---
 
-## 1. Problem
+# A. To do
 
-In a graph with a power-law degree distribution a handful of vertices accumulate
-a huge fraction of the edges. Every edge pointing at such a hub is prepended to
-the hub's edge-list **head chunk** - a single record on a single page. Under
-ArcadeDB's **page-level MVCC**, two transactions that append to that head chunk
-concurrently collide: one commits, the other gets a
-`ConcurrentModificationException` and retries the **whole transaction**.
+## A.1 Adaptive striped / sharded edge list - throughput ([#5156](https://github.com/ArcadeData/arcadedb/issues/5156))
+
+**Why.** Even with zero retries, a single hot chunk is a one-at-a-time version
+chain: every append to a vertex lands on the *same* head-chunk page, so hub
+commits serialise. Measured in the 3-node HA benchmark, appends into one hub cap
+at **~52 edges/s** while a distinct-target control on the same cluster hits
+**~94 edges/s** - the single hot chunk costs ~45% of throughput independent of the
+retry storm (which the merge already handles). Striping is the lever that closes
+that gap.
+
+**Idea.** Let a *single hot vertex* keep a head chunk in **several** edge buckets
+(stripes) and hash appends across them, so concurrent appends hit different
+pages/files and run in parallel. ArcadeDB already keys edge buckets per vertex
+bucket (`getEdgesBucketName`), so the files exist.
+
+**Design guidance:**
+
+- **Adaptive, not blanket.** Degree is power-law: the vast majority of vertices
+  have a handful of edges. Striping every vertex bloats the vertex header
+  (2 → 2N pointers), scatters tiny chunks, and regresses the hottest read paths
+  (`out()`/`in()`/degree/`isConnectedTo` would each open N stripe iterators).
+  Instead, **promote a vertex to a striped representation only when it crosses a
+  degree threshold** (ConcurrentHashMap-treeify style) via a small "stripe
+  directory" record; small vertices and old databases keep the current single-list
+  format unchanged (format-versioned).
+- **New config `SUPERNODE_THRESHOLD`** (e.g. default 128, tunable) as the promotion
+  barrier. Gates the striped *structure* only - the edge-append merge stays
+  unconditionally on (its overhead is ~0.7% and contention is not a function of
+  degree, so a low-degree-but-hot vertex still needs the merge).
+- **Per-bucket / per-page granularity** because MVCC conflicts are page-level:
+  stripe across distinct files/pages so appends never false-share.
+- **Deterministic hash by the NEIGHBOUR vertex RID** (the second element of each
+  `(edgeRID, vertexRID)` entry), NOT the edge RID. `isConnectedTo`,
+  `containsVertex`, `getFirstEdgeConnectedToVertex`, and `removeVertex` all key on
+  the neighbour vertex, so hashing by it localises them to one stripe (O(degree/N));
+  appends still spread because a hub's edges come from many distinct neighbours; and
+  `deleteEdge` still resolves the stripe from the edge's endpoints. Hashing by edge
+  RID would give zero read benefit on those hot paths. (Only a bare
+  `containsEdge(edgeRID)` can't localise - uncommon.)
+- **Reads merge N stripe chains** (and can parallelise); degree = sum of per-stripe
+  counts. **Edge iteration order changes** (per-stripe order, merged) - confirm
+  nothing guarantees edge order and document it.
+- **Composes with the merge**: merge kills the retry storm; striping unlocks
+  throughput. Both stay on.
+
+**Open questions / risks:**
+
+- **Promotion detection without new contention.** Do NOT add a per-append degree
+  counter on the vertex record - it would make every append rewrite the vertex
+  record and reintroduce the very contention we are removing. Use an approximate
+  signal computed where the vertex is already touched (e.g. at a chunk-full
+  transition), not per edge.
+- **Stripe count N**: fixed (8/16) to start; adaptive N (scale with degree) later.
+- **Format/versioning + migration**: the "striped" marker + stripe-directory
+  record; old vertices and DBs read as single-list; promotion is lazy on write.
+
+**Acceptance:** concurrent appends to one super-node scale beyond the single-chunk
+ceiling (target: close the 52→94 eps HA gap; re-run the benchmarks in §B.5); no
+regression for sub-threshold vertices; correctness under concurrency (extend the
+poison/anchor stress + HA consistency tests to the striped layout); existing
+databases keep working without migration.
+
+## A.2 Remove-path anchoring cost ([#5155](https://github.com/ArcadeData/arcadedb/issues/5155))
+
+The #5153 fix makes `EdgeLinkedList.loadChunkForWrite` anchor (mutable-page fetch)
+*every* chunk the remove walk visits, including read-only hops. Bounded (a
+32k-edge hub is ~8 pages) and unmodified pages are dropped at commit, so **not a
+correctness issue** - but it is wasted mutable-page churn on long chains.
+`removeVertex` genuinely modifies many chunks; `removeEdge`/`removeEdgeRID` modify
+only one, so the optimisation is: traverse read-only and anchor just the chunk
+about to be modified. Measure on a large super-node before optimising.
+
+## A.3 Group-commit hub appends (idea, not scoped)
+
+Consider group-committing multiple pending hub appends into one replicated round
+to cut the per-commit HA cost further. Speculative; revisit after striping.
+
+---
+
+# B. Shipped in 26.7.2 (reference)
+
+## B.1 The problem
+
+In a graph with a power-law degree distribution a handful of vertices accumulate a
+huge fraction of the edges. Every edge pointing at such a hub is prepended to the
+hub's edge-list **head chunk** - a single record on a single page. Under ArcadeDB's
+**page-level MVCC**, two transactions that append to that head chunk concurrently
+collide: one commits, the other gets a `ConcurrentModificationException` and
+retries the **whole transaction**.
 
 Symptoms (reported from the field, payments workload, 3-node HA cluster):
 
@@ -30,203 +125,89 @@ The contention scales with data growth: as the hub's edge list grows and hot
 accounts get hotter, the collision probability per operation rises, so a workload
 that was fine yesterday degrades today with no code change.
 
-### Where it lives in the engine
+**Where it lives:** `EdgeLinkedList.add()` prepends to `lastSegment` (the head
+chunk) - O(1) but every concurrent appender hits the **same page**; MVCC conflict
+detection is **page-level**; `ConcurrentModificationException extends
+NeedRetryException`, so the whole `LocalDatabase.transaction(...)` block retries.
 
-- `EdgeLinkedList.add()` - prepends to `lastSegment` (the head chunk). O(1), but
-  every concurrent appender hits the **same page**.
-- MVCC conflict detection is **page-level** (`TransactionManager` /
-  `TransactionContext.commit1stPhase` compare `currentPageVersion` vs
-  `page.getVersion()`), so two appends to the same head-chunk page conflict even
-  though they are logically independent.
-- `ConcurrentModificationException extends NeedRetryException`, so
-  `LocalDatabase.transaction(...)` retries the whole block.
+## B.2 Two independent levers
 
----
+Contention on a super-node has two distinct costs:
 
-## 2. Two independent levers
-
-Contention on a super-node has two distinct costs, and they need two distinct
-fixes:
-
-1. **Wasted work / latency tail** - the retry storm. Each conflict throws away a
-   whole transaction (and under HA a whole replication round) and redoes it.
-   → Fixed by the **commutative edge-append merge** (this release).
+1. **Wasted work / latency tail** - the retry storm (under HA, each retry re-runs a
+   replication round). → Fixed by the **commutative edge-append merge** (§B.3).
 2. **Throughput ceiling** - even with zero retries, a single hot chunk is a
-   one-at-a-time version chain: every append must build on the latest committed
-   version of that one page, so hub commits serialise.
-   → Needs a **structural fix**: striped/sharded edge lists (follow-up).
+   one-at-a-time version chain. → Needs the **striped edge list** (§A.1, TODO).
 
-The benchmarks in §6 quantify both: the merge collapses the retry storm and the
-66-second latency tail, but raw super-node throughput stays ~45% below a
-non-contended workload until the edge list itself is sharded.
+## B.3 Commutative edge-append merge (shipped)
 
----
+**Idea.** Appends to an edge-list chunk **commute** - order carries no semantics.
+So a commit-time page-version conflict whose **only** cause is concurrent in-chunk
+appends is resolved by **replaying this transaction's appends on top of the newer
+committed page**, instead of failing the whole transaction (the edge-list analogue
+of a striped/`LongAdder` merge, at commit time).
 
-## 3. Delivered: commutative edge-append merge
+**Config.** `arcadedb.graph.edgeAppendMerge` (`GRAPH_EDGE_APPEND_MERGE`,
+`SCOPE.DATABASE`, default **true**; kept as an operational kill-switch).
 
-### Idea
+**How it works** (in `TransactionContext.commit1stPhase`, leader/embedded only):
+when `checkPageVersion` fails for a page whose every modification was a tracked
+in-chunk append, the page is rebased instead of aborting - evict the stale copy,
+reload the chunk from the current committed page (bypassing the tx record cache),
+re-apply this tx's appends (`MutableEdgeSegment.add`), write back and re-check; if
+a chunk filled up meanwhile, fall back to a full retry. The merged page is what is
+written to the WAL and replicated, so followers apply the merged bytes verbatim.
 
-Appends to an edge-list chunk **commute** - the order of two edges in a vertex's
-edge list carries no semantics. So a commit-time page-version conflict whose
-**only** cause is concurrent in-chunk appends can be resolved by **replaying this
-transaction's appends on top of the newer committed page**, instead of failing
-the whole transaction. This is the edge-list analogue of a striped/`LongAdder`
-merge, applied at commit time.
+**Correctness guards:**
 
-### Config
+- **Leader / embedded only** (`commit1stPhase(isLeader)`); followers never rebase,
+  so no HA divergence.
+- **Only pure-append pages are eligible.** Every non-commutative write **poisons**
+  the page: edge removal/relink (`EdgeLinkedList.updateSegment`), bulk `addAll`,
+  `deleteAll`, and new-chunk allocation (centralised in
+  `LocalDatabase.createRecordNoLock`).
+- **Bulk import (`GraphBatch`) neither tracks nor poisons** - safe only because a
+  `GraphBatch` tx never also drives `EdgeLinkedList.add` on the same page (implicit
+  invariant; any future mixing must poison those pages).
+- **Allocation-free hot path**: appends keyed by *segment* RID with the pairs packed
+  into primitive arrays (`EdgeAppendBuffer`); poisoned pages held as packed-long
+  keys in a `LongHashSet`; `PageId` materialised only on the rare conflict. Measured
+  overhead: **+39 bytes/edge** (~0.7%) vs feature-off, throughput within noise.
 
-`arcadedb.graph.edgeAppendMerge` (`GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE`,
-`SCOPE.DATABASE`, default **true**).
+**Touched files:** `GlobalConfiguration` (flag), `TransactionContext` (tracking +
+poison + `rebaseEdgeAppends` + commit-loop hook), `LocalDatabase` (central
+new-chunk poison), `EdgeLinkedList` (register appends; poison remove/bulk paths),
+`PageManager` (`edgeAppendMerges` stat).
 
-### How it works
+## B.4 The two lost-update fixes (#5147, #5153) (shipped)
 
-At `TransactionContext.commit1stPhase` (leader / embedded only), the page-version
-check loop is wrapped: when `checkPageVersion` fails for a page whose every
-modification in this transaction was a tracked in-chunk edge append, the page is
-**rebased** instead of aborting:
+Surfaced while benchmarking: concurrent edge writes on one super-node could **drop
+edges** - an edge record committed with no back-reference in the target's edge list
+(`check database` → `missingReferenceBack`). **Pre-existing and independent of the
+merge** (reproduced with it disabled).
 
-1. Evict the stale page copy so the reload observes the current committed version.
-2. Reload the chunk fresh from the bucket (bypassing the tx record cache, which
-   still holds the stale, already-appended instance).
-3. Re-apply this transaction's appends via `MutableEdgeSegment.add(...)`; if a
-   chunk filled up in the meantime, fall back to a normal full retry.
-4. Write the merged chunk back (`updateRecordNoLock`), re-check the version, and
-   continue the commit. The merged page is what gets written to the WAL and
-   replicated - so followers apply the merged bytes verbatim.
+**Root cause** (not a chunk-allocation race): a deferred-update MVCC gap. The chunk
+was read via an immutable `lookupByRID` which (under READ_COMMITTED) does not retain
+the page in the transaction; the page was captured only later by the deferred
+`updateRecord` - at the *newer* version if a concurrent tx touched the same chunk in
+between. The commit-time version check then compared the newer version against
+itself, found no conflict, and the stale chunk buffer overwrote the concurrent
+change.
 
-### Correctness guards
+**Fixes** (anchor the chunk's page in the tx at read time so the conflict is caught
+and the tx retries; correct with the merge off too):
 
-- **Leader / embedded only** (`commit1stPhase(isLeader)`). Followers apply the
-  leader's already-merged WAL verbatim; they never rebase, so no HA divergence.
-  The leader merges, then replicates the merged result.
-- **Only pure-append pages are eligible.** Any non-commutative write **poisons**
-  the page (excludes it): edge removal / relink (`EdgeLinkedList.updateSegment`),
-  bulk `addAll`, and - crucially - **new-chunk allocation**. A brand-new chunk's
-  page has no committed version containing that chunk, so rebasing it would target
-  the wrong bytes; new-chunk poison is centralised in
-  `LocalDatabase.createRecordNoLock` for any `MutableEdgeSegment`, covering
-  `GraphEngine.createInEdgeChunk`/`createOutEdgeChunk` and the
-  `EdgeLinkedList.add` chunk-full branch in one place.
-- Tracking is lazy (only allocated when the feature is on and an append happens)
-  and cleared on `reset()`/`kill()`.
-- **Bulk import (`GraphBatch.addManyAtEndDirect`) neither tracks nor poisons**, and
-  that is safe because of an implicit invariant: a `GraphBatch` transaction builds
-  edge chunks through its own path and never also drives `EdgeLinkedList.add` on the
-  same page, so a bulk-written (untracked, unpoisoned) chunk page can never coexist
-  with a tracked append in one transaction - which is the only thing that could make
-  a poisoned-but-untracked page wrongly rebasable. `GraphBatch` is also
-  single-threaded per its own contract. Any future change that mixes the bulk and
-  the `EdgeLinkedList.add` paths in one transaction must poison the bulk pages.
-- **Slot reuse during rebase.** `rebaseEdgeAppends` reloads the chunk by segment RID
-  and handles a concurrent delete via `RecordNotFoundException` -> retry. The only
-  way an appended-to HEAD chunk is deleted is a concurrent deletion of the vertex
-  itself (`deleteAll`); the head is never empty-collapsed (`updateSegment` only
-  drops non-head empty chunks). Appending edges to a vertex being concurrently
-  deleted is an application-level conflict with already-undefined semantics; the
-  common case is covered by the `RecordNotFoundException` fallback. The residual
-  theoretical case - the freed head-chunk slot being recycled by another chunk
-  before this commit acquires the lock - is not currently guarded beyond that, and
-  is noted here rather than claimed impossible.
-- **Allocation-free hot path.** Appends are keyed by *segment* RID (a super-node
-  is one segment however many edges it receives) with the (edge, vertex) pairs
-  packed into growable primitive arrays (`EdgeAppendBuffer`), not one object per
-  edge. Poisoned pages are held in a `LongHashSet` of packed `(fileId,
-  pageNumber)` keys, so poisoning and the per-append skip check allocate nothing
-  (no `PageId` objects); `PageId`s are materialised only on the rare commit
-  conflict. A just-created chunk (e.g. a new source vertex's edge list) poisons
-  its own page, so its appends are skipped and never cost a buffer. Measured
-  overhead on a single-threaded 200k-edge insert: **+39 bytes/edge** vs
-  feature-off (~0.7% on top of the ~5.3 KB/edge that edge creation already
-  allocates), throughput within noise. This makes always-on cheap; the flag is
-  kept purely as an operational kill-switch for new commit-path code.
+- **#5147 (insertion):** `GraphEngine.createInEdgeChunk`/`createOutEdgeChunk` anchor
+  the head chunk via `fetchPageInTransaction`. Regression
+  `Issue5147SuperNodeChunkRaceTest` - was losing ~130-160 edges/run, now exact.
+- **#5153 (removal twin):** `EdgeLinkedList.removeEdge`/`removeEdgeRID`/`removeVertex`
+  load each chunk they modify through `loadChunkForWrite` (anchors + reads from the
+  anchored page), via the new `EdgeSegment.getPreviousRID()`. Regression
+  `ConcurrentEdgeAppendMergeTest.concurrentAppendsAndRemovesStayConsistent`.
 
-### Touched files
+## B.5 Benchmarks
 
-| File | Change |
-|---|---|
-| `GlobalConfiguration` | `GRAPH_EDGE_APPEND_MERGE` flag |
-| `TransactionContext` | append tracking + poison + `rebaseEdgeAppends` + commit-loop hook |
-| `LocalDatabase` | central new-chunk poison in `createRecordNoLock` |
-| `EdgeLinkedList` | register in-place appends; poison remove/bulk paths |
-| `PageManager` | `edgeAppendMerges` stat |
-
----
-
-## 4. Deferred: striped / sharded edge list (throughput)
-
-To let concurrent appends to one hub run in parallel, a hub's edge list must span
-**multiple pages/files** so writers don't all serialise on one head-chunk page.
-ArcadeDB already keys edge buckets per vertex bucket (`getEdgesBucketName`), so
-the files exist; the change is to let a *single hot vertex* keep a head chunk in
-several of them and hash appends across the stripes.
-
-Design guidance (from the initial review):
-
-- **Adaptive, not blanket.** Degree is power-law: the vast majority of vertices
-  have a handful of edges. Striping every vertex bloats the vertex header
-  (2 → 2N pointers), scatters tiny chunks, and regresses the hottest read path
-  (`out()`/`in()`/degree/`isConnectedTo` open N stripe iterators). Instead,
-  **promote a vertex to a striped representation only when it crosses a degree
-  threshold** (ConcurrentHashMap-treeify style) via a small "stripe directory"
-  record; small vertices and old databases keep the current single-list format
-  unchanged.
-- **Per-bucket granularity** because MVCC conflicts are page-level: stripe across
-  distinct files/pages so appends never false-share.
-- **Deterministic hash by the NEIGHBOUR vertex RID** (the second element of each
-  `(edgeRID, vertexRID)` entry), NOT the edge RID. The connectivity/existence/
-  remove operations (`isConnectedTo`, `containsVertex`, `getFirstEdgeConnectedToVertex`,
-  `removeVertex`) all key on the neighbour vertex, so hashing by it localises them
-  to one stripe (O(degree/N)); appends still spread because a hub's edges come from
-  many distinct neighbours; and `deleteEdge` still resolves the stripe from the
-  edge's endpoints. Hashing by edge RID would give zero read benefit on those hot
-  paths. (Only a bare `containsEdge(edgeRID)` can't localise - uncommon.)
-- Read order changes (per-stripe order, merged) - confirm nothing guarantees edge
-  iteration order and doc the change.
-- Composes with the merge: merge kills the retry storm today; striping unlocks
-  throughput.
-
----
-
-## 5. Related pre-existing bug: #5147 (FIXED, in this PR)
-
-**Issue #5147** - concurrent edge insertion into one super-node could **drop
-edges**: an edge record committed with no back-reference from the target's edge
-list (`check database` -> `missingReferenceBack`; the edge count came up short).
-Pre-existing and independent of the merge (reproduces with the merge **disabled**;
-the merge only *masked* it by re-reading and re-applying at commit).
-
-**Root cause** (not the original chunk-full hypothesis): a deferred-update MVCC
-gap. The head chunk was read via an immutable `lookupByRID` which, under
-READ_COMMITTED, does not retain the page in the transaction. The page was only
-captured later by the deferred `updateRecord` - at the NEWER version if a
-concurrent append committed in between. The commit-time version check then
-compared the newer version against itself, found no conflict, and the stale chunk
-buffer overwrote the concurrent append (a lost update).
-
-**Fix**: `GraphEngine.createInEdgeChunk`/`createOutEdgeChunk` now anchor the head
-chunk's page in the transaction at read time (`fetchPageInTransaction`), so the
-append is bound to that version; a concurrent commit is caught by the MVCC check
-and the transaction retries and re-reads the current chunk. Regression:
-`Issue5147SuperNodeChunkRaceTest` (8 threads x 4000 edges into one vertex) - was
-losing ~130-160 edges/run, now 32000/32000 with a clean integrity check. This
-fixes the root cause so it is correct with the merge off too.
-
-**Also fixed ([#5153](https://github.com/ArcadeData/arcadedb/issues/5153))**: the
-edge-**removal** path (`deleteEdge`/`removeVertex` via `getEdgeHeadChunk`) shared
-the same unanchored-read pattern - concurrent removals on one hot vertex could
-lose a removal (reproduced with the merge on and off, so independent of it).
-`EdgeLinkedList` now loads each chunk it will modify during the remove chain-walk
-through `loadChunkForWrite` (anchors the page at read time, reads content from it,
-via the new `EdgeSegment.getPreviousRID()` to walk without a stray load), so a
-concurrent modification of the same chunk is caught by the MVCC check. Regression:
-`ConcurrentEdgeAppendMergeTest.concurrentAppendsAndRemovesStayConsistent` (mixed
-concurrent append+delete on one hub, net-zero degree, integrity clean).
-
----
-
-## 6. Benchmarks
-
-All numbers: 8 threads, tiny `txRetryDelay`, macOS dev box. Reproduce:
+Reproduce (8 threads, tiny `txRetryDelay`):
 
 ```
 # Embedded (engine):
@@ -239,96 +220,45 @@ mvn -pl ha-raft test -Dtest=SuperNodeConcurrentAppendHABenchmark -DexcludedGroup
 mvn -pl ha-raft test -Dtest=SuperNodeConcurrentAppendHABenchmark -DexcludedGroups= -DsuperNode=false   # control
 ```
 
-### Embedded, 32,000 edges into one hub
+**Embedded, 32,000 edges into one hub:**
 
 | | full-tx retries | append merges | throughput |
 |---|---|---|---|
 | append-merge OFF | 11,298 (35.3%) | 0 | 9,898 edges/s |
 | append-merge ON | **226 (0.7%)** | 31,446 | 11,038 edges/s |
 
-Full-transaction retries collapse ~50×.
+**3-node HA (Raft), 4,000 edges into one hub:**
 
-### 3-node HA (Raft), 4,000 edges into one hub
+| Workload (ON unless noted) | throughput | full-tx retries | max commit latency |
+|---|---|---|---|
+| Super-node | 52 edges/s | 135 (3.4%) | **408 ms** |
+| Super-node, **OFF** | 52 edges/s | 14,002 (350%) | **66,697 ms** |
+| Control (distinct targets) | **94 edges/s** | 2,950 (74%) | 489 ms |
 
-| Workload (ON unless noted) | throughput | full-tx retries | max commit latency | leader merges |
-|---|---|---|---|---|
-| Super-node | 52 edges/s | 135 (3.4%) | **408 ms** | 3,978 |
-| Super-node, **OFF** | 52 edges/s | 14,002 (350%) | **66,697 ms** | 0 |
-| Control (distinct targets) | **94 edges/s** | 2,950 (74%) | 489 ms | 0 |
+The headline win is the **latency tail**: OFF's worst commit is 66.7 s (a single
+edge insertion breaching a 1-minute timeout - the field symptom); ON's worst is
+408 ms, with 4.3× less leader work. Throughput is unchanged by the merge (single
+hot chunk = serialised version chain); the control's 94 eps proves 52/s is a
+*super-node* ceiling, not an HA ceiling → §A.1 striping.
 
-Reading the HA numbers:
+**Verification:** `ConcurrentEdgeAppendMergeTest` (correctness, incl. mixed
+append+remove and merge-disabled), `Issue5147SuperNodeChunkRaceTest`,
+`SuperNodeAppendHAConsistencyIT` (3-node consistency gate); no regressions in
+MVCC/ACID/graph/tx suites.
 
-- **Latency tail:** OFF's worst commit takes **66.7 s** (a single edge insertion
-  breaching a 1-minute timeout - exactly the field symptom). ON's worst is
-  **408 ms**. This is the headline win.
-- **Cluster load:** OFF pushed **18,002** attempts through the leader for 4,000
-  successful commits; ON pushed **4,135**. Same 4,000 replicated, but **4.3× less**
-  leader CPU / network / fsync.
-- **Throughput is unchanged by the merge (52 → 52)** because a single hot chunk is
-  a serialised version chain: each append rebases onto the latest version, so hub
-  commits advance one at a time regardless of retries. The distinct-target
-  **control hits 94 edges/s** on the same cluster, proving 52/s is a
-  *super-node* ceiling, not an HA-replication ceiling. Closing that gap needs the
-  striped edge list (§4).
-
-### Verification
-
-- `ConcurrentEdgeAppendMergeTest` (engine): correctness gate, deterministically
-  clean at 32k concurrent edges (`check database` clean, no lost/duplicated).
-- No regressions: MVCCTest, ConcurrentWriteTest, BasicGraphTest,
-  DanglingEdgeIteratorTest, ACIDTransactionTest, Issue4940/4959,
-  LocalTransactionCommitLockRetryTest.
-
----
-
-## 7. Status
-
-| Item | Status |
-|---|---|
-| Commutative edge-append merge (engine) | ✅ implemented, tested, benchmarked |
-| Embedded + HA benchmarks | ✅ in `@Tag("benchmark")` tests |
-| Issue #5147 (lost-update edge drop) | ✅ fixed (root cause: deferred-update MVCC gap) in this PR |
-| Adaptive striped edge list (throughput) | ⏳ designed, not started |
-| Edge-removal path lost-update (#5153) | ✅ fixed (removal twin of #5147) in this PR |
-| Deterministic 3-node HA correctness gate | ✅ added (`SuperNodeAppendHAConsistencyIT`) |
-
-## 8. Next steps
-
-1. Prototype the **adaptive striped edge list** (promote-on-hot, per-bucket
-   stripes, hash by the neighbour vertex RID - see §4) and re-run the HA benchmark
-   to measure the throughput half. This is the remaining super-node lever now that
-   the retry storm and the two lost-update races are closed.
-2. **Remove-path anchoring cost** (from code review): `loadChunkForWrite`
-   materialises a mutable page for every chunk the remove walk visits, including
-   read-only ones (bounded - a 32k-edge hub is ~8 pages - and unmodified pages are
-   dropped at commit, so not a correctness issue). `removeVertex` genuinely
-   modifies many chunks, but `removeEdge`/`removeEdgeRID` modify only one; a
-   possible optimisation is to traverse read-only and anchor just the chunk about
-   to be modified. Measure on a large super-node before optimising.
-3. Consider group-committing multiple pending hub appends into one replicated
-   round (reduces the per-commit HA cost further).
-
-## 9. Changelog
+## B.6 Changelog
 
 - **2026-07-08** - Root-caused the field issue (contention retries, not GC/
-  compaction). Implemented the commutative edge-append merge behind
-  `arcadedb.graph.edgeAppendMerge` (default on). Added embedded + 3-node HA
-  benchmarks. Filed #5147 for the separate chunk-allocation race. Established via
-  the HA control run that the remaining throughput ceiling is the single hot
-  chunk, motivating the striped-edge-list follow-up.
-- **2026-07-08** - Allocation-free rework of the append tracking (segment-keyed,
-  primitive `EdgeAppendBuffer`, `LongHashSet` poison keyed by packed page id,
-  lazy `PageId`). Per-append overhead dropped from ~+504 to **+39 bytes/edge**;
-  merge behaviour and correctness unchanged. Added the single-threaded overhead
-  micro-benchmark.
-- **2026-07-08** - Fixed **#5147** (root-caused as a deferred-update MVCC gap, not
-  a chunk-allocation race): head-chunk page now anchored in the tx at read time in
-  `GraphEngine.createIn/OutEdgeChunk`. Added `Issue5147SuperNodeChunkRaceTest`.
-  Folded into this PR.
-- **2026-07-08** - Code-review round: hardened the rebase (retryable on missing
-  segment/bucket), `@Tag("slow")` on the correctness test, tightened both
-  benchmarks to strict counts now that #5147 is fixed, benchmark imports cleanup.
-  Fixed the removal-direction twin **#5153** (`EdgeLinkedList` now anchors each
-  chunk it modifies during the remove walk via `loadChunkForWrite` +
-  `EdgeSegment.getPreviousRID()`); regression = the mixed append+delete test. Added
-  the deterministic 3-node HA correctness gate `SuperNodeAppendHAConsistencyIT`.
+  compaction). Implemented the commutative edge-append merge (default on) + embedded
+  and 3-node HA benchmarks.
+- **2026-07-08** - Allocation-free rework of the append tracking (segment-keyed
+  primitive `EdgeAppendBuffer`, `LongHashSet` packed-page poison, lazy `PageId`):
+  per-append overhead ~+504 → **+39 bytes/edge**.
+- **2026-07-08** - Fixed **#5147** (deferred-update MVCC gap; head-chunk read-time
+  anchoring) and the removal twin **#5153** (`loadChunkForWrite` +
+  `EdgeSegment.getPreviousRID()`). Added the deterministic HA gate
+  `SuperNodeAppendHAConsistencyIT`.
+- **2026-07-08** - 5 rounds of code review addressed (rebase hardening,
+  `deleteAll` poison, null-tolerant integrity asserts, merge-off regression test,
+  `GraphBatch`/slot-reuse invariants documented). **PR #5148 merged into 26.7.2.**
+  Filed follow-ups #5155 (remove-path cost) and #5156 (striping).
