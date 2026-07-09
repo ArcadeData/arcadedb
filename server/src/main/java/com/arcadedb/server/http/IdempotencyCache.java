@@ -262,14 +262,15 @@ public class IdempotencyCache {
     final long cutoff = System.currentTimeMillis() - ttlMs;
     final Iterator<Map.Entry<String, CachedEntry>> it = cache.entrySet().iterator();
     while (it.hasNext()) {
-      final Map.Entry<String, CachedEntry> e = it.next();
-      final CachedEntry entry = e.getValue();
-      if (entry.timestampMs < cutoff) {
-        it.remove();
-        currentBytes -= entry.sizeInBytes();
-        if (entry.latch != null)
-          entry.latch.countDown();
-      }
+      final CachedEntry entry = it.next().getValue();
+      // Insertion order equals ascending timestamp (store() always re-appends with a fresh timestamp), so
+      // the first non-expired entry means every later entry is newer too: stop scanning immediately.
+      if (entry.timestampMs >= cutoff)
+        break;
+      it.remove();
+      currentBytes -= entry.sizeInBytes();
+      if (entry.latch != null)
+        entry.latch.countDown();
     }
   }
 

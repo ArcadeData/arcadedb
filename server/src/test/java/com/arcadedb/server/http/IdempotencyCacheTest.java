@@ -219,6 +219,31 @@ class IdempotencyCacheTest {
   }
 
   @Test
+  void completeRetainsBinaryBodyForReplay() {
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
+    assertThat(cache.reserve("bin").isReserved()).isTrue();
+    final byte[] data = new byte[] { 9, 8, 7, 6 };
+    cache.complete("bin", 200, null, data, "bob");
+
+    final IdempotencyCache.CachedEntry entry = cache.get("bin");
+    assertThat(entry).isNotNull();
+    assertThat(entry.binary).isEqualTo(data);
+    assertThat(entry.body).isNull();
+  }
+
+  @Test
+  void cleanupExpiredStopsAtFirstLiveEntry() throws Exception {
+    final IdempotencyCache cache = new IdempotencyCache(80, 100);
+    cache.putSuccess("old", 200, "old", null, "u");
+    Thread.sleep(100); // "old" now past its 80ms TTL
+    cache.putSuccess("fresh", 200, "fresh", null, "u");
+
+    cache.cleanupExpired();
+    assertThat(cache.get("old")).isNull();
+    assertThat(cache.get("fresh")).isNotNull();
+  }
+
+  @Test
   void reserveAfterCompleteReturnsHitWithinTtl() {
     final IdempotencyCache cache = new IdempotencyCache(60_000, 100);
     cache.putSuccess("k", 200, "body", null, "alice");

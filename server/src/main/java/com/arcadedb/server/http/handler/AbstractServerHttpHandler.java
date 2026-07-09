@@ -44,6 +44,7 @@ import io.undertow.util.HttpString;
 import io.undertow.util.PathTemplateMatch;
 import io.undertow.util.StatusCodes;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -107,6 +108,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
     if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
+      exchange.dispatch(this);
+      return;
+    }
+
+    // An idempotent POST may block briefly on IdempotencyCache await() while a concurrent identical retry
+    // is in flight; that must never happen on an Undertow IO thread (blocking IO threads starves the
+    // server). Dispatch to a worker thread first for handlers that would otherwise run on the IO thread.
+    if (exchange.isInIoThread()
+        && "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())
+        && exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID) != null
+        && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null) {
       exchange.dispatch(this);
       return;
     }
@@ -547,7 +559,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (cached.principal != null && !cached.principal.equals(currentPrincipal))
       return false;
     exchange.setStatusCode(cached.statusCode);
-    exchange.getResponseSender().send(cached.body != null ? cached.body : "");
+    // Replay a binary body faithfully; falling back to the string body would send an empty response for a
+    // cached binary export/backup and silently lose data.
+    if (cached.binary != null)
+      exchange.getResponseSender().send(ByteBuffer.wrap(cached.binary));
+    else
+      exchange.getResponseSender().send(cached.body != null ? cached.body : "");
     return true;
   }
 
