@@ -662,6 +662,12 @@ public class CypherSemanticValidator {
       checkExpressionScope(((IsNullExpression) boolExpr).getExpression(), scope);
     } else if (boolExpr instanceof LabelCheckExpression) {
       checkExpressionScope(((LabelCheckExpression) boolExpr).getVariableExpression(), scope);
+    } else if (boolExpr instanceof BooleanCoercionExpression) {
+      // A WHERE body that is a bare expression coerced to boolean (e.g. any()/all()/none()/single()
+      // list predicates, a boolean-typed property, or a comprehension) is scope-checked as a plain
+      // expression. This catches variables that leak out of a pattern/list comprehension into the
+      // outer predicate scope (issue #5179).
+      checkExpressionScope(((BooleanCoercionExpression) boolExpr).getExpression(), scope);
     }
   }
 
