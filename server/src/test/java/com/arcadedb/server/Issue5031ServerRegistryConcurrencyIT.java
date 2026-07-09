@@ -157,8 +157,15 @@ class Issue5031ServerRegistryConcurrencyIT {
       assertThat(lockHeld.await(5, TimeUnit.SECONDS)).isTrue();
 
       final AtomicReference<ServerDatabase> looked = new AtomicReference<>();
-      final Thread lookup = new Thread(() -> looked.set(server.getDatabase("registry", false, true)), "registry-lookup");
+      final CountDownLatch lookupReached = new CountDownLatch(1);
+      final Thread lookup = new Thread(() -> {
+        lookupReached.countDown();
+        looked.set(server.getDatabase("registry", false, true));
+      }, "registry-lookup");
       lookup.start();
+      // Ensure the lookup thread actually reached the getDatabase call before judging whether it blocked,
+      // so a merely-unscheduled thread cannot make the test pass without exercising the gate.
+      assertThat(lookupReached.await(5, TimeUnit.SECONDS)).isTrue();
       lookup.join(TimeUnit.SECONDS.toMillis(1));
 
       final boolean returnedWhileLocked = !lookup.isAlive();
