@@ -34,11 +34,22 @@ half-close semantics.
 - **CON-1** capture `Context.current()` at observer creation and wrap every submitted runnable with
   `grpcContext.wrap(...)`.
 
+## Review follow-ups
+- `close()` also drops this database's `DatabaseContext` entry for the current thread, but ONLY when a
+  transaction was captured (so it never unbinds an unrelated request's context on a foreign pooled
+  thread on the `tx == null` path).
+- `insertBidirectional` shuts down its per-stream executor on all terminal paths (COMMIT, unexpected
+  exception, duplicate START) so its thread cannot leak.
+- `insertBidirectional.onNext`'s task is extracted into a `Runnable` for readability.
+
 ## Tests
 `grpcw/.../Issue5041InsertStreamTxLifecycleIT`:
 - TX-3: stream error mid-way leaves no active transaction bound to the thread.
 - TX-4: an unrelated `DatabaseContext.init()` on the same thread cannot roll back the stream's tx.
 - TX-6: bidirectional half-close without COMMIT commits nothing.
+- CON-1: bidirectional insert authenticated only via `USER_CONTEXT_KEY` (no payload credentials) is
+  rejected without the context and commits with it (self-validating). CON-4 is a genuine guard-vs-submit
+  race, verified by reasoning.
 
 ## Impact
 Only `grpcw` `ArcadeDbGrpcService`. No wire/proto changes. Behavior preserved for payload-credential

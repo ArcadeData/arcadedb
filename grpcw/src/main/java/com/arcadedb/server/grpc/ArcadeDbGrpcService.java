@@ -2859,17 +2859,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Issue #5041 (TX-6): half-close WITHOUT an explicit COMMIT must roll back. The previous
         // flushCommit(false) actually COMMITTED the buffered rows for PER_ROW/PER_BATCH
         // (db.commit();db.begin()) and left the open transaction leaked for PER_STREAM, contradicting
-        // the "commit only on explicit COMMIT" contract. abortTransaction() rolls back the still-open
-        // transaction (a no-op if a prior per-batch commit already terminated it) for every mode.
+        // the "commit only on explicit COMMIT" contract. closeQuietly() -> close() rebinds and rolls
+        // back the still-open transaction (a no-op if a prior per-batch commit already terminated it)
+        // for every mode, then drops the thread-local context - a single rollback path.
         try {
           streamExecutor.submit(grpcContext.wrap(() -> {
             final InsertContext ctx = ref.getAndSet(null);
             if (ctx != null) {
-              // Rebind before rolling back for symmetry with close(): the transaction was begun on
-              // this same single-thread executor so it is already bound here, but rebinding keeps the
-              // rollback correct even if that ever changes.
-              ctx.bindToCurrentThread();
-              ctx.abortTransaction();
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
             }
