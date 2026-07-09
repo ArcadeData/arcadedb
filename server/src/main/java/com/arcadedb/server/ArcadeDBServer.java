@@ -107,9 +107,12 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
-  private             HAServerPlugin                        haServer;
-  private             ServerSecurity                        security;
-  private             HttpServer                            httpServer;
+  // volatile: written by the HA plugin during startPlugins(AFTER_HTTP_ON), i.e. after httpServer.startService()
+  // has begun accepting requests. Undertow worker threads reading these (readiness/cluster handlers, getDatabase's
+  // HA wrapping) need a happens-before with those writes, otherwise under the JMM they may observe null indefinitely.
+  private volatile    HAServerPlugin                        haServer;
+  private volatile    ServerSecurity                        security;
+  private volatile    HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
   private             AiConfiguration                       aiConfiguration;
   private             ServerQueryProfiler                   queryProfiler;
@@ -122,7 +125,7 @@ public class ArcadeDBServer {
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
-  private             Function<LocalDatabase, DatabaseInternal> databaseWrapper;
+  private volatile    Function<LocalDatabase, DatabaseInternal> databaseWrapper;
 //  private             ServerMonitor                         serverMonitor;
 
   static {
@@ -602,15 +605,21 @@ public class ArcadeDBServer {
   }
 
   public ServerDatabase registerDatabase(final String databaseName, final DatabaseInternal database) {
-    final ServerDatabase serverDatabase = new ServerDatabase(this, database);
-    final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
-    if (existing != null)
-      throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
-    return serverDatabase;
+    // Serialise with getDatabase/createDatabase/rewrapDatabases on databasesLock so a concurrent open-from-disk
+    // cannot interleave with this registration and end up with two DatabaseInternal instances over the same directory.
+    synchronized (databasesLock) {
+      final ServerDatabase serverDatabase = new ServerDatabase(this, database);
+      final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
+      if (existing != null)
+        throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
+      return serverDatabase;
+    }
   }
 
   public void removeDatabase(final String databaseName) {
-    databases.remove(databaseName);
+    synchronized (databasesLock) {
+      databases.remove(databaseName);
+    }
   }
 
   public String getServerName() {
@@ -717,7 +726,14 @@ public class ArcadeDBServer {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
-    ServerDatabase db;
+    // Lock-free fast path: an already-open database is served straight off the ConcurrentMap without entering
+    // databasesLock. This keeps the request hot path off the JVM-wide monitor that createDatabase/open and the HA
+    // snapshot installer hold across long I/O. Only the miss (absent or closed) falls through to the locked slow
+    // path, which re-checks under the lock, so createIfNotExists/allowLoad semantics are preserved.
+    ServerDatabase db = databases.get(databaseName);
+    if (db != null && db.isOpen())
+      return db;
+
     synchronized (databasesLock) {
       db = databases.get(databaseName);
 
