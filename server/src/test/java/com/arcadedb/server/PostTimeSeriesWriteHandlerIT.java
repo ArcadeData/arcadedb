@@ -115,6 +115,40 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
+  void partialWriteReportsDroppedMeasurements() throws Exception {
+    // Regression for issue #5036: an ingest mixing a valid TIMESERIES measurement with an unknown one
+    // must NOT return 204. The valid sample is persisted (partial write) but the response must be a
+    // 400 partial-write payload naming the dropped measurement, so the client knows data was discarded.
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE pw_known TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE)");
+
+      final String lineProtocol = """
+          pw_known,location=us temperature=22.5 1000
+          pw_unknown,location=us value=1.0 2000
+          """;
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms", null);
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).contains("pw_unknown");
+      assertThat(error.getInt("written")).isEqualTo(1);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+
+      // The valid sample must have been persisted despite the partial-write error.
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_known");
+      final JSONArray records = result.getJSONObject("result").getJSONArray("records");
+      assertThat(records.length()).isEqualTo(1);
+    });
+  }
+
+  @Test
   void gzipCompressedBodyIsAccepted() throws Exception {
     // Telegraf's [[outputs.influxdb]] plugin sends Content-Encoding: gzip by default.
     // The write handler must decompress the body before parsing it.
@@ -143,6 +177,18 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   private int postLineProtocol(final int serverIndex, final String body, final String precision) throws Exception {
+    final HttpURLConnection connection = openWriteConnection(serverIndex, precision, null);
+
+    try (final OutputStream os = connection.getOutputStream()) {
+      os.write(body.getBytes(StandardCharsets.UTF_8));
+      os.flush();
+    }
+
+    return connection.getResponseCode();
+  }
+
+  private HttpURLConnection openWriteConnection(final int serverIndex, final String precision, final String contentEncoding)
+      throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
         .toURL()
@@ -152,14 +198,10 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     connection.setRequestProperty("Content-Type", "text/plain");
+    if (contentEncoding != null)
+      connection.setRequestProperty("Content-Encoding", contentEncoding);
     connection.setDoOutput(true);
-
-    try (final OutputStream os = connection.getOutputStream()) {
-      os.write(body.getBytes(StandardCharsets.UTF_8));
-      os.flush();
-    }
-
-    return connection.getResponseCode();
+    return connection;
   }
 
   private int postLineProtocolGzip(final int serverIndex, final byte[] compressedBody, final String precision) throws Exception {

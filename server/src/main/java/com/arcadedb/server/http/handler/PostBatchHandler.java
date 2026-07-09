@@ -58,6 +58,12 @@ import java.util.logging.Level;
  * Input must contain vertices first, then edges. Vertices can have temporary IDs (@id) that
  * edges reference via @from/@to. Edges can also reference existing database RIDs (#bucket:pos).
  * <p>
+ * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
+ * failure mid-stream leaves earlier chunks durably committed. On error the response carries
+ * {@code verticesCreated} / {@code edgesCreated} (records processed before the failure) and a
+ * {@code partialCommit} flag; because temporary {@code @id}s are not keys, blindly retrying the whole
+ * payload duplicates the already-committed vertices.
+ * <p>
  * Query parameters (all optional, map to GraphBatch.Builder):
  * - batchSize (int, default 100000)
  * - lightEdges (boolean, default false)
@@ -199,6 +205,24 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
 
       // batch.close() is called by try-with-resources: flushes edges, connects incoming edges
+    } catch (final Exception e) {
+      // A batch load is NOT atomic: GraphBatch commits every commitEvery records, so records
+      // processed before the failure may already be durable on disk. Surface how many vertices and
+      // edges were handled so far (plus a partialCommit flag) instead of a bare error, so a client
+      // can reconcile rather than blindly re-POSTing the whole payload - a retry would duplicate the
+      // already-committed vertices, whose temporary @id values are not keys (issue #5036).
+      final int status = e instanceof IllegalArgumentException ? 400 : 500;
+      final String message = e.getMessage() != null ? e.getMessage() : e.toString();
+      LogManager.instance().log(this, Level.WARNING,
+          "Batch load on database '%s' failed after %d vertices and %d edges: %s",
+          null, databaseName, verticesCreated, edgesCreated, message);
+
+      final JSONObject error = new JSONObject();
+      error.put("error", message);
+      error.put("verticesCreated", verticesCreated);
+      error.put("edgesCreated", edgesCreated);
+      error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
+      return new ExecutionResponse(status, error.toString());
     }
 
     final long elapsed = System.currentTimeMillis() - startTime;

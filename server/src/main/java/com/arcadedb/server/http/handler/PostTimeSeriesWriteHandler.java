@@ -28,6 +28,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -191,16 +192,32 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
       LogManager.instance().log(this, Level.WARNING,
           "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
 
-    if (inserted == 0 && (!unknownTypes.isEmpty() || !nonTimeSeriesTypes.isEmpty())) {
-      final StringBuilder msg = new StringBuilder();
+    // Any dropped sample is a partial write: matching InfluxDB, return 400 naming the dropped
+    // measurements (with written/dropped counts) even when some samples were inserted, so the client
+    // is not told 204 "all good" while data was silently discarded (issue #5036). The samples that did
+    // insert are already committed above - this is a partial-write signal, not a full rollback.
+    final int dropped = unknownTypes.size() + nonTimeSeriesTypes.size();
+    if (dropped > 0) {
+      final StringBuilder msg = new StringBuilder("partial write: ");
       if (!unknownTypes.isEmpty())
-        msg.append("Unknown timeseries type(s): ").append(String.join(", ", unknownTypes)).append(". Create the type first with CREATE TIMESERIES TYPE.");
+        msg.append("unknown timeseries type(s): ").append(String.join(", ", unknownTypes))
+            .append(" (create the type first with CREATE TIMESERIES TYPE).");
       if (!nonTimeSeriesTypes.isEmpty()) {
-        if (msg.length() > 0)
+        if (!unknownTypes.isEmpty())
           msg.append(" ");
-        msg.append("Non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes)).append(". Only TIMESERIES types can receive line protocol data.");
+        msg.append("non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes))
+            .append(" (only TIMESERIES types can receive line protocol data).");
       }
-      return new ExecutionResponse(400, new JSONObject().put("error", msg.toString()).toString());
+
+      final JSONObject error = new JSONObject();
+      error.put("error", msg.toString());
+      error.put("written", inserted);
+      error.put("dropped", dropped);
+      if (!unknownTypes.isEmpty())
+        error.put("unknownTypes", new JSONArray(unknownTypes));
+      if (!nonTimeSeriesTypes.isEmpty())
+        error.put("nonTimeSeriesTypes", new JSONArray(nonTimeSeriesTypes));
+      return new ExecutionResponse(400, error.toString());
     }
 
     return new ExecutionResponse(204, "");
