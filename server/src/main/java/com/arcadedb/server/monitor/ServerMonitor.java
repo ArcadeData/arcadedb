@@ -46,13 +46,15 @@ public class ServerMonitor {
 	private AtomicBoolean running = new AtomicBoolean(false);
 	private long lastHotspotSafepointTime = 0L;
 	private long lastHotspotSafepointCount = 0L;
-	private long lastHeapWarningReported = 0L;
-	private long lastDiskSpaceWarningReported = 0L;
+	// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY.
+	private volatile long lastHeapWarningReported = 0L;
+	private volatile long lastDiskSpaceWarningReported = 0L;
 
 	// JMX related fields
 	private MBeanServer mBeanServer;
 	private ObjectName hotspotRuntimeMBean;
-	private boolean safepointMonitoringAvailable = false;
+	// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY.
+	private volatile boolean safepointMonitoringAvailable = false;
 	private MemoryMXBean memoryMXBean;
 
 	public ServerMonitor(final ArcadeDBServer server) {
