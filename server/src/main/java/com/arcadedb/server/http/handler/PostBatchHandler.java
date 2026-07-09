@@ -286,9 +286,15 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final int colonIdx = ref.indexOf(':');
       if (colonIdx < 0)
         throw new IllegalArgumentException("Malformed RID '" + ref + "' at line " + lineNumber);
-      final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
-      final long position = Long.parseLong(ref.substring(colonIdx + 1));
-      return new RID(bucketId, position);
+      try {
+        final int bucketId = Integer.parseInt(ref.substring(1, colonIdx));
+        final long position = Long.parseLong(ref.substring(colonIdx + 1));
+        return new RID(bucketId, position);
+      } catch (final NumberFormatException e) {
+        // Surface the handler's clear "Malformed RID" message instead of the raw JDK
+        // "For input string: ..." NumberFormatException text (issue #5036 review).
+        throw new IllegalArgumentException("Malformed RID '" + ref + "' at line " + lineNumber, e);
+      }
     }
 
     // Temporary ID reference

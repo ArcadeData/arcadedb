@@ -165,6 +165,32 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Regression for issue #5036: when the very first record fails (nothing committed yet) the error
+   * body must report {@code partialCommit=false} with zero counts, so a client knows no reconciliation
+   * is needed and a full retry is safe.
+   */
+  @Test
+  void partialCommitFalseWhenFirstRecordFails() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          {"@type":"edge","@class":"E1","@from":"noVertexA","@to":"noVertexB"}
+          """;
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(conn));
+      assertThat(error.getInt("verticesCreated")).isEqualTo(0);
+      assertThat(error.getInt("edgesCreated")).isEqualTo(0);
+      assertThat(error.getBoolean("partialCommit")).isFalse();
+      conn.disconnect();
+    });
+  }
+
+  /**
    * Regression for issue #5036: the partial-commit contract must hold for the CSV
    * {@link com.arcadedb.server.http.handler.batch.CsvBatchRecordStream} path too, not just JSONL -
    * the counters live in {@code execute}, independent of the stream format.
