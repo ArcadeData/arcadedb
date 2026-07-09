@@ -2726,6 +2726,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 if (!started.compareAndSet(false, true)) {
                   out.onError(
                       Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
+                  // Issue #5041: this is a terminal error - clean up any in-flight context (rolling
+                  // back its transaction) and stop the per-stream executor so its thread does not leak.
+                  final InsertContext existing = ref.getAndSet(null);
+                  if (existing != null) {
+                    sessionWatermark.remove(existing.sessionId);
+                    existing.closeQuietly();
+                  }
+                  streamExecutor.shutdown();
                   return;
                 }
 
@@ -2809,6 +2817,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   sessionWatermark.remove(ctx.sessionId);
                   ctx.closeQuietly();
                   ref.set(null);
+                  // Issue #5041: COMMIT (success or failure) is terminal - stop the per-stream
+                  // executor so its thread does not leak when the client does not half-close.
+                  streamExecutor.shutdown();
                 }
               }
 
@@ -2825,6 +2836,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
             }
+            // Issue #5041: an unexpected failure is terminal - stop the per-stream executor so its
+            // thread does not leak after the error is delivered to the client.
+            streamExecutor.shutdown();
           }
           }));
         } catch (final RejectedExecutionException ignore) {
@@ -3740,19 +3754,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
      * reusing that thread would silently join the orphaned transaction. Rebind the transaction onto
      * this thread first (it may have been detached by {@link #unbindFromCurrentThread()} or begun on
      * another callback thread) so the rollback releases its locks. Idempotent: after a successful
-     * {@link #flushCommit(boolean)} the handle is already {@code null} and this is a no-op.
+     * {@link #flushCommit(boolean)} the transaction handle is already {@code null} and only the
+     * thread-local cleanup below runs.
+     * <p>
+     * Always drop this database's {@link DatabaseContext} entry for the current thread afterwards so
+     * stale per-thread state (currentUser, querySession, temporary buffers) is not left parked on a
+     * pooled gRPC thread that a later unrelated request reuses.
      */
     @Override
     public void close() {
-      if (tx == null)
-        return;
       try {
-        bindToCurrentThread();
-        abortTransaction();
+        if (tx != null) {
+          bindToCurrentThread();
+          abortTransaction();
+        }
       } catch (final RuntimeException ignore) {
         // best-effort cleanup: the engine may already have terminated the transaction
       } finally {
         tx = null;
+        DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
       }
     }
 
