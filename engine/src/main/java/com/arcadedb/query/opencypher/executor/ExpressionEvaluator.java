@@ -219,8 +219,8 @@ public class ExpressionEvaluator {
         case ADD -> l + r;
         case SUBTRACT -> l - r;
         case MULTIPLY -> l * r;
-        case DIVIDE -> r != 0 ? l / r : null;
-        case MODULO -> r != 0 ? l % r : null;
+        case DIVIDE -> { ArithmeticExpression.checkIntegerDivisorNotZero(expression.getOperator(), r); yield l / r; }
+        case MODULO -> { ArithmeticExpression.checkIntegerDivisorNotZero(expression.getOperator(), r); yield l % r; }
         default -> null;
       };
     }

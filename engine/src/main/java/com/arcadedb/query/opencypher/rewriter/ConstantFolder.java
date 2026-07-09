@@ -150,8 +150,8 @@ public class ConstantFolder extends ExpressionRewriter {
         case ADD -> l + r;
         case SUBTRACT -> l - r;
         case MULTIPLY -> l * r;
-        case DIVIDE -> r != 0 ? l / r : null;
-        case MODULO -> r != 0 ? l % r : null;
+        case DIVIDE -> { ArithmeticExpression.checkIntegerDivisorNotZero(op, r); yield l / r; }
+        case MODULO -> { ArithmeticExpression.checkIntegerDivisorNotZero(op, r); yield l % r; }
         default -> null; // POWER handled below
       };
     }

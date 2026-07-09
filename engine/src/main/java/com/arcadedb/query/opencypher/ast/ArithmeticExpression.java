@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -149,8 +150,8 @@ public class ArithmeticExpression implements Expression {
         case ADD -> l + r;
         case SUBTRACT -> l - r;
         case MULTIPLY -> l * r;
-        case DIVIDE -> r != 0 ? l / r : null; // Integer division (truncation)
-        case MODULO -> r != 0 ? l % r : null;
+        case DIVIDE -> { checkIntegerDivisorNotZero(operator, r); yield l / r; } // Integer division (truncation)
+        case MODULO -> { checkIntegerDivisorNotZero(operator, r); yield l % r; }
         default -> null; // POWER handled below
       };
     }
@@ -163,10 +164,21 @@ public class ArithmeticExpression implements Expression {
       case ADD -> l + r;
       case SUBTRACT -> l - r;
       case MULTIPLY -> l * r;
-      case DIVIDE -> l / r; // IEEE 754: 0.0/0.0=NaN, x/0.0=±Infinity
+      case DIVIDE -> l / r; // IEEE 754: 0.0/0.0=NaN, x/0.0=±Infinity (matches Neo4j / OpenCypher TCK)
       case MODULO -> r != 0 ? l % r : Double.NaN;
       case POWER -> Math.pow(l, r);
     };
+  }
+
+  /**
+   * Integer division/modulo by zero is an arithmetic error in Cypher (like Neo4j, and as required by the
+   * OpenCypher TCK), not a silent {@code null}. Fail the query so callers can tell a real error from a
+   * legitimate null (issue #5163). Floating-point division by zero is left to IEEE 754 semantics
+   * ({@code Infinity}/{@code NaN}): the OpenCypher TCK requires {@code 0.0 / 0.0} to yield {@code NaN}.
+   */
+  public static void checkIntegerDivisorNotZero(final Operator op, final long divisor) {
+    if (divisor == 0)
+      throw new CommandExecutionException(op == Operator.MODULO ? "% by zero" : "/ by zero");
   }
 
   /**
