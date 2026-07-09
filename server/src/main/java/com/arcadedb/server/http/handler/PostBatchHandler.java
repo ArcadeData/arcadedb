@@ -111,6 +111,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     final String databaseName = databaseParam.getFirst();
 
+    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend
+    // DatabaseAbstractHandler. Checked before any leader-forwarding so a follower cannot be used to relay
+    // an unauthorized batch.
+    checkAuthorizationOnDatabase(user, databaseName);
+
     // Determine format from Content-Type
     final HeaderValues contentTypeHeader = exchange.getRequestHeaders().get("Content-Type");
     final String contentType = contentTypeHeader != null && !contentTypeHeader.isEmpty()

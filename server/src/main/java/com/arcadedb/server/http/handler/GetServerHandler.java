@@ -218,12 +218,17 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     final List<Map<String, Object>> settings = new ArrayList<>();
     for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
       if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE) {
+        // Redact every secret setting using the single source of truth (GlobalConfiguration.isHidden(),
+        // which already flags clusterToken/*password*), instead of the previous ad-hoc "contains password"
+        // check that leaked arcadedb.ha.clusterToken in clear and enabled cluster-forwarded-auth root
+        // impersonation (GHSA-46hj-24h4-j8gf).
+        final boolean hidden = cfg.isHidden();
         final Map<String, Object> map = new LinkedHashMap<>();
         map.put("key", cfg.getKey());
-        map.put("value", convertValue(cfg.getKey(), cfg.getValue()));
+        map.put("value", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getValue()));
         map.put("description", cfg.getDescription());
         map.put("overridden", contextKeys.contains(cfg.getKey()));
-        map.put("default", convertValue(cfg.getKey(), cfg.getDefValue()));
+        map.put("default", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getDefValue()));
         settings.add(map);
       }
     }

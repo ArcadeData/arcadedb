@@ -264,6 +264,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void setDateFormat(final String dateFormat) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
     this.dateFormat = dateFormat;
   }
 
@@ -274,6 +275,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
     this.dateTimeFormat = dateTimeFormat;
   }
 
@@ -285,6 +287,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void setExtension(final String name, final JSONObject value) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (value == null)
       extensions.remove(name);
     else
@@ -699,6 +702,8 @@ public class LocalSchema implements Schema {
 
   @Override
   public synchronized void dropMaterializedView(final String viewName) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     final MaterializedViewImpl view = materializedViews.get(viewName);
     if (view == null)
       throw new SchemaException("Materialized view '" + viewName + "' not found");
@@ -729,6 +734,8 @@ public class LocalSchema implements Schema {
   @Override
   public synchronized void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
       final long newIntervalMs) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     final MaterializedViewImpl oldView = materializedViews.get(viewName);
     if (oldView == null)
       throw new SchemaException("Materialized view '" + viewName + "' not found");
@@ -782,6 +789,8 @@ public class LocalSchema implements Schema {
 
   @Override
   public synchronized void dropContinuousAggregate(final String name) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     final ContinuousAggregateImpl ca = continuousAggregates.get(name);
     if (ca == null)
       throw new SchemaException("Continuous aggregate '" + name + "' not found");
@@ -2030,6 +2039,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public Schema registerFunctionLibrary(final FunctionLibraryDefinition library) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (functionLibraries.putIfAbsent(library.getName(), library) != null)
       throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
     return this;
@@ -2037,6 +2047,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public Schema unregisterFunctionLibrary(final String name) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     functionLibraries.remove(name);
     return this;
   }

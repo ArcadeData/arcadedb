@@ -735,6 +735,7 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
+    checkForSchemaMutation();
     final BucketSelectionStrategy previous = this.bucketSelectionStrategy;
     this.bucketSelectionStrategy = selectionStrategy;
     this.bucketSelectionStrategy.setType(this);
@@ -1498,6 +1499,7 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public Object setCustomValue(final String key, final Object value) {
+    checkForSchemaMutation();
     return recordFileChanges(() -> {
       if (value == null)
         return custom.remove(key);

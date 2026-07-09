@@ -152,6 +152,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   }
 
   public void setDownsamplingTiers(final List<DownsamplingTier> tiers) {
+    checkForSchemaMutation();
     this.downsamplingTiers = tiers != null ? new ArrayList<>(tiers) : new ArrayList<>();
   }
 

@@ -171,7 +171,11 @@ public class AlterTypeStatement extends DDLStatement {
         try {
           type.setBucketSelectionStrategy(implName);
           result.setProperty("bucketSelectionStrategy", implName);
-        } catch (Exception e) {
+        } catch (final SecurityException e) {
+          // Permission failures (UPDATE_SCHEMA) must surface as-is so the HTTP layer maps them to 403,
+          // not get masked as a parsing error.
+          throw e;
+        } catch (final Exception e) {
           throw new CommandSQLParsingException("Bucket selection strategy implementation '" + implName + "' was not found", e);
         }
         break;
