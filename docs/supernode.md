@@ -56,6 +56,159 @@ bucket `(b + i) % typeBuckets`. No new file types, bounded file count, and edge
 chunks are only ever reached by pointer (never scanned by file association), so
 hosting another bucket's chunks is harmless.
 
+### Dual-layout mechanics: how classic and striped coexist
+
+**Today's placement invariant (why the hub serialises).** Edge-chunk files exist
+per VERTEX BUCKET (`getEdgesBucketName`: `<vertexBucket>_out_edges` /
+`_in_edges`), but a single vertex lives in exactly one bucket and its list never
+leaves that bucket's file: the first chunk is created in the vertex's own bucket's
+edge file (`GraphEngine.createIn/OutEdgeChunk`) and every later chunk is created
+in the *same bucket as the previous chunk* (`EdgeLinkedList.add`, chunk-full
+branch). So **for one vertex, the whole linked list per direction = exactly ONE
+file, forever** - multiple buckets only spread *different vertices* across files,
+never one vertex's list. (The edge *records* - the `Edge` type with properties -
+are separate and do spread across the edge type's buckets; only the adjacency
+chunk list is single-file per vertex+direction.)
+
+**The discriminator is one byte that already exists.** The vertex record format
+does NOT change - it keeps its two head-pointer RIDs. What changes is what kind of
+record the pointer lands on; every record starts with a record-type byte and
+`RecordFactory` already dispatches on it:
+
+- head → record type **3** (`EdgeSegment`) = **classic layout** (today's path,
+  untouched);
+- head → record type **7** (`StripeDirectory`, new; 0-6 are taken) = **striped**.
+
+No vertex-format bump, no flags, no migration: an old database contains only
+type-3 heads and reads classic forever until a vertex naturally promotes.
+
+**Classic layout** (every vertex below the threshold):
+
+```
+ VERTEX record  (vertex bucket b)                      format UNCHANGED
+ ┌──────────────────────────────────────────────────┐
+ │ type=1 │ OUT head RID │ IN head RID │ properties… │
+ └──────────────────┬───────────────────────────────┘
+                    │ IN head RID
+                    ▼
+        file "Account_b_in_edges"        ONE file for ALL this bucket's IN lists
+ ┌───────────────────────────────┐  prev  ┌──────────────┐  prev  ┌─────────────┐
+ │ CHUNK  type=3  (8KB)          ├───────▶│ CHUNK (4KB)  ├───────▶│ CHUNK (64B) │─▶ ∅
+ │ [used][prev][e,v][e,v][e,v]…  │        └──────────────┘        └─────────────┘
+ └───────────────────────────────┘          older entries            oldest
+        ▲
+        │ EVERY concurrent append writes THIS page, and takes THIS file's
+        └ commit lock for a FULL Raft round → the 52 edges/s serialisation point
+```
+
+**Striped layout** (only after promotion):
+
+```
+ VERTEX record  (unchanged - same two pointers)
+ ┌──────────────────────────────────────────────────┐
+ │ type=1 │ OUT head RID │ IN head RID │ properties… │
+ └──────────────────┬───────────────────────────────┘
+                    │ IN head RID now lands on a DIRECTORY instead of a chunk
+                    ▼
+ STRIPE DIRECTORY  type=7   (small record, lives in "Account_b_in_edges")
+ ┌───────────────────────────────────────────────────────┐
+ │ type=7 │ N=4 │ slot0 RID │ slot1 RID │ slot2 │ slot3  │  ◀── the stripe-head
+ └───┬──────────────┬─────────────┬───────────┬──────────┘      pointers live HERE
+     │ slot0        │ slot1       │ slot2     │ slot3
+     ▼              ▼             ▼           ▼
+ Account_b      Account_b+1   Account_b+2   Account_b+3     ◀── 4 DIFFERENT files
+ _in_edges      _in_edges     _in_edges     _in_edges           = 4 commit locks
+     │              │             │             │               = parallel Raft rounds
+ ┌───────┐      ┌───────┐     ┌───────┐     ┌───────┐
+ │ CHUNK │─prev▶│ CHUNK │     │ CHUNK │     │ CHUNK │
+ └───┬───┘      └───────┘     └───┬───┘     └───────┘
+ ┌───▼───┐       (new chain)  ┌───▼───┐      (new chain)
+ │ CHUNK │                    │ CHUNK │
+ └───┬───┘                    └───────┘
+ ┌───▼───┐  ◀── stripe 0 = the OLD chain, exactly as it was. Promotion moves
+ │ CHUNK │      NOTHING: it only writes the directory and flips the head pointer.
+ └───────┘
+```
+
+Where the pointers live: the stripe-head pointers are a **packed array of N RIDs
+in the directory record's body** - a RID already encodes the file (its `bucketId`
+IS the bucket/file id), so a "pointer to another file" is just an ordinary RID.
+The directory itself lives in the vertex's own bucket's edge file, and it is
+**almost immutable**: rewritten only when a stripe's head chunk fills (slot update,
+~1 per ~1000 appends per stripe) or on a stripe's lazy first use (slots start as
+null RIDs). It never becomes a hot page.
+
+**Dispatch** (single fork point, everything downstream polymorphic):
+
+```
+        any edge-list operation on vertex V, direction D
+                          │
+             load record at V.headRID(D)      (this lookup happens today anyway)
+                          │
+              first byte = record type?
+              ┌───────────┴────────────┐
+           type 3                    type 7
+       (EdgeSegment)            (StripeDirectory)
+              │                        │
+        EdgeLinkedList           StripedEdgeList
+        (today's class,         (wraps N EdgeLinkedLists,
+         zero changes)           one per non-null slot)
+              │                        │
+   ┌──────────┴─────────┐   ┌──────────┴──────────────────────────┐
+   │ add(e,v): head     │   │ add(e,v):    stripe[hash(v)%N].add  │ ◀ different files
+   │ iterate/count:     │   │ contains(v): stripe[hash(v)%N] only │ ◀ O(degree/N)
+   │   walk one chain   │   │ iterate:     concat N iterators     │
+   │ remove: walk chain │   │ count:       sum of N chain counts  │
+   └────────────────────┘   │ remove(e):   stripe from endpoints  │
+                            │ deleteAll:   all N chains + dir     │
+                            └─────────────────────────────────────┘
+```
+
+Mechanically: extract a small `EdgeList` interface with the operations
+`GraphEngine` already uses; `EdgeLinkedList` implements it unchanged;
+`StripedEdgeList` delegates to per-stripe `EdgeLinkedList`s. The fork lives in
+`GraphEngine.getEdgeHeadChunk()` (plus the two `connect*Edge` sites), which
+becomes the type-byte factory.
+
+**Promotion** (atomic, inside the transaction that trips it):
+
+```
+ EdgeLinkedList.add(e, v)
+     │
+     ├── head chunk has room ─▶ in-place append (hot path, unchanged, merge-tracked)
+     │
+     └── CHUNK FULL  ◀── the one place that ALREADY rewrites the vertex record
+            │
+            ├── cumulative < SUPERNODE_THRESHOLD
+            │      └─▶ classic: bigger chunk, vertex.head = new chunk    (today)
+            │
+            └── cumulative ≥ threshold     (derived from the chunk-size doubling
+                     │                      schedule - no counter, no walk)
+                     ▼  PROMOTE, same tx:
+                     1. directory: slot0 = old chain head, slots 1..N-1 = null
+                     2. vertex.head = directory RID
+                     3. append (e,v) via striped path (hash(v) → stripe j →
+                        allocates stripe j's first 64B chunk, slot j filled)
+```
+
+Racers at promotion conflict on the vertex/head page exactly like a chunk-full
+does today, retry, and then see the directory - a one-time event per vertex.
+
+**Compatibility:**
+
+| Database | Behaviour |
+|---|---|
+| Old DB, old binaries | classic only, nothing changes |
+| Old DB on new binaries | classic; a vertex promotes only when it crosses the threshold on a write |
+| `SUPERNODE_THRESHOLD=0` (disabled) | directories never created → file stays readable by older versions |
+| DB with a promoted vertex | NOT readable by older versions (unknown type byte 7) - the one compat cost, paid only after a promotion happens |
+
+**Components to touch:** `RecordFactory` (type 7), new `StripeDirectory` +
+`StripedEdgeList`, `EdgeLinkedList` (promotion check in the existing chunk-full
+branch), `GraphEngine.getEdgeHeadChunk` + the two `connect*` sites (factory),
+`DatabaseChecker` (follow directories), append-merge unchanged (a stripe head is
+just a chunk).
+
 **Design guidance:**
 
 - **Adaptive, not blanket.** Degree is power-law: the vast majority of vertices
