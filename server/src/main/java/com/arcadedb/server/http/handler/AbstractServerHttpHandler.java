@@ -115,9 +115,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // An idempotent POST may block briefly on IdempotencyCache await() while a concurrent identical retry
     // is in flight; that must never happen on an Undertow IO thread (blocking IO threads starves the
     // server). Dispatch to a worker thread first for handlers that would otherwise run on the IO thread.
+    // A blank X-Request-Id is not treated as idempotent (matches the gating below).
+    final String dispatchRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
     if (exchange.isInIoThread()
         && "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())
-        && exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID) != null
+        && dispatchRequestId != null && !dispatchRequestId.isBlank()
         && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null) {
       exchange.dispatch(this);
       return;
@@ -282,15 +284,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           }
       }
 
-      // Idempotency applies only to POST requests that carry an X-Request-Id and are NOT part of an open,
-      // client-managed session transaction (a session-scoped request's outcome is not settled until the
-      // client commits, so it must never be cached/replayed).
+      // Idempotency applies only to POST requests that carry a non-blank X-Request-Id and are NOT part of
+      // an open, client-managed session transaction (a session-scoped request's outcome is not settled
+      // until the client commits, so it must never be cached/replayed). A blank id is ignored: distinct
+      // clients sending an empty header would otherwise collide on the same composite key.
+      final String rawRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
       final boolean idempotentPost = "POST".equalsIgnoreCase(exchange.getRequestMethod().toString())
-          && exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID) != null
+          && rawRequestId != null && !rawRequestId.isBlank()
           && exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER) == null;
 
       if (idempotentPost) {
-        final String rawRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
         // Bind the key to method/path/database/body so a reused correlation id cannot replay a different
         // request's response (the core defect: same X-Request-Id across distinct writes).
         idempotencyKey = buildIdempotencyKey(rawRequestId, exchange.getRequestMethod().toString(),

@@ -295,13 +295,13 @@ public class IdempotencyCache {
     evictToBounds();
   }
 
-  // Drops eldest entries (insertion order) until both bounds are satisfied. Each removal is O(1) via the
-  // LinkedHashMap iterator, so a single insert never scans the whole map.
+  // Drops eldest entries (insertion order) until both bounds are satisfied. Each removal is O(1) via a
+  // single LinkedHashMap iterator, so a single insert never scans the whole map.
   private void evictToBounds() {
-    while (cache.size() > maxEntries || currentBytes > maxBytes) {
-      final Iterator<Map.Entry<String, CachedEntry>> it = cache.entrySet().iterator();
-      if (!it.hasNext())
-        break;
+    if (cache.size() <= maxEntries && currentBytes <= maxBytes)
+      return;
+    final Iterator<Map.Entry<String, CachedEntry>> it = cache.entrySet().iterator();
+    while (it.hasNext() && (cache.size() > maxEntries || currentBytes > maxBytes)) {
       final CachedEntry evicted = it.next().getValue();
       it.remove();
       currentBytes -= evicted.sizeInBytes();
