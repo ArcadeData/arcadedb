@@ -816,7 +816,7 @@ signedIntegerLiteral
    ;
 
 listLiteral
-   : LBRACKET (expression (COMMA expression)* )? RBRACKET
+   : LBRACKET (expression (COMMA expression)* COMMA?)? RBRACKET
    ;
 
 propertyKeyName
