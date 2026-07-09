@@ -34,10 +34,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class ServerQueryProfilerTest extends StaticBaseServerTest {
   private ArcadeDBServer server;
@@ -405,6 +413,72 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
     for (int i = 0; i < profiledDbs.length(); i++)
       names.add(profiledDbs.getString(i));
     assertThat(names).containsExactlyInAnyOrder("dbA", "dbB", "dbC");
+  }
+
+  @Test
+  void concurrentRecordingCountsExactly() throws InterruptedException {
+    // recordQuery() is an unsynchronized hot path called from many Undertow workers. The total
+    // count must be exact under concurrency: a plain int++ loses updates. The number of records
+    // exceeds MAX_ENTRIES (10_000) so the ring buffer wraps, but the grand total must still be exact.
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    final int threads = 8;
+    final int perThread = 2_000;
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    final CountDownLatch startGate = new CountDownLatch(1);
+    final CountDownLatch doneGate = new CountDownLatch(threads);
+
+    for (int t = 0; t < threads; t++) {
+      pool.submit(() -> {
+        try {
+          startGate.await();
+          for (int i = 0; i < perThread; i++)
+            profiler.recordQuery("testdb", "sql", "SELECT FROM Person", 1_000_000L, null);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          doneGate.countDown();
+        }
+      });
+    }
+
+    startGate.countDown();
+    assertThat(doneGate.await(60, TimeUnit.SECONDS)).isTrue();
+    pool.shutdownNow();
+
+    final JSONObject results = profiler.stop();
+    assertThat(results.getInt("totalQueries")).isEqualTo(threads * perThread);
+  }
+
+  @Test
+  void ringBufferIndexDoesNotOverflow() throws Exception {
+    // The ring-buffer slot is writeIndex % MAX_ENTRIES. Once the counter overflows Integer.MAX_VALUE
+    // a signed int modulo goes negative, producing a negative array index and an
+    // ArrayIndexOutOfBoundsException that kills recording. Seed the counter near the overflow point
+    // and assert recording keeps working. Reflection is type-agnostic so this test both reproduces
+    // the bug (AtomicInteger) and validates the fix (overflow-safe counter).
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    final Field writeIndexField = ServerQueryProfiler.class.getDeclaredField("writeIndex");
+    writeIndexField.setAccessible(true);
+    final Object writeIndex = writeIndexField.get(profiler);
+    if (writeIndex instanceof AtomicLong al)
+      al.set(Integer.MAX_VALUE);
+    else if (writeIndex instanceof AtomicInteger ai)
+      ai.set(Integer.MAX_VALUE);
+    else
+      throw new IllegalStateException("Unexpected writeIndex type: " + writeIndex.getClass());
+
+    assertThatCode(() -> {
+      // The first record uses index MAX_VALUE % MAX_ENTRIES (still positive); the next records
+      // cross the overflow boundary and previously produced negative indices.
+      for (int i = 0; i < 10; i++)
+        profiler.recordQuery("testdb", "sql", "SELECT FROM Person", 1_000_000L, null);
+    }).doesNotThrowAnyException();
+
+    assertThat(profiler.stop()).isNotNull();
   }
 
   @Test
