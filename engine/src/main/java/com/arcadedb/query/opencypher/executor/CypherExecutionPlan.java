@@ -3515,6 +3515,18 @@ public class CypherExecutionPlan {
     if (statement.getMergeClause() != null)
       return null;
 
+    // Reject any remaining clause type that the typed accessors above do not cover (FOREACH,
+    // CALL, SUBQUERY, LOAD_CSV, FINISH, ...). These can carry write side effects (e.g. a
+    // FOREACH ... CREATE) or alter the result set, and short-circuiting to a bare TypeCountStep
+    // would silently discard them (issue #5166: FOREACH CREATE nodes were never persisted).
+    // The optimization is only valid for a query made of exactly the single MATCH and the RETURN.
+    if (statement.getClausesInOrder() != null)
+      for (final ClauseEntry clause : statement.getClausesInOrder()) {
+        final ClauseEntry.ClauseType type = clause.getType();
+        if (type != ClauseEntry.ClauseType.MATCH && type != ClauseEntry.ClauseType.RETURN)
+          return null;
+      }
+
     // All conditions met - create optimized TypeCountStep
     final String outputAlias = returnItem.getOutputName();
     return new TypeCountStep(typeName, outputAlias, context);
