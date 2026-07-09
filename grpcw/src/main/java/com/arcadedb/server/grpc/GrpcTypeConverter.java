@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
@@ -201,6 +202,17 @@ class GrpcTypeConverter {
       final GrpcList.Builder lb = GrpcList.newBuilder();
       for (final Object item : list)
         lb.addValues(toGrpcValue(item));
+      return b.setListValue(lb.build()).build();
+    }
+
+    // Java arrays (e.g. float[]/double[] vectors, int[], long[], Object[]) are not Lists, so without
+    // this branch they would fall through to the String.valueOf(...) fallback below and corrupt the
+    // value (e.g. "[F@6d03e736"). byte[] keeps its dedicated BYTES branch above.
+    if (o.getClass().isArray()) {
+      final GrpcList.Builder lb = GrpcList.newBuilder();
+      final int len = Array.getLength(o);
+      for (int i = 0; i < len; i++)
+        lb.addValues(toGrpcValue(Array.get(o, i)));
       return b.setListValue(lb.build()).build();
     }
 
