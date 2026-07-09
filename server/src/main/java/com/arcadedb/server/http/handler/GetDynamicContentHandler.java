@@ -36,9 +36,18 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 public class GetDynamicContentHandler extends AbstractServerHttpHandler {
+
+  // Non-templated Studio assets (js/css/svg/fonts/json/ico) are immutable classpath resources for the
+  // process lifetime. Cache their raw bytes so repeated requests skip the getResourceAsStream + full read
+  // + toByteArray copy on every hit. Bounded so a pathological set of distinct URIs cannot grow it without
+  // limit. Templated (.html) pages are intentionally NOT cached: they embed per-request dynamic content
+  // (now, uuid, role-gated protectBegin sections).
+  private static final int                     STATIC_CACHE_MAX_ENTRIES = 512;
+  private static final Map<String, byte[]>     STATIC_CONTENT_CACHE     = new ConcurrentHashMap<>();
 
   public GetDynamicContentHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -99,25 +108,57 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.static-content").increment();
 
-    LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/static" + uri);
+    final String resourcePath = "static" + uri;
+    LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/" + resourcePath);
 
-    final InputStream file = getClass().getClassLoader().getResourceAsStream("static" + uri);
-    if (file == null)
-      return new ExecutionResponse(404, "Not Found");
-
-    final Binary fileContent = FileUtils.readStreamAsBinary(file);
-    file.close();
-
-    byte[] bytes = fileContent.toByteArray();
-
-    if (processTemplate)
-      bytes = templating(exchange, new String(bytes, DatabaseFactory.getDefaultCharset()), new HashMap<>()).getBytes(
-          DatabaseFactory.getDefaultCharset());
-
-    if (!processTemplate)
+    final byte[] bytes;
+    if (processTemplate) {
+      // Templated pages are re-rendered per request (they embed now/uuid/role-gated sections) and are not cached.
+      final InputStream file = getClass().getClassLoader().getResourceAsStream(resourcePath);
+      if (file == null)
+        return new ExecutionResponse(404, "Not Found");
+      final Binary fileContent = FileUtils.readStreamAsBinary(file);
+      file.close();
+      bytes = templating(exchange, new String(fileContent.toByteArray(), DatabaseFactory.getDefaultCharset()),
+          new HashMap<>()).getBytes(DatabaseFactory.getDefaultCharset());
+    } else {
+      // Immutable static asset: served from the in-process cache after the first read.
+      bytes = loadStaticResource(resourcePath);
+      if (bytes == null)
+        return new ExecutionResponse(404, "Not Found");
       exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "max-age=86400");
+    }
 
     return new ExecutionResponse(200, bytes);
+  }
+
+  /**
+   * Loads an immutable classpath static asset, caching its raw bytes for the process lifetime so repeated
+   * requests avoid re-reading the stream and re-copying the bytes. Returns {@code null} when the resource
+   * does not exist. The cache is bounded; once full, further distinct resources are still served but not
+   * cached. Package-private for direct unit testing.
+   */
+  static byte[] loadStaticResource(final String resourcePath) throws IOException {
+    final byte[] cached = STATIC_CONTENT_CACHE.get(resourcePath);
+    if (cached != null)
+      return cached;
+
+    final InputStream file = GetDynamicContentHandler.class.getClassLoader().getResourceAsStream(resourcePath);
+    if (file == null)
+      return null;
+
+    final byte[] bytes;
+    try {
+      bytes = FileUtils.readStreamAsBinary(file).toByteArray();
+    } finally {
+      file.close();
+    }
+
+    if (STATIC_CONTENT_CACHE.size() < STATIC_CACHE_MAX_ENTRIES) {
+      final byte[] existing = STATIC_CONTENT_CACHE.putIfAbsent(resourcePath, bytes);
+      return existing != null ? existing : bytes;
+    }
+    return bytes;
   }
 
   protected String templating(final HttpServerExchange exchange, final String file, final Map<String, Object> variables)

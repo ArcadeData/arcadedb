@@ -49,8 +49,9 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
-import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
@@ -61,6 +62,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final HttpString REQUEST_ID_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID);
   // Upper bound on a client-supplied X-Request-Id we echo and log, to keep a hostile value bounded.
   private static final int        MAX_REQUEST_ID_LENGTH = 128;
+  // Process-wide monotonic counter used, together with a per-thread random, to mint cheap correlation ids
+  // when the client sends no X-Request-Id. Avoids the shared-SecureRandom cost of UUID.randomUUID() per request.
+  private static final AtomicLong CORRELATION_ID_COUNTER = new AtomicLong();
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -148,7 +152,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // leaking across pooled Undertow worker threads.
       String correlationRequestId = sanitizeRequestId(exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID));
       if (correlationRequestId == null)
-        correlationRequestId = UUID.randomUUID().toString();
+        correlationRequestId = generateCorrelationId();
       exchange.getResponseHeaders().put(REQUEST_ID_HEADER, correlationRequestId);
       // The supplier is an SPI: tolerate an array shorter than 2 (or null) instead of indexing blindly.
       final String[] traceContext = LogManager.instance().currentTraceContext();
@@ -502,6 +506,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final String result = cleaned != null ? cleaned.toString()
         : raw.length() > MAX_REQUEST_ID_LENGTH ? raw.substring(0, MAX_REQUEST_ID_LENGTH) : raw;
     return result.isEmpty() ? null : result;
+  }
+
+  /**
+   * Mints a cheap, non-cryptographic correlation id for a request that carries no {@code X-Request-Id}.
+   * This value is used only for response echo and log correlation - it is never the idempotency key, which
+   * always comes from the raw client header - so a fast {@link ThreadLocalRandom} high-entropy prefix plus a
+   * process-wide monotonic counter is sufficient and avoids the shared-{@code SecureRandom} synchronization
+   * of {@code UUID.randomUUID()} on the request hot path. The result is short and printable, so
+   * {@link #sanitizeRequestId(String)} returns it unchanged.
+   * Package-private for direct unit testing.
+   */
+  static String generateCorrelationId() {
+    return Long.toHexString(ThreadLocalRandom.current().nextLong()) + "-"
+        + Long.toHexString(CORRELATION_ID_COUNTER.incrementAndGet());
   }
 
   /**

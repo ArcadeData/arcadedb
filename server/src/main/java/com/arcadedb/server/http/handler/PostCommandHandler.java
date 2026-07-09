@@ -39,11 +39,61 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
+  // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
+  private static final Pattern LINE_BREAK = Pattern.compile("\\R");
+
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
+  }
+
+  /**
+   * Appends an automatic trailing {@code LIMIT} to SELECT/MATCH SQL commands that do not already carry one,
+   * mirroring the historical heuristic while avoiding a full-command {@code toLowerCase} copy per request.
+   * The command is expected to be already trimmed. Only case-insensitive prefix/substring probes are used,
+   * and the last line is lowercased only when an explicit LIMIT may already be present.
+   */
+  static String appendAutomaticLimit(final String command, final String language, final int limit) {
+    if (limit == -1)
+      return command;
+    if (!"sql".equalsIgnoreCase(language) && !"sqlScript".equalsIgnoreCase(language))
+      return command;
+
+    final boolean isSelect = command.regionMatches(true, 0, "select", 0, 6);
+    final boolean isMatch = command.regionMatches(true, 0, "match", 0, 5);
+    if ((!isSelect && !isMatch) || command.endsWith(";"))
+      return command;
+
+    if (!containsIgnoreCase(command, " limit ") && !containsIgnoreCase(command, "\nlimit "))
+      return command + " limit " + limit;
+
+    // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
+    final String[] lines = LINE_BREAK.split(command);
+    final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
+    if (words.length > 1 //
+        && !"limit".equals(words[words.length - 2]) //
+        && (words.length < 5 || !"limit".equals(words[words.length - 4])))
+      return command + " limit " + limit;
+
+    return command;
+  }
+
+  /**
+   * Allocation-free case-insensitive substring test, avoiding the full-command lowercase copy the previous
+   * {@code String.contains} check required.
+   */
+  private static boolean containsIgnoreCase(final String haystack, final String needle) {
+    final int needleLen = needle.length();
+    if (needleLen == 0)
+      return true;
+    final int max = haystack.length() - needleLen;
+    for (int i = 0; i <= max; i++)
+      if (haystack.regionMatches(true, i, needle, 0, needleLen))
+        return true;
+    return false;
   }
 
   @Override
@@ -120,24 +170,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // and downgraded to HTTP 500.
     paramMap = AbstractQueryHandler.decodeTypedJsonMarkers(paramMap);
 
-    if (limit != -1) {
-      if ("sql".equalsIgnoreCase(language) || "sqlScript".equalsIgnoreCase(language)) {
-        final String commandLC = command.toLowerCase(Locale.ENGLISH).trim();
-        if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
-          if (!commandLC.contains(" limit ") && !commandLC.contains("\nlimit ")) {
-            command += " limit " + limit;
-          } else {
-            final String[] lines = commandLC.split("\\R");
-            final String[] words = lines[lines.length - 1].split(" ");
-            if (words.length > 1) {
-              if (!"limit".equals(words[words.length - 2]) && //
-                  (words.length < 5 || !"limit".equals(words[words.length - 4])))
-                command += " limit " + limit;
-            }
-          }
-        }
-      }
-    }
+    command = appendAutomaticLimit(command, language, limit);
 
     if ("sqlScript".equalsIgnoreCase(language) && !command.endsWith(";"))
       command += ";";
@@ -200,7 +233,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
           if (qResult != null && qResult.getExecutionPlan().isPresent() &&
               (profileExecution != null ||
-                  command.toUpperCase(Locale.ENGLISH).startsWith("PROFILE "))) {
+                  command.regionMatches(true, 0, "PROFILE ", 0, 8))) {
             final var executionPlan = qResult.getExecutionPlan().get();
             response.put("explain", executionPlan.prettyPrint(0, 2));
             response.put("explainPlan", executionPlan.toResult().toJSON());
