@@ -23,3 +23,21 @@ Non-thread-safe shared state accessed concurrently without synchronization / imm
 
 ## Impact
 Server event-log timestamps are now correct under load; session-manager and plugin-manager reads no longer race their mutators. No public API change.
+
+## Pull request
+https://github.com/ArcadeData/arcadedb/pull/5170
+
+## Review cycles
+- Cycle 1 (ee26ad8a6): both bots flagged that the `PluginManager` hardening was incomplete - `getPlugins()`
+  (called from the HA metrics thread), `startPlugins()`, `stopPlugins()` and the discovery-warning loop
+  still iterated the synchronized-map views without holding the monitor. Snapshotted those under the
+  `plugins` monitor before iterating. Also made `ServerMonitor.safepointMonitoringAvailable` volatile and
+  made the plugin stress test hermetic / lighter (20k registrations, `@AfterEach` stops the server).
+- Cycle 2 (ec8163f45): removed the internal review-notes file that had been committed by mistake.
+- Cycle 3 (612d30081): clean approval - Claude reported no blocking issues; Gemini only re-posted
+  already-addressed comments. Timezone stays `ZoneId.systemDefault()` to preserve the prior
+  `SimpleDateFormat` semantics (a UTC switch would change existing deployments' log timestamps and is out
+  of scope for a thread-safety fix).
+
+## Final state
+clean-approval - merge remains with the developer.
