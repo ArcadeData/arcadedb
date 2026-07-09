@@ -165,10 +165,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     Observation.Scope observationScope = null;
 
     // Idempotency reservation bookkeeping, visible to the finally block: when this request owns a PENDING
-    // marker and execution throws, the finally clears it so a concurrent identical retry is released
-    // instead of blocking until the marker's TTL expires.
-    String  idempotencyKey             = null;
-    boolean idempotencyReservationOwned = false;
+    // marker and execution throws, the finally clears exactly that marker so a concurrent identical retry
+    // is released instead of blocking until the marker's TTL expires.
+    String                       idempotencyKey         = null;
+    IdempotencyCache.Reservation idempotencyReservation = null;
 
     try {
       observationScope = observation.openScope();
@@ -312,25 +312,25 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               && replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(idempotencyKey), currentPrincipal))
             return;
         } else if (reservation.isReserved())
-          idempotencyReservationOwned = true;
+          idempotencyReservation = reservation;
       }
 
       final ExecutionResponse response = execute(exchange, user, payload);
       if (response != null) {
         response.send(exchange);
-        if (idempotencyReservationOwned) {
+        if (idempotencyReservation != null) {
           // Do not cache a response that established a client session (e.g. /begin): replaying it would
           // return the body without the arcadedb-session-id header, orphaning the real session.
           if (exchange.getResponseHeaders().contains(SESSION_ID_HEADER))
-            httpServer.getIdempotencyCache().abort(idempotencyKey);
+            httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
           else
-            httpServer.getIdempotencyCache().complete(idempotencyKey, response.getCode(), response.getResponse(),
-                response.getBinary(), user != null ? user.getName() : null);
-          idempotencyReservationOwned = false;
+            httpServer.getIdempotencyCache().complete(idempotencyKey, idempotencyReservation, response.getCode(),
+                response.getResponse(), response.getBinary(), user != null ? user.getName() : null);
+          idempotencyReservation = null;
         }
-      } else if (idempotencyReservationOwned) {
-        httpServer.getIdempotencyCache().abort(idempotencyKey);
-        idempotencyReservationOwned = false;
+      } else if (idempotencyReservation != null) {
+        httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
+        idempotencyReservation = null;
       }
 
     } catch (final ServerSecurityException e) {
@@ -489,9 +489,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } finally {
       // If execution threw after this request reserved the idempotency key, clear the PENDING marker so a
       // concurrent identical retry is released immediately instead of blocking until the marker's TTL.
-      if (idempotencyReservationOwned) {
+      if (idempotencyReservation != null) {
         try {
-          httpServer.getIdempotencyCache().abort(idempotencyKey);
+          httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
         } catch (final Throwable t) {
           LogManager.instance().log(this, Level.WARNING, "Error aborting idempotency reservation", t);
         }
@@ -598,7 +598,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     } catch (final NoSuchAlgorithmException e) {
       // SHA-256 is a JCA-mandated algorithm, so this is unreachable. Fall back to a NUL-namespaced raw key
       // that is still bound to every component, preserving correctness at the cost of a longer key.
-      return requestId + " " + method + " " + path + " " + database + " " + body;
+      return requestId + '\u0000' + method + '\u0000' + path + '\u0000' + database + '\u0000' + body;
     }
   }
 

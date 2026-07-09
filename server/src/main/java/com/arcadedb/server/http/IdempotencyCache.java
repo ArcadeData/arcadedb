@@ -109,12 +109,12 @@ public class IdempotencyCache {
   public static final class Reservation {
     private final CachedEntry hit;      // non-null when a completed response is already cached
     private final CachedEntry inFlight; // non-null when another request is currently executing
-    private final boolean     reserved; // true when THIS caller now owns execution
+    private final CachedEntry owned;    // the PENDING marker installed for THIS caller; non-null iff reserved
 
-    private Reservation(final CachedEntry hit, final CachedEntry inFlight, final boolean reserved) {
+    private Reservation(final CachedEntry hit, final CachedEntry inFlight, final CachedEntry owned) {
       this.hit = hit;
       this.inFlight = inFlight;
-      this.reserved = reserved;
+      this.owned = owned;
     }
 
     /** A completed response is cached and ready to replay. */
@@ -129,7 +129,7 @@ public class IdempotencyCache {
 
     /** This caller now owns execution and must later call {@code complete} or {@code abort}. */
     public boolean isReserved() {
-      return reserved;
+      return owned != null;
     }
 
     /** The cached entry (HIT) or the pending marker to await (IN_FLIGHT); null when RESERVED. */
@@ -185,19 +185,22 @@ public class IdempotencyCache {
   public synchronized Reservation reserve(final String key) {
     if (key == null || key.isEmpty())
       // Not cacheable: let the caller execute without owning a reservation.
-      return new Reservation(null, null, false);
+      return new Reservation(null, null, null);
 
     final CachedEntry existing = cache.get(key);
     if (existing != null && !isExpired(existing)) {
       if (existing.pending)
-        return new Reservation(null, existing, false);
-      return new Reservation(existing, null, false);
+        return new Reservation(null, existing, null);
+      return new Reservation(existing, null, null);
     }
     if (existing != null)
       removeAndRelease(key);
 
-    cache.put(key, CachedEntry.newPending());
-    return new Reservation(null, null, true);
+    final CachedEntry owned = CachedEntry.newPending();
+    cache.put(key, owned);
+    // The caller receives the exact marker instance it owns, so complete/abort can verify identity and
+    // never settle a newer request's reservation if this marker was evicted/expired and replaced.
+    return new Reservation(null, null, owned);
   }
 
   /**
@@ -205,13 +208,15 @@ public class IdempotencyCache {
    * Caches it only when {@code statusCode} is 2xx and the body is within {@link #maxBodyBytes};
    * otherwise the marker is simply cleared. In-flight waiters are released either way.
    */
-  public synchronized void complete(final String key, final int statusCode, final String body, final byte[] binary,
-      final String principal) {
-    if (key == null || key.isEmpty())
+  public synchronized void complete(final String key, final Reservation reservation, final int statusCode, final String body,
+      final byte[] binary, final String principal) {
+    if (key == null || key.isEmpty() || reservation == null || reservation.owned == null)
       return;
     final CachedEntry current = cache.get(key);
-    // Only the marker we installed may be settled; if it is gone (evicted/expired) do nothing.
-    if (current == null || !current.pending)
+    // Only the exact marker this caller installed may be settled. If it was evicted/expired (and possibly
+    // replaced by a newer request's marker), current != owned and we must not touch it - otherwise we would
+    // release a different request's waiters and break the execute-once guarantee.
+    if (current != reservation.owned)
       return;
 
     final boolean cacheable = statusCode >= 200 && statusCode < 300;
@@ -222,18 +227,18 @@ public class IdempotencyCache {
       removeAndRelease(key);
 
     // Release any waiter blocked on this marker; it will re-read the completed entry (or find none).
-    current.latch.countDown();
+    reservation.owned.latch.countDown();
   }
 
   /**
    * Clears a reservation without caching anything (execution failed or produced a non-cacheable
-   * result). Releases in-flight waiters so they fall back to executing themselves.
+   * result). Releases in-flight waiters so they fall back to executing themselves. No-op unless the
+   * caller's exact pending marker is still installed.
    */
-  public synchronized void abort(final String key) {
-    if (key == null || key.isEmpty())
+  public synchronized void abort(final String key, final Reservation reservation) {
+    if (key == null || key.isEmpty() || reservation == null || reservation.owned == null)
       return;
-    final CachedEntry current = cache.get(key);
-    if (current != null && current.pending)
+    if (cache.get(key) == reservation.owned)
       removeAndRelease(key);
   }
 
