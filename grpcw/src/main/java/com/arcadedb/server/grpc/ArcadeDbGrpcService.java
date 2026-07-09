@@ -3760,17 +3760,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
      * reusing that thread would silently join the orphaned transaction. Rebind the transaction onto
      * this thread first (it may have been detached by {@link #unbindFromCurrentThread()} or begun on
      * another callback thread) so the rollback releases its locks. Idempotent: after a successful
-     * {@link #flushCommit(boolean)} the transaction handle is already {@code null} and only the
-     * thread-local cleanup below runs.
+     * {@link #flushCommit(boolean)} the transaction handle is already {@code null} and this is a
+     * no-op.
      * <p>
-     * Always drop this database's {@link DatabaseContext} entry for the current thread afterwards so
-     * stale per-thread state (currentUser, querySession, temporary buffers) is not left parked on a
-     * pooled gRPC thread that a later unrelated request reuses.
+     * When a transaction WAS captured, {@link #bindToCurrentThread()} above binds it to the current
+     * thread, so the current thread's {@link DatabaseContext} entry is provably ours: drop it to
+     * release the stale per-thread state (currentUser, querySession, temporary buffers) left on the
+     * pooled gRPC thread. We deliberately do NOT remove the context on the {@code tx == null} path:
+     * {@code close()} can then be running on a different pooled callback thread (e.g. the
+     * {@code streamFailed} branch of {@code insertStream.onCompleted}), where the entry may belong to
+     * an unrelated request - the same "don't touch a foreign pooled thread's transaction" caution the
+     * surrounding code observes.
      */
     @Override
     public void close() {
+      final boolean hadTransaction = tx != null;
       try {
-        if (tx != null) {
+        if (hadTransaction) {
           bindToCurrentThread();
           abortTransaction();
         }
@@ -3778,7 +3784,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // best-effort cleanup: the engine may already have terminated the transaction
       } finally {
         tx = null;
-        DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
+        if (hadTransaction)
+          DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
       }
     }
 
