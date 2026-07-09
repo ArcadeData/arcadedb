@@ -44,7 +44,8 @@ public class PostRollbackHandler extends DatabaseAbstractHandler {
 
     // End the server-side session: after /rollback its transaction is gone, so the session id must no longer
     // resolve. Leaving it registered let follow-up writes silently auto-commit and made a retried rollback 500.
-    removeSession(exchange);
+    // Ownership-gated so a request carrying another principal's session id cannot evict/orphan that session.
+    removeSession(exchange, user);
 
     exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
     Metrics.counter("http.rollback").increment();

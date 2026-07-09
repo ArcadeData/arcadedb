@@ -107,7 +107,7 @@ class Issue5026HttpSessionLifecycleTest {
     assertThatThrownBy(() -> session.execute(user, () -> {
       callbackRan.set(true);
       return null;
-    })).isInstanceOf(Exception.class);
+    })).isInstanceOf(HttpSessionException.class);
 
     assertThat(callbackRan).as("callback must not run on a session that was removed before the lock was taken").isFalse();
   }

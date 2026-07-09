@@ -173,6 +173,32 @@ public class Issue5026TransactionSessionLifecycleIT extends BaseGraphServerTest 
   }
 
   @Test
+  void commitWithAnotherUsersSessionDoesNotOrphanIt() throws Exception {
+    testEachServer(serverIndex -> {
+      getServer(serverIndex).getSecurity().createUser("other5026", "other5026pwd");
+      final String otherAuth = "Basic " + Base64.getEncoder().encodeToString("other5026:other5026pwd".getBytes());
+
+      // root opens a session.
+      final String rootSessionId = beginSession(serverIndex, rootAuth());
+      final HttpSessionManager manager = getServer(serverIndex).getHttpServer().getSessionManager();
+      assertThat(manager.isSessionRegistered(rootSessionId)).isTrue();
+
+      // A different authenticated principal tries to /commit root's session id. It must be a benign no-op that
+      // does NOT evict (and orphan) root's session - removal is ownership-gated.
+      assertThat(post(serverIndex, "commit", otherAuth, rootSessionId)).isEqualTo(204);
+      assertThat(manager.isSessionRegistered(rootSessionId)).as("another user's commit must not remove root's session").isTrue();
+
+      // root can still use and then commit its own session normally.
+      assertThat(insert(serverIndex, rootAuth(), rootSessionId, "owner-still-usable")).isEqualTo(200);
+      assertThat(post(serverIndex, "commit", rootAuth(), rootSessionId)).isEqualTo(204);
+      assertThat(manager.isSessionRegistered(rootSessionId)).isFalse();
+      assertThat(countPersons(serverIndex, "owner-still-usable")).isEqualTo(1L);
+
+      getServer(serverIndex).getSecurity().dropUser("other5026");
+    });
+  }
+
+  @Test
   void droppingUserInvalidatesItsHttpSessions() throws Exception {
     testEachServer(serverIndex -> {
       getServer(serverIndex).getSecurity().createUser("sess5026", "sess5026pwd");

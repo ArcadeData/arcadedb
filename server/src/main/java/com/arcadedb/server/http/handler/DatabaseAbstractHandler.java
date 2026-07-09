@@ -291,14 +291,19 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
   }
 
   /**
-   * Unregisters the server-side session referenced by the request's session-id header, if any. Called by the
-   * {@code /commit} and {@code /rollback} endpoints so a stale session id is no longer resolvable. Safe to call
-   * when the id is already gone (e.g. an idempotent retry): {@code removeSession} is a no-op then.
+   * Unregisters the server-side session referenced by the request's session-id header, if any - but only when
+   * it is owned by {@code user}. Called by the {@code /commit} and {@code /rollback} endpoints so a stale
+   * session id is no longer resolvable. The ownership gate (via {@link HttpSessionManager#getSessionById})
+   * ensures a request carrying another principal's session id cannot evict (and orphan) that session; it is
+   * also a no-op when the id is already gone (e.g. an idempotent retry).
    */
-  protected void removeSession(final HttpServerExchange exchange) {
+  protected void removeSession(final HttpServerExchange exchange, final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
-    if (sessionId != null && !sessionId.isEmpty())
-      httpServer.getSessionManager().removeSession(sessionId.getFirst());
+    if (sessionId != null && !sessionId.isEmpty()) {
+      final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+      if (session != null)
+        httpServer.getSessionManager().removeSession(session.id);
+    }
   }
 
   protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database,
