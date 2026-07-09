@@ -145,6 +145,62 @@ class TraverseStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void maxDepthReturnsMonotonicBallOnMultiPathGraph() {
+    // Contract: TRAVERSE ... MAXDEPTH d must return the nodes reachable within d hops (the d-hop ball). That set is monotonically non-decreasing in d -- raising
+    // the bound can only add nodes, never remove them -- and once d reaches the root's eccentricity the set is the whole reachable graph. This must hold
+    // irrespective of edge-insertion order or of multiple paths to the same node.
+    //
+    // Graph (a DAG -- cycles are NOT needed to trigger the bug): R reaches X by a short path R->a->X (X at true depth 2) and a long path R->b->c->d->X (depth 4),
+    // and X fans out to s1..s10. 16 nodes total. True d-hop ball sizes: d2 = 5; d>=3 = 16 (every node). The two R out-edges are created long-branch-first
+    // (R->b before R->a) so the depth-first walk pops the long path first and first-reaches X at depth 4.
+    //
+    // Regression guard for issue #5159. Before the fix DepthFirstTraverseStep recorded a node's depth on FIRST arrival with no relaxation when a shorter path
+    // arrived later, and gated subtree expansion on that recorded depth. So at MAXDEPTH 4, X was stamped depth 4 (via the long path), the gate 4 > 4 was false,
+    // and X's 10-node subtree was never expanded -> 6 nodes; at MAXDEPTH 3 the long path is cut before X, so X is reached via the short path at depth 2, expanded,
+    // and all 16 appear. The result thus DROPPED from 16 (d3) to 6 (d4) before returning to 16 (d5): a non-monotonic under-approximation, now yielding [16,16,16].
+    database.transaction(() -> {
+      final String v = "MaxDepthBallV";
+      final String e = "MaxDepthBallE";
+      database.getSchema().createVertexType(v);
+      database.getSchema().createEdgeType(e);
+
+      final Map<String, RID> ids = new HashMap<>();
+      final String[] names = { "R", "a", "b", "c", "d", "X", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10" };
+      for (final String name : names)
+        ids.put(name, database.command("sql", "create vertex " + v + " set name = '" + name + "'").next().getIdentity().get());
+
+      // R->b (long branch) is created before R->a (short branch) so the DFS pops the long path to X first -- the exact order that triggered the pre-fix bug. With
+      // the relaxation fix the expected [16,16,16] holds for any adjacency iteration order; this order is kept only so the test keeps exercising that scenario.
+      final String[][] edges = { { "R", "b" }, { "R", "a" }, { "a", "X" }, { "b", "c" }, { "c", "d" }, { "d", "X" }, //
+          { "X", "s1" }, { "X", "s2" }, { "X", "s3" }, { "X", "s4" }, { "X", "s5" }, { "X", "s6" }, { "X", "s7" }, { "X", "s8" }, { "X", "s9" }, { "X", "s10" } };
+      final Map<String, Object> params = new HashMap<>();
+      for (final String[] edge : edges) {
+        params.put("from", ids.get(edge[0]));
+        params.put("to", ids.get(edge[1]));
+        database.command("sql", "create edge " + e + " from :from to :to", params).close();
+      }
+
+      final int d3 = countWithinDepth(ids.get("R"), e, 3);
+      final int d4 = countWithinDepth(ids.get("R"), e, 4);
+      final int d5 = countWithinDepth(ids.get("R"), e, 5);
+
+      // Every one of MAXDEPTH 3/4/5 must return the full 16-node graph. The bug yields [16, 6, 16] -- MAXDEPTH 4 loses X's whole subtree.
+      assertThat(new int[] { d3, d4, d5 })
+          .as("d-hop ball sizes at MAXDEPTH 3,4,5 must all be 16; a dip means raising the bound dropped reachable nodes")
+          .containsExactly(16, 16, 16);
+    });
+  }
+
+  private int countWithinDepth(final RID root, final String edgeType, final int maxDepth) {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("root", root);
+    try (final ResultSet rs = database.query("sql",
+        "select count(*) as c from (traverse out('" + edgeType + "') from :root MAXDEPTH " + maxDepth + ")", params)) {
+      return ((Number) rs.next().getProperty("c")).intValue();
+    }
+  }
+
+  @Test
   void breadthFirstOrder() {
     // Contract: STRATEGY BREADTH_FIRST must visit the graph level by level -- every node at depth d is emitted before any node at depth d+1. That level-ordering
     // is the definition of a breadth-first traversal and the only observable difference from DEPTH_FIRST. (Sibling order *within* a level is intentionally not
