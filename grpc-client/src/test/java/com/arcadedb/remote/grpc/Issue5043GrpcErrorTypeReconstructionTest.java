@@ -162,6 +162,21 @@ class Issue5043GrpcErrorTypeReconstructionTest {
   }
 
   @Test
+  @DisplayName("Fully-qualified class-name literals in reconstructFromClassName stay in sync with the classes")
+  void reconstructFromClassName_literalsMatchActualClassNames() {
+    // reconstructFromClassName switches on hard-coded FQ class-name string literals (a switch needs constant
+    // labels). If one of these classes is renamed or moved, the literal silently stops matching and
+    // reconstruction reverts to the coarse status-code fallback - with no compile error. This guard turns
+    // that silent regression into a red test. The strings below MUST equal the literals in the mapper.
+    assertThat(DuplicatedKeyException.class.getName()).isEqualTo("com.arcadedb.exception.DuplicatedKeyException");
+    assertThat(ConcurrentModificationException.class.getName()).isEqualTo("com.arcadedb.exception.ConcurrentModificationException");
+    assertThat(NeedRetryException.class.getName()).isEqualTo("com.arcadedb.exception.NeedRetryException");
+    assertThat(RecordNotFoundException.class.getName()).isEqualTo("com.arcadedb.exception.RecordNotFoundException");
+    assertThat(TimeoutException.class.getName()).isEqualTo("com.arcadedb.exception.TimeoutException");
+    assertThat(SecurityException.class.getName()).isEqualTo("java.lang.SecurityException");
+  }
+
+  @Test
   @DisplayName("No trailer (older server) falls back to status-code mapping")
   void noTrailer_fallsBackToStatusCode() {
     final StatusRuntimeException aborted = Status.ABORTED.withDescription("conflict").asRuntimeException();
