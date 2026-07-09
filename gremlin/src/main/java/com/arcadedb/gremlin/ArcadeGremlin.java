@@ -158,7 +158,9 @@ public class ArcadeGremlin extends ArcadeQuery {
 
   public QueryEngine.AnalyzedQuery parse() {
     try {
-      final DefaultGraphTraversal<?,?> resultSet = (DefaultGraphTraversal<?,?>) executeStatement();
+      // ANALYSIS-ONLY: THE ANALYZE() PATH (e.g. HA FOLLOWER IDEMPOTENCY CHECK) DOES NOT RECEIVE THE PARAMETER
+      // BINDINGS, SO USE THE NULL-TOLERANT JAVA ENGINE TO BUILD THE TRAVERSAL SHAPE WITHOUT REQUIRING THEM. #5187
+      final DefaultGraphTraversal<?,?> resultSet = (DefaultGraphTraversal<?,?>) executeStatement(true);
 
       boolean idempotent = true;
       final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
@@ -225,12 +227,16 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   private Iterator<?> executeStatement() throws ScriptException {
+    return executeStatement(false);
+  }
+
+  private Iterator<?> executeStatement(final boolean analysis) throws ScriptException {
     String gremlinEngine = getEffectiveEngine();
 
     if ("auto".equals(gremlinEngine) || "java".equals(gremlinEngine)) {
       // TRY THE NATIVE JAVA ENGINE FIRST
       try {
-        return executeStatement("java");
+        return executeStatement("java", analysis);
       } catch (ScriptException e) {
         if ("java".equals(gremlinEngine) && (parameters == null || parameters.isEmpty()))
           // STRICT JAVA MODE WITH NO PARAMETERS: DO NOT FALLBACK
@@ -244,14 +250,16 @@ public class ArcadeGremlin extends ArcadeQuery {
       gremlinEngine = "groovy";
     }
 
-    return executeStatement(gremlinEngine);
+    return executeStatement(gremlinEngine, analysis);
   }
 
-  private Iterator<?> executeStatement(final String gremlinEngine) throws ScriptException {
+  private Iterator<?> executeStatement(final String gremlinEngine, final boolean analysis) throws ScriptException {
     final Object result;
     if ("java".equals(gremlinEngine)) {
-      // USE THE NATIVE GREMLIN PARSER
-      final GremlinLangScriptEngine gremlinEngineImpl = graph.getGremlinJavaEngine();
+      // USE THE NATIVE GREMLIN PARSER. THE ANALYSIS ENGINE TOLERATES UNBOUND PARAMETERS (#5187).
+      final GremlinLangScriptEngine gremlinEngineImpl = analysis ?
+          graph.getGremlinJavaAnalysisEngine() :
+          graph.getGremlinJavaEngine();
 
       final SimpleBindings bindings = new SimpleBindings();
       bindings.put("g", graph.traversal());
