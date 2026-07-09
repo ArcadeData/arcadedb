@@ -26,18 +26,35 @@ is kept below as **reference** (section B).
 
 ## A.1 Adaptive striped / sharded edge list - throughput ([#5156](https://github.com/ArcadeData/arcadedb/issues/5156))
 
-**Why.** Even with zero retries, a single hot chunk is a one-at-a-time version
-chain: every append to a vertex lands on the *same* head-chunk page, so hub
-commits serialise. Measured in the 3-node HA benchmark, appends into one hub cap
-at **~52 edges/s** while a distinct-target control on the same cluster hits
-**~94 edges/s** - the single hot chunk costs ~45% of throughput independent of the
-retry storm (which the merge already handles). Striping is the lever that closes
-that gap.
+**Why.** Even with zero retries, hub commits serialise. Two independent mechanisms
+cause it, and the second one is the dominant one under HA:
 
-**Idea.** Let a *single hot vertex* keep a head chunk in **several** edge buckets
-(stripes) and hash appends across them, so concurrent appends hit different
-pages/files and run in parallel. ArcadeDB already keys edge buckets per vertex
-bucket (`getEdgesBucketName`), so the files exist.
+1. **Page-version chain**: every append lands on the *same* head-chunk page, so
+   each commit must build on the previous committed version.
+2. **Per-FILE commit locks held across the whole replication round.** On the
+   leader, `commit1stPhase` acquires the commit locks of every touched *file* and
+   they are released only at `reset()` after phase 2 - i.e. **across the full Raft
+   quorum round-trip** (see `RaftReplicatedDatabase.commit`: phase 1 → replicate →
+   phase 2 → reset; the #4936/#4937 semantics require the locks to stay held). All
+   of a hub's IN edges live in ONE file (`getEdgesBucketName` = one `_in_edges` /
+   `_out_edges` file per vertex bucket), so concurrent hub appends queue on that
+   file's lock, **one quorum round at a time**.
+
+Measured in the 3-node HA benchmark: appends into one hub cap at **~52 edges/s**
+while a distinct-target control on the same cluster hits **~94 edges/s**.
+
+**Consequence for the design (this supersedes the earlier "per-page" note): stripes
+MUST live in different FILES, not merely different pages.** Page-level striping
+inside one file would leave the file-lock serialisation intact and gain ~nothing
+under HA - the deployment where the problem was reported.
+
+**Idea.** Let a *single hot vertex* keep a head chunk in **several** edge FILES
+(stripes) and hash appends across them, so concurrent appends take different file
+locks and replicate in parallel. Reuse the **existing per-vertex-bucket edge
+files**: stripe `i` of a hub in vertex bucket `b` lives in the edge file of vertex
+bucket `(b + i) % typeBuckets`. No new file types, bounded file count, and edge
+chunks are only ever reached by pointer (never scanned by file association), so
+hosting another bucket's chunks is harmless.
 
 **Design guidance:**
 
@@ -48,13 +65,27 @@ bucket (`getEdgesBucketName`), so the files exist.
   Instead, **promote a vertex to a striped representation only when it crosses a
   degree threshold** (ConcurrentHashMap-treeify style) via a small "stripe
   directory" record; small vertices and old databases keep the current single-list
-  format unchanged (format-versioned).
-- **New config `SUPERNODE_THRESHOLD`** (e.g. default 128, tunable) as the promotion
-  barrier. Gates the striped *structure* only - the edge-append merge stays
-  unconditionally on (its overhead is ~0.7% and contention is not a function of
-  degree, so a low-degree-but-hot vertex still needs the merge).
-- **Per-bucket / per-page granularity** because MVCC conflicts are page-level:
-  stripe across distinct files/pages so appends never false-share.
+  format unchanged.
+- **New config `SUPERNODE_THRESHOLD`** (e.g. default 128 edges, tunable; 0 =
+  disabled) as the promotion barrier. Gates the striped *structure* only - the
+  edge-append merge stays unconditionally on (its overhead is ~0.7% and contention
+  is not a function of degree, so a low-degree-but-hot vertex still needs the
+  merge).
+- **Zero-cost promotion trigger: the chunk-full transition.** The chunk-full
+  branch of `EdgeLinkedList.add` is the ONE place that already rewrites the vertex
+  record (head-pointer update) and allocates a record - promotion there costs no
+  extra write and no extra contention. The vertex's approximate degree is
+  **derivable from the geometric chunk-size schedule** (64→128→…→8192 doubling:
+  cumulativeBytes ≈ 2×currentChunkSize − 64 until the cap, then +8192 per chunk),
+  so `SUPERNODE_THRESHOLD` maps to a chunk-size boundary with **no degree counter
+  and no walk**. Past the 8 KB cap, every ~700-1000-edge chunk-full is a further
+  promotion opportunity. Concurrent racers to promote: one wins, the others
+  conflict-and-retry, then see the directory (one-time cost).
+- **Directory record, new record type byte; stripe 0 = the existing chain.** The
+  vertex's head pointer simply flips to point at a small directory record (packed
+  array of N stripe-head RIDs; immutable after creation so it never becomes a hot
+  page itself). The vertex record format is **unchanged**, promotion is O(1) with
+  **no data migration**, and old databases read as before.
 - **Deterministic hash by the NEIGHBOUR vertex RID** (the second element of each
   `(edgeRID, vertexRID)` entry), NOT the edge RID. `isConnectedTo`,
   `containsVertex`, `getFirstEdgeConnectedToVertex`, and `removeVertex` all key on
@@ -63,24 +94,54 @@ bucket (`getEdgesBucketName`), so the files exist.
   `deleteEdge` still resolves the stripe from the edge's endpoints. Hashing by edge
   RID would give zero read benefit on those hot paths. (Only a bare
   `containsEdge(edgeRID)` can't localise - uncommon.)
-- **Reads merge N stripe chains** (and can parallelise); degree = sum of per-stripe
-  counts. **Edge iteration order changes** (per-stripe order, merged) - confirm
-  nothing guarantees edge order and document it.
-- **Composes with the merge**: merge kills the retry storm; striping unlocks
-  throughput. Both stay on.
+- **Reads merge N stripe chains**; degree = sum of per-stripe counts. Parallel
+  stripe reads must use the `QueryEngineManager` pool (never the JDK common pool -
+  see the concurrency rules in CLAUDE.md). **Edge iteration order changes**
+  (per-stripe order, merged) - confirm nothing guarantees edge order and document
+  it.
+- **Composes with the merge**: merge kills the retry storm (and mops up residual
+  intra-stripe conflicts); striping unlocks throughput. Both stay on.
+- **Synergy with #5155**: stripes cut the remove-walk length to degree/N, which
+  also shrinks the remove-path anchoring cost by the same factor.
+
+**Alternatives considered and rejected** (re-examined 2026-07-09):
+
+- **Cross-transaction write combining on the leader** (merge k in-flight hub
+  appends into one page update / one Raft round). Attacks the observed bottleneck
+  most directly, but requires either releasing the file locks before replication
+  (speculative version chaining + cascading aborts) or merging several
+  transactions' WAL identities into one entry - both deep, risky changes to the
+  hard-won tx/WAL contract (#4936/#4937/#5064). Kept as the A.3 idea, only worth
+  revisiting after striping.
+- **LSM-style deferred hub append** (commit the edge record synchronously, apply
+  the hub back-reference asynchronously from a batching worker). Moves the
+  contention to the buffer's file/page unless the buffer is itself striped
+  (converges to striping) and adds read-reconciliation + durability complexity.
+- **Record-level MVCC for edge buckets.** Now clearly insufficient: the dominant
+  serialiser under HA is the per-FILE commit lock, which is *coarser* than the
+  page - finer conflict detection changes nothing there.
+- **LongAdder-style contention-probed stripe selection** (append to whichever
+  stripe is free). Perfect write spreading, but destroys the read localisation of
+  hash-by-neighbour (edges to V could be in any stripe). Hash-by-neighbour already
+  spreads statistically well for hubs (many distinct neighbours); keep probing only
+  as a fallback if real-world skew is ever observed.
 
 **Open questions / risks:**
 
-- **Promotion detection without new contention.** Do NOT add a per-append degree
-  counter on the vertex record - it would make every append rewrite the vertex
-  record and reintroduce the very contention we are removing. Use an approximate
-  signal computed where the vertex is already touched (e.g. at a chunk-full
-  transition), not per edge.
-- **Stripe count N**: fixed (8/16) to start; adaptive N (scale with degree) later.
-- **Format/versioning + migration**: the "striped" marker + stripe-directory
-  record; old vertices and DBs read as single-list; promotion is lazy on write.
+- **Stripe count N**: fixed (8/16) to start, but effective parallelism is
+  `min(N, typeBuckets, concurrent writers)` - a 1-bucket vertex type gains nothing
+  under HA because there is only one edge file to stripe into. Document that hub
+  types should keep the default bucket count (≈ CPU cores); optionally warn on
+  promotion when `typeBuckets == 1`.
+- **HA gain is bounded by the control (~1.8× here)**: striping lifts the hub to the
+  cluster's independent-transaction throughput, not beyond it (that residual
+  ceiling is Raft/fsync bound - the A.3 territory). The embedded gain is likely
+  larger - **measure an embedded distinct-target control first** to size it.
+- **Format/versioning**: the directory record type; old vertices and DBs read as
+  single-list; promotion is lazy on write. Demotion (edge deletions shrinking the
+  vertex below threshold) is NOT needed - once striped, stay striped.
 
-**Acceptance:** concurrent appends to one super-node scale beyond the single-chunk
+**Acceptance:** concurrent appends to one super-node scale beyond the single-file
 ceiling (target: close the 52→94 eps HA gap; re-run the benchmarks in §B.5); no
 regression for sub-threshold vertices; correctness under concurrency (extend the
 poison/anchor stress + HA consistency tests to the striped layout); existing
@@ -262,3 +323,14 @@ MVCC/ACID/graph/tx suites.
   `deleteAll` poison, null-tolerant integrity asserts, merge-off regression test,
   `GraphBatch`/slot-reuse invariants documented). **PR #5148 merged into 26.7.2.**
   Filed follow-ups #5155 (remove-path cost) and #5156 (striping).
+- **2026-07-09** - Design re-check of the striping proposal (A.1). Key discovery:
+  the per-FILE commit locks are held across the entire Raft replication round
+  (phase 1 → quorum → phase 2 → reset), so the dominant hub serialiser under HA is
+  the **file lock**, not the page-version chain - stripes must live in **different
+  files** (page-level striping would gain ~nothing under HA). Sharpened the design:
+  reuse the existing per-vertex-bucket edge files as stripe hosts, zero-cost
+  promotion trigger at the chunk-full transition (degree derived from the geometric
+  chunk-size schedule - no counter), immutable directory record + stripe 0 = the
+  existing chain (no vertex-format change, no migration). Re-examined and rejected
+  four alternatives (cross-tx write combining, LSM-style deferred append,
+  record-level MVCC, contention-probed stripes) - documented in A.1.
