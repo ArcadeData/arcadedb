@@ -49,6 +49,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -65,6 +66,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Process-wide monotonic counter used, together with a per-thread random, to mint cheap correlation ids
   // when the client sends no X-Request-Id. Avoids the shared-SecureRandom cost of UUID.randomUUID() per request.
   private static final AtomicLong CORRELATION_ID_COUNTER = new AtomicLong();
+  // Constant path tag used for any request that does not resolve to a route template (Studio "/"
+  // static fallback, prefix handlers, 404 probes). Never echo the raw client URI as a tag value: it
+  // is attacker-controlled and would register an unbounded number of permanent meters (issue #5025).
+  private static final String     UNMATCHED_PATH_TAG = "unmatched";
+  // Cache of resolved arcadedb.http.requests timers keyed by the bounded tag tuple
+  // (method|path|status|db). Avoids rebuilding the Timer.Builder/Tags/Meter.Id and doing a registry
+  // hash lookup on every request. The key space is bounded because every tag is low-cardinality: the
+  // path is collapsed to a route template or the constant "unmatched", method and status are small
+  // enumerations, and db is the finite set of database names.
+  private static final ConcurrentHashMap<String, Timer> HTTP_REQUEST_TIMERS = new ConcurrentHashMap<>();
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -458,29 +469,46 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // inside an ObservationHandler.onStop callback, so this clear must remain the last step.
       LogManager.instance().clearCorrelation();
 
-      Timer.builder("arcadedb.http.requests")
-          .description("HTTP request duration")
-          .tag("method", exchange.getRequestMethod().toString())
-          .tag("path", pathTemplate(exchange))
-          .tag("status", Integer.toString(exchange.getStatusCode()))
-          .tag("db", databaseTag(exchange))
-          .publishPercentileHistogram()
-          .register(Metrics.globalRegistry)
+      httpRequestTimer(exchange.getRequestMethod().toString(), pathTemplate(exchange),
+          Integer.toString(exchange.getStatusCode()), databaseTag(exchange))
           .record(System.nanoTime() - httpStartNanos, TimeUnit.NANOSECONDS);
     }
   }
 
   /**
+   * Resolves (and caches) the {@code arcadedb.http.requests} RED timer for the given bounded tag tuple.
+   * Building the timer once per distinct {@code method|path|status|db} tuple and reusing it removes the
+   * per-request {@code Timer.Builder}/{@code Tags}/{@code Meter.Id} allocation and registry hash lookup
+   * on the hot path. The cache stays bounded because every tag is low-cardinality (issue #5025).
+   * Package-private for direct unit testing.
+   */
+  static Timer httpRequestTimer(final String method, final String path, final String status, final String db) {
+    return HTTP_REQUEST_TIMERS.computeIfAbsent(method + '|' + path + '|' + status + '|' + db,
+        k -> Timer.builder("arcadedb.http.requests")
+            .description("HTTP request duration")
+            .tag("method", method)
+            .tag("path", path)
+            .tag("status", status)
+            .tag("db", db)
+            .publishPercentileHistogram()
+            .register(Metrics.globalRegistry));
+  }
+
+  /**
    * Returns a bounded, low-cardinality path tag for the request: the route template
    * (e.g. {@code /command/{database}}) resolved by the Undertow routing handler, never the raw URI
-   * carrying the concrete database name. Falls back to the relative path for fixed routes
-   * registered without a path template.
+   * carrying the concrete database name. All {@code /api/v1/*} routes (including fixed ones such as
+   * {@code /ready} and {@code /server}) are registered through a {@code RoutingHandler}, which always
+   * attaches a {@link PathTemplateMatch}; only prefix/fallback traffic (the Studio {@code /} static
+   * handler and unmatched 404 probes) reaches the fallback branch. That path is client-controlled, so it
+   * is collapsed to the constant {@link #UNMATCHED_PATH_TAG} to keep the meter cardinality bounded and
+   * avoid a heap-growth DoS driven by arbitrary URIs (issue #5025). Package-private for direct unit testing.
    */
-  private static String pathTemplate(final HttpServerExchange exchange) {
+  static String pathTemplate(final HttpServerExchange exchange) {
     final PathTemplateMatch match = exchange.getAttachment(PathTemplateMatch.ATTACHMENT_KEY);
     if (match != null)
       return match.getMatchedTemplate();
-    return exchange.getRelativePath();
+    return UNMATCHED_PATH_TAG;
   }
 
   /**
