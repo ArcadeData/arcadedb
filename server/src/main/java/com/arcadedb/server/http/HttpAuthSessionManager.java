@@ -66,11 +66,14 @@ public class HttpAuthSessionManager extends RWLockContext {
 
   public void close() {
     timer.cancel();
-    sessions.clear();
+    executeInWriteLock(() -> {
+      sessions.clear();
+      return null;
+    });
   }
 
   public int checkSessionsValidity() {
-    if (sessions.isEmpty())
+    if (executeInReadLock(sessions::isEmpty))
       return 0;
 
     return executeInWriteLock(() -> {
@@ -170,7 +173,7 @@ public class HttpAuthSessionManager extends RWLockContext {
    * @return the count of active sessions
    */
   public int getActiveSessionCount() {
-    return sessions.size();
+    return executeInReadLock(sessions::size);
   }
 
   /**
