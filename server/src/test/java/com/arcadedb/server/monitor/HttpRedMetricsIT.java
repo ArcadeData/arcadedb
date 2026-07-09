@@ -80,6 +80,35 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     assertThat(errorTimer.count()).isGreaterThanOrEqualTo(1L);
   }
 
+  @Test
+  void unmatchedUrisCollapseToBoundedPathTag() throws Exception {
+    // The Studio "/" fallback route handled every distinct, client-controlled URI by tagging the RED
+    // timer with the raw path. Each unique path registered a permanent percentile-histogram Timer that
+    // was never evicted: an unbounded, client-driven heap leak (issue #5025).
+    for (int i = 0; i < 50; i++)
+      hitGet("/unmatched/" + i);
+
+    // No timer may carry a raw client URI in its path tag.
+    final long rawUnmatchedMeters = Metrics.globalRegistry.find("arcadedb.http.requests").timers().stream()
+        .map(t -> t.getId().getTag("path"))
+        .filter(p -> p != null && p.startsWith("/unmatched"))
+        .count();
+    assertThat(rawUnmatchedMeters).isZero();
+
+    // All unmatched traffic collapses onto a single bounded path tag.
+    final Timer collapsed = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "unmatched").timer();
+    assertThat(collapsed).isNotNull();
+    assertThat(collapsed.count()).isGreaterThanOrEqualTo(50L);
+  }
+
+  private void hitGet(final String path) throws Exception {
+    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480" + path).openConnection();
+    c.setRequestMethod("GET");
+    c.connect();
+    c.getResponseCode();
+    c.disconnect();
+  }
+
   private void issueReady() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
     connection.setRequestMethod("GET");

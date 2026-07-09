@@ -22,6 +22,7 @@ import com.arcadedb.database.QueryMetricsRecorder;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -30,17 +31,31 @@ import java.util.concurrent.TimeUnit;
  * metrics are enabled; otherwise the engine keeps the no-op recorder and pays no timing cost.
  */
 public final class MicrometerQueryMetricsRecorder implements QueryMetricsRecorder {
+  // Cache of resolved arcadedb.query.duration timers keyed by protocol|db|language|type. record() runs
+  // for every query/command from every wire protocol; caching removes the per-call Timer.Builder/Tags/
+  // Meter.Id allocation and registry lookup on the hot path. The key space is bounded because every tag
+  // is low-cardinality (finite protocols/languages/types and the finite set of database names).
+  private static final ConcurrentHashMap<String, Timer> QUERY_TIMERS = new ConcurrentHashMap<>();
+
   @Override
   public void record(final String protocol, final String database, final String language, final String type,
       final long durationNanos) {
-    Timer.builder("arcadedb.query.duration")
-        .description("Query/command execution duration")
-        .tag("protocol", protocol)
-        .tag("db", database)
-        .tag("language", language)
-        .tag("type", type)
-        .publishPercentileHistogram()
-        .register(Metrics.globalRegistry)
-        .record(durationNanos, TimeUnit.NANOSECONDS);
+    queryTimer(protocol, database, language, type).record(durationNanos, TimeUnit.NANOSECONDS);
+  }
+
+  /**
+   * Resolves (and caches) the {@code arcadedb.query.duration} timer for the given bounded tag tuple.
+   * Package-private for direct unit testing.
+   */
+  static Timer queryTimer(final String protocol, final String database, final String language, final String type) {
+    return QUERY_TIMERS.computeIfAbsent(protocol + '|' + database + '|' + language + '|' + type,
+        k -> Timer.builder("arcadedb.query.duration")
+            .description("Query/command execution duration")
+            .tag("protocol", protocol)
+            .tag("db", database)
+            .tag("language", language)
+            .tag("type", type)
+            .publishPercentileHistogram()
+            .register(Metrics.globalRegistry));
   }
 }

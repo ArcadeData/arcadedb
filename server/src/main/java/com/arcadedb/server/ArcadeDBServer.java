@@ -56,6 +56,7 @@ import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.ServerPathUtils;
 import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.core.instrument.binder.jvm.ClassLoaderMetrics;
 import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
 import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
@@ -233,6 +234,14 @@ public class ArcadeDBServer {
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
+      // Backstop against a path-tag cardinality explosion on arcadedb.http.requests. The handler already
+      // collapses unmatched URIs to a constant, but this caps the number of distinct "path" tag values and
+      // denies further ones so a future route or regression can never grow the registry without bound.
+      // Configured before any registry/meter is added, as Micrometer requires MeterFilters to precede the
+      // meters they govern.
+      Metrics.globalRegistry.config().meterFilter(
+          MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
+
       Metrics.addRegistry(new SimpleMeterRegistry());
 
       new ClassLoaderMetrics().bindTo(Metrics.globalRegistry);
