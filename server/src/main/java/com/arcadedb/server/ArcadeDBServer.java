@@ -738,10 +738,11 @@ public class ArcadeDBServer {
     // so restricting the fast path to ONLINE makes concurrent startup lookups fall through to the locked slow path
     // and block until the wrapped instances are published - exactly the pre-fast-path behaviour.
     //
-    // The other lock holder is the runtime HA snapshot installer (close->swap->reopen while ONLINE). The request
-    // hot path is already deflected with 503 during an install (snapshotInstallInProgress), and once the installer
-    // closes and removeDatabase-s the entry, databases.get() returns null/closed here and the lookup falls through
-    // to the locked slow path - preserving the #4832 guarantee of never reopening a half-swapped directory.
+    // The other lock holder is the runtime HA snapshot installer (close->swap->reopen while ONLINE). The HTTP request
+    // path is normally deflected with 503 during an install (snapshotInstallInProgress), though that is a check at
+    // request entry rather than a hard guarantee for the whole request or for non-HTTP callers. Once the installer
+    // closes and removeDatabase-s the entry, databases.get() returns null/closed here and the lookup falls through to
+    // the locked slow path - preserving the #4832 guarantee of never reopening a half-swapped directory.
     ServerDatabase db = databases.get(databaseName);
     if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
@@ -872,7 +873,10 @@ public class ArcadeDBServer {
               // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
               if (database != null) {
                 ((DatabaseInternal) database).getEmbedded().drop();
-                databases.remove(dbName);
+                // Route through removeDatabase so this registry mutation also runs under databasesLock, keeping the
+                // defect-2 invariant consistent (this path is startup-single-threaded, but consistency is cheaper
+                // to keep than to reason about the exception).
+                removeDatabase(dbName);
               }
               final String dbPath =
                   configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
