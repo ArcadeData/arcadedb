@@ -26,6 +26,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -105,8 +106,14 @@ public class DocumentIndexer {
     final KeyExpansion expansion = classify(expansions);
     final int expansionIndex = lastExpansionIndex(expansions);
     if (countListExpansions(expansions) > 1) {
-      // Multiple BY ITEM properties sharing the same root list - one entry per list element (issue #5181)
-      addMultiListItemsToIndex(entry, rid, record, propertyNamesArray, expansions);
+      if (isFullText(entry))
+        // Full-text combined index over several BY ITEM properties (issue #5181): a full-text index is an inverted per-field
+        // index, not a compound key, so each BY ITEM property is indexed as the UNION of its own list items (the lists may be
+        // different and of different lengths). No element-wise zip and no shared-root requirement.
+        addFullTextByItemToIndex(entry, rid, record, propertyNamesArray, expansions);
+      else
+        // Multiple BY ITEM properties sharing the same root list - one compound entry per list element (issue #5181)
+        addMultiListItemsToIndex(entry, rid, record, propertyNamesArray, expansions);
     } else if (expansion == KeyExpansion.NONE) {
       // Standard indexing - single entry per document
       final Object[] keyValues = new Object[keyNames.size()];
@@ -286,6 +293,92 @@ public class DocumentIndexer {
       final String[] propertyNames, final KeyExpansion[] expansions) {
     for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNames, expansions))
       entry.put(keyValues, new RID[] { rid });
+  }
+
+  private static boolean isFullText(final Index entry) {
+    return entry.getType() == Schema.INDEX_TYPE.FULL_TEXT;
+  }
+
+  /**
+   * Indexes a document for a FULL_TEXT index with several {@code BY ITEM} properties (issue #5181), e.g.
+   * {@code (title, keywords BY ITEM, `synonyms.name` BY ITEM, `creators.name` BY ITEM)}. A full-text index is an inverted per-field
+   * index (each property position is tokenized independently), so this produces ONE key per document where every {@code BY ITEM}
+   * position carries the union of that property's own list items and every plain position carries its scalar value. Unlike the
+   * compound path, the {@code BY ITEM} properties may reference different lists of different lengths.
+   */
+  private void addFullTextByItemToIndex(final Index entry, final RID rid, final Document record,
+      final String[] propertyNames, final KeyExpansion[] expansions) {
+    final Object[] keyValues = buildFullTextByItemKey(record, propertyNames, expansions);
+    if (!isAllEmpty(keyValues))
+      entry.put(keyValues, new RID[] { rid });
+  }
+
+  /**
+   * Updates a FULL_TEXT combined {@code BY ITEM} index (issue #5181): rebuilds the per-field key from the original and modified
+   * record and, when they differ, removes the old tokens and adds the new ones in one shot (the full-text index tokenizes each
+   * field position, so a single remove/put covers every item of every list).
+   *
+   * @return {@code true} if the index was changed.
+   */
+  private boolean updateFullTextByItemInIndex(final Index index, final RID rid, final Document originalRecord,
+      final Document modifiedRecord, final String[] propertyNames, final KeyExpansion[] expansions) {
+    final Object[] oldKey = buildFullTextByItemKey(originalRecord, propertyNames, expansions);
+    final Object[] newKey = buildFullTextByItemKey(modifiedRecord, propertyNames, expansions);
+    if (Arrays.equals(oldKey, newKey))
+      return false;
+    if (!isAllEmpty(oldKey))
+      index.remove(oldKey, rid);
+    if (!isAllEmpty(newKey))
+      index.put(newKey, new RID[] { rid });
+    return true;
+  }
+
+  /**
+   * Builds the single full-text key for a document: each {@code BY ITEM} position holds the list (union) of the values extracted
+   * from that property's own root list, every other position holds its scalar value.
+   */
+  private Object[] buildFullTextByItemKey(final Document record, final String[] propertyNames, final KeyExpansion[] expansions) {
+    final Object[] keyValues = new Object[propertyNames.length];
+    for (int i = 0; i < propertyNames.length; ++i)
+      keyValues[i] = expansions[i] == KeyExpansion.LIST_ITEM
+          ? collectListItemValues(record, propertyNames[i])
+          : getPropertyValue(record, propertyNames[i]);
+    return keyValues;
+  }
+
+  /**
+   * Returns the non-null values of a single {@code BY ITEM} property, walking its own root list once and extracting the nested
+   * path from each element (e.g. {@code synonyms.name} -> the {@code name} of every element of {@code synonyms}).
+   */
+  private List<Object> collectListItemValues(final Document record, final String propertyName) {
+    final String[] pathParts = propertyName.split("\\.");
+    final Object listValue = record.get(pathParts[0]);
+    if (listValue == null)
+      return List.of();
+    if (!(listValue instanceof List<?> list))
+      throw new IndexException("Property '" + pathParts[0] + "' is indexed with BY ITEM but is not a LIST type");
+    if (list.isEmpty())
+      return List.of();
+
+    final List<Object> values = new ArrayList<>(list.size());
+    for (final Object element : list) {
+      final Object value = extractNestedFromElement(element, pathParts);
+      if (value != null)
+        values.add(value);
+    }
+    return values;
+  }
+
+  /** @return {@code true} when every key position is null or an empty collection (nothing to index). */
+  private static boolean isAllEmpty(final Object[] keyValues) {
+    for (final Object value : keyValues) {
+      if (value instanceof Collection<?> collection) {
+        if (!collection.isEmpty())
+          return false;
+      } else if (value != null)
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -494,8 +587,12 @@ public class DocumentIndexer {
       indexExpansions[indexPos] = expansions;
 
       if (countListExpansions(expansions) > 1) {
-        // Multi-BY ITEM index: diff the compound tuples produced from the shared list (issue #5181)
-        anyIndexModified |= updateMultiListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
+        if (isFullText(index))
+          // Full-text combined BY ITEM index (issue #5181): diff the per-field item unions (see addFullTextByItemToIndex).
+          anyIndexModified |= updateFullTextByItemInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
+        else
+          // Multi-BY ITEM index: diff the compound tuples produced from the shared list (issue #5181)
+          anyIndexModified |= updateMultiListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
       } else if (expansion == KeyExpansion.NONE) {
         // Standard update logic (existing code)
         final Object[] oldKeyValues = new Object[keyNames.size()];
@@ -757,9 +854,15 @@ public class DocumentIndexer {
         final int expansionIndex = lastExpansionIndex(expansions);
 
         if (countListExpansions(expansions) > 1) {
-          // Delete all entries of a multi-BY ITEM index (issue #5181)
-          for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNamesArray, expansions))
-            index.remove(keyValues, record.getIdentity());
+          if (isFullText(index)) {
+            // Remove the per-field item unions of a full-text combined BY ITEM index (issue #5181)
+            final Object[] keyValues = buildFullTextByItemKey(record, propertyNamesArray, expansions);
+            if (!isAllEmpty(keyValues))
+              index.remove(keyValues, record.getIdentity());
+          } else
+            // Delete all entries of a multi-BY ITEM compound index (issue #5181)
+            for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNamesArray, expansions))
+              index.remove(keyValues, record.getIdentity());
         } else if (expansion == KeyExpansion.NONE) {
           // Standard deletion
           final Object[] keyValues = new Object[keyNames.size()];

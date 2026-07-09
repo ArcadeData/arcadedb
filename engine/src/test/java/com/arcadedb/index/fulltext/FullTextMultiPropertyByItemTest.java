@@ -141,8 +141,58 @@ class FullTextMultiPropertyByItemTest extends TestHelper {
     });
   }
 
+  /**
+   * Issue #5181 follow-up: a full-text combined index may mix plain properties and several {@code BY ITEM} properties over
+   * DIFFERENT lists of different lengths (a full-text index is a per-field inverted index, not a compound key). Every field must be
+   * searchable.
+   */
+  @Test
+  void combinedByItemOverDifferentListsAndScalars() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Named");
+      database.command("sql", "CREATE PROPERTY Named.name STRING");
+
+      database.command("sql", "CREATE DOCUMENT TYPE Metadata");
+      database.command("sql", "CREATE PROPERTY Metadata.title STRING");
+      database.command("sql", "CREATE PROPERTY Metadata.description STRING");
+      database.command("sql", "CREATE PROPERTY Metadata.keywords LIST OF STRING");
+      database.command("sql", "CREATE PROPERTY Metadata.synonyms LIST OF Named");
+      database.command("sql", "CREATE PROPERTY Metadata.creators LIST OF Named");
+
+      database.command("sql", "CREATE INDEX Metadata_ft ON Metadata "
+          + "(title, keywords BY ITEM, description, `synonyms.name` BY ITEM, `creators.name` BY ITEM) FULL_TEXT");
+    });
+
+    database.transaction(() ->
+        database.command("sql", "INSERT INTO Metadata SET "
+            + "title = 'alpha', description = 'beta', "
+            + "keywords = ['gamma', 'delta', 'epsilon'], "                                       // 3 items
+            + "synonyms = [{\"@type\":\"Named\",\"name\":\"zeta\"}], "                            // 1 item
+            + "creators = [{\"@type\":\"Named\",\"name\":\"eta\"},{\"@type\":\"Named\",\"name\":\"theta\"}]")); // 2 items
+
+    database.transaction(() -> {
+      // plain string properties
+      assertThat(count("Metadata_ft", "alpha")).as("title").isEqualTo(1);
+      assertThat(count("Metadata_ft", "beta")).as("description").isEqualTo(1);
+      // list of strings (every item searchable, not just the last)
+      assertThat(count("Metadata_ft", "gamma")).as("keywords[0]").isEqualTo(1);
+      assertThat(count("Metadata_ft", "delta")).as("keywords[1]").isEqualTo(1);
+      assertThat(count("Metadata_ft", "epsilon")).as("keywords[2]").isEqualTo(1);
+      // list of documents (nested BY ITEM) over two different lists of different lengths
+      assertThat(count("Metadata_ft", "zeta")).as("synonyms.name").isEqualTo(1);
+      assertThat(count("Metadata_ft", "eta")).as("creators.name[0]").isEqualTo(1);
+      assertThat(count("Metadata_ft", "theta")).as("creators.name[1]").isEqualTo(1);
+      // absent term
+      assertThat(count("Metadata_ft", "omega")).as("absent term").isEqualTo(0);
+    });
+  }
+
   private long count(final String term) {
-    final ResultSet result = database.query("sql", "SELECT expand(search_index('combo', ?)) as r", term);
+    return count("combo", term);
+  }
+
+  private long count(final String indexName, final String term) {
+    final ResultSet result = database.query("sql", "SELECT expand(search_index(?, ?)) as r", indexName, term);
     return result.stream().count();
   }
 }

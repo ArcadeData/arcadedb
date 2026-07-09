@@ -18,8 +18,13 @@ that could starve the very snapshot resync meant to heal the node.
   scalar nested lookup that always yielded `null`. The indexer now detects a per-property expansion: when several
   `BY ITEM` properties share the same root list it walks the list once and builds one compound key per element, zipping
   each property's nested value from the same element (element-wise, not a cross-product). The fix covers the create,
-  build, update, and delete index paths. Multiple `BY ITEM` properties that reference different lists are rejected with a
-  clear error rather than silently mis-indexed.
+  build, update, and delete index paths. For a **compound (LSM) index**, multiple `BY ITEM` properties that reference
+  different lists are rejected with a clear error rather than silently mis-indexed.
+  A **`FULL_TEXT` index** is an inverted per-field index rather than a compound key, so it goes further: it now supports
+  any mix of plain properties and several `BY ITEM` properties over *different* lists of *different* lengths (e.g.
+  `CREATE INDEX Metadata_ft ON Metadata (title, keywords BY ITEM, `synonyms.name` BY ITEM, `creators.name` BY ITEM) FULL_TEXT`).
+  Each `BY ITEM` property is indexed as the union of its own list items, so every field - scalar or list - is searchable
+  with `search_index()`, with no shared-list restriction.
 
 - **OpenCypher: `FOREACH ... CREATE` writes are no longer silently lost when followed directly by `RETURN count(var)`.**
   A query such as `MATCH (a:A) FOREACH (x IN [1] | CREATE (:FB {id: x})) RETURN count(a) AS c` returned the correct
