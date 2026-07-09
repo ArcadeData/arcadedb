@@ -27,9 +27,17 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.CallableNoReturn;
 
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
+import java.util.ArrayList;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -200,6 +208,64 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
         client.close();
       }
     }, "twoSubscribersAreServiced");
+  }
+
+  @Test
+  @Tag("slow")
+  void concurrentSubscribesCreateSingleWatcherAndDeliverOnce() throws Throwable {
+    // ISSUE #5024 (defect 2): subscribe() used a non-atomic containsKey/startDatabaseWatcher check-then-act. Many
+    // clients subscribing to the same database at once each saw the watcher absent and started their own
+    // DatabaseEventWatcherThread; every extra watcher registered as a record-event listener, so a single change was
+    // published once per watcher and each subscriber received duplicate frames. After the fix exactly one watcher is
+    // created and every subscriber receives each event exactly once.
+    execute(() -> {
+      final int clientCount = 8;
+      final var clients = new WebSocketClientHelper[clientCount];
+      for (int i = 0; i < clientCount; i++)
+        clients[i] = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+      final ExecutorService pool = Executors.newFixedThreadPool(clientCount);
+      try {
+        // Fire all subscribes at the same instant to maximise the race on the (previously) unguarded watcher creation.
+        final var barrier = new CyclicBarrier(clientCount);
+        final var errors = new CopyOnWriteArrayList<Throwable>();
+        final var futures = new ArrayList<Future<?>>();
+        for (final var client : clients) {
+          futures.add(pool.submit(() -> {
+            try {
+              barrier.await();
+              final var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph")));
+              assertThat(result.get("result")).isEqualTo("ok");
+            } catch (final Throwable t) {
+              errors.add(t);
+            }
+          }));
+        }
+        for (final var future : futures)
+          future.get(20, TimeUnit.SECONDS);
+        assertThat(errors).as("all concurrent subscribes must succeed").isEmpty();
+
+        // A single change must reach each subscriber exactly once. Use a unique marker so the count is unaffected by any
+        // unrelated change events, and a duplicate watcher is caught as the marker arriving twice.
+        final String marker = "once-" + UUID.randomUUID();
+        getServerDatabase(0, "graph").newVertex("V1").set("name", marker).save();
+
+        for (final var client : clients) {
+          int mine = 0;
+          String message;
+          while ((message = client.popMessage(1500)) != null) {
+            final var record = new JSONObject(message).getJSONObject("record");
+            if (marker.equals(record.getString("name", null)))
+              mine++;
+          }
+          assertThat(mine).as("subscriber must receive its change event exactly once: a duplicate watcher delivers it twice").isEqualTo(1);
+        }
+      } finally {
+        pool.shutdownNow();
+        for (final var client : clients)
+          client.close();
+      }
+    }, "concurrentSubscribesCreateSingleWatcherAndDeliverOnce");
   }
 
   @Test
