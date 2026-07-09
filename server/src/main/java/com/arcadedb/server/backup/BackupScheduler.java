@@ -41,7 +41,6 @@ public class BackupScheduler {
   private final    ArcadeDBServer                  server;
   private final    ScheduledExecutorService        executor;
   private final    Map<String, ScheduledFuture<?>> scheduledTasks;
-  private final    Map<String, CronScheduleParser> cronParsers;
   // Per-database generation token: bumped on every (re)schedule and cleared on cancel, so an
   // in-flight cron task cannot resurrect a schedule that was cancelled or superseded.
   private final    Map<String, Long>               cronGenerations = new ConcurrentHashMap<>();
@@ -63,7 +62,6 @@ public class BackupScheduler {
       return t;
     });
     this.scheduledTasks = new ConcurrentHashMap<>();
-    this.cronParsers = new ConcurrentHashMap<>();
     this.running = false;
   }
 
@@ -146,7 +144,6 @@ public class BackupScheduler {
 
     final long generation;
     synchronized (scheduleLock) {
-      cronParsers.put(databaseName, parser);
       generation = generationSequence.incrementAndGet();
       cronGenerations.put(databaseName, generation);
     }
@@ -172,7 +169,6 @@ public class BackupScheduler {
       synchronized (scheduleLock) {
         cronGenerations.remove(databaseName, generation);
         scheduledTasks.remove(databaseName);
-        cronParsers.remove(databaseName);
       }
       return;
     }
@@ -224,7 +220,6 @@ public class BackupScheduler {
         LogManager.instance().log(this, Level.INFO,
             "Cancelled scheduled backup for database '%s'", databaseName);
       }
-      cronParsers.remove(databaseName);
     }
   }
 
@@ -257,7 +252,6 @@ public class BackupScheduler {
       for (final ScheduledFuture<?> future : tasksToCancel)
         future.cancel(false);
       scheduledTasks.clear();
-      cronParsers.clear();
       cronGenerations.clear();
     }
 
