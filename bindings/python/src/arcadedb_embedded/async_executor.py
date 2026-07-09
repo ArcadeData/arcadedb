@@ -116,8 +116,9 @@ class AsyncExecutor:
         Auto-commit every N operations.
 
         Args:
-            count: Commit frequency (operations per commit).
-                   0 = manual commits only (default).
+            count: Commit frequency (operations per commit). Must be >= 1;
+                   the engine rejects lower values (0 used to be silently
+                   accepted but broke async task execution, engine #4961).
                    Recommended: 1000-10000 for bulk inserts.
 
         Returns:
@@ -126,6 +127,12 @@ class AsyncExecutor:
         Example:
             >>> async_exec.set_commit_every(5000)  # Commit every 5K ops
         """
+        # engine #4961: commitEvery < 1 breaks async task execution
+        if count < 1:
+            raise ValueError(
+                f"commit_every must be >= 1 (got {count}); the async "
+                "executor always commits in batches"
+            )
         self._java_async.setCommitEvery(count)
         return self
 
