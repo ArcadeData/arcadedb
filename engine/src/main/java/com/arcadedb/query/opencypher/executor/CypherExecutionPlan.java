@@ -1882,24 +1882,86 @@ public class CypherExecutionPlan {
     for (int i = 0; i < n; i++)
       components.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(i);
 
-    if (components.size() < 2)
-      return pathPatterns; // single connected component - nothing to reorder
+    // Order the parts inside every component so the most selective occurrence of a shared variable
+    // binds first (issue #5116). A node variable may repeat across single-node parts with different
+    // label constraints (e.g. (n0), (n0:L1:L5)); chaining the bare occurrence first would bind n0 to
+    // every node (full scan) and only afterwards filter by the labels. Stable-sorting the single-node
+    // parts by descending label count lifts the labeled occurrence ahead of the bare one, so the
+    // variable is bound to the small label class and the bare occurrence is then skipped. Relationship
+    // parts (the traversal spine) keep their absolute positions, so this never reorders a traversal.
+    for (final List<Integer> component : components.values())
+      reorderSingleNodePartsBySelectivity(pathPatterns, component);
 
-    // Stable sort components by descending relationship count (ties keep earliest original index).
+    if (components.size() < 2)
+      return rebuild(pathPatterns, components.values()); // single component: only within-part order changed
+
+    // Stable sort components by descending relationship count, then by descending label count so the
+    // more selective component drives the Cartesian product as the outer loop. The label-count
+    // tie-break makes the chosen order independent of the textual order (issue #5116): two disconnected
+    // node components (0 relationships each) that differ only in their label constraints would otherwise
+    // be left in written order, so swapping them changed which one re-scanned per outer row. Only when
+    // both counts tie do we fall back to the earliest original index.
     final List<List<Integer>> ordered = new ArrayList<>(components.values());
     ordered.sort((a, b) -> {
       final int wa = componentRelationshipCount(pathPatterns, a);
       final int wb = componentRelationshipCount(pathPatterns, b);
       if (wa != wb)
         return Integer.compare(wb, wa);
+      final int la = componentLabelCount(pathPatterns, a);
+      final int lb = componentLabelCount(pathPatterns, b);
+      if (la != lb)
+        return Integer.compare(lb, la);
       return Integer.compare(a.get(0), b.get(0));
     });
 
-    final List<PathPattern> result = new ArrayList<>(n);
+    return rebuild(pathPatterns, ordered);
+  }
+
+  private static List<PathPattern> rebuild(final List<PathPattern> pathPatterns,
+      final Iterable<List<Integer>> ordered) {
+    final List<PathPattern> result = new ArrayList<>(pathPatterns.size());
     for (final List<Integer> component : ordered)
       for (final int idx : component)
         result.add(pathPatterns.get(idx));
     return result;
+  }
+
+  /**
+   * Reorders the single-node parts of a component in place so the ones carrying more labels come
+   * first, while relationship-bearing parts keep their absolute positions. Stable within equal label
+   * counts, so the outcome is independent of the textual order of otherwise-equivalent occurrences.
+   */
+  private static void reorderSingleNodePartsBySelectivity(final List<PathPattern> pathPatterns,
+      final List<Integer> component) {
+    // Collect the positions occupied by single-node parts and the part indices sitting in them.
+    final List<Integer> slots = new ArrayList<>();
+    final List<Integer> singleNodeParts = new ArrayList<>();
+    for (int pos = 0; pos < component.size(); pos++) {
+      final int partIndex = component.get(pos);
+      if (pathPatterns.get(partIndex).isSingleNode()) {
+        slots.add(pos);
+        singleNodeParts.add(partIndex);
+      }
+    }
+    if (singleNodeParts.size() < 2)
+      return; // nothing to reorder
+
+    // Stable sort the single-node parts by descending label count (most selective first).
+    singleNodeParts.sort((a, b) -> Integer.compare(
+        pathPatterns.get(b).getFirstNode().getLabels().size(),
+        pathPatterns.get(a).getFirstNode().getLabels().size()));
+
+    // Refill the single-node slots in the new order; relationship parts stay where they were.
+    for (int i = 0; i < slots.size(); i++)
+      component.set(slots.get(i), singleNodeParts.get(i));
+  }
+
+  private static int componentLabelCount(final List<PathPattern> pathPatterns, final List<Integer> component) {
+    int count = 0;
+    for (final int idx : component)
+      for (final NodePattern node : pathPatterns.get(idx).getNodes())
+        count += node.getLabels().size();
+    return count;
   }
 
   /**
