@@ -39,13 +39,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 public class ServerQueryProfiler {
-  private static final int DEFAULT_TIMEOUT_SECONDS = 60;
-  private static final int MAX_ENTRIES             = 10_000;
-  private static final int MAX_PROFILER_FILES      = 50;
+  private static final int     DEFAULT_TIMEOUT_SECONDS = 60;
+  private static final int     MAX_ENTRIES             = 10_000;
+  private static final int     MAX_PROFILER_FILES      = 50;
+  private static final Pattern WHITESPACE              = Pattern.compile("\\s+");
 
   private final ArcadeDBServer server;
 
@@ -55,9 +58,13 @@ public class ServerQueryProfiler {
   private int     timeoutSeconds;
   private Timer   autoStopTimer;
 
-  private final ProfiledQueryEntry[] entries = new ProfiledQueryEntry[MAX_ENTRIES];
-  private final AtomicInteger        writeIndex = new AtomicInteger(0);
-  private int                        totalRecorded;
+  // The recording hot path (recordQuery) is intentionally unsynchronized and can run concurrently on
+  // many Undertow workers. Visibility to the synchronized readers (stop/buildResults) is established
+  // through the AtomicReferenceArray element writes and the AtomicLong counter. writeIndex is a long
+  // so the ring-buffer slot (floorMod) never goes negative even after 2^31 records, and it doubles as
+  // the exact grand total of recorded queries (one atomic increment per record, no lost updates).
+  private final AtomicReferenceArray<ProfiledQueryEntry> entries    = new AtomicReferenceArray<>(MAX_ENTRIES);
+  private final AtomicLong                               writeIndex = new AtomicLong(0);
 
   private JSONObject snapshotStartProfiler;
   private JSONObject snapshotStartDatabases;
@@ -83,9 +90,8 @@ public class ServerQueryProfiler {
       return;
 
     // Clear previous data
-    Arrays.fill(entries, null);
+    clearEntries();
     writeIndex.set(0);
-    totalRecorded = 0;
     lastResults = null;
     stopTimeMs = 0;
     timeoutSeconds = timeoutSec > 0 ? timeoutSec : DEFAULT_TIMEOUT_SECONDS;
@@ -122,7 +128,7 @@ public class ServerQueryProfiler {
     snapshotStopProfiler = Profiler.INSTANCE.toJSON();
     snapshotStopDatabases = captureDatabaseStats();
 
-    LogManager.instance().log(this, Level.INFO, "Query profiler stopped (%d queries recorded)", totalRecorded);
+    LogManager.instance().log(this, Level.INFO, "Query profiler stopped (%d queries recorded)", writeIndex.get());
 
     lastResults = buildResults();
     persistResults(lastResults);
@@ -132,9 +138,8 @@ public class ServerQueryProfiler {
   public synchronized void reset() {
     recording = false;
     cancelAutoStopTimer();
-    Arrays.fill(entries, null);
+    clearEntries();
     writeIndex.set(0);
-    totalRecorded = 0;
     startTimeMs = 0;
     stopTimeMs = 0;
     snapshotStartProfiler = null;
@@ -160,9 +165,9 @@ public class ServerQueryProfiler {
     final ProfiledQueryEntry entry = new ProfiledQueryEntry(database, language, queryText,
         System.currentTimeMillis(), deserializationNanos, engineNanos, serializationNanos, executionPlan);
 
-    final int idx = writeIndex.getAndIncrement() % MAX_ENTRIES;
-    entries[idx] = entry;
-    totalRecorded++;
+    // floorMod on the long sequence stays non-negative even after the counter passes Integer.MAX_VALUE.
+    final int idx = (int) Math.floorMod(writeIndex.getAndIncrement(), MAX_ENTRIES);
+    entries.set(idx, entry);
   }
 
   public void recordQuery(final String database, final String language, final String queryText,
@@ -226,7 +231,7 @@ public class ServerQueryProfiler {
     result.put("stopTime", stopTimeMs > 0 ? stopTimeMs : System.currentTimeMillis());
     result.put("durationMs", (stopTimeMs > 0 ? stopTimeMs : System.currentTimeMillis()) - startTimeMs);
     result.put("timeoutSeconds", timeoutSeconds);
-    result.put("totalQueries", totalRecorded);
+    result.put("totalQueries", writeIndex.get());
 
     // Names of databases that have at least one recorded query in this window.
     // The Studio summary cards use this to scope DB-specific deltas (queries, commands,
@@ -263,9 +268,9 @@ public class ServerQueryProfiler {
 
   private Set<String> collectProfiledDatabaseNames() {
     final LinkedHashSet<String> names = new LinkedHashSet<>();
-    final int count = Math.min(totalRecorded, MAX_ENTRIES);
+    final int count = (int) Math.min(writeIndex.get(), MAX_ENTRIES);
     for (int i = 0; i < count; i++) {
-      final ProfiledQueryEntry entry = entries[i];
+      final ProfiledQueryEntry entry = entries.get(i);
       if (entry != null && entry.database != null)
         names.add(entry.database);
     }
@@ -275,9 +280,9 @@ public class ServerQueryProfiler {
   private JSONArray aggregateQueries() {
     final Map<String, List<ProfiledQueryEntry>> groups = new HashMap<>();
 
-    final int count = Math.min(totalRecorded, MAX_ENTRIES);
+    final int count = (int) Math.min(writeIndex.get(), MAX_ENTRIES);
     for (int i = 0; i < count; i++) {
-      final ProfiledQueryEntry entry = entries[i];
+      final ProfiledQueryEntry entry = entries.get(i);
       if (entry == null)
         continue;
       final String key = entry.database + "|" + entry.language + "|" + normalizeQuery(entry.queryText);
@@ -469,7 +474,12 @@ public class ServerQueryProfiler {
   }
 
   public static String normalizeQuery(final String query) {
-    return query.replaceAll("\\s+", " ").trim();
+    return WHITESPACE.matcher(query).replaceAll(" ").trim();
+  }
+
+  private void clearEntries() {
+    for (int i = 0; i < MAX_ENTRIES; i++)
+      entries.set(i, null);
   }
 
   private static long sumNanos(final long[] values) {
