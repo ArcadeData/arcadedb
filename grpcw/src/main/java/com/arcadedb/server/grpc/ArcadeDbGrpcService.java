@@ -364,6 +364,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
+   * True when the caller explicitly supplied a non-blank transaction id that resolves to no active
+   * transaction - typically because the idle reaper already rolled it back. This is distinct from a
+   * genuinely absent/blank id, which legitimately means "no external transaction, use the auto-transaction
+   * path". A transaction-scoped write RPC must fail loudly in this case instead of silently auto-committing.
+   */
+  private static boolean isUnknownSuppliedTransaction(final String txId, final TransactionContext txCtx) {
+    return txCtx == null && txId != null && !txId.isBlank();
+  }
+
+  /**
+   * gRPC status for a write/stream RPC that carried a non-blank transaction id no longer registered on the
+   * server. FAILED_PRECONDITION signals the client that the transaction it believed it was inside is gone,
+   * so the call must not silently fall through to a per-call auto-commit and lose the atomicity the client
+   * expected.
+   */
+  private static Status unknownTransactionStatus(final String txId) {
+    return Status.FAILED_PRECONDITION.withDescription(
+        "Unknown or expired transaction id: " + txId + " (it may have been rolled back by the idle reaper)");
+  }
+
+  /**
    * Scans the registered transactions and reclaims any that have been idle past {@code txMaxIdleMs}, or (when
    * configured) older than {@code txMaxAgeMs}. Each reaped transaction is removed atomically so the sweep never
    * races a concurrent commit/rollback, then rolled back on its own dedicated thread and its executor shut down.
@@ -381,9 +402,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (!idleExpired && !ageExpired)
           continue;
 
+        // CON-5: for an idle-only reap, re-read lastAccessMs immediately before claiming the transaction so a
+        // request that touched it (via lookupActiveTransaction()) between the staleness read above and the
+        // remove below is not reaped out from under an active caller. An age-expired transaction is reaped
+        // regardless, since createdAtMs never advances on touch().
+        if (!ageExpired) {
+          final long freshIdleMs = System.currentTimeMillis() - ctx.lastAccessMs;
+          if (txMaxIdleMs <= 0 || freshIdleMs < txMaxIdleMs)
+            continue;
+        }
+
         // remove(key, value) ensures only one of the reaper / commit / rollback wins the cleanup.
         // Residual TOCTOU note: a request could lookupActiveTransaction() (touch + submit work) in the instant
-        // between the staleness read above and this remove. That window only opens for an already-idle
+        // between the re-read above and this remove. That window only opens for an already-idle
         // transaction; any command already submitted to the executor still runs to completion before the
         // asynchronous shutdown() in reapTransaction() lets the thread terminate, so no in-flight work is lost.
         if (activeTransactions.remove(entry.getKey(), ctx)) {
@@ -482,6 +513,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final var tx = hasTx ? req.getTransaction() : null;
       final String incomingTxId = hasTx && tx != null ? tx.getTransactionId() : null;
       final TransactionContext txCtx = resolveAuthorizedTransaction(incomingTxId, req.getCredentials());
+
+      if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+        // The client supplied a transaction id that is no longer active (e.g. reaped). Reject instead of
+        // silently auto-committing this write outside the transaction the client believes it is in.
+        resp.onError(unknownTransactionStatus(incomingTxId).asException());
+        return;
+      }
 
       if (txCtx != null) {
         // External transaction - execute command on the transaction's dedicated thread
@@ -775,6 +813,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+      // Non-blank transaction id the server no longer knows about (e.g. reaped): fail loudly instead of
+      // silently auto-committing this write outside the transaction the client believes it is in.
+      resp.onError(unknownTransactionStatus(incomingTxId).asException());
+      return;
+    }
+
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
@@ -902,6 +947,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+      // Non-blank transaction id the server no longer knows about (e.g. reaped): fail loudly instead of
+      // silently auto-committing this write outside the transaction the client believes it is in.
+      resp.onError(unknownTransactionStatus(incomingTxId).asException());
+      return;
+    }
+
     if (txCtx != null) {
       try {
         final Future<LookupByRidResponse> future = txCtx.executor.submit(() -> lookupByRidInternal(req, txCtx.db));
@@ -947,6 +999,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       txCtx = resolveAuthorizedTransaction(incomingTxId, req.getCredentials());
     } catch (final StatusRuntimeException e) {
       resp.onError(e);
+      return;
+    }
+
+    if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+      // Non-blank transaction id the server no longer knows about (e.g. reaped): fail loudly instead of
+      // silently auto-committing this write outside the transaction the client believes it is in.
+      resp.onError(unknownTransactionStatus(incomingTxId).asException());
       return;
     }
 
@@ -1116,6 +1175,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       txCtx = resolveAuthorizedTransaction(incomingTxId, req.getCredentials());
     } catch (final StatusRuntimeException e) {
       resp.onError(e);
+      return;
+    }
+
+    if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+      // Non-blank transaction id the server no longer knows about (e.g. reaped): fail loudly instead of
+      // silently auto-committing this write outside the transaction the client believes it is in.
+      resp.onError(unknownTransactionStatus(incomingTxId).asException());
       return;
     }
 
@@ -1686,38 +1752,85 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     ProtocolContext.set("grpc");
     try {
-      ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
+      final ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
 
       final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
       scso.setOnCancelHandler(() -> cancelled.set(true));
 
-      db = getDatabase(request.getDatabase(), request.getCredentials());
       final int batchSize = Math.max(1, request.getBatchSize());
+      final String language = langOrDefault(request.getLanguage());
+      profileLanguage = language;
 
-      // --- TX begin if requested ---
       final boolean hasTx = request.hasTransaction();
       final var tx = hasTx ? request.getTransaction() : null;
+      final String incomingTxId = hasTx ? tx.getTransactionId() : null;
+
+      // If the client is inside an externally-managed transaction (started via BeginTransaction), route the
+      // whole stream to that transaction's dedicated executor thread. ArcadeDB transactions are thread-bound,
+      // so a stream running on the gRPC worker thread would miss the transaction's own uncommitted writes -
+      // the streaming analogue of the #4260 executeQuery fix. A non-blank id that no longer resolves (e.g.
+      // reaped) is rejected instead of silently running as a throwaway read.
+      final TransactionContext txCtx;
+      try {
+        txCtx = resolveAuthorizedTransaction(incomingTxId, request.getCredentials());
+      } catch (final StatusRuntimeException e) {
+        responseObserver.onError(e);
+        return;
+      }
+      if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+        responseObserver.onError(unknownTransactionStatus(incomingTxId).asException());
+        return;
+      }
+
+      if (txCtx != null) {
+        db = txCtx.db;
+        final Database streamDb = db;
+        // The transaction lifecycle (begin/commit/rollback) stays with the Begin/Commit/Rollback RPCs, exactly
+        // like executeQuery - do NOT begin or commit a throwaway read tx here.
+        final Future<?> future = txCtx.executor.submit(() -> {
+          dispatchStream(streamDb, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
+          return null;
+        });
+        try {
+          future.get();
+        } catch (final ExecutionException ee) {
+          final Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+          if (cause instanceof RuntimeException re)
+            throw re;
+          if (cause instanceof Error err)
+            throw err;
+          throw new RuntimeException(cause);
+        }
+
+        if (cancelled.get()) {
+          if (serverTimedOut.get()) {
+            final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+            try {
+              scso.onError(Status.DEADLINE_EXCEEDED
+                  .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
+                      + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
+                  .asRuntimeException());
+            } catch (final StatusRuntimeException ignore) {
+              // transport may have closed concurrently; the terminal is already moot
+            }
+          }
+          return; // terminal already sent (DEADLINE_EXCEEDED) or intentionally omitted (client cancel)
+        }
+        scso.onCompleted();
+        return;
+      }
+
+      // No external transaction: run on the gRPC worker thread against a pooled database handle.
+      db = getDatabase(request.getDatabase(), request.getCredentials());
+
+      // --- TX begin if requested ---
       if (hasTx && tx.getBegin()) {
         db.begin();
         beganHere = true;
       }
 
-      final String language = langOrDefault(request.getLanguage());
-      profileLanguage = language;
-
       // --- Dispatch on mode (helpers do NOT manage transactions) ---
-      // PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so fall back to CURSOR for non-SQL languages
-      switch (request.getRetrievalMode()) {
-        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-        case PAGED -> {
-          if (!"sql".equalsIgnoreCase(language))
-            streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-          else
-            streamPaged(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-        }
-        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-        default -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-      }
+      dispatchStream(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
 
       // If the client cancelled mid-stream, choose rollback unless caller explicitly
       // asked to commit/rollback.
@@ -1796,6 +1909,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
       QueryProfile.popCurrent();
       ProtocolContext.clear();
+    }
+  }
+
+  /**
+   * Dispatches a stream to the retrieval-mode-specific helper. The helpers do NOT manage transactions; the
+   * caller owns begin/commit/rollback (or, for an externally-managed transaction, leaves the lifecycle to the
+   * Begin/Commit/Rollback RPCs). PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so it falls back to CURSOR
+   * for non-SQL languages.
+   */
+  private void dispatchStream(final Database db, final StreamQueryRequest request, final int batchSize,
+      final ServerCallStreamObserver<QueryResult> scso, final AtomicBoolean cancelled,
+      final AtomicBoolean serverTimedOut, final ProjectionConfig projectionConfig, final String language) {
+    switch (request.getRetrievalMode()) {
+      case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
+      case PAGED -> {
+        if (!"sql".equalsIgnoreCase(language))
+          streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
+        else
+          streamPaged(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
+      }
+      case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
+      default -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
     }
   }
 
