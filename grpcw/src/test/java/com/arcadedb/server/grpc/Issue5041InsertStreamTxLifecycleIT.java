@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.BaseGraphServerTest;
+import io.grpc.Context;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -219,6 +221,67 @@ public class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * CON-1: a bidirectional insert authenticated ONLY through the gRPC context ({@code USER_CONTEXT_KEY},
+   * as set by the auth interceptor for header/Bearer clients) - with NO credentials in the request
+   * payload - must work. The stream executor runs on a different thread than the inbound callback, so
+   * the captured {@code io.grpc.Context} has to be propagated for {@code resolvedUsername()} to see the
+   * user. Self-validating: the first stream (no context, no credentials) must be rejected, proving auth
+   * is actually enforced; the second (context user, still no credentials) must commit.
+   */
+  @Test
+  void bidirectionalHeaderOnlyAuthIsPropagatedToStreamExecutor() throws Exception {
+    final String typeName = "Issue5041Con1_" + System.currentTimeMillis();
+    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
+    try {
+      final InsertRequest start = InsertRequest.newBuilder().setStart(Start.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase(getDatabaseName())
+              // deliberately NO credentials: the only identity source is the gRPC context
+              .setTargetClass(typeName)
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_ERROR)
+              .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM)
+              .build())
+          .build()).build();
+
+      // (a) No context and no credentials: START must be rejected (auth is enforced).
+      final BidiResponseObserver respA = new BidiResponseObserver();
+      final StreamObserver<InsertRequest> reqA = service.insertBidirectional(respA);
+      reqA.onNext(start);
+      assertThat(respA.terminalLatch.await(30, TimeUnit.SECONDS)).isTrue();
+      assertThat(respA.error.get()).as("unauthenticated START must be rejected").isNotNull();
+      assertThat(respA.sessionId.get()).isEmpty();
+
+      // (b) Same payload (no credentials) but the handler is invoked within a gRPC context carrying
+      // the authenticated user, exactly as the auth interceptor would set up for a header/Bearer client.
+      final BidiResponseObserver respB = new BidiResponseObserver();
+      final Context authContext = Context.current().withValue(GrpcAuthInterceptor.USER_CONTEXT_KEY, "root");
+      final AtomicReference<StreamObserver<InsertRequest>> reqBHolder = new AtomicReference<>();
+      authContext.run(() -> reqBHolder.set(service.insertBidirectional(respB)));
+      final StreamObserver<InsertRequest> reqB = reqBHolder.get();
+
+      reqB.onNext(start);
+      assertThat(respB.startedLatch.await(30, TimeUnit.SECONDS)).as("context-authenticated START must succeed").isTrue();
+
+      final InsertChunk.Builder chunk = InsertChunk.newBuilder().setSessionId(respB.sessionId.get()).setChunkSeq(1);
+      for (int i = 0; i < 5; i++)
+        chunk.addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("v" + i)).build());
+      reqB.onNext(InsertRequest.newBuilder().setChunk(chunk.build()).build());
+      assertThat(respB.batchAckLatch.await(30, TimeUnit.SECONDS)).isTrue();
+
+      reqB.onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(respB.sessionId.get()).setCommit(true).build()).build());
+      assertThat(respB.terminalLatch.await(30, TimeUnit.SECONDS)).isTrue();
+      assertThat(respB.committed.get()).as("context-authenticated stream must commit").isTrue();
+      assertThat(countRows(typeName)).isEqualTo(5L);
+    } finally {
+      service.close();
+      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    }
+  }
+
   private static Thread awaitBidiWorker() throws InterruptedException {
     for (int i = 0; i < 300; i++) {
       for (final Thread t : Thread.getAllStackTraces().keySet())
@@ -255,10 +318,12 @@ public class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
    * handler that latches on the Started/BatchAck responses and records whether a Committed arrived.
    */
   private static final class BidiResponseObserver extends ServerCallStreamObserver<InsertResponse> {
-    final CountDownLatch                startedLatch  = new CountDownLatch(1);
-    final CountDownLatch                batchAckLatch = new CountDownLatch(1);
-    final AtomicReference<String>       sessionId     = new AtomicReference<>("");
-    final java.util.concurrent.atomic.AtomicBoolean committed = new java.util.concurrent.atomic.AtomicBoolean(false);
+    final CountDownLatch          startedLatch  = new CountDownLatch(1);
+    final CountDownLatch          batchAckLatch = new CountDownLatch(1);
+    final CountDownLatch          terminalLatch = new CountDownLatch(1);
+    final AtomicReference<String> sessionId     = new AtomicReference<>("");
+    final AtomicBoolean           committed     = new AtomicBoolean(false);
+    final AtomicReference<Throwable> error      = new AtomicReference<>();
 
     @Override public void onNext(final InsertResponse value) {
       switch (value.getMsgCase()) {
@@ -268,8 +333,8 @@ public class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
         default -> { }
       }
     }
-    @Override public void onError(final Throwable t) { }
-    @Override public void onCompleted() { }
+    @Override public void onError(final Throwable t) { error.set(t); terminalLatch.countDown(); }
+    @Override public void onCompleted() { terminalLatch.countDown(); }
 
     @Override public boolean isCancelled() { return false; }
     @Override public void setOnCancelHandler(final Runnable onCancelHandler) { }

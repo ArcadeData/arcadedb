@@ -2709,13 +2709,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (cancelled.get())
           return;
 
-        // Submit all message processing to the single-threaded executor to ensure the transaction
-        // ThreadLocal context is preserved. Issue #5041 (CON-1): wrap the task with the captured
-        // gRPC Context so header/Bearer auth survives the thread hop. Issue #5041 (CON-4): guard the
-        // submit against a RejectedExecutionException thrown when a racing cancel shut the executor
-        // down between the cancelled check above and this submit (onCompleted already guards this).
-        try {
-          streamExecutor.submit(grpcContext.wrap(() -> {
+        // Process every message on the single-threaded executor so the transaction ThreadLocal
+        // context is preserved. Issue #5041 (CON-1): the task is wrapped with the captured gRPC
+        // Context at submit time so header/Bearer auth survives the thread hop.
+        final Runnable task = () -> {
           if (cancelled.get())
             return;
 
@@ -2840,10 +2837,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // thread does not leak after the error is delivered to the client.
             streamExecutor.shutdown();
           }
-          }));
+        };
+
+        // Issue #5041 (CON-4): guard the submit against a RejectedExecutionException thrown when a
+        // racing cancel shut the executor down between the cancelled check above and this submit
+        // (onCompleted already guards this).
+        try {
+          streamExecutor.submit(grpcContext.wrap(task));
         } catch (final RejectedExecutionException ignore) {
-          // Issue #5041 (CON-4): a racing cancel shut the executor down after the cancelled check
-          // above; drop the message instead of throwing out of the callback.
+          // a racing cancel shut the executor down; drop the message instead of throwing out of the callback
         }
       }
 
@@ -2863,6 +2865,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           streamExecutor.submit(grpcContext.wrap(() -> {
             final InsertContext ctx = ref.getAndSet(null);
             if (ctx != null) {
+              // Rebind before rolling back for symmetry with close(): the transaction was begun on
+              // this same single-thread executor so it is already bound here, but rebinding keeps the
+              // rollback correct even if that ever changes.
+              ctx.bindToCurrentThread();
               ctx.abortTransaction();
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
