@@ -129,6 +129,23 @@ class CronScheduleParserSemanticsTest {
   }
 
   /**
+   * A day-of-week range that ends in 7 (Sunday) must be accepted: "1-7" means Monday through Sunday,
+   * i.e. every day. Folding 7 to 0 at value level would wrongly reject this as start &gt; end.
+   */
+  @Test
+  void dayOfWeekRangeEndingInSevenMeansEveryDay() {
+    final CronScheduleParser parser = new CronScheduleParser("0 0 0 * * 1-7");
+
+    // From any day, the next fire is simply the next midnight (every day matches).
+    final LocalDateTime from = LocalDateTime.of(2024, 1, 15, 10, 0, 0); // Monday
+    assertThat(parser.getNextExecutionTime(from)).isEqualTo(LocalDateTime.of(2024, 1, 16, 0, 0, 0));
+
+    // Sunday is included via the 7 endpoint.
+    final LocalDateTime saturday = LocalDateTime.of(2024, 1, 20, 10, 0, 0);
+    assertThat(parser.getNextExecutionTime(saturday)).isEqualTo(LocalDateTime.of(2024, 1, 21, 0, 0, 0));
+  }
+
+  /**
    * A small table of known-good expressions and their expected next fire time.
    */
   @Test

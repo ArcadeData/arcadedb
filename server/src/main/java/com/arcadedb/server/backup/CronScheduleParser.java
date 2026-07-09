@@ -66,7 +66,7 @@ public class CronScheduleParser {
     this.hours = new BitSet(24);
     this.daysOfMonth = new BitSet(32);
     this.months = new BitSet(13);
-    this.daysOfWeek = new BitSet(7);
+    this.daysOfWeek = new BitSet(8); // 0-7, where both 0 and 7 mean Sunday
 
     final String[] fields = expression.trim().split("\\s+");
 
@@ -85,17 +85,22 @@ public class CronScheduleParser {
   }
 
   private void parse(final String[] fields) {
-    parseField(fields[FIELD_SECOND], seconds, 0, 59, null, false);
-    parseField(fields[FIELD_MINUTE], minutes, 0, 59, null, false);
-    parseField(fields[FIELD_HOUR], hours, 0, 23, null, false);
-    parseField(fields[FIELD_DAY_OF_MONTH], daysOfMonth, 1, 31, null, false);
+    parseField(fields[FIELD_SECOND], seconds, 0, 59, null);
+    parseField(fields[FIELD_MINUTE], minutes, 0, 59, null);
+    parseField(fields[FIELD_HOUR], hours, 0, 23, null);
+    parseField(fields[FIELD_DAY_OF_MONTH], daysOfMonth, 1, 31, null);
     parseField(fields[FIELD_MONTH], months, 1, 12, new String[]{"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}, false);
-    parseField(fields[FIELD_DAY_OF_WEEK], daysOfWeek, 0, 6, new String[]{"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"}, true);
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"});
+    // Day-of-week accepts 0-7 where both 0 and 7 mean Sunday, so ranges such as "1-7" (Mon-Sun) and
+    // the lone value "7" are valid. Bit 7 is folded onto bit 0 after the whole field is parsed.
+    parseField(fields[FIELD_DAY_OF_WEEK], daysOfWeek, 0, 7, new String[]{"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"});
+    if (daysOfWeek.get(7)) {
+      daysOfWeek.set(0);
+      daysOfWeek.clear(7);
+    }
   }
 
-  private void parseField(final String field, final BitSet bitSet, final int min, final int max, final String[] names,
-      final boolean dayOfWeek) {
+  private void parseField(final String field, final BitSet bitSet, final int min, final int max, final String[] names) {
     if (isWildcard(field)) {
       bitSet.set(min, max + 1);
       return;
@@ -104,7 +109,7 @@ public class CronScheduleParser {
     // Handle lists (comma-separated)
     if (field.contains(",")) {
       for (final String part : field.split(","))
-        parseField(part, bitSet, min, max, names, dayOfWeek);
+        parseField(part, bitSet, min, max, names);
       return;
     }
 
@@ -113,7 +118,7 @@ public class CronScheduleParser {
       final String[] parts = field.split("/", -1);
       if (parts.length != 2)
         throw new IllegalArgumentException("Invalid CRON increment '" + field + "' in expression '" + expression + "'");
-      final int start = "*".equals(parts[0]) ? min : parseValue(parts[0], min, max, names, dayOfWeek);
+      final int start = "*".equals(parts[0]) ? min : parseValue(parts[0], min, max, names);
       final int increment = parseInt(parts[1], "increment");
       if (increment <= 0)
         throw new IllegalArgumentException(
@@ -128,8 +133,8 @@ public class CronScheduleParser {
       final String[] parts = field.split("-");
       if (parts.length != 2)
         throw new IllegalArgumentException("Invalid CRON range '" + field + "' in expression '" + expression + "'");
-      final int rangeStart = parseValue(parts[0], min, max, names, dayOfWeek);
-      final int rangeEnd = parseValue(parts[1], min, max, names, dayOfWeek);
+      final int rangeStart = parseValue(parts[0], min, max, names);
+      final int rangeEnd = parseValue(parts[1], min, max, names);
       if (rangeStart > rangeEnd)
         throw new IllegalArgumentException(
             "Invalid CRON range '" + field + "' in expression '" + expression + "': start is greater than end");
@@ -138,10 +143,10 @@ public class CronScheduleParser {
     }
 
     // Single value
-    bitSet.set(parseValue(field, min, max, names, dayOfWeek));
+    bitSet.set(parseValue(field, min, max, names));
   }
 
-  private int parseValue(final String value, final int min, final int max, final String[] names, final boolean dayOfWeek) {
+  private int parseValue(final String value, final int min, final int max, final String[] names) {
     int result = -1;
     if (names != null) {
       final String upper = value.toUpperCase();
@@ -153,10 +158,6 @@ public class CronScheduleParser {
     }
     if (result < 0)
       result = parseInt(value, "value");
-
-    // Accept 7 as an alias for Sunday (0), a very common convention.
-    if (dayOfWeek && result == 7)
-      result = 0;
 
     if (result < min || result > max)
       throw new IllegalArgumentException(

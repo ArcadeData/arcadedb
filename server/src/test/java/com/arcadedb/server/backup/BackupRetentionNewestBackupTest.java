@@ -66,7 +66,9 @@ class BackupRetentionNewestBackupTest {
    */
   @Test
   void newestBackupSurvivesTieredDailyRetention() throws Exception {
-    final LocalDateTime now = LocalDateTime.now().withMinute(0).withSecond(0).withNano(0);
+    // Fixed date at noon so all three files always fall in the same day bucket (a floating
+    // LocalDateTime.now() near midnight could split them across two days and skew the assertions).
+    final LocalDateTime now = LocalDateTime.of(2026, 7, 15, 12, 0, 0);
 
     final File oldest = createBackupFile(now.minusHours(2));
     final File middle = createBackupFile(now.minusHours(1));
