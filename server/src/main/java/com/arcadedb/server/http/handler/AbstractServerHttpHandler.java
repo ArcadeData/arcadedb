@@ -649,6 +649,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return message.replace("\\\\", " ").replace('\n', ' ');
   }
 
+  /**
+   * Returns the per-request correlation id echoed in the response header (issue #4466), or {@code null} if none is set.
+   * Handlers that build a bespoke error body (e.g. the streaming batch endpoint) reuse this so their client-facing
+   * error stays cross-referenceable with the server log, exactly like the standard {@code sendErrorResponse} envelope.
+   */
+  protected String getCorrelationId(final HttpServerExchange exchange) {
+    return exchange.getResponseHeaders().getFirst(REQUEST_ID_HEADER);
+  }
+
   protected String getQueryParameter(final HttpServerExchange exchange, final String name) {
     return getQueryParameter(exchange, name, null);
   }

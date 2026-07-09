@@ -115,6 +115,62 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
+  void partialWriteReportsDroppedMeasurements() throws Exception {
+    // Regression for issue #5036: an ingest mixing a valid TIMESERIES measurement with an unknown one
+    // must NOT return 204. The valid sample is persisted (partial write) but the response must be a
+    // 400 partial-write payload naming the dropped measurement, so the client knows data was discarded.
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE pw_known TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE)");
+
+      final String lineProtocol = """
+          pw_known,location=us temperature=22.5 1000
+          pw_unknown,location=us value=1.0 2000
+          """;
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).contains("pw_unknown");
+      assertThat(error.getInt("written")).isEqualTo(1);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+
+      // The valid sample must have been persisted despite the partial-write error.
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_known");
+      final JSONArray records = result.getJSONObject("result").getJSONArray("records");
+      assertThat(records.length()).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void allDroppedReportsPartialWritePayloadShape() throws Exception {
+    // Regression for issue #5036: the all-dropped case (written=0) keeps returning 400 and now carries
+    // the same partial-write payload shape (written/dropped/unknownTypes) as the mixed case.
+    testEachServer(serverIndex -> {
+      final String lineProtocol = "ghost_only,host=srv1 value=1.0 1000\n";
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getInt("written")).isEqualTo(0);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+      assertThat(error.getJSONArray("unknownTypes").getString(0)).isEqualTo("ghost_only");
+    });
+  }
+
+  @Test
   void gzipCompressedBodyIsAccepted() throws Exception {
     // Telegraf's [[outputs.influxdb]] plugin sends Content-Encoding: gzip by default.
     // The write handler must decompress the body before parsing it.
@@ -143,6 +199,17 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   private int postLineProtocol(final int serverIndex, final String body, final String precision) throws Exception {
+    final HttpURLConnection connection = openWriteConnection(serverIndex, precision);
+
+    try (final OutputStream os = connection.getOutputStream()) {
+      os.write(body.getBytes(StandardCharsets.UTF_8));
+      os.flush();
+    }
+
+    return connection.getResponseCode();
+  }
+
+  private HttpURLConnection openWriteConnection(final int serverIndex, final String precision) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
         .toURL()
@@ -153,13 +220,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     connection.setRequestProperty("Content-Type", "text/plain");
     connection.setDoOutput(true);
-
-    try (final OutputStream os = connection.getOutputStream()) {
-      os.write(body.getBytes(StandardCharsets.UTF_8));
-      os.flush();
-    }
-
-    return connection.getResponseCode();
+    return connection;
   }
 
   private int postLineProtocolGzip(final int serverIndex, final byte[] compressedBody, final String precision) throws Exception {
