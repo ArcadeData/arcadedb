@@ -302,6 +302,19 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     }
   }
 
+  /**
+   * Rolls back the active transaction on the server.
+   *
+   * <p><b>Behavior change (issue #5042):</b> if the server reports {@code rolledBack=false} - meaning it no
+   * longer has the transaction to roll back, typically because the idle reaper already reclaimed it - this
+   * method throws a {@link TransactionException} instead of silently reporting a clean rollback. The local
+   * transaction state ({@code transactionId}/{@code sessionId}) is still cleared before the throw, so the
+   * client is left in a consistent, tx-free state.
+   *
+   * <p>This is a backward-incompatible change for callers that use {@code rollback()} in a {@code catch}/
+   * cleanup block: such callers should wrap the call in {@code try/catch} if a throw from an already-reaped
+   * transaction must not mask an earlier exception.
+   */
   @Override
   public void rollback() {
 

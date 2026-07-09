@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>Also verifies the streaming analogue of the #4260 fix: a streamed query issued inside an
  * externally-managed transaction sees the transaction's own uncommitted writes.
  */
+@Tag("slow")
 public class Issue5042CommitRollbackThrowIT extends BaseGraphServerTest {
 
   private static final int    GRPC_PORT   = 50051;

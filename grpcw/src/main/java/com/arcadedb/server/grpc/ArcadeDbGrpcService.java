@@ -1793,6 +1793,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         });
         try {
           future.get();
+        } catch (final InterruptedException ie) {
+          // Restore the interrupt status and surface an explicit CANCELLED terminal rather than letting the
+          // outer catch mask it as a generic INTERNAL error with the interrupt flag swallowed.
+          Thread.currentThread().interrupt();
+          responseObserver.onError(
+              Status.CANCELLED.withDescription("Stream query execution was interrupted").asRuntimeException());
+          return;
         } catch (final ExecutionException ee) {
           final Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
           if (cause instanceof RuntimeException re)

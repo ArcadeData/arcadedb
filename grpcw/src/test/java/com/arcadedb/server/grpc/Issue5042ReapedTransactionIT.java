@@ -52,9 +52,13 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *   <li>Write RPCs ({@code executeCommand}, {@code createRecord}, {@code updateRecord},
  *       {@code deleteRecord}) reject a non-blank-but-unknown transaction id with
  *       {@code FAILED_PRECONDITION} instead of silently falling through to a per-call auto-commit.</li>
+ *   <li>The {@code lookupByRid} read RPC applies the same rejection: a non-blank-but-unknown transaction id
+ *       fails with {@code FAILED_PRECONDITION} rather than silently serving an out-of-transaction read.</li>
  *   <li>A genuinely absent/blank transaction id still takes the auto-transaction path.</li>
  *   <li>{@code streamQuery} honors the supplied transaction id and runs inside the transaction, so a
  *       streamed read sees the transaction's own uncommitted writes.</li>
+ *   <li>{@code streamQuery} rejects a non-blank-but-unknown transaction id with {@code FAILED_PRECONDITION}
+ *       instead of silently running as a throwaway read.</li>
  * </ul>
  */
 public class Issue5042ReapedTransactionIT extends BaseGraphServerTest {
@@ -181,6 +185,49 @@ public class Issue5042ReapedTransactionIT extends BaseGraphServerTest {
         .setQuery("SELECT FROM Person WHERE name IN ['reaped-write','reaped-create','reaped-update']")
         .build());
     assertThat(q.getResultsList().get(0).getRecordsList()).isEmpty();
+  }
+
+  @Test
+  void lookupByRidRejectsUnknownNonBlankTransactionId() {
+    // A non-blank transaction id the server never registered (the reaped/unknown case).
+    final String unknownTxId = "reaped-" + UUID.randomUUID();
+    final TransactionContext unknownTx = TransactionContext.newBuilder()
+        .setTransactionId(unknownTxId).setDatabase(getDatabaseName()).build();
+
+    final StatusRuntimeException lookupErr = catchThrowableOfType(StatusRuntimeException.class, () ->
+        authenticatedStub.lookupByRid(LookupByRidRequest.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(credentials())
+            .setRid("#1:0")
+            .setTransaction(unknownTx)
+            .build()));
+    assertThat(lookupErr).as("lookupByRid must reject an unknown non-blank txId").isNotNull();
+    assertThat(lookupErr.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+  }
+
+  @Test
+  void streamQueryRejectsUnknownNonBlankTransactionId() {
+    // A non-blank transaction id the server never registered (the reaped/unknown case).
+    final String unknownTxId = "reaped-" + UUID.randomUUID();
+    final TransactionContext unknownTx = TransactionContext.newBuilder()
+        .setTransactionId(unknownTxId).setDatabase(getDatabaseName()).build();
+
+    // The streamed read must fail loudly instead of silently running as a throwaway read. The error surfaces
+    // when the stream is consumed, so drive the iterator inside the assertion.
+    final StatusRuntimeException streamErr = catchThrowableOfType(StatusRuntimeException.class, () -> {
+      final Iterator<QueryResult> it = authenticatedStub.streamQuery(StreamQueryRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setQuery("SELECT FROM Person")
+          .setBatchSize(10)
+          .setRetrievalMode(StreamQueryRequest.RetrievalMode.CURSOR)
+          .setTransaction(unknownTx)
+          .build());
+      while (it.hasNext())
+        it.next();
+    });
+    assertThat(streamErr).as("streamQuery must reject an unknown non-blank txId").isNotNull();
+    assertThat(streamErr.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
   }
 
   @Test
