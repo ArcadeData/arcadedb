@@ -27,6 +27,9 @@ import com.arcadedb.remote.RemoteException;
 import io.grpc.Metadata;
 import io.grpc.Status;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
 /**
  * Rebuilds the original ArcadeDB engine exception from a gRPC error returned by the server.
  * <p>
@@ -68,7 +71,7 @@ final class GrpcClientErrorMapper {
     // Legacy / trailer-less fallback: map by status code only.
     return switch (status.getCode()) {
       case NOT_FOUND -> new RecordNotFoundException(msg, null);
-      case ALREADY_EXISTS -> new DuplicatedKeyException(dupIndex(trailers), dupKeys(trailers), null);
+      case ALREADY_EXISTS -> new DuplicatedKeyException(dupIndex(trailers, msg), dupKeys(trailers, msg), null);
       case ABORTED -> new ConcurrentModificationException(msg);
       case DEADLINE_EXCEEDED -> new TimeoutException(msg);
       case PERMISSION_DENIED -> new SecurityException(msg);
@@ -81,7 +84,7 @@ final class GrpcClientErrorMapper {
       final Metadata trailers) {
     return switch (exceptionClass) {
       case "com.arcadedb.exception.DuplicatedKeyException" ->
-          new DuplicatedKeyException(dupIndex(trailers), dupKeys(trailers), null);
+          new DuplicatedKeyException(dupIndex(trailers, msg), dupKeys(trailers, msg), null);
       case "com.arcadedb.exception.ConcurrentModificationException" -> new ConcurrentModificationException(msg);
       case "com.arcadedb.exception.NeedRetryException" -> new NeedRetryException(msg);
       case "com.arcadedb.exception.RecordNotFoundException" -> new RecordNotFoundException(msg, null);
@@ -92,13 +95,33 @@ final class GrpcClientErrorMapper {
     };
   }
 
-  private static String dupIndex(final Metadata trailers) {
+  /**
+   * Returns the Base64-decoded index-name trailer, or {@code fallback} (the server-supplied message) when
+   * the trailer is absent - e.g. talking to an older server that never emits it - so diagnostics survive.
+   */
+  private static String dupIndex(final Metadata trailers, final String fallback) {
     final String v = trailers != null ? trailers.get(DUP_INDEX_KEY) : null;
-    return v != null ? v : "";
+    return v != null ? decodeTrailer(v) : fallback;
   }
 
-  private static String dupKeys(final Metadata trailers) {
+  /**
+   * Returns the Base64-decoded keys trailer, or {@code fallback} (the server-supplied message) when the
+   * trailer is absent, so the reconstructed exception keeps a useful message against pre-upgrade servers.
+   */
+  private static String dupKeys(final Metadata trailers, final String fallback) {
     final String v = trailers != null ? trailers.get(DUP_KEYS_KEY) : null;
-    return v != null ? v : "";
+    return v != null ? decodeTrailer(v) : fallback;
+  }
+
+  /**
+   * Mirror of the server-side Base64 encoding used to carry arbitrary (possibly non-ASCII) trailer values.
+   * Falls back to the raw value if it is not valid Base64, so a malformed trailer never masks the error.
+   */
+  private static String decodeTrailer(final String value) {
+    try {
+      return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+    } catch (final IllegalArgumentException e) {
+      return value;
+    }
   }
 }

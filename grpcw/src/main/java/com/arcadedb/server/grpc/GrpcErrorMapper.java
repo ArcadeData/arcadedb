@@ -28,6 +28,8 @@ import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.concurrent.ExecutionException;
 
 /**
@@ -44,10 +46,18 @@ public final class GrpcErrorMapper {
   /** Trailer carrying the fully-qualified engine exception class name so the client can rebuild the type. */
   public static final Metadata.Key<String> EXCEPTION_CLASS_KEY = Metadata.Key.of("arcadedb-exception-class",
       Metadata.ASCII_STRING_MARSHALLER);
-  /** Trailer carrying the index name for a {@link DuplicatedKeyException}. */
+  /**
+   * Trailer carrying the index name for a {@link DuplicatedKeyException}, Base64-encoded.
+   * The value is Base64 so arbitrary index names (unicode, control characters) survive the ASCII-only
+   * gRPC metadata channel intact; the client Base64-decodes it back.
+   */
   public static final Metadata.Key<String> DUP_INDEX_KEY        = Metadata.Key.of("arcadedb-dup-index",
       Metadata.ASCII_STRING_MARSHALLER);
-  /** Trailer carrying the offending keys for a {@link DuplicatedKeyException}. */
+  /**
+   * Trailer carrying the offending keys for a {@link DuplicatedKeyException}, Base64-encoded.
+   * The value is Base64 because indexed key values can be arbitrary user data (unicode, non-Latin
+   * scripts, control characters) that ASCII gRPC metadata cannot carry losslessly.
+   */
   public static final Metadata.Key<String> DUP_KEYS_KEY         = Metadata.Key.of("arcadedb-dup-keys",
       Metadata.ASCII_STRING_MARSHALLER);
 
@@ -88,9 +98,9 @@ public final class GrpcErrorMapper {
     if (cause instanceof DuplicatedKeyException dup) {
       code = Status.Code.ALREADY_EXISTS;
       if (dup.getIndexName() != null)
-        trailers.put(DUP_INDEX_KEY, dup.getIndexName());
+        trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
       if (dup.getKeys() != null)
-        trailers.put(DUP_KEYS_KEY, dup.getKeys());
+        trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
     } else if (cause instanceof NeedRetryException) {
       // Covers ConcurrentModificationException (a NeedRetryException subclass): retryable conflict.
       code = Status.Code.ABORTED;
@@ -110,5 +120,13 @@ public final class GrpcErrorMapper {
     final String description = contextPrefix != null && !contextPrefix.isBlank() ? contextPrefix + ": " + msg : msg;
 
     return code.toStatus().withDescription(description).withCause(cause).asRuntimeException(trailers);
+  }
+
+  /**
+   * Base64-encodes a trailer value so arbitrary (possibly non-ASCII) index names and key values survive
+   * the ASCII-only gRPC metadata channel. The client decodes it with the mirror method.
+   */
+  static String encodeTrailer(final String value) {
+    return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
   }
 }

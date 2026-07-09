@@ -30,6 +30,9 @@ import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -47,6 +50,11 @@ class Issue5043GrpcErrorTypeReconstructionTest {
     if (exceptionClass != null)
       trailers.put(GrpcClientErrorMapper.EXCEPTION_CLASS_KEY, exceptionClass);
     return status.asRuntimeException(trailers);
+  }
+
+  /** Mirrors the server-side Base64 encoding of duplicate-key trailer values. */
+  private static String enc(final String value) {
+    return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
   }
 
   @Test
@@ -67,8 +75,8 @@ class Issue5043GrpcErrorTypeReconstructionTest {
   @DisplayName("ALREADY_EXISTS + DuplicatedKeyException trailer rebuilds a NON-retryable duplicate key with index/keys")
   void alreadyExistsWithDupTrailer_rebuildsDuplicatedKeyWithDetails() {
     final Metadata trailers = new Metadata();
-    trailers.put(GrpcClientErrorMapper.DUP_INDEX_KEY, "Person[email]");
-    trailers.put(GrpcClientErrorMapper.DUP_KEYS_KEY, "[a@b.com]");
+    trailers.put(GrpcClientErrorMapper.DUP_INDEX_KEY, enc("Person[email]"));
+    trailers.put(GrpcClientErrorMapper.DUP_KEYS_KEY, enc("[a@b.com]"));
     final StatusRuntimeException wire = withClass(Status.ALREADY_EXISTS.withDescription("dup"),
         DuplicatedKeyException.class.getName(), trailers);
 
@@ -80,6 +88,37 @@ class Issue5043GrpcErrorTypeReconstructionTest {
     final DuplicatedKeyException dup = (DuplicatedKeyException) rebuilt;
     assertThat(dup.getIndexName()).isEqualTo("Person[email]");
     assertThat(dup.getKeys()).isEqualTo("[a@b.com]");
+  }
+
+  @Test
+  @DisplayName("Base64 dup trailers with non-ASCII index/keys are decoded losslessly")
+  void alreadyExistsWithNonAsciiTrailers_decodedLosslessly() {
+    final String indexName = "Persönne[naïve]";
+    final String keys = "[Ünïcödé-名前-😀]";
+    final Metadata trailers = new Metadata();
+    trailers.put(GrpcClientErrorMapper.DUP_INDEX_KEY, enc(indexName));
+    trailers.put(GrpcClientErrorMapper.DUP_KEYS_KEY, enc(keys));
+    final StatusRuntimeException wire = withClass(Status.ALREADY_EXISTS.withDescription("dup"),
+        DuplicatedKeyException.class.getName(), trailers);
+
+    final DuplicatedKeyException dup = (DuplicatedKeyException) GrpcClientErrorMapper.toException(wire);
+
+    assertThat(dup.getIndexName()).isEqualTo(indexName);
+    assertThat(dup.getKeys()).isEqualTo(keys);
+  }
+
+  @Test
+  @DisplayName("ALREADY_EXISTS with no dup trailers (older server) preserves the server message")
+  void alreadyExistsNoTrailers_preservesServerMessage() {
+    // An older server ships only the status + description, no dup-index/dup-keys trailers. The
+    // reconstructed exception must keep the server's descriptive message instead of an empty placeholder.
+    final StatusRuntimeException wire = Status.ALREADY_EXISTS
+        .withDescription("Duplicated key [John] found on index 'Person[name]'").asRuntimeException();
+
+    final RuntimeException rebuilt = GrpcClientErrorMapper.toException(wire);
+
+    assertThat(rebuilt).isInstanceOf(DuplicatedKeyException.class)
+        .hasMessageContaining("Duplicated key [John] found on index 'Person[name]'");
   }
 
   @Test

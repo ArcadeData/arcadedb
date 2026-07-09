@@ -29,6 +29,8 @@ import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.concurrent.ExecutionException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,8 +51,33 @@ class GrpcErrorMapperTest {
     final Metadata trailers = sre.getTrailers();
     assertThat(trailers).isNotNull();
     assertThat(trailers.get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DuplicatedKeyException.class.getName());
-    assertThat(trailers.get(GrpcErrorMapper.DUP_INDEX_KEY)).isEqualTo("Person[name]");
-    assertThat(trailers.get(GrpcErrorMapper.DUP_KEYS_KEY)).isEqualTo("[John]");
+    // The dup trailers are Base64-encoded so arbitrary key values survive the ASCII metadata channel.
+    assertThat(decode(trailers.get(GrpcErrorMapper.DUP_INDEX_KEY))).isEqualTo("Person[name]");
+    assertThat(decode(trailers.get(GrpcErrorMapper.DUP_KEYS_KEY))).isEqualTo("[John]");
+  }
+
+  @Test
+  @DisplayName("Duplicate-key trailers carry non-ASCII index/keys losslessly and stay ASCII on the wire")
+  void duplicatedKey_nonAsciiKeysSurviveTrailer() {
+    final String indexName = "Persönne[naïve]";
+    final String keys = "[Ünïcödé-名前-😀]";
+    final DuplicatedKeyException dup = new DuplicatedKeyException(indexName, keys, null);
+
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(dup, null);
+
+    final Metadata trailers = sre.getTrailers();
+    final String wireIndex = trailers.get(GrpcErrorMapper.DUP_INDEX_KEY);
+    final String wireKeys = trailers.get(GrpcErrorMapper.DUP_KEYS_KEY);
+    // On the wire the value must be pure printable ASCII (0x20-0x7E) so gRPC metadata cannot corrupt it.
+    assertThat(wireIndex).matches("[\\x20-\\x7E]+");
+    assertThat(wireKeys).matches("[\\x20-\\x7E]+");
+    // Decoding restores the original non-ASCII content exactly.
+    assertThat(decode(wireIndex)).isEqualTo(indexName);
+    assertThat(decode(wireKeys)).isEqualTo(keys);
+  }
+
+  private static String decode(final String value) {
+    return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
   }
 
   @Test
@@ -137,6 +164,6 @@ class GrpcErrorMapperTest {
         new ExecutionException(new DuplicatedKeyException("idx", "[k]", null)), "Commit failed");
 
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
-    assertThat(sre.getTrailers().get(GrpcErrorMapper.DUP_INDEX_KEY)).isEqualTo("idx");
+    assertThat(decode(sre.getTrailers().get(GrpcErrorMapper.DUP_INDEX_KEY))).isEqualTo("idx");
   }
 }
