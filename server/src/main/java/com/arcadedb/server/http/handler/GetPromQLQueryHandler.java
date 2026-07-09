@@ -49,6 +49,10 @@ public class GetPromQLQueryHandler extends AbstractServerHttpHandler {
     if (databaseParam == null || databaseParam.isEmpty())
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Database parameter is required"));
 
+    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
+    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
+    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+
     final String query = getQueryParameter(exchange, "query");
     if (query == null || query.isBlank())
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Missing required parameter: query"));

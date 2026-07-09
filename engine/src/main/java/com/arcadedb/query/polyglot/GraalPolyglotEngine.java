@@ -83,12 +83,17 @@ public class GraalPolyglotEngine implements AutoCloseable {
     final Context.Builder builder = Context.newBuilder().engine(engine).//
         //resourceLimits(limits).//
             allowHostAccess(SANDBOXED_HOST_ACCESS).//
-            allowIO(IOAccess.ALL).//
+            // IOAccess.NONE: deny built-in file/URL access so a script cannot use load(path|url) to read
+            // host files or perform SSRF (e.g. fetching cloud metadata), which IOAccess.ALL permitted even
+            // when host-class lookup was locked down (GHSA-vwjc-v7x7-cm6g / GHSA-48qw hardening).
+            allowIO(IOAccess.NONE).//
             allowNativeAccess(false).//
             allowCreateProcess(false).//
             allowEnvironmentAccess(EnvironmentAccess.NONE).//
             allowCreateThread(false).//
-            allowPolyglotAccess(PolyglotAccess.ALL).//
+            // PolyglotAccess.NONE: no cross-language eval, so a script cannot pivot into another GraalVM
+            // language that might be on the classpath to escape this language's sandbox.
+            allowPolyglotAccess(PolyglotAccess.NONE).//
             allowHostClassLookup(
             s -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
 

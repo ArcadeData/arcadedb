@@ -45,6 +45,10 @@ public class GetGrafanaHealthHandler extends AbstractServerHttpHandler {
 
     final String databaseName = databaseParam.getFirst();
 
+    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend
+    // DatabaseAbstractHandler. Also prevents this endpoint from being a cross-database existence oracle.
+    checkAuthorizationOnDatabase(user, databaseName);
+
     // Verify the database exists (will throw if not)
     httpServer.getServer().getDatabase(databaseName, false, false);
 

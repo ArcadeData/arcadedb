@@ -577,6 +577,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Authorization choke point for database-scoped routes that do NOT extend {@link DatabaseAbstractHandler}
+   * (time-series, batch, Prometheus and Grafana handlers). Without this check those handlers resolved and
+   * operated on any database named in the path, letting a user authorized for one database read and write
+   * another (cross-database IDOR, GHSA-x8mg-6r4p-87pf). Mirrors the gate in
+   * {@link DatabaseAbstractHandler#execute}. Throws {@link SecurityException} (mapped to HTTP 403) when the
+   * authenticated user cannot access the database; fails closed on a missing database name.
+   */
+  protected void checkAuthorizationOnDatabase(final ServerSecurityUser user, final String databaseName) {
+    if (databaseName == null || databaseName.isEmpty())
+      throw new IllegalArgumentException("Database parameter is null");
+    if (user != null && !user.canAccessToDatabase(databaseName))
+      throw new SecurityException("User '" + user.getName() + "' is not allowed to access database '" + databaseName + "'");
+  }
+
+  /**
    * Ensures only the root user can execute server administration commands.
    * API token-authenticated users have synthetic names like "apitoken:&lt;name&gt;" and will
    * always fail this check — this is intentional, as token management requires root credentials.

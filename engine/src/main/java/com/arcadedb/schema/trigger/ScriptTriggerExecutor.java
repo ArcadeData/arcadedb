@@ -53,7 +53,13 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
       if (scriptEngine == null) {
         scriptEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
             .setLanguage("js")
-            .setAllowedPackages(Arrays.asList("java.lang.*", "java.util.*", "java.time.*", "java.math.*"))
+            // Do NOT allow host-class lookup of java.lang.*: it let a trigger script reach
+            // Java.type("java.lang.Runtime").getRuntime().exec(...) / ProcessBuilder / System.exit and
+            // obtain OS command execution with only UPDATE_SCHEMA privileges (GHSA-x9f9-r4m8-9xc2).
+            // allowCreateProcess(false) does not stop this because exec() is a host method call reached
+            // through HostAccess, not GraalVM's guest process API. Keep only the benign value packages;
+            // JavaScript has native String/Math/Number so dropping java.lang.* rarely affects real triggers.
+            .setAllowedPackages(Arrays.asList("java.util.*", "java.time.*", "java.math.*"))
             .build();
       }
 

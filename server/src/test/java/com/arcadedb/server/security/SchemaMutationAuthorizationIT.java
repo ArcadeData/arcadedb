@@ -60,6 +60,14 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
             .as("read-only token must not rename a type").isEqualTo(403);
         assertThat(command(serverIndex, token, "ALTER PROPERTY Memory.salience MANDATORY true"))
             .as("read-only token must not alter a property constraint").isEqualTo(403);
+        // GHSA-8vr5-263f-x5r3: the two type-level setters missed by the general UPDATE_SCHEMA hardening
+        assertThat(command(serverIndex, token, "ALTER TYPE Memory CUSTOM description = 'unauthorized-schema-write'"))
+            .as("read-only token must not write type CUSTOM metadata").isEqualTo(403);
+        assertThat(command(serverIndex, token, "ALTER TYPE Memory BUCKETSELECTIONSTRATEGY `round-robin`"))
+            .as("read-only token must not change the bucket-selection strategy").isEqualTo(403);
+        // GHSA-8vr5-263f-x5r3 defense-in-depth: index rebuild is UPDATE_SCHEMA-gated (statsOnly path used to bypass it)
+        assertThat(command(serverIndex, token, "REBUILD INDEX *"))
+            .as("read-only token must not REBUILD INDEX").isEqualTo(403);
       } finally {
         deleteToken(serverIndex, "schema-probe-token");
       }
@@ -77,6 +85,56 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
       assertThat(adminCommand(serverIndex, "ALTER TYPE Doc SUPERTYPE +Base")).isEqualTo(200);
       assertThat(adminCommand(serverIndex, "ALTER PROPERTY Doc.title MANDATORY true")).isEqualTo(200);
       assertThat(adminCommand(serverIndex, "DROP PROPERTY Doc.title")).isEqualTo(200);
+      // GHSA-8vr5-263f-x5r3 positive controls: the new guards must not block an administrator
+      assertThat(adminCommand(serverIndex, "ALTER TYPE Doc CUSTOM description = 'authorized'")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "ALTER TYPE Doc BUCKETSELECTIONSTRATEGY `round-robin`")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "REBUILD INDEX *")).isEqualTo(200);
+    });
+  }
+
+  /**
+   * GHSA-8vr5-263f-x5r3 sibling sweep: the same UPDATE_SCHEMA gap existed on materialized views, continuous aggregates,
+   * time-series downsampling policies, and function-library registration. A read-only identity must be denied (403) on
+   * every one, while the administrator must still be able to perform them.
+   */
+  @Test
+  void readOnlyTokenCannotMutateViewsAggregatesAndFunctions() throws Exception {
+    testEachServer(serverIndex -> {
+      // ARRANGE (as admin): a source type, a materialized view, a time-series type and a continuous aggregate over it
+      assertThat(adminCommand(serverIndex, "CREATE DOCUMENT TYPE Account")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "CREATE PROPERTY Account.active BOOLEAN")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex,
+          "CREATE MATERIALIZED VIEW ActiveAccounts AS SELECT name FROM Account WHERE active = true")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex,
+          "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) SHARDS 1")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "CREATE CONTINUOUS AGGREGATE sensor_hourly AS "
+          + "SELECT id, ts.timeBucket('1h', ts) AS hour, avg(value) AS avg_value FROM Sensor GROUP BY id, hour"))
+          .isEqualTo(200);
+
+      final String token = "Bearer " + createReadOnlyToken(serverIndex, "schema-siblings-token");
+      try {
+        assertThat(command(serverIndex, token, "ALTER MATERIALIZED VIEW ActiveAccounts REFRESH MANUAL"))
+            .as("read-only token must not ALTER a materialized view").isEqualTo(403);
+        assertThat(command(serverIndex, token, "DROP MATERIALIZED VIEW ActiveAccounts"))
+            .as("read-only token must not DROP a materialized view").isEqualTo(403);
+        assertThat(command(serverIndex, token, "DROP CONTINUOUS AGGREGATE sensor_hourly"))
+            .as("read-only token must not DROP a continuous aggregate").isEqualTo(403);
+        assertThat(command(serverIndex, token,
+            "ALTER TIMESERIES TYPE Sensor ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS"))
+            .as("read-only token must not change a time-series downsampling policy").isEqualTo(403);
+        assertThat(command(serverIndex, token, "DEFINE FUNCTION Probe.f \"return 1\" LANGUAGE js"))
+            .as("read-only token must not register a function library").isEqualTo(403);
+      } finally {
+        deleteToken(serverIndex, "schema-siblings-token");
+      }
+
+      // Positive controls: the administrator must still be able to perform each guarded operation
+      assertThat(adminCommand(serverIndex,
+          "ALTER TIMESERIES TYPE Sensor ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "DEFINE FUNCTION Probe.f \"return 1\" LANGUAGE js")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "ALTER MATERIALIZED VIEW ActiveAccounts REFRESH MANUAL")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "DROP CONTINUOUS AGGREGATE sensor_hourly")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "DROP MATERIALIZED VIEW ActiveAccounts")).isEqualTo(200);
     });
   }
 

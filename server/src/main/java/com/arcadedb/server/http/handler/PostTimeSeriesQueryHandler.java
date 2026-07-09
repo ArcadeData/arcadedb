@@ -62,6 +62,10 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     if (databaseParam == null || databaseParam.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
 
+    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
+    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
+    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+
     if (payload == null || !payload.has("type"))
       return new ExecutionResponse(400, "{ \"error\" : \"'type' parameter is required\"}");
 

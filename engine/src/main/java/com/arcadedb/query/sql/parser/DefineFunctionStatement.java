@@ -2,8 +2,9 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
@@ -32,7 +33,15 @@ public class DefineFunctionStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    final Database database = context.getDatabase();
+    final DatabaseInternal database = context.getDatabase();
+
+    // Defining a function in a scripting language (polyglot, e.g. JavaScript) is arbitrary host code
+    // execution, so it requires security-admin privileges - not merely UPDATE_SCHEMA. Otherwise a user
+    // with schema (or lesser) access could DEFINE FUNCTION ... LANGUAGE js and then invoke it via SELECT,
+    // bypassing the polyglot scripting gate that GHSA-48qw introduced (GHSA-vwjc-v7x7-cm6g). SQL/Cypher
+    // user functions are declarative, not host code, so they keep the standard schema-level protection.
+    if (language != null && "js".equalsIgnoreCase(language.getStringValue()))
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
     final FunctionLibraryDefinition fLib;
     if (!database.getSchema().hasFunctionLibrary(libraryName.getStringValue())) {
