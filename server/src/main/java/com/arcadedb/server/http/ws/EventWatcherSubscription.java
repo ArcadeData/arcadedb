@@ -51,7 +51,9 @@ public class EventWatcherSubscription {
 
   public void add(final String type, final Set<ChangeEvent.TYPE> changeTypes) {
     final var key = type == null ? "*" : type; // ConcurrentHashMap can't have null keys, so use * for "all types."
-    typeSubscriptions.computeIfAbsent(key, k -> new HashSet<>()).addAll(changeTypes == null ? allTypes : changeTypes);
+    // The set values are read by the watcher thread (isMatch) while Undertow IO threads mutate them here, so they must
+    // be thread-safe: a plain HashSet resize during addAll could make a concurrent contains() misread or throw.
+    typeSubscriptions.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet()).addAll(changeTypes == null ? allTypes : changeTypes);
   }
 
   public WebSocketChannel getChannel() {
