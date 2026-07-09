@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -40,7 +41,12 @@ public class BackupScheduler {
   private final    ArcadeDBServer                  server;
   private final    ScheduledExecutorService        executor;
   private final    Map<String, ScheduledFuture<?>> scheduledTasks;
-  private final    Map<String, CronScheduleParser> cronParsers;
+  // Per-database generation token: bumped on every (re)schedule and cleared on cancel, so an
+  // in-flight cron task cannot resurrect a schedule that was cancelled or superseded.
+  private final    Map<String, Long>               cronGenerations = new ConcurrentHashMap<>();
+  private final    AtomicLong                      generationSequence = new AtomicLong();
+  // Serializes schedule install / cancel so a reschedule cannot race a concurrent cancel.
+  private final    Object                          scheduleLock = new Object();
   private final    String                          backupDirectory;
   private final    BackupRetentionManager          retentionManager;
   private volatile boolean                         running;
@@ -56,7 +62,6 @@ public class BackupScheduler {
       return t;
     });
     this.scheduledTasks = new ConcurrentHashMap<>();
-    this.cronParsers = new ConcurrentHashMap<>();
     this.running = false;
   }
 
@@ -127,44 +132,77 @@ public class BackupScheduler {
     LogManager.instance().log(this, Level.INFO,
         "Scheduling backup for database '%s' with CRON expression: %s", databaseName, cronExpression);
 
+    final CronScheduleParser parser;
     try {
-      final CronScheduleParser parser = new CronScheduleParser(cronExpression);
-      cronParsers.put(databaseName, parser);
-
-      // Schedule the first execution
-      scheduleNextCronExecution(databaseName, task, parser);
-
+      // Constructing the parser validates the CRON expression (field ranges, increments, ...).
+      parser = new CronScheduleParser(cronExpression);
     } catch (final IllegalArgumentException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Invalid CRON expression for database '%s': %s", databaseName, e.getMessage());
+      return;
     }
+
+    final long generation;
+    synchronized (scheduleLock) {
+      generation = generationSequence.incrementAndGet();
+      cronGenerations.put(databaseName, generation);
+    }
+
+    // Schedule the first execution
+    scheduleNextCronExecution(databaseName, task, parser, generation);
   }
 
   private void scheduleNextCronExecution(final String databaseName, final BackupTask task,
-                                         final CronScheduleParser parser) {
+                                         final CronScheduleParser parser, final long generation) {
     if (!running)
       return;
 
-    final long delayMillis = parser.getDelayMillis(LocalDateTime.now());
+    final long delayMillis;
+    try {
+      delayMillis = parser.getDelayMillis(LocalDateTime.now());
+    } catch (final RuntimeException e) {
+      // An impossible schedule (e.g. Feb 30th) must stop only THIS database's chain, not throw
+      // inside the executor task and break rescheduling for everything.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot compute next execution time for database '%s' (CRON '%s'): %s. Automatic backups stopped for this database.",
+          databaseName, parser.getExpression(), e.getMessage());
+      synchronized (scheduleLock) {
+        cronGenerations.remove(databaseName, generation);
+        scheduledTasks.remove(databaseName);
+      }
+      return;
+    }
 
     LogManager.instance().log(this, Level.FINE,
         "Next backup for database '%s' scheduled in %d ms", databaseName, delayMillis);
 
-    final ScheduledFuture<?> future = executor.schedule(() -> {
-      try {
-        task.run();
-      } finally {
-        // Schedule the next execution only if still running and parser is still registered
-        // Use atomic get to avoid race condition between containsKey and get
-        if (running) {
-          final CronScheduleParser currentParser = cronParsers.get(databaseName);
-          if (currentParser != null)
-            scheduleNextCronExecution(databaseName, task, currentParser);
-        }
-      }
-    }, delayMillis, TimeUnit.MILLISECONDS);
+    synchronized (scheduleLock) {
+      // Only install if this generation is still current (not cancelled or superseded).
+      final Long current = cronGenerations.get(databaseName);
+      if (!running || current == null || current != generation)
+        return;
 
-    scheduledTasks.put(databaseName, future);
+      try {
+        final ScheduledFuture<?> future = executor.schedule(() -> {
+          try {
+            task.run();
+          } finally {
+            // Reschedule only if this task still owns the current generation.
+            if (running) {
+              final Long g = cronGenerations.get(databaseName);
+              if (g != null && g == generation)
+                scheduleNextCronExecution(databaseName, task, parser, generation);
+            }
+          }
+        }, delayMillis, TimeUnit.MILLISECONDS);
+
+        scheduledTasks.put(databaseName, future);
+      } catch (final RejectedExecutionException e) {
+        // Executor is shutting down; nothing left to schedule.
+        LogManager.instance().log(this, Level.FINE,
+            "Backup scheduler shutting down, skipped rescheduling for database '%s'", databaseName);
+      }
+    }
   }
 
   /**
@@ -173,13 +211,16 @@ public class BackupScheduler {
    * @param databaseName The name of the database
    */
   public void cancelBackup(final String databaseName) {
-    final ScheduledFuture<?> future = scheduledTasks.remove(databaseName);
-    if (future != null) {
-      future.cancel(false);
-      LogManager.instance().log(this, Level.INFO,
-          "Cancelled scheduled backup for database '%s'", databaseName);
+    synchronized (scheduleLock) {
+      // Invalidate any in-flight reschedule for this database first.
+      cronGenerations.remove(databaseName);
+      final ScheduledFuture<?> future = scheduledTasks.remove(databaseName);
+      if (future != null) {
+        future.cancel(false);
+        LogManager.instance().log(this, Level.INFO,
+            "Cancelled scheduled backup for database '%s'", databaseName);
+      }
     }
-    cronParsers.remove(databaseName);
   }
 
   /**
@@ -206,11 +247,13 @@ public class BackupScheduler {
     running = false;
 
     // Cancel all scheduled tasks - create copy to avoid ConcurrentModificationException
-    final List<ScheduledFuture<?>> tasksToCancel = new ArrayList<>(scheduledTasks.values());
-    for (final ScheduledFuture<?> future : tasksToCancel)
-      future.cancel(false);
-    scheduledTasks.clear();
-    cronParsers.clear();
+    synchronized (scheduleLock) {
+      final List<ScheduledFuture<?>> tasksToCancel = new ArrayList<>(scheduledTasks.values());
+      for (final ScheduledFuture<?> future : tasksToCancel)
+        future.cancel(false);
+      scheduledTasks.clear();
+      cronGenerations.clear();
+    }
 
     // Shutdown the executor
     executor.shutdown();

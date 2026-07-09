@@ -105,6 +105,11 @@ public class BackupRetentionManager {
     else
       filesToKeep = applyMaxFilesRetention(backupFiles, retention.getMaxFiles());
 
+    // Always keep the most recent backup so a just-completed backup is never deleted. Retention
+    // runs immediately after each backup; with tiered buckets keeping the oldest member, the newest
+    // restore point would otherwise be discarded seconds after creation.
+    filesToKeep.add(backupFiles.get(backupFiles.size() - 1).file);
+
     // Delete files not in the keep set
     int deletedCount = 0;
     int failedCount = 0;
