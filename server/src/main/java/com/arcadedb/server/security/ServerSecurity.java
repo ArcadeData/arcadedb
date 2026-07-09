@@ -29,9 +29,9 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
-import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
@@ -309,9 +309,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
     users.put(name, user);
     saveUsers();
-    // The principal's authorization may have changed: invalidate its live HTTP transaction sessions so they
-    // cannot keep running under the previous grants.
-    invalidateHttpSessions(name);
+    // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
+    // authorization is still re-checked on every command, so a narrowed grant is enforced without tearing
+    // down unrelated in-flight work. Only drop and password change (below) invalidate live sessions.
     return user;
   }
 

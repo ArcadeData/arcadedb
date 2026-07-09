@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
 
@@ -107,6 +109,29 @@ public class Issue5026TransactionSessionLifecycleIT extends BaseGraphServerTest 
     }
   }
 
+  // Returns the HTTP status code of a GET /query, capturing the response body into out[0] on success.
+  private int getQuery(final int serverIndex, final String auth, final String sessionId, final String sql, final String[] out)
+      throws Exception {
+    final String encoded = URLEncoder.encode(sql, StandardCharsets.UTF_8).replace("+", "%20");
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        baseUrl(serverIndex) + "/query/" + DATABASE_NAME + "/sql/" + encoded).openConnection();
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty("Authorization", auth);
+    if (sessionId != null)
+      connection.setRequestProperty(HttpSessionManager.ARCADEDB_SESSION_ID, sessionId);
+    connection.connect();
+    try {
+      final int code = connection.getResponseCode();
+      if (code == 200)
+        out[0] = readResponse(connection);
+      else
+        readError(connection);
+      return code;
+    } finally {
+      connection.disconnect();
+    }
+  }
+
   private long countPersons(final int serverIndex, final String name) {
     final Database db = getServerDatabase(serverIndex, DATABASE_NAME);
     return db.query("sql", "SELECT count(*) AS c FROM Person WHERE name = ?", name).next().<Long>getProperty("c");
@@ -169,6 +194,24 @@ public class Issue5026TransactionSessionLifecycleIT extends BaseGraphServerTest 
 
       assertThat(post(serverIndex, "rollback", auth, sessionId)).isEqualTo(204);
       assertThat(post(serverIndex, "rollback", auth, sessionId)).as("retried rollback idempotent").isEqualTo(204);
+    });
+  }
+
+  @Test
+  void staleSessionOnReadDegradesToSessionlessRead() throws Exception {
+    testEachServer(serverIndex -> {
+      final String auth = rootAuth();
+      final String sessionId = beginSession(serverIndex, auth);
+      assertThat(insert(serverIndex, auth, sessionId, "read-degrade")).isEqualTo(200);
+      assertThat(post(serverIndex, "commit", auth, sessionId)).isEqualTo(204);
+
+      // A read (GET /query) carrying the now-removed session id must NOT 404: read-only handlers degrade to a
+      // session-less request and still return the committed row (read-after-commit preserved). Writes, by
+      // contrast, are rejected (asserted in commitRemovesSessionAndRejectsStaleWrite).
+      final String[] body = new String[1];
+      final int code = getQuery(serverIndex, auth, sessionId, "SELECT name FROM Person WHERE name = 'read-degrade'", body);
+      assertThat(code).as("stale session on a read degrades to a session-less 200").isEqualTo(200);
+      assertThat(body[0]).contains("read-degrade");
     });
   }
 

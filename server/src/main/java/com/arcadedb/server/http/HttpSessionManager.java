@@ -110,6 +110,10 @@ public class HttpSessionManager extends RWLockContext {
       // Enforce ownership BEFORE the caller attaches the session to the thread context: a session must only be
       // resolvable by the principal that opened it, so another user cannot adopt (and commit) its transaction.
       // A session with no recorded owner is never resolvable by an authenticated principal (null-safe).
+      // NOTE: ownership compares by ServerSecurityUser identity/name, so protection against a dropped-then-
+      // recreated same-name principal relies on removeSessionsForUser() being invoked from every user
+      // removal/mutation path (ServerSecurity.dropUser/setUserPassword). Any future path that replaces the
+      // users map without routing through those hooks must also invalidate the affected sessions here.
       if (user != null && (session.user == null || !session.user.equals(user)))
         return null;
       return session;
