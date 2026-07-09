@@ -200,7 +200,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
   private void tryAddEntryPoint(final Result res, final CommandContext context) {
     if (whileClause == null || whileClause.matchesFilters(res, context)) {
-      this.entryPoints.addFirst(res);
+      this.entryPoints.addLast(res);
     }
 
     if (res.isElement()) {
@@ -227,7 +227,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
-    result.append("+ DEPTH-FIRST TRAVERSE \n");
+    result.append("+ BREADTH-FIRST TRAVERSE \n");
     result.append(spaces);
     result.append("  ").append(projections.toString());
     if (whileClause != null) {
