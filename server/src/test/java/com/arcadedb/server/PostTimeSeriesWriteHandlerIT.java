@@ -128,7 +128,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
           pw_unknown,location=us value=1.0 2000
           """;
 
-      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms", null);
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
       try (final OutputStream os = connection.getOutputStream()) {
         os.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
         os.flush();
@@ -177,7 +177,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   private int postLineProtocol(final int serverIndex, final String body, final String precision) throws Exception {
-    final HttpURLConnection connection = openWriteConnection(serverIndex, precision, null);
+    final HttpURLConnection connection = openWriteConnection(serverIndex, precision);
 
     try (final OutputStream os = connection.getOutputStream()) {
       os.write(body.getBytes(StandardCharsets.UTF_8));
@@ -187,8 +187,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     return connection.getResponseCode();
   }
 
-  private HttpURLConnection openWriteConnection(final int serverIndex, final String precision, final String contentEncoding)
-      throws Exception {
+  private HttpURLConnection openWriteConnection(final int serverIndex, final String precision) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
         .toURL()
@@ -198,8 +197,6 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     connection.setRequestProperty("Content-Type", "text/plain");
-    if (contentEncoding != null)
-      connection.setRequestProperty("Content-Encoding", contentEncoding);
     connection.setDoOutput(true);
     return connection;
   }

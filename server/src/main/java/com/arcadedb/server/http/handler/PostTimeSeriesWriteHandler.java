@@ -196,7 +196,9 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
     // measurements (with written/dropped counts) even when some samples were inserted, so the client
     // is not told 204 "all good" while data was silently discarded (issue #5036). The samples that did
     // insert are already committed above - this is a partial-write signal, not a full rollback.
-    final int dropped = unknownTypes.size() + nonTimeSeriesTypes.size();
+    // `dropped` counts individual samples (samples.size() - inserted), consistent with `written`
+    // (inserted samples); every parsed sample is either inserted or skipped into one of the drop sets.
+    final int dropped = samples.size() - inserted;
     if (dropped > 0) {
       final StringBuilder msg = new StringBuilder("partial write: ");
       if (!unknownTypes.isEmpty())
