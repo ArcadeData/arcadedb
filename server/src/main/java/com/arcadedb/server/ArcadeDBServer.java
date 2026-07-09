@@ -737,6 +737,11 @@ public class ArcadeDBServer {
     // pre-wrap (non-replicated) instance mid-swap. status flips to ONLINE only after that re-wrapping completes,
     // so restricting the fast path to ONLINE makes concurrent startup lookups fall through to the locked slow path
     // and block until the wrapped instances are published - exactly the pre-fast-path behaviour.
+    //
+    // The other lock holder is the runtime HA snapshot installer (close->swap->reopen while ONLINE). The request
+    // hot path is already deflected with 503 during an install (snapshotInstallInProgress), and once the installer
+    // closes and removeDatabase-s the entry, databases.get() returns null/closed here and the lookup falls through
+    // to the locked slow path - preserving the #4832 guarantee of never reopening a half-swapped directory.
     ServerDatabase db = databases.get(databaseName);
     if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
