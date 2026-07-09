@@ -31,6 +31,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
@@ -308,15 +309,35 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
     users.put(name, user);
     saveUsers();
+    // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
+    // authorization is still re-checked on every command, so a narrowed grant is enforced without tearing
+    // down unrelated in-flight work. Only drop and password change (below) invalidate live sessions.
     return user;
   }
 
-  public synchronized boolean dropUser(final String userName) {
-    if (users.remove(userName) != null) {
+  public boolean dropUser(final String userName) {
+    synchronized (this) {
+      if (users.remove(userName) == null)
+        return false;
       saveUsers();
-      return true;
     }
-    return false;
+    // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
+    // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
+    // session.cancel() waits (unbounded, by design) on the per-session lock for any in-flight command, and
+    // holding this monitor across that wait would stall every other admin op serialized on it.
+    invalidateHttpSessions(userName);
+    return true;
+  }
+
+  /**
+   * Invalidates every live HTTP transaction session owned by the named principal (rolling back its open
+   * transaction). No-op when the HTTP server is not running (e.g. embedded use). Must be called OUTSIDE the
+   * {@code ServerSecurity} monitor: it can block on a session's in-flight command via {@code cancel()}.
+   */
+  private void invalidateHttpSessions(final String userName) {
+    final HttpServer httpServer = server != null ? server.getHttpServer() : null;
+    if (httpServer != null)
+      httpServer.getSessionManager().removeSessionsForUser(userName);
   }
 
   @Override
@@ -347,6 +368,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException("User '" + userName + "' not found");
     user.setPassword(encodePassword(password));
     saveUsers();
+    // A password change re-authenticates the principal: drop its live HTTP transaction sessions.
+    invalidateHttpSessions(userName);
   }
 
   @Override
