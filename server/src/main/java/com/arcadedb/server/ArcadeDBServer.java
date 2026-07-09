@@ -107,9 +107,12 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
-  private             HAServerPlugin                        haServer;
-  private             ServerSecurity                        security;
-  private             HttpServer                            httpServer;
+  // volatile: written by the HA plugin during startPlugins(AFTER_HTTP_ON), i.e. after httpServer.startService()
+  // has begun accepting requests. Undertow worker threads reading these (readiness/cluster handlers, getDatabase's
+  // HA wrapping) need a happens-before with those writes, otherwise under the JMM they may observe null indefinitely.
+  private volatile    HAServerPlugin                        haServer;
+  private volatile    ServerSecurity                        security;
+  private volatile    HttpServer                            httpServer;
   private             MCPConfiguration                      mcpConfiguration;
   private             AiConfiguration                       aiConfiguration;
   private             ServerQueryProfiler                   queryProfiler;
@@ -122,7 +125,7 @@ public class ArcadeDBServer {
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
-  private             Function<LocalDatabase, DatabaseInternal> databaseWrapper;
+  private volatile    Function<LocalDatabase, DatabaseInternal> databaseWrapper;
 //  private             ServerMonitor                         serverMonitor;
 
   static {
@@ -602,15 +605,21 @@ public class ArcadeDBServer {
   }
 
   public ServerDatabase registerDatabase(final String databaseName, final DatabaseInternal database) {
-    final ServerDatabase serverDatabase = new ServerDatabase(this, database);
-    final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
-    if (existing != null)
-      throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
-    return serverDatabase;
+    // Serialise with getDatabase/createDatabase/rewrapDatabases on databasesLock so a concurrent open-from-disk
+    // cannot interleave with this registration and end up with two DatabaseInternal instances over the same directory.
+    synchronized (databasesLock) {
+      final ServerDatabase serverDatabase = new ServerDatabase(this, database);
+      final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
+      if (existing != null)
+        throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
+      return serverDatabase;
+    }
   }
 
   public void removeDatabase(final String databaseName) {
-    databases.remove(databaseName);
+    synchronized (databasesLock) {
+      databases.remove(databaseName);
+    }
   }
 
   public String getServerName() {
@@ -717,7 +726,27 @@ public class ArcadeDBServer {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
-    ServerDatabase db;
+    // Lock-free fast path: an already-open database is served straight off the ConcurrentMap without entering
+    // databasesLock. This keeps the request hot path off the JVM-wide monitor that createDatabase/open and the HA
+    // snapshot installer hold across long I/O. Only the miss (absent or closed) falls through to the locked slow
+    // path, which re-checks under the lock, so createIfNotExists/allowLoad semantics are preserved.
+    //
+    // The fast path is gated on STATUS.ONLINE. During startup (STATUS.STARTING) the HTTP server is already
+    // accepting requests while the HA plugin still has to run rewrapDatabases() under databasesLock to swap the
+    // plain LocalDatabase entries for HA-wrapped ones. Bypassing the lock in that window could hand a caller the
+    // pre-wrap (non-replicated) instance mid-swap. status flips to ONLINE only after that re-wrapping completes,
+    // so restricting the fast path to ONLINE makes concurrent startup lookups fall through to the locked slow path
+    // and block until the wrapped instances are published - exactly the pre-fast-path behaviour.
+    //
+    // The other lock holder is the runtime HA snapshot installer (close->swap->reopen while ONLINE). The HTTP request
+    // path is normally deflected with 503 during an install (snapshotInstallInProgress), though that is a check at
+    // request entry rather than a hard guarantee for the whole request or for non-HTTP callers. Once the installer
+    // closes and removeDatabase-s the entry, databases.get() returns null/closed here and the lookup falls through to
+    // the locked slow path - preserving the #4832 guarantee of never reopening a half-swapped directory.
+    ServerDatabase db = databases.get(databaseName);
+    if (status == STATUS.ONLINE && db != null && db.isOpen())
+      return db;
+
     synchronized (databasesLock) {
       db = databases.get(databaseName);
 
@@ -844,7 +873,10 @@ public class ArcadeDBServer {
               // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
               if (database != null) {
                 ((DatabaseInternal) database).getEmbedded().drop();
-                databases.remove(dbName);
+                // Route through removeDatabase so this registry mutation also runs under databasesLock, keeping the
+                // defect-2 invariant consistent (this path is startup-single-threaded, but consistency is cheaper
+                // to keep than to reason about the exception).
+                removeDatabase(dbName);
               }
               final String dbPath =
                   configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
