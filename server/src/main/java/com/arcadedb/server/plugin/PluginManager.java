@@ -33,6 +33,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
@@ -50,7 +51,9 @@ public class PluginManager {
   private final ArcadeDBServer                     server;
   private final ContextConfiguration               configuration;
   private final String                             pluginsDirectory;
-  private final Map<String, PluginDescriptor>      plugins        = new LinkedHashMap<>();
+  // A synchronized LinkedHashMap PRESERVES INSERTION ORDER (RELIED ON BY startPlugins / stopPlugins) WHILE
+  // MAKING registerPlugin (CALLED e.g. BY THE HA PLUGIN AT STARTUP) SAFE AGAINST CONCURRENT READERS.
+  private final Map<String, PluginDescriptor>      plugins        = Collections.synchronizedMap(new LinkedHashMap<>());
   private final Map<ClassLoader, PluginDescriptor> classLoaderMap = new ConcurrentHashMap<>();
   private final Set<String>                        configuredPlugins;
   private final Set<String>                        configuredPluginNames;
@@ -328,7 +331,11 @@ public class PluginManager {
    * Get plugin names.
    */
   public Set<String> getPluginNames() {
-    return Collections.unmodifiableSet(plugins.keySet());
+    // COPY-ON-READ UNDER THE MAP MONITOR: RETURNS AN INSERTION-ORDERED SNAPSHOT THAT CANNOT THROW
+    // ConcurrentModificationException IF registerPlugin MUTATES THE MAP WHILE THE CALLER ITERATES.
+    synchronized (plugins) {
+      return Collections.unmodifiableSet(new LinkedHashSet<>(plugins.keySet()));
+    }
   }
 
   /**

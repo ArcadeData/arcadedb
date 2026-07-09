@@ -75,7 +75,7 @@ public class HttpSessionManager extends RWLockContext {
   }
 
   public int checkSessionsValidity() {
-    if (sessions.isEmpty())
+    if (executeInReadLock(sessions::isEmpty))
       return 0;
 
     return executeInWriteLock(() -> {
@@ -120,6 +120,6 @@ public class HttpSessionManager extends RWLockContext {
   }
 
   public int getActiveSessions() {
-    return sessions.size();
+    return executeInReadLock(sessions::size);
   }
 }

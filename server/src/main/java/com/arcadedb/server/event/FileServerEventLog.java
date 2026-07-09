@@ -31,6 +31,9 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -38,18 +41,20 @@ import java.util.List;
 import java.util.logging.Level;
 
 public class FileServerEventLog implements ServerEventLog {
-  private final static String           FILE_PREFIX = "server-event-log-";
-  private final static String           FILE_EXT    = ".jsonl";
-  private final static int              KEEP_FILES  = 10;
-  private final        ArcadeDBServer   server;
-  private final        SimpleDateFormat dateFormat;
-  private              File             newFileName;
-  private              List<String>     existentFiles;
-  private              File             logDirectory;
+  private final static String            FILE_PREFIX = "server-event-log-";
+  private final static String            FILE_EXT    = ".jsonl";
+  private final static int               KEEP_FILES  = 10;
+  // DateTimeFormatter IS IMMUTABLE AND THREAD-SAFE, UNLIKE SimpleDateFormat WHICH CORRUPTS ITS INTERNAL
+  // Calendar WHEN reportEvent() IS CALLED CONCURRENTLY FROM MANY THREADS (HTTP HANDLERS, MONITOR, HA, ...).
+  private final static DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
+      .withZone(ZoneId.systemDefault());
+  private final        ArcadeDBServer    server;
+  private              File              newFileName;
+  private              List<String>      existentFiles;
+  private              File              logDirectory;
 
   public FileServerEventLog(final ArcadeDBServer server) {
     this.server = server;
-    this.dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
   }
 
   public void start() {
@@ -115,7 +120,7 @@ public class FileServerEventLog implements ServerEventLog {
 
     try {
       final JSONObject json = new JSONObject();
-      json.put("time", dateFormat.format(new Date()));
+      json.put("time", formatEventTime(System.currentTimeMillis()));
       json.put("type", eventType);
       json.put("component", component);
       json.put("db", databaseName);
@@ -125,6 +130,10 @@ public class FileServerEventLog implements ServerEventLog {
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on writing into server event log file %s", e, newFileName);
     }
+  }
+
+  String formatEventTime(final long epochMillis) {
+    return DATE_FORMAT.format(Instant.ofEpochMilli(epochMillis));
   }
 
   @Override
