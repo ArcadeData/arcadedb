@@ -329,4 +329,90 @@ class CypherQueryStatisticsTest extends TestHelper {
       assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
     });
   }
+
+  @Test
+  void detachDeleteWithExplicitEdgeCountsRelationshipOnce() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:Dd {n:'a'})-[:LINK]->(b:Dd {n:'b'})");
+      final QueryStatistics s = statsOf(database,
+          "MATCH (a:Dd {n:'a'})-[r:LINK]->(b:Dd {n:'b'}) DETACH DELETE r, a, b");
+      assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
+      assertThat(s.getNodesDeleted()).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void callSubqueryWriteCountsPropagateToOuter() {
+    database.transaction(() -> {
+      final QueryStatistics s = statsOf(database,
+          "UNWIND [1,2] AS x CALL { WITH x CREATE (:CallNode {v:x}) } RETURN x");
+      assertThat(s.getNodesCreated()).isEqualTo(2);
+      assertThat(s.getPropertiesSet()).isEqualTo(2);
+      assertThat(s.getLabelsAdded()).isEqualTo(2);
+      assertThat(s.containsUpdates()).isTrue();
+    });
+  }
+
+  @Test
+  void topLevelUnionWriteCountsAreSummed() {
+    database.transaction(() -> {
+      final QueryStatistics s = statsOf(database,
+          "CREATE (:UnionA {n:1}) RETURN 1 AS r UNION ALL CREATE (:UnionB {n:2}) RETURN 2 AS r");
+      assertThat(s.getNodesCreated()).isEqualTo(2);
+      assertThat(s.getPropertiesSet()).isEqualTo(2);
+      assertThat(s.getLabelsAdded()).isEqualTo(2);
+      assertThat(s.containsUpdates()).isTrue();
+    });
+  }
+
+  @Test
+  void zeroNetEffectWriteUnionStillReportsStatisticsPresent() {
+    // Presence of statistics on the result set signals "this was a write statement", independent
+    // of whether the write actually mutated anything. Both UNION branches are MERGE clauses that
+    // match the pre-existing node, so containsUpdates() is false, but getStatistics() must still
+    // be present.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:UnionMergeTarget {id:1})");
+      final ResultSet rs = database.command("opencypher",
+          "MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r UNION ALL "
+              + "MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r");
+      while (rs.hasNext())
+        rs.next();
+      assertThat(rs.getStatistics()).isPresent();
+      assertThat(rs.getStatistics().get().containsUpdates()).isFalse();
+    });
+  }
+
+  @Test
+  void notNullConstraintCountsAsConstraintAdded() {
+    database.command("opencypher", "CREATE (:NnLabel {p:1})");
+    final QueryStatistics s = statsOf(database, "CREATE CONSTRAINT FOR (n:NnLabel) REQUIRE n.p IS NOT NULL");
+    assertThat(s.getConstraintsAdded()).isEqualTo(1);
+  }
+
+  @Test
+  void nodeKeyConstraintCountsAsConstraintAdded() {
+    final QueryStatistics s = statsOf(database, "CREATE CONSTRAINT FOR (n:KeyLabel) REQUIRE n.k IS NODE KEY");
+    assertThat(s.getConstraintsAdded()).isEqualTo(1);
+  }
+
+  @Test
+  void typedConstraintCountsAsConstraintAdded() {
+    final QueryStatistics s = statsOf(database, "CREATE CONSTRAINT FOR (n:TypedLabel) REQUIRE n.age IS TYPED INTEGER");
+    assertThat(s.getConstraintsAdded()).isEqualTo(1);
+  }
+
+  @Test
+  void uniqueConstraintOverPlainIndexStillCountsAsConstraintAdded() {
+    // A non-unique index already covers the property. TypeIndexBuilder.create() only tolerates a
+    // pre-existing index with a different uniqueness when IF NOT EXISTS is used - it then drops the
+    // plain index and creates the unique one. That is a genuine schema change and must be counted
+    // even though indexExistsOnProperties(...) sees an index there both before and after.
+    database.command("sql", "CREATE VERTEX TYPE CoveredLabel");
+    database.command("sql", "CREATE PROPERTY CoveredLabel.email STRING");
+    database.command("sql", "CREATE INDEX ON CoveredLabel (email) NOTUNIQUE");
+    final QueryStatistics s = statsOf(database, "CREATE CONSTRAINT IF NOT EXISTS FOR (n:CoveredLabel) REQUIRE n.email IS UNIQUE");
+    assertThat(s.getConstraintsAdded()).isEqualTo(1);
+  }
 }

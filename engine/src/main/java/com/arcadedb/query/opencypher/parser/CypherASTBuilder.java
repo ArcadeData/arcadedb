@@ -681,6 +681,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
           items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
         }
+      } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
+        // SET n[keyExpr] = value — dynamic property assignment (issue #5141)
+        if (findPatternExpressionRecursive(dynCtx.expression()) != null)
+          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
+        final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
+        final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
+        final Expression valueExpr = expressionBuilder.parseExpression(dynCtx.expression());
+        final Cypher25Parser.Expression1Context baseExpr1 = dynPropExpr.expression1();
+        if (baseExpr1.variable() != null) {
+          items.add(new SetClause.SetItem(baseExpr1.variable().getText(), null, keyExpr, valueExpr));
+        } else {
+          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+          items.add(new SetClause.SetItem(null, targetExpr, keyExpr, valueExpr));
+        }
       } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
         // SET n = {map} — replace all properties
         final String variable = propsCtx.variable().getText();
@@ -746,6 +760,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           final String[] parts = propExpr.split("\\.", 2);
           items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
         }
+      } else if (itemCtx instanceof Cypher25Parser.RemoveDynamicPropContext dynCtx) {
+        // REMOVE n[keyExpr] — dynamic property removal (issue #5141)
+        final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
+        final String variable = dynPropExpr.expression1().getText();
+        final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
+        items.add(new RemoveClause.RemoveItem(variable, keyExpr));
       } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext) {
         final Cypher25Parser.RemoveLabelsContext labelsCtx = (Cypher25Parser.RemoveLabelsContext) itemCtx;
         final String variable = stripBackticks(labelsCtx.variable().getText());
@@ -754,7 +774,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           labels.add(stripBackticks(lt.symbolicNameString().getText()));
         items.add(new RemoveClause.RemoveItem(variable, labels));
       }
-      // TODO: Handle RemoveDynamicProp and RemoveLabelsIs
+      // TODO: Handle RemoveLabelsIs
     }
 
     return new RemoveClause(items);
@@ -1326,7 +1346,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (parenExpr != null && compCtx == null) {
       // Check if the parenthesized expression contains just a bare variable (e.g., WHERE (n)).
       // A single-node pattern without relationships is invalid as a boolean predicate.
-      final String innerText = parenExpr.expression().getText().trim();
+      // Use getOriginalText (whitespace-preserving) rather than getText(): getText() strips all
+      // whitespace, so a genuine predicate such as (friend IN inactive_nodes) collapses to
+      // "friendINinactive_nodes" and spuriously matches the bare-identifier regex, getting
+      // misparsed as an invalid single-node pattern (issue #5138).
+      final String innerText = getOriginalText(parenExpr.expression()).trim();
       if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$")) {
         final NodePattern nodePattern = new NodePattern(innerText, null, null);
         final PathPattern singleNodePath = new PathPattern(List.of(nodePattern), List.of(), null);

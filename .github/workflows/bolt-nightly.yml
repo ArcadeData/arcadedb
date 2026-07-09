@@ -1,0 +1,526 @@
+name: Bolt nightly driver-version matrix
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize nightly runs so a cron run overlapping a manual dispatch cannot race
+# the list-then-create in report-regression and open duplicate issues.
+concurrency:
+  group: bolt-nightly
+  cancel-in-progress: false
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+
+      - name: Cache local Maven repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build and package with Maven Docker profile
+        run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors --show-version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save docker image
+        run: docker save arcadedata/arcadedb:latest > /tmp/arcadedb-image.tar
+
+      - name: Cache Docker image
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}
+
+      - name: Cache Maven artifacts
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}
+
+  bolt-nightly-java:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # -Dneo4j-driver.version overrides the bolt-driver-legacy profile's
+          # default so the oldest band actually loads the 4.4.20 driver.
+          - version: "4.4.20"
+            args: "-Pbolt-driver-legacy -Dit.test=RemoteBoltLegacyDriverIT -Dneo4j-driver.version=4.4.20"
+            report: RemoteBoltLegacyDriverIT
+          - version: "5.28.5"
+            args: "-Dit.test=RemoteBoltDatabaseIT -Dneo4j-driver.version=5.28.5"
+            report: RemoteBoltDatabaseIT
+          - version: "6.2.0"
+            args: "-Dit.test=RemoteBoltDatabaseIT -Dneo4j-driver.version=6.2.0"
+            report: RemoteBoltDatabaseIT
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+      - name: Restore Maven artifacts
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-repo-${{ github.run_id }}
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Run Bolt suite against pinned driver
+        run: ./mvnw verify -Pintegration -pl e2e ${{ matrix.args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        # Glob (with nullglob) so both a single aggregate report and any
+        # per-@Nested-class split files (TEST-...RemoteBoltDatabaseIT$Connection.xml)
+        # are folded together; an empty match yields an empty cell, not a crash.
+        run: |
+          shopt -s nullglob
+          reports=(e2e/target/failsafe-reports/TEST-com.arcadedb.e2e.${{ matrix.report }}*.xml)
+          python3 bolt/conformance/tools/junit_to_matrix.py "${reports[@]}" \
+            --language java --driver-version "${{ matrix.version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-java-${{ matrix.version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-java-${{ matrix.version }}
+          path: bolt-matrix-java-*.json
+          retention-days: 7
+
+  bolt-nightly-js:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["5.28.3", "6.2.0"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-js
+        # jest's --reporters is an array option, so a trailing positional test
+        # path is swallowed as another reporter and jest dies with "Could not
+        # resolve a module for a custom reporter". The reporters (and jest-junit's
+        # output path) are already declared in e2e-js/package.json's jest config,
+        # so pass only the test path on the CLI. npm ci + --no-save pins the
+        # driver deterministically without rewriting the lockfile.
+        run: |
+          npm ci
+          npm install --no-save neo4j-driver@${{ matrix.driver-version }}
+          NODE_OPTIONS=--experimental-vm-modules npx jest --runInBand --ci src/js-bolt-conformance.test.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-js/reports/jest-junit.xml \
+            --language javascript --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-javascript-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-javascript-${{ matrix.driver-version }}
+          path: bolt-matrix-javascript-*.json
+          retention-days: 7
+
+  bolt-nightly-python:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["5.28.4", "6.1.0", "6.2.0"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.0"
+      - name: Setup UV package manager
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-python
+        run: |
+          uv pip install --system -e .
+          uv pip install --system pytest "neo4j==${{ matrix.driver-version }}"
+          mkdir -p reports
+          pytest tests/test_bolt.py --junitxml=reports/python-junit.xml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-python/reports/python-junit.xml \
+            --language python --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-python-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-python-${{ matrix.driver-version }}
+          path: bolt-matrix-python-*.json
+          retention-days: 7
+
+  bolt-nightly-csharp:
+    needs: build-image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["5.26.2", "5.28.4", "6.2.1"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: "10.0"
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-csharp/ArcadeDB.E2ETests
+        # Absolute LogFilePath: the JUnit logger resolves a relative path against
+        # the results directory in some versions, which would miss the reader below.
+        run: |
+          dotnet add package Neo4j.Driver --version ${{ matrix.driver-version }}
+          mkdir -p reports
+          dotnet test --filter FullyQualifiedName~Bolt --logger "junit;LogFilePath=${{ github.workspace }}/e2e-csharp/ArcadeDB.E2ETests/reports/csharp-junit.xml"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-csharp/ArcadeDB.E2ETests/reports/csharp-junit.xml \
+            --language csharp --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-csharp-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-csharp-${{ matrix.driver-version }}
+          path: bolt-matrix-csharp-*.json
+          retention-days: 7
+
+  bolt-nightly-go:
+    needs: build-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        driver-version: ["5.27.0", "5.28.0", "5.28.4"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "e2e-go/go.mod"
+          cache-dependency-path: "e2e-go/go.sum"
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Verify keytool is available (required by TLS scenarios)
+        run: command -v keytool
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@v1.13.0
+      - name: Run Bolt suite against pinned driver
+        working-directory: e2e-go
+        run: |
+          go get github.com/neo4j/neo4j-go-driver/v5@v${{ matrix.driver-version }}
+          go mod tidy
+          mkdir -p reports
+          gotestsum --junitfile reports/go-junit.xml --format standard-verbose -- -timeout 20m ./...
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: arcadedata/arcadedb:latest
+      - name: Convert to matrix JSON
+        if: success() || failure()
+        run: |
+          python3 bolt/conformance/tools/junit_to_matrix.py \
+            e2e-go/reports/go-junit.xml \
+            --language go --driver-version "${{ matrix.driver-version }}" \
+            --spec bolt/conformance/spec.yaml \
+            -o "bolt-matrix-go-${{ matrix.driver-version }}.json"
+      - name: Upload cell result
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-matrix-go-${{ matrix.driver-version }}
+          path: bolt-matrix-go-*.json
+          retention-days: 7
+
+  merge-matrix:
+    needs: [bolt-nightly-java, bolt-nightly-js, bolt-nightly-python, bolt-nightly-csharp, bolt-nightly-go]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    outputs:
+      has-failures: ${{ steps.merge.outputs.has-failures }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Download all cell artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: cells
+          pattern: bolt-matrix-*
+          merge-multiple: true
+      - name: Merge into compatibility matrix
+        id: merge
+        run: |
+          shopt -s nullglob
+          cells=(cells/*.json)
+          # driver-versions.md is the single source of truth for the expected
+          # cell set; a cell missing from it, present but undocumented, or empty
+          # of scenarios all force has_failures.
+          python3 bolt/conformance/tools/merge_matrix.py "${cells[@]}" \
+            --expect-from bolt/conformance/driver-versions.md \
+            -o bolt-compat-matrix.json
+          has_failures=$(python3 -c "import json; print(str(json.load(open('bolt-compat-matrix.json'))['has_failures']).lower())")
+          echo "has-failures=${has_failures}" >> "$GITHUB_OUTPUT"
+      - name: Upload compatibility matrix
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-compat-matrix
+          path: bolt-compat-matrix.json
+          retention-days: 30
+
+  report-regression:
+    needs: merge-matrix
+    # Fire on a failing matrix, and also when the merge job itself failed - a
+    # crashed merge leaves has-failures unset, which must not silence the alarm.
+    if: ${{ always() && (needs.merge-matrix.outputs.has-failures == 'true' || needs.merge-matrix.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Download compatibility matrix
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: bolt-compat-matrix
+      - name: Open or update regression issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            let matrix = {scenarios: {}, missing_cells: [], unexpected_cells: [], empty_cells: []};
+            let mergeFailed = false;
+            try {
+              matrix = JSON.parse(fs.readFileSync('bolt-compat-matrix.json', 'utf8'));
+            } catch (e) {
+              // No matrix artifact means the merge step itself failed.
+              mergeFailed = true;
+            }
+            const failing = [];
+            for (const [scen, langs] of Object.entries(matrix.scenarios)) {
+              for (const [lang, vers] of Object.entries(langs)) {
+                for (const [ver, status] of Object.entries(vers)) {
+                  if (status === 'fail') failing.push(`- ${scen} / ${lang} / ${ver}`);
+                }
+              }
+            }
+            const missing = (matrix.missing_cells || []).map(c => `- ${c} (job produced no result)`);
+            const unexpected = (matrix.unexpected_cells || []).map(c => `- ${c} (ran but not in driver-versions.md)`);
+            const empty = (matrix.empty_cells || []).map(c => `- ${c} (ran but produced no recognized scenarios)`);
+            const title = 'Bolt driver compatibility regression (nightly)';
+            const label = 'bolt-compat-regression';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const sections = [`Nightly Bolt matrix reported problems.\n\nRun: ${runUrl}`];
+            if (mergeFailed) sections.push('### Merge step failed\nThe matrix could not be produced - the compatibility signal for this run is unavailable; investigate the run.');
+            if (failing.length) sections.push(`### Failing cells\n${failing.sort().join('\n')}`);
+            if (missing.length) sections.push(`### Missing cells\n${missing.join('\n')}`);
+            if (unexpected.length) sections.push(`### Unexpected cells\n${unexpected.join('\n')}`);
+            if (empty.length) sections.push(`### Empty cells (no scenarios)\n${empty.join('\n')}`);
+            const body = sections.join('\n\n');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: label,
+            });
+            const hit = existing.data.find(i => i.title === title);
+            if (hit) {
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: [label] });
+            }
+
+  resolve-regression:
+    needs: merge-matrix
+    if: ${{ always() && needs.merge-matrix.outputs.has-failures == 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Close the regression issue on a green night
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = 'Bolt driver compatibility regression (nightly)';
+            const label = 'bolt-compat-regression';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: label,
+            });
+            const hit = existing.data.find(i => i.title === title);
+            if (hit) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number,
+                body: `Nightly Bolt matrix is green again. Run: ${runUrl}`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: hit.number, state: 'closed',
+              });
+            }
+
+  publish-matrix:
+    needs: merge-matrix
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install conformance tooling deps
+        run: pip install -r bolt/conformance/requirements.txt
+      - name: Download compatibility matrix
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: bolt-compat-matrix
+      - name: Render and publish if the matrix artifact is present
+        run: |
+          if [ ! -f bolt-compat-matrix.json ]; then
+            echo "No bolt-compat-matrix.json artifact (merge-matrix produced none); leaving the last published matrix in place."
+            exit 0
+          fi
+          python3 bolt/conformance/tools/render_matrix.py \
+            --matrix bolt-compat-matrix.json \
+            --spec bolt/conformance/spec.yaml \
+            --versions bolt/conformance/driver-versions.md \
+            --repo "${{ github.repository }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --timestamp "$(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --out-page bolt/conformance/COMPATIBILITY.md \
+            --out-badge bolt/conformance/badge.json
+          if git diff --quiet -- bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json; then
+            echo "Rendered matrix is byte-identical to the committed one; nothing to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bolt/conformance/COMPATIBILITY.md bolt/conformance/badge.json
+          git commit -m "docs(bolt): refresh driver compatibility matrix [skip ci]"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Published matrix refresh."
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); rebasing onto main and retrying."
+            git pull --rebase -X theirs origin main || git rebase --abort || true
+          done
+          # A publish that cannot land (e.g. new branch protection on main) must
+          # not red the nightly - the driver-compatibility signal itself is
+          # unaffected, and report-regression already alarms on real red cells.
+          echo "::warning::Could not push the refreshed Bolt compatibility matrix to main after retries; the published page is stale."
+          exit 0

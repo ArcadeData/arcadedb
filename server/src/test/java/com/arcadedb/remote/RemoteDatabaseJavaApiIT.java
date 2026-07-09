@@ -213,6 +213,38 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
   }
 
+  /**
+   * Issue #5122: RemoteVertex.isConnectedTo() must accept a Vertex object as argument, not only a RID.
+   * Passing the vertex directly used to inline its full toString() (e.g. #76:1@Person[name=John]) into the
+   * generated SQL, producing a syntax error. The identity must be extracted before embedding it in the query.
+   */
+  @Test
+  void isConnectedToWithVertexArgument() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE Person");
+    database.command("sql", "CREATE EDGE TYPE KNOWS");
+
+    database.transaction(() -> {
+      final MutableVertex john = database.newVertex("Person").set("name", "John").set("age", 42).save();
+      final MutableVertex jane = database.newVertex("Person").set("name", "Jane").save();
+      john.newEdge("KNOWS", jane).save();
+
+      // WORKS: passing the RID
+      assertThat(john.isConnectedTo(jane.getIdentity())).isTrue();
+      assertThat(john.isConnectedTo(jane.getIdentity(), OUT, "KNOWS")).isTrue();
+
+      // Issue #5122: passing the Vertex object directly must behave the same as passing its RID
+      assertThat(john.isConnectedTo(jane)).isTrue();
+      assertThat(john.isConnectedTo(jane, OUT)).isTrue();
+      assertThat(john.isConnectedTo(jane, IN)).isFalse();
+      assertThat(john.isConnectedTo(jane, OUT, "KNOWS")).isTrue();
+      assertThat(jane.isConnectedTo(john, IN, "KNOWS")).isTrue();
+      assertThat(jane.isConnectedTo(john, OUT, "KNOWS")).isFalse();
+    });
+  }
+
   @BeforeEach
   public void beginTest() {
     super.beginTest();

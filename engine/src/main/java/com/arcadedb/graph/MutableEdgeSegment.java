@@ -401,14 +401,22 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public EdgeSegment getPrevious() {
+    final RID nextRID = getPreviousRID();
+    return nextRID == null ? null : (EdgeSegment) database.lookupByRID(nextRID, true);
+  }
+
+  @Override
+  public RID getPreviousRID() {
+    // NOTE: the on-disk pointer is historically labelled "NEXT" but it links to the PREVIOUS chunk in list
+    // order (the list is stored head-first, newest chunk first). Side-effect: moves the buffer position.
     buffer.position(Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE);
 
-    final RID nextRID = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_RID, null); // NEXT
+    final RID previousRID = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_RID, null);
 
-    if (nextRID.getBucketId() == -1 && nextRID.getPosition() == -1)
+    if (previousRID.getBucketId() == -1 && previousRID.getPosition() == -1)
       return null;
 
-    return (EdgeSegment) database.lookupByRID(nextRID, true);
+    return previousRID;
   }
 
   @Override

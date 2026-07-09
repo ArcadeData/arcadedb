@@ -27,6 +27,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -36,6 +37,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -265,6 +267,7 @@ public class GraphEngine {
     EdgeSegment inChunk = null;
     if (inEdgesHeadChunk != null)
       try {
+        anchorHeadChunkPage(inEdgesHeadChunk);
         inChunk = (EdgeSegment) database.lookupByRID(inEdgesHeadChunk, true);
       } catch (final RecordNotFoundException e) {
         LogManager.instance()
@@ -292,6 +295,7 @@ public class GraphEngine {
     EdgeSegment outChunk = null;
     if (outEdgesHeadChunk != null)
       try {
+        anchorHeadChunkPage(outEdgesHeadChunk);
         outChunk = (EdgeSegment) database.lookupByRID(outEdgesHeadChunk, true);
       } catch (final RecordNotFoundException e) {
         LogManager.instance()
@@ -311,6 +315,23 @@ public class GraphEngine {
     }
 
     return outChunk;
+  }
+
+  /**
+   * #5147: brings the head chunk's page into the transaction NOW, at the version it is read, so an append is
+   * anchored to that version for the commit-time MVCC check. Without this the chunk is read via an immutable
+   * lookup (which, under READ_COMMITTED, does not retain the page) and the page is only captured later by the
+   * deferred {@code updateRecord} - at the newer version if a concurrent transaction appended to the same
+   * chunk in between. The version check would then compare the newer version against itself, find no conflict,
+   * and the stale chunk buffer would silently overwrite the concurrent append (a lost update / dropped edge).
+   * Anchoring here makes the conflict visible so the transaction retries and re-reads the current chunk.
+   */
+  private void anchorHeadChunkPage(final RID headChunkRID) {
+    try {
+      ((LocalBucket) database.getSchema().getBucketById(headChunkRID.getBucketId())).fetchPageInTransaction(headChunkRID);
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on loading edge chunk page " + headChunkRID, e);
+    }
   }
 
   public long countEdges(final VertexInternal vertex, final Vertex.DIRECTION direction, final String... edgeTypes) {

@@ -10,6 +10,90 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **OpenCypher: repeating a node variable across single-node MATCH parts is no longer order-sensitive.**
+  A query such as `MATCH (n0:L1:L5), (n0), (n1)` ran up to ~16x slower when the parts were written in a
+  different order, e.g. `MATCH (n1), (n0), (n0:L1:L5)` ([#5116](https://github.com/ArcadeData/arcadedb/issues/5116)).
+  The multi-label conjunction `(n0:L1:L5)` disqualifies the cost-based optimizer, so the query runs on the
+  legacy step-chain path, which chained comma-separated pattern parts in textual order as a nested-loop
+  Cartesian product. When the bare `(n0)` was chained before the labeled `(n0:L1:L5)`, `n0` was first bound to
+  every node (full scan) and only afterwards filtered by the labels. The legacy planner now orders the parts of
+  each independent component so the most selective (labeled) occurrence of a shared variable binds first, and
+  breaks ties between disconnected node components by descending label count, making the plan independent of the
+  written order. Extends the pattern-part reordering introduced for [#5117](https://github.com/ArcadeData/arcadedb/issues/5117).
+
+- **Graph: concurrent edge insertion into the same super-node (hot) vertex no longer silently drops edges.**
+  Under many transactions appending edges to one vertex at once, an edge record could commit with **no
+  back-reference** in the target vertex's edge list - the edge count came up short and `CHECK DATABASE` reported
+  `missingReferenceBack` ([#5147](https://github.com/ArcadeData/arcadedb/issues/5147)). Root cause was a
+  deferred-update MVCC gap: the edge-list head chunk was read via an immutable lookup that (under
+  `READ_COMMITTED`) did not retain the page in the transaction, and the page was only captured later by the
+  deferred record update - at the newer version if a concurrent append committed in between. The commit-time
+  page-version check then compared the newer version against itself, found no conflict, and the stale chunk
+  buffer overwrote the concurrent append (a lost update). The head chunk's page is now anchored in the
+  transaction at read time, so a concurrent commit is detected and the transaction retries. Pre-existing and
+  independent of the new edge-append merge (it reproduced with that feature disabled).
+
+- **Cypher: `COUNT { ... }` (and other block subqueries) inside a pattern-comprehension `WHERE` no longer swallow a
+  trailing comparison.** A filter such as `[(a)-[:E]->(b) WHERE COUNT { MATCH (b)-[:E]->() } = 0 | b.name]` was parsed
+  as just the `COUNT { ... }` block, dropping the `= 0`, so the predicate evaluated to a non-boolean count and every
+  candidate passed the filter ([#5140](https://github.com/ArcadeData/arcadedb/issues/5140)). The special-function
+  detector (`COUNT`/`COLLECT`/`EXISTS`/`CASE`/`shortestPath`) guarded its "does this cover the whole expression?" check
+  with a 2-character text-length tolerance, which a short trailing operator like `= 0` or `> 0` slipped through. The
+  guard now uses exact parse-tree token boundaries, so the surrounding comparison is retained and the comprehension
+  filters correctly, matching Neo4j.
+
+- **Cypher: dynamic bracket property mutations (`SET n[key] = value`, `REMOVE n[key]`) are now applied
+  instead of being silently ignored.** ArcadeDB parsed these forms but never lowered them into a property
+  write, so the query succeeded while doing nothing; only dot-syntax (`SET n.key`) and reads (`RETURN n['key']`)
+  worked ([#5141](https://github.com/ArcadeData/arcadedb/issues/5141)). Both the literal-key
+  (`SET d['propA'] = 'hello'`) and computed-key (`SET d[k] = 'world'`) variants now behave like their
+  dot-syntax equivalents, matching Neo4j. As with `SET n.key`, assigning `null` removes the property.
+
+- **Cypher: pattern comprehension with a target-node inline property filter no longer loses valid matches.**
+  A pattern comprehension such as `[(a)-[:QE {w: 1}]->(b:A {v: 10}) | b.name]` returned an empty list even when
+  exactly one target satisfied both filters ([#5146](https://github.com/ArcadeData/arcadedb/issues/5146)). The
+  node inline map literal (`{v: 10}`) is parsed as a `Long`, but the stored property is an `Integer`, and the
+  pattern-comprehension node matcher compared them with a strict `equals()` that fails across numeric types.
+  The start-node, end-node, and relationship inline-property comparisons now share the same numeric-tolerant,
+  parameter-aware value matching used by regular `MATCH` (`MatchNodeStep`), so a `Long` literal matches an
+  `Integer` value and vice versa. The equivalent explicit `WHERE` form and regular `MATCH` already worked.
+
+- **Encryption: `FULL_TEXT` (and every `LSM_TREE`) index now returns results on an encrypted database.** With
+  data encryption enabled, a `SELECT ... WHERE SEARCH_FIELDS([...], '...')` (or any equality/range lookup on an
+  `LSM_TREE`-indexed property) returned an empty result set ([#5142](https://github.com/ArcadeData/arcadedb/issues/5142)).
+  The #4137 fix that keeps index keys deterministic (encryption uses a fresh random IV per call, so encrypted
+  keys never match on lookup) had only been wired into the `HASH` index bucket; `LSM_TREE` index keys - which
+  the `FULL_TEXT` index is built on - were still serialized encrypted, so the random-IV ciphertext broke the
+  ordered key comparison. `LSM_TREE` keys are now serialized and read back in clear, exactly like `HASH` keys;
+  the record content they point to stays encrypted. **Note:** an already-encrypted database created before this
+  fix must rebuild its `LSM_TREE`/`FULL_TEXT` indexes (`REBUILD INDEX *`), since their on-disk keys were written
+  with the old encrypted layout.
+
+- **Cypher: parenthesized `IN` predicate against a variable no longer misparses as an invalid node pattern.**
+  A `WHERE` predicate such as `(friend IN inactive_nodes)` (typically injected around the body of a correlated
+  `EXISTS { ... }` subquery) was flattened by the parser to `friendINinactive_nodes`, which spuriously matched
+  the bare-identifier check and was rejected as a single-node pattern. Because `EXISTS` swallows subquery
+  parse errors as `false`, patterns like `EXISTS { MATCH (u)-[:FRIEND]->(friend) WHERE friend IN inactive_nodes }`
+  never matched an outer-scope collected node list ([#5138](https://github.com/ArcadeData/arcadedb/issues/5138)).
+  The bare-variable detection now inspects the whitespace-preserving source text, matching Neo4j and Memgraph.
+
+- **Remote API: `RemoteVertex.isConnectedTo()` now accepts a `Vertex` object, not only a `RID`.** Calling
+  `vertex.isConnectedTo(otherVertex, ...)` from a remote database threw a `SQL syntax error at ... mismatched
+  input '@'` because the argument was inlined into the generated SQL via its full `toString()` (e.g.
+  `#4:0@Person[name=Jane]`) instead of just its identity ([#5122](https://github.com/ArcadeData/arcadedb/issues/5122)).
+  All three `isConnectedTo` overloads now embed `argument.getIdentity()`, so passing a `Vertex` behaves exactly
+  like passing its `RID`.
+
+- **Bolt: a single failed TLS handshake no longer wedges the shared listener (DoS).** With Bolt-over-TLS
+  (`arcadedb.bolt.ssl=OPTIONAL`/`REQUIRED`), one aborted or untrusted-certificate handshake could pin a CPU
+  core at ~100% and stop the listener from completing handshakes for *all* subsequent clients until the server
+  was restarted ([#5106](https://github.com/ArcadeData/arcadedb/issues/5106)). Two defects on the accept path
+  caused it: the TLS-detection peek re-read a closed socket in a tight loop when a client closed early
+  (busy-spin), and the blocking TLS handshake ran on the single accept thread, so a slow/stalled/failed
+  handshake blocked every other connection. Transport detection and the TLS handshake now run on the
+  per-connection thread (never on the accept thread) with a bounded read timeout, so a hostile or broken
+  handshake only affects its own connection and the shared listener stays available.
+
 - **Cypher: `exists()` now enforces multi-label constraints on an already-bound start variable.** A predicate
   like `exists((n:A:B)-->(:Node))` accepted the `A:B` label conjunction but silently ignored it on the bound
   variable `n`, so nodes lacking one of the labels (but with a matching outgoing edge) still passed
@@ -543,6 +627,17 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Improvements
 
+- **OpenCypher: pattern-part order no longer affects MATCH performance.** For a leading `MATCH` with
+  several comma-separated pattern parts, the legacy execution path chained them left-deep as a
+  nested-loop Cartesian product and re-executed every later part once per outer row, so writing a cheap
+  standalone node (e.g. `(n4:L3)`) *before* an expensive multi-hop traversal re-ran that traversal once
+  per node - a ~33x slowdown versus the reverse order. The planner now reorders independent
+  (disconnected) pattern components so the edge-bearing, more-selective component always drives as the
+  outer loop, making both formulations equally fast. Reordering is applied only when every part is
+  structurally pure (no inline properties/labels/relationship WHERE that could reference a sibling
+  part's variable), and the Cartesian product is commutative, so results are unchanged
+  ([#5117](https://github.com/ArcadeData/arcadedb/issues/5117)).
+
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it
   quarantines the affected database and downloads a fresh snapshot from the leader. Previously every
   subsequent committed entry for that database re-logged a full `SEVERE` stack trace (observed in the
@@ -552,6 +647,39 @@ that could starve the very snapshot resync meant to heal the node.
   and the redundant per-entry stack trace in `applyTransaction` is suppressed while the database is
   quarantined. Genuine (non-diverged) replication errors still log loudly. Recovery behaviour is
   otherwise unchanged.
+
+- **`LSM_SPARSE_VECTOR`: configurable posting-weight quantization.** The sparse vector index now
+  exposes the posting-weight quantization through index `METADATA`, bringing it to parity with the
+  dense vector index's `quantization` knob. The segment format already supported `FP32`, `FP16` and
+  `INT8`; previously the choice was hard-wired to `INT8`. Users who need exact scoring can now opt
+  into `FP32`, or trade off recall/latency/disk on their own workload
+  ([#5143](https://github.com/ArcadeData/arcadedb/issues/5143)).
+
+  ```sql
+  CREATE INDEX ON Doc (tokens, weights) LSM_SPARSE_VECTOR
+  METADATA { "dimensions": 30000, "weightQuantization": "FP32" }
+  ```
+
+  The default stays `INT8` (compact, near-exact recall). The choice is persisted in the schema and
+  governs how new segments are written; existing segments remain self-describing (each stores its
+  own quantization code), so already-built indexes are unaffected. The Java API exposes the same knob
+  via `TypeLSMSparseVectorIndexBuilder.withWeightQuantization(...)`.
+
+- **Graph: concurrent edge insertion into a "super-node" (hot vertex) no longer triggers a retry storm.**
+  When many transactions append edges to the SAME vertex at once - a payments graph funnelling every
+  transaction into a central account, a popular product, a star-schema hub - they all collide on that
+  vertex's single edge-list head chunk under ArcadeDB's page-level MVCC. Previously each collision aborted
+  the whole transaction with a `ConcurrentModificationException` and retried it; under HA every retry re-ran
+  the entire Raft replication round, so contention piled up into multi-second (occasionally over a minute)
+  leader latencies that could breach application timeouts. Because appends to an edge list commute (order is
+  irrelevant), the engine now replays the conflicting appends on top of the newer committed page instead of
+  failing the transaction. In a 3-node HA benchmark this cut the worst-case commit latency from ~67s to
+  ~0.4s and full-transaction retries from ~350% to ~0.7% of commits for the same workload, with 4x less
+  leader/replication work. The optimization is on by default and transparent (all edges still land; the
+  leader replicates the merged result, so replicas stay identical). It adds ~0.7% allocation overhead on the
+  non-contended path and can be disabled with `arcadedb.graph.edgeAppendMerge=false`. Raw write throughput on
+  a single hot vertex is unchanged (a follow-up shards the edge list itself); this release removes the retry
+  cascade and the latency spikes.
 
 ## Breaking Changes (migration notes)
 

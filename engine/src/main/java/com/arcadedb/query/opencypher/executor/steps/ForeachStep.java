@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
@@ -173,6 +174,12 @@ public class ForeachStep extends AbstractExecutionStep {
         } finally {
           context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, previousBatch);
         }
+
+        // Inner write clauses (e.g. SET) mutate a fresh MutableDocument stored back on the iteration
+        // row, but the outer input row still references the original immutable snapshot. Sync those
+        // mutations back so the next iteration accumulates on the latest state and a RETURN in the
+        // same query observes the update, matching direct SET / Neo4j behaviour (issue #5114).
+        propagateMutationsToInputRow(inputRow, iterationRow);
       }
 
       if (!wasInTransaction)
@@ -183,6 +190,27 @@ public class ForeachStep extends AbstractExecutionStep {
       if (e instanceof RuntimeException re)
         throw re;
       throw new CommandExecutionException("FOREACH execution failed", e);
+    }
+  }
+
+  /**
+   * Copies document-valued properties that the FOREACH body mutated on the per-iteration row back
+   * onto the passed-through input row. A write clause such as SET replaces the iteration row's
+   * binding with a fresh {@link com.arcadedb.database.MutableDocument} (or, for a label change, a
+   * new {@link com.arcadedb.graph.Vertex}); the outer input row still points at the pre-mutation
+   * snapshot. Restricting the sync to names already present in the input row (as documents) avoids
+   * leaking the loop variable or clause-bound temporaries into the query output.
+   */
+  private void propagateMutationsToInputRow(final Result inputRow, final ResultInternal iterationRow) {
+    if (!(inputRow instanceof ResultInternal outer))
+      return;
+    for (final String propName : inputRow.getPropertyNames()) {
+      final Object outerValue = inputRow.getProperty(propName);
+      if (!(outerValue instanceof Document))
+        continue;
+      final Object innerValue = iterationRow.getProperty(propName);
+      if (innerValue instanceof Document && innerValue != outerValue)
+        outer.setProperty(propName, innerValue);
     }
   }
 
@@ -252,7 +280,7 @@ public class ForeachStep extends AbstractExecutionStep {
         return new MergeStep(mergeClause, context, functionFactory);
       case REMOVE:
         final RemoveClause removeClause = clauseEntry.getTypedClause();
-        return new RemoveStep(removeClause, context);
+        return new RemoveStep(removeClause, context, functionFactory);
       case FOREACH:
         final ForeachClause nestedForeach = clauseEntry.getTypedClause();
         return new ForeachStep(nestedForeach, context, functionFactory);

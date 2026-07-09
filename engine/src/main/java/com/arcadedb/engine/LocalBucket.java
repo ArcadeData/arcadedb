@@ -40,6 +40,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntIntHashMap;
+import com.arcadedb.utility.LockManager;
 
 import java.io.IOException;
 import java.util.*;
@@ -418,14 +419,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext transaction = database.getTransactionIfExists();
 
     final long cached = cachedRecordCount.get();
-    if (cached > -1 && transaction != null)
-      return cached + transaction.getBucketRecordDelta(fileId);
+    if (cached > -1)
+      // O(1) fast path: the counter is kept up to date on every commit, so return it directly. With an active
+      // transaction add its uncommitted delta; without one there is nothing pending, so the cached value is the
+      // committed count. Only a still-unknown (-1) counter falls through to the full recompute below.
+      return cached + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
 
-    long total = 0;
+    // #5152: the recompute below (scan + publish of cachedRecordCount) must be mutually exclusive with a
+    // commit's publishPages + record-count fold on this bucket. A commit holds this bucket's file lock across
+    // both (TransactionContext.commit2ndPhase, until reset()), so acquiring the same lock here serializes the
+    // recompute with commits. Without it a commit could publish a record and then, seeing the still-(-1)
+    // counter, drop its delta at the fold while our scan misses that just-published record (lost update), or
+    // conversely our scan counts a published record whose delta the fold then re-adds (double count). The lock
+    // is taken only on this rare recompute path (counter unknown) - never on the O(1) cached fast-path returned
+    // above. The requester mirrors the transaction's so a recompute invoked while the same transaction already
+    // holds the lock re-enters instead of self-deadlocking.
+    final TransactionManager txManager = database.getTransactionManager();
+    // Deliberately the pure getRequester() read (not captureRequester()): this call acquires and releases the
+    // lock symmetrically on one thread, so there is nothing to capture, and reading avoids mutating the
+    // transaction's requester field from a possibly-foreign counting thread. Falls back to the current thread.
+    final Object requester = transaction != null ? transaction.getRequester() : Thread.currentThread();
+    final long lockTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
 
-    final int txPageCount = getTotalPages();
-
+    LockManager.LOCK_STATUS lockStatus = LockManager.LOCK_STATUS.NO;
     try {
+      lockStatus = txManager.tryLockFile(fileId, lockTimeout, requester);
+
+      // Another thread may have recomputed the counter while we were queued on the lock. Re-check now that we
+      // hold it (or timed out) and skip the duplicate O(N) scan, which also shortens how long we hold the lock.
+      final long recomputed = cachedRecordCount.get();
+      if (recomputed > -1)
+        return recomputed + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
+
+      long total = 0;
+
+      final int txPageCount = getTotalPages();
+
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final PageId pageIdToLoad = new PageId(database, file.getFileId(), pageId);
         final BasePage page = transaction != null ?
@@ -449,12 +478,29 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       }
 
-      cachedRecordCount.set(total);
+      // Publish the recomputed value only when this scan ran under the lock (acquired now, or already held by
+      // an enclosing transaction). On a lock-acquisition timeout (NO) the scan ran lock-free and may be drifted,
+      // so leave the counter at -1 and return a best-effort value: a later call recomputes cleanly.
+      if (lockStatus != LockManager.LOCK_STATUS.NO)
+        // The scan reads the transaction's view (getPage returns its uncommitted pages first), so `total`
+        // already includes this transaction's pending delta. Cache the COMMITTED base (total - pending) so the
+        // commit-time fold adds the delta exactly once instead of double-counting it; the caller still gets the
+        // transaction-visible `total` below.
+        cachedRecordCount.set(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total);
+      else
+        LogManager.instance().log(this, Level.FINE,
+                "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
+                lockTimeout);
+      return total;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot count bucket '" + componentName + "'", e);
+    } finally {
+      // Release only if WE acquired it. ALREADY_ACQUIRED means an enclosing transaction owns the lock and is
+      // responsible for releasing it; NO means the acquisition timed out and we ran the scan lock-free.
+      if (lockStatus == LockManager.LOCK_STATUS.YES)
+        txManager.unlockFile(fileId, requester);
     }
-    return total;
   }
 
   public Map<String, Object> check(final int verboseLevel, final boolean fix) {
@@ -602,6 +648,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         warning = null;
       }
     }
+
+    if (fix)
+      // #5149: reconcile the cached record counter that count(*) relies on. Invalidating forces the next
+      // count() to rescan authoritatively, and reusing the existing -1 sentinel means the value is
+      // repopulated by count()'s own scan logic (no risk of a rule mismatch with this method's tallies) and
+      // survives a rollback of the enclosing transaction. We invalidate rather than write the freshly scanned
+      // value because check(fix=true) may run inside a caller-managed transaction: at commit TransactionContext
+      // folds that transaction's accumulated bucket delta into the counter, but only when it is > -1. Writing a
+      // scanned value would let unrelated inserts/deletes in that same transaction be double-counted on top of
+      // it; leaving -1 makes the fold skip. (check()'s own corrupt-record deletions go through
+      // deleteRecordInternal, which does not register a bucket delta, so they are not the concern here.)
+      // Caveat: no count() must run on this bucket between here and the checker's commit - not from this caller
+      // (DatabaseChecker does not) nor from a concurrent transaction. count() would repopulate the counter
+      // (> -1) and let the commit-time fold re-apply the delta, reintroducing drift. That window (publishPages
+      // then the fold in TransactionContext) is inherent to the incremental counter; CHECK FIX is an admin
+      // operation, so it is expected to run without concurrent counts on the same bucket.
+      cachedRecordCount.set(-1);
 
     final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
 

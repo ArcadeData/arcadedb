@@ -80,6 +80,8 @@ public interface CommandContext {
 
   QueryStatistics getStatistics();
 
+  void setStatistics(QueryStatistics statistics);
+
   void declareScriptVariable(String varName);
 
   boolean isScriptVariableDeclared(String varName);

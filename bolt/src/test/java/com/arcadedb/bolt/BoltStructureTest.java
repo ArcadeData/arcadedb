@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
+import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltNode;
 import com.arcadedb.bolt.structure.BoltPath;
@@ -30,6 +31,7 @@ import com.arcadedb.database.RID;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.Instant;
@@ -50,14 +52,28 @@ import static org.assertj.core.api.Assertions.*;
  */
 class BoltStructureTest {
 
+  // Serializes a structure at the default (Bolt 4.x) negotiated version and returns the raw PackStream
+  // bytes. The first byte is the TINY_STRUCT marker (0xB0 | fieldCount); the second is the signature.
+  private static byte[] wireHeader(final PackStreamStructure s) throws IOException {
+    return wireHeader(s, 4);
+  }
+
+  // Serializes a structure at the given negotiated Bolt major version.
+  private static byte[] wireHeader(final PackStreamStructure s, final int boltMajorVersion) throws IOException {
+    final PackStreamWriter writer = new PackStreamWriter().boltMajorVersion(boltMajorVersion);
+    s.writeTo(writer);
+    return writer.toByteArray();
+  }
+
   // ============ BoltNode tests ============
 
   @Test
-  void boltNodeCreation() {
+  void boltNodeCreation() throws IOException {
     final BoltNode node = new BoltNode(123L, List.of("Person", "Employee"), Map.of("name", "Alice"), "#1:0");
 
-    assertThat(node.getSignature()).isEqualTo(BoltNode.SIGNATURE);
-    assertThat(node.getFieldCount()).isEqualTo(3);
+    final byte[] header = wireHeader(node);
+    assertThat(header[0]).isEqualTo((byte) (0xB0 | 3)); // TINY_STRUCT, 3 fields (Bolt 4.x)
+    assertThat(header[1]).isEqualTo(BoltNode.SIGNATURE);
     assertThat(node.getId()).isEqualTo(123L);
     assertThat(node.getLabels()).containsExactly("Person", "Employee");
     assertThat(node.getProperties()).containsEntry("name", "Alice");
@@ -96,13 +112,14 @@ class BoltStructureTest {
   // ============ BoltRelationship tests ============
 
   @Test
-  void boltRelationshipCreation() {
+  void boltRelationshipCreation() throws IOException {
     final BoltRelationship rel = new BoltRelationship(
         100L, 1L, 2L, "KNOWS", Map.of("since", 2020), "#10:0", "#1:0", "#2:0"
     );
 
-    assertThat(rel.getSignature()).isEqualTo(BoltRelationship.SIGNATURE);
-    assertThat(rel.getFieldCount()).isEqualTo(5);
+    final byte[] header = wireHeader(rel);
+    assertThat(header[0]).isEqualTo((byte) (0xB0 | 5)); // TINY_STRUCT, 5 fields (Bolt 4.x)
+    assertThat(header[1]).isEqualTo(BoltRelationship.SIGNATURE);
     assertThat(rel.getId()).isEqualTo(100L);
     assertThat(rel.getStartNodeId()).isEqualTo(1L);
     assertThat(rel.getEndNodeId()).isEqualTo(2L);
@@ -146,11 +163,12 @@ class BoltStructureTest {
   // ============ BoltUnboundRelationship tests ============
 
   @Test
-  void boltUnboundRelationshipCreation() {
+  void boltUnboundRelationshipCreation() throws IOException {
     final BoltUnboundRelationship rel = new BoltUnboundRelationship(1L, "FRIEND", Map.of("weight", 0.5), "#1:0");
 
-    assertThat(rel.getSignature()).isEqualTo(BoltUnboundRelationship.SIGNATURE);
-    assertThat(rel.getFieldCount()).isEqualTo(3);
+    final byte[] header = wireHeader(rel);
+    assertThat(header[0]).isEqualTo((byte) (0xB0 | 3)); // TINY_STRUCT, 3 fields (Bolt 4.x)
+    assertThat(header[1]).isEqualTo(BoltUnboundRelationship.SIGNATURE);
     assertThat(rel.getId()).isEqualTo(1L);
     assertThat(rel.getType()).isEqualTo("FRIEND");
     assertThat(rel.getProperties()).containsEntry("weight", 0.5);
@@ -187,7 +205,7 @@ class BoltStructureTest {
   // ============ BoltPath tests ============
 
   @Test
-  void boltPathCreation() {
+  void boltPathCreation() throws IOException {
     final List<BoltNode> nodes = List.of(
         new BoltNode(1L, List.of("A"), Map.of(), "#1:0"),
         new BoltNode(2L, List.of("B"), Map.of(), "#2:0")
@@ -199,11 +217,32 @@ class BoltStructureTest {
 
     final BoltPath path = new BoltPath(nodes, rels, indices);
 
-    assertThat(path.getSignature()).isEqualTo(BoltPath.SIGNATURE);
-    assertThat(path.getFieldCount()).isEqualTo(3);
+    final byte[] header = wireHeader(path);
+    assertThat(header[0]).isEqualTo((byte) (0xB0 | 3)); // TINY_STRUCT, 3 fields
+    assertThat(header[1]).isEqualTo(BoltPath.SIGNATURE);
     assertThat(path.getNodes()).hasSize(2);
     assertThat(path.getRelationships()).hasSize(1);
     assertThat(path.getIndices()).containsExactly(1L, 1L);
+  }
+
+  @Test
+  void versionGatedStructuresEmitBolt5HeaderShape() throws IOException {
+    // On Bolt >= 5 the version-gated structs append element_id fields, so writeTo() must emit a wider
+    // header than the 4.x base: Node 3 -> 4, Relationship 5 -> 8, UnboundRelationship 3 -> 4. This is
+    // the exact case the removed accessors got wrong (they returned the 4.x count on a 5.x connection);
+    // pin the 5.x header shape at the unit level so a regression in the version gate fails fast here.
+    final byte[] node = wireHeader(new BoltNode(1L, List.of("Label"), Map.of("k", "v"), "#1:0"), 5);
+    assertThat(node[0]).isEqualTo((byte) (0xB0 | 4)); // TINY_STRUCT, 4 fields (adds element_id)
+    assertThat(node[1]).isEqualTo(BoltNode.SIGNATURE);
+
+    final byte[] rel = wireHeader(
+        new BoltRelationship(10L, 1L, 2L, "KNOWS", Map.of(), "#10:0", "#1:0", "#2:0"), 5);
+    assertThat(rel[0]).isEqualTo((byte) (0xB0 | 8)); // TINY_STRUCT, 8 fields (adds element ids)
+    assertThat(rel[1]).isEqualTo(BoltRelationship.SIGNATURE);
+
+    final byte[] unbound = wireHeader(new BoltUnboundRelationship(5L, "REL", Map.of(), "#5:0"), 5);
+    assertThat(unbound[0]).isEqualTo((byte) (0xB0 | 4)); // TINY_STRUCT, 4 fields (adds element_id)
+    assertThat(unbound[1]).isEqualTo(BoltUnboundRelationship.SIGNATURE);
   }
 
   @Test

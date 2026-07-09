@@ -7,6 +7,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalSchema;
 
 import java.util.Map;
 import java.util.Objects;
@@ -24,6 +25,9 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
     final Database database = context.getDatabase();
 
     database.getSchema().getFunctionLibrary(libraryName.getStringValue()).unregisterFunction(functionName.getStringValue());
+
+    // Persist the removal so it survives a restart (issue #5121).
+    ((LocalSchema) database.getSchema()).saveConfiguration();
 
     return new InternalResultSet().add(new ResultInternal(database).setProperty("operation", "delete function").setProperty("libraryName", libraryName.getStringValue())
         .setProperty("functionName", functionName.getStringValue()));

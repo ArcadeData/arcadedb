@@ -35,6 +35,13 @@ jobs:
         working-directory: bolt/conformance
         run: python3 -m unittest test_validate_spec.py -v
 
+      - name: Run conformance tools unit tests
+        working-directory: bolt/conformance/tools
+        run: |
+          python3 -m unittest test_junit_to_matrix.py -v
+          python3 -m unittest test_merge_matrix.py -v
+          python3 -m unittest test_render_matrix.py -v
+
       - name: Validate spec.yaml
         working-directory: bolt/conformance
         run: python3 validate_spec.py spec.yaml
