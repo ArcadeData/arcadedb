@@ -19,7 +19,6 @@
 package com.arcadedb.server.backup;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
@@ -166,22 +165,11 @@ public class BackupTask implements Runnable {
    * Performs the actual backup using the integration Backup class.
    * <p>
    * Note: The backup mechanism in ArcadeDB reads from immutable pages and handles
-   * consistency internally. The transaction check is a safety warning but does not
-   * block new transactions - the backup is designed to be non-blocking.
+   * consistency internally, so it is safe to run concurrently with active transactions on other
+   * threads - uncommitted changes are simply not included.
    */
   private String performBackup() throws Exception {
     final Database database = server.getDatabase(databaseName);
-
-    // Check for active transaction - warn but don't block
-    // ArcadeDB backup is designed to work on immutable pages, so this is informational
-    if (database.isTransactionActive()) {
-      final DatabaseInternal dbInternal = (DatabaseInternal) database;
-      if (dbInternal.getTransaction().hasChanges()) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Backup for database '%s' starting with active transaction - uncommitted changes will not be included",
-            databaseName);
-      }
-    }
 
     // Generate backup filename
     final String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP_FORMAT);
