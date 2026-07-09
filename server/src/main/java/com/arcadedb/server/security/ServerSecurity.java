@@ -29,6 +29,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
+import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.security.credential.CredentialsValidator;
@@ -308,15 +309,31 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
     users.put(name, user);
     saveUsers();
+    // The principal's authorization may have changed: invalidate its live HTTP transaction sessions so they
+    // cannot keep running under the previous grants.
+    invalidateHttpSessions(name);
     return user;
   }
 
   public synchronized boolean dropUser(final String userName) {
     if (users.remove(userName) != null) {
       saveUsers();
+      // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
+      // cannot adopt (and commit) the prior principal's still-open session.
+      invalidateHttpSessions(userName);
       return true;
     }
     return false;
+  }
+
+  /**
+   * Invalidates every live HTTP transaction session owned by the named principal (rolling back its open
+   * transaction). No-op when the HTTP server is not running (e.g. embedded use).
+   */
+  private void invalidateHttpSessions(final String userName) {
+    final HttpServer httpServer = server != null ? server.getHttpServer() : null;
+    if (httpServer != null)
+      httpServer.getSessionManager().removeSessionsForUser(userName);
   }
 
   @Override
@@ -347,6 +364,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException("User '" + userName + "' not found");
     user.setPassword(encodePassword(password));
     saveUsers();
+    // A password change re-authenticates the principal: drop its live HTTP transaction sessions.
+    invalidateHttpSessions(userName);
   }
 
   @Override

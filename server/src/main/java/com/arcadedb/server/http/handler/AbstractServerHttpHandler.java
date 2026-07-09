@@ -27,6 +27,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.security.ApiTokenConfiguration;
@@ -445,6 +446,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         e.getMessage());
         sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
       }
+    } catch (final HttpSessionException e) {
+      // A referenced HTTP transaction session id is no longer resolvable (committed/rolled back, expired,
+      // owned by another principal, or invalidated). Surface as an explicit 404 client error - never a 500,
+      // and never a silent implicit-transaction commit. Must precede the TransactionException arm below since
+      // HttpSessionException extends it.
+      LogManager.instance()
+              .log(this, Level.FINE, "Transaction session error on command execution (%s): %s", getClass().getSimpleName(),
+                      e.getMessage());
+      sendErrorResponse(exchange, 404, "Remote transaction session not found or expired", e, null);
     } catch (final TransactionException e) {
       Throwable realException = e;
       if (e.getCause() != null)

@@ -30,12 +30,12 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
-import io.undertow.util.StatusCodes;
 
 import java.util.Deque;
 import java.util.Locale;
@@ -290,6 +290,17 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     return requiresTransaction();
   }
 
+  /**
+   * Unregisters the server-side session referenced by the request's session-id header, if any. Called by the
+   * {@code /commit} and {@code /rollback} endpoints so a stale session id is no longer resolvable. Safe to call
+   * when the id is already gone (e.g. an idempotent retry): {@code removeSession} is a no-op then.
+   */
+  protected void removeSession(final HttpServerExchange exchange) {
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
+    if (sessionId != null && !sessionId.isEmpty())
+      httpServer.getSessionManager().removeSession(sessionId.getFirst());
+  }
+
   protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database,
       final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -297,8 +308,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // LOOK UP FOR THE SESSION ID
       final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
       if (session == null) {
-        exchange.setStatusCode(StatusCodes.UNAUTHORIZED);
-        throw new TransactionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
+        // The session id is not resolvable (committed/rolled back, expired, or owned by another principal).
+        // A write-capable handler MUST reject it: falling through session-less would run the command in an
+        // implicit auto-committing transaction while the client believes it is inside a transaction it can
+        // still roll back. Read-only handlers (GET /query) and the transaction endpoints
+        // (/begin, /commit, /rollback) instead degrade to a session-less request, keeping read-after-commit
+        // and idempotent retries of commit/rollback working.
+        if (requiresTransaction())
+          throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
+
+        return null;
       }
 
       // FORCE THE RESET OF TL

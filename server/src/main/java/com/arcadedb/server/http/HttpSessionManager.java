@@ -103,7 +103,25 @@ public class HttpSessionManager extends RWLockContext {
   }
 
   public HttpSession getSessionById(final ServerSecurityUser user, final String txId) {
-    return executeInReadLock(() -> sessions.get(txId));
+    return executeInReadLock(() -> {
+      final HttpSession session = sessions.get(txId);
+      if (session == null)
+        return null;
+      // Enforce ownership BEFORE the caller attaches the session to the thread context: a session must only be
+      // resolvable by the principal that opened it, so another user cannot adopt (and commit) its transaction.
+      if (user != null && !session.user.equals(user))
+        return null;
+      return session;
+    });
+  }
+
+  /**
+   * Returns true if a session with the given id is still tracked. Used by {@link HttpSession#execute} to
+   * re-validate, under the session lock, that the idle sweep did not remove the session between the manager
+   * lookup and lock acquisition.
+   */
+  public boolean isSessionRegistered(final String id) {
+    return executeInReadLock(() -> sessions.containsKey(id));
   }
 
   public HttpSession createSession(final ServerSecurityUser user, final TransactionContext dbTx) {
@@ -117,6 +135,37 @@ public class HttpSessionManager extends RWLockContext {
 
   public HttpSession removeSession(final String id) {
     return executeInWriteLock(() -> sessions.remove(id));
+  }
+
+  /**
+   * Invalidates every live session owned by the named principal: the sessions are unregistered and their
+   * open transactions rolled back. Called when a user is dropped or its password is changed so a stale (or
+   * recreated same-name) principal cannot adopt a session opened by the previous principal.
+   *
+   * @return the number of sessions removed
+   */
+  public int removeSessionsForUser(final String userName) {
+    if (userName == null)
+      return 0;
+
+    // Unregister under the write lock first, then cancel() (rollback) outside it: cancel() waits on the
+    // per-session lock for any in-flight command, which must never be done while holding the manager lock.
+    final List<HttpSession> removed = executeInWriteLock(() -> {
+      final List<HttpSession> owned = new ArrayList<>();
+      for (final Iterator<Map.Entry<String, HttpSession>> it = sessions.entrySet().iterator(); it.hasNext(); ) {
+        final HttpSession session = it.next().getValue();
+        if (session.user != null && userName.equals(session.user.getName())) {
+          owned.add(session);
+          it.remove();
+        }
+      }
+      return owned;
+    });
+
+    for (final HttpSession session : removed)
+      session.cancel();
+
+    return removed.size();
   }
 
   public int getActiveSessions() {
