@@ -1442,28 +1442,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Cypher25Parser.ListItemsPredicateContext listPredCtx = expressionBuilder.findListItemsPredicateRecursive(expr6);
     if (listPredCtx != null) {
       final Expression listPredExpr = expressionBuilder.parseListItemsPredicate(listPredCtx);
-      return new BooleanExpression() {
-        @Override
-        public boolean evaluate(final Result result, final CommandContext context) {
-          final Object value = listPredExpr.evaluate(result, context);
-          return value instanceof Boolean && (Boolean) value;
-        }
-
-        @Override
-        public Object evaluateTernary(final Result result, final CommandContext context) {
-          final Object value = listPredExpr.evaluate(result, context);
-          if (value == null)
-            return null;
-          if (value instanceof Boolean)
-            return value;
-          return Boolean.TRUE;
-        }
-
-        @Override
-        public String getText() {
-          return listPredExpr.getText();
-        }
-      };
+      // Wrap via BooleanCoercionExpression (rather than an anonymous adapter) so the semantic
+      // validator can reach the underlying predicate and scope-check its WHERE body. This catches
+      // variables that leak out of a pattern/list comprehension into the outer predicate (issue #5179).
+      return new BooleanCoercionExpression(listPredExpr);
     }
 
     // Check if the expression is a function call used as a predicate (e.g., isEmpty(x), exists(x))
