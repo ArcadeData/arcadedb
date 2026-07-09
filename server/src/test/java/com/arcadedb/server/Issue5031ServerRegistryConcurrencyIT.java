@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -55,6 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   values written by the HA plugin after the HTTP server already started serving requests.</li>
  * </ul>
  */
+@Tag("slow")
 class Issue5031ServerRegistryConcurrencyIT {
   private ArcadeDBServer server;
 
@@ -121,6 +123,56 @@ class Issue5031ServerRegistryConcurrencyIT {
         .isTrue();
     assertThat(looked.get()).isNotNull();
     assertThat(looked.get().isOpen()).isTrue();
+  }
+
+  /**
+   * Defect 1 (startup safety): the lock-free fast path must be inactive while the server is not yet
+   * {@code ONLINE}. During startup the HA plugin re-wraps the open databases under {@code databasesLock};
+   * a lookup in that window must fall through to the locked slow path (and block) instead of handing out
+   * the pre-wrap instance. We simulate the startup window by flipping {@code status} back to {@code STARTING}
+   * and holding {@code databasesLock}: the lookup must block until the lock is released.
+   */
+  @Test
+  void fastPathIsDisabledWhileServerNotOnline() throws Exception {
+    final Field statusField = ArcadeDBServer.class.getDeclaredField("status");
+    statusField.setAccessible(true);
+    final Object online = statusField.get(server);
+
+    final CountDownLatch lockHeld = new CountDownLatch(1);
+    final CountDownLatch releaseLock = new CountDownLatch(1);
+    try {
+      statusField.set(server, ArcadeDBServer.STATUS.STARTING);
+
+      final Thread holder = new Thread(() -> {
+        synchronized (server.getDatabasesLock()) {
+          lockHeld.countDown();
+          try {
+            releaseLock.await(10, TimeUnit.SECONDS);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      }, "registry-lock-holder");
+      holder.start();
+      assertThat(lockHeld.await(5, TimeUnit.SECONDS)).isTrue();
+
+      final AtomicReference<ServerDatabase> looked = new AtomicReference<>();
+      final Thread lookup = new Thread(() -> looked.set(server.getDatabase("registry", false, true)), "registry-lookup");
+      lookup.start();
+      lookup.join(TimeUnit.SECONDS.toMillis(1));
+
+      final boolean returnedWhileLocked = !lookup.isAlive();
+      releaseLock.countDown();
+      holder.join(TimeUnit.SECONDS.toMillis(5));
+      lookup.join(TimeUnit.SECONDS.toMillis(5));
+
+      assertThat(returnedWhileLocked)
+          .as("while the server is not ONLINE the lookup must take the locked slow path and block")
+          .isFalse();
+      assertThat(looked.get()).isNotNull();
+    } finally {
+      statusField.set(server, online);
+    }
   }
 
   /**

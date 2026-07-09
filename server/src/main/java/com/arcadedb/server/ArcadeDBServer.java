@@ -730,8 +730,15 @@ public class ArcadeDBServer {
     // databasesLock. This keeps the request hot path off the JVM-wide monitor that createDatabase/open and the HA
     // snapshot installer hold across long I/O. Only the miss (absent or closed) falls through to the locked slow
     // path, which re-checks under the lock, so createIfNotExists/allowLoad semantics are preserved.
+    //
+    // The fast path is gated on STATUS.ONLINE. During startup (STATUS.STARTING) the HTTP server is already
+    // accepting requests while the HA plugin still has to run rewrapDatabases() under databasesLock to swap the
+    // plain LocalDatabase entries for HA-wrapped ones. Bypassing the lock in that window could hand a caller the
+    // pre-wrap (non-replicated) instance mid-swap. status flips to ONLINE only after that re-wrapping completes,
+    // so restricting the fast path to ONLINE makes concurrent startup lookups fall through to the locked slow path
+    // and block until the wrapped instances are published - exactly the pre-fast-path behaviour.
     ServerDatabase db = databases.get(databaseName);
-    if (db != null && db.isOpen())
+    if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
 
     synchronized (databasesLock) {
