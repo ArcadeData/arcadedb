@@ -173,23 +173,32 @@ public class CountExpression implements Expression {
     }
 
     if (clauseStart >= 0) {
-      if (topWherePos >= 0 && topWherePos < clauseStart) {
-        int insertPos = topWherePos + 5;
-        while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
-          insertPos++;
-        return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
-      }
+      if (topWherePos >= 0 && topWherePos < clauseStart)
+        return wrapExistingWhere(query, topWherePos, clauseStart, conditions);
       return query.substring(0, clauseStart) + "WHERE " + conditions + " " + query.substring(clauseStart);
     }
 
-    if (topWherePos >= 0) {
-      int insertPos = topWherePos + 5;
-      while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
-        insertPos++;
-      return query.substring(0, insertPos) + conditions + " AND " + query.substring(insertPos);
-    }
+    if (topWherePos >= 0)
+      return wrapExistingWhere(query, topWherePos, query.length(), conditions);
 
     return query + " WHERE " + conditions;
+  }
+
+  /**
+   * Prepends the correlation {@code conditions} to an existing WHERE predicate, wrapping the
+   * original predicate in parentheses so operator precedence is preserved. Without the parentheses
+   * an injected {@code AND} would bind tighter than an inner {@code OR}
+   * (e.g. {@code cond AND a OR b} -> {@code (cond AND a) OR b}), decoupling the OR branch from the
+   * correlated outer row (issue #5165).
+   */
+  private static String wrapExistingWhere(final String query, final int topWherePos, final int whereBodyEnd,
+      final String conditions) {
+    int insertPos = topWherePos + 5;
+    while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
+      insertPos++;
+    final String body = query.substring(insertPos, whereBodyEnd).trim();
+    final String tail = whereBodyEnd < query.length() ? " " + query.substring(whereBodyEnd) : "";
+    return query.substring(0, insertPos) + conditions + " AND (" + body + ")" + tail;
   }
 
   private static boolean matchesKeywordAt(final String upper, final int pos, final String keyword) {
