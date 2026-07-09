@@ -70,6 +70,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
   // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
+  // Per-thread SHA-256 for the idempotency key: reused (reset) each call so the request hot path avoids the
+  // JCA provider lookup of MessageDigest.getInstance() per request. SHA-256 is JCA-mandated, so init cannot
+  // fail in practice; if it ever did the digest would be unusable, so we fail fast.
+  private static final ThreadLocal<MessageDigest> SHA_256_DIGEST = ThreadLocal.withInitial(() -> {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (final NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is a JCA-mandated algorithm but was not found", e);
+    }
+  });
   // Upper bound on a client-supplied X-Request-Id we echo and log, to keep a hostile value bounded.
   private static final int        MAX_REQUEST_ID_LENGTH = 128;
   // Process-wide monotonic counter used, together with a per-thread random, to mint cheap correlation ids
@@ -579,27 +589,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   static String buildIdempotencyKey(final String requestId, final String method, final String path,
       final String database, final String body) {
-    try {
-      final MessageDigest md = MessageDigest.getInstance("SHA-256");
-      final Charset cs = DatabaseFactory.getDefaultCharset();
-      updateDigest(md, requestId, cs);
-      updateDigest(md, method, cs);
-      updateDigest(md, path, cs);
-      updateDigest(md, database, cs);
-      if (body != null)
-        md.update(body.getBytes(cs));
-      final byte[] digest = md.digest();
-      final StringBuilder sb = new StringBuilder(digest.length * 2);
-      for (final byte b : digest) {
-        sb.append(Character.forDigit((b >> 4) & 0xF, 16));
-        sb.append(Character.forDigit(b & 0xF, 16));
-      }
-      return sb.toString();
-    } catch (final NoSuchAlgorithmException e) {
-      // SHA-256 is a JCA-mandated algorithm, so this is unreachable. Fall back to a NUL-namespaced raw key
-      // that is still bound to every component, preserving correctness at the cost of a longer key.
-      return requestId + '\u0000' + method + '\u0000' + path + '\u0000' + database + '\u0000' + body;
+    final MessageDigest md = SHA_256_DIGEST.get();
+    md.reset();
+    final Charset cs = DatabaseFactory.getDefaultCharset();
+    updateDigest(md, requestId, cs);
+    updateDigest(md, method, cs);
+    updateDigest(md, path, cs);
+    updateDigest(md, database, cs);
+    if (body != null)
+      md.update(body.getBytes(cs));
+    final byte[] digest = md.digest();
+    final StringBuilder sb = new StringBuilder(digest.length * 2);
+    for (final byte b : digest) {
+      sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+      sb.append(Character.forDigit(b & 0xF, 16));
     }
+    return sb.toString();
   }
 
   private static void updateDigest(final MessageDigest md, final String value, final Charset cs) {
