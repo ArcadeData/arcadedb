@@ -18,10 +18,9 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -49,8 +48,7 @@ public class LocalDateTimeConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("localdatetime");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String) {
-      final String str = (String) args[0];
+    if (args[0] instanceof String str) {
       try {
         return CypherLocalDateTime.parse(str);
       } catch (final Exception e) {
@@ -65,16 +63,16 @@ public class LocalDateTimeConstructorFunction implements StatelessFunction {
       return CypherLocalDateTime.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherLocalDateTime)
       return args[0];
-    if (args[0] instanceof CypherDateTime)
-      return new CypherLocalDateTime(((CypherDateTime) args[0]).getValue().toLocalDateTime());
-    if (args[0] instanceof CypherDate)
-      return new CypherLocalDateTime(((CypherDate) args[0]).getValue().atStartOfDay());
-    if (args[0] instanceof LocalDateTime)
-      return new CypherLocalDateTime((LocalDateTime) args[0]);
-    if (args[0] instanceof LocalDate)
-      return new CypherLocalDateTime(((LocalDate) args[0]).atStartOfDay());
-    if (args[0] instanceof CypherTime)
-      return new CypherLocalDateTime(LocalDateTime.of(LocalDate.now(), ((CypherTime) args[0]).getValue().toLocalTime()));
+    if (args[0] instanceof CypherDateTime time)
+      return new CypherLocalDateTime(time.getValue().toLocalDateTime());
+    if (args[0] instanceof CypherDate date)
+      return new CypherLocalDateTime(date.getValue().atStartOfDay());
+    if (args[0] instanceof LocalDateTime time1)
+      return new CypherLocalDateTime(time1);
+    if (args[0] instanceof LocalDate date1)
+      return new CypherLocalDateTime(date1.atStartOfDay());
+    if (args[0] instanceof CypherTime time2)
+      return new CypherLocalDateTime(LocalDateTime.of(LocalDate.now(), time2.getValue().toLocalTime()));
     throw new CommandExecutionException("localdatetime() expects a string, map, or temporal argument");
   }
 }

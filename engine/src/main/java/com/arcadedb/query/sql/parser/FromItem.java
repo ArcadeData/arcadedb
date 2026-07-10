@@ -331,15 +331,14 @@ public class FromItem extends SimpleNode {
   }
 
   public void setValue(final Object value) {
-    if (value instanceof Identifiable identifiable)
-      rids.add(new Rid(identifiable.getIdentity()));
-    else if (value instanceof ResultSet set) {
-      resultSet = set;
-    } else if (value instanceof Result r) {
-      if (r.isElement())
+    switch (value) {
+      case Identifiable identifiable -> rids.add(new Rid(identifiable.getIdentity()));
+      case ResultSet set -> resultSet = set;
+      case Result r when r.isElement() ->
         setValue(r.toElement());
-      else
+      case Result r ->
         setValue(r.toMap());
+      case null, default -> {}
     }
   }
   @Override

@@ -20,16 +20,8 @@ package com.arcadedb.server;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Query;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.QueryResult;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.ReadRequest;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.ReadResponse;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.*;
+
 import org.junit.jupiter.api.Test;
 import org.xerial.snappy.Snappy;
 
@@ -175,7 +167,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
       final TimeSeries ts = qr.getTimeSeries().getFirst();
       assertThat(ts.getSamples()).hasSize(3);
-      assertThat(ts.getSamples().get(0).value()).isEqualTo(1024.0);
+      assertThat(ts.getSamples().getFirst().value()).isEqualTo(1024.0);
       assertThat(ts.getSamples().get(1).value()).isEqualTo(2048.0);
       assertThat(ts.getSamples().get(2).value()).isEqualTo(4096.0);
     });

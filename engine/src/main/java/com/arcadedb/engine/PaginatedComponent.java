@@ -23,11 +23,10 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.Level;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * Extends a FileComponent by supporting pages.

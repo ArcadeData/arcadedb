@@ -56,7 +56,7 @@ class SuperNodeAppendHAConsistencyIT extends BaseRaftHATest {
   }
 
   @Test
-  void concurrentSuperNodeAppendsReplicateWithoutLoss() throws InterruptedException {
+  void concurrentSuperNodeAppendsReplicateWithoutLoss() throws Exception {
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {

@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -393,9 +394,9 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
       String statement = "CREATE EDGE ET FROM :fromRid TO :toRid";
 
-      Map<String, Object> params = new HashMap<>();
-      params.put("fromRid", v1.getIdentity());
-      params.put("toRid", v2.getIdentity());
+      Map<String, Object> params = new HashMap<>(Map.of(
+          "fromRid", v1.getIdentity(),
+          "toRid", v2.getIdentity()));
 
       database.command("sql", statement, params);
 
@@ -509,7 +510,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
   void databaseUniqueIndex() throws Exception {
     testEachServer(serverIndex -> {
       try (RemoteDatabase tx = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
-          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);) {
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         tx.getSchema().createVertexType("SimpleVertexEx").createProperty("svuuid", String.class)
             .createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
 

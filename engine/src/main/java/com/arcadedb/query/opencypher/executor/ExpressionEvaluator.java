@@ -23,10 +23,10 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
-import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
@@ -83,28 +83,28 @@ public class ExpressionEvaluator {
    * Evaluate an expression against a result row.
    */
   public Object evaluate(final Expression expression, final Result result, final CommandContext context) {
-    if (expression instanceof VariableExpression) {
-      return evaluateVariable((VariableExpression) expression, result);
-    } else if (expression instanceof PropertyAccessExpression) {
-      return evaluatePropertyAccess((PropertyAccessExpression) expression, result);
-    } else if (expression instanceof ListIndexExpression) {
-      return evaluateListIndex((ListIndexExpression) expression, result, context);
-    } else if (expression instanceof FunctionCallExpression) {
-      return evaluateFunction((FunctionCallExpression) expression, result, context);
-    } else if (expression instanceof ArithmeticExpression) {
-      return evaluateArithmetic((ArithmeticExpression) expression, result, context);
-    } else if (expression instanceof ListExpression) {
-      return evaluateList((ListExpression) expression, result, context);
-    } else if (expression instanceof ComparisonExpressionWrapper) {
-      return evaluateComparison((ComparisonExpressionWrapper) expression, result, context);
+    if (expression instanceof VariableExpression variableExpression) {
+      return evaluateVariable(variableExpression, result);
+    } else if (expression instanceof PropertyAccessExpression accessExpression) {
+      return evaluatePropertyAccess(accessExpression, result);
+    } else if (expression instanceof ListIndexExpression indexExpression) {
+      return evaluateListIndex(indexExpression, result, context);
+    } else if (expression instanceof FunctionCallExpression callExpression) {
+      return evaluateFunction(callExpression, result, context);
+    } else if (expression instanceof ArithmeticExpression arithmeticExpression) {
+      return evaluateArithmetic(arithmeticExpression, result, context);
+    } else if (expression instanceof ListExpression listExpression) {
+      return evaluateList(listExpression, result, context);
+    } else if (expression instanceof ComparisonExpressionWrapper wrapper) {
+      return evaluateComparison(wrapper, result, context);
     } else if (expression instanceof BooleanWrapperExpression bwe) {
       return evaluateBooleanWrapper(bwe, result, context);
     } else if (aggregationOverrides() != null && expression instanceof MapExpression me) {
       return evaluateMap(me, result, context);
-    } else if (aggregationOverrides() != null && expression instanceof ListComprehensionExpression) {
-      return evaluateListComprehension((ListComprehensionExpression) expression, result, context);
-    } else if (aggregationOverrides() != null && expression instanceof ListPredicateExpression) {
-      return evaluateListPredicate((ListPredicateExpression) expression, result, context);
+    } else if (aggregationOverrides() != null && expression instanceof ListComprehensionExpression comprehensionExpression) {
+      return evaluateListComprehension(comprehensionExpression, result, context);
+    } else if (aggregationOverrides() != null && expression instanceof ListPredicateExpression predicateExpression) {
+      return evaluateListPredicate(predicateExpression, result, context);
     } else if (expression instanceof ListSliceExpression lse) {
       return evaluateListSlice(lse, result, context);
     }
@@ -279,8 +279,8 @@ public class ExpressionEvaluator {
       return null;
 
     final Iterable<?> iterable;
-    if (listValue instanceof Iterable)
-      iterable = (Iterable<?>) listValue;
+    if (listValue instanceof Iterable<?> iterable1)
+      iterable = iterable1;
     else
       return expression.evaluate(result, context); // fallback for arrays
 
@@ -316,8 +316,8 @@ public class ExpressionEvaluator {
       return null;
 
     final Iterable<?> iterable;
-    if (listValue instanceof Iterable)
-      iterable = (Iterable<?>) listValue;
+    if (listValue instanceof Iterable<?> iterable1)
+      iterable = iterable1;
     else
       return expression.evaluate(result, context); // fallback
 
@@ -333,7 +333,7 @@ public class ExpressionEvaluator {
 
       if (expression.getWhereExpression() != null) {
         final Object filterValue = evaluate(expression.getWhereExpression(), iterResult, context);
-        if (filterValue instanceof Boolean && (Boolean) filterValue)
+        if (filterValue instanceof Boolean boolean1 && boolean1)
           matchCount++;
       } else {
         matchCount++;
@@ -361,8 +361,8 @@ public class ExpressionEvaluator {
     final int size;
     if (isListLike)
       size = MultiValue.getSize(listValue);
-    else if (listValue instanceof String)
-      size = ((String) listValue).length();
+    else if (listValue instanceof String string)
+      size = string.length();
     else
       throw new IllegalArgumentException("Cannot slice type: " + listValue.getClass().getSimpleName());
 
@@ -417,8 +417,7 @@ public class ExpressionEvaluator {
    */
   public int evaluateSkipLimit(final Expression expr, final Result result, final CommandContext context) {
     final Object value = evaluate(expr, result, context);
-    if (value instanceof Number) {
-      final Number num = (Number) value;
+    if (value instanceof Number num) {
       if (num instanceof Float || num instanceof Double) {
         final double d = num.doubleValue();
         if (d != Math.floor(d) || Double.isInfinite(d))
@@ -429,8 +428,8 @@ public class ExpressionEvaluator {
         throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + intVal);
       return intVal;
     }
-    if (value instanceof String)
-      return Integer.parseInt((String) value);
+    if (value instanceof String string)
+      return Integer.parseInt(string);
     throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: " + (value != null ? value.getClass().getSimpleName() : "null"));
   }
 }

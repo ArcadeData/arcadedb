@@ -19,8 +19,8 @@
 package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * Returns the passed {@literal field/value} (or optional parameter {@literal return_value_if_not_null}) if

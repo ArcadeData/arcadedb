@@ -43,19 +43,19 @@ class MoreLikeThisQueryBuilderTest {
     final MoreLikeThisQueryBuilder builder = new MoreLikeThisQueryBuilder(config);
 
     // When: selecting terms from sample data
-    final Map<String, Integer> termFreqs = new HashMap<>();
-    termFreqs.put("java", 5);
-    termFreqs.put("database", 3);
-    termFreqs.put("the", 10);  // High doc freq should be filtered
-    termFreqs.put("a", 8);     // Too short, should be filtered
-    termFreqs.put("query", 1); // Below minTermFreq, should be filtered
+    final Map<String, Integer> termFreqs = new HashMap<>(Map.of(
+        "java", 5,
+        "database", 3,
+        "the", 10,  // High doc freq should be filtered
+        "a", 8,     // Too short, should be filtered
+        "query", 1)); // Below minTermFreq, should be filtered
 
-    final Map<String, Integer> docFreqs = new HashMap<>();
-    docFreqs.put("java", 10);
-    docFreqs.put("database", 5);
-    docFreqs.put("the", 60);  // 60/100 = 60% > maxDocFreqPercent
-    docFreqs.put("a", 70);
-    docFreqs.put("query", 2);
+    final Map<String, Integer> docFreqs = new HashMap<>(Map.of(
+        "java", 10,
+        "database", 5,
+        "the", 60,  // 60/100 = 60% > maxDocFreqPercent
+        "a", 70,
+        "query", 2));
 
     final int totalDocs = 100;
 
@@ -83,17 +83,17 @@ class MoreLikeThisQueryBuilderTest {
     final MoreLikeThisQueryBuilder builder = new MoreLikeThisQueryBuilder(config);
 
     // When: selecting from many terms
-    final Map<String, Integer> termFreqs = new HashMap<>();
-    termFreqs.put("java", 10);
-    termFreqs.put("database", 8);
-    termFreqs.put("query", 6);
-    termFreqs.put("index", 4);
+    final Map<String, Integer> termFreqs = new HashMap<>(Map.of(
+        "java", 10,
+        "database", 8,
+        "query", 6,
+        "index", 4));
 
-    final Map<String, Integer> docFreqs = new HashMap<>();
-    docFreqs.put("java", 5);
-    docFreqs.put("database", 10);
-    docFreqs.put("query", 15);
-    docFreqs.put("index", 20);
+    final Map<String, Integer> docFreqs = new HashMap<>(Map.of(
+        "java", 5,
+        "database", 10,
+        "query", 15,
+        "index", 20));
 
     final int totalDocs = 100;
 
@@ -104,7 +104,7 @@ class MoreLikeThisQueryBuilderTest {
     assertThat(terms.size()).isEqualTo(2);
     // "java" should have highest TF-IDF: 10 * log(100/5) = 10 * 1.301 = 13.01
     // "database" should have second highest: 8 * log(100/10) = 8 * 1.0 = 8.0
-    assertThat(terms.get(0)).isEqualTo("java");
+    assertThat(terms.getFirst()).isEqualTo("java");
     assertThat(terms.get(1)).isEqualTo("database");
   }
 
@@ -119,13 +119,13 @@ class MoreLikeThisQueryBuilderTest {
     final MoreLikeThisQueryBuilder builder = new MoreLikeThisQueryBuilder(config);
 
     // When: selecting terms with various frequencies
-    final Map<String, Integer> termFreqs = new HashMap<>();
-    termFreqs.put("frequent", 10);
-    termFreqs.put("rare", 2);
+    final Map<String, Integer> termFreqs = new HashMap<>(Map.of(
+        "frequent", 10,
+        "rare", 2));
 
-    final Map<String, Integer> docFreqs = new HashMap<>();
-    docFreqs.put("frequent", 10);
-    docFreqs.put("rare", 2);
+    final Map<String, Integer> docFreqs = new HashMap<>(Map.of(
+        "frequent", 10,
+        "rare", 2));
 
     final int totalDocs = 100;
 
@@ -134,7 +134,7 @@ class MoreLikeThisQueryBuilderTest {
 
     assertThat(terms).isNotNull();
     assertThat(terms.size()).isEqualTo(1);
-    assertThat(terms.get(0)).isEqualTo("frequent");
+    assertThat(terms.getFirst()).isEqualTo("frequent");
     assertThat(terms.contains("rare")).isFalse();
   }
 
@@ -149,13 +149,13 @@ class MoreLikeThisQueryBuilderTest {
     final MoreLikeThisQueryBuilder builder = new MoreLikeThisQueryBuilder(config);
 
     // When: selecting terms with various document frequencies
-    final Map<String, Integer> termFreqs = new HashMap<>();
-    termFreqs.put("common", 3);
-    termFreqs.put("unique", 2);
+    final Map<String, Integer> termFreqs = new HashMap<>(Map.of(
+        "common", 3,
+        "unique", 2));
 
-    final Map<String, Integer> docFreqs = new HashMap<>();
-    docFreqs.put("common", 10);
-    docFreqs.put("unique", 2);
+    final Map<String, Integer> docFreqs = new HashMap<>(Map.of(
+        "common", 10,
+        "unique", 2));
 
     final int totalDocs = 100;
 
@@ -164,7 +164,7 @@ class MoreLikeThisQueryBuilderTest {
 
     assertThat(terms).isNotNull();
     assertThat(terms.size()).isEqualTo(1);
-    assertThat(terms.get(0)).isEqualTo("common");
+    assertThat(terms.getFirst()).isEqualTo("common");
     assertThat(terms.contains("unique")).isFalse();
   }
 
@@ -180,17 +180,17 @@ class MoreLikeThisQueryBuilderTest {
     final MoreLikeThisQueryBuilder builder = new MoreLikeThisQueryBuilder(config);
 
     // When: selecting terms with various lengths
-    final Map<String, Integer> termFreqs = new HashMap<>();
-    termFreqs.put("sql", 5);           // Too short (3 < 4)
-    termFreqs.put("java", 5);          // OK (4 <= 4 <= 8)
-    termFreqs.put("database", 5);      // OK (4 <= 8 <= 8)
-    termFreqs.put("extraordinarily", 5); // Too long (15 > 8)
+    final Map<String, Integer> termFreqs = new HashMap<>(Map.of(
+        "sql", 5,           // Too short (3 < 4)
+        "java", 5,          // OK (4 <= 4 <= 8)
+        "database", 5,      // OK (4 <= 8 <= 8)
+        "extraordinarily", 5)); // Too long (15 > 8)
 
-    final Map<String, Integer> docFreqs = new HashMap<>();
-    docFreqs.put("sql", 10);
-    docFreqs.put("java", 10);
-    docFreqs.put("database", 10);
-    docFreqs.put("extraordinarily", 10);
+    final Map<String, Integer> docFreqs = new HashMap<>(Map.of(
+        "sql", 10,
+        "java", 10,
+        "database", 10,
+        "extraordinarily", 10));
 
     final int totalDocs = 100;
 
@@ -234,13 +234,13 @@ class MoreLikeThisQueryBuilderTest {
     final MoreLikeThisQueryBuilder builder = new MoreLikeThisQueryBuilder(config);
 
     // When: selecting terms
-    final Map<String, Integer> termFreqs = new HashMap<>();
-    termFreqs.put("java", 10);
-    termFreqs.put("database", 5);
+    final Map<String, Integer> termFreqs = new HashMap<>(Map.of(
+        "java", 10,
+        "database", 5));
 
-    final Map<String, Integer> docFreqs = new HashMap<>();
-    docFreqs.put("java", 5);
-    docFreqs.put("database", 10);
+    final Map<String, Integer> docFreqs = new HashMap<>(Map.of(
+        "java", 5,
+        "database", 10));
 
     final int totalDocs = 100;
 

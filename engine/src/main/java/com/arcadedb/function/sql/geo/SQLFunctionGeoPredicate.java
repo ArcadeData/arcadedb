@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.locationtech.spatial4j.shape.Shape;
 
 import java.util.ArrayList;

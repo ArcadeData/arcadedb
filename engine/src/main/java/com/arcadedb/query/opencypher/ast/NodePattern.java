@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -58,9 +57,9 @@ public class NodePattern implements PatternElement {
       final Map<String, Object> properties, final String propertiesParameterName,
       final boolean labelDisjunction) {
     this.variable = variable;
-    this.labels = labels != null ? labels : Collections.emptyList();
-    this.dynamicLabels = dynamicLabels != null ? dynamicLabels : Collections.emptyList();
-    this.properties = properties != null ? properties : Collections.emptyMap();
+    this.labels = labels != null ? labels : List.of();
+    this.dynamicLabels = dynamicLabels != null ? dynamicLabels : List.of();
+    this.properties = properties != null ? properties : Map.of();
     this.explicitProperties = properties != null || propertiesParameterName != null;
     this.propertiesParameterName = propertiesParameterName;
     this.labelDisjunction = labelDisjunction;
@@ -156,7 +155,7 @@ public class NodePattern implements PatternElement {
    * @return first label or null
    */
   public String getFirstLabel() {
-    return labels.isEmpty() ? null : labels.get(0);
+    return labels.isEmpty() ? null : labels.getFirst();
   }
 
   @Override

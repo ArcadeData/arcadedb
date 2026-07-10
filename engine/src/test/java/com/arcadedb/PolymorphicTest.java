@@ -23,6 +23,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;

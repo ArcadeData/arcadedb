@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -80,7 +81,7 @@ class UserSeedOnPeerAddScenarioIT extends ContainersTestTemplate {
     // Step B: verify alice login works on all three nodes
     logger.info("Verifying alice login on all nodes before peer-add");
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> loginOk(servers.get(0), "alice", ALICE_PASSWORD)
+        .until(() -> loginOk(servers.getFirst(), "alice", ALICE_PASSWORD)
             && loginOk(servers.get(1), "alice", ALICE_PASSWORD)
             && loginOk(servers.get(2), "alice", ALICE_PASSWORD));
 
@@ -100,7 +101,7 @@ class UserSeedOnPeerAddScenarioIT extends ContainersTestTemplate {
 
     // Step D: verify alice login still works on every node
     logger.info("Re-verifying alice login on all nodes after peer-add");
-    assertThat(loginOk(servers.get(0), "alice", ALICE_PASSWORD))
+    assertThat(loginOk(servers.getFirst(), "alice", ALICE_PASSWORD))
         .as("alice login on node 0 after peer-add").isTrue();
     assertThat(loginOk(servers.get(1), "alice", ALICE_PASSWORD))
         .as("alice login on node 1 after peer-add").isTrue();

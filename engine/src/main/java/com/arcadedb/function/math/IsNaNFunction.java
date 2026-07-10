@@ -37,8 +37,8 @@ public class IsNaNFunction implements StatelessFunction {
       throw new CommandExecutionException("isNaN() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Number)
-      return Double.isNaN(((Number) args[0]).doubleValue());
+    if (args[0] instanceof Number number)
+      return Double.isNaN(number.doubleValue());
     throw new CommandExecutionException("isNaN() requires a numeric argument");
   }
 }

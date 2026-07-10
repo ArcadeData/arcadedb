@@ -18,13 +18,13 @@
  */
 package com.arcadedb.remote;
 
-import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.HashMap;

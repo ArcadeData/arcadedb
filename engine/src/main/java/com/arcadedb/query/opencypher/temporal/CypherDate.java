@@ -99,12 +99,12 @@ public class CypherDate implements CypherTemporalValue {
     LocalDate base = null;
     if (map.containsKey("date")) {
       final Object dateVal = map.get("date");
-      if (dateVal instanceof CypherDate)
-        base = ((CypherDate) dateVal).value;
-      else if (dateVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) dateVal).getValue().toLocalDate();
-      else if (dateVal instanceof CypherDateTime)
-        base = ((CypherDateTime) dateVal).getValue().toLocalDate();
+      switch (dateVal) {
+        case CypherDate date -> base = date.value;
+        case CypherLocalDateTime time1 -> base = time1.getValue().toLocalDate();
+        case CypherDateTime time -> base = time.getValue().toLocalDate();
+        case null, default -> {}
+      }
     }
 
     // Week-based date construction
@@ -175,8 +175,8 @@ public class CypherDate implements CypherTemporalValue {
 
   @Override
   public int compareTo(final CypherTemporalValue other) {
-    if (other instanceof CypherDate)
-      return value.compareTo(((CypherDate) other).value);
+    if (other instanceof CypherDate date)
+      return value.compareTo(date.value);
     throw new IllegalArgumentException("Cannot compare Date with " + other.getClass().getSimpleName());
   }
 
@@ -198,20 +198,20 @@ public class CypherDate implements CypherTemporalValue {
   }
 
   static int toInt(final Object val) {
-    if (val instanceof Number)
-      return ((Number) val).intValue();
+    if (val instanceof Number number)
+      return number.intValue();
     return Integer.parseInt(val.toString());
   }
 
   static long toLong(final Object val) {
-    if (val instanceof Number)
-      return ((Number) val).longValue();
+    if (val instanceof Number number)
+      return number.longValue();
     return Long.parseLong(val.toString());
   }
 
   static double toDouble(final Object val) {
-    if (val instanceof Number)
-      return ((Number) val).doubleValue();
+    if (val instanceof Number number)
+      return number.doubleValue();
     return Double.parseDouble(val.toString());
   }
 }

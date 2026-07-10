@@ -21,6 +21,7 @@ package com.arcadedb.server.http;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;

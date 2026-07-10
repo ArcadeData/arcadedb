@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.log.LogManager;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

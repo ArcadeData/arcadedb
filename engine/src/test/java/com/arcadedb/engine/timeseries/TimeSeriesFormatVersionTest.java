@@ -24,6 +24,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -172,7 +173,7 @@ class TimeSeriesFormatVersionTest {
 
       final List<Object[]> results = store.scanRange(1000L, 3000L, null, null);
       assertThat(results).hasSize(3);
-      assertThat((double) results.get(0)[1]).isEqualTo(10.0);
+      assertThat((double) results.getFirst()[1]).isEqualTo(10.0);
       assertThat((double) results.get(2)[1]).isEqualTo(30.0);
 
       // Verify aggregation still uses block stats correctly
@@ -185,7 +186,7 @@ class TimeSeriesFormatVersionTest {
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
       store.aggregateMultiBlocks(1000L, 3000L, requests, 3600000L, result, null, null);
 
-      final long bucket = result.getBucketTimestamps().get(0);
+      final long bucket = result.getBucketTimestamps().getFirst();
       assertThat(result.getValue(bucket, 0)).isEqualTo(60.0);  // SUM
       assertThat(result.getValue(bucket, 1)).isEqualTo(10.0);  // MIN
       assertThat(result.getValue(bucket, 2)).isEqualTo(30.0);  // MAX

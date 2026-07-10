@@ -23,6 +23,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.ContinuousAggregate;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

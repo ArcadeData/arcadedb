@@ -26,6 +26,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.select.SelectIterator;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -61,9 +62,7 @@ class RecordRecyclingTest {
       RID maxEdgeRID = null;
 
       for (int i = 0; i < CYCLES; i++) {
-        final Database db = databaseFactory.open();
-
-        try {
+        try (final Database db = databaseFactory.open()) {
           db.transaction(() -> {
             final MutableVertex root = db.newVertex(VERTEX_TYPE)//
                 .set("id", 0)//
@@ -109,7 +108,6 @@ class RecordRecyclingTest {
           final ResultSet result = db.command("sql", "check database");
           // System.out.println(result.nextIfAvailable().toJSON());
         } finally {
-          db.close();
           new File(databaseFactory.getDatabasePath() + File.separator + STATISTICS_FILE_NAME).delete();
           assertThat(databaseFactory.getActiveDatabaseInstances()).isEmpty();
         }

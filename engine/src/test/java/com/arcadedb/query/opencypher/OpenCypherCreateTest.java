@@ -6,6 +6,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -238,10 +239,10 @@ class OpenCypherCreateTest {
     database.getSchema().createVertexType("User");
 
     database.transaction(() -> {
-      final Map<String, Object> props = new HashMap<>();
-      props.put("name", "Alice");
-      props.put("id", 42);
-      props.put("userType", "ADMIN");
+      final Map<String, Object> props = new HashMap<>(Map.of(
+          "name", "Alice",
+          "id", 42,
+          "userType", "ADMIN"));
 
       final Map<String, Object> params = new HashMap<>();
       params.put("props", props);
@@ -270,9 +271,9 @@ class OpenCypherCreateTest {
 
     database.transaction(() -> {
       // Test using individual parameter references in map syntax
-      final Map<String, Object> params = new HashMap<>();
-      params.put("name", "Bob");
-      params.put("age", 25);
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "name", "Bob",
+          "age", 25));
 
       final ResultSet result = database.command("opencypher",
           "CREATE (n:User {name: $name, age: $age}) RETURN n", params);

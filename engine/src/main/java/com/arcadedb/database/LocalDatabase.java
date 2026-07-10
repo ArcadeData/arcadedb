@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
@@ -111,7 +112,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -1141,7 +1141,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     try {
       final List<IndexInternal> indexes = record instanceof Document d ? indexer.getInvolvedIndexes(d) :
-          Collections.emptyList();
+          List.of();
 
       if (!indexes.isEmpty()) {
         // UPDATE THE INDEXES TOO
@@ -1214,8 +1214,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // Proceed with the physical deletion anyway so the stuck record can finally be removed; leftover index/external
           // entries are best-effort and a database check can repair them afterwards.
           LogManager.instance().log(this, Level.WARNING,
-              "Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; "
-                  + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());
+              """
+              Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; \
+              run a database check to repair any dangling index entries.""", record.getIdentity(), e.getMessage());
         }
       }
 

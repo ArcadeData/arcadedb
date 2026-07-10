@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -51,7 +52,7 @@ class TimeSeriesEngineTest extends TestHelper {
     assertThat(results).hasSize(3);
 
     // Results should be sorted by timestamp
-    assertThat((long) results.get(0)[0]).isEqualTo(1000L);
+    assertThat((long) results.getFirst()[0]).isEqualTo(1000L);
     assertThat((long) results.get(1)[0]).isEqualTo(2000L);
     assertThat((long) results.get(2)[0]).isEqualTo(3000L);
     database.commit();
@@ -98,7 +99,7 @@ class TimeSeriesEngineTest extends TestHelper {
     final TagFilter filter = TagFilter.eq(0, "B");
     final List<Object[]> results = engine.query(1000L, 4000L, null, filter);
     assertThat(results).hasSize(2);
-    assertThat((String) results.get(0)[1]).isEqualTo("B");
+    assertThat((String) results.getFirst()[1]).isEqualTo("B");
     assertThat((String) results.get(1)[1]).isEqualTo("B");
     database.commit();
 

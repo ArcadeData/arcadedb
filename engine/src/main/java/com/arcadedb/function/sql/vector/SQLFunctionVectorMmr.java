@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -244,7 +243,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
 
   private static List<RidScore> materializeCandidates(final Object src) {
     if (src == null)
-      return Collections.emptyList();
+      return List.of();
     if (!(src instanceof Iterable<?> iter))
       throw new CommandSQLParsingException(NAME + " 1st argument must be an iterable of scored rows, got "
           + src.getClass().getSimpleName());

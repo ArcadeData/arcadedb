@@ -77,6 +77,11 @@
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
 
+        <rewrite-maven-plugin.version>6.43.0</rewrite-maven-plugin.version>
+        <rewrite-static-analysis.version>2.38.0</rewrite-static-analysis.version>
+        <rewrite-migrate-java.version>3.39.0</rewrite-migrate-java.version>
+        <rewrite-testing-frameworks.version>3.41.0</rewrite-testing-frameworks.version>
+
         <testcontainers.version>2.0.5</testcontainers.version>
         <logback-classic.version>1.5.37</logback-classic.version>
         <micrometer.version>1.17.0</micrometer.version>
@@ -101,7 +106,7 @@
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.35.1</protobuf-java.version>
         <com.google.api.grpc.version>2.73.0</com.google.api.grpc.version>
-        <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
+        <javax.annotation-api.version>1.3.5</javax.annotation-api.version>
 
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
     </properties>
@@ -205,7 +210,7 @@
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
                     <!-- ADD THIS LINE TO SKIP BENCHMARKS BY DEFAULT -->
-<!--                    <excludedGroups>benchmark</excludedGroups>-->
+                    <!--                    <excludedGroups>benchmark</excludedGroups>-->
                     <properties>
                         <!-- Work around. Surefire does not include enough
                              information to disambiguate between different
@@ -360,6 +365,34 @@
                     </excludedLicenses>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.openrewrite.maven</groupId>
+                <artifactId>rewrite-maven-plugin</artifactId>
+                <version>${rewrite-maven-plugin.version}</version>
+                <configuration>
+                    <activeRecipes>
+                        <recipe>com.arcadedb.GeneralCleanup</recipe>
+                    </activeRecipes>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.openrewrite.recipe</groupId>
+                        <artifactId>rewrite-static-analysis</artifactId>
+                        <version>${rewrite-static-analysis.version}</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>org.openrewrite.recipe</groupId>
+                        <artifactId>rewrite-migrate-java</artifactId>
+                        <version>RELEASE</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>org.openrewrite.recipe</groupId>
+                        <artifactId>rewrite-testing-frameworks</artifactId>
+                        <version>${rewrite-testing-frameworks.version}</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+
         </plugins>
 
         <pluginManagement>

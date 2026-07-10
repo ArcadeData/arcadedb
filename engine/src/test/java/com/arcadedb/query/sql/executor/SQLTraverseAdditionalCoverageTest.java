@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -68,7 +69,7 @@ class SQLTraverseAdditionalCoverageTest extends TestHelper {
       }
       assertThat(depths).hasSize(5);
       // BFS: root at depth 0
-      assertThat(depths.get(0)).isEqualTo(0);
+      assertThat(depths.getFirst()).isEqualTo(0);
       // All depths should be present: 0, 1, 2
       assertThat(depths).contains(0, 1, 2);
       rs.close();
@@ -103,7 +104,7 @@ class SQLTraverseAdditionalCoverageTest extends TestHelper {
         names.add(item.getProperty("name"));
       }
       assertThat(names).hasSize(4);
-      assertThat(names.get(0)).isEqualTo("a"); // root always first
+      assertThat(names.getFirst()).isEqualTo("a"); // root always first
       // DFS goes deep before wide
       rs.close();
     });
@@ -246,7 +247,7 @@ class SQLTraverseAdditionalCoverageTest extends TestHelper {
       while (rs.hasNext())
         names.add(rs.next().getProperty("name"));
       assertThat(names).hasSize(4);
-      assertThat(names.get(0)).isEqualTo("n3");
+      assertThat(names.getFirst()).isEqualTo("n3");
       rs.close();
     });
   }

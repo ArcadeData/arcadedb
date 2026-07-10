@@ -31,21 +31,14 @@ import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.ConnectException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpConnectTimeoutException;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
+import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -276,7 +269,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     String gatewaySessionId = null;
 
     try (InputStream body = response.body();
-         BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+         BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8)); output) {
       String line;
       while ((line = reader.readLine()) != null) {
         if (!line.startsWith("data: "))
@@ -351,8 +344,6 @@ public class AiChatHandler extends AbstractServerHttpHandler {
             forwardEvent(output, event);
         }
       }
-    } finally {
-      try { output.close(); } catch (final Exception ignored) {}
     }
 
     // Save chat history from the done event

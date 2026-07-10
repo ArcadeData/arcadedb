@@ -26,6 +26,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -102,18 +103,21 @@ class AlgoGhostEdgeTest {
 
     // allSimplePaths expands live edges from A to C.
     assertProcedureDoesNotThrow(
-        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
-            + "CALL algo.allSimplePaths(a, c, ['LINK'], 10) YIELD path RETURN path");
+        """
+        MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) \
+        CALL algo.allSimplePaths(a, c, ['LINK'], 10) YIELD path RETURN path""");
 
     // dijkstra iterates live edges to rebuild the path / read weights.
     assertProcedureDoesNotThrow(
-        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
-            + "CALL algo.dijkstra(a, c, 'LINK', 'w') YIELD path, weight RETURN path, weight");
+        """
+        MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) \
+        CALL algo.dijkstra(a, c, 'LINK', 'w') YIELD path, weight RETURN path, weight""");
 
     // path.expand is an APOC-style traversal over live edges (procedures/path/PathExpand).
     assertProcedureDoesNotThrow(
-        "MATCH (a:Node {name:'A'}) "
-            + "CALL path.expand(a, 'LINK', null, 1, 10) YIELD path RETURN path");
+        """
+        MATCH (a:Node {name:'A'}) \
+        CALL path.expand(a, 'LINK', null, 1, 10) YIELD path RETURN path""");
   }
 
   /**
@@ -158,16 +162,19 @@ class AlgoGhostEdgeTest {
     // algo.msa (directed minimum spanning arborescence, Chu-Liu/Edmonds) is rooted at A and reaches B only
     // via A's ghost out-edge: distinct from algo.mst (undirected MST) above, so it needs its own smoke run.
     assertProcedureDoesNotThrow(
-        "MATCH (a:Node {name:'A'}) "
-            + "CALL algo.msa(a, 'LINK', 'w') YIELD source, target, weight RETURN count(*) AS c");
+        """
+        MATCH (a:Node {name:'A'}) \
+        CALL algo.msa(a, 'LINK', 'w') YIELD source, target, weight RETURN count(*) AS c""");
 
     // Source/target path algorithms whose start node (A) reaches its neighbor only via the ghost edge.
     assertProcedureDoesNotThrow(
-        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
-            + "CALL algo.kShortestPaths(a, c, 2, 'LINK', 'w') YIELD weight RETURN count(*) AS c");
+        """
+        MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) \
+        CALL algo.kShortestPaths(a, c, 2, 'LINK', 'w') YIELD weight RETURN count(*) AS c""");
     assertProcedureDoesNotThrow(
-        "MATCH (s:Node {name:'A'}), (t:Node {name:'C'}) "
-            + "CALL algo.maxFlow(s, t, 'LINK', 'w') YIELD maxFlow RETURN maxFlow");
+        """
+        MATCH (s:Node {name:'A'}), (t:Node {name:'C'}) \
+        CALL algo.maxFlow(s, t, 'LINK', 'w') YIELD maxFlow RETURN maxFlow""");
 
     // SQL graph functions (bellmanFord, duanSSSP) iterate live edges via getEdges() too.
     final RID a;

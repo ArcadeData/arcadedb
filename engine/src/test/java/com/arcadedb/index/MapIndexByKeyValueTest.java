@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -91,9 +92,9 @@ public class MapIndexByKeyValueTest extends TestHelper {
     database.transaction(() -> database.command("sql", "CREATE INDEX ON Movie (thumbs BY KEY) NOTUNIQUE"));
 
     database.transaction(() -> {
-      final Map<String, Object> t1 = new HashMap<>();
-      t1.put("poster", "p1.png");
-      t1.put("banner", "b1.png");
+      final Map<String, Object> t1 = new HashMap<>(Map.of(
+          "poster", "p1.png",
+          "banner", "b1.png"));
       final MutableDocument m1 = database.newDocument("Movie");
       m1.set("title", "M1");
       m1.set("thumbs", t1);
@@ -138,9 +139,9 @@ public class MapIndexByKeyValueTest extends TestHelper {
       m1.set("thumbs", t1);
       m1.save();
 
-      final Map<String, Object> t2 = new HashMap<>();
-      t2.put("banner", "shared.png");
-      t2.put("poster", "unique.png");
+      final Map<String, Object> t2 = new HashMap<>(Map.of(
+          "banner", "shared.png",
+          "poster", "unique.png"));
       final MutableDocument m2 = database.newDocument("Movie");
       m2.set("title", "M2");
       m2.set("thumbs", t2);
@@ -206,9 +207,9 @@ public class MapIndexByKeyValueTest extends TestHelper {
   @Test
   void byKeyByValueIndexBuiltOverExistingData() {
     database.transaction(() -> {
-      final Map<String, Object> t1 = new HashMap<>();
-      t1.put("poster", "p1.png");
-      t1.put("banner", "b1.png");
+      final Map<String, Object> t1 = new HashMap<>(Map.of(
+          "poster", "p1.png",
+          "banner", "b1.png"));
       final MutableDocument m1 = database.newDocument("Movie");
       m1.set("title", "M1");
       m1.set("thumbs", t1);

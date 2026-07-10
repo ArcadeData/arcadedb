@@ -209,7 +209,7 @@ public class GraphEngine {
                              final boolean bidirectional) {
 
     if (connections == null || connections.isEmpty())
-      return Collections.emptyList();
+      return List.of();
 
     final RID sourceVertexRID = sourceVertex.getIdentity();
 
@@ -555,10 +555,9 @@ public class GraphEngine {
 
   public IterableGraph<Edge> getEdges(final VertexInternal vertex, final Vertex.DIRECTION direction,
                                       final String... edgeTypes) {
-    if (direction == null)
-      throw new IllegalArgumentException("Direction is null");
 
     switch (direction) {
+      case null: throw new IllegalArgumentException("Direction is null");
       case BOTH: {
         final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
         final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
@@ -659,10 +658,9 @@ public class GraphEngine {
    */
   public IterableGraph<Vertex> getVertices(final VertexInternal vertex, final Vertex.DIRECTION direction,
                                            final String... edgeTypes) {
-    if (direction == null)
-      throw new IllegalArgumentException("Direction is null");
 
     switch (direction) {
+      case null: throw new IllegalArgumentException("Direction is null");
       case BOTH: {
         final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
         final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
@@ -736,10 +734,9 @@ public class GraphEngine {
    */
   public Iterable<RID> getConnectedVertexRIDs(final VertexInternal vertex, final Vertex.DIRECTION direction,
                                                final String... edgeTypes) {
-    if (direction == null)
-      throw new IllegalArgumentException("Direction is null");
 
     switch (direction) {
+      case null: throw new IllegalArgumentException("Direction is null");
       case BOTH: {
         final MultiIterator<RID> result = new MultiIterator<>();
         final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
@@ -768,7 +765,7 @@ public class GraphEngine {
       default:
         throw new IllegalArgumentException("Invalid direction " + direction);
     }
-    return Collections.emptyList();
+    return List.of();
   }
 
   public RID getFirstEdgeConnectedToVertex(final VertexInternal vertex, final Identifiable toVertex,

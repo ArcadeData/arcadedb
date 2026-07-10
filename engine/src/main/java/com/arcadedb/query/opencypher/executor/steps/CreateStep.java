@@ -28,15 +28,15 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.CreateClause;
+import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
-import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.*;
 
@@ -313,8 +313,8 @@ public class CreateStep extends AbstractExecutionStep {
         // Check if vertex already exists in result (from MATCH)
         if (nodePattern.getVariable() != null) {
           final Object existing = result.getProperty(nodePattern.getVariable());
-          if (existing instanceof Vertex) {
-            vertex = (Vertex) existing;
+          if (existing instanceof Vertex vertex1) {
+            vertex = vertex1;
           }
         }
 
@@ -353,7 +353,7 @@ public class CreateStep extends AbstractExecutionStep {
 
       // Build and assign path variable if specified (e.g., CREATE p=(...)-[...]->(...))
       if (pathPattern.hasPathVariable()) {
-        final TraversalPath path = new TraversalPath(vertices.get(0));
+        final TraversalPath path = new TraversalPath(vertices.getFirst());
         for (int i = 0; i < edges.size(); i++)
           path.addStep(edges.get(i), vertices.get(i + 1));
         result.setProperty(pathPattern.getPathVariable(), path);
@@ -476,13 +476,12 @@ public class CreateStep extends AbstractExecutionStep {
       Object value = entry.getValue();
 
       // Resolve parameter references
-      if (value instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
+      if (value instanceof CypherASTBuilder.ParameterReference reference) {
+        final String paramName = reference.getName();
         value = context.getInputParameters().get(paramName);
       }
       // Evaluate Expression objects (e.g., property access, function calls like rand())
-      else if (value instanceof Expression) {
-        final Expression expr = (Expression) value;
+      else if (value instanceof Expression expr) {
         if (evaluator != null)
           value = evaluator.evaluate(expr, currentResult, context);
         else
@@ -536,13 +535,12 @@ public class CreateStep extends AbstractExecutionStep {
       Object value = entry.getValue();
 
       // Resolve parameter references
-      if (value instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
+      if (value instanceof CypherASTBuilder.ParameterReference reference) {
+        final String paramName = reference.getName();
         value = context.getInputParameters().get(paramName);
       }
       // Evaluate Expression objects (e.g., property access, function calls like rand())
-      else if (value instanceof Expression) {
-        final Expression expr = (Expression) value;
+      else if (value instanceof Expression expr) {
         if (evaluator != null)
           value = evaluator.evaluate(expr, currentResult, context);
         else

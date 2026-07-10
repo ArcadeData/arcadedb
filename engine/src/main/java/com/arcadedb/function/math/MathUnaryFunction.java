@@ -47,8 +47,8 @@ public class MathUnaryFunction implements StatelessFunction {
       throw new CommandExecutionException(name + "() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Number) {
-      final double result = op.applyAsDouble(((Number) args[0]).doubleValue());
+    if (args[0] instanceof Number number) {
+      final double result = op.applyAsDouble(number.doubleValue());
       // Return integer type only when the result is a whole number that fits in a long.
       // Without the range guard, large doubles (e.g. 1e30) saturate to Long.MAX_VALUE on cast.
       if (result >= Long.MIN_VALUE && result <= Long.MAX_VALUE

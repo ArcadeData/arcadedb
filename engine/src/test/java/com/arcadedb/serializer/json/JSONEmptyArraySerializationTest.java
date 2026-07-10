@@ -19,17 +19,18 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Stack;
 import java.util.TreeSet;
 import java.util.Vector;
@@ -81,11 +82,11 @@ class JSONEmptyArraySerializationTest extends TestHelper {
   @Test
   void jsonObjectFromMapWithEmptyCollections() {
     // Test creating JSONObject from Map containing empty collections
-    Map<String, Object> data = new HashMap<>();
-    data.put("attributes", new ArrayList<>());
-    data.put("tags", new HashSet<>());
-    data.put("values", new Object[0]);
-    data.put("items", Collections.emptyList());
+    Map<String, Object> data = new HashMap<>(Map.of(
+        "attributes", new ArrayList<>(),
+        "tags", new HashSet<>(),
+        "values", new Object[0],
+        "items", List.of()));
 
     // This should not throw an exception
     JSONObject json = new JSONObject(data);
@@ -114,7 +115,7 @@ class JSONEmptyArraySerializationTest extends TestHelper {
     JSONArray outerArray = new JSONArray();
     outerArray.put(new ArrayList<>());
     outerArray.put(new Object[0]);
-    outerArray.put(Collections.emptySet());
+    outerArray.put(Set.of());
 
     // Verify the array was created correctly
     assertThat(outerArray.length()).isEqualTo(3);
@@ -137,7 +138,7 @@ class JSONEmptyArraySerializationTest extends TestHelper {
     json.put("nonEmptyArray", Arrays.asList(1, 2, 3));
     json.put("emptyArray", new ArrayList<>());
     json.put("anotherNonEmpty", Arrays.asList("a", "b"));
-    json.put("anotherEmpty", Collections.emptySet());
+    json.put("anotherEmpty", Set.of());
 
     // Verify the object was created correctly
     assertThat(json.getJSONArray("nonEmptyArray").length()).isEqualTo(3);
@@ -183,7 +184,7 @@ class JSONEmptyArraySerializationTest extends TestHelper {
   void emptyCollectionsSerialization() {
     // Test that empty collections serialize correctly to JSON strings
     JSONObject json = new JSONObject();
-    json.put("empty", Collections.emptyList());
+    json.put("empty", List.of());
 
     String jsonString = json.toString();
     assertThat(jsonString).contains("\"empty\":[]");

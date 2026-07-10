@@ -44,9 +44,9 @@ public class SQLTriggerExecutor implements TriggerExecutor {
   public boolean execute(final Database database, final Record record, final Record oldRecord) {
     try {
       // Prepare context variables for SQL execution
-      final Map<String, Object> params = new HashMap<>();
-      params.put("record", record);
-      params.put("$record", record);
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "record", record,
+          "$record", record));
       if (oldRecord != null) {
         params.put("oldRecord", oldRecord);
         params.put("$oldRecord", oldRecord);

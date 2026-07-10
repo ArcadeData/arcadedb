@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 

@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -99,7 +100,7 @@ class AnchorSelectorTest {
     statistics.setCardinality("Person", 10000);
 
     // Create logical plan with node having no properties
-    final LogicalPlan plan = createPlanWithNode("p", "Person", Collections.emptyMap());
+    final LogicalPlan plan = createPlanWithNode("p", "Person", Map.of());
 
     // When: Select anchor
     final AnchorSelection anchor = anchorSelector.selectAnchor(plan);
@@ -260,7 +261,7 @@ class AnchorSelectorTest {
     statistics.addIndex(index);
 
     final LogicalNode node = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.emptyMap());
+        Map.of());
 
     // When: Check if should use index
     final boolean shouldUse = anchorSelector.shouldUseIndex(node, "Person");
@@ -360,7 +361,7 @@ class AnchorSelectorTest {
 
     @Override
     public List<IndexStatistics> getIndexesForType(final String typeName) {
-      return indexes.getOrDefault(typeName, Collections.emptyList());
+      return indexes.getOrDefault(typeName, List.of());
     }
   }
 }

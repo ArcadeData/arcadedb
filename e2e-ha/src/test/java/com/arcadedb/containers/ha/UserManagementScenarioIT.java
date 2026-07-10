@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -64,25 +65,25 @@ class UserManagementScenarioIT extends ContainersTestTemplate {
         .put("password", ALICE_PASSWORD)
         .put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
     logger.info("Creating user alice on leader");
-    final int createStatus = postServerCommandAsRoot(servers.get(0), "create user " + alice.toString(), 30_000);
+    final int createStatus = postServerCommandAsRoot(servers.getFirst(), "create user " + alice.toString(), 30_000);
     assertThat(createStatus).as("create user HTTP status").isEqualTo(200);
 
     // Step B: await until alice can log in on every node
     logger.info("Awaiting alice login propagation");
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> loginOk(servers.get(0), "alice", ALICE_PASSWORD)
+        .until(() -> loginOk(servers.getFirst(), "alice", ALICE_PASSWORD)
             && loginOk(servers.get(1), "alice", ALICE_PASSWORD)
             && loginOk(servers.get(2), "alice", ALICE_PASSWORD));
 
     // Step C: drop alice on the leader
     logger.info("Dropping user alice on leader");
-    final int dropStatus = postServerCommandAsRoot(servers.get(0), "drop user alice", 30_000);
+    final int dropStatus = postServerCommandAsRoot(servers.getFirst(), "drop user alice", 30_000);
     assertThat(dropStatus).as("drop user HTTP status").isEqualTo(200);
 
     // Step D: await until alice can no longer log in on any node
     logger.info("Awaiting alice login rejection propagation");
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> !loginOk(servers.get(0), "alice", ALICE_PASSWORD)
+        .until(() -> !loginOk(servers.getFirst(), "alice", ALICE_PASSWORD)
             && !loginOk(servers.get(1), "alice", ALICE_PASSWORD)
             && !loginOk(servers.get(2), "alice", ALICE_PASSWORD));
   }

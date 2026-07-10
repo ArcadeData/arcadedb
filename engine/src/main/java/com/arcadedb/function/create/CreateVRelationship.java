@@ -68,12 +68,12 @@ public class CreateVRelationship extends AbstractCreateFunction {
         : new HashMap<>();
 
     // Create a virtual relationship representation
-    final Map<String, Object> vRel = new HashMap<>();
-    vRel.put("_type", "vRelationship");
-    vRel.put("_id", "vRel:" + (++virtualIdCounter));
-    vRel.put("_relType", type);
-    vRel.put("_start", getNodeId(fromNode));
-    vRel.put("_end", getNodeId(toNode));
+    final Map<String, Object> vRel = new HashMap<>(Map.of(
+        "_type", "vRelationship",
+        "_id", "vRel:" + (++virtualIdCounter),
+        "_relType", type,
+        "_start", getNodeId(fromNode),
+        "_end", getNodeId(toNode)));
     vRel.putAll(properties);
 
     return vRel;
@@ -83,14 +83,13 @@ public class CreateVRelationship extends AbstractCreateFunction {
     if (node == null)
       return null;
 
-    if (node instanceof Vertex)
-      return ((Vertex) node).getIdentity().toString();
+    if (node instanceof Vertex vertex)
+      return vertex.getIdentity().toString();
 
-    if (node instanceof Document)
-      return ((Document) node).getIdentity().toString();
+    if (node instanceof Document document)
+      return document.getIdentity().toString();
 
-    if (node instanceof Map) {
-      final Map<?, ?> map = (Map<?, ?>) node;
+    if (node instanceof Map<?, ?> map) {
       if (map.containsKey("_id"))
         return map.get("_id");
     }

@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
@@ -191,10 +192,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       return null;
 
     final byte[] bytes;
-    try {
+    try (file) {
       bytes = FileUtils.readStreamAsBinary(file).toByteArray();
-    } finally {
-      file.close();
     }
 
     if (STATIC_CONTENT_CACHE.size() < STATIC_CACHE_MAX_ENTRIES) {

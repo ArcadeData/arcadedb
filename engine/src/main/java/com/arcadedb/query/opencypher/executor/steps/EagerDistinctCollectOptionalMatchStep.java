@@ -116,9 +116,9 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
             for (final String varName : collectDistinctVariables) {
               final Object value = matchResult.getProperty(varName);
               if (value != null) {
-                if (value instanceof Identifiable) {
+                if (value instanceof Identifiable identifiable) {
                   // Use RID for identity to handle same record loaded multiple times
-                  distinctSets.get(varName).add(new IdentifiableWrapper((Identifiable) value));
+                  distinctSets.get(varName).add(new IdentifiableWrapper(identifiable));
                 } else {
                   distinctSets.get(varName).add(value);
                 }
@@ -142,8 +142,8 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
             final Set<Object> distinctSet = distinctSets.get(varName);
             final List<Object> list = new ArrayList<>(distinctSet.size());
             for (final Object value : distinctSet) {
-              if (value instanceof IdentifiableWrapper) {
-                list.add(((IdentifiableWrapper) value).getIdentifiable());
+              if (value instanceof IdentifiableWrapper wrapper) {
+                list.add(wrapper.getIdentifiable());
               } else {
                 list.add(value);
               }
@@ -182,8 +182,8 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
         for (final String varName : collectDistinctVariables) {
           final Object value = matchResult.getProperty(varName);
           if (value != null) {
-            if (value instanceof Identifiable) {
-              distinctSets.get(varName).add(new IdentifiableWrapper((Identifiable) value));
+            if (value instanceof Identifiable identifiable1) {
+              distinctSets.get(varName).add(new IdentifiableWrapper(identifiable1));
             } else {
               distinctSets.get(varName).add(value);
             }
@@ -198,8 +198,8 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
         final Set<Object> distinctSet = distinctSets.get(varName);
         final List<Object> list = new ArrayList<>(distinctSet.size());
         for (final Object value : distinctSet) {
-          if (value instanceof IdentifiableWrapper) {
-            list.add(((IdentifiableWrapper) value).getIdentifiable());
+          if (value instanceof IdentifiableWrapper wrapper1) {
+            list.add(wrapper1.getIdentifiable());
           } else {
             list.add(value);
           }

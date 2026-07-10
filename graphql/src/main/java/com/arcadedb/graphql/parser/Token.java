@@ -138,10 +138,10 @@ implements Serializable {
    */
   public static Token newToken(final int ofKind, final String image)
   {
-    switch(ofKind)
+    return switch(ofKind)
     {
-      default : return new Token(ofKind, image);
-    }
+      default  -> new Token(ofKind, image);
+    };
   }
 
   public static Token newToken(final int ofKind)

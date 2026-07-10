@@ -27,6 +27,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -526,9 +527,9 @@ class LSMVectorIndexStorageBenchmark {
           System.out.println("  Exact search returned: " + exactResults.size() + " results");
           System.out.println("  Approx search returned: " + approxResults.size() + " results");
           if (!exactResults.isEmpty())
-            System.out.println("  Exact top result: RID=" + exactResults.get(0).getFirst() + ", dist=" + exactResults.get(0).getSecond());
+            System.out.println("  Exact top result: RID=" + exactResults.getFirst().getFirst() + ", dist=" + exactResults.getFirst().getSecond());
           if (!approxResults.isEmpty())
-            System.out.println("  Approx top result: RID=" + approxResults.get(0).getFirst() + ", dist=" + approxResults.get(0).getSecond());
+            System.out.println("  Approx top result: RID=" + approxResults.getFirst().getFirst() + ", dist=" + approxResults.getFirst().getSecond());
           // Check overlap
           final var exactRIDs = exactResults.stream().map(p -> p.getFirst().toString()).collect(Collectors.toSet());
           final var approxRIDs = approxResults.stream().map(p -> p.getFirst().toString()).collect(Collectors.toSet());

@@ -39,6 +39,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+
 import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
 
 import java.util.ArrayDeque;
@@ -1062,9 +1063,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // fired, and the WARNING below gives operators the reason should a waiter hang.
       LogManager.instance()
           .log(DatabaseAsyncExecutorImpl.class, Level.WARNING,
-              "Asynchronous task %s was scheduled on a worker that already shut down and cannot be removed from its "
-                  + "'fast' queue: its completion will never be notified. Use the 'standard' async queue implementation "
-                  + "to close this window", task);
+              """
+              Asynchronous task %s was scheduled on a worker that already shut down and cannot be removed from its \
+              'fast' queue: its completion will never be notified. Use the 'standard' async queue implementation \
+              to close this window""", task);
       return false;
     }
   }

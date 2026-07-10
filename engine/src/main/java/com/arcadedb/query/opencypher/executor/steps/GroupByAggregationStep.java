@@ -77,8 +77,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
 
     for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
       final Expression expr = item.getExpression();
-      if (expr.isAggregation() && expr instanceof FunctionCallExpression) {
-        aggregationItems.add(new AggregationItem(item.getOutputName(), (FunctionCallExpression) expr));
+      if (expr.isAggregation() && expr instanceof FunctionCallExpression expression) {
+        aggregationItems.add(new AggregationItem(item.getOutputName(), expression));
       } else if (expr.containsAggregation()) {
         // Complex expression containing aggregations (arithmetic, function wrapping, etc.)
         final Map<String, FunctionCallExpression> innerAggs = new HashMap<>();
@@ -109,7 +109,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final List<Result> results;
 
     if (singleKeyPath) {
-      results = aggregateSingleKey(groupingKeys.get(0), aggExpressions, aggOutputNames, aggCount, context);
+      results = aggregateSingleKey(groupingKeys.getFirst(), aggExpressions, aggOutputNames, aggCount, context);
     } else {
       results = aggregateMultiKey(groupingKeys, aggregationItems, complexAggregationItems,
           aggExpressions, aggOutputNames, aggCount, context);

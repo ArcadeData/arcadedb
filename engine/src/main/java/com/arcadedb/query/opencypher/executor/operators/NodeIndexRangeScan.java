@@ -291,9 +291,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   @SuppressWarnings("unchecked")
   private static int compareValues(final Object value1, final Object value2) {
     // Handle numeric comparisons with type coercion
-    if (value1 instanceof Number && value2 instanceof Number) {
-      final Number n1 = (Number) value1;
-      final Number n2 = (Number) value2;
+    if (value1 instanceof Number n1 && value2 instanceof Number n2) {
 
       // Compare as doubles to handle mixed types (Integer, Long, Float, Double)
       return Double.compare(n1.doubleValue(), n2.doubleValue());
@@ -306,9 +304,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     if (value1 instanceof Temporal || value1 instanceof Date || value2 instanceof Temporal || value2 instanceof Date) {
       final Object t1 = TemporalUtil.fromCoreJavaType(value1);
       final Object t2 = TemporalUtil.fromCoreJavaType(value2);
-      if (t1 instanceof CypherTemporalValue && t2 instanceof CypherTemporalValue) {
+      if (t1 instanceof CypherTemporalValue value && t2 instanceof CypherTemporalValue value3) {
         try {
-          return ((CypherTemporalValue) t1).compareTo((CypherTemporalValue) t2);
+          return value.compareTo(value3);
         } catch (final IllegalArgumentException e) {
           // Different temporal granularities are not orderable: keep scanning and let FilterOperator decide.
           return -1;

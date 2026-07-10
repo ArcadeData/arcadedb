@@ -21,12 +21,7 @@ package com.arcadedb.bolt;
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
-import com.arcadedb.bolt.structure.BoltNode;
-import com.arcadedb.bolt.structure.BoltPath;
-import com.arcadedb.bolt.structure.BoltRelationship;
-import com.arcadedb.bolt.structure.BoltStructureMapper;
-import com.arcadedb.bolt.structure.BoltTemporalStructure;
-import com.arcadedb.bolt.structure.BoltUnboundRelationship;
+import com.arcadedb.bolt.structure.*;
 import com.arcadedb.database.RID;
 
 import org.junit.jupiter.api.Test;
@@ -34,15 +29,9 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.OffsetDateTime;
-import java.time.OffsetTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
+import java.nio.charset.StandardCharsets;
+import java.sql.Time;
+import java.time.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
@@ -68,7 +57,7 @@ class BoltStructureTest {
   // ============ BoltNode tests ============
 
   @Test
-  void boltNodeCreation() throws IOException {
+  void boltNodeCreation() throws Exception {
     final BoltNode node = new BoltNode(123L, List.of("Person", "Employee"), Map.of("name", "Alice"), "#1:0");
 
     final byte[] header = wireHeader(node);
@@ -112,7 +101,7 @@ class BoltStructureTest {
   // ============ BoltRelationship tests ============
 
   @Test
-  void boltRelationshipCreation() throws IOException {
+  void boltRelationshipCreation() throws Exception {
     final BoltRelationship rel = new BoltRelationship(
         100L, 1L, 2L, "KNOWS", Map.of("since", 2020), "#10:0", "#1:0", "#2:0"
     );
@@ -163,7 +152,7 @@ class BoltStructureTest {
   // ============ BoltUnboundRelationship tests ============
 
   @Test
-  void boltUnboundRelationshipCreation() throws IOException {
+  void boltUnboundRelationshipCreation() throws Exception {
     final BoltUnboundRelationship rel = new BoltUnboundRelationship(1L, "FRIEND", Map.of("weight", 0.5), "#1:0");
 
     final byte[] header = wireHeader(rel);
@@ -205,7 +194,7 @@ class BoltStructureTest {
   // ============ BoltPath tests ============
 
   @Test
-  void boltPathCreation() throws IOException {
+  void boltPathCreation() throws Exception {
     final List<BoltNode> nodes = List.of(
         new BoltNode(1L, List.of("A"), Map.of(), "#1:0"),
         new BoltNode(2L, List.of("B"), Map.of(), "#2:0")
@@ -226,7 +215,7 @@ class BoltStructureTest {
   }
 
   @Test
-  void versionGatedStructuresEmitBolt5HeaderShape() throws IOException {
+  void versionGatedStructuresEmitBolt5HeaderShape() throws Exception {
     // On Bolt >= 5 the version-gated structs append element_id fields, so writeTo() must emit a wider
     // header than the 4.x base: Node 3 -> 4, Relationship 5 -> 8, UnboundRelationship 3 -> 4. This is
     // the exact case the removed accessors got wrong (they returned the 4.x count on a 5.x connection);
@@ -319,7 +308,7 @@ class BoltStructureTest {
     // Last field is the element_id string "#1:0" -> tiny-string 0x84 then ASCII bytes.
     final byte[] b = v5.toByteArray();
     assertThat(b[b.length - 5]).isEqualTo((byte) (0x80 | 4));
-    assertThat(new String(b, b.length - 4, 4, java.nio.charset.StandardCharsets.UTF_8)).isEqualTo("#1:0");
+    assertThat(new String(b, b.length - 4, 4, StandardCharsets.UTF_8)).isEqualTo("#1:0");
   }
 
   @Test
@@ -409,7 +398,7 @@ class BoltStructureTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) BoltStructureMapper.toPackStreamValue(list);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo(1L);
+    assertThat(result.getFirst()).isEqualTo(1L);
     assertThat(result.get(1)).isEqualTo("two");
     assertThat(result.get(2)).isEqualTo(true);
   }
@@ -512,7 +501,7 @@ class BoltStructureTest {
 
   @Test
   void mapperSqlTime() throws Exception {
-    final java.sql.Time sqlTime = java.sql.Time.valueOf(LocalTime.of(10, 30, 45));
+    final Time sqlTime = Time.valueOf(LocalTime.of(10, 30, 45));
     assertThat(wireRoundTrip(sqlTime)).isEqualTo(sqlTime.toLocalTime());
   }
 
@@ -619,7 +608,7 @@ class BoltStructureTest {
     assertThat(result).hasSize(2);
 
     @SuppressWarnings("unchecked")
-    final List<Object> inner1 = (List<Object>) result.get(0);
+    final List<Object> inner1 = (List<Object>) result.getFirst();
     assertThat(inner1).containsExactly(1L, 2L);
   }
 

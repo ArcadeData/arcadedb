@@ -20,18 +20,18 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.graph.MutableVertex;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.util.Map;
-
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -170,8 +170,8 @@ class OpenCypherOptionalMatchTest {
 
     // Alice -> Bob
 
-    assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
-    assertThat(results.get(0).<String>getProperty("knows")).isEqualTo("Bob");
+    assertThat(results.getFirst().<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("knows")).isEqualTo("Bob");
 
     // Bob -> NULL
     assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
@@ -208,8 +208,8 @@ class OpenCypherOptionalMatchTest {
     assertThat(results.size()).as("All people should be returned").isEqualTo(3);
 
     // Alice -> Bob (matched and passed filter: age 25 > 20)
-    assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
-    assertThat(results.get(0).<String>getProperty("knows")).isEqualTo("Bob");
+    assertThat(results.getFirst().<String>getProperty("person")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("knows")).isEqualTo("Bob");
 
     // Bob -> NULL (no outgoing relationships)
     assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
@@ -265,8 +265,8 @@ class OpenCypherOptionalMatchTest {
 
     // Should return exactly 1 row: doc=MyTargetDoc, c=LinkedChunk_1
     assertThat(results).hasSize(1);
-    assertThat(results.get(0).<String>getProperty("docName")).isEqualTo("MyTargetDoc");
-    assertThat(results.get(0).<String>getProperty("chunkName")).isEqualTo("LinkedChunk_1");
+    assertThat(results.getFirst().<String>getProperty("docName")).isEqualTo("MyTargetDoc");
+    assertThat(results.getFirst().<String>getProperty("chunkName")).isEqualTo("LinkedChunk_1");
   }
 
   /** See issue #3218 */

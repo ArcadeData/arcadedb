@@ -278,22 +278,22 @@ public class PackStreamWriter {
   public void writeValue(final Object value) throws IOException {
     if (value == null) {
       writeNull();
-    } else if (value instanceof Boolean) {
-      writeBoolean((Boolean) value);
+    } else if (value instanceof Boolean boolean1) {
+      writeBoolean(boolean1);
     } else if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
       writeInteger(((Number) value).longValue());
     } else if (value instanceof Float || value instanceof Double) {
       writeFloat(((Number) value).doubleValue());
-    } else if (value instanceof String) {
-      writeString((String) value);
-    } else if (value instanceof byte[]) {
-      writeBytes((byte[]) value);
-    } else if (value instanceof List) {
-      writeList((List<?>) value);
+    } else if (value instanceof String string) {
+      writeString(string);
+    } else if (value instanceof byte[] bytes) {
+      writeBytes(bytes);
+    } else if (value instanceof List<?> list) {
+      writeList(list);
     } else if (value instanceof Map) {
       writeMap((Map<String, Object>) value);
-    } else if (value instanceof PackStreamStructure) {
-      ((PackStreamStructure) value).writeTo(this);
+    } else if (value instanceof PackStreamStructure structure) {
+      structure.writeTo(this);
     } else {
       // Default: convert to string
       writeString(value.toString());

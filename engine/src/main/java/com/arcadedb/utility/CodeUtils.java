@@ -24,7 +24,6 @@ import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -98,7 +97,7 @@ public class CodeUtils {
 
   public static List<String> split(final String text, final String sep, final int limit, final int estimatedSize) {
     if( text == null || text.isEmpty() )
-      return Collections.emptyList();
+      return List.of();
 
     final List<String> parts = limit > -1 ? new ArrayList<>(limit) : new ArrayList<>(estimatedSize);
     int startPos = 0;

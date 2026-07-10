@@ -23,13 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -212,14 +206,16 @@ public class DatabaseReconciler {
       // Preserve the interrupt so the pool/executor can observe it and shut down cleanly.
       Thread.currentThread().interrupt();
       LogManager.instance().log(this, Level.WARNING,
-          "Interrupted while listing the leader's databases for auto-acquire; refreshing only the databases "
-              + "already present locally.");
+          """
+          Interrupted while listing the leader's databases for auto-acquire; refreshing only the databases \
+          already present locally.""");
       refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
       return;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
-          "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
-              + "present locally. Missing databases will be retried on the next reconcile.", e.getMessage());
+          """
+          Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already \
+          present locally. Missing databases will be retried on the next reconcile.""", e.getMessage());
       refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
       return;
     }
@@ -305,8 +301,9 @@ public class DatabaseReconciler {
     for (final String dbName : plan.leaderMissing()) {
       acquireStatuses.put(dbName, new AcquireStatus(AcquireState.LEADER_MISSING, System.currentTimeMillis(), null));
       LogManager.instance().log(this, Level.WARNING,
-          "Database '%s' is present locally but the leader does not hold it; keeping the local copy (not dropping). "
-              + "If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.",
+          """
+          Database '%s' is present locally but the leader does not hold it; keeping the local copy (not dropping). \
+          If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.""",
           dbName, dbName);
     }
 
@@ -334,8 +331,9 @@ public class DatabaseReconciler {
       return true;
     if (count == ACQUIRE_GIVE_UP_AFTER)
       LogManager.instance().log(this, Level.SEVERE,
-          "Database '%s' failed to acquire/refresh %d times in a row; leaving it FAILED and no longer re-triggering "
-              + "the snapshot install for it (it will be retried on the next install). Check the leader's copy.",
+          """
+          Database '%s' failed to acquire/refresh %d times in a row; leaving it FAILED and no longer re-triggering \
+          the snapshot install for it (it will be retried on the next install). Check the leader's copy.""",
           dbName, count);
     return false;
   }
@@ -374,9 +372,10 @@ public class DatabaseReconciler {
       final String clusterToken) throws IOException {
     if (mustFailInstallWhenLeaderListUnavailable(localUserDatabaseNames()))
       throw new IOException(
-          "Cannot enumerate the leader's databases for auto-acquire and this node holds no databases locally; "
-              + "failing the snapshot install so Ratis retries rather than ACKing the snapshot index with no data "
-              + "installed (issue #4799)");
+          """
+          Cannot enumerate the leader's databases for auto-acquire and this node holds no databases locally; \
+          failing the snapshot install so Ratis retries rather than ACKing the snapshot index with no data \
+          installed (issue #4799)""");
     refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
   }
 

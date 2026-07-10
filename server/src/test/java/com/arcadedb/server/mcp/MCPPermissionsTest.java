@@ -20,8 +20,10 @@ package com.arcadedb.server.mcp;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
+
 import org.junit.jupiter.api.Test;
 
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
@@ -92,7 +94,7 @@ class MCPPermissionsTest {
   @Test
   void upsertRequiresBothCreateAndUpdate() {
     // UPSERT produces both CREATE and UPDATE operations
-    final Set<OperationType> upsertOps = Set.of(OperationType.CREATE, OperationType.UPDATE);
+    final Set<OperationType> upsertOps = EnumSet.of(OperationType.CREATE, OperationType.UPDATE);
 
     // Should fail if insert is denied
     final MCPConfiguration configNoInsert = new MCPConfiguration("./target/test");
@@ -137,7 +139,7 @@ class MCPPermissionsTest {
   @Test
   void multipleOperationTypesAllChecked() {
     // A command that does both DELETE and UPDATE (like MOVE VERTEX)
-    final Set<OperationType> moveOps = Set.of(OperationType.UPDATE, OperationType.DELETE);
+    final Set<OperationType> moveOps = EnumSet.of(OperationType.UPDATE, OperationType.DELETE);
 
     final MCPConfiguration configNoDelete = new MCPConfiguration("./target/test");
     configNoDelete.setAllowUpdate(true);

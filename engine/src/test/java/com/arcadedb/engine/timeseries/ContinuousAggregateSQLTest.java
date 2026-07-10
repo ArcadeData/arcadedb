@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -119,7 +120,7 @@ class ContinuousAggregateSQLTest extends TestHelper {
     final List<Result> results = collectResults(rs);
     assertThat(results).hasSize(1);
 
-    final Result r = results.get(0);
+    final Result r = results.getFirst();
     assertThat(r.<String>getProperty("name")).isEqualTo("hourly_temps");
     assertThat(r.<String>getProperty("sourceType")).isEqualTo("SensorReading");
     assertThat(r.<String>getProperty("bucketColumn")).isEqualTo("hour");

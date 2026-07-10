@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Random;

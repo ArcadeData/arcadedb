@@ -22,9 +22,10 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.WALVersionGapException;
+
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -63,7 +64,7 @@ class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
 
@@ -97,7 +98,7 @@ class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
     walTx.pages = new WALFile.WALPage[] { walPage };
 
     // The partial delta over a stale baseline must be refused (would otherwise silently corrupt).
-    assertThatThrownBy(() -> db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false))
+    assertThatThrownBy(() -> db.getTransactionManager().applyChanges(walTx, Map.of(), false))
         .isInstanceOf(WALVersionGapException.class);
 
     // The page must be untouched: original version and the probe byte outside the delta range.
@@ -108,7 +109,7 @@ class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
 
     // With ignoreErrors=true the partial forceApply is skipped (no change), again leaving the page intact.
     db.getPageManager().removePageFromCache(pageId0);
-    final boolean changed = db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), true);
+    final boolean changed = db.getTransactionManager().applyChanges(walTx, Map.of(), true);
     assertThat(changed).isFalse();
     db.getPageManager().removePageFromCache(pageId0);
     assertThat(db.getPageManager().getImmutablePage(pageId0, pageSize, false, true).getVersion()).isEqualTo(baseVersion);
@@ -123,7 +124,7 @@ class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
 
@@ -152,7 +153,7 @@ class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
 
     walTx.pages = new WALFile.WALPage[] { walPage };
 
-    final boolean changed = db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false);
+    final boolean changed = db.getTransactionManager().applyChanges(walTx, Map.of(), false);
     assertThat(changed).isTrue();
 
     db.getPageManager().removePageFromCache(pageId0);

@@ -25,6 +25,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.LockManager;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

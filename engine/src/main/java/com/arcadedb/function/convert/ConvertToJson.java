@@ -69,12 +69,12 @@ public class ConvertToJson extends AbstractConvertFunction {
       return new JSONObject((Map<String, ?>) value);
     }
 
-    if (value instanceof List) {
-      return new JSONArray((List<?>) value);
+    if (value instanceof List<?> list) {
+      return new JSONArray(list);
     }
 
-    if (value instanceof Document) {
-      return ((Document) value).toJSON();
+    if (value instanceof Document document) {
+      return document.toJSON();
     }
 
     // Primitive values

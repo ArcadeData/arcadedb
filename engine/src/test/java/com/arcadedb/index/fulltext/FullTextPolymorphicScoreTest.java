@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -125,7 +126,7 @@ class FullTextPolymorphicScoreTest extends TestHelper {
         assertThat(scores.get(i)).isGreaterThanOrEqualTo(scores.get(i + 1));
 
       // The document matching all 5 terms should be first
-      assertThat(texts.get(0)).contains("dispatch pipeline hivemind scheduler agent");
+      assertThat(texts.getFirst()).contains("dispatch pipeline hivemind scheduler agent");
     });
   }
 
@@ -172,7 +173,7 @@ class FullTextPolymorphicScoreTest extends TestHelper {
       assertThat(scores).hasSize(2);
 
       // Descending order
-      assertThat(scores.get(0)).isGreaterThanOrEqualTo(scores.get(1));
+      assertThat(scores.getFirst()).isGreaterThanOrEqualTo(scores.get(1));
     });
   }
 

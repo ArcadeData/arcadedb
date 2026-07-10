@@ -24,6 +24,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;

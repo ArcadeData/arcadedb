@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseFactory;
 
 import javax.annotation.processing.Generated;
-
 import java.io.*;
 
 /**

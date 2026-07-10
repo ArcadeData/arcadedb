@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -152,9 +153,9 @@ class RemoteDatabaseTest {
 
   @Test
   void mapArgsWithSingleMap() {
-    final Map<String, Object> params = new HashMap<>();
-    params.put("name", "test");
-    params.put("value", 42);
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "name", "test",
+        "value", 42));
 
     final Map<String, Object> result = database.mapArgs(new Object[]{params});
     assertThat(result).isEqualTo(params);
@@ -233,12 +234,9 @@ class RemoteDatabaseTest {
     // Simulate cluster-configuration discovery placing a concrete leader pod address;
     // begin() will pin to this leader rather than the load-balancer hostname.
     final Pair<String, Integer> leader = new Pair<>("leader-pod", 2481);
-    final TestableRemoteDatabaseWithLeader db = new TestableRemoteDatabaseWithLeader(
-        "localhost", 2480, "testdb", "root", "test", leader);
-    try {
+    try (final TestableRemoteDatabaseWithLeader db = new TestableRemoteDatabaseWithLeader(
+        "localhost", 2480, "testdb", "root", "test", leader)) {
       assertThat(db.resolveStickyTargetServer()).isEqualTo(leader);
-    } finally {
-      db.close();
     }
   }
 
@@ -252,8 +250,7 @@ class RemoteDatabaseTest {
       closedPort = probe.getLocalPort();
     }
 
-    final TestableRemoteDatabase failDb = new TestableRemoteDatabase("127.0.0.1", closedPort, "testdb", "root", "test");
-    try {
+    try (final TestableRemoteDatabase failDb = new TestableRemoteDatabase("127.0.0.1", closedPort, "testdb", "root", "test")) {
       failDb.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
 
       assertThatThrownBy(failDb::begin).isInstanceOf(TransactionException.class);
@@ -261,8 +258,6 @@ class RemoteDatabaseTest {
       // Pin released - URL falls back to the configured host, not a stale pinned address
       assertThat(failDb.isTransactionActive()).isFalse();
       assertThat(failDb.getUrl("command")).isEqualTo("http://127.0.0.1:" + closedPort + "/api/v1/command");
-    } finally {
-      failDb.close();
     }
   }
 
@@ -274,8 +269,7 @@ class RemoteDatabaseTest {
       unreachablePort = probe.getLocalPort();
     }
 
-    final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test");
-    try {
+    try (final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test")) {
       // Expose a replica entry so maxRetry = 2, allowing the server-switch retry path.
       db.getReplicaServerList().add(new Pair<>("127.0.0.1", 9999));
       // Simulate an in-flight transaction (session issued by the original server).
@@ -290,8 +284,6 @@ class RemoteDatabaseTest {
 
       // Session must be cleared so the object is in a consistent, retryable state.
       assertThat(db.isTransactionActive()).isFalse();
-    } finally {
-      db.close();
     }
   }
 
@@ -304,15 +296,12 @@ class RemoteDatabaseTest {
       unreachablePort = probe.getLocalPort();
     }
 
-    final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test");
-    try {
+    try (final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test")) {
       db.getReplicaServerList().add(new Pair<>("127.0.0.1", 9999));
       // No setSessionId - no active transaction.
 
       assertThatThrownBy(() -> db.query("sql", "select 1"))
           .isNotInstanceOf(TransactionException.class);
-    } finally {
-      db.close();
     }
   }
 

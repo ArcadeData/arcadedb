@@ -42,8 +42,8 @@ public class ElementIdFunction implements StatelessFunction {
       throw new CommandExecutionException("elementId() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Identifiable)
-      return ((Identifiable) args[0]).getIdentity().toString();
+    if (args[0] instanceof Identifiable identifiable)
+      return identifiable.getIdentity().toString();
     return null;
   }
 }

@@ -19,6 +19,7 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.query.sql.executor.Result;
+
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
@@ -174,12 +175,11 @@ public class MongoDBToSqlTranslator {
 
       final Object next = it.next();
 
-      if (next instanceof com.arcadedb.database.Document document)
-        result.add(convertDocumentToMongoDB(document));
-      else if (next instanceof Result result1)
-        result.add(convertDocumentToMongoDB(result1));
-      else
-        throw new IllegalArgumentException("Object not supported");
+      switch (next) {
+        case com.arcadedb.database.Document document -> result.add(convertDocumentToMongoDB(document));
+        case Result result1 -> result.add(convertDocumentToMongoDB(result1));
+        case null, default -> throw new IllegalArgumentException("Object not supported");
+      }
 
       if (numberToReturn > 0 && result.size() >= numberToReturn)
         break;

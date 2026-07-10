@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.OutputStreamWriter;

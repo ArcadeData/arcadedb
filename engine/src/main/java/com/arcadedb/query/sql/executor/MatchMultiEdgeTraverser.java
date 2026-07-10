@@ -80,26 +80,27 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
         } else {
           iCommandContext.setVariable("current", o);
           final Object nextSteps = method.execute(o, possibleResults, iCommandContext);
-          if (nextSteps instanceof Collection collection) {
-            collection.stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull).forEach(i -> rightSide.add((ResultInternal) i));
-          } else if (nextSteps instanceof Document document) {
-            rightSide.add(new ResultInternal(document));
-          } else if (nextSteps instanceof ResultInternal internal) {
-            rightSide.add(internal);
-          } else if (nextSteps instanceof Iterable iterable) {
-            for (final Object step : iterable) {
-              final ResultInternal converted = toOResultInternal(step);
-              if (converted != null) {
-                rightSide.add(converted);
+          switch (nextSteps) {
+            case Collection collection -> collection.stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull).forEach(i -> rightSide.add((ResultInternal) i));
+            case Document document -> rightSide.add(new ResultInternal(document));
+            case ResultInternal internal -> rightSide.add(internal);
+            case Iterable iterable -> {
+              for (final Object step : iterable) {
+                final ResultInternal converted = toOResultInternal(step);
+                if (converted != null) {
+                  rightSide.add(converted);
+                }
               }
             }
-          } else if (nextSteps instanceof Iterator iterator) {
-            while (iterator.hasNext()) {
-              final ResultInternal converted = toOResultInternal(iterator.next());
-              if (converted != null) {
-                rightSide.add(converted);
+            case Iterator iterator -> {
+              while (iterator.hasNext()) {
+                final ResultInternal converted = toOResultInternal(iterator.next());
+                if (converted != null) {
+                  rightSide.add(converted);
+                }
               }
             }
+            case null, default -> {}
           }
         }
       }

@@ -27,9 +27,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.SetClause;
-import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -474,8 +474,8 @@ public class SetStep extends AbstractExecutionStep {
   }
 
   private void validatePropertyValue(final Object value) {
-    if (value instanceof List) {
-      for (final Object element : (List<?>) value) {
+    if (value instanceof List<?> list) {
+      for (final Object element : list) {
         if (element instanceof Map)
           throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
         if (element instanceof List)

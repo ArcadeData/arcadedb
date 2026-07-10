@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.utility.MultiIterator;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;

@@ -23,6 +23,7 @@ import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -99,9 +100,9 @@ class TimeSeriesSealedStoreTest {
       final List<Object[]> results = store.scanRange(1000L, 5000L, null, null);
       assertThat(results).hasSize(5);
 
-      assertThat((long) results.get(0)[0]).isEqualTo(1000L);
-      assertThat((String) results.get(0)[1]).isEqualTo("A");
-      assertThat((double) results.get(0)[2]).isEqualTo(20.0);
+      assertThat((long) results.getFirst()[0]).isEqualTo(1000L);
+      assertThat((String) results.getFirst()[1]).isEqualTo("A");
+      assertThat((double) results.getFirst()[2]).isEqualTo(20.0);
 
       assertThat((long) results.get(4)[0]).isEqualTo(5000L);
       assertThat((String) results.get(4)[1]).isEqualTo("B");
@@ -126,7 +127,7 @@ class TimeSeriesSealedStoreTest {
       // Query subset
       final List<Object[]> results = store.scanRange(2000L, 4000L, null, null);
       assertThat(results).hasSize(3);
-      assertThat((long) results.get(0)[0]).isEqualTo(2000L);
+      assertThat((long) results.getFirst()[0]).isEqualTo(2000L);
       assertThat((long) results.get(2)[0]).isEqualTo(4000L);
     }
   }
@@ -176,7 +177,7 @@ class TimeSeriesSealedStoreTest {
       // Query only block 2
       final List<Object[]> results = store.scanRange(5000L, 6000L, null, null);
       assertThat(results).hasSize(2);
-      assertThat((String) results.get(0)[1]).isEqualTo("B");
+      assertThat((String) results.getFirst()[1]).isEqualTo("B");
     }
   }
 
@@ -209,8 +210,8 @@ class TimeSeriesSealedStoreTest {
       final TagFilter filterA = TagFilter.eq(0, "A");
       final List<Object[]> results = store.scanRange(1000L, 5000L, null, filterA);
       assertThat(results).hasSize(2);
-      assertThat((long) results.get(0)[0]).isEqualTo(1000L);
-      assertThat((String) results.get(0)[1]).isEqualTo("A");
+      assertThat((long) results.getFirst()[0]).isEqualTo(1000L);
+      assertThat((String) results.getFirst()[1]).isEqualTo("A");
       assertThat((long) results.get(1)[0]).isEqualTo(3000L);
       assertThat((String) results.get(1)[1]).isEqualTo("A");
     }
@@ -244,7 +245,7 @@ class TimeSeriesSealedStoreTest {
         results.add(iter.next());
 
       assertThat(results).hasSize(2);
-      assertThat((String) results.get(0)[1]).isEqualTo("X");
+      assertThat((String) results.getFirst()[1]).isEqualTo("X");
       assertThat((String) results.get(1)[1]).isEqualTo("X");
     }
   }
@@ -370,7 +371,7 @@ class TimeSeriesSealedStoreTest {
 
       final List<Object[]> results = store.scanRange(0L, 10000L, null, null);
       assertThat(results).hasSize(2);
-      assertThat((long) results.get(0)[0]).isEqualTo(5000L);
+      assertThat((long) results.getFirst()[0]).isEqualTo(5000L);
     }
   }
 

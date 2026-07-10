@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -45,12 +46,8 @@ import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.IntStream;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
+import static com.arcadedb.schema.Property.*;
+import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.data.Offset.offset;
 
 public class PostgresWJdbcIT extends BaseGraphServerTest {

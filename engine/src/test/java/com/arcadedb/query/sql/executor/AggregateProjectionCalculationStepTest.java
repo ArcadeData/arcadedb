@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.parser.SelectStatement;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

@@ -34,6 +34,7 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;

@@ -19,11 +19,10 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ConfigurationException;
+
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * Unit tests for the Raft membership quorum guard (issue #4796): removing a peer (or leaving the

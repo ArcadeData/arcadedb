@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -111,8 +112,8 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
     // Find the auto-backup plugin
     AutoBackupSchedulerPlugin backupPlugin = null;
     for (final var plugin : server.getPlugins()) {
-      if (plugin instanceof AutoBackupSchedulerPlugin) {
-        backupPlugin = (AutoBackupSchedulerPlugin) plugin;
+      if (plugin instanceof AutoBackupSchedulerPlugin schedulerPlugin) {
+        backupPlugin = schedulerPlugin;
         break;
       }
     }
@@ -130,8 +131,8 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
     // Find the auto-backup plugin
     AutoBackupSchedulerPlugin backupPlugin = null;
     for (final var plugin : server.getPlugins()) {
-      if (plugin instanceof AutoBackupSchedulerPlugin) {
-        backupPlugin = (AutoBackupSchedulerPlugin) plugin;
+      if (plugin instanceof AutoBackupSchedulerPlugin schedulerPlugin) {
+        backupPlugin = schedulerPlugin;
         break;
       }
     }
@@ -149,8 +150,8 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
     // Find the auto-backup plugin
     AutoBackupSchedulerPlugin backupPlugin = null;
     for (final var plugin : server.getPlugins()) {
-      if (plugin instanceof AutoBackupSchedulerPlugin) {
-        backupPlugin = (AutoBackupSchedulerPlugin) plugin;
+      if (plugin instanceof AutoBackupSchedulerPlugin schedulerPlugin) {
+        backupPlugin = schedulerPlugin;
         break;
       }
     }
@@ -185,8 +186,8 @@ class AutoBackupSchedulerPluginIT extends BaseGraphServerTest {
 
     AutoBackupSchedulerPlugin backupPlugin = null;
     for (final var plugin : server.getPlugins()) {
-      if (plugin instanceof AutoBackupSchedulerPlugin) {
-        backupPlugin = (AutoBackupSchedulerPlugin) plugin;
+      if (plugin instanceof AutoBackupSchedulerPlugin schedulerPlugin) {
+        backupPlugin = schedulerPlugin;
         break;
       }
     }

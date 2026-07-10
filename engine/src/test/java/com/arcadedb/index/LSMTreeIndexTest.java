@@ -18,6 +18,35 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.index.lsm.LSMTreeIndex;
+import com.arcadedb.log.DefaultLogger;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.FileUtils;
+
+import org.assertj.core.api.Assertions;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -35,38 +64,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
-import org.assertj.core.api.Assertions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import org.awaitility.Awaitility;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-
-import java.io.File;
-
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.utility.FileUtils;
-
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.TestHelper;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.index.lsm.LSMTreeIndex;
-import com.arcadedb.log.DefaultLogger;
-import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Schema;
 
 @Tag("slow")
 class LSMTreeIndexTest extends TestHelper {
@@ -599,7 +598,6 @@ class LSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT; ++i) {
         for (final Index index : indexes)
           assertThat(index.get(new Object[] { i }).hasNext()).withFailMessage("Found item with key " + i).isFalse();
-        ;
       }
 
     });
@@ -1584,10 +1582,10 @@ class LSMTreeIndexTest extends TestHelper {
     @Test
     void filteringAfterParameterizedMultiFieldUpdate() {
       database.transaction(() -> {
-        final Map<String, Object> params = new HashMap<>();
-        params.put("uid", "c1");
-        params.put("version", 2);
-        params.put("status", "synced");
+        final Map<String, Object> params = new HashMap<>(Map.of(
+            "uid", "c1",
+            "version", 2,
+            "status", "synced"));
 
         database.command("sql", "UPDATE Child SET version = :version, status = :status WHERE uid = :uid", params);
       });
@@ -1597,7 +1595,7 @@ class LSMTreeIndexTest extends TestHelper {
         final List<Result> pendingList = pending.stream().toList();
 
         assertThat(pendingList).hasSize(1);
-        assertThat(pendingList.get(0).<String>getProperty("uid")).isEqualTo("c2");
+        assertThat(pendingList.getFirst().<String>getProperty("uid")).isEqualTo("c2");
       });
 
       database.transaction(() -> {
@@ -1644,9 +1642,9 @@ class LSMTreeIndexTest extends TestHelper {
     @Test
     void filteringAfterParameterizedSingleFieldUpdate() {
       database.transaction(() -> {
-        final Map<String, Object> params = new HashMap<>();
-        params.put("uid", "c2");
-        params.put("status", "synced");
+        final Map<String, Object> params = new HashMap<>(Map.of(
+            "uid", "c2",
+            "status", "synced"));
 
         database.command("sql", "UPDATE Child SET status = :status WHERE uid = :uid", params);
       });
@@ -1656,7 +1654,7 @@ class LSMTreeIndexTest extends TestHelper {
         final List<Result> pendingList = pending.stream().toList();
 
         assertThat(pendingList).hasSize(1);
-        assertThat(pendingList.get(0).<String>getProperty("uid")).isEqualTo("c1");
+        assertThat(pendingList.getFirst().<String>getProperty("uid")).isEqualTo("c1");
       });
 
       database.transaction(() -> {

@@ -23,12 +23,12 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -125,7 +125,7 @@ class CypherCollectSubqueryTest {
     final Object names = r.getProperty("names");
     assertThat(names).isInstanceOf(List.class);
     @SuppressWarnings("unchecked") final List<Object> list = (List<Object>) names;
-    assertThat(list).isEqualTo(Collections.emptyList());
+    assertThat(list).isEqualTo(List.of());
     assertThat(results.hasNext()).isFalse();
   }
 

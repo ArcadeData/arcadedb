@@ -59,9 +59,9 @@ class PatternTestParserTest extends AbstractParserTest {
     assertThat(subPatterns.get(1).getNumOfEdges()).isEqualTo(0);
     assertThat(subPatterns.get(1).getAliasToNode().size()).isEqualTo(1);
 
-    final Set<String> aliases = new HashSet<>();
-    aliases.add("a");
-    aliases.add("b");
+    final Set<String> aliases = new HashSet<>(Set.of(
+        "a",
+        "b"));
     aliases.remove(subPatterns.getFirst().getAliasToNode().keySet().iterator().next());
     aliases.remove(subPatterns.get(1).getAliasToNode().keySet().iterator().next());
     assertThat(aliases.size()).isEqualTo(0);
@@ -80,13 +80,13 @@ class PatternTestParserTest extends AbstractParserTest {
     final List<Pattern> subPatterns = pattern.getDisjointPatterns();
     assertThat(subPatterns.size()).isEqualTo(2);
 
-    final Set<String> aliases = new HashSet<>();
-    aliases.add("a");
-    aliases.add("b");
-    aliases.add("c");
-    aliases.add("d");
-    aliases.add("e");
-    aliases.add("f");
+    final Set<String> aliases = new HashSet<>(Set.of(
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f"));
     aliases.removeAll(subPatterns.getFirst().getAliasToNode().keySet());
     aliases.removeAll(subPatterns.get(1).getAliasToNode().keySet());
     assertThat(aliases.size()).isEqualTo(0);

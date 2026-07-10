@@ -24,6 +24,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -37,8 +38,6 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * Tests for MATCH clause enhancements:
@@ -124,8 +123,8 @@ public class OpenCypherMatchEnhancementsTest {
     assertThat(results.size()).as("Expected Cartesian product of 2 people").isEqualTo(4);
 
     // Alice-Alice, Alice-Bob, Bob-Alice, Bob-Bob
-    assertThat(results.get(0).<String>getProperty("person1")).isEqualTo("Alice");
-    assertThat(results.get(0).<String>getProperty("person2")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("person1")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("person2")).isEqualTo("Alice");
 
     assertThat(results.get(1).<String>getProperty("person1")).isEqualTo("Alice");
     assertThat(results.get(1).<String>getProperty("person2")).isEqualTo("Bob");
@@ -290,7 +289,7 @@ public class OpenCypherMatchEnhancementsTest {
 
       final List<Result> rows = collectAll(ref[0]);
       assertThat(rows).hasSize(2);
-      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
       assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
     } finally {
       db.drop();
@@ -313,7 +312,7 @@ public class OpenCypherMatchEnhancementsTest {
 
       final List<Result> rows = collectAll(ref[0]);
       assertThat(rows).hasSize(2);
-      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
       assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
     } finally {
       db.drop();
@@ -336,8 +335,8 @@ public class OpenCypherMatchEnhancementsTest {
 
       final List<Result> rows = collectAll(ref[0]);
       assertThat(rows).hasSize(2);
-      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
-      assertThat(((Number) rows.get(0).getProperty("x")).intValue()).isEqualTo(1);
+      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
+      assertThat(((Number) rows.getFirst().getProperty("x")).intValue()).isEqualTo(1);
       assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
       assertThat(((Number) rows.get(1).getProperty("x")).intValue()).isEqualTo(1);
     } finally {
@@ -361,7 +360,7 @@ public class OpenCypherMatchEnhancementsTest {
 
       final List<Result> rows = collectAll(ref[0]);
       assertThat(rows).hasSize(2);
-      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
       assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
     } finally {
       db.drop();
@@ -381,7 +380,7 @@ public class OpenCypherMatchEnhancementsTest {
           "MATCH (n:Person4019) WITH n RETURN n.name AS name ORDER BY name"));
 
       assertThat(rows).hasSize(2);
-      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
       assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
     } finally {
       db.drop();
@@ -425,8 +424,8 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("country_name")).isEqualTo("USA");
+      assertThat((String) rows.getFirst().getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("country_name")).isEqualTo("USA");
     } finally {
       db.drop();
     }
@@ -443,8 +442,8 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("country_name")).isEqualTo("USA");
+      assertThat((String) rows.getFirst().getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("country_name")).isEqualTo("USA");
     } finally {
       db.drop();
     }
@@ -461,8 +460,8 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("country_name")).isEqualTo("USA");
-      final List<?> people = (List<?>) rows.get(0).getProperty("people");
+      assertThat((String) rows.getFirst().getProperty("country_name")).isEqualTo("USA");
+      final List<?> people = (List<?>) rows.getFirst().getProperty("people");
       assertThat(people.stream().map(Object::toString).toList()).containsExactly("Alice");
     } finally {
       db.drop();
@@ -478,7 +477,7 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("city_name")).isEqualTo("New York");
+      assertThat((String) rows.getFirst().getProperty("city_name")).isEqualTo("New York");
     } finally {
       db.drop();
     }
@@ -493,7 +492,7 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("person_name")).isEqualTo("Alice");
     } finally {
       db.drop();
     }
@@ -510,8 +509,8 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("region_name")).isEqualTo("North America");
+      assertThat((String) rows.getFirst().getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("region_name")).isEqualTo("North America");
     } finally {
       db.drop();
     }
@@ -529,8 +528,8 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("country_name")).isEqualTo("USA");
+      assertThat((String) rows.getFirst().getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("country_name")).isEqualTo("USA");
     } finally {
       db.drop();
     }
@@ -548,8 +547,8 @@ public class OpenCypherMatchEnhancementsTest {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("country_name")).isEqualTo("USA");
+      assertThat((String) rows.getFirst().getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("country_name")).isEqualTo("USA");
     } finally {
       db.drop();
     }
@@ -806,9 +805,9 @@ public class OpenCypherMatchEnhancementsTest {
       final String targetId = ids[1];
 
       final List<Map<String, Object>> batch = new ArrayList<>();
-      final Map<String, Object> row = new HashMap<>();
-      row.put("source_id", sourceId);
-      row.put("target_id", targetId);
+      final Map<String, Object> row = new HashMap<>(Map.of(
+          "source_id", sourceId,
+          "target_id", targetId));
       batch.add(row);
 
       final long startTime = System.currentTimeMillis();
@@ -960,7 +959,7 @@ public class OpenCypherMatchEnhancementsTest {
             results.add(rs.next());
 
           assertThat(results).hasSize(1);
-          final Result row = results.get(0);
+          final Result row = results.getFirst();
           assertThat(row.getPropertyNames()).contains("out1", "out2");
           assertThat((Object) row.getProperty("out1")).isNotNull();
           assertThat((Object) row.getProperty("out2")).isNotNull();
@@ -988,7 +987,7 @@ public class OpenCypherMatchEnhancementsTest {
             results.add(rs.next());
 
           assertThat(results).hasSize(1);
-          final Result row = results.get(0);
+          final Result row = results.getFirst();
           assertThat(row.getPropertyNames()).contains("t1", "t2");
         }
       });
@@ -1013,7 +1012,7 @@ public class OpenCypherMatchEnhancementsTest {
             results.add(rs.next());
 
           assertThat(results).hasSize(1);
-          final Result row = results.get(0);
+          final Result row = results.getFirst();
           assertThat(row.getPropertyNames()).contains("t1", "itemId");
           assertThat(row.<String>getProperty("itemId")).isEqualTo("A");
         }
@@ -1040,7 +1039,7 @@ public class OpenCypherMatchEnhancementsTest {
             results.add(rs.next());
 
           assertThat(results).hasSize(1);
-          final Result row = results.get(0);
+          final Result row = results.getFirst();
           assertThat(row.<String>getProperty("srcId")).isEqualTo("A");
           assertThat(row.<String>getProperty("tgtName")).isEqualTo("B");
         }
@@ -1069,7 +1068,7 @@ public class OpenCypherMatchEnhancementsTest {
             results.add(rs.next());
 
           assertThat(results).hasSize(1);
-          assertThat(results.get(0).<String>getProperty("tid")).isEqualTo("A");
+          assertThat(results.getFirst().<String>getProperty("tid")).isEqualTo("A");
         }
       });
     } finally {

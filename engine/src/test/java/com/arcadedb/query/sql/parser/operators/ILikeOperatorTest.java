@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.parser.ILikeOperator;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

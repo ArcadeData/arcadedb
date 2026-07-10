@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FileServerEventLogConcurrencyTest {
 
   @Test
-  void concurrentTimestampFormattingIsThreadSafe() throws InterruptedException {
+  void concurrentTimestampFormattingIsThreadSafe() throws Exception {
     // No server is needed: formatEventTime() only touches the (previously shared) formatter.
     final FileServerEventLog eventLog = new FileServerEventLog(null);
 

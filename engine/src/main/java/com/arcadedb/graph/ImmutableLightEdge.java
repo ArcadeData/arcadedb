@@ -25,7 +25,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 
@@ -83,7 +82,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
 
   @Override
   public Set<String> getPropertyNames() {
-    return Collections.emptySet();
+    return Set.of();
   }
 
   @Override
@@ -98,7 +97,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
 
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
-    return Collections.emptyMap();
+    return Map.of();
   }
 
   @Override

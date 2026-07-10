@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
 

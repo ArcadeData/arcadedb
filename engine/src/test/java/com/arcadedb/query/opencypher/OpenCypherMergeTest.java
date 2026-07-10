@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -290,8 +291,8 @@ class OpenCypherMergeTest {
     @SuppressWarnings("unchecked")
     final List<String> labels = (List<String>) labelsObj;
     assertThat(labels).hasSize(1);
-    assertThat(labels.get(0)).isEqualTo("select");
-    assertThat(labels.get(0)).doesNotContain("`");
+    assertThat(labels.getFirst()).isEqualTo("select");
+    assertThat(labels.getFirst()).doesNotContain("`");
   }
 
   /** See issue #3998 */
@@ -804,27 +805,27 @@ class OpenCypherMergeTest {
 
       final List<Map<String, Object>> batch = new ArrayList<>();
 
-      final Map<String, Object> entry1 = new HashMap<>();
-      entry1.put("identity", "normal");
-      entry1.put("name", "normal");
+      final Map<String, Object> entry1 = new HashMap<>(Map.of(
+          "identity", "normal",
+          "name", "normal"));
       batch.add(entry1);
 
       // Single quote character: the original crash case
-      final Map<String, Object> entryQuote = new HashMap<>();
-      entryQuote.put("identity", "'");
-      entryQuote.put("name", "'");
+      final Map<String, Object> entryQuote = new HashMap<>(Map.of(
+          "identity", "'",
+          "name", "'"));
       batch.add(entryQuote);
 
       // Starts and ends with quote but length > 1
-      final Map<String, Object> entryQuotedString = new HashMap<>();
-      entryQuotedString.put("identity", "'wrapped'");
-      entryQuotedString.put("name", "'wrapped'");
+      final Map<String, Object> entryQuotedString = new HashMap<>(Map.of(
+          "identity", "'wrapped'",
+          "name", "'wrapped'"));
       batch.add(entryQuotedString);
 
       // Contains a quote but not both start+end
-      final Map<String, Object> entryPartialQuote = new HashMap<>();
-      entryPartialQuote.put("identity", "it's");
-      entryPartialQuote.put("name", "it's");
+      final Map<String, Object> entryPartialQuote = new HashMap<>(Map.of(
+          "identity", "it's",
+          "name", "it's"));
       batch.add(entryPartialQuote);
 
       final Map<String, Object> params = new HashMap<>();

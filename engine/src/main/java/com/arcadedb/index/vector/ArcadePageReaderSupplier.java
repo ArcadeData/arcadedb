@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
+
 import io.github.jbellis.jvector.disk.RandomAccessReader;
 import io.github.jbellis.jvector.disk.ReaderSupplier;
 

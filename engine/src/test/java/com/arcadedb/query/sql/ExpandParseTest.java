@@ -3,6 +3,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -56,9 +57,9 @@ class ExpandParseTest extends TestHelper {
       @SuppressWarnings("unchecked")
       final List<Result> list = (List<Result>) testValue;
       assertThat(list).hasSize(1);
-      assertThat(list.get(0).getPropertyNames().contains("x")).isTrue();
-      assertThat(list.get(0).getPropertyNames().contains("y")).isFalse();
-      assertThat((Object) list.get(0).getProperty("x")).isEqualTo(1);
+      assertThat(list.getFirst().getPropertyNames().contains("x")).isTrue();
+      assertThat(list.getFirst().getPropertyNames().contains("y")).isFalse();
+      assertThat((Object) list.getFirst().getProperty("x")).isEqualTo(1);
     });
   }
 

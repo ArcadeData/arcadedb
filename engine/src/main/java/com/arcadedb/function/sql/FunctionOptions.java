@@ -20,7 +20,6 @@ package com.arcadedb.function.sql;
 
 import com.arcadedb.exception.CommandSQLParsingException;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,7 +51,7 @@ public class FunctionOptions {
   @SuppressWarnings("unchecked")
   public FunctionOptions(final String functionName, final Map<?, ?> options, final Set<String> allowedKeys) {
     this.functionName = functionName;
-    this.options = options == null ? Collections.emptyMap() : (Map<String, Object>) options;
+    this.options = options == null ? Map.of() : (Map<String, Object>) options;
 
     for (final Object rawKey : this.options.keySet()) {
       final String key = rawKey == null ? null : rawKey.toString();

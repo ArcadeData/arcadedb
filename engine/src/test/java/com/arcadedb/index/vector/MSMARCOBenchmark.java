@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +39,6 @@ import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 
 /**
@@ -84,7 +84,7 @@ class MSMARCOBenchmark {
 
   @Test
   void runMSMARCOBenchmark() throws Exception {
-    final Path dataDir = Paths.get(DATA_DIR);
+    final Path dataDir = Path.of(DATA_DIR);
     if (!Files.isDirectory(dataDir)) {
       System.err.println("=== MSMARCO dataset not found at: " + dataDir);
       System.err.println("=== Download it first (see class javadoc for instructions)");

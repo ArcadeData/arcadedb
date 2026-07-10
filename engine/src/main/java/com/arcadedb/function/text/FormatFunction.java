@@ -60,18 +60,18 @@ public class FormatFunction implements StatelessFunction {
 
     // Extract the TemporalAccessor from Cypher temporal types
     final TemporalAccessor temporal;
-    if (args[0] instanceof CypherDate)
-      temporal = ((CypherDate) args[0]).getValue();
-    else if (args[0] instanceof CypherLocalTime)
-      temporal = ((CypherLocalTime) args[0]).getValue();
-    else if (args[0] instanceof CypherTime)
-      temporal = ((CypherTime) args[0]).getValue();
-    else if (args[0] instanceof CypherLocalDateTime)
-      temporal = ((CypherLocalDateTime) args[0]).getValue();
-    else if (args[0] instanceof CypherDateTime)
-      temporal = ((CypherDateTime) args[0]).getValue();
-    else if (args[0] instanceof TemporalAccessor)
-      temporal = (TemporalAccessor) args[0];
+    if (args[0] instanceof CypherDate date)
+      temporal = date.getValue();
+    else if (args[0] instanceof CypherLocalTime time3)
+      temporal = time3.getValue();
+    else if (args[0] instanceof CypherTime time2)
+      temporal = time2.getValue();
+    else if (args[0] instanceof CypherLocalDateTime time1)
+      temporal = time1.getValue();
+    else if (args[0] instanceof CypherDateTime time)
+      temporal = time.getValue();
+    else if (args[0] instanceof TemporalAccessor accessor)
+      temporal = accessor;
     else
       throw new CommandExecutionException("format() requires a temporal value as first argument");
 

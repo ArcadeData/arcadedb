@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -200,7 +201,7 @@ public class Issue4806InsertStreamMidStreamCommitFailureIT extends BaseGraphServ
           .setQuery("SELECT name FROM " + typeName + " WHERE name = 'Charlie'")
           .build());
       final boolean charlieExists = !queryResp.getResultsList().isEmpty()
-          && !queryResp.getResultsList().get(0).getRecordsList().isEmpty();
+          && !queryResp.getResultsList().getFirst().getRecordsList().isEmpty();
       assertThat(charlieExists)
           .as("rows after a mid-stream commit failure must not be inserted into the broken transaction")
           .isFalse();
@@ -306,7 +307,7 @@ public class Issue4806InsertStreamMidStreamCommitFailureIT extends BaseGraphServ
           .setCredentials(credentials())
           .setQuery("SELECT count(*) as cnt FROM " + typeName)
           .build());
-      final long count = queryResp.getResultsList().get(0).getRecordsList().get(0)
+      final long count = queryResp.getResultsList().getFirst().getRecordsList().getFirst()
           .getPropertiesMap().get("cnt").getInt64Value();
       assertThat(count)
           .as("rows buffered in a transaction aborted mid-stream must not be committed")

@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -103,7 +104,7 @@ class OpenCypherAdvancedFunctionTest {
     assertThat(result.hasNext()).isTrue();
     final List<?> parts = (List<?>) result.next().getProperty("result");
     assertThat(parts).hasSize(3);
-    assertThat(parts.get(0)).isEqualTo("one");
+    assertThat(parts.getFirst()).isEqualTo("one");
     assertThat(parts.get(1)).isEqualTo("two");
     assertThat(parts.get(2)).isEqualTo("three");
   }
@@ -145,7 +146,7 @@ class OpenCypherAdvancedFunctionTest {
     assertThat(result.hasNext()).isTrue();
     final List<?> tail = (List<?>) result.next().getProperty("result");
     assertThat(tail).hasSize(4);
-    assertThat(((Number) tail.get(0)).intValue()).isEqualTo(2);
+    assertThat(((Number) tail.getFirst()).intValue()).isEqualTo(2);
     assertThat(((Number) tail.get(3)).intValue()).isEqualTo(5);
   }
 
@@ -166,7 +167,7 @@ class OpenCypherAdvancedFunctionTest {
     assertThat(result.hasNext()).isTrue();
     final List<?> range = (List<?>) result.next().getProperty("result");
     assertThat(range).hasSize(5);
-    assertThat(((Number) range.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) range.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) range.get(4)).longValue()).isEqualTo(5L);
   }
 
@@ -178,7 +179,7 @@ class OpenCypherAdvancedFunctionTest {
     assertThat(result.hasNext()).isTrue();
     final List<?> range = (List<?>) result.next().getProperty("result");
     assertThat(range).hasSize(6); // 0, 2, 4, 6, 8, 10
-    assertThat(((Number) range.get(0)).longValue()).isEqualTo(0L);
+    assertThat(((Number) range.getFirst()).longValue()).isEqualTo(0L);
     assertThat(((Number) range.get(1)).longValue()).isEqualTo(2L);
     assertThat(((Number) range.get(5)).longValue()).isEqualTo(10L);
   }
@@ -191,7 +192,7 @@ class OpenCypherAdvancedFunctionTest {
     assertThat(result.hasNext()).isTrue();
     final List<?> reversed = (List<?>) result.next().getProperty("result");
     assertThat(reversed).hasSize(5);
-    assertThat(((Number) reversed.get(0)).intValue()).isEqualTo(5);
+    assertThat(((Number) reversed.getFirst()).intValue()).isEqualTo(5);
     assertThat(((Number) reversed.get(4)).intValue()).isEqualTo(1);
   }
 
@@ -256,7 +257,7 @@ class OpenCypherAdvancedFunctionTest {
     assertThat(result.hasNext()).isTrue();
     final List<?> nodes = (List<?>) result.next().getProperty("nodeList");
     assertThat(nodes).hasSize(3); // Alice, Bob, Charlie
-    assertThat(nodes.get(0)).isInstanceOf(Vertex.class);
+    assertThat(nodes.getFirst()).isInstanceOf(Vertex.class);
     assertThat(nodes.get(1)).isInstanceOf(Vertex.class);
     assertThat(nodes.get(2)).isInstanceOf(Vertex.class);
   }
@@ -272,7 +273,7 @@ class OpenCypherAdvancedFunctionTest {
     assertThat(result.hasNext()).isTrue();
     final List<?> rels = (List<?>) result.next().getProperty("relList");
     assertThat(rels).hasSize(2); // Two KNOWS relationships
-    assertThat(rels.get(0)).isInstanceOf(Edge.class);
+    assertThat(rels.getFirst()).isInstanceOf(Edge.class);
     assertThat(rels.get(1)).isInstanceOf(Edge.class);
   }
 

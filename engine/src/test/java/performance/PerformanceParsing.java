@@ -25,7 +25,6 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,7 +53,7 @@ public class PerformanceParsing {
     final AtomicLong ok = new AtomicLong();
     final AtomicLong error = new AtomicLong();
 
-    try {
+    try (database) {
       final long begin = System.currentTimeMillis();
 
       for (int i = 0; i < MAX_LOOPS; ++i) {
@@ -80,7 +79,6 @@ public class PerformanceParsing {
       System.out.println("Executed " + MAX_LOOPS + " simple queries in " + (System.currentTimeMillis() - begin) + "ms");
 
     } finally {
-      database.close();
 
       assertThat(ok.get()).isEqualTo(MAX_LOOPS);
       assertThat(error.get()).isEqualTo(0);

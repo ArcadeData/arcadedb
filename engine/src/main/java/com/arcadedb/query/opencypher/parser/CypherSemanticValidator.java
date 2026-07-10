@@ -55,8 +55,8 @@ public class CypherSemanticValidator {
 
   public static void validate(final CypherStatement statement) {
     // For UNION statements, validate union-specific constraints then each subquery
-    if (statement instanceof UnionStatement) {
-      validateUnion((UnionStatement) statement);
+    if (statement instanceof UnionStatement unionStatement) {
+      validateUnion(unionStatement);
       return;
     }
 
@@ -85,7 +85,7 @@ public class CypherSemanticValidator {
 
     // Check that mixing UNION and UNION ALL is not allowed
     if (flags.size() > 1) {
-      final boolean firstIsAll = flags.get(0);
+      final boolean firstIsAll = flags.getFirst();
       for (int i = 1; i < flags.size(); i++) {
         if (flags.get(i) != firstIsAll)
           throw new CommandParsingException("InvalidClauseComposition: Cannot mix UNION and UNION ALL");
@@ -561,42 +561,41 @@ public class CypherSemanticValidator {
     if (expr instanceof StarExpression)
       return;
 
-    if (expr instanceof VariableExpression) {
-      final String varName = ((VariableExpression) expr).getVariableName();
+    if (expr instanceof VariableExpression expression7) {
+      final String varName = expression7.getVariableName();
       // Skip synthetic variable names that are really expression text (AST builder artifacts)
       // The AST builder creates VariableExpression from raw text in some cases
       if (!isValidVariableName(varName))
         return;
       if (!scope.contains(varName))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
-    } else if (expr instanceof PropertyAccessExpression) {
-      final String varName = ((PropertyAccessExpression) expr).getVariableName();
+    } else if (expr instanceof PropertyAccessExpression expression6) {
+      final String varName = expression6.getVariableName();
       if (isValidVariableName(varName) && !scope.contains(varName))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
-    } else if (expr instanceof FunctionCallExpression) {
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+    } else if (expr instanceof FunctionCallExpression expression5) {
+      for (final Expression arg : expression5.getArguments())
         checkExpressionScope(arg, scope);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkExpressionScope(((ArithmeticExpression) expr).getLeft(), scope);
-      checkExpressionScope(((ArithmeticExpression) expr).getRight(), scope);
-    } else if (expr instanceof TernaryLogicalExpression) {
-      checkExpressionScope(((TernaryLogicalExpression) expr).getLeft(), scope);
-      if (((TernaryLogicalExpression) expr).getRight() != null)
-        checkExpressionScope(((TernaryLogicalExpression) expr).getRight(), scope);
-    } else if (expr instanceof ListExpression) {
-      for (final Expression elem : ((ListExpression) expr).getElements())
+    } else if (expr instanceof ArithmeticExpression expression4) {
+      checkExpressionScope(expression4.getLeft(), scope);
+      checkExpressionScope(expression4.getRight(), scope);
+    } else if (expr instanceof TernaryLogicalExpression expression3) {
+      checkExpressionScope(expression3.getLeft(), scope);
+      if (expression3.getRight() != null)
+        checkExpressionScope(expression3.getRight(), scope);
+    } else if (expr instanceof ListExpression expression2) {
+      for (final Expression elem : expression2.getElements())
         checkExpressionScope(elem, scope);
-    } else if (expr instanceof MapExpression) {
-      for (final Expression value : ((MapExpression) expr).getEntries().values())
+    } else if (expr instanceof MapExpression expression1) {
+      for (final Expression value : expression1.getEntries().values())
         checkExpressionScope(value, scope);
-    } else if (expr instanceof BooleanWrapperExpression) {
-      checkBooleanExpressionScope(((BooleanWrapperExpression) expr).getBooleanExpression(), scope);
-    } else if (expr instanceof ComparisonExpressionWrapper) {
-      final ComparisonExpression comp = ((ComparisonExpressionWrapper) expr).getComparison();
+    } else if (expr instanceof BooleanWrapperExpression expression) {
+      checkBooleanExpressionScope(expression.getBooleanExpression(), scope);
+    } else if (expr instanceof ComparisonExpressionWrapper wrapper) {
+      final ComparisonExpression comp = wrapper.getComparison();
       checkExpressionScope(comp.getLeft(), scope);
       checkExpressionScope(comp.getRight(), scope);
-    } else if (expr instanceof CaseExpression) {
-      final CaseExpression caseExpr = (CaseExpression) expr;
+    } else if (expr instanceof CaseExpression caseExpr) {
       if (caseExpr.getCaseExpression() != null)
         checkExpressionScope(caseExpr.getCaseExpression(), scope);
       for (final CaseAlternative alt : caseExpr.getAlternatives()) {
@@ -605,8 +604,7 @@ public class CypherSemanticValidator {
       }
       if (caseExpr.getElseExpression() != null)
         checkExpressionScope(caseExpr.getElseExpression(), scope);
-    } else if (expr instanceof ListComprehensionExpression) {
-      final ListComprehensionExpression lce = (ListComprehensionExpression) expr;
+    } else if (expr instanceof ListComprehensionExpression lce) {
       checkExpressionScope(lce.getListExpression(), scope);
       // The variable introduces a new scope binding for the inner expressions
       final Set<String> innerScope = new HashSet<>(scope);
@@ -615,12 +613,10 @@ public class CypherSemanticValidator {
         checkExpressionScope(lce.getWhereExpression(), innerScope);
       if (lce.getMapExpression() != null)
         checkExpressionScope(lce.getMapExpression(), innerScope);
-    } else if (expr instanceof ListIndexExpression) {
-      final ListIndexExpression lie = (ListIndexExpression) expr;
+    } else if (expr instanceof ListIndexExpression lie) {
       checkExpressionScope(lie.getListExpression(), scope);
       checkExpressionScope(lie.getIndexExpression(), scope);
-    } else if (expr instanceof ListPredicateExpression) {
-      final ListPredicateExpression lpe = (ListPredicateExpression) expr;
+    } else if (expr instanceof ListPredicateExpression lpe) {
       checkExpressionScope(lpe.getListExpression(), scope);
       // The variable introduces a new scope binding for the WHERE expression
       final Set<String> innerScope = new HashSet<>(scope);
@@ -694,10 +690,10 @@ public class CypherSemanticValidator {
   }
 
   private boolean containsNodeVariable(final Expression expr) {
-    if (expr instanceof ListExpression)
-      for (final Expression elem : ((ListExpression) expr).getElements()) {
-        if (elem instanceof VariableExpression) {
-          final VarType type = varTypes.get(((VariableExpression) elem).getVariableName());
+    if (expr instanceof ListExpression expression1)
+      for (final Expression elem : expression1.getElements()) {
+        if (elem instanceof VariableExpression expression) {
+          final VarType type = varTypes.get(expression.getVariableName());
           if (type == VarType.NODE)
             return true;
         }
@@ -713,15 +709,14 @@ public class CypherSemanticValidator {
   private void checkExpressionScopeSkipAggArgs(final Expression expr, final Set<String> scope) {
     if (expr == null)
       return;
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
+    if (expr instanceof FunctionCallExpression func) {
       if (func.isAggregation())
         return; // Don't check arguments of aggregation against restricted scope
       for (final Expression arg : func.getArguments())
         checkExpressionScopeSkipAggArgs(arg, scope);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkExpressionScopeSkipAggArgs(((ArithmeticExpression) expr).getLeft(), scope);
-      checkExpressionScopeSkipAggArgs(((ArithmeticExpression) expr).getRight(), scope);
+    } else if (expr instanceof ArithmeticExpression expression) {
+      checkExpressionScopeSkipAggArgs(expression.getLeft(), scope);
+      checkExpressionScopeSkipAggArgs(expression.getRight(), scope);
     } else {
       checkExpressionScope(expr, scope);
     }
@@ -729,8 +724,8 @@ public class CypherSemanticValidator {
 
   private void checkPropertyValuesScope(final Map<String, Object> properties, final Set<String> scope) {
     for (final Object value : properties.values())
-      if (value instanceof Expression)
-        checkExpressionScope((Expression) value, scope);
+      if (value instanceof Expression expression)
+        checkExpressionScope(expression, scope);
   }
 
   private void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
@@ -782,37 +777,41 @@ public class CypherSemanticValidator {
     if (expr == null)
       return;
 
-    if (expr instanceof TernaryLogicalExpression) {
-      final TernaryLogicalExpression tle = (TernaryLogicalExpression) expr;
-      // Check that operands are valid boolean types
-      checkOperandForBooleanContext(tle.getLeft());
-      if (tle.getRight() != null)
-        checkOperandForBooleanContext(tle.getRight());
-      // Recurse into operands
-      checkBooleanOperandInExpression(tle.getLeft());
-      if (tle.getRight() != null)
-        checkBooleanOperandInExpression(tle.getRight());
-    } else if (expr instanceof FunctionCallExpression) {
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        checkBooleanOperandInExpression(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkBooleanOperandInExpression(((ArithmeticExpression) expr).getLeft());
-      checkBooleanOperandInExpression(((ArithmeticExpression) expr).getRight());
-    } else if (expr instanceof ListExpression) {
-      for (final Expression elem : ((ListExpression) expr).getElements())
-        checkBooleanOperandInExpression(elem);
-    } else if (expr instanceof BooleanWrapperExpression) {
-      checkBooleanOperandInBooleanExpression(((BooleanWrapperExpression) expr).getBooleanExpression());
-    } else if (expr instanceof CaseExpression) {
-      final CaseExpression caseExpr = (CaseExpression) expr;
-      if (caseExpr.getCaseExpression() != null)
-        checkBooleanOperandInExpression(caseExpr.getCaseExpression());
-      for (final CaseAlternative alt : caseExpr.getAlternatives()) {
-        checkBooleanOperandInExpression(alt.getWhenExpression());
-        checkBooleanOperandInExpression(alt.getThenExpression());
+    switch (expr) {
+      case TernaryLogicalExpression tle -> {
+        // Check that operands are valid boolean types
+        checkOperandForBooleanContext(tle.getLeft());
+        if (tle.getRight() != null)
+          checkOperandForBooleanContext(tle.getRight());
+        // Recurse into operands
+        checkBooleanOperandInExpression(tle.getLeft());
+        if (tle.getRight() != null)
+          checkBooleanOperandInExpression(tle.getRight());
       }
-      if (caseExpr.getElseExpression() != null)
-        checkBooleanOperandInExpression(caseExpr.getElseExpression());
+      case FunctionCallExpression expression3 -> {
+        for (final Expression arg : expression3.getArguments())
+          checkBooleanOperandInExpression(arg);
+      }
+      case ArithmeticExpression expression2 -> {
+        checkBooleanOperandInExpression(expression2.getLeft());
+        checkBooleanOperandInExpression(expression2.getRight());
+      }
+      case ListExpression expression1 -> {
+        for (final Expression elem : expression1.getElements())
+          checkBooleanOperandInExpression(elem);
+      }
+      case BooleanWrapperExpression expression -> checkBooleanOperandInBooleanExpression(expression.getBooleanExpression());
+      case CaseExpression caseExpr -> {
+        if (caseExpr.getCaseExpression() != null)
+          checkBooleanOperandInExpression(caseExpr.getCaseExpression());
+        for (final CaseAlternative alt : caseExpr.getAlternatives()) {
+          checkBooleanOperandInExpression(alt.getWhenExpression());
+          checkBooleanOperandInExpression(alt.getThenExpression());
+        }
+        if (caseExpr.getElseExpression() != null)
+          checkBooleanOperandInExpression(caseExpr.getElseExpression());
+      }
+      case null, default -> {}
     }
   }
 
@@ -820,25 +819,27 @@ public class CypherSemanticValidator {
     if (boolExpr == null)
       return;
 
-    if (boolExpr instanceof LogicalExpression) {
-      final LogicalExpression logExpr = (LogicalExpression) boolExpr;
-      // Check operands
-      checkBooleanExprOperandValidity(logExpr.getLeft());
-      if (logExpr.getRight() != null)
-        checkBooleanExprOperandValidity(logExpr.getRight());
-      // Recurse
-      checkBooleanOperandInBooleanExpression(logExpr.getLeft());
-      if (logExpr.getRight() != null)
-        checkBooleanOperandInBooleanExpression(logExpr.getRight());
-    } else if (boolExpr instanceof ComparisonExpression) {
-      final ComparisonExpression comp = (ComparisonExpression) boolExpr;
-      checkBooleanOperandInExpression(comp.getLeft());
-      checkBooleanOperandInExpression(comp.getRight());
-    } else if (boolExpr instanceof InExpression) {
-      final InExpression inExpr = (InExpression) boolExpr;
-      checkBooleanOperandInExpression(inExpr.getExpression());
-      for (final Expression elem : inExpr.getList())
-        checkBooleanOperandInExpression(elem);
+    switch (boolExpr) {
+      case LogicalExpression logExpr -> {
+        // Check operands
+        checkBooleanExprOperandValidity(logExpr.getLeft());
+        if (logExpr.getRight() != null)
+          checkBooleanExprOperandValidity(logExpr.getRight());
+        // Recurse
+        checkBooleanOperandInBooleanExpression(logExpr.getLeft());
+        if (logExpr.getRight() != null)
+          checkBooleanOperandInBooleanExpression(logExpr.getRight());
+      }
+      case ComparisonExpression comp -> {
+        checkBooleanOperandInExpression(comp.getLeft());
+        checkBooleanOperandInExpression(comp.getRight());
+      }
+      case InExpression inExpr -> {
+        checkBooleanOperandInExpression(inExpr.getExpression());
+        for (final Expression elem : inExpr.getList())
+          checkBooleanOperandInExpression(elem);
+      }
+      case null, default -> {}
     }
   }
 
@@ -847,8 +848,8 @@ public class CypherSemanticValidator {
       return;
 
     // Reject non-boolean literal values
-    if (operand instanceof LiteralExpression) {
-      final Object value = ((LiteralExpression) operand).getValue();
+    if (operand instanceof LiteralExpression expression) {
+      final Object value = expression.getValue();
       if (value != null && !(value instanceof Boolean))
         throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + value.getClass().getSimpleName());
     }
@@ -959,7 +960,7 @@ public class CypherSemanticValidator {
           if (expr == null)
             continue;
           // Check for non-projected aggregation function in ORDER BY
-          if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation()) {
+          if (expr instanceof FunctionCallExpression expression && expression.isAggregation()) {
             final String exprText = expr.getText();
             if (exprText != null && !projectedNames.contains(exprText))
               throw new CommandSemanticException("UndefinedVariable: Aggregation in ORDER BY is not projected");
@@ -975,8 +976,7 @@ public class CypherSemanticValidator {
     if (expr == null)
       return;
 
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
+    if (expr instanceof FunctionCallExpression func) {
       if (func.isAggregation()) {
         if (insideAggregation)
           throw new CommandParsingException("NestedAggregation: Nested aggregation functions are not allowed");
@@ -989,26 +989,24 @@ public class CypherSemanticValidator {
       }
       for (final Expression arg : func.getArguments())
         checkNestedAggregation(arg, insideAggregation);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkNestedAggregation(((ArithmeticExpression) expr).getLeft(), insideAggregation);
-      checkNestedAggregation(((ArithmeticExpression) expr).getRight(), insideAggregation);
-    } else if (expr instanceof TernaryLogicalExpression) {
-      checkNestedAggregation(((TernaryLogicalExpression) expr).getLeft(), insideAggregation);
-      if (((TernaryLogicalExpression) expr).getRight() != null)
-        checkNestedAggregation(((TernaryLogicalExpression) expr).getRight(), insideAggregation);
-    } else if (expr instanceof BooleanWrapperExpression) {
-      final BooleanExpression boolExpr = ((BooleanWrapperExpression) expr).getBooleanExpression();
+    } else if (expr instanceof ArithmeticExpression expression3) {
+      checkNestedAggregation(expression3.getLeft(), insideAggregation);
+      checkNestedAggregation(expression3.getRight(), insideAggregation);
+    } else if (expr instanceof TernaryLogicalExpression expression2) {
+      checkNestedAggregation(expression2.getLeft(), insideAggregation);
+      if (expression2.getRight() != null)
+        checkNestedAggregation(expression2.getRight(), insideAggregation);
+    } else if (expr instanceof BooleanWrapperExpression expression1) {
+      final BooleanExpression boolExpr = expression1.getBooleanExpression();
       checkNestedAggregationInBoolean(boolExpr, insideAggregation);
-    } else if (expr instanceof ListExpression) {
-      for (final Expression elem : ((ListExpression) expr).getElements())
+    } else if (expr instanceof ListExpression expression) {
+      for (final Expression elem : expression.getElements())
         checkNestedAggregation(elem, insideAggregation);
-    } else if (expr instanceof ListComprehensionExpression) {
-      final ListComprehensionExpression lce = (ListComprehensionExpression) expr;
+    } else if (expr instanceof ListComprehensionExpression lce) {
       checkNestedAggregation(lce.getListExpression(), insideAggregation);
       if (lce.getMapExpression() != null)
         checkAggregationInListComprehension(lce.getMapExpression());
-    } else if (expr instanceof CaseExpression) {
-      final CaseExpression caseExpr = (CaseExpression) expr;
+    } else if (expr instanceof CaseExpression caseExpr) {
       if (caseExpr.getCaseExpression() != null)
         checkNestedAggregation(caseExpr.getCaseExpression(), insideAggregation);
       for (final CaseAlternative alt : caseExpr.getAlternatives()) {
@@ -1021,21 +1019,20 @@ public class CypherSemanticValidator {
   }
 
   private void checkNestedAggregationInBoolean(final BooleanExpression boolExpr, final boolean insideAggregation) {
-    if (boolExpr instanceof ComparisonExpression) {
-      checkNestedAggregation(((ComparisonExpression) boolExpr).getLeft(), insideAggregation);
-      checkNestedAggregation(((ComparisonExpression) boolExpr).getRight(), insideAggregation);
-    } else if (boolExpr instanceof LogicalExpression) {
-      checkNestedAggregationInBoolean(((LogicalExpression) boolExpr).getLeft(), insideAggregation);
-      if (((LogicalExpression) boolExpr).getRight() != null)
-        checkNestedAggregationInBoolean(((LogicalExpression) boolExpr).getRight(), insideAggregation);
+    if (boolExpr instanceof ComparisonExpression expression1) {
+      checkNestedAggregation(expression1.getLeft(), insideAggregation);
+      checkNestedAggregation(expression1.getRight(), insideAggregation);
+    } else if (boolExpr instanceof LogicalExpression expression) {
+      checkNestedAggregationInBoolean(expression.getLeft(), insideAggregation);
+      if (expression.getRight() != null)
+        checkNestedAggregationInBoolean(expression.getRight(), insideAggregation);
     }
   }
 
   private static final Set<String> NON_DETERMINISTIC_FUNCTIONS = Set.of("rand", "randomuuid");
 
   private void checkNonConstantInAggregation(final Expression expr) {
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
+    if (expr instanceof FunctionCallExpression func) {
       if (NON_DETERMINISTIC_FUNCTIONS.contains(func.getFunctionName().toLowerCase(Locale.ROOT)))
         throw new CommandParsingException("NonConstantExpression: Non-constant expression is not allowed inside aggregation: " + func.getFunctionName());
     }
@@ -1044,11 +1041,11 @@ public class CypherSemanticValidator {
   private void checkAggregationInListComprehension(final Expression expr) {
     if (expr == null)
       return;
-    if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
+    if (expr instanceof FunctionCallExpression expression && expression.isAggregation())
       throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in list comprehensions");
-    if (expr instanceof ArithmeticExpression) {
-      checkAggregationInListComprehension(((ArithmeticExpression) expr).getLeft());
-      checkAggregationInListComprehension(((ArithmeticExpression) expr).getRight());
+    if (expr instanceof ArithmeticExpression expression1) {
+      checkAggregationInListComprehension(expression1.getLeft());
+      checkAggregationInListComprehension(expression1.getRight());
     }
   }
 
@@ -1062,20 +1059,22 @@ public class CypherSemanticValidator {
     if (boolExpr == null)
       return;
 
-    if (boolExpr instanceof LogicalExpression) {
-      final LogicalExpression logExpr = (LogicalExpression) boolExpr;
-      checkAggregationInBooleanExpression(logExpr.getLeft());
-      if (logExpr.getRight() != null)
-        checkAggregationInBooleanExpression(logExpr.getRight());
-    } else if (boolExpr instanceof ComparisonExpression) {
-      final ComparisonExpression comp = (ComparisonExpression) boolExpr;
-      checkAggregationInExpression(comp.getLeft());
-      checkAggregationInExpression(comp.getRight());
-    } else if (boolExpr instanceof InExpression) {
-      final InExpression inExpr = (InExpression) boolExpr;
-      checkAggregationInExpression(inExpr.getExpression());
-      for (final Expression elem : inExpr.getList())
-        checkAggregationInExpression(elem);
+    switch (boolExpr) {
+      case LogicalExpression logExpr -> {
+        checkAggregationInBooleanExpression(logExpr.getLeft());
+        if (logExpr.getRight() != null)
+          checkAggregationInBooleanExpression(logExpr.getRight());
+      }
+      case ComparisonExpression comp -> {
+        checkAggregationInExpression(comp.getLeft());
+        checkAggregationInExpression(comp.getRight());
+      }
+      case InExpression inExpr -> {
+        checkAggregationInExpression(inExpr.getExpression());
+        for (final Expression elem : inExpr.getList())
+          checkAggregationInExpression(elem);
+      }
+      case null, default -> {}
     }
   }
 
@@ -1083,14 +1082,14 @@ public class CypherSemanticValidator {
     if (expr == null)
       return;
 
-    if (expr instanceof FunctionCallExpression) {
-      if (((FunctionCallExpression) expr).isAggregation())
+    if (expr instanceof FunctionCallExpression expression1) {
+      if (expression1.isAggregation())
         throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in ORDER BY after RETURN");
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+      for (final Expression arg : expression1.getArguments())
         checkAggregationInOrderBy(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkAggregationInOrderBy(((ArithmeticExpression) expr).getLeft());
-      checkAggregationInOrderBy(((ArithmeticExpression) expr).getRight());
+    } else if (expr instanceof ArithmeticExpression expression) {
+      checkAggregationInOrderBy(expression.getLeft());
+      checkAggregationInOrderBy(expression.getRight());
     }
   }
 
@@ -1109,7 +1108,7 @@ public class CypherSemanticValidator {
       if (!expr.containsAggregation())
         continue;
       // Pure aggregation call is fine
-      if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
+      if (expr instanceof FunctionCallExpression expression && expression.isAggregation())
         continue;
       // Mixed expression — check non-aggregated parts
       checkMixedAggregation(expr, groupingVars);
@@ -1122,45 +1121,49 @@ public class CypherSemanticValidator {
   private void checkMixedAggregation(final Expression expr, final Set<String> groupingVars) {
     if (expr == null)
       return;
-    if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
+    if (expr instanceof FunctionCallExpression expression && expression.isAggregation())
       return; // Stop at aggregation boundary
 
-    if (expr instanceof ArithmeticExpression) {
-      final Expression left = ((ArithmeticExpression) expr).getLeft();
-      final Expression right = ((ArithmeticExpression) expr).getRight();
-      final boolean leftAgg = left != null && left.containsAggregation();
-      final boolean rightAgg = right != null && right.containsAggregation();
+    switch (expr) {
+      case ArithmeticExpression expression3 -> {
+        final Expression left = expression3.getLeft();
+        final Expression right = expression3.getRight();
+        final boolean leftAgg = left != null && left.containsAggregation();
+        final boolean rightAgg = right != null && right.containsAggregation();
 
-      if (leftAgg && !rightAgg) {
-        validateNonAggPart(right, groupingVars);
-        checkMixedAggregation(left, groupingVars);
-      } else if (!leftAgg && rightAgg) {
-        validateNonAggPart(left, groupingVars);
-        checkMixedAggregation(right, groupingVars);
-      } else {
-        checkMixedAggregation(left, groupingVars);
-        checkMixedAggregation(right, groupingVars);
+        if (leftAgg && !rightAgg) {
+          validateNonAggPart(right, groupingVars);
+          checkMixedAggregation(left, groupingVars);
+        } else if (!leftAgg && rightAgg) {
+          validateNonAggPart(left, groupingVars);
+          checkMixedAggregation(right, groupingVars);
+        } else {
+          checkMixedAggregation(left, groupingVars);
+          checkMixedAggregation(right, groupingVars);
+        }
       }
-    } else if (expr instanceof FunctionCallExpression) {
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        checkMixedAggregation(arg, groupingVars);
-    } else if (expr instanceof BooleanWrapperExpression) {
-      checkMixedAggregationInBoolean(((BooleanWrapperExpression) expr).getBooleanExpression(), groupingVars);
-    } else if (expr instanceof ComparisonExpressionWrapper) {
-      final ComparisonExpression comp = ((ComparisonExpressionWrapper) expr).getComparison();
-      checkMixedAggregation(comp.getLeft(), groupingVars);
-      checkMixedAggregation(comp.getRight(), groupingVars);
+      case FunctionCallExpression expression2 -> {
+        for (final Expression arg : expression2.getArguments())
+          checkMixedAggregation(arg, groupingVars);
+      }
+      case BooleanWrapperExpression expression1 -> checkMixedAggregationInBoolean(expression1.getBooleanExpression(), groupingVars);
+      case ComparisonExpressionWrapper wrapper -> {
+        final ComparisonExpression comp = wrapper.getComparison();
+        checkMixedAggregation(comp.getLeft(), groupingVars);
+        checkMixedAggregation(comp.getRight(), groupingVars);
+      }
+      case null, default -> {}
     }
   }
 
   private void checkMixedAggregationInBoolean(final BooleanExpression boolExpr, final Set<String> groupingVars) {
-    if (boolExpr instanceof ComparisonExpression) {
-      checkMixedAggregation(((ComparisonExpression) boolExpr).getLeft(), groupingVars);
-      checkMixedAggregation(((ComparisonExpression) boolExpr).getRight(), groupingVars);
-    } else if (boolExpr instanceof LogicalExpression) {
-      checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getLeft(), groupingVars);
-      if (((LogicalExpression) boolExpr).getRight() != null)
-        checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getRight(), groupingVars);
+    if (boolExpr instanceof ComparisonExpression expression1) {
+      checkMixedAggregation(expression1.getLeft(), groupingVars);
+      checkMixedAggregation(expression1.getRight(), groupingVars);
+    } else if (boolExpr instanceof LogicalExpression expression) {
+      checkMixedAggregationInBoolean(expression.getLeft(), groupingVars);
+      if (expression.getRight() != null)
+        checkMixedAggregationInBoolean(expression.getRight(), groupingVars);
     }
   }
 
@@ -1171,14 +1174,14 @@ public class CypherSemanticValidator {
     if (expr == null)
       return;
     // Simple variable reference — OK if it's a grouping key
-    if (expr instanceof VariableExpression) {
-      if (!groupingVars.contains(((VariableExpression) expr).getVariableName()))
+    if (expr instanceof VariableExpression expression) {
+      if (!groupingVars.contains(expression.getVariableName()))
         throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
       return;
     }
     // Simple property access — OK if the variable is a grouping key
-    if (expr instanceof PropertyAccessExpression) {
-      if (!groupingVars.contains(((PropertyAccessExpression) expr).getVariableName()))
+    if (expr instanceof PropertyAccessExpression expression1) {
+      if (!groupingVars.contains(expression1.getVariableName()))
         throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
       return;
     }
@@ -1197,8 +1200,7 @@ public class CypherSemanticValidator {
       return true;
     if (expr instanceof LiteralExpression || expr instanceof StarExpression)
       return false;
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
+    if (expr instanceof FunctionCallExpression func) {
       if (func.isAggregation())
         return false; // Variables inside aggregation arguments are OK
       for (final Expression arg : func.getArguments())
@@ -1206,13 +1208,13 @@ public class CypherSemanticValidator {
           return true;
       return false;
     }
-    if (expr instanceof ArithmeticExpression)
-      return hasVariableRefOutsideAggregation(((ArithmeticExpression) expr).getLeft())
-          || hasVariableRefOutsideAggregation(((ArithmeticExpression) expr).getRight());
-    if (expr instanceof BooleanWrapperExpression)
-      return hasBooleanVarRefOutsideAgg(((BooleanWrapperExpression) expr).getBooleanExpression());
-    if (expr instanceof ComparisonExpressionWrapper) {
-      final ComparisonExpression comp = ((ComparisonExpressionWrapper) expr).getComparison();
+    if (expr instanceof ArithmeticExpression expression)
+      return hasVariableRefOutsideAggregation(expression.getLeft())
+          || hasVariableRefOutsideAggregation(expression.getRight());
+    if (expr instanceof BooleanWrapperExpression expression1)
+      return hasBooleanVarRefOutsideAgg(expression1.getBooleanExpression());
+    if (expr instanceof ComparisonExpressionWrapper wrapper) {
+      final ComparisonExpression comp = wrapper.getComparison();
       return hasVariableRefOutsideAggregation(comp.getLeft())
           || hasVariableRefOutsideAggregation(comp.getRight());
     }
@@ -1222,14 +1224,14 @@ public class CypherSemanticValidator {
   private static boolean hasBooleanVarRefOutsideAgg(final BooleanExpression boolExpr) {
     if (boolExpr == null)
       return false;
-    if (boolExpr instanceof ComparisonExpression)
-      return hasVariableRefOutsideAggregation(((ComparisonExpression) boolExpr).getLeft())
-          || hasVariableRefOutsideAggregation(((ComparisonExpression) boolExpr).getRight());
-    if (boolExpr instanceof LogicalExpression) {
-      if (hasBooleanVarRefOutsideAgg(((LogicalExpression) boolExpr).getLeft()))
+    if (boolExpr instanceof ComparisonExpression expression)
+      return hasVariableRefOutsideAggregation(expression.getLeft())
+          || hasVariableRefOutsideAggregation(expression.getRight());
+    if (boolExpr instanceof LogicalExpression expression1) {
+      if (hasBooleanVarRefOutsideAgg(expression1.getLeft()))
         return true;
-      return ((LogicalExpression) boolExpr).getRight() != null
-          && hasBooleanVarRefOutsideAgg(((LogicalExpression) boolExpr).getRight());
+      return expression1.getRight() != null
+          && hasBooleanVarRefOutsideAgg(expression1.getRight());
     }
     return false;
   }
@@ -1247,34 +1249,36 @@ public class CypherSemanticValidator {
   }
 
   private static void collectVariableNamesFromExpression(final Expression expr, final Set<String> vars) {
-    if (expr instanceof VariableExpression)
-      vars.add(((VariableExpression) expr).getVariableName());
-    else if (expr instanceof PropertyAccessExpression)
-      vars.add(((PropertyAccessExpression) expr).getVariableName());
-    else if (expr instanceof ArithmeticExpression) {
-      collectVariableNamesFromExpression(((ArithmeticExpression) expr).getLeft(), vars);
-      collectVariableNamesFromExpression(((ArithmeticExpression) expr).getRight(), vars);
-    } else if (expr instanceof FunctionCallExpression) {
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        collectVariableNamesFromExpression(arg, vars);
+    switch (expr) {
+      case VariableExpression expression3 -> vars.add(expression3.getVariableName());
+      case PropertyAccessExpression expression2 -> vars.add(expression2.getVariableName());
+      case ArithmeticExpression expression1 -> {
+        collectVariableNamesFromExpression(expression1.getLeft(), vars);
+        collectVariableNamesFromExpression(expression1.getRight(), vars);
+      }
+      case FunctionCallExpression expression -> {
+        for (final Expression arg : expression.getArguments())
+          collectVariableNamesFromExpression(arg, vars);
+      }
+      case null, default -> {}
     }
   }
 
   private static void collectVariableRefsOutsideAggregation(final Expression expr, final Set<String> vars) {
     if (expr == null)
       return;
-    if (expr instanceof VariableExpression)
-      vars.add(((VariableExpression) expr).getVariableName());
-    else if (expr instanceof PropertyAccessExpression)
-      vars.add(((PropertyAccessExpression) expr).getVariableName());
-    else if (expr instanceof FunctionCallExpression) {
-      if (((FunctionCallExpression) expr).isAggregation())
+    if (expr instanceof VariableExpression expression3)
+      vars.add(expression3.getVariableName());
+    else if (expr instanceof PropertyAccessExpression expression2)
+      vars.add(expression2.getVariableName());
+    else if (expr instanceof FunctionCallExpression expression1) {
+      if (expression1.isAggregation())
         return; // Stop at aggregation boundary
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+      for (final Expression arg : expression1.getArguments())
         collectVariableRefsOutsideAggregation(arg, vars);
-    } else if (expr instanceof ArithmeticExpression) {
-      collectVariableRefsOutsideAggregation(((ArithmeticExpression) expr).getLeft(), vars);
-      collectVariableRefsOutsideAggregation(((ArithmeticExpression) expr).getRight(), vars);
+    } else if (expr instanceof ArithmeticExpression expression) {
+      collectVariableRefsOutsideAggregation(expression.getLeft(), vars);
+      collectVariableRefsOutsideAggregation(expression.getRight(), vars);
     }
   }
 
@@ -1282,14 +1286,14 @@ public class CypherSemanticValidator {
     if (expr == null)
       return;
 
-    if (expr instanceof FunctionCallExpression) {
-      if (((FunctionCallExpression) expr).isAggregation())
+    if (expr instanceof FunctionCallExpression expression1) {
+      if (expression1.isAggregation())
         throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in WHERE");
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+      for (final Expression arg : expression1.getArguments())
         checkAggregationInExpression(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkAggregationInExpression(((ArithmeticExpression) expr).getLeft());
-      checkAggregationInExpression(((ArithmeticExpression) expr).getRight());
+    } else if (expr instanceof ArithmeticExpression expression) {
+      checkAggregationInExpression(expression.getLeft());
+      checkAggregationInExpression(expression.getRight());
     }
   }
 
@@ -1377,7 +1381,7 @@ public class CypherSemanticValidator {
   private void checkMergePropertyNotNull(final Object value) {
     if (value == null)
       throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
-    if (value instanceof LiteralExpression && ((LiteralExpression) value).getValue() == null)
+    if (value instanceof LiteralExpression expression && expression.getValue() == null)
       throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
   }
 
@@ -1485,15 +1489,15 @@ public class CypherSemanticValidator {
     if (expr == null)
       return;
     // Check for negative and floating-point literal values
-    if (expr instanceof LiteralExpression) {
-      final Object val = ((LiteralExpression) expr).getValue();
-      if (val instanceof Number) {
+    if (expr instanceof LiteralExpression expression) {
+      final Object val = expression.getValue();
+      if (val instanceof Number number) {
         if (val instanceof Float || val instanceof Double) {
-          final double d = ((Number) val).doubleValue();
+          final double d = number.doubleValue();
           if (d != Math.floor(d) || Double.isInfinite(d))
             throw new CommandParsingException("InvalidArgumentType: " + clauseName + " value must be an integer, got: Float(" + d + ")");
         }
-        if (((Number) val).intValue() < 0)
+        if (number.intValue() < 0)
           throw new CommandParsingException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
       }
     }
@@ -1503,16 +1507,16 @@ public class CypherSemanticValidator {
   }
 
   private static boolean containsVariableReference(final Expression expr) {
-    if (expr instanceof VariableExpression)
-      return !"*".equals(((VariableExpression) expr).getVariableName());
+    if (expr instanceof VariableExpression expression)
+      return !"*".equals(expression.getVariableName());
     if (expr instanceof PropertyAccessExpression)
       return true;
-    if (expr instanceof ArithmeticExpression) {
-      return containsVariableReference(((ArithmeticExpression) expr).getLeft())
-          || containsVariableReference(((ArithmeticExpression) expr).getRight());
+    if (expr instanceof ArithmeticExpression expression1) {
+      return containsVariableReference(expression1.getLeft())
+          || containsVariableReference(expression1.getRight());
     }
-    if (expr instanceof FunctionCallExpression) {
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
+    if (expr instanceof FunctionCallExpression expression2) {
+      for (final Expression arg : expression2.getArguments())
         if (containsVariableReference(arg))
           return true;
     }
@@ -1558,7 +1562,7 @@ public class CypherSemanticValidator {
       if (withClause.hasAggregations()) {
         for (final ReturnClause.ReturnItem item : withClause.getItems()) {
           final Expression expr = item.getExpression();
-          if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation()) {
+          if (expr instanceof FunctionCallExpression expression && expression.isAggregation()) {
             if (item.getAlias() == null)
               throw new CommandParsingException("NoExpressionAlias: Expression in WITH must be aliased (use AS)");
           }
@@ -1599,102 +1603,113 @@ public class CypherSemanticValidator {
   private void checkFunctionArgTypes(final Expression expr) {
     if (expr == null)
       return;
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
-      final String name = func.getFunctionName().toLowerCase();
-      // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
-      if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
-        throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
-      final List<Expression> args = func.getArguments();
-      if (args.size() == 1) {
-        final Expression arg = args.get(0);
-        final VarType argType = getExpressionType(arg);
-        if (argType != null) {
-          switch (name) {
-            case "length":
-              // length() only works on paths and strings, not nodes or relationships
-              if (argType == VarType.NODE)
-                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
-              if (argType == VarType.RELATIONSHIP)
-                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
-              break;
-            case "type":
-              // type() only works on relationships
-              if (argType == VarType.NODE)
-                throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node");
-              break;
-            case "labels":
-              // labels() only works on nodes
-              if (argType == VarType.PATH)
-                throw new CommandParsingException("InvalidArgumentType: labels() requires a node argument, got path");
-              break;
-            case "size":
-              // size() works on strings and lists, not paths
-              if (argType == VarType.PATH)
-                throw new CommandParsingException("InvalidArgumentType: size() cannot be applied to a path");
-              break;
+    switch (expr) {
+      case FunctionCallExpression func -> {
+        final String name = func.getFunctionName().toLowerCase();
+        // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
+        if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
+          throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
+        final List<Expression> args = func.getArguments();
+        if (args.size() == 1) {
+          final Expression arg = args.getFirst();
+          final VarType argType = getExpressionType(arg);
+          if (argType != null) {
+            switch (name) {
+              case "length":
+                // length() only works on paths and strings, not nodes or relationships
+                if (argType == VarType.NODE)
+                  throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
+                if (argType == VarType.RELATIONSHIP)
+                  throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
+                break;
+              case "type":
+                // type() only works on relationships
+                if (argType == VarType.NODE)
+                  throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node");
+                break;
+              case "labels":
+                // labels() only works on nodes
+                if (argType == VarType.PATH)
+                  throw new CommandParsingException("InvalidArgumentType: labels() requires a node argument, got path");
+                break;
+              case "size":
+                // size() works on strings and lists, not paths
+                if (argType == VarType.PATH)
+                  throw new CommandParsingException("InvalidArgumentType: size() cannot be applied to a path");
+                break;
+            }
           }
         }
+        // Recurse into arguments
+        for (final Expression arg : args)
+          checkFunctionArgTypes(arg);
       }
-      // Recurse into arguments
-      for (final Expression arg : args)
-        checkFunctionArgTypes(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkFunctionArgTypes(((ArithmeticExpression) expr).getLeft());
-      checkFunctionArgTypes(((ArithmeticExpression) expr).getRight());
-    } else if (expr instanceof ListExpression) {
-      for (final Expression elem : ((ListExpression) expr).getElements())
-        checkFunctionArgTypes(elem);
-    } else if (expr instanceof CaseExpression) {
-      final CaseExpression caseExpr = (CaseExpression) expr;
-      if (caseExpr.getCaseExpression() != null)
-        checkFunctionArgTypes(caseExpr.getCaseExpression());
-      for (final CaseAlternative alt : caseExpr.getAlternatives()) {
-        checkFunctionArgTypes(alt.getWhenExpression());
-        checkFunctionArgTypes(alt.getThenExpression());
+      case ArithmeticExpression expression1 -> {
+        checkFunctionArgTypes(expression1.getLeft());
+        checkFunctionArgTypes(expression1.getRight());
       }
-      if (caseExpr.getElseExpression() != null)
-        checkFunctionArgTypes(caseExpr.getElseExpression());
+      case ListExpression expression -> {
+        for (final Expression elem : expression.getElements())
+          checkFunctionArgTypes(elem);
+      }
+      case CaseExpression caseExpr -> {
+        if (caseExpr.getCaseExpression() != null)
+          checkFunctionArgTypes(caseExpr.getCaseExpression());
+        for (final CaseAlternative alt : caseExpr.getAlternatives()) {
+          checkFunctionArgTypes(alt.getWhenExpression());
+          checkFunctionArgTypes(alt.getThenExpression());
+        }
+        if (caseExpr.getElseExpression() != null)
+          checkFunctionArgTypes(caseExpr.getElseExpression());
+      }
+      case null, default -> {}
     }
   }
 
   private void checkPropertyAccessOnPath(final Expression expr) {
     if (expr == null)
       return;
-    if (expr instanceof PropertyAccessExpression) {
-      final String varName = ((PropertyAccessExpression) expr).getVariableName();
-      final VarType type = varTypes.get(varName);
-      if (type == VarType.PATH)
-        throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
-    } else if (expr instanceof FunctionCallExpression) {
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        checkPropertyAccessOnPath(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkPropertyAccessOnPath(((ArithmeticExpression) expr).getLeft());
-      checkPropertyAccessOnPath(((ArithmeticExpression) expr).getRight());
+    switch (expr) {
+      case PropertyAccessExpression expression2 -> {
+        final String varName = expression2.getVariableName();
+        final VarType type = varTypes.get(varName);
+        if (type == VarType.PATH)
+          throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
+      }
+      case FunctionCallExpression expression1 -> {
+        for (final Expression arg : expression1.getArguments())
+          checkPropertyAccessOnPath(arg);
+      }
+      case ArithmeticExpression expression -> {
+        checkPropertyAccessOnPath(expression.getLeft());
+        checkPropertyAccessOnPath(expression.getRight());
+      }
+      case null, default -> {}
     }
   }
 
   private void checkPropertyAccessOnPathInBoolean(final BooleanExpression boolExpr) {
     if (boolExpr == null)
       return;
-    if (boolExpr instanceof ComparisonExpression) {
-      checkPropertyAccessOnPath(((ComparisonExpression) boolExpr).getLeft());
-      checkPropertyAccessOnPath(((ComparisonExpression) boolExpr).getRight());
-    } else if (boolExpr instanceof LogicalExpression) {
-      checkPropertyAccessOnPathInBoolean(((LogicalExpression) boolExpr).getLeft());
-      if (((LogicalExpression) boolExpr).getRight() != null)
-        checkPropertyAccessOnPathInBoolean(((LogicalExpression) boolExpr).getRight());
-    } else if (boolExpr instanceof InExpression) {
-      checkPropertyAccessOnPath(((InExpression) boolExpr).getExpression());
-    } else if (boolExpr instanceof IsNullExpression) {
-      checkPropertyAccessOnPath(((IsNullExpression) boolExpr).getExpression());
+    switch (boolExpr) {
+      case ComparisonExpression expression3 -> {
+        checkPropertyAccessOnPath(expression3.getLeft());
+        checkPropertyAccessOnPath(expression3.getRight());
+      }
+      case LogicalExpression expression2 -> {
+        checkPropertyAccessOnPathInBoolean(expression2.getLeft());
+        if (expression2.getRight() != null)
+          checkPropertyAccessOnPathInBoolean(expression2.getRight());
+      }
+      case InExpression expression1 -> checkPropertyAccessOnPath(expression1.getExpression());
+      case IsNullExpression expression -> checkPropertyAccessOnPath(expression.getExpression());
+      case null, default -> {}
     }
   }
 
   private VarType getExpressionType(final Expression expr) {
-    if (expr instanceof VariableExpression) {
-      final String varName = ((VariableExpression) expr).getVariableName();
+    if (expr instanceof VariableExpression expression) {
+      final String varName = expression.getVariableName();
       return varTypes.get(varName);
     }
     return null;

@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -69,7 +70,7 @@ class ImportDatabaseScenarioIT extends ContainersTestTemplate {
 
     // Issue the import command on node 0
     logger.info("Issuing import database on node 0");
-    final int importStatus = postServerCommand(servers.get(0),
+    final int importStatus = postServerCommand(servers.getFirst(),
         "import database " + IMPORT_DB + " file:///home/arcadedb/import-fixture.jsonl.tgz",
         180_000);
     assertThat(importStatus).as("import database HTTP status").isEqualTo(200);
@@ -77,7 +78,7 @@ class ImportDatabaseScenarioIT extends ContainersTestTemplate {
     // Await until every node sees the imported database
     logger.info("Waiting for import to propagate to every node");
     Awaitility.await().atMost(180, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS)
-        .until(() -> databaseExistsOnServer(servers.get(0), IMPORT_DB)
+        .until(() -> databaseExistsOnServer(servers.getFirst(), IMPORT_DB)
             && databaseExistsOnServer(servers.get(1), IMPORT_DB)
             && databaseExistsOnServer(servers.get(2), IMPORT_DB));
 
@@ -88,7 +89,7 @@ class ImportDatabaseScenarioIT extends ContainersTestTemplate {
       final RemoteDatabase db = new RemoteDatabase(
           servers.get(i).host(), servers.get(i).httpPort(), IMPORT_DB, "root", PASSWORD);
       db.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
-      try {
+      try (db) {
         final int nodeIndex = i;
         Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS)
             .until(() -> {
@@ -108,8 +109,6 @@ class ImportDatabaseScenarioIT extends ContainersTestTemplate {
           final Number cnt = r.getProperty("cnt");
           counts[i] = cnt != null ? cnt.longValue() : 0L;
         }
-      } finally {
-        db.close();
       }
     }
 

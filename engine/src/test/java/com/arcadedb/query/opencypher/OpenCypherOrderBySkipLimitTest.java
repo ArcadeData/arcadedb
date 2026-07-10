@@ -5,6 +5,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -13,8 +14,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * Tests for ORDER BY, SKIP, and LIMIT clauses in OpenCypher queries.
@@ -57,7 +56,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(5);
 
     // Should be ordered by age ascending: Bob(25), David(28), Alice(30), Eve(32), Charlie(35)
-    assertThat((String) results.get(0).getProperty("n.name")).isEqualTo("Bob");
+    assertThat((String) results.getFirst().getProperty("n.name")).isEqualTo("Bob");
     assertThat((String) results.get(1).getProperty("n.name")).isEqualTo("David");
     assertThat((String) results.get(2).getProperty("n.name")).isEqualTo("Alice");
     assertThat((String) results.get(3).getProperty("n.name")).isEqualTo("Eve");
@@ -74,7 +73,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(5);
 
     // Should be ordered by age descending: Charlie(35), Eve(32), Alice(30), David(28), Bob(25)
-    assertThat((String) results.get(0).getProperty("n.name")).isEqualTo("Charlie");
+    assertThat((String) results.getFirst().getProperty("n.name")).isEqualTo("Charlie");
     assertThat((String) results.get(1).getProperty("n.name")).isEqualTo("Eve");
     assertThat((String) results.get(2).getProperty("n.name")).isEqualTo("Alice");
     assertThat((String) results.get(3).getProperty("n.name")).isEqualTo("David");
@@ -91,7 +90,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(5);
 
     // Should be ordered alphabetically: Alice, Bob, Charlie, David, Eve
-    assertThat((String) results.get(0).getProperty("n.name")).isEqualTo("Alice");
+    assertThat((String) results.getFirst().getProperty("n.name")).isEqualTo("Alice");
     assertThat((String) results.get(1).getProperty("n.name")).isEqualTo("Bob");
     assertThat((String) results.get(2).getProperty("n.name")).isEqualTo("Charlie");
     assertThat((String) results.get(3).getProperty("n.name")).isEqualTo("David");
@@ -157,7 +156,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(3);
 
     // Should be ordered by age, skip first (Bob), return next 3: David, Alice, Eve
-    assertThat((String) results.get(0).getProperty("n.name")).isEqualTo("David");
+    assertThat((String) results.getFirst().getProperty("n.name")).isEqualTo("David");
     assertThat((String) results.get(1).getProperty("n.name")).isEqualTo("Alice");
     assertThat((String) results.get(2).getProperty("n.name")).isEqualTo("Eve");
   }
@@ -172,7 +171,7 @@ public class OpenCypherOrderBySkipLimitTest {
 
     // Should return 3 people older than 28, ordered by age descending
     assertThat(results).hasSize(3);
-    assertThat((String) results.get(0).getProperty("n.name")).isEqualTo("Charlie"); // 35
+    assertThat((String) results.getFirst().getProperty("n.name")).isEqualTo("Charlie"); // 35
     assertThat((String) results.get(1).getProperty("n.name")).isEqualTo("Eve"); // 32
     assertThat((String) results.get(2).getProperty("n.name")).isEqualTo("Alice"); // 30
   }
@@ -188,7 +187,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(4);
 
     // Ascending: non-null values first, then null at the end
-    assertThat((Long) results.get(0).getProperty("val")).isEqualTo(1);
+    assertThat((Long) results.getFirst().getProperty("val")).isEqualTo(1);
     assertThat((Long) results.get(1).getProperty("val")).isEqualTo(2);
     assertThat((Long) results.get(2).getProperty("val")).isEqualTo(3);
     assertThat((Object) results.get(3).getProperty("val")).isNull();
@@ -205,7 +204,7 @@ public class OpenCypherOrderBySkipLimitTest {
     assertThat(results).hasSize(4);
 
     // Descending: null first, then non-null values descending
-    assertThat((Object) results.get(0).getProperty("val")).isNull();
+    assertThat((Object) results.getFirst().getProperty("val")).isNull();
     assertThat((Long) results.get(1).getProperty("val")).isEqualTo(3);
     assertThat((Long) results.get(2).getProperty("val")).isEqualTo(2);
     assertThat((Long) results.get(3).getProperty("val")).isEqualTo(1);
@@ -221,7 +220,7 @@ public class OpenCypherOrderBySkipLimitTest {
 
     assertThat(results).hasSize(5);
 
-    assertThat((Long) results.get(0).getProperty("val")).isEqualTo(1);
+    assertThat((Long) results.getFirst().getProperty("val")).isEqualTo(1);
     assertThat((Long) results.get(1).getProperty("val")).isEqualTo(2);
     assertThat((Long) results.get(2).getProperty("val")).isEqualTo(3);
     assertThat((Object) results.get(3).getProperty("val")).isNull();
@@ -295,8 +294,8 @@ public class OpenCypherOrderBySkipLimitTest {
 
       final List<Result> rows = collectResults(result);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-003");
-      assertThat((List<Object>) rows.get(0).getProperty("items")).containsExactly("ItemC");
+      assertThat((String) rows.getFirst().getProperty("orderId")).isEqualTo("ORD-003");
+      assertThat((List<Object>) rows.getFirst().getProperty("items")).containsExactly("ItemC");
     } finally {
       db.drop();
     }
@@ -317,8 +316,8 @@ public class OpenCypherOrderBySkipLimitTest {
 
       final List<Result> rows = collectResults(result);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-001");
-      assertThat((List<Object>) rows.get(0).getProperty("items")).containsExactly("ItemA");
+      assertThat((String) rows.getFirst().getProperty("orderId")).isEqualTo("ORD-001");
+      assertThat((List<Object>) rows.getFirst().getProperty("items")).containsExactly("ItemA");
     } finally {
       db.drop();
     }
@@ -340,7 +339,7 @@ public class OpenCypherOrderBySkipLimitTest {
 
       final List<Result> rows = collectResults(result);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-002");
+      assertThat((String) rows.getFirst().getProperty("orderId")).isEqualTo("ORD-002");
     } finally {
       db.drop();
     }
@@ -360,7 +359,7 @@ public class OpenCypherOrderBySkipLimitTest {
 
       final List<Result> rows = collectResults(result);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-003");
+      assertThat((String) rows.getFirst().getProperty("orderId")).isEqualTo("ORD-003");
     } finally {
       db.drop();
     }
@@ -382,8 +381,8 @@ public class OpenCypherOrderBySkipLimitTest {
 
       final List<Result> rows = collectResults(result);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-003");
-      assertThat((List<Object>) rows.get(0).getProperty("items")).containsExactly("ItemC");
+      assertThat((String) rows.getFirst().getProperty("orderId")).isEqualTo("ORD-003");
+      assertThat((List<Object>) rows.getFirst().getProperty("items")).containsExactly("ItemC");
     } finally {
       db.drop();
     }

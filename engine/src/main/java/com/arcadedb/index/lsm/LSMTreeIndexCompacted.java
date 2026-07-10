@@ -73,7 +73,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
-      return Collections.emptySet();
+      return Set.of();
 
     try {
       final Set<IndexCursorEntry> set = new HashSet<>();
@@ -284,7 +284,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       // NO PAGES. THIS SHOULD NEVER HAPPEN
       LogManager.instance()
           .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
-      return Collections.emptyList();
+      return List.of();
     }
 
     final int effectivePageCount;
@@ -326,7 +326,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           LogManager.instance()
               .log(this, Level.WARNING, "Compacted index '%s' root page %s has an invalid pageNumber=%d", null, getName(), pageId,
                   rootPageId);
-          return Collections.emptyList();
+          return List.of();
         }
       }
 

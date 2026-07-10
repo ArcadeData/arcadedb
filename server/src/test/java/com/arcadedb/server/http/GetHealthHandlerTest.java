@@ -21,6 +21,7 @@ package com.arcadedb.server.http;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.http.handler.GetHealthHandler;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

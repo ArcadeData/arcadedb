@@ -22,7 +22,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Set;
 
 /**
  * Transforms current value in a Set.
@@ -46,7 +49,7 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
 
     if (value == null)
       // NULL VALUE, RETURN AN EMPTY SET
-      return Collections.emptySet();
+      return Set.of();
 
     if (value instanceof Collection<?>) {
       return new HashSet<>((Collection<Object>) value);

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,14 +43,15 @@ class Issue5005SubqueryOrderByLimitTest {
   void setUp() {
     database = new DatabaseFactory("./target/databases/testopencypher-issue5005").create();
     database.command("opencypher",
-        "CREATE (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}), "
-            + "(carol:Person {name: 'Carol'}), (dave:Person {name: 'Dave'}), "
-            + "(eve:Person {name: 'Eve'}), "
-            + "(alice)-[:FOLLOWS]->(bob), "
-            + "(bob)-[:FOLLOWS]->(carol), "
-            + "(alice)-[:FOLLOWS]->(dave), "
-            + "(dave)-[:FOLLOWS]->(carol), "
-            + "(carol)-[:FOLLOWS]->(eve)");
+        """
+        CREATE (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}), \
+        (carol:Person {name: 'Carol'}), (dave:Person {name: 'Dave'}), \
+        (eve:Person {name: 'Eve'}), \
+        (alice)-[:FOLLOWS]->(bob), \
+        (bob)-[:FOLLOWS]->(carol), \
+        (alice)-[:FOLLOWS]->(dave), \
+        (dave)-[:FOLLOWS]->(carol), \
+        (carol)-[:FOLLOWS]->(eve)""");
   }
 
   @AfterEach
@@ -71,27 +73,30 @@ class Issue5005SubqueryOrderByLimitTest {
   @Test
   void directOrderByLimit() {
     final long len = single(
-        "MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) "
-            + "MATCH p = (a)-[:FOLLOWS*1..4]->(c) "
-            + "RETURN length(p) AS len ORDER BY len LIMIT 1", "len");
+        """
+        MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) \
+        MATCH p = (a)-[:FOLLOWS*1..4]->(c) \
+        RETURN length(p) AS len ORDER BY len LIMIT 1""", "len");
     assertThat(len).isEqualTo(2);
   }
 
   @Test
   void subqueryMinAggregation() {
     final long distance = single(
-        "MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) "
-            + "CALL { WITH a, c MATCH p = (a)-[:FOLLOWS*1..4]->(c) RETURN p, length(p) AS len } "
-            + "RETURN min(len) AS distance", "distance");
+        """
+        MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) \
+        CALL { WITH a, c MATCH p = (a)-[:FOLLOWS*1..4]->(c) RETURN p, length(p) AS len } \
+        RETURN min(len) AS distance""", "distance");
     assertThat(distance).isEqualTo(2);
   }
 
   @Test
   void subqueryOrderByLimit() {
     final long distance = single(
-        "MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) "
-            + "CALL { WITH a, c MATCH p = (a)-[:FOLLOWS*1..4]->(c) RETURN length(p) AS len ORDER BY len LIMIT 1 } "
-            + "RETURN len AS distance", "distance");
+        """
+        MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) \
+        CALL { WITH a, c MATCH p = (a)-[:FOLLOWS*1..4]->(c) RETURN length(p) AS len ORDER BY len LIMIT 1 } \
+        RETURN len AS distance""", "distance");
     assertThat(distance).isEqualTo(2);
   }
 }

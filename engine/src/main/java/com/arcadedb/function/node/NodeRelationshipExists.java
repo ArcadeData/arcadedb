@@ -76,11 +76,10 @@ public class NodeRelationshipExists extends AbstractNodeFunction {
     if (args.length < 2 || args[1] == null)
       return null;
 
-    if (args[1] instanceof String)
-      return new String[] { (String) args[1] };
+    if (args[1] instanceof String string)
+      return new String[] { string };
 
-    if (args[1] instanceof Collection) {
-      final Collection<?> coll = (Collection<?>) args[1];
+    if (args[1] instanceof Collection<?> coll) {
       return coll.stream().map(Object::toString).toArray(String[]::new);
     }
 

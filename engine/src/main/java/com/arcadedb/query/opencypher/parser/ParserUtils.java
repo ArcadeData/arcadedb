@@ -145,8 +145,7 @@ public class ParserUtils {
 
   private static void collectDynamicLabelContextsRecursive(final ParseTree node,
       final List<Cypher25Parser.ExpressionContext> out) {
-    if (node instanceof Cypher25Parser.DynamicLabelContext) {
-      final Cypher25Parser.DynamicLabelContext dyn = (Cypher25Parser.DynamicLabelContext) node;
+    if (node instanceof Cypher25Parser.DynamicLabelContext dyn) {
       final Cypher25Parser.DynamicAnyAllExpressionContext inner = dyn.dynamicAnyAllExpression();
       if (inner != null && inner.expression() != null)
         out.add(inner.expression());

@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

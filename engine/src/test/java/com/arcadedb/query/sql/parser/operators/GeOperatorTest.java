@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.parser.GeOperator;
+
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

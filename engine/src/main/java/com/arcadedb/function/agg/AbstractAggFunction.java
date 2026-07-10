@@ -46,10 +46,10 @@ public abstract class AbstractAggFunction implements StatelessFunction {
     if (input == null)
       return result;
 
-    if (input instanceof Collection) {
-      for (final Object item : (Collection<?>) input) {
-        if (item instanceof Number) {
-          result.add(((Number) item).doubleValue());
+    if (input instanceof Collection<?> collection) {
+      for (final Object item : collection) {
+        if (item instanceof Number number) {
+          result.add(number.doubleValue());
         }
       }
     } else if (input.getClass().isArray()) {
@@ -68,15 +68,15 @@ public abstract class AbstractAggFunction implements StatelessFunction {
         }
         case Object[] objects -> {
           for (final Object item : objects) {
-            if (item instanceof Number)
-              result.add(((Number) item).doubleValue());
+            if (item instanceof Number number1)
+              result.add(number1.doubleValue());
           }
         }
         default -> {
         }
       }
-    } else if (input instanceof Number)
-      result.add(((Number) input).doubleValue());
+    } else if (input instanceof Number number2)
+      result.add(number2.doubleValue());
 
     return result;
   }
@@ -89,8 +89,8 @@ public abstract class AbstractAggFunction implements StatelessFunction {
     if (input == null)
       return result;
 
-    if (input instanceof Collection) {
-      result.addAll((Collection<?>) input);
+    if (input instanceof Collection<?> collection) {
+      result.addAll(collection);
     } else if (input.getClass().isArray()) {
       switch (input) {
         case Object[] objects -> {

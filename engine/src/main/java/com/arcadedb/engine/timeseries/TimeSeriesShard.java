@@ -29,7 +29,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.IOException;
-import java.util.logging.Level;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -41,6 +40,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.logging.Level;
 
 /**
  * Pairs a mutable TimeSeriesBucket with a sealed TimeSeriesSealedStore.
@@ -134,7 +134,7 @@ public class TimeSeriesShard implements AutoCloseable {
       } catch (final Exception e) {
         if (db.isTransactionActive())
           db.rollback();
-        throw e instanceof IOException ? (IOException) e :
+        throw e instanceof IOException ioe ? ioe :
             new IOException("Failed to initialise header for shard " + shardIndex, e);
       }
     }
@@ -166,7 +166,7 @@ public class TimeSeriesShard implements AutoCloseable {
       // Close both stores to avoid resource leaks before propagating the error
       try { this.sealedStore.close(); } catch (final Exception ignored) {}
       try { this.mutableBucket.close(); } catch (final Exception ignored) {}
-      throw e instanceof IOException ? (IOException) e :
+      throw e instanceof IOException ioe ? ioe :
           new IOException("Crash recovery failed for shard " + shardIndex, e);
     }
   }
@@ -205,7 +205,7 @@ public class TimeSeriesShard implements AutoCloseable {
           } catch (final Exception e) {
             if (db.isTransactionActive())
               db.rollback();
-            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+            throw e instanceof IOException ioe ? ioe : new IOException("Failed to append timeseries samples", e);
           }
           // On Raft HA leaders, release the read lock BEFORE commit. See appendSamples() javadoc for
           // why. In standalone (non-replicated) mode there is no waitForActiveRecordingSession()
@@ -233,7 +233,7 @@ public class TimeSeriesShard implements AutoCloseable {
           } catch (final Exception e) {
             if (db.isTransactionActive())
               db.rollback();
-            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+            throw e instanceof IOException ioe ? ioe : new IOException("Failed to append timeseries samples", e);
           }
         } finally {
           if (readLockHeld)
@@ -460,7 +460,7 @@ public class TimeSeriesShard implements AutoCloseable {
         } catch (final Exception e) {
           if (db.isTransactionActive())
             db.rollback();
-          throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
+          throw e instanceof IOException ioe ? ioe : new IOException("Compaction failed in phase 0", e);
         }
       }
       // Every loop iteration that does not break either returns or throws, so a successful exit
@@ -522,7 +522,7 @@ public class TimeSeriesShard implements AutoCloseable {
     } catch (final Exception e) {
       sealedStore.deleteTempFileIfExists();
       clearCompactionFlagBestEffort();
-      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
+      throw e instanceof IOException ioe ? ioe : new IOException("Compaction failed writing temp file", e);
     }
 
     // ── Phase 4a (brief writeLock + read-only TX): snapshot remaining pages ──────────────
@@ -651,7 +651,7 @@ public class TimeSeriesShard implements AutoCloseable {
         } catch (final IOException te) {
           throw new IOException("Compaction failed and sealed store rollback also failed: " + te.getMessage(), e);
         }
-        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 4c", e);
+        throw e instanceof IOException ioe ? ioe : new IOException("Compaction failed in phase 4c", e);
       }
     } finally {
       compactionLock.writeLock().unlock();

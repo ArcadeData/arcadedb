@@ -31,6 +31,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +44,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -134,7 +136,7 @@ class RaftHAComprehensiveIT {
 
     // Verify content: spot-check 10 random records
     for (int check = 0; check < 10; check++) {
-      final int id = (int) (Math.random() * recordCount);
+      final int id = (int) (ThreadLocalRandom.current().nextDouble() * recordCount);
       for (final ArcadeDBServer s : servers) {
         if (s == null || !s.isStarted())
           continue;

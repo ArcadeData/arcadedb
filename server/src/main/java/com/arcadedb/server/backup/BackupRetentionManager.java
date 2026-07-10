@@ -24,7 +24,7 @@ import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
@@ -90,7 +90,7 @@ public class BackupRetentionManager {
       return 0;
     }
 
-    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
+    final File dbBackupDir = Path.of(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 
@@ -150,7 +150,7 @@ public class BackupRetentionManager {
   private List<BackupFileInfo> getBackupFiles(final File dbBackupDir) {
     final File[] files = dbBackupDir.listFiles(BACKUP_FILE_FILTER);
     if (files == null || files.length == 0)
-      return Collections.emptyList();
+      return List.of();
 
     if (files.length > MAX_BACKUP_FILES_TO_PROCESS) {
       LogManager.instance().log(this, Level.WARNING,
@@ -256,7 +256,7 @@ public class BackupRetentionManager {
     for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
       final List<BackupFileInfo> bucketFiles = buckets.get(sortedBuckets.get(i));
       if (!bucketFiles.isEmpty())
-        selected.add(bucketFiles.get(0).file); // Oldest in bucket
+        selected.add(bucketFiles.getFirst().file); // Oldest in bucket
     }
 
     return selected;
@@ -290,7 +290,7 @@ public class BackupRetentionManager {
     for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
       final List<BackupFileInfo> bucketFiles = buckets.get(sortedBuckets.get(i));
       if (!bucketFiles.isEmpty())
-        selected.add(bucketFiles.get(0).file);
+        selected.add(bucketFiles.getFirst().file);
     }
 
     return selected;
@@ -322,7 +322,7 @@ public class BackupRetentionManager {
     for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
       final List<BackupFileInfo> bucketFiles = buckets.get(sortedBuckets.get(i));
       if (!bucketFiles.isEmpty())
-        selected.add(bucketFiles.get(0).file);
+        selected.add(bucketFiles.getFirst().file);
     }
 
     return selected;
@@ -352,7 +352,7 @@ public class BackupRetentionManager {
     for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
       final List<BackupFileInfo> bucketFiles = buckets.get(sortedBuckets.get(i));
       if (!bucketFiles.isEmpty())
-        selected.add(bucketFiles.get(0).file);
+        selected.add(bucketFiles.getFirst().file);
     }
 
     return selected;
@@ -373,7 +373,7 @@ public class BackupRetentionManager {
    * Gets the total size of all backup files for a database.
    */
   public long getBackupSizeBytes(final String databaseName) {
-    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
+    final File dbBackupDir = Path.of(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 
@@ -391,7 +391,7 @@ public class BackupRetentionManager {
    * Gets the count of backup files for a database.
    */
   public int getBackupCount(final String databaseName) {
-    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
+    final File dbBackupDir = Path.of(backupDirectory, databaseName).toFile();
     if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
       return 0;
 

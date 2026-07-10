@@ -18,16 +18,14 @@
  */
 package com.arcadedb.server.monitor;
 
-import io.micrometer.core.instrument.Meter;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-
-import org.junit.jupiter.api.Test;
-
-import java.util.Set;
-
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.handler.GetServerHandler;
 
+import io.micrometer.core.instrument.Meter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.Test;
+
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;

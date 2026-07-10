@@ -495,7 +495,7 @@ public final class AntiJoinChainOp implements CountOp {
     if (checkPos < hops)
       tailCounts = buildTailCounts(db, nodeLabels[checkPos], checkPos);
     else
-      tailCounts = Collections.emptyMap();
+      tailCounts = Map.of();
 
     // Phase 3: Frontier expansion from each anchor.
     final RID[] EMPTY = new RID[0];

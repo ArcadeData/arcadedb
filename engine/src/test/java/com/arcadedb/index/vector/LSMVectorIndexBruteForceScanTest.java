@@ -35,7 +35,6 @@ import com.arcadedb.utility.Pair;
 
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
-
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;

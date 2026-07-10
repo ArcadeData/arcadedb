@@ -63,9 +63,9 @@ class QueryAndIndexesTest extends TestHelper {
   void equalsFiltering() {
 
     database.transaction(() -> {
-      final Map<String, Object> params = new HashMap<>();
-      params.put(":name", "Jay");
-      params.put(":surname", "Miner123");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          ":name", "Jay",
+          ":surname", "Miner123"));
       final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
 
       final AtomicInteger total = new AtomicInteger();

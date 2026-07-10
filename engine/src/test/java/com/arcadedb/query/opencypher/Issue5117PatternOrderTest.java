@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5117PatternOrderTest {
+class Issue5117PatternOrderTest {
   private Database database;
 
   private static final int L3_COUNT    = 30;
@@ -110,8 +111,9 @@ public class Issue5117PatternOrderTest {
     final long slowWork = profileTotalRows(slow);
 
     assertThat(slowWork)
-        .as("reordering independent pattern parts must not multiply the work of the expensive "
-            + "traversal (fast=%d, slow=%d rows processed)", fastWork, slowWork)
+        .as("""
+            reordering independent pattern parts must not multiply the work of the expensive \
+            traversal (fast=%d, slow=%d rows processed)""", fastWork, slowWork)
         .isEqualTo(fastWork);
   }
 

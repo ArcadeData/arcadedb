@@ -21,13 +21,14 @@ package com.arcadedb.query.opencypher.functions;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import org.assertj.core.api.Assertions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
@@ -220,7 +221,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> maxList = (List<Object>) result.next().getProperty("result");
     assertThat(maxList).hasSize(2);
-    assertThat(((Number) maxList.get(0)).intValue()).isEqualTo(1);
+    assertThat(((Number) maxList.getFirst()).intValue()).isEqualTo(1);
     assertThat(((Number) maxList.get(1)).intValue()).isEqualTo(2);
   }
 
@@ -259,7 +260,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> minList = (List<Object>) result.next().getProperty("result");
     assertThat(minList).hasSize(3);
-    assertThat((String) minList.get(0)).isEqualTo("a");
+    assertThat((String) minList.getFirst()).isEqualTo("a");
     assertThat((String) minList.get(1)).isEqualTo("c");
     assertThat(((Number) minList.get(2)).intValue()).isEqualTo(23);
   }

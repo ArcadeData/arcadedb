@@ -162,20 +162,20 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
 
             // CSR lookup: accept both GAVVertex and Vertex as source
             final int nodeId;
-            if (sourceObj instanceof GAVVertex)
-              nodeId = ((GAVVertex) sourceObj).getNodeId();
-            else if (sourceObj instanceof Vertex)
-              nodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
-            else {
-              neighborIds = null;
-              continue;
+            switch (sourceObj) {
+              case GAVVertex vertex1 -> nodeId = vertex1.getNodeId();
+              case Vertex vertex -> nodeId = provider.getNodeId(vertex.getIdentity());
+              case null, default -> {
+                neighborIds = null;
+                continue;
+              }
             }
 
             if (nodeId < 0) {
               // Vertex not in GAV mapping (created after last build) — fall back to OLTP
-              if (sourceObj instanceof Vertex) {
+              if (sourceObj instanceof Vertex vertex2) {
                 final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-                oltpFallbackEdges = ((Vertex) sourceObj).getEdges(arcadeDirection, edgeTypes).iterator();
+                oltpFallbackEdges = vertex2.getEdges(arcadeDirection, edgeTypes).iterator();
               }
               neighborIds = null;
               continue;

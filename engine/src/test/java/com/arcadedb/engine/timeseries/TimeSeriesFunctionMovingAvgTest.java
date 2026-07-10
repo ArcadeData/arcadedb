@@ -52,7 +52,7 @@ class TimeSeriesFunctionMovingAvgTest extends TestHelper {
 
     assertThat(ma).hasSize(5);
     // Position 0: avg(1) = 1.0
-    assertThat(ma.get(0)).isCloseTo(1.0, within(0.001));
+    assertThat(ma.getFirst()).isCloseTo(1.0, within(0.001));
     // Position 1: avg(1,2) = 1.5
     assertThat(ma.get(1)).isCloseTo(1.5, within(0.001));
     // Position 2: avg(1,2,3) = 2.0
@@ -79,7 +79,7 @@ class TimeSeriesFunctionMovingAvgTest extends TestHelper {
     final List<Double> ma = (List<Double>) rs.next().getProperty("ma");
 
     assertThat(ma).hasSize(3);
-    assertThat(ma.get(0)).isCloseTo(10.0, within(0.001));
+    assertThat(ma.getFirst()).isCloseTo(10.0, within(0.001));
     assertThat(ma.get(1)).isCloseTo(20.0, within(0.001));
     assertThat(ma.get(2)).isCloseTo(30.0, within(0.001));
   }
@@ -99,7 +99,7 @@ class TimeSeriesFunctionMovingAvgTest extends TestHelper {
     final List<Double> ma = (List<Double>) rs.next().getProperty("ma");
 
     assertThat(ma).hasSize(2);
-    assertThat(ma.get(0)).isCloseTo(4.0, within(0.001));
+    assertThat(ma.getFirst()).isCloseTo(4.0, within(0.001));
     assertThat(ma.get(1)).isCloseTo(6.0, within(0.001));
   }
 
@@ -113,8 +113,8 @@ class TimeSeriesFunctionMovingAvgTest extends TestHelper {
     if (rs.hasNext()) {
       final Result row = rs.next();
       final Object ma = row.getProperty("ma");
-      if (ma instanceof List)
-        assertThat((List<?>) ma).isEmpty();
+      if (ma instanceof List<?> list)
+        assertThat(list).isEmpty();
     }
   }
 
@@ -134,7 +134,7 @@ class TimeSeriesFunctionMovingAvgTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final List<Double> ma = (List<Double>) rs.next().getProperty("ma");
     assertThat(ma).hasSize(3);
-    assertThat(ma.get(0)).isCloseTo(1.0, within(0.001));
+    assertThat(ma.getFirst()).isCloseTo(1.0, within(0.001));
     assertThat(ma.get(1)).isCloseTo(1.5, within(0.001));
     assertThat(ma.get(2)).isCloseTo(2.5, within(0.001));
   }

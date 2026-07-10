@@ -161,8 +161,8 @@ public class OrderByItem {
       // false = DESC (descending), true/null = ASC (ascending, default)
       if (Boolean.FALSE.equals(dirValue)) {
         isDescending = true;
-      } else if (dirValue instanceof String) {
-        isDescending = DESC.equalsIgnoreCase((String) dirValue);
+      } else if (dirValue instanceof String string) {
+        isDescending = DESC.equalsIgnoreCase(string);
       }
     }
     if (isDescending) {

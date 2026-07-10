@@ -129,69 +129,39 @@ private int jjStopAtPos(int pos, int kind)
    return pos + 1;
 }
 private int jjMoveStringLiteralDfa0_0(){
-   switch(curChar)
+   return switch(curChar)
    {
-      case '!':
-         return jjStopAtPos(0, 3);
-      case '#':
-         return jjStartNfaWithStates_0(0, 2, 5);
-      case '$':
-         return jjStopAtPos(0, 4);
-      case '(':
-         return jjStopAtPos(0, 5);
-      case ')':
-         return jjStopAtPos(0, 6);
-      case '+':
-         return jjStopAtPos(0, 16);
-      case ',':
-         return jjStopAtPos(0, 1);
-      case '-':
-         return jjStartNfaWithStates_0(0, 17, 37);
-      case '.':
-         return jjMoveStringLiteralDfa1_0(0x80L);
-      case ':':
-         return jjStopAtPos(0, 8);
-      case '=':
-         return jjStopAtPos(0, 9);
-      case '@':
-         return jjStopAtPos(0, 10);
-      case '[':
-         return jjStopAtPos(0, 11);
-      case ']':
-         return jjStopAtPos(0, 12);
-      case 'd':
-         return jjMoveStringLiteralDfa1_0(0x80000000L);
-      case 'e':
-         return jjMoveStringLiteralDfa1_0(0x48000000L);
-      case 'f':
-         return jjMoveStringLiteralDfa1_0(0x200080000L);
-      case 'i':
-         return jjMoveStringLiteralDfa1_0(0x26000000L);
-      case 'm':
-         return jjMoveStringLiteralDfa1_0(0x200000L);
-      case 'n':
-         return jjMoveStringLiteralDfa1_0(0x400000000L);
-      case 'o':
-         return jjMoveStringLiteralDfa1_0(0x800000000L);
-      case 'q':
-         return jjMoveStringLiteralDfa1_0(0x100000L);
-      case 's':
-         return jjMoveStringLiteralDfa1_0(0xc00000L);
-      case 't':
-         return jjMoveStringLiteralDfa1_0(0x101000000L);
-      case 'u':
-         return jjMoveStringLiteralDfa1_0(0x10000000L);
-      case '{':
-         return jjStopAtPos(0, 13);
-      case '|':
-         return jjStopAtPos(0, 14);
-      case '}':
-         return jjStopAtPos(0, 15);
-      case 65279:
-         return jjStopAtPos(0, 40);
-      default :
-         return jjMoveNfa_0(0, 0);
-   }
+      case '!' -> jjStopAtPos(0, 3);
+      case '#' -> jjStartNfaWithStates_0(0, 2, 5);
+      case '$' -> jjStopAtPos(0, 4);
+      case '(' -> jjStopAtPos(0, 5);
+      case ')' -> jjStopAtPos(0, 6);
+      case '+' -> jjStopAtPos(0, 16);
+      case ',' -> jjStopAtPos(0, 1);
+      case '-' -> jjStartNfaWithStates_0(0, 17, 37);
+      case '.' -> jjMoveStringLiteralDfa1_0(0x80L);
+      case ':' -> jjStopAtPos(0, 8);
+      case '=' -> jjStopAtPos(0, 9);
+      case '@' -> jjStopAtPos(0, 10);
+      case '[' -> jjStopAtPos(0, 11);
+      case ']' -> jjStopAtPos(0, 12);
+      case 'd' -> jjMoveStringLiteralDfa1_0(0x80000000L);
+      case 'e' -> jjMoveStringLiteralDfa1_0(0x48000000L);
+      case 'f' -> jjMoveStringLiteralDfa1_0(0x200080000L);
+      case 'i' -> jjMoveStringLiteralDfa1_0(0x26000000L);
+      case 'm' -> jjMoveStringLiteralDfa1_0(0x200000L);
+      case 'n' -> jjMoveStringLiteralDfa1_0(0x400000000L);
+      case 'o' -> jjMoveStringLiteralDfa1_0(0x800000000L);
+      case 'q' -> jjMoveStringLiteralDfa1_0(0x100000L);
+      case 's' -> jjMoveStringLiteralDfa1_0(0xc00000L);
+      case 't' -> jjMoveStringLiteralDfa1_0(0x101000000L);
+      case 'u' -> jjMoveStringLiteralDfa1_0(0x10000000L);
+      case '{' -> jjStopAtPos(0, 13);
+      case '|' -> jjStopAtPos(0, 14);
+      case '}' -> jjStopAtPos(0, 15);
+      case 65279 -> jjStopAtPos(0, 40);
+      default  -> jjMoveNfa_0(0, 0);
+   };
 }
 private int jjMoveStringLiteralDfa1_0(long active0){
    try { curChar = input_stream.readChar(); }

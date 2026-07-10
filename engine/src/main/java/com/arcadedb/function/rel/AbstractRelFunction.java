@@ -48,8 +48,8 @@ public abstract class AbstractRelFunction implements StatelessFunction {
     if (input == null)
       return null;
 
-    if (input instanceof Edge)
-      return (Edge) input;
+    if (input instanceof Edge edge)
+      return edge;
 
     if (input instanceof Document doc) {
       return doc.getRecord() instanceof Edge edge ? edge : null;

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
@@ -159,9 +160,9 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     }
     assertThat(result.hasNext()).isFalse();
 
-    final Set<String> names = new HashSet<>();
-    names.add("name1");
-    names.add("name2");
+    final Set<String> names = new HashSet<>(Set.of(
+        "name1",
+        "name2"));
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();

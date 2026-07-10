@@ -48,8 +48,8 @@ public class DatabaseChecker {
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
   private       boolean             compress     = false;
-  private       Set<Object>         buckets      = Collections.emptySet();
-  private       Set<String>         types        = Collections.emptySet();
+  private       Set<Object>         buckets      = Set.of();
+  private       Set<String>         types        = Set.of();
   private       int                 maxWarnings  = 100_000;
   private final Map<String, Object> result       = new HashMap<>();
 

@@ -45,10 +45,10 @@ public class ToBooleanFunction implements StatelessFunction {
       return args[0];
     if (args[0] instanceof Float || args[0] instanceof Double)
       throw new CommandExecutionException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
-    if (args[0] instanceof Number)
-      return ((Number) args[0]).longValue() != 0L;
-    if (args[0] instanceof String) {
-      final String str = ((String) args[0]).toLowerCase(Locale.ROOT);
+    if (args[0] instanceof Number number)
+      return number.longValue() != 0L;
+    if (args[0] instanceof String string) {
+      final String str = string.toLowerCase(Locale.ROOT);
       if ("true".equals(str))
         return Boolean.TRUE;
       else if ("false".equals(str))

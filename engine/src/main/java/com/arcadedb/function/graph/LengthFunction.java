@@ -44,12 +44,9 @@ public class LengthFunction implements StatelessFunction {
 
     if (args[0] == null)
       return null;
-    if (args[0] instanceof TraversalPath)
-      return (long) ((TraversalPath) args[0]).length();
-    if (args[0] instanceof List) {
-      // Path is represented as a list of alternating vertices and edges
-      // Length = number of edges
-      final List<?> path = (List<?>) args[0];
+    if (args[0] instanceof TraversalPath path)
+      return (long) path.length();
+    if (args[0] instanceof List<?> path) {
       long edgeCount = 0;
       for (final Object element : path) {
         if (element instanceof Edge) {
@@ -57,9 +54,9 @@ public class LengthFunction implements StatelessFunction {
         }
       }
       return edgeCount;
-    } else if (args[0] instanceof String) {
+    } else if (args[0] instanceof String string) {
       // Also support string length for compatibility
-      return (long) ((String) args[0]).length();
+      return (long) string.length();
     }
     return 0L;
   }

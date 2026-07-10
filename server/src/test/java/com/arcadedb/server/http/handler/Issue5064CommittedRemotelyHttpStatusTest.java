@@ -38,9 +38,7 @@ import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 /**
  * Regression test for the wire-facing half of issue #5064 (PR #5075): when a transaction is durably
@@ -64,8 +62,9 @@ class Issue5064CommittedRemotelyHttpStatusTest {
   @Test
   void committedRemotelyMapsTo409WithDoNotRetryDetail() {
     final HandledResponse response = handle(new TransactionCommittedRemotelyException(
-        "Transaction TX(1) is committed cluster-wide but the local apply failed"
-            + " (local pages reconciled from the replicated payload). Do NOT retry: reload the records and continue",
+        """
+        Transaction TX(1) is committed cluster-wide but the local apply failed\
+         (local pages reconciled from the replicated payload). Do NOT retry: reload the records and continue""",
         new IllegalStateException("simulated local apply failure")));
 
     assertThat(response.statusCode)
@@ -84,8 +83,9 @@ class Issue5064CommittedRemotelyHttpStatusTest {
     // CommandExecutionException. The do-not-retry 409 must survive the wrapping - falling through to the
     // generic 500 would re-invite the duplicate-insert retry the distinct type exists to prevent.
     final HandledResponse response = handle(new CommandExecutionException("Error on command execution",
-        new TransactionCommittedRemotelyException("Transaction TX(1) is committed cluster-wide but the local apply failed."
-            + " Do NOT retry: reload the records and continue", new IllegalStateException("simulated"))));
+        new TransactionCommittedRemotelyException("""
+            Transaction TX(1) is committed cluster-wide but the local apply failed.\
+             Do NOT retry: reload the records and continue""", new IllegalStateException("simulated"))));
 
     assertThat(response.statusCode)
         .as("a WRAPPED committed-remotely outcome must keep the non-retryable 409 (body=%s)", response.body)
@@ -99,8 +99,9 @@ class Issue5064CommittedRemotelyHttpStatusTest {
     // Same guard for the auto-commit wrapper in DatabaseAbstractHandler, which wraps any Exception thrown
     // by execute() in a plain TransactionException.
     final HandledResponse response = handle(new TransactionException("Error on transaction commit",
-        new TransactionCommittedRemotelyException("Transaction TX(1) is committed cluster-wide but the local apply failed."
-            + " Do NOT retry: reload the records and continue", new IllegalStateException("simulated"))));
+        new TransactionCommittedRemotelyException("""
+            Transaction TX(1) is committed cluster-wide but the local apply failed.\
+             Do NOT retry: reload the records and continue""", new IllegalStateException("simulated"))));
 
     assertThat(response.statusCode)
         .as("the auto-commit wrapper must not degrade the committed-remotely 409 (body=%s)", response.body)

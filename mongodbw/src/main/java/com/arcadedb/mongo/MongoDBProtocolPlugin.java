@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.MongoServer;
 import de.bwaldvogel.mongo.backend.DatabaseResolver;
@@ -33,7 +34,7 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   private MongoServer                         mongoDBServer;
   private MongoDBBackend                      mongoDBBackend;
   private ArcadeDBServer                      server;
-  private Map<String, MongoDBDatabaseWrapper> databases = new ConcurrentHashMap<>();
+  private final Map<String, MongoDBDatabaseWrapper> databases = new ConcurrentHashMap<>();
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {

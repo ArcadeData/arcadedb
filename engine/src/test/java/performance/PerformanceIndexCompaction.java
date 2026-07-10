@@ -44,7 +44,7 @@ public class PerformanceIndexCompaction {
     final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(ComponentFile.MODE.READ_WRITE);
 
     final long begin = System.currentTimeMillis();
-    try {
+    try (database) {
       System.out.println("Compacting all indexes...");
 
       final long total = database.countType("Device", true);
@@ -62,7 +62,6 @@ public class PerformanceIndexCompaction {
       System.out.println("Compaction done");
 
     } finally {
-      database.close();
       System.out.println("Compaction finished in " + (System.currentTimeMillis() - begin) + "ms");
     }
 

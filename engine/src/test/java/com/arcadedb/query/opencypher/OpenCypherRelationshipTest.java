@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.parser.PatternParser;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,8 +34,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * Tests for relationship pattern parsing and graph traversal.
@@ -84,7 +83,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     assertThat(path.getNodeCount()).isEqualTo(2);
     assertThat(path.getRelationshipCount()).isEqualTo(1);
 
@@ -108,7 +107,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     final RelationshipPattern rel = path.getRelationship(0);
 
     assertThat(rel.getDirection()).isEqualTo(Direction.IN);
@@ -120,7 +119,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     final RelationshipPattern rel = path.getRelationship(0);
 
     assertThat(rel.getDirection()).isEqualTo(Direction.BOTH);
@@ -132,7 +131,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     final RelationshipPattern rel = path.getRelationship(0);
 
     assertThat(rel.isVariableLength()).isTrue();
@@ -147,7 +146,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     final RelationshipPattern rel = path.getRelationship(0);
 
     assertThat(rel.isVariableLength()).isTrue();
@@ -162,7 +161,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     final RelationshipPattern rel = path.getRelationship(0);
 
     assertThat(rel.getVariable()).isNull();
@@ -176,7 +175,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     assertThat(path.isSingleNode()).isTrue();
     assertThat(path.getNodeCount()).isEqualTo(1);
     assertThat(path.getRelationshipCount()).isEqualTo(0);
@@ -192,7 +191,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     final NodePattern node = path.getNode(0);
 
     assertThat(node.getVariable()).isEqualTo("n");
@@ -205,7 +204,7 @@ public class OpenCypherRelationshipTest {
 
     assertThat(patterns).hasSize(1);
 
-    final PathPattern path = patterns.get(0);
+    final PathPattern path = patterns.getFirst();
     assertThat(path.getNodeCount()).isEqualTo(2);
 
     final NodePattern node1 = path.getNode(0);

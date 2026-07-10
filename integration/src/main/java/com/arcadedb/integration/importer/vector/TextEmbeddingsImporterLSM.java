@@ -49,14 +49,14 @@ public class TextEmbeddingsImporterLSM {
   private final    ImporterSettings settings;
   private final    ConsoleLogger    logger;
   private          boolean          normalizeVectors  = false;
-  private          String           databasePath;
-  private          boolean          overwriteDatabase = false;
+  private final          String           databasePath;
+  private final          boolean          overwriteDatabase = false;
   private          long             errors            = 0L;
-  private          long             warnings          = 0L;
+  private final          long             warnings          = 0L;
   private          DatabaseFactory  factory;
   private          Database         database;
   private          long             beginTime;
-  private          boolean          error             = false;
+  private final          boolean          error             = false;
   private          ImporterContext  context           = new ImporterContext();
   private          String           vectorTypeName;
   private          String           similarityFunctionName;

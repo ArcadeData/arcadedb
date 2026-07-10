@@ -136,49 +136,49 @@ public final class GAVVertex implements Vertex {
   @Override
   public String getString(final String p) {
     final Object v = get(p);
-    return v instanceof String ? (String) v : v != null ? v.toString() : null;
+    return v instanceof String s ? s : v != null ? v.toString() : null;
   }
 
   @Override
   public Boolean getBoolean(final String p) {
     final Object v = get(p);
-    return v instanceof Boolean ? (Boolean) v : null;
+    return v instanceof Boolean b ? b : null;
   }
 
   @Override
   public Byte getByte(final String p) {
     final Object v = get(p);
-    return v instanceof Number ? ((Number) v).byteValue() : null;
+    return v instanceof Number n ? n.byteValue() : null;
   }
 
   @Override
   public Short getShort(final String p) {
     final Object v = get(p);
-    return v instanceof Number ? ((Number) v).shortValue() : null;
+    return v instanceof Number n ? n.shortValue() : null;
   }
 
   @Override
   public Integer getInteger(final String p) {
     final Object v = get(p);
-    return v instanceof Number ? ((Number) v).intValue() : null;
+    return v instanceof Number n ? n.intValue() : null;
   }
 
   @Override
   public Long getLong(final String p) {
     final Object v = get(p);
-    return v instanceof Number ? ((Number) v).longValue() : null;
+    return v instanceof Number n ? n.longValue() : null;
   }
 
   @Override
   public Float getFloat(final String p) {
     final Object v = get(p);
-    return v instanceof Number ? ((Number) v).floatValue() : null;
+    return v instanceof Number n ? n.floatValue() : null;
   }
 
   @Override
   public Double getDouble(final String p) {
     final Object v = get(p);
-    return v instanceof Number ? ((Number) v).doubleValue() : null;
+    return v instanceof Number n ? n.doubleValue() : null;
   }
 
   @Override

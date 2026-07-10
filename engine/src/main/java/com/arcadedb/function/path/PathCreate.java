@@ -87,8 +87,8 @@ public class PathCreate extends AbstractPathFunction {
     if (input instanceof List)
       return (List<Object>) input;
 
-    if (input instanceof Collection)
-      return new ArrayList<>((Collection<?>) input);
+    if (input instanceof Collection<?> collection)
+      return new ArrayList<>(collection);
 
     final List<Object> result = new ArrayList<>();
     result.add(input);

@@ -3,6 +3,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -210,9 +211,9 @@ class OrderByDirectionParameterTest extends TestHelper {
       database.command("sql", "INSERT INTO TestOrderParam6 SET category = 'B', num = 4");
 
       // Test with mixed direction: category ASC (true), num DESC (false)
-      Map<String, Object> params = new HashMap<>();
-      params.put("catDir", true);
-      params.put("numDir", false);
+      Map<String, Object> params = new HashMap<>(Map.of(
+          "catDir", true,
+          "numDir", false));
 
       ResultSet rs = database.query("sql", "SELECT category, num FROM TestOrderParam6 ORDER BY category :catDir, num :numDir", params);
 

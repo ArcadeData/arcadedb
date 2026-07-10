@@ -95,27 +95,27 @@ public class CypherDuration implements CypherTemporalValue {
       final Object value = entry.getValue();
 
       // Only use fast path for integral values; fractional values need cascading via general path
-      if (value instanceof Number && !hasFraction((Number) value)) {
+      if (value instanceof Number number && !hasFraction(number)) {
         // Common single-field cases
         switch (key) {
           case "seconds":
-            return new CypherDuration(0, 0, ((Number) value).longValue(), 0);
+            return new CypherDuration(0, 0, number.longValue(), 0);
           case "minutes":
-            return new CypherDuration(0, 0, ((Number) value).longValue() * 60, 0);
+            return new CypherDuration(0, 0, number.longValue() * 60, 0);
           case "hours":
-            return new CypherDuration(0, 0, ((Number) value).longValue() * 3600, 0);
+            return new CypherDuration(0, 0, number.longValue() * 3600, 0);
           case "days":
-            return new CypherDuration(0, ((Number) value).longValue(), 0, 0);
+            return new CypherDuration(0, number.longValue(), 0, 0);
           case "weeks":
-            return new CypherDuration(0, ((Number) value).longValue() * 7, 0, 0);
+            return new CypherDuration(0, number.longValue() * 7, 0, 0);
           case "months":
-            return new CypherDuration(((Number) value).longValue(), 0, 0, 0);
+            return new CypherDuration(number.longValue(), 0, 0, 0);
           case "years":
-            return new CypherDuration(((Number) value).longValue() * 12, 0, 0, 0);
+            return new CypherDuration(number.longValue() * 12, 0, 0, 0);
           case "milliseconds":
-            return new CypherDuration(0, 0, ((Number) value).longValue() / 1000, (int) (((Number) value).longValue() % 1000 * 1_000_000));
+            return new CypherDuration(0, 0, number.longValue() / 1000, (int) (number.longValue() % 1000 * 1_000_000));
           case "nanoseconds":
-            return new CypherDuration(0, 0, 0, ((Number) value).intValue());
+            return new CypherDuration(0, 0, 0, number.intValue());
         }
       }
     }

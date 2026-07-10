@@ -142,7 +142,7 @@ public class MatchPathItem extends SimpleNode {
       if (matchedNode != null) {
         possibleResults = Set.of(matchedNode);
       } else if (matchContext.matched.containsKey(filter.getAlias())) {
-        possibleResults = Collections.emptySet();//optional node, the matched element is a null value
+        possibleResults = Set.of();//optional node, the matched element is a null value
       } else {
         possibleResults = matchContext.candidates == null ? null : matchContext.candidates.get(filter.getAlias());
       }

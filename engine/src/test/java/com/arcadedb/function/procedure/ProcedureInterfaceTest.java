@@ -20,9 +20,9 @@ package com.arcadedb.function.procedure;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -124,7 +124,7 @@ class ProcedureInterfaceTest {
 
       @Override
       public List<String> getYieldFields() {
-        return Collections.emptyList();
+        return List.of();
       }
 
       @Override
@@ -165,7 +165,7 @@ class ProcedureInterfaceTest {
 
       @Override
       public List<String> getYieldFields() {
-        return Collections.singletonList("result");
+        return List.of("result");
       }
 
       @Override

@@ -25,9 +25,9 @@ import com.arcadedb.utility.DateUtils;
 
 import org.junit.jupiter.api.Test;
 
-import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,7 +66,7 @@ class OffsetDateTimeStorageTest {
       final Object stored = result.next().getProperty("ts");
       // Previously null (dropped); now stored as a datetime preserving the instant.
       assertThat(stored).isNotNull();
-      assertThat(DateUtils.dateTimeToTimestamp(stored, java.time.temporal.ChronoUnit.MILLIS))
+      assertThat(DateUtils.dateTimeToTimestamp(stored, ChronoUnit.MILLIS))
           .isEqualTo(value.toInstant().toEpochMilli());
     } finally {
       database.drop();

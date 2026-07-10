@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -289,7 +290,7 @@ class UnwindExpandStepTest extends TestHelper {
         results.add(result.next());
 
       assertThat(results).hasSize(3);
-      assertThat(results.get(0).<Integer>getProperty("lst")).isEqualTo(1);
+      assertThat(results.getFirst().<Integer>getProperty("lst")).isEqualTo(1);
       assertThat(results.get(1).<Integer>getProperty("lst")).isEqualTo(2);
       assertThat(results.get(2).<Integer>getProperty("lst")).isEqualTo(3);
     });
@@ -366,7 +367,7 @@ class UnwindExpandStepTest extends TestHelper {
         results.add(result.next());
 
       assertThat(results).hasSize(3);
-      assertThat(results.get(0).<Integer>getProperty("lst")).isEqualTo(1);
+      assertThat(results.getFirst().<Integer>getProperty("lst")).isEqualTo(1);
       assertThat(results.get(1).<Integer>getProperty("lst")).isEqualTo(2);
       assertThat(results.get(2).<Integer>getProperty("lst")).isEqualTo(3);
     });

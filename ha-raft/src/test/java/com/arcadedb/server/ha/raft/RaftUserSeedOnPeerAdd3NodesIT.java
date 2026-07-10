@@ -25,6 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -35,7 +36,6 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 
@@ -111,7 +111,7 @@ class RaftUserSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
 
     // Step B: pick a non-leader target and corrupt its users state
     final int target = (leader + 1) % getServerCount();
-    final Path targetUsersFile = Paths.get(getServer(target).getRootPath(), "config", "server-users.jsonl");
+    final Path targetUsersFile = Path.of(getServer(target).getRootPath(), "config", "server-users.jsonl");
     assertThat(Files.exists(targetUsersFile)).isTrue();
 
     // Preserve root's existing password hash so root login still works after the corruption

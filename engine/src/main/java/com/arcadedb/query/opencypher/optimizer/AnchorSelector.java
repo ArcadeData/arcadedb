@@ -250,7 +250,7 @@ public class AnchorSelector {
       }
 
       // For composite indexes, check if property is the first column (can use index prefix)
-      if (!index.getPropertyNames().isEmpty() && index.getPropertyNames().get(0).equals(propertyName)) {
+      if (!index.getPropertyNames().isEmpty() && index.getPropertyNames().getFirst().equals(propertyName)) {
         return index;
       }
     }
@@ -280,9 +280,7 @@ public class AnchorSelector {
       }
 
       // Check if it's a comparison expression
-      if (condition instanceof ComparisonExpression) {
-        final ComparisonExpression comparison =
-            (ComparisonExpression) condition;
+      if (condition instanceof ComparisonExpression comparison) {
 
         // Only handle EQUALS comparisons
         if (comparison.getOperator() != ComparisonExpression.Operator.EQUALS) {
@@ -293,17 +291,15 @@ public class AnchorSelector {
         final Expression left = comparison.getLeft();
         final Expression right = comparison.getRight();
 
-        if (left instanceof PropertyAccessExpression) {
-          final PropertyAccessExpression propAccess =
-              (PropertyAccessExpression) left;
+        if (left instanceof PropertyAccessExpression propAccess) {
 
           if (propAccess.getVariableName().equals(variable)) {
             // Extract the property name and value
             final String propertyName = propAccess.getPropertyName();
 
             // Try to extract constant value from right side
-            if (right instanceof LiteralExpression) {
-              final Object value = ((LiteralExpression) right).getValue();
+            if (right instanceof LiteralExpression expression) {
+              final Object value = expression.getValue();
               predicates.put(propertyName, value);
             } else if (right instanceof ParameterExpression) {
               // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
@@ -313,15 +309,13 @@ public class AnchorSelector {
         }
 
         // Also check reverse: value = property (e.g., 500 = p.id)
-        if (right instanceof PropertyAccessExpression) {
-          final PropertyAccessExpression propAccess =
-              (PropertyAccessExpression) right;
+        if (right instanceof PropertyAccessExpression propAccess) {
 
           if (propAccess.getVariableName().equals(variable)) {
             final String propertyName = propAccess.getPropertyName();
 
-            if (left instanceof LiteralExpression) {
-              final Object value = ((LiteralExpression) left).getValue();
+            if (left instanceof LiteralExpression expression1) {
+              final Object value = expression1.getValue();
               predicates.put(propertyName, value);
             } else if (left instanceof ParameterExpression) {
               // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
@@ -372,9 +366,7 @@ public class AnchorSelector {
                                                      final BooleanExpression expression,
                                                      final Map<String, List<RangePredicate>> predicates) {
     // Handle comparison expressions
-    if (expression instanceof ComparisonExpression) {
-      final ComparisonExpression comparison =
-              (ComparisonExpression) expression;
+    if (expression instanceof ComparisonExpression comparison) {
 
       // Only handle range operators: <, >, <=, >=
       final ComparisonExpression.Operator operator = comparison.getOperator();
@@ -389,20 +381,18 @@ public class AnchorSelector {
       final Expression right = comparison.getRight();
 
       // Pattern: property < value  (e.g., age < 65)
-      if (left instanceof PropertyAccessExpression) {
-        final PropertyAccessExpression propAccess =
-                (PropertyAccessExpression) left;
+      if (left instanceof PropertyAccessExpression propAccess) {
 
         if (propAccess.getVariableName().equals(variable)) {
           final String propertyName = propAccess.getPropertyName();
           Object value;
           boolean isParameter = false;
 
-          if (right instanceof LiteralExpression) {
-            value = ((LiteralExpression) right).getValue();
-          } else if (right instanceof ParameterExpression) {
+          if (right instanceof LiteralExpression literalExpression) {
+            value = literalExpression.getValue();
+          } else if (right instanceof ParameterExpression parameterExpression) {
             isParameter = true;
-            value = ((ParameterExpression) right).getParameterName();
+            value = parameterExpression.getParameterName();
           } else {
             return; // Unsupported right side (function call, etc.)
           }
@@ -413,20 +403,18 @@ public class AnchorSelector {
       }
 
       // Pattern: value > property  (e.g., 65 > age) - need to flip operator
-      if (right instanceof PropertyAccessExpression) {
-        final PropertyAccessExpression propAccess =
-                (PropertyAccessExpression) right;
+      if (right instanceof PropertyAccessExpression propAccess) {
 
         if (propAccess.getVariableName().equals(variable)) {
           final String propertyName = propAccess.getPropertyName();
           Object value;
           boolean isParameter = false;
 
-          if (left instanceof LiteralExpression) {
-            value = ((LiteralExpression) left).getValue();
-          } else if (left instanceof ParameterExpression) {
+          if (left instanceof LiteralExpression literalExpression1) {
+            value = literalExpression1.getValue();
+          } else if (left instanceof ParameterExpression parameterExpression1) {
             isParameter = true;
-            value = ((ParameterExpression) left).getParameterName();
+            value = parameterExpression1.getParameterName();
           } else {
             return; // Unsupported left side
           }
@@ -440,9 +428,7 @@ public class AnchorSelector {
     }
 
     // Handle AND expressions - both sides may contain range predicates
-    if (expression instanceof LogicalExpression) {
-      final LogicalExpression logicalExpr =
-              (LogicalExpression) expression;
+    if (expression instanceof LogicalExpression logicalExpr) {
 
       if (logicalExpr.getOperator() == LogicalExpression.Operator.AND) {
         extractRangePredicatesFromExpression(variable, logicalExpr.getLeft(), predicates);
@@ -461,18 +447,13 @@ public class AnchorSelector {
    */
   private ComparisonExpression.Operator flipOperator(
           final ComparisonExpression.Operator operator) {
-    switch (operator) {
-      case LESS_THAN:
-        return ComparisonExpression.Operator.GREATER_THAN;
-      case GREATER_THAN:
-        return ComparisonExpression.Operator.LESS_THAN;
-      case LESS_THAN_OR_EQUAL:
-        return ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-      case GREATER_THAN_OR_EQUAL:
-        return ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-      default:
-        return operator;
-    }
+    return switch (operator) {
+      case LESS_THAN -> ComparisonExpression.Operator.GREATER_THAN;
+      case GREATER_THAN -> ComparisonExpression.Operator.LESS_THAN;
+      case LESS_THAN_OR_EQUAL -> ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+      case GREATER_THAN_OR_EQUAL -> ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+      default -> operator;
+    };
   }
 
   /**

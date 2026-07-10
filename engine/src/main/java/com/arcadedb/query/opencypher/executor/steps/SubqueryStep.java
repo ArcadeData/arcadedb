@@ -42,7 +42,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -108,7 +107,7 @@ public class SubqueryStep extends AbstractExecutionStep {
   private static Set<String> computeImportedVariables(final SubqueryClause clause) {
     final List<String> scope = clause.getScopeVariables();
     if (scope != null) {
-      if (scope.size() == 1 && STAR_SCOPE.equals(scope.get(0)))
+      if (scope.size() == 1 && STAR_SCOPE.equals(scope.getFirst()))
         return null; // sentinel: import everything
       return new LinkedHashSet<>(scope);
     }
@@ -129,11 +128,11 @@ public class SubqueryStep extends AbstractExecutionStep {
 
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses == null || clauses.isEmpty())
-      return Collections.emptySet();
+      return Set.of();
 
-    final ClauseEntry first = clauses.get(0);
+    final ClauseEntry first = clauses.getFirst();
     if (first.getType() != ClauseEntry.ClauseType.WITH)
-      return Collections.emptySet();
+      return Set.of();
 
     final WithClause withClause = first.getTypedClause();
     final Set<String> imports = new LinkedHashSet<>();

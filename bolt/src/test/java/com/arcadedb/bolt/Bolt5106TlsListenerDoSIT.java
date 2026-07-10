@@ -43,6 +43,7 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -209,7 +210,7 @@ public class Bolt5106TlsListenerDoSIT extends BaseGraphServerTest {
       try (final Driver driver = GraphDatabase.driver(
           "bolt+ssc://localhost:" + BOLT_PORT,
           AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
-          Config.builder().withConnectionTimeout(5, java.util.concurrent.TimeUnit.SECONDS).build())) {
+          Config.builder().withConnectionTimeout(5, TimeUnit.SECONDS).build())) {
         try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
           final Result result = session.run("RETURN 1 AS value");
           assertThat(result.hasNext()).isTrue();

@@ -20,10 +20,13 @@ package com.arcadedb.remote;
 
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,7 +46,7 @@ class RemoteDocumentTypeTest {
     when(mockDatabase.getSchema()).thenReturn(mockSchema);
 
     final Result record = createMockResult("TestType", 42, List.of("bucket1", "bucket2"),
-        "round-robin", List.of(), List.of(), Collections.emptyMap());
+        "round-robin", List.of(), List.of(), Map.of());
 
     type = new RemoteDocumentType(mockDatabase, record);
   }
@@ -82,7 +85,7 @@ class RemoteDocumentTypeTest {
   @Test
   void constructorWithLongRecordCount() {
     final Result record = createMockResult("LongType", 100L, List.of("b1"),
-        "round-robin", List.of(), List.of(), Collections.emptyMap());
+        "round-robin", List.of(), List.of(), Map.of());
 
     final RemoteDocumentType longType = new RemoteDocumentType(mockDatabase, record);
     assertThat(longType.count()).isEqualTo(100);
@@ -91,7 +94,7 @@ class RemoteDocumentTypeTest {
   @Test
   void constructorWithNullRecordCount() {
     final Result record = createMockResult("NullType", null, List.of("b1"),
-        "round-robin", List.of(), List.of(), Collections.emptyMap());
+        "round-robin", List.of(), List.of(), Map.of());
 
     final RemoteDocumentType nullType = new RemoteDocumentType(mockDatabase, record);
     assertThat(nullType.count()).isEqualTo(0);
@@ -100,7 +103,7 @@ class RemoteDocumentTypeTest {
   @Test
   void equalsWithSameName() {
     final Result record2 = createMockResult("TestType", 0, List.of(),
-        "round-robin", List.of(), List.of(), Collections.emptyMap());
+        "round-robin", List.of(), List.of(), Map.of());
     final RemoteDocumentType type2 = new RemoteDocumentType(mockDatabase, record2);
 
     assertThat(type.equals(type2)).isTrue();
@@ -109,7 +112,7 @@ class RemoteDocumentTypeTest {
   @Test
   void equalsWithDifferentName() {
     final Result record2 = createMockResult("OtherType", 0, List.of(),
-        "round-robin", List.of(), List.of(), Collections.emptyMap());
+        "round-robin", List.of(), List.of(), Map.of());
     final RemoteDocumentType type2 = new RemoteDocumentType(mockDatabase, record2);
 
     assertThat(type.equals(type2)).isFalse();
@@ -123,7 +126,7 @@ class RemoteDocumentTypeTest {
   @Test
   void isTheSameAs() {
     final Result record2 = createMockResult("TestType", 0, List.of(),
-        "round-robin", List.of(), List.of(), Collections.emptyMap());
+        "round-robin", List.of(), List.of(), Map.of());
     final RemoteDocumentType type2 = new RemoteDocumentType(mockDatabase, record2);
 
     assertThat(type.isTheSameAs(type2)).isTrue();
@@ -141,13 +144,13 @@ class RemoteDocumentTypeTest {
 
   @Test
   void existsPropertyReturnsTrueForExistingProperty() {
-    final Map<String, Object> prop = new HashMap<>();
-    prop.put("name", "myProp");
-    prop.put("type", "STRING");
-    prop.put("id", 1);
+    final Map<String, Object> prop = new HashMap<>(Map.of(
+        "name", "myProp",
+        "type", "STRING",
+        "id", 1));
 
     final Result record = createMockResult("WithProps", 0, List.of(),
-        "round-robin", List.of(), List.of(prop), Collections.emptyMap());
+        "round-robin", List.of(), List.of(prop), Map.of());
 
     final RemoteDocumentType typeWithProps = new RemoteDocumentType(mockDatabase, record);
     assertThat(typeWithProps.existsProperty("myProp")).isTrue();
@@ -165,17 +168,17 @@ class RemoteDocumentTypeTest {
 
   @Test
   void getPropertyNames() {
-    final Map<String, Object> prop1 = new HashMap<>();
-    prop1.put("name", "prop1");
-    prop1.put("type", "STRING");
-    prop1.put("id", 1);
-    final Map<String, Object> prop2 = new HashMap<>();
-    prop2.put("name", "prop2");
-    prop2.put("type", "INTEGER");
-    prop2.put("id", 2);
+    final Map<String, Object> prop1 = new HashMap<>(Map.of(
+        "name", "prop1",
+        "type", "STRING",
+        "id", 1));
+    final Map<String, Object> prop2 = new HashMap<>(Map.of(
+        "name", "prop2",
+        "type", "INTEGER",
+        "id", 2));
 
     final Result record = createMockResult("WithProps", 0, List.of(),
-        "round-robin", List.of(), List.of(prop1, prop2), Collections.emptyMap());
+        "round-robin", List.of(), List.of(prop1, prop2), Map.of());
 
     final RemoteDocumentType typeWithProps = new RemoteDocumentType(mockDatabase, record);
     assertThat(typeWithProps.getPropertyNames()).containsExactlyInAnyOrder("prop1", "prop2");
@@ -183,13 +186,13 @@ class RemoteDocumentTypeTest {
 
   @Test
   void getProperties() {
-    final Map<String, Object> prop = new HashMap<>();
-    prop.put("name", "myProp");
-    prop.put("type", "STRING");
-    prop.put("id", 1);
+    final Map<String, Object> prop = new HashMap<>(Map.of(
+        "name", "myProp",
+        "type", "STRING",
+        "id", 1));
 
     final Result record = createMockResult("WithProps", 0, List.of(),
-        "round-robin", List.of(), List.of(prop), Collections.emptyMap());
+        "round-robin", List.of(), List.of(prop), Map.of());
 
     final RemoteDocumentType typeWithProps = new RemoteDocumentType(mockDatabase, record);
     assertThat(typeWithProps.getProperties()).hasSize(1);
@@ -414,24 +417,24 @@ class RemoteDocumentTypeTest {
 
   @Test
   void reloadUpdatesExistingProperties() {
-    final Map<String, Object> prop = new HashMap<>();
-    prop.put("name", "myProp");
-    prop.put("type", "STRING");
-    prop.put("id", 1);
+    final Map<String, Object> prop = new HashMap<>(Map.of(
+        "name", "myProp",
+        "type", "STRING",
+        "id", 1));
 
     final Result record1 = createMockResult("TestType", 10, List.of(),
-        "round-robin", List.of(), List.of(prop), Collections.emptyMap());
+        "round-robin", List.of(), List.of(prop), Map.of());
     final RemoteDocumentType typeWithProp = new RemoteDocumentType(mockDatabase, record1);
 
     // Reload with same property name but updated attributes
-    final Map<String, Object> updatedProp = new HashMap<>();
-    updatedProp.put("name", "myProp");
-    updatedProp.put("type", "STRING");
-    updatedProp.put("id", 1);
-    updatedProp.put("mandatory", true);
+    final Map<String, Object> updatedProp = new HashMap<>(Map.of(
+        "name", "myProp",
+        "type", "STRING",
+        "id", 1,
+        "mandatory", true));
 
     final Result record2 = createMockResult("TestType", 20, List.of(),
-        "round-robin", List.of(), List.of(updatedProp), Collections.emptyMap());
+        "round-robin", List.of(), List.of(updatedProp), Map.of());
     typeWithProp.reload(record2);
 
     assertThat(typeWithProp.count()).isEqualTo(20);

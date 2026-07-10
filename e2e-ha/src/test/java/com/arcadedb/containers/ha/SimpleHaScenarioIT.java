@@ -21,6 +21,7 @@ package com.arcadedb.containers.ha;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

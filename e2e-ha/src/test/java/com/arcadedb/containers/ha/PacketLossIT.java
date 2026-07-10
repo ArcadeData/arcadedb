@@ -21,6 +21,7 @@ package com.arcadedb.containers.ha;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
 import org.awaitility.Awaitility;
@@ -84,7 +85,7 @@ class PacketLossIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
 
     logger.info("Creating database and schema");
@@ -150,7 +151,7 @@ class PacketLossIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
 
     logger.info("Creating database and initial data");
@@ -214,7 +215,7 @@ class PacketLossIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
 
     logger.info("Creating database and initial data");
@@ -284,7 +285,7 @@ class PacketLossIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
@@ -351,7 +352,7 @@ class PacketLossIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
 
     logger.info("Creating database and initial data");

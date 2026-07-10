@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

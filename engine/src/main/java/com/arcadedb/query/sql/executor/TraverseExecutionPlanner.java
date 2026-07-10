@@ -125,55 +125,59 @@ public class TraverseExecutionPlanner {
     if (paramValue instanceof String string && RID.is(paramValue))
       paramValue = context.getDatabase().newRID(string);
 
-    if (paramValue == null) {
-      result.chain(new EmptyStep(context));//nothing to return
-    } else if (paramValue instanceof LocalDocumentType type) {
-      final FromClause from = new FromClause(-1);
-      final FromItem item = new FromItem(-1);
-      from.setItem(item);
-      item.setIdentifier(new Identifier(type.getName()));
-      handleClassAsTarget(result, from, context);
-    } else if (paramValue instanceof String string) {
-      //strings are treated as classes
-      final FromClause from = new FromClause(-1);
-      final FromItem item = new FromItem(-1);
-      from.setItem(item);
-      item.setIdentifier(new Identifier(string));
-      handleClassAsTarget(result, from, context);
-    } else if (paramValue instanceof Identifiable identifiable) {
-      final RID orid = identifiable.getIdentity();
-      final Rid rid = new Rid(-1);
-      final PInteger bucket = new PInteger(-1);
-      bucket.setValue(orid.getBucketId());
-      final PInteger position = new PInteger(-1);
-      position.setValue(orid.getPosition());
-      rid.setLegacy(true);
-      rid.setBucket(bucket);
-      rid.setPosition(position);
-
-      handleRidsAsTarget(result, List.of(rid), context);
-    } else if (paramValue instanceof Iterable iterable) {
-      //try list of RIDs
-      final List<Rid> rids = new ArrayList<>();
-      for (final Object x : iterable) {
-        if (!(x instanceof Identifiable)) {
-          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
-        }
-        final RID orid = ((Identifiable) x).getIdentity();
-
+    switch (paramValue) {
+      case null -> result.chain(new EmptyStep(context));
+      case LocalDocumentType type -> {
+        final FromClause from = new FromClause(-1);
+        final FromItem item = new FromItem(-1);
+        from.setItem(item);
+        item.setIdentifier(new Identifier(type.getName()));
+        handleClassAsTarget(result, from, context);
+      }
+      case String string -> {
+        //strings are treated as classes
+        final FromClause from = new FromClause(-1);
+        final FromItem item = new FromItem(-1);
+        from.setItem(item);
+        item.setIdentifier(new Identifier(string));
+        handleClassAsTarget(result, from, context);
+      }
+      case Identifiable identifiable -> {
+        final RID orid = identifiable.getIdentity();
         final Rid rid = new Rid(-1);
         final PInteger bucket = new PInteger(-1);
         bucket.setValue(orid.getBucketId());
         final PInteger position = new PInteger(-1);
         position.setValue(orid.getPosition());
+        rid.setLegacy(true);
         rid.setBucket(bucket);
         rid.setPosition(position);
 
-        rids.add(rid);
+        handleRidsAsTarget(result, List.of(rid), context);
       }
-      handleRidsAsTarget(result, rids, context);
-    } else
-      throw new CommandExecutionException("Invalid target: " + paramValue);
+      case Iterable iterable -> {
+        //try list of RIDs
+        final List<Rid> rids = new ArrayList<>();
+        for (final Object x : iterable) {
+          if (!(x instanceof Identifiable)) {
+            throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
+          }
+          final RID orid = ((Identifiable) x).getIdentity();
+
+          final Rid rid = new Rid(-1);
+          final PInteger bucket = new PInteger(-1);
+          bucket.setValue(orid.getBucketId());
+          final PInteger position = new PInteger(-1);
+          position.setValue(orid.getPosition());
+          rid.setBucket(bucket);
+          rid.setPosition(position);
+
+          rids.add(rid);
+        }
+        handleRidsAsTarget(result, rids, context);
+      }
+      default -> throw new CommandExecutionException("Invalid target: " + paramValue);
+    }
   }
 
   private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context) {

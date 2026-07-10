@@ -36,6 +36,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -48,6 +49,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,7 +95,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
         vertex.set("name", "doc" + i);
         final float[] vector = new float[dimensions];
         for (int j = 0; j < dimensions; j++)
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         vertex.set("embedding", vector);
         vertex.save();
         insertedRIDs.add(vertex.getIdentity());
@@ -122,7 +124,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
       for (int s = 0; s < 20; s++) {
         final float[] queryVector = new float[dimensions];
         for (int j = 0; j < dimensions; j++)
-          queryVector[j] = (float) Math.random();
+          queryVector[j] = (float) ThreadLocalRandom.current().nextDouble();
         final ResultSet rs = database.query("sql",
             "SELECT vectorNeighbors('VectorDoc[embedding]', ?, 10) AS neighbors",
             queryVector);
@@ -167,7 +169,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
         vertex.set("name", "doc" + i);
         final float[] vector = new float[dimensions];
         for (int j = 0; j < dimensions; j++)
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         vertex.set("embedding", vector);
         vertex.save();
         insertedRIDs.add(vertex.getIdentity());
@@ -244,7 +246,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     // Force graph build
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Vec[vector]");
-    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
     index.buildVectorGraphNow();
 
     // Delete one vector to create a tombstone
@@ -327,7 +329,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     database.transaction(() -> {
       final TypeIndex ti = (TypeIndex) database.getSchema().getIndexByName("Vec[vector]");
-      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().iterator().next();
+      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().getFirst();
 
       final List<LSMVectorIndexPageParser.VectorEntry> entries =
           LSMVectorIndexPageParser.parseAllEntries(
@@ -1063,7 +1065,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
     index.buildVectorGraphNow();
 
     final Map<String, Long> stats = index.getStats();
@@ -1085,7 +1087,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     database.transaction(() -> {
       final TypeIndex ti = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().iterator().next();
+      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().getFirst();
       final Map<String, Long> s = idx.getStats();
       final long vectorCount = s.get("totalVectors");
       final long deltaCount = s.get("deltaVectorsCount");
@@ -1161,7 +1163,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     database.transaction(() -> {
       final TypeIndex ti = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().iterator().next();
+      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().getFirst();
       final Map<String, Long> stats = idx.getStats();
 
       assertThat(stats.get("totalVectors"))
@@ -1221,7 +1223,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
     index.buildVectorGraphNow();
 
     assertThat(index.getStats().get("graphNodeCount")).isGreaterThanOrEqualTo(66L);
@@ -1242,7 +1244,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     database.transaction(() -> {
       final TypeIndex ti = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().iterator().next();
+      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().getFirst();
 
       assertThat(idx.getStats().get("totalVectors"))
           .as("All %d vectors should be loaded from pages", totalVectors)
@@ -1372,7 +1374,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
     index.buildVectorGraphNow();
 
     database.transaction(() -> {
@@ -1396,7 +1398,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     database.transaction(() -> {
       final TypeIndex ti = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().iterator().next();
+      final LSMVectorIndex idx = (LSMVectorIndex) ti.getSubIndexes().getFirst();
       final Map<String, Long> stats = idx.getStats();
       final long activeVectors = stats.get("activeVectors");
 
@@ -1463,7 +1465,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ImageEmbedding[vector]");
-    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
     index.buildVectorGraphNow();
 
     database.transaction(() -> {
@@ -1543,7 +1545,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Vec[vector]");
-    final LSMVectorIndex idx = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+    final LSMVectorIndex idx = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
 
     final List<LSMVectorIndexPageParser.VectorEntry> allEntries =
         LSMVectorIndexPageParser.parseAllEntries(
@@ -1736,7 +1738,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
     });
 
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("OFTVec[vector]");
-    final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
 
     final List<RID> rids = new ArrayList<>();
     database.transaction(() -> {

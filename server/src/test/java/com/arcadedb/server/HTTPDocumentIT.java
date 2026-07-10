@@ -25,8 +25,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-
 import com.arcadedb.server.http.handler.AbstractQueryHandler;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
@@ -455,7 +455,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPayload(connection, "sql", "SELECT FROM Person", "studio", Collections.emptyMap());
+      formatPayload(connection, "sql", "SELECT FROM Person", "studio", Map.of());
       connection.connect();
 
       try {

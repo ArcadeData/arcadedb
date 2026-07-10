@@ -53,8 +53,8 @@ public abstract class AbstractTextFunction implements StatelessFunction {
     if (arg == null) {
       return defaultValue;
     }
-    if (arg instanceof Number) {
-      return ((Number) arg).intValue();
+    if (arg instanceof Number number) {
+      return number.intValue();
     }
     return Integer.parseInt(arg.toString());
   }

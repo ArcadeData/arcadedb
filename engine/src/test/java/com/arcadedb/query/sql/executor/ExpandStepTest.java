@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -34,10 +35,10 @@ class ExpandStepTest extends TestHelper {
     database.getSchema().createDocumentType("Container");
 
     database.transaction(() -> {
-      final List<Integer> values = new ArrayList<>();
-      values.add(1);
-      values.add(2);
-      values.add(3);
+      final List<Integer> values = new ArrayList<>(List.of(
+          1,
+          2,
+          3));
       database.newDocument("Container").set("name", "test").set("values", values).save();
     });
 
@@ -64,9 +65,9 @@ class ExpandStepTest extends TestHelper {
       child1.save();
       child2.save();
 
-      final List<Object> children = new ArrayList<>();
-      children.add(child1);
-      children.add(child2);
+      final List<Object> children = new ArrayList<>(List.of(
+          child1,
+          child2));
 
       database.newDocument("Parent").set("name", "parent").set("children", children).save();
     });
@@ -104,14 +105,14 @@ class ExpandStepTest extends TestHelper {
     database.getSchema().createDocumentType("MultiContainer");
 
     database.transaction(() -> {
-      final List<Integer> values1 = new ArrayList<>();
-      values1.add(1);
-      values1.add(2);
+      final List<Integer> values1 = new ArrayList<>(List.of(
+          1,
+          2));
       database.newDocument("MultiContainer").set("values", values1).save();
 
-      final List<Integer> values2 = new ArrayList<>();
-      values2.add(3);
-      values2.add(4);
+      final List<Integer> values2 = new ArrayList<>(List.of(
+          3,
+          4));
       database.newDocument("MultiContainer").set("values", values2).save();
     });
 
@@ -132,9 +133,9 @@ class ExpandStepTest extends TestHelper {
     database.getSchema().createDocumentType("FilteredContainer");
 
     database.transaction(() -> {
-      final List<Integer> values1 = new ArrayList<>();
-      values1.add(10);
-      values1.add(20);
+      final List<Integer> values1 = new ArrayList<>(List.of(
+          10,
+          20));
       database.newDocument("FilteredContainer").set("name", "A").set("values", values1).save();
 
       final List<Integer> values2 = new ArrayList<>();
@@ -202,10 +203,10 @@ class ExpandStepTest extends TestHelper {
     database.getSchema().createDocumentType("Strings");
 
     database.transaction(() -> {
-      final List<String> values = new ArrayList<>();
-      values.add("alpha");
-      values.add("beta");
-      values.add("gamma");
+      final List<String> values = new ArrayList<>(List.of(
+          "alpha",
+          "beta",
+          "gamma"));
       database.newDocument("Strings").set("values", values).save();
     });
 

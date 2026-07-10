@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.EdgeType;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

@@ -28,7 +28,9 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Unit tests for the {@code $bytes} / {@code $int8} typed-JSON-marker decoder (#4135). */
+/**
+ * Unit tests for the {@code $bytes} / {@code $int8} typed-JSON-marker decoder (#4135).
+ */
 class AbstractQueryHandlerTypedJsonMarkersTest {
 
   @Test
@@ -105,10 +107,10 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
   void mapWithNoMarkersReturnsSameReference() {
     // Performance contract: a parameter map with only scalar / non-marker values must not
     // allocate a new map - the original reference flows through unchanged.
-    final Map<String, Object> in = new LinkedHashMap<>();
-    in.put("a", 42);
-    in.put("b", "hello");
-    in.put("c", Map.of("status", "active"));
+    final Map<String, Object> in = Map.of(
+        "a", 42,
+        "b", "hello",
+        "c", Map.of("status", "active"));
 
     final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
 
@@ -214,7 +216,8 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
 
     final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
 
-    @SuppressWarnings("unchecked") final Map<String, Object> outer = (Map<String, Object>) out.get("outer");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> outer = (Map<String, Object>) out.get("outer");
     assertThat(outer.get("inner")).isInstanceOf(byte[].class);
     assertThat((byte[]) outer.get("inner")).containsExactly((byte) 1, (byte) 2, (byte) 3);
   }
@@ -268,15 +271,16 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
   void multiKeyMapWithDollarBytesIsLeftAlone() {
     // Only single-key maps trigger the decoder; user data with leading-$ keys must round-trip.
     final Map<String, Object> in = new LinkedHashMap<>();
-    final Map<String, Object> userData = new LinkedHashMap<>();
-    userData.put("$bytes", "not-a-marker-because-other-keys");
-    userData.put("note", "hello");
+    final Map<String, Object> userData = Map.of(
+        "$bytes", "not-a-marker-because-other-keys",
+        "note", "hello");
     in.put("q", userData);
 
     final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
 
     assertThat(out.get("q")).isInstanceOf(Map.class);
-    @SuppressWarnings("unchecked") final Map<String, Object> got = (Map<String, Object>) out.get("q");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> got = (Map<String, Object>) out.get("q");
     assertThat(got).containsEntry("$bytes", "not-a-marker-because-other-keys");
     assertThat(got).containsEntry("note", "hello");
   }
@@ -289,7 +293,8 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
     final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
 
     assertThat(out.get("q")).isInstanceOf(Map.class);
-    @SuppressWarnings("unchecked") final Map<String, Object> got = (Map<String, Object>) out.get("q");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> got = (Map<String, Object>) out.get("q");
     assertThat(got).containsExactlyEntriesOf(Map.of("name", "Alice"));
   }
 
@@ -305,8 +310,8 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
     assertThat(out.get("batch")).isInstanceOf(List.class);
     final List<?> batch = (List<?>) out.get("batch");
     assertThat(batch).hasSize(2);
-    assertThat(batch.get(0)).isInstanceOf(byte[].class);
-    assertThat((byte[]) batch.get(0)).containsExactly((byte) 1, (byte) 2, (byte) 3);
+    assertThat(batch.getFirst()).isInstanceOf(byte[].class);
+    assertThat((byte[]) batch.getFirst()).containsExactly((byte) 1, (byte) 2, (byte) 3);
     assertThat(batch.get(1)).isInstanceOf(byte[].class);
     assertThat((byte[]) batch.get(1)).containsExactly((byte) 4, (byte) 5, (byte) 6);
   }
@@ -318,9 +323,9 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
     // when keyed ordinally so the positional-array call shape at the HTTP layer round-trips too.
     final byte[] expected = { 1, 2, 3 };
     final String b64 = Base64.getEncoder().encodeToString(expected);
-    final Map<String, Object> in = new LinkedHashMap<>();
-    in.put("0", Map.of("$bytes", b64));
-    in.put("1", Map.of("$int8", List.of(0, 64, -1)));
+    final Map<String, Object> in = Map.of(
+        "0", Map.of("$bytes", b64),
+        "1", Map.of("$int8", List.of(0, 64, -1)));
 
     final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
 
@@ -332,10 +337,10 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
 
   @Test
   void scalarValuesPassThrough() {
-    final Map<String, Object> in = new LinkedHashMap<>();
-    in.put("a", 42);
-    in.put("b", "hello");
-    in.put("c", List.of(1.0, 2.0, 3.0));
+    final Map<String, Object> in = Map.of(
+        "a", 42,
+        "b", "hello",
+        "c", List.of(1.0, 2.0, 3.0));
 
     final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
 

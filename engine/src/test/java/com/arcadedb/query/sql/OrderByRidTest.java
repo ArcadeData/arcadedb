@@ -3,6 +3,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -44,8 +45,8 @@ class OrderByRidTest extends TestHelper {
       }
 
       // First result should have the highest position
-      RID first = rids.get(0);
-      RID last = rids.get(rids.size() - 1);
+      RID first = rids.getFirst();
+      RID last = rids.getLast();
       //System.out.println("First RID: " + first + " position=" + first.getPosition());
       //System.out.println("Last RID: " + last + " position=" + last.getPosition());
       assertThat(first.getPosition()).isGreaterThanOrEqualTo(last.getPosition());

@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import com.mongodb.MongoClient;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
@@ -30,15 +31,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
-import static com.mongodb.client.model.Filters.and;
-import static com.mongodb.client.model.Filters.eq;
-import static com.mongodb.client.model.Filters.exists;
-import static com.mongodb.client.model.Filters.gt;
-import static com.mongodb.client.model.Filters.lte;
-import static com.mongodb.client.model.Filters.ne;
+import static com.arcadedb.schema.Property.*;
+import static com.mongodb.client.model.Filters.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class MongoDBServerTest extends BaseGraphServerTest {

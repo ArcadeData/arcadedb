@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

@@ -21,7 +21,6 @@ package com.arcadedb.function.path;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -55,7 +54,7 @@ public class PathElements extends AbstractPathFunction {
   @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
-      return Collections.emptyList();
+      return List.of();
 
     List<Object> nodes;
     List<Object> rels;
@@ -68,11 +67,11 @@ public class PathElements extends AbstractPathFunction {
       // Already a list of elements
       return args[0];
     } else {
-      return Collections.emptyList();
+      return List.of();
     }
 
     if (nodes == null)
-      return Collections.emptyList();
+      return List.of();
 
     final List<Object> elements = new ArrayList<>();
 

@@ -22,7 +22,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * Transforms current value in a List.
@@ -46,7 +49,7 @@ public class SQLMethodAsList extends AbstractSQLMethod {
 
     if (value == null)
       // NULL VALUE, RETURN AN EMPTY LIST
-      return Collections.emptyList();
+      return List.of();
 
     if (value instanceof Collection<?>) {
       return new ArrayList<>((Collection<Object>) value);

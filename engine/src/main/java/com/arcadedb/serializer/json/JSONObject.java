@@ -21,6 +21,7 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.utility.DateUtils;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -632,23 +633,26 @@ public class JSONObject implements Map<String, Object> {
   public void validate() {
     for (String key : keySet()) {
       Object value = get(key);
-      if (value instanceof Number number) {
-        if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
-          // FIX NAN NUMBERS
-          put(key, (Number) null);
-      } else if (value instanceof JSONObject nObject) {
-        nObject.validate();
-      } else if (value instanceof JSONArray array) {
-        for (int i = 0; i < array.length(); i++) {
-          final Object arrayValue = array.get(i);
-          if (arrayValue instanceof Number number) {
-            if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
-              // FIX NAN NUMBERS
-              array.put(i, null);
-          } else if (arrayValue instanceof JSONObject nObject) {
-            nObject.validate();
+      switch (value) {
+        case Number number -> {
+          if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
+            // FIX NAN NUMBERS
+            put(key, (Number) null);
+        }
+        case JSONObject nObject -> nObject.validate();
+        case JSONArray array -> {
+          for (int i = 0;i < array.length();i++) {
+            final Object arrayValue = array.get(i);
+            if (arrayValue instanceof Number number) {
+              if (Double.isNaN(number.doubleValue()) || Double.isInfinite(number.doubleValue()))
+                // FIX NAN NUMBERS
+                array.put(i, null);
+            } else if (arrayValue instanceof JSONObject nObject) {
+              nObject.validate();
+            }
           }
         }
+        case null, default -> {}
       }
     }
   }

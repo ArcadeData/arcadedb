@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -129,7 +130,7 @@ class OpenCypherBatchBenchmark {
       // Step 2: Force graph build - simulates what happens between API calls when
       // the inactivity timer fires and builds the HNSW graph
       final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("VectorDoc[embedding]");
-      final LSMVectorIndex vectorIndex = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+      final LSMVectorIndex vectorIndex = (LSMVectorIndex) typeIndex.getSubIndexes().getFirst();
       vectorIndex.buildVectorGraphNow();
 
       // Verify graph was built
@@ -370,9 +371,9 @@ class OpenCypherBatchBenchmark {
 
       final List<Map<String, Object>> batch = new ArrayList<>();
       for (final String rid : chunkRids) {
-        final Map<String, Object> entry = new HashMap<>();
-        entry.put("destRID", rid);
-        entry.put("vector", List.of(1.0, 2.0, 3.0));
+        final Map<String, Object> entry = new HashMap<>(Map.of(
+            "destRID", rid,
+            "vector", List.of(1.0, 2.0, 3.0)));
         batch.add(entry);
       }
 
@@ -623,12 +624,12 @@ class OpenCypherBatchBenchmark {
       for (int b = 0; b < batches; b++) {
         final List<Map<String, Object>> batch = new ArrayList<>(perBatch);
         for (int i = 0; i < perBatch; i++) {
-          final Map<String, Object> entry = new HashMap<>();
-          entry.put("_parent_rid", parentRid[0]);
-          entry.put("subtype", "CHUNK");
-          entry.put("name", "chunk_" + (b * perBatch + i));
-          entry.put("text", "body for chunk " + (b * perBatch + i));
-          entry.put("index", b * perBatch + i);
+          final Map<String, Object> entry = new HashMap<>(Map.of(
+              "_parent_rid", parentRid[0],
+              "subtype", "CHUNK",
+              "name", "chunk_" + (b * perBatch + i),
+              "text", "body for chunk " + (b * perBatch + i),
+              "index", b * perBatch + i));
           batch.add(entry);
         }
 

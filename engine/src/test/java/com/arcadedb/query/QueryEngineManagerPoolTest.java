@@ -18,12 +18,12 @@
  */
 package com.arcadedb.query;
 
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-
-import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;

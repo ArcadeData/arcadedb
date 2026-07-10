@@ -102,24 +102,27 @@ public class BasicCommandContext implements CommandContext {
         firstPart = pos > -1 ? otherParts.substring(0, pos) : otherParts;
         otherParts = pos > -1 ? otherParts.substring(pos + 1) : "";
 
-        if (result instanceof Result result1) {
-          // Handle special metadata properties for Result objects
-          if ("@rid".equals(firstPart))
-            result = result1.getIdentity().orElse(null);
-          else if ("@type".equals(firstPart))
-            result = result1.getElement().map(Document::getTypeName).orElse(null);
-          else
-            result = result1.getProperty(firstPart);
-        } else if (result instanceof Map map)
-          result = map.get(firstPart);
-        else if (result instanceof Document document) {
-          // Handle special metadata properties that are not stored in the document
-          if ("@rid".equals(firstPart))
-            result = document.getIdentity();
-          else if ("@type".equals(firstPart))
-            result = document.getTypeName();
-          else
-            result = document.get(firstPart);
+        switch (result) {
+          case Result result1 -> {
+            // Handle special metadata properties for Result objects
+            if ("@rid".equals(firstPart))
+              result = result1.getIdentity().orElse(null);
+            else if ("@type".equals(firstPart))
+              result = result1.getElement().map(Document::getTypeName).orElse(null);
+            else
+              result = result1.getProperty(firstPart);
+          }
+          case Map map -> result = map.get(firstPart);
+          case Document document -> {
+            // Handle special metadata properties that are not stored in the document
+            if ("@rid".equals(firstPart))
+              result = document.getIdentity();
+            else if ("@type".equals(firstPart))
+              result = document.getTypeName();
+            else
+              result = document.get(firstPart);
+          }
+          case null, default -> {}
         }
 
       }
@@ -263,12 +266,11 @@ public class BasicCommandContext implements CommandContext {
       init();
 
       final Object v = variables.get(name);
-      if (v == null)
-        variables.put(name, 1);
-      else if (v instanceof Number number)
-        variables.put(name, number.longValue() + 1);
-      else
-        throw new IllegalArgumentException("Variable '" + name + "' is not a number, but: " + v.getClass());
+      switch (v) {
+        case null -> variables.put(name, 1);
+        case Number number -> variables.put(name, number.longValue() + 1);
+        default -> throw new IllegalArgumentException("Variable '" + name + "' is not a number, but: " + v.getClass());
+      }
     }
     return this;
   }
@@ -523,12 +525,11 @@ public class BasicCommandContext implements CommandContext {
   }
 
   private StringBuilder printValue(final StringBuilder buffer, final Object value) {
-    if (value == null)
-      buffer.append("null");
-    else if (value instanceof InternalResultSet set)
-      buffer.append("resultset ").append(set.countEntries()).append(" entries");
-    else
-      buffer.append(value);
+    switch (value) {
+      case null -> buffer.append("null");
+      case InternalResultSet set -> buffer.append("resultset ").append(set.countEntries()).append(" entries");
+      default -> buffer.append(value);
+    }
 
     return buffer;
   }

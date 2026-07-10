@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Property;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
@@ -51,12 +52,12 @@ class RemoteImmutableVertexTest {
     when(mockType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
     when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
 
-    final Map<String, Object> attributes = new HashMap<>();
-    attributes.put(Property.TYPE_PROPERTY, "TestVertex");
-    attributes.put(Property.CAT_PROPERTY, "v");
-    attributes.put("name", "testVertex");
-    attributes.put("value", 42);
-    attributes.put(Property.RID_PROPERTY, "#3:0");
+    final Map<String, Object> attributes = new HashMap<>(Map.of(
+        Property.TYPE_PROPERTY, "TestVertex",
+        Property.CAT_PROPERTY, "v",
+        "name", "testVertex",
+        "value", 42,
+        Property.RID_PROPERTY, "#3:0"));
 
     vertex = new RemoteImmutableVertex(mockDatabase, attributes);
   }

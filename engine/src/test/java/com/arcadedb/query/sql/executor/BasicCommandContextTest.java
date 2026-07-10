@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.ContextConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;

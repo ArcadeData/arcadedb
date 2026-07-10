@@ -18,10 +18,10 @@
  */
 package com.arcadedb.server.mcp.tools;
 
-import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityUser;
 

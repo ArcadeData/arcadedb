@@ -24,12 +24,12 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -88,16 +88,16 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       if (MultiValue.getSize(source) > 1)
         throw new IllegalArgumentException("Only one sourceVertex is allowed");
       source = MultiValue.getFirstValue(source);
-      if (source instanceof Result && ((Result) source).isElement()) {
-        source = ((Result) source).getElement().get();
+      if (source instanceof Result result && result.isElement()) {
+        source = result.getElement().get();
       }
     }
 
-    if (record != null && source instanceof String)
-      source = record.get((String) source);
+    if (record != null && source instanceof String string)
+      source = record.get(string);
 
-    if (source instanceof Identifiable) {
-      final Document elem = (Document) ((Identifiable) source).getRecord();
+    if (source instanceof Identifiable identifiable) {
+      final Document elem = (Document) identifiable.getRecord();
       if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The sourceVertex must be a vertex record");
 
@@ -116,11 +116,11 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
     }
 
-    if (record != null && dest instanceof String)
-      dest = record.get((String) dest);
+    if (record != null && dest instanceof String string1)
+      dest = record.get(string1);
 
-    if (dest instanceof Identifiable identifiable) {
-      final Document elem = (Document) identifiable.getRecord();
+    if (dest instanceof Identifiable identifiableDest) {
+      final Document elem = (Document) identifiableDest.getRecord();
       if (!(elem instanceof Vertex vertex)) {
         throw new IllegalArgumentException("The destinationVertex must be a vertex record");
       }
@@ -166,7 +166,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       if (current.getIdentity().equals(goal.getIdentity()) || currentDepth >= paramMaxDepth) {
 
         while (current != null) {
-          route.add(0, current);
+          route.addFirst(current);
           current = cameFrom.get(current);
         }
         return getPath();
@@ -356,10 +356,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (e != null) {
       final Object fieldValue = e.get(paramWeightFieldName);
       if (fieldValue != null)
-        if (fieldValue instanceof Float)
-          return (Float) fieldValue;
-        else if (fieldValue instanceof Number)
-          return ((Number) fieldValue).doubleValue();
+        if (fieldValue instanceof Float float1)
+          return float1;
+        else if (fieldValue instanceof Number number)
+          return number.doubleValue();
     }
 
     return MIN;
@@ -369,10 +369,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (edge != null) {
       final Object fieldValue = edge.get(paramWeightFieldName);
       if (fieldValue != null)
-        if (fieldValue instanceof Float)
-          return (Float) fieldValue;
-        else if (fieldValue instanceof Number)
-          return ((Number) fieldValue).doubleValue();
+        if (fieldValue instanceof Float float1)
+          return float1;
+        else if (fieldValue instanceof Number number)
+          return number.doubleValue();
     }
 
     return MIN;

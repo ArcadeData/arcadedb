@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -104,9 +105,9 @@ class TimeSeriesBucketTest extends TestHelper {
     final List<Object[]> results = bucket.scanRange(2000L, 4000L, null);
     assertThat(results).hasSize(3);
 
-    assertThat((long) results.get(0)[0]).isEqualTo(2000L);
-    assertThat((String) results.get(0)[1]).isEqualTo("B");
-    assertThat((double) results.get(0)[2]).isEqualTo(21.5);
+    assertThat((long) results.getFirst()[0]).isEqualTo(2000L);
+    assertThat((String) results.getFirst()[1]).isEqualTo("B");
+    assertThat((double) results.getFirst()[2]).isEqualTo(21.5);
 
     assertThat((long) results.get(2)[0]).isEqualTo(4000L);
     assertThat((String) results.get(2)[1]).isEqualTo("C");
@@ -153,8 +154,8 @@ class TimeSeriesBucketTest extends TestHelper {
     database.begin();
     final List<Object[]> results = bucket.scanRange(100L, 300L, null);
     assertThat(results).hasSize(3);
-    assertThat((double) results.get(0)[1]).isEqualTo(1.5);
-    assertThat((int) results.get(0)[2]).isEqualTo(10);
+    assertThat((double) results.getFirst()[1]).isEqualTo(1.5);
+    assertThat((int) results.getFirst()[2]).isEqualTo(10);
     assertThat((double) results.get(2)[1]).isEqualTo(3.5);
     assertThat((int) results.get(2)[2]).isEqualTo(30);
     database.commit();

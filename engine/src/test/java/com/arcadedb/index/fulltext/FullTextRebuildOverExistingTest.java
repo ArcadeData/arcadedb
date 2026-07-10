@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;

@@ -19,12 +19,13 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.JsonSerializer;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -95,9 +96,9 @@ class JSONSerializerTest extends TestHelper {
 
   @Test
   void map2json() {
-    Map<String, Object> map = new HashMap<>();
-    map.put("key1", "value1");
-    map.put("key2", 123);
+    Map<String, Object> map = new HashMap<>(Map.of(
+        "key1", "value1",
+        "key2", 123));
 
     JSONObject json = jsonSerializer.map2json(map, testType, false);
 
@@ -119,9 +120,9 @@ class JSONSerializerTest extends TestHelper {
 
   @Test
   void convertToJSONType() {
-    Map<String, Object> map = new HashMap<>();
-    map.put("key1", "value1");
-    map.put("key2", 123);
+    Map<String, Object> map = new HashMap<>(Map.of(
+        "key1", "value1",
+        "key2", 123));
 
     Object jsonType = jsonSerializer.map2json(map, testType, false);
 

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;

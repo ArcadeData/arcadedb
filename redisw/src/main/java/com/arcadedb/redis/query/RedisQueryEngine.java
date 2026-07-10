@@ -31,7 +31,6 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -43,6 +42,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.*;
@@ -320,12 +320,12 @@ public class RedisQueryEngine implements QueryEngine {
     if (result instanceof Record record) {
       // Return documents directly (consistent with SQL/OpenCypher result format)
       final ResultInternal resultInternal = new ResultInternal(record);
-      return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
+      return new IteratorResultSet(Set.of((Result) resultInternal).iterator());
     }
 
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("value", result);
-    return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
+    return new IteratorResultSet(Set.of((Result) resultInternal).iterator());
   }
 
   // --- RAM Commands (default bucket) ---

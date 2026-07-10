@@ -31,10 +31,10 @@ class CypherStatisticsHelperTest {
 
   @Test
   void countsPreExistingPropertiesNotReSetAndSkipsInternal() {
-    final Set<String> existing = new LinkedHashSet<>();
-    existing.add("a");
-    existing.add("b");
-    existing.add("@type"); // internal - never counted
+    final Set<String> existing = Set.of(
+        "a",
+        "b",
+        "@type"); // internal - never counted
     final Map<String, Object> replacement = new HashMap<>();
     replacement.put("a", 1); // re-set, not a removal
     // b is removed (absent from replacement) -> counts 1

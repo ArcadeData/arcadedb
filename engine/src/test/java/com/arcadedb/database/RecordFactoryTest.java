@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -30,6 +31,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinaryTypes;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

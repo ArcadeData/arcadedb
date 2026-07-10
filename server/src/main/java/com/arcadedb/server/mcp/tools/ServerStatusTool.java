@@ -19,12 +19,12 @@
 package com.arcadedb.server.mcp.tools;
 
 import com.arcadedb.Constants;
-import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.HashSet;

@@ -314,21 +314,23 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     // covers the case where a Java caller hands in a fixed-size array. No reflection needed:
     // primitive RID arrays would not type-check against the {@code asRid(Object)} entry-point
     // anyway, so Object[] is the only array shape we need to admit.
-    if (raw instanceof Iterable<?> iter) {
-      for (final Object o : iter)
-        rids.add(asRid(o));
-    } else if (raw instanceof Object[] arr) {
-      for (final Object o : arr)
-        rids.add(asRid(o));
-    } else {
-      throw new CommandSQLParsingException(NAME + " each pair must be a 2-element list, got: " + raw);
+    switch (raw) {
+      case Iterable<?> iter -> {
+        for (final Object o : iter)
+          rids.add(asRid(o));
+      }
+      case Object[] arr -> {
+        for (final Object o : arr)
+          rids.add(asRid(o));
+      }
+      case null, default -> throw new CommandSQLParsingException(NAME + " each pair must be a 2-element list, got: " + raw);
     }
     if (rids.size() != 2)
       throw new CommandSQLParsingException(NAME + " each pair must have exactly 2 entries (positive, negative), got "
           + rids.size());
-    if (rids.get(0).equals(rids.get(1)))
-      throw new CommandSQLParsingException(NAME + " positive and negative cannot be the same RID: " + rids.get(0));
-    return new Pair(rids.get(0), rids.get(1));
+    if (rids.getFirst().equals(rids.get(1)))
+      throw new CommandSQLParsingException(NAME + " positive and negative cannot be the same RID: " + rids.getFirst());
+    return new Pair(rids.getFirst(), rids.get(1));
   }
 
   private static RID asRid(final Object o) {

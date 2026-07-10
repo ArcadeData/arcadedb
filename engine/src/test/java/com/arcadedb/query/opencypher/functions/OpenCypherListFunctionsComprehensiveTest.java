@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.functions;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,7 +30,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import org.assertj.core.api.Assertions;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -93,7 +94,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> distinct = (List<Object>) result.next().getProperty("result");
     assertThat(distinct).hasSize(5);
-    assertThat(distinct.get(0)).isEqualTo(1L);
+    assertThat(distinct.getFirst()).isEqualTo(1L);
     assertThat(distinct.get(1)).isEqualTo(true);
     assertThat(distinct.get(2)).isNull();
     assertThat(distinct.get(3)).isEqualTo("a");
@@ -126,7 +127,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> flattened = (List<Object>) result.next().getProperty("result");
     assertThat(flattened).hasSize(3);
-    assertThat(flattened.get(0)).isEqualTo("a");
+    assertThat(flattened.getFirst()).isEqualTo("a");
     assertThat(flattened.get(1)).isEqualTo("b");
     // Third element should still be a list since default depth is 1
     assertThat(flattened.get(2)).isInstanceOf(List.class);
@@ -150,7 +151,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> flattened = (List<Object>) result.next().getProperty("result");
     assertThat(flattened).hasSize(2);
-    assertThat(flattened.get(0)).isEqualTo("a");
+    assertThat(flattened.getFirst()).isEqualTo("a");
     assertThat(flattened.get(1)).isInstanceOf(List.class);
   }
 
@@ -212,7 +213,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> inserted = (List<Object>) result.next().getProperty("result");
     assertThat(inserted).hasSize(5);
-    assertThat(inserted.get(0)).isEqualTo(true);
+    assertThat(inserted.getFirst()).isEqualTo(true);
     assertThat(inserted.get(1)).isEqualTo(false);
     assertThat(inserted.get(2)).isEqualTo("a");
   }
@@ -392,7 +393,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     final List<Object> sorted = (List<Object>) result.next().getProperty("result");
     assertThat(sorted).hasSize(4);
     // Cypher ordering: strings < booleans < numbers
-    assertThat(sorted.get(0)).isEqualTo("a");
+    assertThat(sorted.getFirst()).isEqualTo("a");
     assertThat(sorted.get(1)).isEqualTo(true);
   }
 
@@ -500,7 +501,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> range = (List<Object>) result.next().getProperty("result");
     assertThat(range).hasSize(11);
-    assertThat(((Number) range.get(0)).intValue()).isEqualTo(0);
+    assertThat(((Number) range.getFirst()).intValue()).isEqualTo(0);
     assertThat(((Number) range.get(10)).intValue()).isEqualTo(10);
   }
 
@@ -512,7 +513,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> range = (List<Object>) result.next().getProperty("result");
     assertThat(range).hasSize(6);
-    assertThat(((Number) range.get(0)).intValue()).isEqualTo(2);
+    assertThat(((Number) range.getFirst()).intValue()).isEqualTo(2);
     assertThat(((Number) range.get(1)).intValue()).isEqualTo(5);
     assertThat(((Number) range.get(5)).intValue()).isEqualTo(17);
   }
@@ -525,7 +526,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> range = (List<Object>) result.next().getProperty("result");
     assertThat(range).hasSize(6);
-    assertThat(((Number) range.get(0)).intValue()).isEqualTo(10);
+    assertThat(((Number) range.getFirst()).intValue()).isEqualTo(10);
     assertThat(((Number) range.get(5)).intValue()).isEqualTo(0);
   }
 
@@ -598,7 +599,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> reversed = (List<Object>) result.next().getProperty("result");
     assertThat(reversed).hasSize(5);
-    assertThat(((Number) reversed.get(0)).intValue()).isEqualTo(487);
+    assertThat(((Number) reversed.getFirst()).intValue()).isEqualTo(487);
     assertThat(reversed.get(1)).isNull();
     assertThat(((Number) reversed.get(2)).intValue()).isEqualTo(521);
     assertThat(reversed.get(3)).isEqualTo("abc");
@@ -641,7 +642,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> tail = (List<Object>) result.next().getProperty("result");
     assertThat(tail).hasSize(4);
-    assertThat(((Number) tail.get(0)).intValue()).isEqualTo(2);
+    assertThat(((Number) tail.getFirst()).intValue()).isEqualTo(2);
     assertThat(((Number) tail.get(3)).intValue()).isEqualTo(5);
   }
 
@@ -673,7 +674,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> boolList = (List<Object>) result.next().getProperty("result");
     assertThat(boolList).hasSize(5);
-    assertThat(boolList.get(0)).isNull(); // 'a string' not convertible
+    assertThat(boolList.getFirst()).isNull(); // 'a string' not convertible
     assertThat(boolList.get(1)).isEqualTo(true);
     assertThat(boolList.get(2)).isEqualTo(false); // 'false' string converts to false
     assertThat(boolList.get(3)).isNull();
@@ -708,7 +709,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> floatList = (List<Object>) result.next().getProperty("result");
     assertThat(floatList).hasSize(5);
-    assertThat(floatList.get(0)).isNull();
+    assertThat(floatList.getFirst()).isNull();
     assertThat(((Number) floatList.get(1)).doubleValue()).isEqualTo(2.5);
     assertThat(((Number) floatList.get(2)).doubleValue()).isEqualTo(3.14159);
     assertThat(floatList.get(3)).isNull();
@@ -733,7 +734,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> intList = (List<Object>) result.next().getProperty("result");
     assertThat(intList).hasSize(5);
-    assertThat(intList.get(0)).isNull();
+    assertThat(intList.getFirst()).isNull();
     assertThat(((Number) intList.get(1)).intValue()).isEqualTo(2);
     assertThat(((Number) intList.get(2)).intValue()).isEqualTo(5);
     assertThat(intList.get(3)).isNull();
@@ -758,7 +759,7 @@ class OpenCypherListFunctionsComprehensiveTest {
     @SuppressWarnings("unchecked")
     final List<Object> strList = (List<Object>) result.next().getProperty("result");
     assertThat(strList).hasSize(4);
-    assertThat(strList.get(0)).isEqualTo("already a string");
+    assertThat(strList.getFirst()).isEqualTo("already a string");
     assertThat(strList.get(1)).isEqualTo("2");
     assertThat(strList.get(2)).isNull();
     assertThat(strList.get(3)).isNull(); // list not convertible

@@ -24,6 +24,7 @@ import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.StreamQueryRequest;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
@@ -33,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -286,12 +288,12 @@ public class ArcadeDbHTTPTvsGRPCBench {
   private static Map<String, Object> uf(String id, String tenant, String area, String type, String feedback,
       Map<String, Object> image,
       Instant ts) {
-    Map<String, Object> m = new LinkedHashMap<>();
-    m.put("id", id);
-    m.put("empowerTenantId", tenant);
-    m.put("applicationArea", area);
-    m.put("empowerType", type);
-    m.put("feedback", feedback);
+    Map<String, Object> m = new HashMap<>(Map.of(
+        "id", id,
+        "empowerTenantId", tenant,
+        "applicationArea", area,
+        "empowerType", type,
+        "feedback", feedback));
     if (image != null)
       m.put("image", image); // EMBEDDED map (server coerces to embedded doc)
     m.put("timestamp", Date.from(ts));

@@ -21,6 +21,7 @@ package com.arcadedb.containers.ha;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+
 import io.micrometer.core.instrument.Metrics;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
@@ -59,7 +60,7 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     logger.info("Starting all containers");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
@@ -136,7 +137,7 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     logger.info("Starting all containers");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
@@ -170,7 +171,7 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper dbn = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+        DatabaseWrapper dbn = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
         dbn.addUserAndPhotos(numOfUsers, numOfPhotos);
         dbn.close();
       });
@@ -180,7 +181,7 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     if (numOfFriendship > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper dbn = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+        DatabaseWrapper dbn = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
         dbn.createFriendships(numOfFriendship);
         dbn.close();
       });
@@ -189,7 +190,7 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     if (numOfLike > 0) {
       // Each thread will create friendships
       executor.submit(() -> {
-        DatabaseWrapper dbn = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+        DatabaseWrapper dbn = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
         dbn.createLike(numOfLike);
         dbn.close();
       });

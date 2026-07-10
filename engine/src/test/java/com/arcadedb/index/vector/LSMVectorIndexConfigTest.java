@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 

@@ -34,7 +34,6 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #4420: a record whose on-disk buffer is corrupted (e.g. produced by a version affected by

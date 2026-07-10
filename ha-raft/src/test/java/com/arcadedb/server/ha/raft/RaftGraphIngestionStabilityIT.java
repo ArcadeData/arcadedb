@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

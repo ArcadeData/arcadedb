@@ -25,7 +25,6 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
-
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidLongHashMap;
 

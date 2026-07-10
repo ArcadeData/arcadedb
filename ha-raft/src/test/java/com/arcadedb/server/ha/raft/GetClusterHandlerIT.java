@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;

@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

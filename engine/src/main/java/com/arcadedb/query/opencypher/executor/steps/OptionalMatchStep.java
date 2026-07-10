@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
@@ -151,8 +150,8 @@ public class OptionalMatchStep extends AbstractExecutionStep {
                   // Count-only optimization: just track unique RIDs, don't buffer full objects
                   for (final String varName : variableNames) {
                     final Object val = matchResult.getProperty(varName);
-                    if (val instanceof Identifiable) {
-                      uniqueRIDs.add(((Identifiable) val).getIdentity());
+                    if (val instanceof Identifiable identifiable) {
+                      uniqueRIDs.add(identifiable.getIdentity());
                     }
                   }
                   currentInputMatchCount++;

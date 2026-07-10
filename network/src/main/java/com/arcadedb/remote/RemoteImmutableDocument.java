@@ -21,25 +21,18 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
-import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.logging.Level;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.schema.Property.*;
 
 public class RemoteImmutableDocument extends ImmutableDocument {
   protected final RemoteDatabase      remoteDatabase;
@@ -212,6 +205,6 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         }
       }
     }
-    return propTypes != null ? propTypes : Collections.emptyMap();
+    return propTypes != null ? propTypes : Map.of();
   }
 }

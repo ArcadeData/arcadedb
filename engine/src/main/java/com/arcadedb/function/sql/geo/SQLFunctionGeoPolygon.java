@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
+
 import org.locationtech.spatial4j.shape.Point;
 
 import java.util.List;
@@ -70,14 +71,12 @@ public class SQLFunctionGeoPolygon extends SQLFunctionAbstract {
   }
 
   private void appendCoord(final StringBuilder sb, final Object point) {
-    if (point instanceof Point p) {
-      sb.append(GeoUtils.formatCoord(p.getX())).append(" ").append(GeoUtils.formatCoord(p.getY()));
-    } else if (point instanceof List<?> list) {
-      sb.append(GeoUtils.formatCoord(GeoUtils.getDoubleValue(list.get(0))))
+    switch (point) {
+      case Point p -> sb.append(GeoUtils.formatCoord(p.getX())).append(" ").append(GeoUtils.formatCoord(p.getY()));
+      case List<?> list -> sb.append(GeoUtils.formatCoord(GeoUtils.getDoubleValue(list.getFirst())))
           .append(" ")
           .append(GeoUtils.formatCoord(GeoUtils.getDoubleValue(list.get(1))));
-    } else {
-      throw new IllegalArgumentException("Invalid point element: " + point);
+      case null, default -> throw new IllegalArgumentException("Invalid point element: " + point);
     }
   }
 
@@ -85,7 +84,7 @@ public class SQLFunctionGeoPolygon extends SQLFunctionAbstract {
     if (point instanceof Point p)
       return new double[] { p.getX(), p.getY() };
     if (point instanceof List<?> list)
-      return new double[] { GeoUtils.getDoubleValue(list.get(0)), GeoUtils.getDoubleValue(list.get(1)) };
+      return new double[] { GeoUtils.getDoubleValue(list.getFirst()), GeoUtils.getDoubleValue(list.get(1)) };
     throw new IllegalArgumentException("Invalid point element: " + point);
   }
 

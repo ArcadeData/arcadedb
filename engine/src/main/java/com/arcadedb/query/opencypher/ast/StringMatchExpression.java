@@ -72,20 +72,12 @@ public class StringMatchExpression implements BooleanExpression {
 
   @Override
   public String getText() {
-    final String op;
-    switch (matchType) {
-      case STARTS_WITH:
-        op = " STARTS WITH ";
-        break;
-      case ENDS_WITH:
-        op = " ENDS WITH ";
-        break;
-      case CONTAINS:
-        op = " CONTAINS ";
-        break;
-      default:
-        op = " UNKNOWN ";
-    }
+    final String op = switch (matchType) {
+      case STARTS_WITH -> " STARTS WITH ";
+      case ENDS_WITH -> " ENDS WITH ";
+      case CONTAINS -> " CONTAINS ";
+      default -> " UNKNOWN ";
+    };
     return expression.getText() + op + pattern.getText();
   }
 

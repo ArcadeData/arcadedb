@@ -26,6 +26,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.zip.ZipEntry;
@@ -72,7 +73,7 @@ class SnapshotDurabilityTest {
   void extractionFsyncsEachFileWithoutAlteringContent(@TempDir final Path dir) throws Exception {
     // Build a plain (manifest-less) snapshot ZIP and extract it. The fsync added to the extraction
     // loop must not corrupt or truncate any file: every byte read back must equal what was written.
-    final Map<String, byte[]> files = new LinkedHashMap<>();
+    final Map<String, byte[]> files = new HashMap<>();
     files.put("configuration.json", "{\"k\":\"v\"}".getBytes(StandardCharsets.UTF_8));
     files.put("schema.json", "{\"types\":[]}".getBytes(StandardCharsets.UTF_8));
     final byte[] page = new byte[128 * 1024];

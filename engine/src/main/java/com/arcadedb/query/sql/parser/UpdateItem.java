@@ -158,9 +158,9 @@ public class UpdateItem extends SimpleNode {
       return true;
     // Numeric type-safe comparison: Integer(1) equals Long(1). Float vs Double may report unequal
     // after widening (0.1f != 0.1d): conservative on purpose, the only cost is a redundant write.
-    if (a instanceof Number && b instanceof Number)
-      return ((Number) a).longValue() == ((Number) b).longValue()
-          && Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue()) == 0;
+    if (a instanceof Number number && b instanceof Number number1)
+      return number.longValue() == number1.longValue()
+          && Double.compare(number.doubleValue(), number1.doubleValue()) == 0;
     return false;
   }
 
@@ -203,10 +203,10 @@ public class UpdateItem extends SimpleNode {
         return result.toMap();
     } else if (value instanceof Identifiable)
       return value;
-    else if (value instanceof List && containsOResult((Collection) value))
-      return ((List) value).stream().map(x -> extractFromResult(x)).collect(Collectors.toList());
-    else if (value instanceof Set && containsOResult((Collection) value))
-      return ((Set) value).stream().map(x -> extractFromResult(x)).collect(Collectors.toSet());
+    else if (value instanceof List list && containsOResult((Collection) value))
+      return list.stream().map(x -> extractFromResult(x)).collect(Collectors.toList());
+    else if (value instanceof Set set && containsOResult((Collection) value))
+      return set.stream().map(x -> extractFromResult(x)).collect(Collectors.toSet());
 
     return value;
   }

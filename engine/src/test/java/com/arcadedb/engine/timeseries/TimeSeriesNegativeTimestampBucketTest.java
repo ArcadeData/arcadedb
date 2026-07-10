@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import com.github.dockerjava.api.model.ContainerNetwork;
@@ -34,16 +35,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.ContainerState;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.lifecycle.Startables;
-import org.testcontainers.containers.BindMode;
 import org.testcontainers.utility.MountableFile;
-
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.File;
 import java.io.IOException;

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConcurrentModificationException;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,7 +48,7 @@ class Issue5018Phase2ConflictMessageTest {
   @Test
   void engineConcurrentModificationExceptionSelectsPageConflictMessage() {
     final String message = RaftReplicatedDatabase.phase2CommitFailureMessage(
-        new com.arcadedb.exception.ConcurrentModificationException("page 1 v2 != v1"));
+        new ConcurrentModificationException("page 1 v2 != v1"));
 
     assertThat(message).contains(PAGE_CONFLICT_MARKER);
     assertThat(message).contains("this may indicate a locking bug");

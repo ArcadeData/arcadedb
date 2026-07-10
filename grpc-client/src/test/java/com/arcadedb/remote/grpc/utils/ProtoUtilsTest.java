@@ -26,6 +26,7 @@ import com.arcadedb.server.grpc.GrpcList;
 import com.arcadedb.server.grpc.GrpcMap;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
+
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
@@ -150,10 +151,10 @@ class ProtoUtilsTest {
 
   @Test
   void toGrpcValueList() {
-    final List<Object> list = new ArrayList<>();
-    list.add(1);
-    list.add("two");
-    list.add(3.0);
+    final List<Object> list = new ArrayList<>(List.of(
+        1,
+        "two",
+        3.0));
 
     final GrpcValue value = ProtoUtils.toGrpcValue(list);
 
@@ -166,10 +167,10 @@ class ProtoUtilsTest {
 
   @Test
   void toGrpcValueMap() {
-    final Map<String, Object> map = new HashMap<>();
-    map.put("name", "Alice");
-    map.put("age", 30);
-    map.put("active", true);
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "name", "Alice",
+        "age", 30,
+        "active", true));
 
     final GrpcValue value = ProtoUtils.toGrpcValue(map);
 
@@ -311,7 +312,7 @@ class ProtoUtilsTest {
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) result;
     assertThat(list).hasSize(3);
-    assertThat(list.get(0)).isEqualTo(1);
+    assertThat(list.getFirst()).isEqualTo(1);
     assertThat(list.get(1)).isEqualTo("two");
     assertThat((Double) list.get(2)).isCloseTo(3.0, within(0.001));
   }
@@ -391,10 +392,10 @@ class ProtoUtilsTest {
 
   @Test
   void mapToProtoRecord() {
-    final Map<String, Object> map = new HashMap<>();
-    map.put("field1", "value1");
-    map.put("field2", 42);
-    map.put("field3", true);
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "field1", "value1",
+        "field2", 42,
+        "field3", true));
 
     final GrpcRecord grpcRecord = ProtoUtils.mapToProtoRecord(map, "#10:5", "TestType");
 
@@ -452,16 +453,16 @@ class ProtoUtilsTest {
   @Test
   void roundTripCollections() {
     // List
-    final List<Object> list = new ArrayList<>();
-    list.add(1);
-    list.add("two");
-    list.add(3.0);
+    final List<Object> list = new ArrayList<>(List.of(
+        1,
+        "two",
+        3.0));
     assertRoundTrip(list);
 
     // Map
-    final Map<String, Object> map = new HashMap<>();
-    map.put("name", "Alice");
-    map.put("age", 30);
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "name", "Alice",
+        "age", 30));
     assertRoundTrip(map);
   }
 
@@ -489,14 +490,11 @@ class ProtoUtilsTest {
     final GrpcValue grpcValue = ProtoUtils.toGrpcValue(original);
     final Object result = ProtoUtils.fromGrpcValue(grpcValue);
 
-    if (original instanceof byte[]) {
-      assertThat((byte[]) result).isEqualTo((byte[]) original);
-    } else if (original instanceof Float) {
-      assertThat((Float) result).isCloseTo((Float) original, within(0.001f));
-    } else if (original instanceof Double) {
-      assertThat((Double) result).isCloseTo((Double) original, within(0.000001));
-    } else {
-      assertThat(result).isEqualTo(original);
+    switch (original) {
+      case byte[] bytes -> assertThat((byte[]) result).isEqualTo(bytes);
+      case Float float1 -> assertThat((Float) result).isCloseTo(float1, within(0.001f));
+      case Double double1 -> assertThat((Double) result).isCloseTo(double1, within(0.000001));
+      case null, default -> assertThat(result).isEqualTo(original);
     }
   }
 }

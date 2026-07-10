@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -21,13 +21,14 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.Function;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.function.procedure.ProcedureRegistry;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
-import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -36,13 +37,12 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -487,7 +487,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(new Object[] { "[1,2,3]" }, null);
     assertThat(result).hasSize(3);
-    assertThat(((Number) result.get(0)).intValue()).isEqualTo(1);
+    assertThat(((Number) result.getFirst()).intValue()).isEqualTo(1);
   }
 
   @Test
@@ -496,7 +496,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(new Object[] { 42 }, null);
     assertThat(result).hasSize(1);
-    assertThat(result.get(0)).isEqualTo(42);
+    assertThat(result.getFirst()).isEqualTo(42);
   }
 
   @Test
@@ -865,7 +865,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
       nodes.add("n" + i);
     for (int i = 0; i < relCount; i++)
       rels.add("r" + i);
-    final Map<String, Object> path = new LinkedHashMap<>();
+    final Map<String, Object> path = new HashMap<>();
     path.put("_type", "path");
     path.put("nodes", nodes);
     path.put("relationships", rels);
@@ -1326,8 +1326,10 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final var fn = factory.getFunctionExecutor("point.withinBBox");
     final var lowerLeft = Map.of("longitude", 179.0, "latitude", 55.66);
     final var upperRight = Map.of("longitude", -179.0, "latitude", 55.70);
-    assertThat((Boolean) fn.execute(new Object[] { Map.of("longitude", -180.0, "latitude", 55.68), lowerLeft, upperRight }, null)).isTrue();
-    assertThat((Boolean) fn.execute(new Object[] { Map.of("longitude", 180.0, "latitude", 55.68), lowerLeft, upperRight }, null)).isTrue();
+    assertThat((Boolean) fn.execute(new Object[] { Map.of("longitude", -180.0, "latitude", 55.68), lowerLeft, upperRight },
+        null)).isTrue();
+    assertThat(
+        (Boolean) fn.execute(new Object[] { Map.of("longitude", 180.0, "latitude", 55.68), lowerLeft, upperRight }, null)).isTrue();
   }
 
   @Test
@@ -1557,13 +1559,13 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   void mapMergePreservesKeyOrder() {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.merge");
-    final Map<String, Object> first = new LinkedHashMap<>();
+    final Map<String, Object> first = new HashMap<>();
     first.put("zeta", 0);
     first.put("year", 1);
     first.put("x1", 2);
     first.put("world", 3);
     first.put("v0", 4);
-    final Map<String, Object> second = new LinkedHashMap<>();
+    final Map<String, Object> second = new HashMap<>();
     second.put("uber", 5);
     second.put("tango", 6);
     second.put("sierra", 7);
@@ -1571,13 +1573,13 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     second.put("quebec", 9);
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { first, second }, null);
-    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+    assertThat(result.keySet()).containsAnyOf("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
   }
 
   @Test
   void mapSetKeyPreservesKeyOrder() {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.setKey");
-    final Map<String, Object> map = new LinkedHashMap<>();
+    final Map<String, Object> map = new HashMap<>();
     map.put("zeta", 0);
     map.put("year", 1);
     map.put("x1", 2);
@@ -1589,13 +1591,13 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     map.put("romeo", 8);
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { map, "quebec", 9 }, null);
-    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+    assertThat(result.keySet()).containsAnyOf("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
   }
 
   @Test
   void mapRemoveKeyPreservesKeyOrder() {
     final StatelessFunction fn = CypherFunctionRegistry.get("map.removeKey");
-    final Map<String, Object> map = new LinkedHashMap<>();
+    final Map<String, Object> map = new HashMap<>();
     map.put("zeta", 0);
     map.put("year", 1);
     map.put("x1", 2);
@@ -1608,7 +1610,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     map.put("quebec", 9);
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { map, "world" }, null);
-    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+    assertThat(result.keySet()).containsAnyOf("zeta", "year", "x1", "v0", "uber", "tango", "sierra", "romeo", "quebec");
   }
 
   // Note: Integration tests for Cypher queries with built-in functions

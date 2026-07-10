@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -102,13 +103,11 @@ class WalRecoveryCorrectnessTest {
 
     // 4. Reopen: the lock file triggers recovery, the WAL holds the v2 delta, the disk page SAYS v2 but
     // still contains the v1 bytes. Replay must repair it - the old <= skip left 'A' behind forever.
-    final Database reopened = factory.open();
-    try {
+    try (final Database reopened = factory.open()) {
       assertThat(reopened.query("sql", "SELECT v FROM Doc").next().<String>getProperty("v"))
           .as("recovery must re-apply the equal-version WAL delta and repair the torn page (#4926)")
           .isEqualTo("B");
     } finally {
-      reopened.close();
       factory.close();
     }
   }

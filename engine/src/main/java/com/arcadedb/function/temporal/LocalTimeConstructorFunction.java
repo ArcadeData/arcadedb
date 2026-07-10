@@ -18,10 +18,9 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
@@ -49,8 +48,7 @@ public class LocalTimeConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("localtime");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String) {
-      final String str = (String) args[0];
+    if (args[0] instanceof String str) {
       try {
         return CypherLocalTime.parse(str);
       } catch (final Exception e) {
@@ -65,14 +63,14 @@ public class LocalTimeConstructorFunction implements StatelessFunction {
       return CypherLocalTime.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherLocalTime)
       return args[0];
-    if (args[0] instanceof CypherTime)
-      return new CypherLocalTime(((CypherTime) args[0]).getValue().toLocalTime());
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherLocalTime(((CypherLocalDateTime) args[0]).getValue().toLocalTime());
-    if (args[0] instanceof CypherDateTime)
-      return new CypherLocalTime(((CypherDateTime) args[0]).getValue().toLocalTime());
-    if (args[0] instanceof LocalDateTime)
-      return new CypherLocalTime(((LocalDateTime) args[0]).toLocalTime());
+    if (args[0] instanceof CypherTime time)
+      return new CypherLocalTime(time.getValue().toLocalTime());
+    if (args[0] instanceof CypherLocalDateTime time1)
+      return new CypherLocalTime(time1.getValue().toLocalTime());
+    if (args[0] instanceof CypherDateTime time2)
+      return new CypherLocalTime(time2.getValue().toLocalTime());
+    if (args[0] instanceof LocalDateTime time3)
+      return new CypherLocalTime(time3.toLocalTime());
     throw new CommandExecutionException("localtime() expects a string, map, or temporal argument");
   }
 }

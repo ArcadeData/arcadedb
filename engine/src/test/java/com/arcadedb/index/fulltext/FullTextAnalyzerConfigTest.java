@@ -24,6 +24,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.junit.jupiter.api.Test;
 
@@ -80,7 +81,7 @@ class FullTextAnalyzerConfigTest extends TestHelper {
       }
 
       assertThat(results).hasSize(1);
-      assertThat(results.get(0).getProperty("content").toString()).contains("running");
+      assertThat(results.getFirst().getProperty("content").toString()).contains("running");
     });
   }
 
@@ -183,7 +184,7 @@ class FullTextAnalyzerConfigTest extends TestHelper {
 
       // Only Doc1 has both "java" AND "programming"
       assertThat(results).hasSize(1);
-      assertThat(results.get(0).getProperty("content").toString()).contains("java programming");
+      assertThat(results.getFirst().getProperty("content").toString()).contains("java programming");
     });
   }
 

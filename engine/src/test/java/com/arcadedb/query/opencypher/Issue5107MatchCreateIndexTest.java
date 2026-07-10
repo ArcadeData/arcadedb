@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5107MatchCreateIndexTest {
+class Issue5107MatchCreateIndexTest {
   private Database database;
 
   @BeforeEach
@@ -88,9 +89,10 @@ public class Issue5107MatchCreateIndexTest {
    */
   @Test
   void matchCreateUsesIndexForConstantPredicate() {
-    final String write = "MATCH (p:Person) WHERE p.id = 42 "
-        + "CREATE (q:Person {id: 900001, name: 'w', age: 33, city: 'c'}) "
-        + "CREATE (p)-[:KNOWS {since: 2026}]->(q)";
+    final String write = """
+        MATCH (p:Person) WHERE p.id = 42 \
+        CREATE (q:Person {id: 900001, name: 'w', age: 33, city: 'c'}) \
+        CREATE (p)-[:KNOWS {since: 2026}]->(q)""";
 
     // PROFILE surfaces the executed legacy plan; MatchNodeStep prints [index: Person[id]] when it
     // resolved the MATCH through the index instead of a full scan.
@@ -123,9 +125,10 @@ public class Issue5107MatchCreateIndexTest {
     final Map<String, Object> params = new HashMap<>();
     params.put("id", 7);
 
-    final String write = "MATCH (p:Person) WHERE p.id = $id "
-        + "CREATE (q:Person {id: 900002, name: 'param', age: 40, city: 'x'}) "
-        + "CREATE (p)-[:KNOWS {since: 2027}]->(q)";
+    final String write = """
+        MATCH (p:Person) WHERE p.id = $id \
+        CREATE (q:Person {id: 900002, name: 'param', age: 40, city: 'x'}) \
+        CREATE (p)-[:KNOWS {since: 2027}]->(q)""";
 
     final String plan = profilePlan(write, params);
 
@@ -148,8 +151,9 @@ public class Issue5107MatchCreateIndexTest {
    */
   @Test
   void matchSingleCreateStillUsesIndex() {
-    final String write = "MATCH (p:Person) WHERE p.id = 13 "
-        + "CREATE (q:Person {id: 900003, name: 'single', age: 21, city: 'y'})";
+    final String write = """
+        MATCH (p:Person) WHERE p.id = 13 \
+        CREATE (q:Person {id: 900003, name: 'single', age: 21, city: 'y'})""";
 
     final String plan = profilePlan(write);
 
@@ -173,9 +177,10 @@ public class Issue5107MatchCreateIndexTest {
   void matchCreateNonIndexedPredicateFallsBackGracefully() {
     // 'name' is not indexed; the constant equality on it cannot use an index and must fall back to a
     // full scan + row-level filter without throwing. 'Person5' matches exactly one vertex.
-    final String write = "MATCH (p:Person) WHERE p.name = 'Person5' "
-        + "CREATE (q:Person {id: 900004, name: 'fallback', age: 99, city: 'z'}) "
-        + "CREATE (p)-[:KNOWS {since: 2028}]->(q)";
+    final String write = """
+        MATCH (p:Person) WHERE p.name = 'Person5' \
+        CREATE (q:Person {id: 900004, name: 'fallback', age: 99, city: 'z'}) \
+        CREATE (p)-[:KNOWS {since: 2028}]->(q)""";
 
     // Must not throw and must not falsely claim an index (there is none on 'name').
     final String plan = profilePlan(write);

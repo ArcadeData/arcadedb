@@ -30,6 +30,7 @@ import com.arcadedb.integration.TestHelper;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;

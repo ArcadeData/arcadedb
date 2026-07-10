@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.MaterializedViewRefreshMode;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

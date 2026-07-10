@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -93,9 +94,9 @@ class QueryTest extends TestHelper {
   void equalsFiltering() {
 
     database.transaction(() -> {
-      final Map<String, Object> params = new HashMap<>();
-      params.put(":name", "Jay");
-      params.put(":surname", "Miner123");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          ":name", "Jay",
+          ":surname", "Miner123"));
       final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
 
       final AtomicInteger total = new AtomicInteger();
@@ -117,9 +118,9 @@ class QueryTest extends TestHelper {
   @Test
   void nullSafeEqualsFiltering() {
     database.transaction(() -> {
-      final Map<String, Object> params = new HashMap<>();
-      params.put(":name", "Jay");
-      params.put(":surname", "Miner123");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          ":name", "Jay",
+          ":surname", "Miner123"));
       final ResultSet rs = database.command("SQL", "SELECT FROM V WHERE notExistent <=> null");
 
       final AtomicInteger total = new AtomicInteger();
@@ -138,9 +139,9 @@ class QueryTest extends TestHelper {
   void cachedStatementAndExecutionPlan() {
 
     database.transaction(() -> {
-      final Map<String, Object> params = new HashMap<>();
-      params.put(":name", "Jay");
-      params.put(":surname", "Miner123");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          ":name", "Jay",
+          ":surname", "Miner123"));
       ResultSet rs = database.command("SQL", "SELECT FROM V WHERE name = :name AND surname = :surname", params);
 
       AtomicInteger total = new AtomicInteger();
@@ -820,9 +821,9 @@ class QueryTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE CustomerWhere BUCKET Customer_Europe_Where");
       database.command("sql", "INSERT INTO bucket:Customer_Europe_Where CONTENT { firstName: 'Enzo', lastName: 'Ferrari', region: 'Europe' }");
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("bucketName", "Customer_Europe_Where");
-      params.put("lastName", "Ferrari");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "bucketName", "Customer_Europe_Where",
+          "lastName", "Ferrari"));
 
       final ResultSet resultSet = database.query("sql",
           "SELECT FROM bucket::bucketName WHERE lastName = :lastName", params);
@@ -841,10 +842,10 @@ class QueryTest extends TestHelper {
       database.command("sql", "CREATE BUCKET Customer_Americas_Ins IF NOT EXISTS");
       database.command("sql", "CREATE DOCUMENT TYPE CustomerIns BUCKET Customer_Americas_Ins");
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("bucketName", "Customer_Americas_Ins");
-      params.put("firstName", "Steve");
-      params.put("lastName", "Jobs");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "bucketName", "Customer_Americas_Ins",
+          "firstName", "Steve",
+          "lastName", "Jobs"));
 
       database.command("sql",
           "INSERT INTO bucket::bucketName CONTENT { firstName: :firstName, lastName: :lastName }", params);
@@ -1022,9 +1023,9 @@ class QueryTest extends TestHelper {
         database.command("sql", "INSERT INTO doc5 SET num = " + i);
       }
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("skip", 2);
-      params.put("limit", 5);
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "skip", 2,
+          "limit", 5));
 
       final ResultSet rs = database.query("sql", "SELECT FROM doc5 SKIP :skip LIMIT :limit", params);
 
@@ -1076,9 +1077,9 @@ class QueryTest extends TestHelper {
       for (int i = 0; i < 10; i++)
         database.command("sql", "INSERT INTO Brewery SET name = 'Brewery" + i + "'");
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("limit", 25);
-      params.put("offset", 0);
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "limit", 25,
+          "offset", 0));
 
       final ResultSet rs = database.query("sql", "select * from Brewery skip :offset limit :limit", params);
       final List<Result> results = new ArrayList<>();
@@ -1100,9 +1101,9 @@ class QueryTest extends TestHelper {
       for (int i = 0; i < 10; i++)
         database.command("sql", "INSERT INTO Brewery2 SET name = 'Brewery" + i + "'");
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("limit", 5);
-      params.put("offset", 3);
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "limit", 5,
+          "offset", 3));
 
       final ResultSet rs = database.query("sql", "select * from Brewery2 skip :offset limit :limit", params);
       final List<Result> results = new ArrayList<>();
@@ -1124,9 +1125,9 @@ class QueryTest extends TestHelper {
       for (int i = 0; i < 10; i++)
         database.command("sql", "INSERT INTO Brewery3 SET name = 'Brewery" + i + "'");
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("limit", 4);
-      params.put("offset", 2);
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "limit", 4,
+          "offset", 2));
 
       final ResultSet rs = database.query("sql", "select * from Brewery3 limit :limit skip :offset", params);
       final List<Result> results = new ArrayList<>();
@@ -1445,9 +1446,9 @@ class QueryTest extends TestHelper {
       database.command("sql", "INSERT INTO THEME SET identity = ?", "hello\tworld");
       database.command("sql", "INSERT INTO THEME SET identity = ?", "baz qux");
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("keyWordIdentifier_0", "hello");
-      params.put("keyWordIdentifier_1", "world");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "keyWordIdentifier_0", "hello",
+          "keyWordIdentifier_1", "world"));
 
       final ResultSet rs = database.query("sql",
           """
@@ -1486,7 +1487,7 @@ class QueryTest extends TestHelper {
         results.add(rs.next());
 
       assertThat(results).hasSize(1);
-      assertThat(results.get(0).<String>getProperty("identity")).isEqualTo("hello\nworld");
+      assertThat(results.getFirst().<String>getProperty("identity")).isEqualTo("hello\nworld");
     });
   }
 
@@ -1512,7 +1513,7 @@ class QueryTest extends TestHelper {
         results.add(rs.next());
 
       assertThat(results).hasSize(1);
-      assertThat(results.get(0).<String>getProperty("identity")).isEqualTo("hello\nworld");
+      assertThat(results.getFirst().<String>getProperty("identity")).isEqualTo("hello\nworld");
     });
   }
 
@@ -1532,9 +1533,9 @@ class QueryTest extends TestHelper {
       database.command("sql", "INSERT INTO THEME2 SET identity = ?", "hello\tworld");
       database.command("sql", "INSERT INTO THEME2 SET identity = ?", "baz qux");
 
-      final Map<String, Object> params = new HashMap<>();
-      params.put("keyWordIdentifier_0", "hello");
-      params.put("keyWordIdentifier_1", "world");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "keyWordIdentifier_0", "hello",
+          "keyWordIdentifier_1", "world"));
 
       final ResultSet rs = database.query("sql",
           """

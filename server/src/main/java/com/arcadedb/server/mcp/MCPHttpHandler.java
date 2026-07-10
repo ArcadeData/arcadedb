@@ -20,23 +20,15 @@ package com.arcadedb.server.mcp;
 
 import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
-import com.arcadedb.server.mcp.tools.GetSchemaTool;
-import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
-import com.arcadedb.server.mcp.tools.ListDatabasesTool;
-import com.arcadedb.server.mcp.tools.ProfilerStartTool;
-import com.arcadedb.server.mcp.tools.ProfilerStatusTool;
-import com.arcadedb.server.mcp.tools.ProfilerStopTool;
-import com.arcadedb.server.mcp.tools.QueryTool;
-import com.arcadedb.server.mcp.tools.ServerStatusTool;
-import com.arcadedb.server.mcp.tools.SetServerSettingTool;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
+import com.arcadedb.server.mcp.tools.*;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 
 import java.util.logging.Level;

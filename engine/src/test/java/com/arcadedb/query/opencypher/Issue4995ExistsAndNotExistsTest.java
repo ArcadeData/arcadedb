@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,14 +48,14 @@ class Issue4995ExistsAndNotExistsTest {
       factory.open().drop();
     database = factory.create();
 
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE "
-          + "(u1:User {id: 1, active: true}), "
-          + "(u2:User {id: 2, active: false}), "
-          + "(u3:User {id: 3, active: true}), "
-          + "(u1)-[:FRIEND]->(u2), "
-          + "(u3)-[:FRIEND]->(u1)");
-    });
+    database.transaction(() ->
+      database.command("opencypher", """
+          CREATE \
+          (u1:User {id: 1, active: true}), \
+          (u2:User {id: 2, active: false}), \
+          (u3:User {id: 3, active: true}), \
+          (u1)-[:FRIEND]->(u2), \
+          (u3)-[:FRIEND]->(u1)"""));
   }
 
   @AfterEach
@@ -65,12 +66,12 @@ class Issue4995ExistsAndNotExistsTest {
 
   @Test
   void existsAndNotExists() {
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (u:User {active: true}) "
-          + "WHERE EXISTS { MATCH (u)-[:FRIEND]->(:User) } "
-          + "AND NOT EXISTS { MATCH (u)-[:FRIEND]->(f:User) WHERE f.active IS NULL OR f.active = true } "
-          + "SET u.flagged = true");
-    });
+    database.transaction(() ->
+      database.command("opencypher", """
+          MATCH (u:User {active: true}) \
+          WHERE EXISTS { MATCH (u)-[:FRIEND]->(:User) } \
+          AND NOT EXISTS { MATCH (u)-[:FRIEND]->(f:User) WHERE f.active IS NULL OR f.active = true } \
+          SET u.flagged = true"""));
 
     final List<Integer> flagged = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher",
@@ -89,9 +90,10 @@ class Issue4995ExistsAndNotExistsTest {
     // The correlated EXISTS subquery has a top-level OR in its WHERE followed by a RETURN clause,
     // exercising the branch that injects the correlation before a subsequent clause keyword.
     final List<Integer> matched = new ArrayList<>();
-    try (final ResultSet rs = database.query("opencypher", "MATCH (u:User {active: true}) "
-        + "WHERE EXISTS { MATCH (u)-[:FRIEND]->(f:User) WHERE f.active IS NULL OR f.active = true RETURN f } "
-        + "RETURN u.id AS uid ORDER BY uid")) {
+    try (final ResultSet rs = database.query("opencypher", """
+        MATCH (u:User {active: true}) \
+        WHERE EXISTS { MATCH (u)-[:FRIEND]->(f:User) WHERE f.active IS NULL OR f.active = true RETURN f } \
+        RETURN u.id AS uid ORDER BY uid""")) {
       while (rs.hasNext())
         matched.add(((Number) rs.next().getProperty("uid")).intValue());
     }

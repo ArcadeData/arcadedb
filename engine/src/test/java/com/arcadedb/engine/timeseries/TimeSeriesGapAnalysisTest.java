@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -255,7 +256,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
     final List<Object> filled = (List<Object>) rs.next().getProperty("filled");
 
     assertThat(filled).hasSize(3);
-    assertThat(((Number) filled.get(0)).doubleValue()).isEqualTo(10.0);
+    assertThat(((Number) filled.getFirst()).doubleValue()).isEqualTo(10.0);
     assertThat(((Number) filled.get(1)).doubleValue()).isCloseTo(20.0, within(0.01)); // linearly interpolated
     assertThat(((Number) filled.get(2)).doubleValue()).isEqualTo(30.0);
   }
@@ -279,7 +280,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
     final List<Object> filled = (List<Object>) rs.next().getProperty("filled");
 
     assertThat(filled).hasSize(4);
-    assertThat(((Number) filled.get(0)).doubleValue()).isEqualTo(0.0);
+    assertThat(((Number) filled.getFirst()).doubleValue()).isEqualTo(0.0);
     assertThat(((Number) filled.get(1)).doubleValue()).isCloseTo(10.0, within(0.01));
     assertThat(((Number) filled.get(2)).doubleValue()).isCloseTo(20.0, within(0.01));
     assertThat(((Number) filled.get(3)).doubleValue()).isEqualTo(30.0);
@@ -302,7 +303,7 @@ class TimeSeriesGapAnalysisTest extends TestHelper {
     final List<Object> filled = (List<Object>) rs.next().getProperty("filled");
 
     assertThat(filled).hasSize(3);
-    assertThat(((Number) filled.get(0)).doubleValue()).isEqualTo(1.0);
+    assertThat(((Number) filled.getFirst()).doubleValue()).isEqualTo(1.0);
     assertThat(((Number) filled.get(1)).doubleValue()).isEqualTo(2.0);
     assertThat(((Number) filled.get(2)).doubleValue()).isEqualTo(3.0);
   }

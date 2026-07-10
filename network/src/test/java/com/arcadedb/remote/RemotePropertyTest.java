@@ -40,10 +40,10 @@ class RemotePropertyTest {
   void setUp() {
     mockOwner = mock(DocumentType.class);
 
-    final Map<String, Object> record = new HashMap<>();
-    record.put("name", "testProperty");
-    record.put("type", "STRING");
-    record.put("id", 1);
+    final Map<String, Object> record = new HashMap<>(Map.of(
+        "name", "testProperty",
+        "type", "STRING",
+        "id", 1));
 
     property = new RemoteProperty(mockOwner, record);
   }
@@ -148,9 +148,9 @@ class RemotePropertyTest {
 
   @Test
   void reloadWithCustom() {
-    final Map<String, Object> customValues = new HashMap<>();
-    customValues.put("key1", "value1");
-    customValues.put("key2", 42);
+    final Map<String, Object> customValues = new HashMap<>(Map.of(
+        "key1", "value1",
+        "key2", 42));
 
     final Map<String, Object> entry = new HashMap<>();
     entry.put("custom", customValues);
@@ -167,17 +167,17 @@ class RemotePropertyTest {
     final Map<String, Object> customValues = new HashMap<>();
     customValues.put("customKey", "customValue");
 
-    final Map<String, Object> entry = new HashMap<>();
-    entry.put("ofType", "LONG");
-    entry.put("mandatory", true);
-    entry.put("readOnly", true);
-    entry.put("notNull", true);
-    entry.put("min", "1");
-    entry.put("max", "999");
-    entry.put("hidden", true);
-    entry.put("default", 10); // Use non-String to avoid expression parsing
-    entry.put("regexp", "\\d+");
-    entry.put("custom", customValues);
+    final Map<String, Object> entry = new HashMap<>(Map.of(
+        "ofType", "LONG",
+        "mandatory", true,
+        "readOnly", true,
+        "notNull", true,
+        "min", "1",
+        "max", "999",
+        "hidden", true,
+        "default", 10, // Use non-String to avoid expression parsing
+        "regexp", "\\d+",
+        "custom", customValues));
 
     property.reload(entry);
 

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -56,9 +55,9 @@ public class RelationshipPattern implements PatternElement {
       final Map<String, Object> properties, final String propertiesParameterName, final Integer minHops,
       final Integer maxHops, final BooleanExpression whereExpression) {
     this.variable = variable;
-    this.types = types != null ? types : Collections.emptyList();
+    this.types = types != null ? types : List.of();
     this.direction = direction != null ? direction : Direction.BOTH;
-    this.properties = properties != null ? properties : Collections.emptyMap();
+    this.properties = properties != null ? properties : Map.of();
     this.propertiesParameterName = propertiesParameterName;
     this.minHops = minHops;
     this.maxHops = maxHops;
@@ -171,7 +170,7 @@ public class RelationshipPattern implements PatternElement {
    * @return first type or null
    */
   public String getFirstType() {
-    return types.isEmpty() ? null : types.get(0);
+    return types.isEmpty() ? null : types.getFirst();
   }
 
   /**

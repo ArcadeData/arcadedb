@@ -112,7 +112,7 @@ public class ResultInternal implements Result {
   }
 
   public Set<String> getTemporaryProperties() {
-    return temporaryContent == null ? Collections.emptySet() : temporaryContent.keySet();
+    return temporaryContent == null ? Set.of() : temporaryContent.keySet();
   }
 
   /**
@@ -426,7 +426,7 @@ public class ResultInternal implements Result {
 
   @Override
   public Set<String> getMetadataKeys() {
-    return metadata == null ? Collections.emptySet() : metadata.keySet();
+    return metadata == null ? Set.of() : metadata.keySet();
   }
 
   public ResultInternal setElement(final Document element) {

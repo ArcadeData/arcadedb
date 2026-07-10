@@ -27,7 +27,6 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -42,7 +41,7 @@ public class TypeBuilder<T> {
   boolean                 ignoreIfExists    = false;
   String                  typeName;
   List<LocalDocumentType> superTypes;
-  List<Bucket>            bucketInstances   = Collections.emptyList();
+  List<Bucket>            bucketInstances   = List.of();
   int                     buckets;
   int                     pageSize;
   boolean                 edgeBidirectional = true;

@@ -49,7 +49,7 @@ class TraceparentPropagationTest {
     });
 
     assertThat(exporter.getFinishedSpanItems()).isNotEmpty();
-    assertThat(exporter.getFinishedSpanItems().get(0).getTraceId()).isEqualTo(parentTraceId);
+    assertThat(exporter.getFinishedSpanItems().getFirst().getTraceId()).isEqualTo(parentTraceId);
 
     plugin.stopService();
   }

@@ -125,8 +125,8 @@ public class TernaryLogicalExpression implements Expression {
   private static Boolean toBoolean(final Object value) {
     if (value == null)
       return null;
-    if (value instanceof Boolean)
-      return (Boolean) value;
+    if (value instanceof Boolean boolean1)
+      return boolean1;
     // Non-null, non-boolean values are truthy in Cypher
     return true;
   }

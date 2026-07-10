@@ -41,8 +41,8 @@ public class DurationConstructorFunction implements StatelessFunction {
       throw new CommandExecutionException("duration() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String)
-      return CypherDuration.parse((String) args[0]);
+    if (args[0] instanceof String string)
+      return CypherDuration.parse(string);
     if (args[0] instanceof Map)
       return CypherDuration.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherDuration)

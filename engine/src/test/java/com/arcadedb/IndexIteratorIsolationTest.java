@@ -24,10 +24,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -71,7 +73,7 @@ class IndexIteratorIsolationTest extends TestHelper {
 
               // Query for a random existing UUID
               final Map<String, Object> map = new HashMap<>();
-              final long randomUUID = (long) (Math.random() * TOTAL_RECORDS) + 1;
+              final long randomUUID = (long) (ThreadLocalRandom.current().nextDouble() * TOTAL_RECORDS) + 1;
               map.put(":uuid", randomUUID);
 
               final ResultSet result = database.command("SQL", "select from Transaction where uuid = :uuid", map);

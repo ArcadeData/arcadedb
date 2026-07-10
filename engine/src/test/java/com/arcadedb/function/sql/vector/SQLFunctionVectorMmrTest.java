@@ -69,7 +69,7 @@ class SQLFunctionVectorMmrTest extends TestHelper {
 
     // lambda=1: pure relevance. Order is exactly score-descending: A, B, C.
     final List<RID> pure = runMmr(candidates, "embedding", 1.0f, 3);
-    assertThat(pure).containsExactly(rids.get(0), rids.get(1), rids.get(2));
+    assertThat(pure).containsExactly(rids.getFirst(), rids.get(1), rids.get(2));
 
     // lambda=0.5: diversity wins on rank 2. A is picked first (highest score). Then B and C
     // compete: B has score 0.85 but is highly similar to A; C has score 0.7 but is dissimilar.
@@ -78,7 +78,7 @@ class SQLFunctionVectorMmrTest extends TestHelper {
     //   C: 0.5 * 0.7  - 0.5 * cos(C, A) ≈ 0.35  - 0.5 * 0.0  =  0.35
     // C wins. Final: [A, C, B].
     final List<RID> diversified = runMmr(candidates, "embedding", 0.5f, 3);
-    assertThat(diversified).containsExactly(rids.get(0), rids.get(2), rids.get(1));
+    assertThat(diversified).containsExactly(rids.getFirst(), rids.get(2), rids.get(1));
   }
 
   @Test
@@ -87,7 +87,7 @@ class SQLFunctionVectorMmrTest extends TestHelper {
     final List<Map<String, Object>> candidates = candidates(rids, new float[] { 0.9f, 0.85f, 0.7f });
 
     final List<RID> top1 = runMmr(candidates, "embedding", 0.5f, 1);
-    assertThat(top1).hasSize(1).containsExactly(rids.get(0));
+    assertThat(top1).hasSize(1).containsExactly(rids.getFirst());
   }
 
   @Test
@@ -121,9 +121,9 @@ class SQLFunctionVectorMmrTest extends TestHelper {
     // Set up a vector index and the same A/B/C cluster fixture used by setupClusterFixture.
     final List<RID> rids = setupClusterFixture();
     database.transaction(() ->
-      database.command("sql", """
-          CREATE INDEX IF NOT EXISTS ON %s (embedding) LSM_VECTOR
-          METADATA { dimensions: 3, similarity: 'COSINE' }""".formatted(TYPE)));
+        database.command("sql", """
+            CREATE INDEX IF NOT EXISTS ON %s (embedding) LSM_VECTOR
+            METADATA { dimensions: 3, similarity: 'COSINE' }""".formatted(TYPE)));
 
     // Query at A's location. vector.neighbors returns rows with {@code distance}, not
     // {@code score}. mmr must accept this shape.
@@ -132,12 +132,13 @@ class SQLFunctionVectorMmrTest extends TestHelper {
             + "`vector.neighbors`('" + TYPE + "[embedding]', [1.0, 0.1, 0.0], 3), "
             + "'embedding', { lambda: 0.5, k: 3 }))");
     final List<RID> got = new ArrayList<>();
-    while (rs.hasNext()) got.add((RID) rs.next().getProperty("@rid"));
+    while (rs.hasNext())
+      got.add((RID) rs.next().getProperty("@rid"));
     rs.close();
     // All three docs should appear (k=3 candidates, all valid). The exact order depends on the
     // diversity tradeoff; the assertion is that mmr produced any results at all - a NaN-dropped
     // run would return empty.
-    assertThat(got).hasSize(3).containsExactlyInAnyOrder(rids.get(0), rids.get(1), rids.get(2));
+    assertThat(got).hasSize(3).containsExactlyInAnyOrder(rids.getFirst(), rids.get(1), rids.get(2));
   }
 
   @Test
@@ -156,14 +157,14 @@ class SQLFunctionVectorMmrTest extends TestHelper {
     final RID rid4 = rid4Holder[0];
 
     final List<Map<String, Object>> candidates = new ArrayList<>(candidates(rids, new float[] { 0.9f, 0.85f, 0.7f }));
-    final LinkedHashMap<String, Object> missing = new LinkedHashMap<>();
-    missing.put("@rid", rid4);
-    missing.put("score", 0.95f);
-    candidates.add(0, missing);
+    final Map<String, Object> missing = Map.of(
+        "@rid", rid4,
+        "score", 0.95f);
+    candidates.addFirst(missing);
 
     final List<RID> result = runMmr(candidates, "embedding", 1.0f, 4);
     // The 4th candidate (no embedding) is silently dropped; remaining order is by score desc.
-    assertThat(result).containsExactly(rids.get(0), rids.get(1), rids.get(2));
+    assertThat(result).containsExactly(rids.getFirst(), rids.get(1), rids.get(2));
   }
 
   // --- helpers ---
@@ -174,9 +175,9 @@ class SQLFunctionVectorMmrTest extends TestHelper {
       database.getSchema().getOrCreateDocumentType(TYPE).createProperty("name", Type.STRING);
       database.getSchema().getType(TYPE).createProperty("embedding", Type.ARRAY_OF_FLOATS);
       // A and B are nearly identical (cluster 1). C is orthogonal (cluster 2).
-      ids.add(insert("A", new float[] { 1.0f,  0.1f, 0.0f }));
+      ids.add(insert("A", new float[] { 1.0f, 0.1f, 0.0f }));
       ids.add(insert("B", new float[] { 0.99f, 0.05f, 0.0f }));
-      ids.add(insert("C", new float[] { 0.0f,  0.0f, 1.0f }));
+      ids.add(insert("C", new float[] { 0.0f, 0.0f, 1.0f }));
     });
     return ids;
   }
@@ -192,9 +193,9 @@ class SQLFunctionVectorMmrTest extends TestHelper {
   private static List<Map<String, Object>> candidates(final List<RID> rids, final float[] scores) {
     final List<Map<String, Object>> out = new ArrayList<>(rids.size());
     for (int i = 0; i < rids.size(); i++) {
-      final LinkedHashMap<String, Object> row = new LinkedHashMap<>();
-      row.put("@rid", rids.get(i));
-      row.put("score", scores[i]);
+      final Map<String, Object> row = Map.of(
+          "@rid", rids.get(i),
+          "score", scores[i]);
       out.add(row);
     }
     return out;

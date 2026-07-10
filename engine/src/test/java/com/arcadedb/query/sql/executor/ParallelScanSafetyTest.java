@@ -23,10 +23,10 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
-
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;

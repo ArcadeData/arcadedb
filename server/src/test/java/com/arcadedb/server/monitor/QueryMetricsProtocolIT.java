@@ -19,12 +19,13 @@
 package com.arcadedb.server.monitor;
 
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
@@ -38,7 +39,7 @@ class QueryMetricsProtocolIT extends BaseGraphServerTest {
 
   @Test
   void httpQueryRecordedWithProtocolTag() throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/query/graph").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/query/graph").toURL().openConnection();
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Authorization",

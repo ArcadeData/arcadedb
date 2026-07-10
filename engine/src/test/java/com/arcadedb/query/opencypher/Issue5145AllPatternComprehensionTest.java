@@ -24,13 +24,17 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,10 +68,11 @@ class Issue5145AllPatternComprehensionTest {
   }
 
   private static final String FLAG_QUERY =
-      "MATCH (u:User {active: true}) " +
-      "WITH u, [(u)-[:FRIEND]->(f:User) | f.active] AS actives " +
-      "WHERE size(actives) > 0 AND all(a IN actives WHERE a = false) " +
-      "SET u.flagged = true";
+      """
+      MATCH (u:User {active: true}) \
+      WITH u, [(u)-[:FRIEND]->(f:User) | f.active] AS actives \
+      WHERE size(actives) > 0 AND all(a IN actives WHERE a = false) \
+      SET u.flagged = true""";
 
   private long flaggedCount() {
     return ((Number) database.query("opencypher",
@@ -96,10 +101,11 @@ class Issue5145AllPatternComprehensionTest {
   @Test
   void sixNodeBaseline() {
     database.command("opencypher",
-        "CREATE (u1:User {id:1, active:true}), (u2:User {id:2, active:true}), (u3:User {id:3, active:true}), "
-        + "(u4:User {id:4, active:false}), (u5:User {id:5, active:false}), (u6:User {id:6, active:false}), "
-        + "(u1)-[:FRIEND]->(u4), (u1)-[:FRIEND]->(u5), (u2)-[:FRIEND]->(u4), (u2)-[:FRIEND]->(u1), "
-        + "(u3)-[:FRIEND]->(u5), (u3)-[:FRIEND]->(u6)");
+        """
+        CREATE (u1:User {id:1, active:true}), (u2:User {id:2, active:true}), (u3:User {id:3, active:true}), \
+        (u4:User {id:4, active:false}), (u5:User {id:5, active:false}), (u6:User {id:6, active:false}), \
+        (u1)-[:FRIEND]->(u4), (u1)-[:FRIEND]->(u5), (u2)-[:FRIEND]->(u4), (u2)-[:FRIEND]->(u1), \
+        (u3)-[:FRIEND]->(u5), (u3)-[:FRIEND]->(u6)""");
 
     database.command("opencypher", FLAG_QUERY);
 
@@ -127,7 +133,7 @@ class Issue5145AllPatternComprehensionTest {
       final int k = rnd.nextInt(6);
       final List<Integer> others = new ArrayList<>();
       for (int x = 0; x < 35; x++) if (x != i) others.add(x);
-      java.util.Collections.shuffle(others, rnd);
+      Collections.shuffle(others, rnd);
       for (int t = 0; t < k; t++)
         parts.add("(u" + i + ")-[:FRIEND]->(u" + others.get(t) + ")");
     }
@@ -136,10 +142,11 @@ class Issue5145AllPatternComprehensionTest {
     final int groundTruth = expectedFlagged();
 
     final long collectCnt = ((Number) database.query("opencypher",
-        "MATCH (u:User {active: true})-[:FRIEND]->(f:User) " +
-        "WITH u, collect(f.active) AS actives " +
-        "WHERE size(actives) > 0 AND all(a IN actives WHERE a = false) " +
-        "RETURN count(DISTINCT u) AS cnt").next().getProperty("cnt")).longValue();
+        """
+        MATCH (u:User {active: true})-[:FRIEND]->(f:User) \
+        WITH u, collect(f.active) AS actives \
+        WHERE size(actives) > 0 AND all(a IN actives WHERE a = false) \
+        RETURN count(DISTINCT u) AS cnt""").next().getProperty("cnt")).longValue();
 
     database.command("opencypher", FLAG_QUERY);
     final long patternComprehension = flaggedCount();
@@ -159,10 +166,11 @@ class Issue5145AllPatternComprehensionTest {
     final ResultSet pc = database.query("opencypher",
         "MATCH (u:User {active: true}) RETURN u.id AS id, [(u)-[:FRIEND]->(f:User) | f.active] AS actives ORDER BY id");
     final ResultSet cl = database.query("opencypher",
-        "MATCH (u:User {active: true}) OPTIONAL MATCH (u)-[:FRIEND]->(f:User) " +
-        "WITH u.id AS id, collect(f.active) AS actives RETURN id, actives ORDER BY id");
+        """
+        MATCH (u:User {active: true}) OPTIONAL MATCH (u)-[:FRIEND]->(f:User) \
+        WITH u.id AS id, collect(f.active) AS actives RETURN id, actives ORDER BY id""");
 
-    final java.util.Map<Object, List<Object>> pcMap = new java.util.TreeMap<>();
+    final Map<Object, List<Object>> pcMap = new TreeMap<>();
     while (pc.hasNext()) {
       final Result r = pc.next();
       pcMap.put(r.getProperty("id"), sorted(r.getProperty("actives")));
@@ -181,11 +189,13 @@ class Issue5145AllPatternComprehensionTest {
     // u0 (active) -FRIEND-> u1 (inactive); u0 -FOLLOWS-> u2 (active). The comprehension over FRIEND
     // must yield [false] only, so the active FOLLOWS target does not turn all() false.
     database.command("opencypher",
-        "CREATE (u0:User {id:0, active:true}), (u1:User {id:1, active:false}), (u2:User {id:2, active:true}), "
-        + "(u0)-[:FRIEND]->(u1), (u0)-[:FOLLOWS]->(u2)");
+        """
+        CREATE (u0:User {id:0, active:true}), (u1:User {id:1, active:false}), (u2:User {id:2, active:true}), \
+        (u0)-[:FRIEND]->(u1), (u0)-[:FOLLOWS]->(u2)""");
     final Result r = database.query("opencypher",
-        "MATCH (u:User {id:0}) WITH u, [(u)-[:FRIEND]->(f:User) | f.active] AS actives "
-        + "RETURN actives, all(a IN actives WHERE a = false) AS allInactive").next();
+        """
+        MATCH (u:User {id:0}) WITH u, [(u)-[:FRIEND]->(f:User) | f.active] AS actives \
+        RETURN actives, all(a IN actives WHERE a = false) AS allInactive""").next();
     assertThat(sorted(r.getProperty("actives"))).containsExactly(false);
     assertThat(r.<Boolean>getProperty("allInactive")).isTrue();
   }
@@ -200,7 +210,7 @@ class Issue5145AllPatternComprehensionTest {
         final int k = rnd.nextInt(6);
         final List<Integer> others = new ArrayList<>();
         for (int x = 0; x < nodeCount; x++) if (x != i) others.add(x);
-        java.util.Collections.shuffle(others, rnd);
+        Collections.shuffle(others, rnd);
         for (int t = 0; t < k; t++)
           users.get(i).newEdge("FRIEND", users.get(others.get(t))).save();
       }

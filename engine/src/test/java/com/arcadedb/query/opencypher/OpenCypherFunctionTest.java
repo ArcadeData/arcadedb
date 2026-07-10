@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -528,7 +529,7 @@ class OpenCypherFunctionTest {
       assertThat(rs.hasNext()).isTrue();
       final List<Object> list = (List<Object>) rs.next().getProperty("x");
       assertThat(list).hasSize(2);
-      assertThat(list.get(0)).isEqualTo(1L);
+      assertThat(list.getFirst()).isEqualTo(1L);
       assertThat(list.get(1)).isNotNull();
     } finally {
       db.drop();

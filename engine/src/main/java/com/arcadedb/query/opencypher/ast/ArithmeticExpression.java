@@ -212,15 +212,15 @@ public class ArithmeticExpression implements Expression {
 
     // Duration * Number or Number * Duration
     if (op == Operator.MULTIPLY) {
-      if (leftValue instanceof CypherDuration ld && rightValue instanceof Number)
-        return ld.multiply(((Number) rightValue).doubleValue());
-      if (leftValue instanceof Number && rightValue instanceof CypherDuration rd)
-        return rd.multiply(((Number) leftValue).doubleValue());
+      if (leftValue instanceof CypherDuration ld && rightValue instanceof Number number)
+        return ld.multiply(number.doubleValue());
+      if (leftValue instanceof Number number1 && rightValue instanceof CypherDuration rd)
+        return rd.multiply(number1.doubleValue());
     }
 
     // Duration / Number
-    if (op == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number)
-      return ld.divide(((Number) rightValue).doubleValue());
+    if (op == Operator.DIVIDE && leftValue instanceof CypherDuration ld && rightValue instanceof Number number2)
+      return ld.divide(number2.doubleValue());
 
     // java.time.LocalDate (from ArcadeDB storage) ± Duration
     if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {

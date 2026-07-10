@@ -18,11 +18,11 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -159,7 +159,7 @@ class Issue5152CountRecomputeRaceTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  void cachedCounterStaysConsistentUnderConcurrentRecomputeAndCommits() throws InterruptedException {
+  void cachedCounterStaysConsistentUnderConcurrentRecomputeAndCommits() throws Exception {
     insert(0, BASE);
     int expected = BASE;
 

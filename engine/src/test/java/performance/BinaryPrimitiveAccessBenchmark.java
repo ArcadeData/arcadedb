@@ -19,6 +19,7 @@
 package performance;
 
 import com.arcadedb.database.Binary;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

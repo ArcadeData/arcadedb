@@ -20,8 +20,8 @@ package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * Generates a UUID as a 128-bits value using the Leach-Salz variant. For more information look at:

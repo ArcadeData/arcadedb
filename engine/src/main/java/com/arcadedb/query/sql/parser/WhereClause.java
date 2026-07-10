@@ -193,7 +193,7 @@ public class WhereClause extends SimpleNode {
 
   public List<AndBlock> flatten() {
     if (this.baseExpression == null)
-      return Collections.emptyList();
+      return List.of();
 
     if (flattened == null)
       flattened = this.baseExpression.flatten();

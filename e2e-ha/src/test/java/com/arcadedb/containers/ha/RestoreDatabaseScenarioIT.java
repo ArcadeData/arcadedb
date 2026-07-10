@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -63,7 +64,7 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
@@ -80,17 +81,15 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
       // Take a backup via SQL on the leader (node 0)
       logger.info("Taking backup on leader");
       final String backupFile;
-      final RemoteDatabase leaderDb = new RemoteDatabase(servers.get(0).host(), servers.get(0).httpPort(), DATABASE, "root", PASSWORD);
+      final RemoteDatabase leaderDb = new RemoteDatabase(servers.getFirst().host(), servers.getFirst().httpPort(), DATABASE, "root", PASSWORD);
       leaderDb.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
-      try {
+      try (leaderDb) {
         try (final ResultSet result = leaderDb.command("sql", "backup database")) {
           assertThat(result.hasNext()).isTrue();
           final Result response = result.next();
           backupFile = response.getProperty("backupFile");
           assertThat(backupFile).isNotNull();
         }
-      } finally {
-        leaderDb.close();
       }
       logger.info("Backup created: {}", backupFile);
       final String backupUrl = "file:///home/arcadedb/backups/" + DATABASE + "/" + backupFile;
@@ -102,11 +101,11 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
 
       // Drop the database cluster-wide via HTTP on the leader
       logger.info("Dropping database cluster-wide");
-      final int dropStatus = postServerCommand(servers.get(0), "drop database " + DATABASE);
+      final int dropStatus = postServerCommand(servers.getFirst(), "drop database " + DATABASE);
       assertThat(dropStatus).as("drop database HTTP status").isEqualTo(200);
 
       Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
-          .until(() -> !databaseExistsOnServer(servers.get(0), DATABASE)
+          .until(() -> !databaseExistsOnServer(servers.getFirst(), DATABASE)
               && !databaseExistsOnServer(servers.get(1), DATABASE)
               && !databaseExistsOnServer(servers.get(2), DATABASE));
 
@@ -120,24 +119,24 @@ class RestoreDatabaseScenarioIT extends ContainersTestTemplate {
       final int leaderIdx = waitForRaftLeader(servers, 30);
       if (leaderIdx != 0) {
         logger.info("Node 0 is not the leader (leader is {}); transferring leadership to node 0", leaderIdx);
-        transferLeadershipToNode(servers, servers.get(0), 30);
+        transferLeadershipToNode(servers, servers.getFirst(), 30);
         assertThat(waitForRaftLeader(servers, 30)).as("Node 0 must be leader before restore").isEqualTo(0);
       }
 
       // Restore from the backup on node 0 (the node that holds the backup file)
       logger.info("Restoring from backup: {}", backupUrl);
-      final int restoreStatus = postServerCommand(servers.get(0), "restore database " + DATABASE + " " + backupUrl);
+      final int restoreStatus = postServerCommand(servers.getFirst(), "restore database " + DATABASE + " " + backupUrl);
       assertThat(restoreStatus).as("restore database HTTP status").isEqualTo(200);
 
       // Wait for restore to propagate to every peer
       logger.info("Waiting for restore to propagate to every peer");
       Awaitility.await().atMost(120, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
-          .until(() -> databaseExistsOnServer(servers.get(0), DATABASE)
+          .until(() -> databaseExistsOnServer(servers.getFirst(), DATABASE)
               && databaseExistsOnServer(servers.get(1), DATABASE)
               && databaseExistsOnServer(servers.get(2), DATABASE));
 
       // Reopen wrappers and verify restored data on every node
-      final DatabaseWrapper db0b = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+      final DatabaseWrapper db0b = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
       final DatabaseWrapper db1b = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
       final DatabaseWrapper db2b = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
       try {

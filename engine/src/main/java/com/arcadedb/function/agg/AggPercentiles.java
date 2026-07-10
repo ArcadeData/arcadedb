@@ -59,7 +59,7 @@ public class AggPercentiles extends AbstractAggFunction {
     final List<Double> percentiles = toDoubleList(args[1]);
 
     if (values.isEmpty())
-      return Collections.emptyList();
+      return List.of();
 
     Collections.sort(values);
 

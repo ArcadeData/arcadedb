@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.engine.ComponentFile.MODE;
 import com.arcadedb.schema.DocumentType;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 

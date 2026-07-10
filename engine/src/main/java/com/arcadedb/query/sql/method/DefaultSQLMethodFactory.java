@@ -71,8 +71,6 @@ import com.arcadedb.query.sql.method.string.SQLMethodLeft;
 import com.arcadedb.query.sql.method.string.SQLMethodLength;
 import com.arcadedb.query.sql.method.string.SQLMethodNormalize;
 import com.arcadedb.query.sql.method.string.SQLMethodPrefix;
-import com.arcadedb.query.sql.method.string.SQLMethodTrimPrefix;
-import com.arcadedb.query.sql.method.string.SQLMethodTrimSuffix;
 import com.arcadedb.query.sql.method.string.SQLMethodReplace;
 import com.arcadedb.query.sql.method.string.SQLMethodRight;
 import com.arcadedb.query.sql.method.string.SQLMethodSplit;
@@ -80,6 +78,8 @@ import com.arcadedb.query.sql.method.string.SQLMethodSubString;
 import com.arcadedb.query.sql.method.string.SQLMethodToLowerCase;
 import com.arcadedb.query.sql.method.string.SQLMethodToUpperCase;
 import com.arcadedb.query.sql.method.string.SQLMethodTrim;
+import com.arcadedb.query.sql.method.string.SQLMethodTrimPrefix;
+import com.arcadedb.query.sql.method.string.SQLMethodTrimSuffix;
 
 import java.util.HashMap;
 import java.util.Locale;

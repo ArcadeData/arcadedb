@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Date;

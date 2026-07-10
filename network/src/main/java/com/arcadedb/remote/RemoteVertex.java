@@ -21,23 +21,12 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.ImmutableLightEdge;
-import com.arcadedb.graph.IterableGraph;
-import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.*;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.NoSuchElementException;
+import java.util.*;
 
 /**
  * Vertex type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or

@@ -235,48 +235,51 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   protected void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl,
       final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
       final Object value, final int limit) {
-    if (value instanceof Identifiable identifiable) {
+    switch (value) {
+      case Identifiable identifiable -> {
 
-      final DocumentType type;
-      if (value instanceof Document document)
-        type = document.getType();
-      else {
-        final RID rid = identifiable.getIdentity();
-        type = database.getSchema().getTypeByBucketId(rid.getBucketId());
-      }
+        final DocumentType type;
+        if (value instanceof Document document)
+          type = document.getType();
+        else {
+          final RID rid = identifiable.getIdentity();
+          type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+        }
 
-      if (type instanceof LocalVertexType) {
-        if (includedVertices.add(((Identifiable) value).getIdentity()))
-          vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
-      } else if (type instanceof LocalEdgeType) {
-        final Edge edge = ((Identifiable) value).asEdge(true);
-        if (includedEdges.add(edge.getIdentity())) {
-          edges.put(serializerImpl.serializeGraphElement(edge));
-          try {
-            if (includedVertices.add(edge.getIn())) {
-              final Vertex inV = edge.getInVertex();
-              vertices.put(serializerImpl.serializeGraphElement(inV));
+        if (type instanceof LocalVertexType) {
+          if (includedVertices.add(((Identifiable) value).getIdentity()))
+            vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
+        } else if (type instanceof LocalEdgeType) {
+          final Edge edge = ((Identifiable) value).asEdge(true);
+          if (includedEdges.add(edge.getIdentity())) {
+            edges.put(serializerImpl.serializeGraphElement(edge));
+            try {
+              if (includedVertices.add(edge.getIn())) {
+                final Vertex inV = edge.getInVertex();
+                vertices.put(serializerImpl.serializeGraphElement(inV));
+              }
+              if (includedVertices.add(edge.getOut())) {
+                final Vertex outV = edge.getOutVertex();
+                vertices.put(serializerImpl.serializeGraphElement(outV));
+              }
+            } catch (RecordNotFoundException e) {
+              LogManager.instance().log(this, Level.SEVERE, "Error on loading connecting vertices for edge %s: vertex %s not found",
+                  edge.getIdentity(), e.getRID());
             }
-            if (includedVertices.add(edge.getOut())) {
-              final Vertex outV = edge.getOutVertex();
-              vertices.put(serializerImpl.serializeGraphElement(outV));
-            }
-          } catch (RecordNotFoundException e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on loading connecting vertices for edge %s: vertex %s not found",
-                edge.getIdentity(), e.getRID());
           }
         }
       }
-    } else if (value instanceof Result result) {
-      analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, result, limit);
-    } else if (value instanceof Collection<?> collection) {
-      for (final Iterator<?> it = collection.iterator(); it.hasNext(); ) {
-        try {
-          analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(), limit);
-        } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
+      case Result result -> analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, result, limit);
+      case Collection<?> collection -> {
+        for (final Iterator<?> it = collection.iterator();it.hasNext();) {
+          try {
+            analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(), limit);
+          } catch (Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
+          }
         }
       }
+      case null, default -> {}
     }
   }
 
@@ -291,7 +294,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         return array;
       }
     } else
-      paramMap = Collections.emptyMap();
+      paramMap = Map.of();
     return paramMap;
   }
 

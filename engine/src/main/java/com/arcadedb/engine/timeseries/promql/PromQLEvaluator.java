@@ -19,7 +19,6 @@
 package com.arcadedb.engine.timeseries.promql;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -42,6 +41,7 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.NumberLiteral;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.StringLiteral;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
@@ -544,7 +544,7 @@ public class PromQLEvaluator {
       final int rowPos = 1 + nonTsIdx;
       nonTsIdx++;
       if (col.getRole() == ColumnDefinition.ColumnRole.FIELD)
-        return rowPos < row.length && row[rowPos] instanceof Number ? ((Number) row[rowPos]).doubleValue() : Double.NaN;
+        return rowPos < row.length && row[rowPos] instanceof Number n ? n.doubleValue() : Double.NaN;
     }
     return Double.NaN;
   }

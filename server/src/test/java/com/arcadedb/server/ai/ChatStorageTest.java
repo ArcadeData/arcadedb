@@ -21,12 +21,13 @@ package com.arcadedb.server.ai;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -217,9 +218,9 @@ class ChatStorageTest {
   void saveChatPropagatesWriteFailure() {
     // Place a regular file where the user's chat directory should be so the write cannot create the
     // target directory. The failure must surface (not be silently swallowed as a false success).
-    final File chatsDir = Paths.get(TEST_ROOT, "chats").toFile();
+    final File chatsDir = Path.of(TEST_ROOT, "chats").toFile();
     chatsDir.mkdirs();
-    final File blocker = Paths.get(TEST_ROOT, "chats", "blockeduser").toFile();
+    final File blocker = Path.of(TEST_ROOT, "chats", "blockeduser").toFile();
     assertThat(writeEmptyFile(blocker)).isTrue();
 
     final JSONObject chat = ChatStorage.createNewChat("db", "Will fail");

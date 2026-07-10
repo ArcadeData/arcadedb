@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -209,7 +210,7 @@ class TimeSeriesSQLTest extends TestHelper {
       results.add(rs.next());
 
     assertThat(results).hasSize(1); // All in same hour bucket
-    assertThat(((Number) results.get(0).getProperty("avg_val")).doubleValue()).isEqualTo(20.0);
+    assertThat(((Number) results.getFirst().getProperty("avg_val")).doubleValue()).isEqualTo(20.0);
   }
 
   /**

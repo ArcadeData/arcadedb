@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,17 +46,17 @@ class Issue5095ExistsMultiLabelTest {
   @BeforeEach
   void setUp() {
     database = new DatabaseFactory("./target/databases/issue-5095-exists-multilabel").create();
-    database.transaction(() -> {
+    database.transaction(() ->
       // n1: labels A+B, no outgoing edge
       // n2: labels A+B, has outgoing edge   -> should match
       // n3: label A only, has outgoing edge -> should NOT match
       // n4: label B only, has outgoing edge -> should NOT match
-      database.command("opencypher", "CREATE "
-          + "(n1:Node:A:B {id: 1}),"
-          + "(n2:Node:A:B {id: 2})-[:LINK]->(n1),"
-          + "(n3:Node:A {id: 3})-[:LINK]->(n1),"
-          + "(n4:Node:B {id: 4})-[:LINK]->(n1)");
-    });
+      database.command("opencypher", """
+          CREATE \
+          (n1:Node:A:B {id: 1}),\
+          (n2:Node:A:B {id: 2})-[:LINK]->(n1),\
+          (n3:Node:A {id: 3})-[:LINK]->(n1),\
+          (n4:Node:B {id: 4})-[:LINK]->(n1)"""));
   }
 
   @AfterEach

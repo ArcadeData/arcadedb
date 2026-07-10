@@ -118,7 +118,7 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
     final List<ResultInternal> results = new ArrayList<>();
 
     // Get the starting point from the first edge's source alias
-    final String startAlias = edges.get(0).out ? edges.get(0).edge.out.alias : edges.get(0).edge.in.alias;
+    final String startAlias = edges.getFirst().out ? edges.getFirst().edge.out.alias : edges.getFirst().edge.in.alias;
     Identifiable startingElem = upstream.getElementProperty(startAlias);
     if (startingElem instanceof Result r)
       startingElem = r.getElement().orElse(null);

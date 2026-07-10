@@ -42,9 +42,9 @@ class ContextConfigurationTest {
 
   @Test
   void constructorWithMapCopiesValues() {
-    final Map<String, Object> initial = new HashMap<>();
-    initial.put("key1", "value1");
-    initial.put("key2", 42);
+    final Map<String, Object> initial = new HashMap<>(Map.of(
+        "key1", "value1",
+        "key2", 42));
 
     final ContextConfiguration configWithMap = new ContextConfiguration(initial);
 

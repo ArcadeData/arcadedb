@@ -27,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -121,11 +122,8 @@ class ErrorHandlingIT extends BaseGraphServerTest {
 
     // The authentication error may occur either during construction or during query
     assertThatThrownBy(() -> {
-      RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 50051, 2480, getDatabaseName(), "root", "wrongpassword");
-      try {
+      try (RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 50051, 2480, getDatabaseName(), "root", "wrongpassword")) {
         badDb.query("sql", "SELECT FROM `" + TYPE + "`");
-      } finally {
-        badDb.close();
       }
     }).satisfiesAnyOf(
         e -> assertThat(e).isInstanceOf(SecurityException.class),
@@ -262,13 +260,10 @@ class ErrorHandlingIT extends BaseGraphServerTest {
   @DisplayName("Connection to wrong port fails gracefully")
   void connectionRefused_throwsConnectionException() {
     RemoteGrpcServer badServer = new RemoteGrpcServer("localhost", 59999, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 59999, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
-
-    try {
+    try (RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 59999, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
       assertThatThrownBy(() -> badDb.query("sql", "SELECT 1"))
           .isInstanceOf(Exception.class); // Could be RemoteException, NeedRetryException, etc.
     } finally {
-      badDb.close();
       badServer.close();
     }
   }

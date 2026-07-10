@@ -28,6 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
+
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
@@ -38,6 +39,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,7 +76,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     for (int i = 0; i < 20; i++) {
       final float[] vector = new float[dimensions];
       for (int j = 0; j < dimensions; j++) {
-        vector[j] = (float) Math.random();
+        vector[j] = (float) ThreadLocalRandom.current().nextDouble();
       }
       database.newDocument("Embedding")
           .set("name", "embedding" + i)
@@ -139,7 +141,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     // Verify vector search still works
     final float[] queryVector = new float[dimensions];
     for (int i = 0; i < dimensions; i++) {
-      queryVector[i] = (float) Math.random();
+      queryVector[i] = (float) ThreadLocalRandom.current().nextDouble();
     }
 
     final IndexCursor cursor = rebuiltVectorIndex.get(new Object[] { queryVector }, 5);
@@ -172,7 +174,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       final float[] vector = new float[64];
       for (int j = 0; j < 64; j++) {
-        vector[j] = (float) Math.random();
+        vector[j] = (float) ThreadLocalRandom.current().nextDouble();
       }
       database.newDocument("QuantizedEmbedding")
           .set("name", "qembed" + i)
@@ -228,7 +230,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     for (int i = 0; i < 5; i++) {
       final float[] vector = new float[32];
       for (int j = 0; j < 32; j++) {
-        vector[j] = (float) Math.random();
+        vector[j] = (float) ThreadLocalRandom.current().nextDouble();
       }
       database.newDocument("VectorDoc")
           .set("name", "doc" + i)

@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.RID;
+
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
@@ -330,10 +331,10 @@ class GrpcTypeConverterTest {
 
   @Test
   void convertParametersWithValues() {
-    Map<String, GrpcValue> params = new HashMap<>();
-    params.put("name", GrpcValue.newBuilder().setStringValue("John").build());
-    params.put("age", GrpcValue.newBuilder().setInt32Value(30).build());
-    params.put("active", GrpcValue.newBuilder().setBoolValue(true).build());
+    Map<String, GrpcValue> params = new HashMap<>(Map.of(
+        "name", GrpcValue.newBuilder().setStringValue("John").build(),
+        "age", GrpcValue.newBuilder().setInt32Value(30).build(),
+        "active", GrpcValue.newBuilder().setBoolValue(true).build()));
 
     Map<String, Object> result = GrpcTypeConverter.convertParameters(params);
 

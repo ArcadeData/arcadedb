@@ -22,10 +22,11 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
@@ -86,8 +87,7 @@ class PageManagerLifecycleRefCountTest {
   @Test
   void closingOneDatabaseNeverTearsDownTheManagerForOthers() {
     final DatabaseFactory factoryA = new DatabaseFactory(DB_A);
-    final DatabaseFactory factoryB = new DatabaseFactory(DB_B);
-    try {
+    try (final DatabaseFactory factoryB = new DatabaseFactory(DB_B)) {
       final Database dbA = factoryA.create();
       final Database dbB = factoryB.create();
 
@@ -107,7 +107,6 @@ class PageManagerLifecycleRefCountTest {
           .as("the LAST release tears the manager down").isNull();
     } finally {
       factoryA.close();
-      factoryB.close();
     }
   }
 
@@ -169,8 +168,7 @@ class PageManagerLifecycleRefCountTest {
     // !open), but the lifecycle release ran unconditionally - a defensive double-close consumed a SECOND
     // reference and tore the flush thread down under the other open database.
     final DatabaseFactory factoryA = new DatabaseFactory(DB_A);
-    final DatabaseFactory factoryB = new DatabaseFactory(DB_B);
-    try {
+    try (final DatabaseFactory factoryB = new DatabaseFactory(DB_B)) {
       final Database dbA = factoryA.create();
       final Database dbB = factoryB.create();
 
@@ -188,7 +186,6 @@ class PageManagerLifecycleRefCountTest {
       assertThat(PageManager.INSTANCE.getFlushThread()).isNull();
     } finally {
       factoryA.close();
-      factoryB.close();
     }
   }
 
@@ -199,28 +196,22 @@ class PageManagerLifecycleRefCountTest {
     final Object previous = GlobalConfiguration.MAX_PAGE_RAM.getValue();
     GlobalConfiguration.MAX_PAGE_RAM.setValue(-2);
     try {
-      final DatabaseFactory factory = new DatabaseFactory(DB_A);
-      try {
+      try (final DatabaseFactory factory = new DatabaseFactory(DB_A)) {
         assertThatThrownBy(factory::create)
             .as("misconfigured startup must fail the open").hasMessageContaining("configuration is invalid");
-      } finally {
-        factory.close();
       }
     } finally {
       GlobalConfiguration.MAX_PAGE_RAM.setValue(previous);
     }
 
     // The failed acquire left no residue: a healthy open now starts the manager normally.
-    final DatabaseFactory factory = new DatabaseFactory(DB_A);
-    try {
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_A)) {
       final Database db = factory.create();
       assertThat(PageManager.INSTANCE.getFlushThread())
           .as("the wedged-counter state must not survive a startup failure (#5070)").isNotNull();
       db.getSchema().createDocumentType("Doc");
       db.transaction(() -> db.newDocument("Doc").set("v", 1).save());
       db.drop();
-    } finally {
-      factory.close();
     }
   }
 
@@ -229,8 +220,7 @@ class PageManagerLifecycleRefCountTest {
     // #5070 review round 2: a live shutdown+startup swap in configure() raced the hot paths, which read
     // flushThread/readCache without the lifecycle lock - a concurrent flush could NPE on the transient
     // null. A profile change while databases are open is now refused loudly; the thread survives untouched.
-    final DatabaseFactory factory = new DatabaseFactory(DB_A);
-    try {
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_A)) {
       final Database db = factory.create();
       final PageManagerFlushThread before = PageManager.INSTANCE.getFlushThread();
       assertThat(before).isNotNull();
@@ -242,8 +232,6 @@ class PageManagerLifecycleRefCountTest {
           .isSameAs(before);
       assertThat(before.isAlive()).isTrue();
       db.drop();
-    } finally {
-      factory.close();
     }
   }
 }

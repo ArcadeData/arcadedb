@@ -358,16 +358,14 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     for (final Object item : items) {
       if (item == null)
         continue;
-      if (item instanceof RID rid)
-        out.add(rid);
-      else if (item instanceof Identifiable id)
-        out.add(id.getIdentity());
-      else if (item instanceof String s)
-        out.add(db.newRID(s));
-      else
-        throw new CommandSQLParsingException(
+      switch (item) {
+        case RID rid -> out.add(rid);
+        case Identifiable id -> out.add(id.getIdentity());
+        case String s -> out.add(db.newRID(s));
+        case null, default -> throw new CommandSQLParsingException(
             "Option 'filter' for function '" + functionName + "' must contain RIDs, got: "
                 + item.getClass().getSimpleName());
+      }
     }
     return out;
   }

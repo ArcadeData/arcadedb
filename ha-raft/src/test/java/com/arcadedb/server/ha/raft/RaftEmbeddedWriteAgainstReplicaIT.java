@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.logging.Level;

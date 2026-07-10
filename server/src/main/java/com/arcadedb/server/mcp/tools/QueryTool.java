@@ -29,7 +29,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.Collections;
+import java.util.Map;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -91,7 +91,7 @@ public class QueryTool {
     // Reuse the already-parsed statement when possible (SQL). For other engines (Cypher, Gremlin,
     // GraphQL) analyzed.execute() returns null and the query is re-parsed by database.query().
     final JSONArray records = new JSONArray();
-    final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
+    final ResultSet analyzedResultSet = analyzed.execute(Map.of());
     try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.query(language, query)) {
       int count = 0;
       while (resultSet.hasNext() && count < limit) {

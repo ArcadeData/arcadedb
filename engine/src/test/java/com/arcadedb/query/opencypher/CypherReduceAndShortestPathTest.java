@@ -25,6 +25,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -235,7 +236,7 @@ class CypherReduceAndShortestPathTest {
     final List<?> pathList = (List<?>) path;
     // Path should be: Alice, edge, Bob, edge, Charlie, edge, David (4 nodes + 3 edges = 7)
     assertThat(pathList.size()).isEqualTo(7);
-    assertThat(pathList.get(0)).isInstanceOf(Vertex.class);
+    assertThat(pathList.getFirst()).isInstanceOf(Vertex.class);
     assertThat(pathList.get(1)).isInstanceOf(Edge.class);
     assertThat(pathList.get(2)).isInstanceOf(Vertex.class);
 
@@ -284,7 +285,7 @@ class CypherReduceAndShortestPathTest {
     final List<?> pathList = (List<?>) path;
     // Path to self should be just the node itself (resolved as Vertex)
     assertThat(pathList.size()).isEqualTo(1);
-    assertThat(pathList.get(0)).isInstanceOf(Vertex.class);
+    assertThat(pathList.getFirst()).isInstanceOf(Vertex.class);
 
     assertThat(resultSet.hasNext()).isFalse();
   }
@@ -305,7 +306,7 @@ class CypherReduceAndShortestPathTest {
     if (resultSet.hasNext()) {
       final Result result = resultSet.next();
       final Object path = result.getProperty("p");
-      assertThat(path == null || (path instanceof List && ((List<?>) path).isEmpty())).isTrue();
+      assertThat(path == null || (path instanceof List<?> l && l.isEmpty())).isTrue();
     }
   }
 

@@ -37,7 +37,7 @@ public class PerformanceScan {
 
     database.async().setParallelLevel(4);
 
-    try {
+    try (database) {
       for (int i = 0; i < MAX_LOOPS; ++i) {
         final long begin = System.currentTimeMillis();
 
@@ -56,8 +56,6 @@ public class PerformanceScan {
 
         System.out.println("Found " + row.get() + " elements in " + (System.currentTimeMillis() - begin) + "ms");
       }
-    } finally {
-      database.close();
     }
   }
 }

@@ -25,7 +25,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
@@ -50,7 +50,7 @@ public class ApiTokenConfiguration {
   private final        ConcurrentHashMap<String, JSONObject> tokens       = new ConcurrentHashMap<>();
 
   public ApiTokenConfiguration(final String configPath) {
-    this.filePath = Paths.get(configPath, FILE_NAME).toString();
+    this.filePath = Path.of(configPath, FILE_NAME).toString();
   }
 
   public synchronized void load() {

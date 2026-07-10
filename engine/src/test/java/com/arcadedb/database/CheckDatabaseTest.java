@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
@@ -32,6 +33,7 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;

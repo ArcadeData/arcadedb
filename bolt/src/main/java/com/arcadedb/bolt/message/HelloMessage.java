@@ -58,8 +58,8 @@ public class HelloMessage extends BoltMessage {
 
   public String getRouting() {
     final Object routing = extra.get("routing");
-    if (routing instanceof Map) {
-      final Object address = ((Map<?, ?>) routing).get("address");
+    if (routing instanceof Map<?, ?> map) {
+      final Object address = map.get("address");
       return address != null ? address.toString() : null;
     }
     return null;

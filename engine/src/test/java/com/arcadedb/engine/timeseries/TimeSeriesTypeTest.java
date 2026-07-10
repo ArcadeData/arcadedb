@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -111,7 +112,7 @@ class TimeSeriesTypeTest extends TestHelper {
     assertThat(tsType.getTsColumns()).hasSize(3);
 
     // Verify column roles restored correctly
-    final ColumnDefinition tsCol = tsType.getTsColumns().get(0);
+    final ColumnDefinition tsCol = tsType.getTsColumns().getFirst();
     assertThat(tsCol.getName()).isEqualTo("ts");
     assertThat(tsCol.getRole()).isEqualTo(ColumnDefinition.ColumnRole.TIMESTAMP);
 
@@ -138,8 +139,8 @@ class TimeSeriesTypeTest extends TestHelper {
     assertThat(type.getTsColumns()).hasSize(5);
 
     // Verify timestamp column
-    assertThat(type.getTsColumns().get(0).getRole()).isEqualTo(ColumnDefinition.ColumnRole.TIMESTAMP);
-    assertThat(type.getTsColumns().get(0).getDataType()).isEqualTo(Type.LONG);
+    assertThat(type.getTsColumns().getFirst().getRole()).isEqualTo(ColumnDefinition.ColumnRole.TIMESTAMP);
+    assertThat(type.getTsColumns().getFirst().getDataType()).isEqualTo(Type.LONG);
 
     // Verify tags
     assertThat(type.getTsColumns().get(1).getRole()).isEqualTo(ColumnDefinition.ColumnRole.TAG);

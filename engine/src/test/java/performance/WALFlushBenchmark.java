@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

@@ -242,10 +242,10 @@ public class OrderByStep extends AbstractExecutionStep {
           if (obj == null)
             return null;
 
-          if (obj instanceof Vertex)
-            return convertFromStorage(((Vertex) obj).get(parts[1]));
-          else if (obj instanceof Edge)
-            return convertFromStorage(((Edge) obj).get(parts[1]));
+          if (obj instanceof Vertex vertex)
+            return convertFromStorage(vertex.get(parts[1]));
+          else if (obj instanceof Edge edge)
+            return convertFromStorage(edge.get(parts[1]));
         }
 
         return convertFromStorage(result.getProperty(expression));
@@ -343,18 +343,16 @@ public class OrderByStep extends AbstractExecutionStep {
           return -1;
 
         // Handle NaN: NaN sorts just before null
-        final boolean nan1 = v1 instanceof Double && Double.isNaN((Double) v1) ||
-            v1 instanceof Float && Float.isNaN((Float) v1);
-        final boolean nan2 = v2 instanceof Double && Double.isNaN((Double) v2) ||
-            v2 instanceof Float && Float.isNaN((Float) v2);
+        final boolean nan1 = v1 instanceof Double d && Double.isNaN(d) ||
+            v1 instanceof Float f && Float.isNaN(f);
+        final boolean nan2 = v2 instanceof Double d && Double.isNaN(d) ||
+            v2 instanceof Float f && Float.isNaN(f);
         if (nan1 && nan2) return 0;
         if (nan1) return 1;
         if (nan2) return -1;
 
         // Compare lists element-by-element
-        if (v1 instanceof List && v2 instanceof List) {
-          final List<?> l1 = (List<?>) v1;
-          final List<?> l2 = (List<?>) v2;
+        if (v1 instanceof List<?> l1 && v2 instanceof List<?> l2) {
           final int minSize = Math.min(l1.size(), l2.size());
           for (int i = 0; i < minSize; i++) {
             final int cmp = compareValues(l1.get(i), l2.get(i));
@@ -364,30 +362,30 @@ public class OrderByStep extends AbstractExecutionStep {
         }
 
         // Compare booleans: false < true
-        if (v1 instanceof Boolean && v2 instanceof Boolean)
-          return Boolean.compare((Boolean) v1, (Boolean) v2);
+        if (v1 instanceof Boolean boolean1 && v2 instanceof Boolean boolean2)
+          return Boolean.compare(boolean1, boolean2);
 
         // Compare temporal values
-        if (v1 instanceof CypherTemporalValue && v2 instanceof CypherTemporalValue) {
+        if (v1 instanceof CypherTemporalValue value && v2 instanceof CypherTemporalValue value1) {
           try {
-            return ((CypherTemporalValue) v1).compareTo((CypherTemporalValue) v2);
+            return value.compareTo(value1);
           } catch (final IllegalArgumentException e) {
             // Different temporal types — fall through to type rank
           }
         }
 
         // Same-type Comparable comparison
-        if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable) {
+        if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable comparable) {
           try {
-            return ((Comparable) v1).compareTo(v2);
+            return comparable.compareTo(v2);
           } catch (final ClassCastException e) {
             // Fall through
           }
         }
 
         // Cross-type number comparison
-        if (v1 instanceof Number && v2 instanceof Number)
-          return Double.compare(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
+        if (v1 instanceof Number number && v2 instanceof Number number1)
+          return Double.compare(number.doubleValue(), number1.doubleValue());
 
         // Different types: order by type rank
         final int rank1 = typeRank(v1);
@@ -396,9 +394,9 @@ public class OrderByStep extends AbstractExecutionStep {
           return Integer.compare(rank1, rank2);
 
         // Same rank, try Comparable
-        if (v1 instanceof Comparable && v2 instanceof Comparable) {
+        if (v1 instanceof Comparable comparable1 && v2 instanceof Comparable) {
           try {
-            return ((Comparable) v1).compareTo(v2);
+            return comparable1.compareTo(v2);
           } catch (final ClassCastException e) {
             // Fall through
           }

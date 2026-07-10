@@ -28,6 +28,7 @@ import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -109,8 +110,8 @@ class TimeSeriesHttpBenchmark extends BaseGraphServerTest {
             for (int i = 0; i < BATCH_SIZE; i++) {
               final long ts = batchStart + i * 100L;
               final String sensorId = "sensor_" + (i % NUM_SENSORS);
-              final double temperature = 20.0 + (Math.random() * 15.0);
-              final double humidity = 40.0 + (Math.random() * 40.0);
+              final double temperature = 20.0 + (ThreadLocalRandom.current().nextDouble() * 15.0);
+              final double humidity = 40.0 + (ThreadLocalRandom.current().nextDouble() * 40.0);
               sb.append("SensorData,sensor_id=").append(sensorId)
                   .append(" temperature=").append(temperature)
                   .append(",humidity=").append(humidity)

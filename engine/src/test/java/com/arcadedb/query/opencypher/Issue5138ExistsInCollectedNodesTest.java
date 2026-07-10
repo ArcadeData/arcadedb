@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,15 +48,15 @@ class Issue5138ExistsInCollectedNodesTest {
       factory.open().drop();
     database = factory.create();
 
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE "
-          + "(a:User {id: 1, active: true}), "
-          + "(b:User {id: 2, active: true}), "
-          + "(c:User {id: 3, active: false}), "
-          + "(d:User {id: 4, active: false}), "
-          + "(a)-[:FRIEND]->(c), "
-          + "(b)-[:FRIEND]->(d)");
-    });
+    database.transaction(() ->
+      database.command("opencypher", """
+          CREATE \
+          (a:User {id: 1, active: true}), \
+          (b:User {id: 2, active: true}), \
+          (c:User {id: 3, active: false}), \
+          (d:User {id: 4, active: false}), \
+          (a)-[:FRIEND]->(c), \
+          (b)-[:FRIEND]->(d)"""));
   }
 
   @AfterEach
@@ -68,14 +69,15 @@ class Issue5138ExistsInCollectedNodesTest {
   void existsWithInCollectedNodeList() {
     final List<String> results = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (inactive:User {active: false}) "
-            + "WITH collect(DISTINCT inactive) AS inactive_nodes "
-            + "MATCH (u:User {active: true}) "
-            + "RETURN u.id AS id, EXISTS { "
-            + "  MATCH (u)-[:FRIEND]->(friend) "
-            + "  WHERE friend IN inactive_nodes "
-            + "} AS has_inactive_friend "
-            + "ORDER BY id")) {
+        """
+        MATCH (inactive:User {active: false}) \
+        WITH collect(DISTINCT inactive) AS inactive_nodes \
+        MATCH (u:User {active: true}) \
+        RETURN u.id AS id, EXISTS { \
+          MATCH (u)-[:FRIEND]->(friend) \
+          WHERE friend IN inactive_nodes \
+        } AS has_inactive_friend \
+        ORDER BY id""")) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         results.add(r.getProperty("id") + "=" + r.getProperty("has_inactive_friend"));
@@ -87,17 +89,17 @@ class Issue5138ExistsInCollectedNodesTest {
 
   @Test
   void writeGuardedByExistsInCollectedNodeList() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (inactive:User {active: false}) "
-              + "WITH collect(DISTINCT inactive) AS inactive_nodes "
-              + "MATCH (u:User {active: true}) "
-              + "WHERE EXISTS { "
-              + "  MATCH (u)-[:FRIEND]->(friend) "
-              + "  WHERE friend IN inactive_nodes "
-              + "} "
-              + "SET u.flagged = true");
-    });
+          """
+          MATCH (inactive:User {active: false}) \
+          WITH collect(DISTINCT inactive) AS inactive_nodes \
+          MATCH (u:User {active: true}) \
+          WHERE EXISTS { \
+            MATCH (u)-[:FRIEND]->(friend) \
+            WHERE friend IN inactive_nodes \
+          } \
+          SET u.flagged = true"""));
 
     long cnt;
     try (final ResultSet rs = database.query("opencypher",

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.antlr;
 import com.arcadedb.query.sql.grammar.SQLLexer;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.parser.*;
+
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.junit.jupiter.api.Test;
@@ -292,7 +293,7 @@ class SQLASTBuilderTest {
     final List<Statement> statements = parseScript("SELECT * FROM User; SELECT * FROM Product;");
 
     assertThat(statements).hasSize(2);
-    assertThat(statements.get(0)).isInstanceOf(SelectStatement.class);
+    assertThat(statements.getFirst()).isInstanceOf(SelectStatement.class);
     assertThat(statements.get(1)).isInstanceOf(SelectStatement.class);
   }
 
@@ -303,7 +304,7 @@ class SQLASTBuilderTest {
     );
 
     assertThat(statements).hasSize(3);
-    assertThat(statements.get(0)).isInstanceOf(CreateVertexTypeStatement.class);
+    assertThat(statements.getFirst()).isInstanceOf(CreateVertexTypeStatement.class);
     assertThat(statements.get(1)).isInstanceOf(InsertStatement.class);
     assertThat(statements.get(2)).isInstanceOf(SelectStatement.class);
   }

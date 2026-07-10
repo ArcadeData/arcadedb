@@ -39,7 +39,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
@@ -295,8 +294,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               if (sourceObj instanceof GAVVertex gavVertex) {
                 sourceNodeId = gavVertex.getNodeId();
                 // Don't resolve to Vertex yet — only resolve if we can't use GAV fast path
-              } else if (sourceObj instanceof Vertex)
-                sourceVertex = (Vertex) sourceObj;
+              } else if (sourceObj instanceof Vertex vertex)
+                sourceVertex = vertex;
 
               if (sourceVertex != null || sourceNodeId >= 0) {
 
@@ -376,7 +375,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Label filter via bucket ID (no vertex load)
             if (targetNodePattern != null && targetNodePattern.hasLabels()) {
-              final String targetLabel = targetNodePattern.getLabels().get(0);
+              final String targetLabel = targetNodePattern.getLabels().getFirst();
               final String typeName = db.getSchema().getTypeByBucketId(targetRid.getBucketId()).getName();
               if (!targetLabel.equals(typeName) && !db.getSchema().getType(typeName).instanceOf(targetLabel))
                 continue;
@@ -387,8 +386,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
               final Object boundValue = lastResult.getProperty(targetVariable);
               final RID boundRid;
-              if (boundValue instanceof Vertex)
-                boundRid = ((Vertex) boundValue).getIdentity();
+              if (boundValue instanceof Vertex vertex)
+                boundRid = vertex.getIdentity();
               else
                 boundRid = null;
               if (boundRid != null
@@ -442,8 +441,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             // verify the traversed vertex matches the bound value (identity check)
             if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
               final Object boundValue = lastResult.getProperty(targetVariable);
-              if (boundValue instanceof Vertex) {
-                if (!((Vertex) boundValue).getIdentity().equals(targetVertex.getIdentity())) {
+              if (boundValue instanceof Vertex vertex) {
+                if (!vertex.getIdentity().equals(targetVertex.getIdentity())) {
                   continue;
                 }
               }
@@ -530,8 +529,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             if (relationshipVariable != null && boundVariableNames != null
                 && boundVariableNames.contains(relationshipVariable)) {
               final Object boundRel = lastResult.getProperty(relationshipVariable);
-              if (boundRel instanceof Edge) {
-                if (!((Edge) boundRel).getIdentity().equals(edge.getIdentity()))
+              if (boundRel instanceof Edge edge1) {
+                if (!edge1.getIdentity().equals(edge.getIdentity()))
                   continue;
               }
             }
@@ -540,8 +539,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             // verify the traversed vertex matches the bound value (identity check)
             if (boundVariableNames != null && boundVariableNames.contains(targetVariable)) {
               final Object boundValue = lastResult.getProperty(targetVariable);
-              if (boundValue instanceof Vertex) {
-                if (!((Vertex) boundValue).getIdentity().equals(targetVertex.getIdentity())) {
+              if (boundValue instanceof Vertex vertex) {
+                if (!vertex.getIdentity().equals(targetVertex.getIdentity())) {
                   continue;
                 }
               }
@@ -568,9 +567,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               // Check if there's an existing path from a previous hop to extend
               final Object existingPath = lastResult.getProperty(pathVariable);
               final TraversalPath path;
-              if (existingPath instanceof TraversalPath)
+              if (existingPath instanceof TraversalPath traversalPath)
                 // Extend existing path (multi-hop pattern)
-                path = new TraversalPath((TraversalPath) existingPath, edge, targetVertex);
+                path = new TraversalPath(traversalPath, edge, targetVertex);
               else {
                 // Create new path starting from source vertex
                 path = new TraversalPath((Vertex) lastResult.getProperty(sourceVariable));
@@ -677,16 +676,16 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       if (previousStepVariables != null && previousStepVariables.contains(prop))
         continue;
       final Object val = result.getProperty(prop);
-      if (val instanceof Edge) {
-        if (currentTypes == null || edgeTypeMatchesAny((Edge) val, currentTypes))
+      if (val instanceof Edge edge) {
+        if (currentTypes == null || edgeTypeMatchesAny(edge, currentTypes))
           return true;
       }
       if (val instanceof TraversalPath)
         return true; // paths may contain any edge type — conservative
       if (val instanceof List) {
         for (final Object item : (List<Object>) val)
-          if (item instanceof Edge) {
-            if (currentTypes == null || edgeTypeMatchesAny((Edge) item, currentTypes))
+          if (item instanceof Edge edge1) {
+            if (currentTypes == null || edgeTypeMatchesAny(edge1, currentTypes))
               return true;
           }
       }
@@ -901,16 +900,15 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       Object expected = entry.getValue();
 
       // Evaluate Expression-based property values (e.g., variable references from a prior WITH)
-      if (expected instanceof Expression && currentResult != null)
-        expected = ((Expression) expected).evaluate(currentResult, context);
+      if (expected instanceof Expression expression && currentResult != null)
+        expected = expression.evaluate(currentResult, context);
 
       // Resolve parameter references (e.g., $param -> actual value from context)
-      if (expected instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
+      if (expected instanceof CypherASTBuilder.ParameterReference reference) {
+        final String paramName = reference.getName();
         if (context.getInputParameters() != null)
           expected = context.getInputParameters().get(paramName);
-      } else if (expected instanceof String) {
-        final String s = (String) expected;
+      } else if (expected instanceof String s) {
         // Legacy parameter reference encoded as "$name"
         if (s.startsWith("$") && s.length() > 1) {
           final String paramName = s.substring(1);
@@ -923,8 +921,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       }
 
       if (actual == null || !actual.equals(expected)) {
-        if (actual instanceof Number && expected instanceof Number) {
-          if (((Number) actual).longValue() != ((Number) expected).longValue())
+        if (actual instanceof Number number && expected instanceof Number number1) {
+          if (number.longValue() != number1.longValue())
             return false;
         } else
           return false;
@@ -951,17 +949,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       if (previousStepVariables != null && previousStepVariables.contains(prop))
         continue;
       final Object val = result.getProperty(prop);
-      if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
+      if (val instanceof Edge edge1 && edge1.getIdentity().equals(edgeRid))
         return true;
-      if (val instanceof TraversalPath) {
-        for (final Edge pathEdge : ((TraversalPath) val).getEdges())
+      if (val instanceof TraversalPath path) {
+        for (final Edge pathEdge : path.getEdges())
           if (pathEdge.getIdentity().equals(edgeRid))
             return true;
       }
       // Check edge lists from VLP relationship variables
       if (val instanceof List) {
         for (final Object item : (List<Object>) val)
-          if (item instanceof Edge && ((Edge) item).getIdentity().equals(edgeRid))
+          if (item instanceof Edge edge11 && edge11.getIdentity().equals(edgeRid))
             return true;
       }
     }
@@ -999,12 +997,11 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       Object expected = entry.getValue();
 
       // Resolve parameter references (e.g., $param -> actual value from context)
-      if (expected instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
+      if (expected instanceof CypherASTBuilder.ParameterReference reference) {
+        final String paramName = reference.getName();
         if (context.getInputParameters() != null)
           expected = context.getInputParameters().get(paramName);
-      } else if (expected instanceof String) {
-        final String s = (String) expected;
+      } else if (expected instanceof String s) {
         // Legacy parameter reference encoded as "$name"
         if (s.startsWith("$") && s.length() > 1) {
           final String paramName = s.substring(1);
@@ -1017,8 +1014,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       }
 
       if (actual == null || !actual.equals(expected)) {
-        if (actual instanceof Number && expected instanceof Number) {
-          if (((Number) actual).longValue() != ((Number) expected).longValue())
+        if (actual instanceof Number number && expected instanceof Number number1) {
+          if (number.longValue() != number1.longValue())
             return false;
         } else
           return false;

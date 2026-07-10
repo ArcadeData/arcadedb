@@ -20,12 +20,8 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.integration.importer.AnalyzedEntity;
-import com.arcadedb.integration.importer.ImportException;
-import com.arcadedb.integration.importer.ImporterContext;
-import com.arcadedb.integration.importer.ImporterSettings;
-import com.arcadedb.integration.importer.Parser;
-import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.integration.importer.*;
+
 import com.univocity.parsers.common.AbstractParser;
 
 import java.io.IOException;

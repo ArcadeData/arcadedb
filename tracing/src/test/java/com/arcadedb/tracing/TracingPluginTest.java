@@ -19,6 +19,7 @@
 package com.arcadedb.tracing;
 
 import com.arcadedb.log.LogManager;
+
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
@@ -45,7 +46,7 @@ class TracingPluginTest {
     });
 
     assertThat(exporter.getFinishedSpanItems()).isNotEmpty();
-    assertThat(exporter.getFinishedSpanItems().get(0).getName()).contains("test.op");
+    assertThat(exporter.getFinishedSpanItems().getFirst().getName()).contains("test.op");
 
     plugin.stopService();
   }

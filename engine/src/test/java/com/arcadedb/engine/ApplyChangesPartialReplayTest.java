@@ -21,9 +21,10 @@ package com.arcadedb.engine;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,7 +56,7 @@ class ApplyChangesPartialReplayTest extends TestHelper {
     });
 
     // Get the bucket's file ID
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
 
@@ -84,7 +85,7 @@ class ApplyChangesPartialReplayTest extends TestHelper {
     walTx.pages = new WALFile.WALPage[] { walPage0 };
 
     // Apply the WAL transaction - this should succeed (version matches)
-    final boolean changed = db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false);
+    final boolean changed = db.getTransactionManager().applyChanges(walTx, Map.of(), false);
     assertThat(changed).isTrue();
 
     // Verify page 0 is now at the new version
@@ -135,7 +136,7 @@ class ApplyChangesPartialReplayTest extends TestHelper {
     // With the fix: replayPage0 is skipped (already applied), freshPage0 is applied
     // Without the fix: replayPage0 throws CME, freshPage0 is never reached
     db.getPageManager().removePageFromCache(pageId0);
-    final boolean changed2 = db.getTransactionManager().applyChanges(replayTx, Collections.emptyMap(), false);
+    final boolean changed2 = db.getTransactionManager().applyChanges(replayTx, Map.of(), false);
     assertThat(changed2).isTrue();
 
     // Verify the fresh page update was applied (version advanced)

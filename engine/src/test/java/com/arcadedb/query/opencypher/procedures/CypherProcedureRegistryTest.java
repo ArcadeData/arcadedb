@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures;
 import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

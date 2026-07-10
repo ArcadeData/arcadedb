@@ -27,6 +27,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;

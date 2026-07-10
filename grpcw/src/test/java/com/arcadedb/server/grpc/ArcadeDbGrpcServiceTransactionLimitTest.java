@@ -118,7 +118,7 @@ class ArcadeDbGrpcServiceTransactionLimitTest {
   }
 
   @Test
-  void concurrentReservationsNeverExceedPerPrincipalCapAndReleaseCleanly() throws InterruptedException {
+  void concurrentReservationsNeverExceedPerPrincipalCapAndReleaseCleanly() throws Exception {
     final int cap = 10;
     final int threads = 64;
     final ArcadeDbGrpcService service = service(0, cap);

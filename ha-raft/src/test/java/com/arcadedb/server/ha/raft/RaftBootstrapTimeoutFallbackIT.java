@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 

@@ -19,6 +19,7 @@
 package com.arcadedb.exception;
 
 import com.arcadedb.database.RID;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

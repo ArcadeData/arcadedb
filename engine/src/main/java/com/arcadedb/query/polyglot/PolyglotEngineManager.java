@@ -19,6 +19,7 @@
 package com.arcadedb.query.polyglot;
 
 import com.arcadedb.log.LogManager;
+
 import org.graalvm.polyglot.Engine;
 
 import java.util.logging.Level;

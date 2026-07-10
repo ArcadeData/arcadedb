@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -139,9 +138,10 @@ public class ClusterMonitor {
     // instead of letting the recovery look enabled while it can never trigger (issue #4696 review).
     if (peerChannelResetDurationMs > 0 && peerUnreachableThresholdMs <= 0)
       LogManager.instance().log(this, Level.WARNING,
-          "Channel-reset recovery is enabled (arcadedb.ha.peerChannelResetDuration=%d) but the peer-unreachable threshold "
-              + "(arcadedb.ha.peerUnreachableThreshold=%d) is disabled; the channel reset can never trigger. Set "
-              + "arcadedb.ha.peerUnreachableThreshold > 0 to activate it.",
+          """
+          Channel-reset recovery is enabled (arcadedb.ha.peerChannelResetDuration=%d) but the peer-unreachable threshold \
+          (arcadedb.ha.peerUnreachableThreshold=%d) is disabled; the channel reset can never trigger. Set \
+          arcadedb.ha.peerUnreachableThreshold > 0 to activate it.""",
           peerChannelResetDurationMs, peerUnreachableThresholdMs);
     this.lagWarningThreshold = lagWarningThreshold;
     this.stalledResyncDurationMs = stalledResyncDurationMs;
@@ -391,8 +391,9 @@ public class ClusterMonitor {
       if (!state.channelResetGaveUp) {
         state.channelResetGaveUp = true;
         LogManager.instance().log(this, Level.SEVERE,
-            "Follower '%s' still unreachable after %d replication-channel resets over %dms; giving up automatic channel "
-                + "recovery - operator intervention (e.g. a leadership transfer) is required.",
+            """
+            Follower '%s' still unreachable after %d replication-channel resets over %dms; giving up automatic channel \
+            recovery - operator intervention (e.g. a leadership transfer) is required.""",
             replicaId, state.channelResetCount, now - state.channelUnreachableSinceMs);
       }
       return;
@@ -401,8 +402,9 @@ public class ClusterMonitor {
     state.channelResetCount++;
     state.channelLastResetAtMs = now;
     LogManager.instance().log(this, Level.WARNING,
-        "Follower '%s' unreachable for %dms; triggering a replication-channel reset (attempt %d/%d) to force a fresh "
-            + "DNS re-resolution and reconnect.",
+        """
+        Follower '%s' unreachable for %dms; triggering a replication-channel reset (attempt %d/%d) to force a fresh \
+        DNS re-resolution and reconnect.""",
         replicaId, now - state.channelUnreachableSinceMs, state.channelResetCount, CHANNEL_RESET_MAX_ATTEMPTS);
     try {
       unreachablePeerChannelHandler.accept(replicaId);
@@ -450,7 +452,7 @@ public class ClusterMonitor {
 
   public Map<String, Long> getReplicaLags() {
     if (replicaStates.isEmpty())
-      return Collections.emptyMap();
+      return Map.of();
 
     final Map<String, Long> lags = new ConcurrentHashMap<>();
     for (final Map.Entry<String, ReplicaState> entry : replicaStates.entrySet())

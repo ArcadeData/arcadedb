@@ -43,7 +43,7 @@ public class ServerMonitor {
 	private static final int HOURS_24 = 24 * 60 * 60 * 1_000;
 	private final ArcadeDBServer server;
 	private volatile Thread checker;
-	private AtomicBoolean running = new AtomicBoolean(false);
+	private final AtomicBoolean running = new AtomicBoolean(false);
 	private long lastHotspotSafepointTime = 0L;
 	private long lastHotspotSafepointCount = 0L;
 	// WRITTEN BY THE MONITOR THREAD, READ BY getStatus() FROM ANY THREAD: volatile GUARANTEES VISIBILITY.

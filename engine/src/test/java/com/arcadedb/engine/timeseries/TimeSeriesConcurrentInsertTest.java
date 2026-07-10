@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

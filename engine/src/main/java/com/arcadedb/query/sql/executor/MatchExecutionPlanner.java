@@ -290,7 +290,7 @@ public class MatchExecutionPlanner {
         // Detect a chain of consecutive fusible edges
         final List<EdgeTraversal> chain = collectFusibleChain(sortedEdges, i, context);
         if (chain.size() >= 2) {
-          plan.chain(new MatchGAVFusedStep(context, chain, chain.get(0).gavProvider));
+          plan.chain(new MatchGAVFusedStep(context, chain, chain.getFirst().gavProvider));
           i += chain.size();
         } else {
           addStepsFor(plan, edge, context, false);

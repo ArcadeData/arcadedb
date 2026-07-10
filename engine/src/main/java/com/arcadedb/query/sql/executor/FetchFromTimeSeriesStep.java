@@ -115,8 +115,8 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               // standard DATETIME representation) instead of a java.util.Date. A java.util.Date is
               // formatted by the result JSON serializer with the date-only pattern, truncating the
               // value to the day; a temporal keeps the full date-time with its sub-second precision.
-              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long)
-                value = DateUtils.dateTime(context.getDatabase(), (Long) value, ChronoUnit.MILLIS, LocalDateTime.class,
+              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long long1)
+                value = DateUtils.dateTime(context.getDatabase(), long1, ChronoUnit.MILLIS, LocalDateTime.class,
                     ChronoUnit.MILLIS);
 
               result.setProperty(col.getName(), value);

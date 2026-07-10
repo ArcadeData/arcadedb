@@ -39,18 +39,18 @@ public class SizeFunction implements StatelessFunction {
       throw new CommandExecutionException("size() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof List)
-      return (long) ((List<?>) args[0]).size();
-    if (args[0] instanceof String)
-      return (long) ((String) args[0]).length();
-    if (args[0] instanceof float[])
-      return (long) ((float[]) args[0]).length;
-    if (args[0] instanceof double[])
-      return (long) ((double[]) args[0]).length;
-    if (args[0] instanceof int[])
-      return (long) ((int[]) args[0]).length;
-    if (args[0] instanceof long[])
-      return (long) ((long[]) args[0]).length;
+    if (args[0] instanceof List<?> list)
+      return (long) list.size();
+    if (args[0] instanceof String string)
+      return (long) string.length();
+    if (args[0] instanceof float[] floats)
+      return (long) floats.length;
+    if (args[0] instanceof double[] doubles)
+      return (long) doubles.length;
+    if (args[0] instanceof int[] ints)
+      return (long) ints.length;
+    if (args[0] instanceof long[] longs)
+      return (long) longs.length;
     return null;
   }
 }

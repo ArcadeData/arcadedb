@@ -53,7 +53,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -232,7 +231,7 @@ public class CypherOptimizer {
    */
   private Set<LogicalRelationship> computeNeedsEdgeTracking(final List<LogicalRelationship> orderedRels) {
     if (orderedRels.size() <= 1)
-      return Collections.emptySet();
+      return Set.of();
 
     final Map<Integer, List<LogicalRelationship>> byClause = new HashMap<>();
     for (final LogicalRelationship rel : orderedRels)
@@ -347,7 +346,7 @@ public class CypherOptimizer {
    * @return physical operator (NodeIndexSeek or NodeByLabelScan)
    */
   private PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
-    final IndexSelectionRule indexRule = (IndexSelectionRule) rules.get(0);
+    final IndexSelectionRule indexRule = (IndexSelectionRule) rules.getFirst();
     return indexRule.createAnchorOperator(anchor);
   }
 
@@ -392,7 +391,7 @@ public class CypherOptimizer {
 
     for (final LogicalRelationship rel : orderedRels) {
       final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
-          rel.getClauseIndex(), Collections.emptySet());
+          rel.getClauseIndex(), Set.of());
 
       // Check if we should use ExpandInto (both endpoints bound)
       if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
@@ -633,9 +632,9 @@ public class CypherOptimizer {
 
     // Skip filters at the top (they sit above the expand chain)
     PhysicalOperator topFilter = null;
-    if (current instanceof FilterOperator) {
+    if (current instanceof FilterOperator operator) {
       topFilter = current;
-      current = ((FilterOperator) current).getChild();
+      current = operator.getChild();
     }
 
     while (current instanceof GAVExpandAll) {
@@ -648,7 +647,7 @@ public class CypherOptimizer {
       return rootOperator;
 
     // Verify all use the same provider
-    final GraphTraversalProvider provider = chain.get(0).getProvider();
+    final GraphTraversalProvider provider = chain.getFirst().getProvider();
     for (int i = 1; i < chain.size(); i++)
       if (chain.get(i).getProvider() != provider)
         return rootOperator;
@@ -727,8 +726,8 @@ public class CypherOptimizer {
         rootOperator.getEstimatedCardinality());
 
     // Push filter INTO the fused chain (evaluated via column store, before creating output objects)
-    if (topFilter instanceof FilterOperator) {
-      fused.setPushedFilter(((FilterOperator) topFilter).getPredicate());
+    if (topFilter instanceof FilterOperator operator1) {
+      fused.setPushedFilter(operator1.getPredicate());
       // No need for a separate FilterOperator on top — the fused chain handles it
     }
     return fused;
@@ -764,8 +763,7 @@ public class CypherOptimizer {
   }
 
   private void markDeferredRecursive(final PhysicalOperator op, final Set<String> usedVariables, final boolean isRoot) {
-    if (op instanceof GAVExpandAll) {
-      final GAVExpandAll gav = (GAVExpandAll) op;
+    if (op instanceof GAVExpandAll gav) {
       if (!isRoot) {
         final String targetVar = gav.getTargetVariable();
         if (targetVar != null && !usedVariables.contains(targetVar))
@@ -773,9 +771,9 @@ public class CypherOptimizer {
       }
       if (gav.getChild() != null)
         markDeferredRecursive(gav.getChild(), usedVariables, false);
-    } else if (op instanceof FilterOperator) {
-      if (((FilterOperator) op).getChild() != null)
-        markDeferredRecursive(((FilterOperator) op).getChild(), usedVariables, false);
+    } else if (op instanceof FilterOperator operator) {
+      if (operator.getChild() != null)
+        markDeferredRecursive(operator.getChild(), usedVariables, false);
     }
   }
 
@@ -805,13 +803,11 @@ public class CypherOptimizer {
       final PhysicalOperator input) {
     // Determine the actual expand target variable (may differ from rel.getTargetVariable()
     // when the optimizer reverses traversal direction)
-    final String expandTargetVariable;
-    if (input instanceof GAVExpandAll)
-      expandTargetVariable = ((GAVExpandAll) input).getTargetVariable();
-    else if (input instanceof ExpandAll)
-      expandTargetVariable = ((ExpandAll) input).getTargetVariable();
-    else
-      expandTargetVariable = rel.getTargetVariable();
+    final String expandTargetVariable = switch (input) {
+      case GAVExpandAll all1 -> all1.getTargetVariable();
+      case ExpandAll all -> all.getTargetVariable();
+      case null, default -> rel.getTargetVariable();
+    };
 
     // Look up the LogicalNode for the expand target variable
     final LogicalNode targetNode =
@@ -829,12 +825,12 @@ public class CypherOptimizer {
     // Push label filter directly into the expand operator for early filtering
     // instead of wrapping with a separate FilterOperator (avoids materializing
     // rows that will be immediately discarded)
-    if (input instanceof GAVExpandAll) {
-      ((GAVExpandAll) input).setTargetLabel(targetLabel);
+    if (input instanceof GAVExpandAll all2) {
+      all2.setTargetLabel(targetLabel);
       return input;
     }
-    if (input instanceof ExpandAll) {
-      ((ExpandAll) input).setTargetLabel(targetLabel);
+    if (input instanceof ExpandAll all3) {
+      all3.setTargetLabel(targetLabel);
       return input;
     }
 
@@ -844,8 +840,7 @@ public class CypherOptimizer {
       public boolean evaluate(final Result result,
           final CommandContext context) {
         final Object vertexObj = result.getProperty(expandTargetVariable);
-        if (vertexObj instanceof Vertex) {
-          final Vertex vertex = (Vertex) vertexObj;
+        if (vertexObj instanceof Vertex vertex) {
           return vertex.getType().instanceOf(targetLabel);
         }
         return false;

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;

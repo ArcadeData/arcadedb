@@ -86,9 +86,9 @@ public final class PartitioningTestFixture {
   public static void populateVertices(final Database database, final String typeName) {
     database.transaction(() -> {
       for (final String tenant : TENANTS) {
-        final Map<String, Object> params = new HashMap<>();
-        params.put("t", tenant);
-        params.put("p", "p-" + tenant);
+        final Map<String, Object> params = new HashMap<>(Map.of(
+            "t", tenant,
+            "p", "p-" + tenant));
         database.command("sql", "CREATE VERTEX " + typeName + " SET tenant_id = :t, payload = :p", params);
       }
     });

@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.NumberUtils;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -476,7 +475,7 @@ public class BaseExpression extends MathExpression {
         return List.of(modifier.suffix.identifier.toString());
       }
     }
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override

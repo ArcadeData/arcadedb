@@ -722,8 +722,9 @@ public class HashIndexBucket extends PaginatedComponent {
 
     if (metadataCorrupt)
       LogManager.instance().log(this, Level.SEVERE,
-          "Corrupted metadata detected on hash index '%s' (fileId=%d): %s. The index must be rebuilt (DROP and "
-              + "recreate it). Raw metadata page 0 dump (content bytes):%n%s",
+          """
+          Corrupted metadata detected on hash index '%s' (fileId=%d): %s. The index must be rebuilt (DROP and \
+          recreate it). Raw metadata page 0 dump (content bytes):%n%s""",
           null, getName(), fileId, describeMetadata(rawNumKeys), dumpMetadataPage(metaPage));
   }
 
@@ -854,8 +855,9 @@ public class HashIndexBucket extends PaginatedComponent {
 
     if (!problems.isEmpty())
       LogManager.instance().log(this, Level.SEVERE,
-          "CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
-              + "(DROP and recreate it).", null, getName(), fileId, problems);
+          """
+          CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt \
+          (DROP and recreate it).""", null, getName(), fileId, problems);
 
     return problems;
   }

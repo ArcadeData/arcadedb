@@ -211,8 +211,8 @@ public class CaseExpression extends MathExpression {
   private boolean isTrue(final Object value) {
     if (value == null)
       return false;
-    if (value instanceof Boolean)
-      return (Boolean) value;
+    if (value instanceof Boolean boolean1)
+      return boolean1;
     // Non-null, non-false values are considered true
     return true;
   }

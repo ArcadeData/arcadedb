@@ -50,8 +50,8 @@ public class PercentileDiscFunction implements StatelessFunction {
       if (percentile < 0.0 || percentile > 1.0)
         throw new CommandExecutionException("NumberOutOfRange: percentile must be between 0.0 and 1.0, got: " + percentile);
     }
-    if (args[0] instanceof Number)
-      values.add((Number) args[0]);
+    if (args[0] instanceof Number number)
+      values.add(number);
     return null;
   }
 

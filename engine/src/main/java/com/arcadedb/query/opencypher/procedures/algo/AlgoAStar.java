@@ -19,12 +19,12 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 
 import java.util.HashMap;
 import java.util.LinkedList;

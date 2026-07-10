@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -97,7 +98,7 @@ class FullTextScoreTest extends TestHelper {
 
       // Doc1 and Doc3 have both "java" and "programming", Doc2 has only "java"
       // So Doc1 and Doc3 should come before Doc2
-      assertThat(orderedTitles.get(orderedTitles.size() - 1)).isEqualTo("Doc2");
+      assertThat(orderedTitles.getLast()).isEqualTo("Doc2");
     });
   }
 

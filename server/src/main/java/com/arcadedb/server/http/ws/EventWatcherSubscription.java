@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.database.Document;
+
 import io.undertow.websockets.core.WebSocketChannel;
 
 import java.io.IOException;

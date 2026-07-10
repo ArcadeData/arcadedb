@@ -74,8 +74,7 @@ public class AggregationStep extends AbstractExecutionStep {
     // Identify aggregation functions and create function instances
     for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
       final Expression expr = item.getExpression();
-      if (expr.isAggregation() && expr instanceof FunctionCallExpression) {
-        final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+      if (expr.isAggregation() && expr instanceof FunctionCallExpression funcExpr) {
         // Pass the DISTINCT flag to create the appropriate function instance
         final StatelessFunction function = functionFactory.getFunctionExecutor(
             funcExpr.getFunctionName(), funcExpr.isDistinct());
@@ -117,8 +116,7 @@ public class AggregationStep extends AbstractExecutionStep {
           final StatelessFunction function = aggregators.get(outputName);
 
           // Evaluate the function arguments for this row
-          if (expr instanceof FunctionCallExpression) {
-            final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+          if (expr instanceof FunctionCallExpression funcExpr) {
             final Object[] args = new Object[funcExpr.getArguments().size()];
             for (int i = 0; i < args.length; i++) {
               args[i] = evaluator.evaluate(funcExpr.getArguments().get(i), inputRow, context);

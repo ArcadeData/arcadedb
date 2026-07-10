@@ -32,6 +32,11 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -77,7 +82,7 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
   // fix (folded into this PR) means the super-node workload now keeps every committed edge.
 
   @Test
-  void concurrentAppendToSuperNodeUnderHA() throws InterruptedException {
+  void concurrentAppendToSuperNodeUnderHA() throws Exception {
     // Toggle the feature from a plain system property so the baseline run is reliable regardless of how the
     // surefire fork forwards -D flags: -DedgeAppendMerge=false for the OFF comparison.
     // Control switch: -DsuperNode=false makes each edge target a fresh per-transaction vertex instead of the
@@ -197,15 +202,15 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
           =====================================================================""".formatted(
           superNode ? "super-node (shared hub)" : "control (distinct targets)",
           GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean(), THREADS, committed.get(), TOTAL_EDGES,
-          java.util.Arrays.toString(perServerDegree), attempts.get(), retries, 100.0 * retries / TOTAL_EDGES, merges,
+          Arrays.toString(perServerDegree), attempts.get(), retries, 100.0 * retries / TOTAL_EDGES, merges,
           conflicts, elapsed, TOTAL_EDGES / (elapsed / 1000.0), totalLatencyNs.get() / 1e6 / TOTAL_EDGES,
           maxLatencyNs.get() / 1e6);
       LogManager.instance().log(this, Level.INFO, report);
       try {
-        final java.io.File out = new java.io.File("./target/supernode-append-ha-benchmark.txt");
-        java.nio.file.Files.writeString(out.toPath(), report + System.lineSeparator(),
-            java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
-      } catch (final java.io.IOException ignore) {
+        final File out = new File("./target/supernode-append-ha-benchmark.txt");
+        Files.writeString(out.toPath(), report + System.lineSeparator(),
+            StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+      } catch (final IOException ignore) {
         // best-effort reporting only
       }
 

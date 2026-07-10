@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -375,8 +376,9 @@ class CypherQueryStatisticsTest extends TestHelper {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:UnionMergeTarget {id:1})");
       final ResultSet rs = database.command("opencypher",
-          "MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r UNION ALL "
-              + "MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r");
+          """
+          MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r UNION ALL \
+          MERGE (n:UnionMergeTarget {id:1}) RETURN n.id AS r""");
       while (rs.hasNext())
         rs.next();
       assertThat(rs.getStatistics()).isPresent();

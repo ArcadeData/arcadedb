@@ -359,26 +359,24 @@ public class TableFormatter {
   }
 
   public static Object getPrettyFieldValue(Object value, final int multiValueMaxEntries) {
-    if (value == null)
-      value = "<null>";
-    else if (value instanceof MultiIterator<?> iterator)
-      value = getPrettyFieldMultiValue(iterator.iterator(), multiValueMaxEntries);
-    else if (value instanceof Iterator<?> iterator)
-      value = getPrettyFieldMultiValue(iterator, multiValueMaxEntries);
-    else if (value instanceof Collection<?> collection)
-      value = getPrettyFieldMultiValue(collection.iterator(), multiValueMaxEntries);
-    else if (value instanceof Record record) {
-      if (record.getIdentity() == null) {
+    switch (value) {
+      case null -> value = "<null>";
+      case MultiIterator<?> iterator -> value = getPrettyFieldMultiValue(iterator.iterator(), multiValueMaxEntries);
+      case Iterator<?> iterator -> value = getPrettyFieldMultiValue(iterator, multiValueMaxEntries);
+      case Collection<?> collection -> value = getPrettyFieldMultiValue(collection.iterator(), multiValueMaxEntries);
+      case Record record when record.getIdentity() == null ->
         value = value.toString();
-      } else {
+      case Record record -> {
         value = record.getIdentity().toString();
       }
-    } else if (value instanceof Date date) {
-      synchronized (DEF_DATEFORMAT) {
-        value = DEF_DATEFORMAT.format(date);
+      case Date date -> {
+        synchronized (DEF_DATEFORMAT) {
+          value = DEF_DATEFORMAT.format(date);
+        }
       }
-    } else if (value instanceof byte[] bytes)
-      value = "byte[" + bytes.length + "]";
+      case byte[] bytes -> value = "byte[" + bytes.length + "]";
+      default -> {}
+    }
 
     return value;
   }

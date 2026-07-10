@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.sql.graph.SQLFunctionMove;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -30,7 +31,6 @@ import com.arcadedb.query.sql.executor.FunctionAggregationContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
-import com.arcadedb.function.sql.graph.SQLFunctionMove;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -114,14 +114,11 @@ public class FunctionCall extends SimpleNode {
       }
     }
     for (final Expression expr : this.params) {
-      if (record instanceof Identifiable identifiable) {
-        paramValues.add(expr.execute(identifiable, context));
-      } else if (record instanceof Result result) {
-        paramValues.add(expr.execute(result, context));
-      } else if (record == null) {
-        paramValues.add(expr.execute((Result) record, context));
-      } else {
-        throw new CommandExecutionException("Invalid value for $current: " + record);
+      switch (record) {
+        case null -> paramValues.add(expr.execute((Result) record, context));
+        case Identifiable identifiable -> paramValues.add(expr.execute(identifiable, context));
+        case Result result -> paramValues.add(expr.execute(result, context));
+        default -> throw new CommandExecutionException("Invalid value for $current: " + record);
       }
     }
 
@@ -446,8 +443,8 @@ public class FunctionCall extends SimpleNode {
     if (params != null) {
       final List<Object> paramsJson = new ArrayList<>();
       for (Object item : params) {
-        if (item instanceof SimpleNode) {
-          paramsJson.add(((SimpleNode) item).toJSON());
+        if (item instanceof SimpleNode node) {
+          paramsJson.add(node.toJSON());
         } else {
           paramsJson.add(item);
         }

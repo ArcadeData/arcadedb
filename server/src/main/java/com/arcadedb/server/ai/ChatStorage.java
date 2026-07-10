@@ -27,7 +27,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -179,11 +179,11 @@ public class ChatStorage {
   }
 
   private File getUserDir(final String username) {
-    return Paths.get(rootPath, "chats", sanitizeFilename(username)).toFile();
+    return Path.of(rootPath, "chats", sanitizeFilename(username)).toFile();
   }
 
   private File getChatFile(final String username, final String chatId) {
-    return Paths.get(rootPath, "chats", sanitizeFilename(username), sanitizeFilename(chatId) + ".json").toFile();
+    return Path.of(rootPath, "chats", sanitizeFilename(username), sanitizeFilename(chatId) + ".json").toFile();
   }
 
   /**

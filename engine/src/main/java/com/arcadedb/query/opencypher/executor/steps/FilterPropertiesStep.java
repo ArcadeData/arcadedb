@@ -159,8 +159,7 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
 
       // Get the object from result
       final Object obj = result.getProperty(variable);
-      if (obj instanceof Document) {
-        final Document doc = (Document) obj;
+      if (obj instanceof Document doc) {
         if (!doc.has(property)) {
           return false;
         }
@@ -184,8 +183,8 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
 
     try {
       // Try numeric comparison
-      if (left instanceof Number) {
-        final double leftNum = ((Number) left).doubleValue();
+      if (left instanceof Number number) {
+        final double leftNum = number.doubleValue();
         final double rightNum = Double.parseDouble(right);
 
         return switch (operator) {

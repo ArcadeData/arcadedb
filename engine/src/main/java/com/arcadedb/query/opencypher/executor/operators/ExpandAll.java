@@ -219,10 +219,10 @@ public class ExpandAll extends AbstractPhysicalOperator {
     RidHashSet used = null;
     for (final String relVar : sameClausePrecedingRelVars) {
       final Object val = row.getProperty(relVar);
-      if (val instanceof Edge) {
+      if (val instanceof Edge edge) {
         if (used == null)
           used = new RidHashSet();
-        used.add(((Edge) val).getIdentity());
+        used.add(edge.getIdentity());
       }
     }
     return used;

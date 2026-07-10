@@ -70,12 +70,12 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
             final List<Map<String, Object>> settings = new ArrayList<>();
             for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
               if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE) {
-                final Map<String, Object> map = new LinkedHashMap<>();
-                map.put("key", cfg.getKey());
-                map.put("value", convertValue(cfg.getKey(), dbCfg.getValue(cfg)));
-                map.put("description", cfg.getDescription());
-                map.put("overridden", contextKeys.contains(cfg.getKey()));
-                map.put("default", convertValue(cfg.getKey(), cfg.getDefValue()));
+                final Map<String, Object> map = new HashMap<>(Map.of(
+                    "key", cfg.getKey(),
+                    "value", convertValue(cfg.getKey(), dbCfg.getValue(cfg)),
+                    "description", cfg.getDescription(),
+                    "overridden", contextKeys.contains(cfg.getKey()),
+                    "default", convertValue(cfg.getKey(), cfg.getDefValue())));
 
                 settings.add(map);
               }

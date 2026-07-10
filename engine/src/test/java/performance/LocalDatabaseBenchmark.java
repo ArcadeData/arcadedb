@@ -41,10 +41,10 @@ public class LocalDatabaseBenchmark {
   private static final int                 TX_RETRY             = CONCURRENT_THREADS * 100;
   private static final String              DATABASE_NAME        = "benchmark";
   private final        Map<String, Object> globalStats          = new HashMap<>();
-  private              AtomicLong          globalCounter        = new AtomicLong();
-  private              AtomicLong          lastCounter          = new AtomicLong();
-  private              AtomicInteger       concurrentExceptions = new AtomicInteger();
-  private              AtomicInteger       errors               = new AtomicInteger();
+  private final              AtomicLong          globalCounter        = new AtomicLong();
+  private final              AtomicLong          lastCounter          = new AtomicLong();
+  private final              AtomicInteger       concurrentExceptions = new AtomicInteger();
+  private final              AtomicInteger       errors               = new AtomicInteger();
   private              Database            database;
 
   public static void main(String[] args) {

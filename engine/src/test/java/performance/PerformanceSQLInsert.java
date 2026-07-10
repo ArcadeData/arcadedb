@@ -49,7 +49,7 @@ public class PerformanceSQLInsert {
     final AtomicLong oks = new AtomicLong();
     final AtomicLong errors = new AtomicLong();
 
-    try {
+    try (database) {
       final long begin = System.currentTimeMillis();
 
       for (int i = 0; i < MAX_LOOPS; ++i) {
@@ -88,8 +88,6 @@ public class PerformanceSQLInsert {
                 + oks.get() + " errors=" + errors.get() + ")");
       }
 
-    } finally {
-      database.close();
     }
   }
 }

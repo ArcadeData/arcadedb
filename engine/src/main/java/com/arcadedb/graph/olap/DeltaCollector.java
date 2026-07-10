@@ -29,7 +29,6 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -210,7 +209,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   private static Map<String, Object> extractProperties(final Document doc) {
     final Set<String> names = doc.getPropertyNames();
     if (names.isEmpty())
-      return Collections.emptyMap();
+      return Map.of();
     final Map<String, Object> props = new HashMap<>(names.size());
     for (final String name : names)
       props.put(name, doc.get(name));

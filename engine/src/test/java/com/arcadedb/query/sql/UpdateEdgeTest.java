@@ -4,6 +4,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Iterator;

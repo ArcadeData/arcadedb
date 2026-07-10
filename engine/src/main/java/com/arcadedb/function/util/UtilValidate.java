@@ -51,19 +51,13 @@ public class UtilValidate extends AbstractUtilFunction {
     final Object predicate = args[0];
     final String message = args[1] != null ? args[1].toString() : "Validation failed";
 
-    final boolean valid;
-    if (predicate == null) {
-      valid = false;
-    } else if (predicate instanceof Boolean) {
-      valid = (Boolean) predicate;
-    } else if (predicate instanceof String) {
-      final String str = (String) predicate;
-      valid = !str.isEmpty() && !"false".equalsIgnoreCase(str) && !"0".equals(str);
-    } else if (predicate instanceof Number) {
-      valid = ((Number) predicate).doubleValue() != 0.0;
-    } else {
-      valid = true;
-    }
+    final boolean valid = switch (predicate) {
+      case null -> false;
+      case Boolean boolean1 -> boolean1;
+      case String str -> !str.isEmpty() && !"false".equalsIgnoreCase(str) && !"0".equals(str);
+      case Number number -> number.doubleValue() != 0.0;
+      default -> true;
+    };
 
     if (!valid) {
       throw new IllegalArgumentException(message);

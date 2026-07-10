@@ -21,6 +21,7 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.graph.MutableVertex;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

@@ -27,6 +27,7 @@ import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
 import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import com.arcadedb.utility.TableFormatter;
+
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -34,6 +35,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
@@ -275,8 +277,8 @@ public class DatabaseWrapper {
       String tag1 = "tag" + i % numberOfPhotos;
       String tag2 = "tag" + (i % numberOfPhotos + 1);
       String description = IntStream.range(0, 100).mapToObj(j -> wordSupplier.get()).reduce((a, b) -> a + " " + b).orElse("");
-      double lon = Math.round((GEO_LON_MIN + Math.random() * GEO_LON_RANGE) * 1e6) / 1e6;
-      double lat = Math.round((GEO_LAT_MIN + Math.random() * GEO_LAT_RANGE) * 1e6) / 1e6;
+      double lon = Math.round((GEO_LON_MIN + ThreadLocalRandom.current().nextDouble() * GEO_LON_RANGE) * 1e6) / 1e6;
+      double lat = Math.round((GEO_LAT_MIN + ThreadLocalRandom.current().nextDouble() * GEO_LAT_RANGE) * 1e6) / 1e6;
       String location = String.format("POINT (%s %s)", lon, lat);
       String sqlScript = """
           BEGIN;

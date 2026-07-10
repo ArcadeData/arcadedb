@@ -105,8 +105,8 @@ public class LogicalExpression implements BooleanExpression {
   private static Boolean toBoolean(final Object value) {
     if (value == null)
       return null;
-    if (value instanceof Boolean)
-      return (Boolean) value;
+    if (value instanceof Boolean boolean1)
+      return boolean1;
     return true;
   }
 

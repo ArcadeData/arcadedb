@@ -161,9 +161,10 @@ public class RebuildIndexStatement extends DDLStatement {
         if (docType instanceof LocalDocumentType ldt && !ldt.isNeedsRepartition()) {
           ldt.setNeedsRepartition(true);
           LogManager.instance().log(this, Level.WARNING,
-              "Rebuild of index found records of type '%s' stored outside their partition hash-target bucket; "
-                  + "partition-aware pruning is now disabled (queries fan out across all buckets and stay correct). "
-                  + "Run `REBUILD TYPE %s WITH repartition = true` to relocate the records and re-enable pruning",
+              """
+              Rebuild of index found records of type '%s' stored outside their partition hash-target bucket; \
+              partition-aware pruning is now disabled (queries fan out across all buckets and stay correct). \
+              Run `REBUILD TYPE %s WITH repartition = true` to relocate the records and re-enable pruning""",
               null, docType.getName(), docType.getName());
         }
       }

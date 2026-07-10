@@ -33,15 +33,7 @@ import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.Values;
 import org.neo4j.driver.types.Node;
 
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.OffsetDateTime;
-import java.time.OffsetTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
+import java.time.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -86,8 +78,9 @@ public class Bolt4907TemporalOutputIT extends BaseGraphServerTest {
               t: localtime('10:30:45')})""").consume();
 
         final Record row = session.run(
-            "MATCH (e:Ev {id: 1}) RETURN e.ts AS ts, e.tsOff AS tsOff, e.tsZone AS tsZone, e.day AS day, "
-                + "e.ldt AS ldt, e.tOff AS tOff, e.t AS t").single();
+            """
+            MATCH (e:Ev {id: 1}) RETURN e.ts AS ts, e.tsOff AS tsOff, e.tsZone AS tsZone, e.day AS day, \
+            e.ldt AS ldt, e.tOff AS tOff, e.t AS t""").single();
 
         // Would throw if any value came back as a string instead of a native temporal struct.
         assertThat(row.get("ts").asZonedDateTime().toInstant()).isEqualTo(Instant.parse("2024-01-15T10:30:45Z"));

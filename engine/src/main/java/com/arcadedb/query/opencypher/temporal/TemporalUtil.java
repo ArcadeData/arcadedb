@@ -235,14 +235,14 @@ public final class TemporalUtil {
     // If either is time-only, only compare time portions
     if (isTimeOnly(from) || isTimeOnly(to)) {
       // Two CypherTime values: compare by instant (UTC-normalized)
-      if (from instanceof CypherTime && to instanceof CypherTime) {
+      if (from instanceof CypherTime time && to instanceof CypherTime time1) {
         final Duration duration = Duration.between(
-            ((CypherTime) from).getValue(), ((CypherTime) to).getValue());
+            time.getValue(), time1.getValue());
         return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
       }
       // When mixed with a zoned datetime, use the zoned datetime's timezone
       if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-        final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
+        final CypherDateTime zoned = from instanceof CypherDateTime cdt ? cdt : (CypherDateTime) to;
         final ZoneId zone = zoned.getValue().getZone();
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
@@ -258,7 +258,7 @@ public final class TemporalUtil {
     }
     // Both have date components — handle DST-aware computation
     if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-      final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
+      final CypherDateTime zoned = from instanceof CypherDateTime cdt ? cdt : (CypherDateTime) to;
       final ZoneId zone = zoned.getValue().getZone();
       final LocalDate refDate = getReferenceDate(zoned);
       final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
@@ -280,14 +280,14 @@ public final class TemporalUtil {
     // If either is time-only, only compare time portions
     if (isTimeOnly(from) || isTimeOnly(to)) {
       // Two CypherTime values: compare by instant (UTC-normalized)
-      if (from instanceof CypherTime && to instanceof CypherTime) {
+      if (from instanceof CypherTime time && to instanceof CypherTime time1) {
         final Duration timeDur = Duration.between(
-            ((CypherTime) from).getValue(), ((CypherTime) to).getValue());
+            time.getValue(), time1.getValue());
         return new CypherDuration(0, 0, timeDur.getSeconds(), timeDur.getNano());
       }
       // When mixed with a zoned datetime, use the zoned datetime's timezone
       if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-        final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
+        final CypherDateTime zoned = from instanceof CypherDateTime cdt ? cdt : (CypherDateTime) to;
         final ZoneId zone = zoned.getValue().getZone();
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
@@ -468,40 +468,40 @@ public final class TemporalUtil {
   }
 
   private static LocalTime extractTime(final CypherTemporalValue val) {
-    if (val instanceof CypherLocalTime)
-      return ((CypherLocalTime) val).getValue();
-    if (val instanceof CypherTime)
-      return ((CypherTime) val).getValue().toLocalTime();
-    if (val instanceof CypherLocalDateTime)
-      return ((CypherLocalDateTime) val).getValue().toLocalTime();
-    if (val instanceof CypherDateTime)
-      return ((CypherDateTime) val).getValue().toLocalTime();
+    if (val instanceof CypherLocalTime time)
+      return time.getValue();
+    if (val instanceof CypherTime time1)
+      return time1.getValue().toLocalTime();
+    if (val instanceof CypherLocalDateTime time2)
+      return time2.getValue().toLocalTime();
+    if (val instanceof CypherDateTime time3)
+      return time3.getValue().toLocalTime();
     if (val instanceof CypherDate)
       return LocalTime.MIDNIGHT;
     throw new IllegalArgumentException("Cannot extract time from: " + val.getClass().getSimpleName());
   }
 
   private static LocalDate extractDate(final CypherTemporalValue val) {
-    if (val instanceof CypherDate)
-      return ((CypherDate) val).getValue();
-    if (val instanceof CypherLocalDateTime)
-      return ((CypherLocalDateTime) val).getValue().toLocalDate();
-    if (val instanceof CypherDateTime)
-      return ((CypherDateTime) val).getValue().toLocalDate();
+    if (val instanceof CypherDate date)
+      return date.getValue();
+    if (val instanceof CypherLocalDateTime time)
+      return time.getValue().toLocalDate();
+    if (val instanceof CypherDateTime time1)
+      return time1.getValue().toLocalDate();
     throw new IllegalArgumentException("Cannot extract date from: " + val.getClass().getSimpleName());
   }
 
   private static LocalDateTime extractDateTime(final CypherTemporalValue val) {
-    if (val instanceof CypherDate)
-      return ((CypherDate) val).getValue().atStartOfDay();
-    if (val instanceof CypherLocalDateTime)
-      return ((CypherLocalDateTime) val).getValue();
-    if (val instanceof CypherDateTime)
-      return ((CypherDateTime) val).getValue().toLocalDateTime();
-    if (val instanceof CypherLocalTime)
-      return LocalDateTime.of(LocalDate.of(0, 1, 1), ((CypherLocalTime) val).getValue());
-    if (val instanceof CypherTime)
-      return LocalDateTime.of(LocalDate.of(0, 1, 1), ((CypherTime) val).getValue().toLocalTime());
+    if (val instanceof CypherDate date)
+      return date.getValue().atStartOfDay();
+    if (val instanceof CypherLocalDateTime time)
+      return time.getValue();
+    if (val instanceof CypherDateTime time1)
+      return time1.getValue().toLocalDateTime();
+    if (val instanceof CypherLocalTime time2)
+      return LocalDateTime.of(LocalDate.of(0, 1, 1), time2.getValue());
+    if (val instanceof CypherTime time3)
+      return LocalDateTime.of(LocalDate.of(0, 1, 1), time3.getValue().toLocalTime());
     throw new IllegalArgumentException("Cannot extract datetime from: " + val.getClass().getSimpleName());
   }
 
@@ -561,16 +561,16 @@ public final class TemporalUtil {
   }
 
   private static Instant toInstant(final CypherTemporalValue val) {
-    if (val instanceof CypherDateTime)
-      return ((CypherDateTime) val).getValue().toInstant();
-    if (val instanceof CypherDate)
-      return ((CypherDate) val).getValue().atStartOfDay(ZoneOffset.UTC).toInstant();
-    if (val instanceof CypherLocalDateTime)
-      return ((CypherLocalDateTime) val).getValue().atZone(ZoneOffset.UTC).toInstant();
-    if (val instanceof CypherTime)
-      return ((CypherTime) val).getValue().atDate(LocalDate.of(0, 1, 1)).toInstant();
-    if (val instanceof CypherLocalTime)
-      return LocalDateTime.of(LocalDate.of(0, 1, 1), ((CypherLocalTime) val).getValue()).atZone(ZoneOffset.UTC).toInstant();
+    if (val instanceof CypherDateTime time)
+      return time.getValue().toInstant();
+    if (val instanceof CypherDate date)
+      return date.getValue().atStartOfDay(ZoneOffset.UTC).toInstant();
+    if (val instanceof CypherLocalDateTime time1)
+      return time1.getValue().atZone(ZoneOffset.UTC).toInstant();
+    if (val instanceof CypherTime time2)
+      return time2.getValue().atDate(LocalDate.of(0, 1, 1)).toInstant();
+    if (val instanceof CypherLocalTime time3)
+      return LocalDateTime.of(LocalDate.of(0, 1, 1), time3.getValue()).atZone(ZoneOffset.UTC).toInstant();
     throw new IllegalArgumentException("Cannot convert to Instant: " + val.getClass().getSimpleName());
   }
 }

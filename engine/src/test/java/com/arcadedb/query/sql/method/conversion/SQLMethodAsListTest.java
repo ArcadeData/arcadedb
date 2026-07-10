@@ -25,7 +25,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,9 +57,9 @@ class SQLMethodAsListTest {
   @Test
   void list() {
     // The expected behavior is to return the list itself.
-    final ArrayList<Object> aList = new ArrayList<Object>();
-    aList.add(1);
-    aList.add("2");
+    final ArrayList<Object> aList = new ArrayList<>(List.of(
+        1,
+        "2"));
     final Object result = function.execute(aList, null, null, null);
     assertThat(aList).isEqualTo(result);
   }
@@ -67,14 +68,14 @@ class SQLMethodAsListTest {
   void collection() {
     // The expected behavior is to return a list with all of the elements
     // of the collection in it.
-    final Set<Object> aCollection = new LinkedHashSet<Object>();
-    aCollection.add(1);
-    aCollection.add("2");
+    final Set<Object> aCollection = new HashSet<>(Set.of(
+        1,
+        "2"));
     final Object result = function.execute(aCollection, null, null, null);
 
-    final ArrayList<Object> expected = new ArrayList<Object>();
-    expected.add(1);
-    expected.add("2");
+    final ArrayList<Object> expected = new ArrayList<>(List.of(
+        1,
+        "2"));
     assertThat(result).isEqualTo(expected);
 
   }
@@ -83,9 +84,9 @@ class SQLMethodAsListTest {
   void iterable() {
     // The expected behavior is to return a list with all the elements
     // of the iterable in it, in order of the collections iterator.
-    final ArrayList<Object> expected = new ArrayList<Object>();
-    expected.add(1);
-    expected.add("2");
+    final ArrayList<Object> expected = new ArrayList<>(List.of(
+        1,
+        "2"));
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
     final Object result = function.execute(anIterable, null, null, null);
@@ -98,9 +99,9 @@ class SQLMethodAsListTest {
   void iterator() {
     // The expected behavior is to return a list with all the elements
     // of the iterator in it, in order of the iterator.
-    final ArrayList<Object> expected = new ArrayList<Object>();
-    expected.add(1);
-    expected.add("2");
+    final ArrayList<Object> expected = new ArrayList<>(List.of(
+        1,
+        "2"));
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(expected);
     final Object result = function.execute(anIterable.iterator(), null, null, null);

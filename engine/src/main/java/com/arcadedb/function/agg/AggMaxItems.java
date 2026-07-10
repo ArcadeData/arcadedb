@@ -80,9 +80,9 @@ public class AggMaxItems extends AbstractAggFunction {
       }
     }
 
-    final Map<String, Object> result = new HashMap<>();
-    result.put("value", maxValue);
-    result.put("items", maxItems);
+    final Map<String, Object> result = new HashMap<>(Map.of(
+        "value", maxValue,
+        "items", maxItems));
     return result;
   }
 }

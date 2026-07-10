@@ -19,6 +19,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.BasicDatabase;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -144,7 +145,7 @@ class PaginatedComponentFileRenameConcurrencyTest {
     }
 
     if (!failures.isEmpty())
-      throw new AssertionError("Concurrent I/O during rename observed a closed/invalid channel: " + failures.get(0), failures.get(0));
+      throw new AssertionError("Concurrent I/O during rename observed a closed/invalid channel: " + failures.getFirst(), failures.getFirst());
 
     assertThat(failures).isEmpty();
     assertThat(pcf.isOpen()).isTrue();

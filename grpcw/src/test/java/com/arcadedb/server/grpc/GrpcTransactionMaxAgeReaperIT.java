@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;

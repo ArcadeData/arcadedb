@@ -122,13 +122,13 @@ public class GraphBatch implements AutoCloseable {
 
   // --- Edge buffer: flat arrays for minimal GC pressure ---
   // Each edge occupies one slot across these parallel arrays.
-  private int[]      edgeSrcBucketIds;
-  private long[]     edgeSrcPositions;
-  private int[]      edgeDstBucketIds;
-  private long[]     edgeDstPositions;
-  private int[]      edgeTypeBucketIds;   // first bucket id of the edge type (for light edge RID)
-  private boolean[]  edgeHasProperties;
-  private Object[][] edgeProperties;      // null for light edges
+  private final int[]      edgeSrcBucketIds;
+  private final long[]     edgeSrcPositions;
+  private final int[]      edgeDstBucketIds;
+  private final long[]     edgeDstPositions;
+  private final int[]      edgeTypeBucketIds;   // first bucket id of the edge type (for light edge RID)
+  private final boolean[]  edgeHasProperties;
+  private final Object[][] edgeProperties;      // null for light edges
   private int        edgeCount;
 
   // --- Deferred incoming edges: accumulated across flushes, connected at close() ---
@@ -148,7 +148,7 @@ public class GraphBatch implements AutoCloseable {
   private long[] tmpVertexPositions;
 
   // --- Sort index: avoids moving the large property arrays during sort ---
-  private int[] sortIndex;
+  private final int[] sortIndex;
 
   // --- Merge sort temp buffer: allocated once, reused across sorts ---
   private int[] mergeTmp;
@@ -1274,7 +1274,7 @@ public class GraphBatch implements AutoCloseable {
 
     final Throwable t = error.get();
     if (t != null)
-      throw t instanceof RuntimeException ? (RuntimeException) t : new RuntimeException(t);
+      throw t instanceof RuntimeException re ? re : new RuntimeException(t);
   }
 
   /**
@@ -1943,7 +1943,7 @@ public class GraphBatch implements AutoCloseable {
 
     final Throwable t = error.get();
     if (t != null)
-      throw t instanceof RuntimeException ? (RuntimeException) t : new RuntimeException(t);
+      throw t instanceof RuntimeException re ? re : new RuntimeException(t);
   }
 
   /**

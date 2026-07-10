@@ -50,13 +50,11 @@ public class ReturnStatement extends SimpleExecStatement {
       rs.add(res);
     } else if (result instanceof Iterable iterable) {
       for (Object o : iterable) {
-        final Result r;
-        if (o instanceof Result result1)
-          r = result1;
-        else if (o instanceof Map map)
-          r = new ResultInternal(map);
-        else
-          r = new ResultInternal(CollectionUtils.singletonMap("value", o));
+        final Result r = switch (o) {
+          case Result result1 -> result1;
+          case Map map -> new ResultInternal(map);
+          case null, default -> new ResultInternal(CollectionUtils.singletonMap("value", o));
+        };
         rs.add(r);
       }
     } else if (result instanceof ResultSet set) {

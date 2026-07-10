@@ -689,7 +689,7 @@ public enum Type {
           }
           // If the property type is LINK (not LIST) and we have a single-element list, unwrap it
           if (property != null && property.getType() == LINK && result.size() == 1) {
-            return result.get(0);
+            return result.getFirst();
           }
           return result;
         } else if (value instanceof String string) {
@@ -1110,16 +1110,14 @@ public enum Type {
 
     } else if (left instanceof BigDecimal) {
       // DOUBLE
-      if (right instanceof Integer integer)
-        right = new BigDecimal(integer);
-      else if (right instanceof Float float1)
-        right = BigDecimal.valueOf(float1);
-      else if (right instanceof Double double1)
-        right = BigDecimal.valueOf(double1);
-      else if (right instanceof Short short1)
-        right = new BigDecimal(short1);
-      else if (right instanceof Byte byte1)
-        right = new BigDecimal(byte1);
+      switch (right) {
+        case Integer integer -> right = new BigDecimal(integer);
+        case Float float1 -> right = BigDecimal.valueOf(float1);
+        case Double double1 -> right = BigDecimal.valueOf(double1);
+        case Short short1 -> right = new BigDecimal(short1);
+        case Byte byte1 -> right = new BigDecimal(byte1);
+        case null, default -> {}
+      }
     } else if (left instanceof Byte) {
       if (right instanceof Short)
         left = left.shortValue();
@@ -1154,19 +1152,19 @@ public enum Type {
    * @return the canonical key for the value
    */
   public static Object normalizeNumberForKey(final Object value) {
-    if (value instanceof Number) {
+    if (value instanceof Number number) {
       if (value instanceof BigDecimal bigDecimal)
         return bigDecimal.stripTrailingZeros();
       if (value instanceof BigInteger bigInteger)
         return new BigDecimal(bigInteger);
       if (value instanceof Double || value instanceof Float) {
-        final double d = ((Number) value).doubleValue();
+        final double d = number.doubleValue();
         if (Double.isNaN(d) || Double.isInfinite(d))
           return value;
         return BigDecimal.valueOf(d).stripTrailingZeros();
       }
       // Integer/Long/Short/Byte/AtomicInteger/AtomicLong and other integral numbers
-      return BigDecimal.valueOf(((Number) value).longValue());
+      return BigDecimal.valueOf(number.longValue());
     }
     return value;
   }

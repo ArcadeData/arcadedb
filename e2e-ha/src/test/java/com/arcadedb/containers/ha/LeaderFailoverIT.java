@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -85,7 +86,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
@@ -190,7 +191,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
@@ -326,7 +327,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };

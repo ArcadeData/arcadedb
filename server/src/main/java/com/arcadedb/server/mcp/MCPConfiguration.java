@@ -27,7 +27,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -217,6 +217,6 @@ public class MCPConfiguration {
   }
 
   private File getConfigFile() {
-    return Paths.get(rootPath, "config", "mcp-config.json").toFile();
+    return Path.of(rootPath, "config", "mcp-config.json").toFile();
   }
 }

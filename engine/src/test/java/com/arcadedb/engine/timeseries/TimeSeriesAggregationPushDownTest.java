@@ -21,11 +21,12 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,7 +77,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     // Sort by hour to ensure deterministic order
     results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
-    assertThat(((Number) results.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
+    assertThat(((Number) results.getFirst().getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("avg_temp")).doubleValue()).isCloseTo(150.0, within(0.01));
     assertThat(((Number) results.get(2).getProperty("avg_temp")).doubleValue()).isCloseTo(30.0, within(0.01));
   }
@@ -92,8 +93,8 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     // Bucket 0: avg(temp)=25, max(humidity)=65
-    assertThat(((Number) results.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
-    assertThat(((Number) results.get(0).getProperty("max_hum")).doubleValue()).isCloseTo(65.0, within(0.01));
+    assertThat(((Number) results.getFirst().getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
+    assertThat(((Number) results.getFirst().getProperty("max_hum")).doubleValue()).isCloseTo(65.0, within(0.01));
 
     // Bucket 1: avg(temp)=150, max(humidity)=80
     assertThat(((Number) results.get(1).getProperty("avg_temp")).doubleValue()).isCloseTo(150.0, within(0.01));
@@ -114,7 +115,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
 
     results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
-    assertThat(((Number) results.get(0).getProperty("cnt")).longValue()).isEqualTo(4);
+    assertThat(((Number) results.getFirst().getProperty("cnt")).longValue()).isEqualTo(4);
     assertThat(((Number) results.get(1).getProperty("cnt")).longValue()).isEqualTo(2);
     assertThat(((Number) results.get(2).getProperty("cnt")).longValue()).isEqualTo(6);
   }
@@ -130,7 +131,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
 
     results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
-    assertThat(((Number) results.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
+    assertThat(((Number) results.getFirst().getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("avg_temp")).doubleValue()).isCloseTo(150.0, within(0.01));
   }
 
@@ -144,7 +145,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
 
     results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
-    assertThat(((Number) results.get(0).getProperty("sum_temp")).doubleValue()).isCloseTo(100.0, within(0.01));
+    assertThat(((Number) results.getFirst().getProperty("sum_temp")).doubleValue()).isCloseTo(100.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("sum_temp")).doubleValue()).isCloseTo(300.0, within(0.01));
     assertThat(((Number) results.get(2).getProperty("sum_temp")).doubleValue()).isCloseTo(180.0, within(0.01));
   }
@@ -159,7 +160,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
 
     results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
-    assertThat(((Number) results.get(0).getProperty("min_temp")).doubleValue()).isCloseTo(10.0, within(0.01));
+    assertThat(((Number) results.getFirst().getProperty("min_temp")).doubleValue()).isCloseTo(10.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("min_temp")).doubleValue()).isCloseTo(100.0, within(0.01));
     assertThat(((Number) results.get(2).getProperty("min_temp")).doubleValue()).isCloseTo(5.0, within(0.01));
   }
@@ -184,8 +185,8 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     assertThat(results).hasSize(1);
 
     // Overall: (10+20+30+40+100+200+5+15+25+35+45+55) / 12 = 580/12 = 48.333...
-    assertThat(((Number) results.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(48.333, within(0.01));
-    assertThat(((Number) results.get(0).getProperty("cnt")).longValue()).isEqualTo(12);
+    assertThat(((Number) results.getFirst().getProperty("avg_temp")).doubleValue()).isCloseTo(48.333, within(0.01));
+    assertThat(((Number) results.getFirst().getProperty("cnt")).longValue()).isEqualTo(12);
   }
 
   @Test
@@ -210,8 +211,8 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
 
     // Verify values match expected
     assertThat(pushDownResults).hasSize(3);
-    assertThat(((Number) pushDownResults.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
-    assertThat(((Number) pushDownResults.get(0).getProperty("max_temp")).doubleValue()).isCloseTo(40.0, within(0.01));
+    assertThat(((Number) pushDownResults.getFirst().getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
+    assertThat(((Number) pushDownResults.getFirst().getProperty("max_temp")).doubleValue()).isCloseTo(40.0, within(0.01));
     assertThat(((Number) pushDownResults.get(1).getProperty("avg_temp")).doubleValue()).isCloseTo(150.0, within(0.01));
     assertThat(((Number) pushDownResults.get(1).getProperty("max_temp")).doubleValue()).isCloseTo(200.0, within(0.01));
     assertThat(((Number) pushDownResults.get(2).getProperty("avg_temp")).doubleValue()).isCloseTo(30.0, within(0.01));

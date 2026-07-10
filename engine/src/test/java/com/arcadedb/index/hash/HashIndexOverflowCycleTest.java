@@ -127,7 +127,7 @@ class HashIndexOverflowCycleTest extends TestHelper {
    */
   private void injectSelfReferentialOverflowChain() {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = ((IndexInternal) db.getSchema().getIndexByName(indexName)).getFileIds().get(0);
+    final int fileId = ((IndexInternal) db.getSchema().getIndexByName(indexName)).getFileIds().getFirst();
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
 
     db.transaction(() -> {

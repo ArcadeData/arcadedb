@@ -22,13 +22,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
-import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.*;
@@ -39,7 +39,6 @@ import com.arcadedb.utility.CollectionUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -141,18 +140,15 @@ public class CallStep extends AbstractExecutionStep {
             // variables if they share a name with a YIELD field. The lazy iterator merges
             // inputRow later, after YIELD filtering.
             allPairs.add(Map.entry(inputRow,
-                Collections.singletonList((Object) new ResultInternal()).iterator()));
+                List.of((Object) new ResultInternal()).iterator()));
           continue;
         }
 
-        final Iterator<?> iter;
-        if (callResult instanceof Iterator) {
-          iter = (Iterator<?>) callResult;
-        } else if (callResult instanceof Collection) {
-          iter = ((Collection<?>) callResult).iterator();
-        } else {
-          iter = Collections.singletonList(callResult).iterator();
-        }
+        final Iterator<?> iter = switch (callResult) {
+          case Iterator<?> iterator -> iterator;
+          case Collection<?> collection -> collection.iterator();
+          case null, default -> List.of(callResult).iterator();
+        };
         allPairs.add(Map.entry(inputRow, iter));
       } finally {
         if (context.isProfiling())
@@ -347,8 +343,8 @@ public class CallStep extends AbstractExecutionStep {
    * Converts a procedure Result to ResultInternal for consistency.
    */
   private ResultInternal convertProcedureResultToInternal(final Result result) {
-    if (result instanceof ResultInternal) {
-      return (ResultInternal) result;
+    if (result instanceof ResultInternal internal) {
+      return internal;
     }
     final ResultInternal internal = new ResultInternal();
     for (final String prop : result.getPropertyNames()) {
@@ -406,7 +402,7 @@ public class CallStep extends AbstractExecutionStep {
             !(result instanceof Iterator)) {
           // Scalar result - wrap it using the first YIELD field name
           if (!callClause.getYieldItems().isEmpty()) {
-            final String fieldName = callClause.getYieldItems().get(0).getFieldName();
+            final String fieldName = callClause.getYieldItems().getFirst().getFieldName();
             return CollectionUtils.singletonMap(fieldName, result);
           }
         }
@@ -519,21 +515,17 @@ public class CallStep extends AbstractExecutionStep {
       return createEmptyResultSet();
     }
 
-    if (result instanceof ResultSet) {
+    if (result instanceof ResultSet set) {
       // Already a ResultSet
-      return (ResultSet) result;
+      return set;
     }
 
     // Build a lazy iterator that converts items on demand without pre-materializing
-    final Iterator<?> sourceIter;
-    if (result instanceof Iterator) {
-      sourceIter = (Iterator<?>) result;
-    } else if (result instanceof Collection) {
-      sourceIter = ((Collection<?>) result).iterator();
-    } else {
-      // Single result
-      sourceIter = Collections.singletonList(result).iterator();
-    }
+    final Iterator<?> sourceIter = switch (result) {
+      case Iterator<?> iterator -> iterator;
+      case Collection<?> collection -> collection.iterator();
+      case null, default -> List.of(result).iterator();
+    };
 
     // Optimization: when the procedure has set a result count hint and YIELD has no WHERE filter,
     // return a fast-counting ResultSet that reuses a single shared Result object instead of
@@ -635,14 +627,12 @@ public class CallStep extends AbstractExecutionStep {
 
     final ResultInternal result = new ResultInternal();
 
-    if (item instanceof Map) {
+    if (item instanceof Map<?, ?> map) {
       // Map - copy all entries
-      for (final Map.Entry<?, ?> entry : ((Map<?, ?>) item).entrySet()) {
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
         result.setProperty(String.valueOf(entry.getKey()), entry.getValue());
       }
-    } else if (item instanceof Document) {
-      // Document - copy all properties
-      final Document doc = (Document) item;
+    } else if (item instanceof Document doc) {
       for (final String prop : doc.getPropertyNames()) {
         result.setProperty(prop, doc.get(prop));
       }

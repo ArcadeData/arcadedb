@@ -50,7 +50,7 @@ public class ServerSecurityUser implements SecurityUser {
       databasesNames = Collections.unmodifiableSet(userDatabases.keySet());
 
     } else {
-      databasesNames = Collections.emptySet();
+      databasesNames = Set.of();
     }
   }
 
@@ -133,7 +133,7 @@ public class ServerSecurityUser implements SecurityUser {
     if (userConfiguration.has("databases"))
       databasesNames = Collections.unmodifiableSet(userConfiguration.getJSONObject("databases").keySet());
     else
-      databasesNames = Collections.emptySet();
+      databasesNames = Set.of();
     databaseCache.clear();
   }
 
@@ -193,8 +193,8 @@ public class ServerSecurityUser implements SecurityUser {
    */
   private static List<Object> getGroupsAsList(final JSONObject userDatabases, final String key) {
     final Object value = userDatabases.get(key);
-    if (value instanceof JSONArray)
-      return ((JSONArray) value).toList();
+    if (value instanceof JSONArray array)
+      return array.toList();
     if (value instanceof String)
       return List.of(value);
     return List.of();

@@ -20,6 +20,7 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;

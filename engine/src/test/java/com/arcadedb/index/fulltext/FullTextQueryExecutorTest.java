@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

@@ -20,8 +20,11 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Basic GraphRAG Example.
@@ -58,7 +61,7 @@ class GraphRAGTest extends TestHelper {
 
     final float[] sampleVector = new float[DIMENSIONS];
     for (int i = 0; i < DIMENSIONS; i++)
-      sampleVector[i] = (float) Math.random();
+      sampleVector[i] = (float) ThreadLocalRandom.current().nextDouble();
 
     // Ingest: Store Publications with Vector Embeddings
     // Insert documents with their semantic embeddings and link entities:

@@ -18,10 +18,9 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -49,8 +48,7 @@ public class DateConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("date");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String) {
-      final String str = (String) args[0];
+    if (args[0] instanceof String str) {
       try {
         return CypherDate.parse(str);
       } catch (final Exception e) {
@@ -65,17 +63,15 @@ public class DateConstructorFunction implements StatelessFunction {
       return CypherDate.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherDate)
       return args[0];
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherDate(((CypherLocalDateTime) args[0]).getValue().toLocalDate());
-    if (args[0] instanceof CypherDateTime)
-      return new CypherDate(((CypherDateTime) args[0]).getValue().toLocalDate());
-    if (args[0] instanceof LocalDate)
-      return new CypherDate((LocalDate) args[0]);
-    if (args[0] instanceof LocalDateTime)
-      return new CypherDate(((LocalDateTime) args[0]).toLocalDate());
-    if (args[0] instanceof CypherTemporalValue) {
-      // Generic temporal -> extract date part
-      final CypherTemporalValue tv = (CypherTemporalValue) args[0];
+    if (args[0] instanceof CypherLocalDateTime time)
+      return new CypherDate(time.getValue().toLocalDate());
+    if (args[0] instanceof CypherDateTime time1)
+      return new CypherDate(time1.getValue().toLocalDate());
+    if (args[0] instanceof LocalDate date)
+      return new CypherDate(date);
+    if (args[0] instanceof LocalDateTime time2)
+      return new CypherDate(time2.toLocalDate());
+    if (args[0] instanceof CypherTemporalValue tv) {
       final Object year = tv.getTemporalProperty("year");
       if (year != null)
         return new CypherDate(LocalDate.of(((Number) year).intValue(),

@@ -24,6 +24,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
+
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 
@@ -78,7 +79,7 @@ class LSMVectorIndexEuclideanOrderingTest extends TestHelper {
     final List<Pair<RID, Float>> results = index.findNeighborsFromVector(new float[] { 0.0f, 0.0f }, 1);
 
     assertThat(results).hasSize(1);
-    assertThat(results.get(0).getFirst()).as("k=1 must return the closest vector").isEqualTo(nearRid[0]);
+    assertThat(results.getFirst().getFirst()).as("k=1 must return the closest vector").isEqualTo(nearRid[0]);
   }
 
   @Test
@@ -123,9 +124,9 @@ class LSMVectorIndexEuclideanOrderingTest extends TestHelper {
     final List<Pair<RID, Float>> results = index.findNeighborsFromVector(new float[] { 0.0f, 0.0f }, 3);
 
     assertThat(results).hasSize(3);
-    assertThat(results.get(0).getFirst()).as("first result must be the nearest vector").isEqualTo(rids[0]);
+    assertThat(results.getFirst().getFirst()).as("first result must be the nearest vector").isEqualTo(rids[0]);
     assertThat(results.get(2).getFirst()).as("last result must be the farthest vector").isEqualTo(rids[2]);
-    assertThat(results.get(0).getSecond())
+    assertThat(results.getFirst().getSecond())
         .as("distances must be non-decreasing")
         .isLessThanOrEqualTo(results.get(1).getSecond());
     assertThat(results.get(1).getSecond())
@@ -170,9 +171,9 @@ class LSMVectorIndexEuclideanOrderingTest extends TestHelper {
           .set("embedding", new float[] { 10.0f, 10.0f }).save();
     });
 
-    final Map<String, Object> params = new HashMap<>();
-    params.put("vec", new float[] { 0.0f, 0.0f });
-    params.put("k", 2);
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "vec", new float[]{0.0f, 0.0f},
+        "k", 2));
 
     try (final ResultSet results = database.query("opencypher",
         "CALL db.index.vector.queryNodes('EuclidQN[embedding]', $k, $vec) YIELD node, score RETURN node.name AS name, score",

@@ -18,12 +18,12 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -73,9 +73,8 @@ class CypherPlanCacheInvalidationTest {
 
   @Test
   void planCacheIsFlushedOnSchemaChange() {
-    database.transaction(() -> {
-      database.command("cypher", "CREATE (a:Foo {x:1})-[:REL]->(b:Foo {x:2}), (c:Foo {x:1})-[:REL]->(d:Foo {x:2})");
-    });
+    database.transaction(() ->
+      database.command("cypher", "CREATE (a:Foo {x:1})-[:REL]->(b:Foo {x:2}), (c:Foo {x:1})-[:REL]->(d:Foo {x:2})"));
 
     // Populate the plan cache with a node-returning query (its plan depends on the current schema).
     assertThat(matchRows(Q)).isEqualTo(2L);

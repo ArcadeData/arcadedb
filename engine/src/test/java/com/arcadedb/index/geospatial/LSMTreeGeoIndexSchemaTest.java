@@ -24,6 +24,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

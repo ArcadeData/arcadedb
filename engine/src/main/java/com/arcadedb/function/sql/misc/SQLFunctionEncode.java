@@ -23,8 +23,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Base64;
 
@@ -53,15 +53,16 @@ public class SQLFunctionEncode extends SQLFunctionAbstract {
     final String format = params[1].toString();
 
     byte[] data = null;
-    if (candidate instanceof byte[] bytes) {
-      data = bytes;
-    } else if (candidate instanceof String string) {
-      data = string.getBytes();
-    } else if (candidate instanceof RID iD) {
-      final Record rec = iD.getRecord();
-      if (rec instanceof Binary binary) {
-        data = binary.toByteArray();
+    switch (candidate) {
+      case byte[] bytes -> data = bytes;
+      case String string -> data = string.getBytes();
+      case RID iD -> {
+        final Record rec = iD.getRecord();
+        if (rec instanceof Binary binary) {
+          data = binary.toByteArray();
+        }
       }
+      case null, default -> {}
     }
 
     if (data == null)

@@ -19,11 +19,12 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.network.binary.QuorumNotReachedException;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -58,7 +59,7 @@ class RaftTransactionBrokerTest {
   void replicateSchemaEncodesCorrectEntryType() {
     assertThatThrownBy(() ->
         broker.replicateSchema("testdb", "{}", Map.of(1, "file1.dat"), Map.of(),
-            Collections.emptyList(), Collections.emptyList()))
+            List.of(), List.of()))
         .isInstanceOf(QuorumNotReachedException.class);
   }
 

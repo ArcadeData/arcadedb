@@ -2,6 +2,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.server.ha.raft.FollowerResyncProgressTracker.Event;
 import com.arcadedb.server.ha.raft.FollowerResyncProgressTracker.Tick;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

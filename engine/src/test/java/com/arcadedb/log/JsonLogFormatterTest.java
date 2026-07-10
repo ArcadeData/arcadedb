@@ -19,6 +19,7 @@
 package com.arcadedb.log;
 
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

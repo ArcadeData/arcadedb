@@ -56,7 +56,7 @@ class FollowerStatesCorrelationTest {
     final List<Map<String, Object>> states = RaftHAServer.correlateFollowerStates(peers, match, next, peers);
 
     assertThat(states).isNotNull().hasSize(3);
-    assertThat(states.get(0)).containsEntry("peerId", "a").containsEntry("matchIndex", 100L)
+    assertThat(states.getFirst()).containsEntry("peerId", "a").containsEntry("matchIndex", 100L)
         .containsEntry("nextIndex", 101L).containsEntry("lastRpcElapsedMs", 10L);
     assertThat(states.get(1)).containsEntry("peerId", "b").containsEntry("matchIndex", 200L)
         .containsEntry("nextIndex", 201L).containsEntry("lastRpcElapsedMs", 20L);
@@ -106,7 +106,7 @@ class FollowerStatesCorrelationTest {
     final List<Map<String, Object>> states = RaftHAServer.degradedFollowerStates(peers);
 
     assertThat(states).hasSize(2);
-    assertThat(states.get(0)).containsEntry("peerId", "a").containsEntry("lastRpcElapsedMs", 10L)
+    assertThat(states.getFirst()).containsEntry("peerId", "a").containsEntry("lastRpcElapsedMs", 10L)
         .doesNotContainKey("matchIndex").doesNotContainKey("nextIndex");
     assertThat(states.get(1)).containsEntry("peerId", "b").containsEntry("lastRpcElapsedMs", 20L)
         .doesNotContainKey("matchIndex").doesNotContainKey("nextIndex");

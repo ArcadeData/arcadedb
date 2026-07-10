@@ -43,7 +43,7 @@ public class PerformanceComplexIndexTest {
     final int parallel = 2;
 
     Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open();
-    try {
+    try  {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         database.begin();
 

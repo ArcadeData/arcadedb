@@ -24,6 +24,7 @@ import com.arcadedb.engine.timeseries.simd.ScalarTimeSeriesVectorOps;
 import com.arcadedb.engine.timeseries.simd.SimdTimeSeriesVectorOps;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOps;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -127,7 +128,7 @@ class TimeSeriesNaNHandlingTest extends TestHelper {
         new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"));
     final MultiColumnAggregationResult multi = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE, requests, 0, null);
     assertThat(multi.size()).isEqualTo(1);
-    final long bucketTs = multi.getBucketTimestamps().get(0);
+    final long bucketTs = multi.getBucketTimestamps().getFirst();
     assertThat(multi.getValue(bucketTs, 0)).as("multi-column MIN skips NaN").isEqualTo(5.0);
     assertThat(multi.getValue(bucketTs, 1)).as("multi-column MAX skips NaN").isEqualTo(20.0);
     database.commit();

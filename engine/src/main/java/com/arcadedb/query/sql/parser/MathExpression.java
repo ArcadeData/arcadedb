@@ -25,9 +25,8 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.*;
-import com.arcadedb.utility.DateUtils;
-
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -67,7 +66,7 @@ public class MathExpression extends SimpleNode {
 
         return extractScalarFromResult(result, value);
       }
-    } else if (value instanceof List<?> list && list.size() == 1 && list.get(0) instanceof Result result) {
+    } else if (value instanceof List<?> list && list.size() == 1 && list.getFirst() instanceof Result result) {
       return extractScalarFromResult(result, value);
     }
     return value;
@@ -1134,8 +1133,8 @@ public class MathExpression extends SimpleNode {
     if (childExpressions != null) {
       final List<Object> childExpressionsJson = new ArrayList<>();
       for (Object item : childExpressions) {
-        if (item instanceof SimpleNode) {
-          childExpressionsJson.add(((SimpleNode) item).toJSON());
+        if (item instanceof SimpleNode node) {
+          childExpressionsJson.add(node.toJSON());
         } else {
           childExpressionsJson.add(item);
         }

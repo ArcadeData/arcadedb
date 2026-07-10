@@ -54,6 +54,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
@@ -63,11 +64,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GraphBatch;
-import com.arcadedb.graph.GraphEngine;
-import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.*;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -92,13 +89,12 @@ import com.arcadedb.server.HAServerPlugin;
 
 import java.io.IOException;
 import java.net.URI;
-import java.nio.ByteBuffer;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -176,7 +172,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.ofEntries(
       Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
-      Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
+      Map.entry(ConcurrentModificationException.class.getName(), ConcurrentModificationException::new),
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
       Map.entry(TransactionException.class.getName(), TransactionException::new),
@@ -548,7 +544,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * was logged with the generic wording.
    */
   static String phase2CommitFailureMessage(final Throwable e) {
-    if (e instanceof com.arcadedb.exception.ConcurrentModificationException)
+    if (e instanceof ConcurrentModificationException)
       return """
           Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
           A page was concurrently modified under file lock - this may indicate a locking bug. \
@@ -1465,7 +1461,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final byte[] wal = serializeFilePagesAsWal(fileId);
         if (wal != null) {
           walEntries.add(wal);
-          bucketDeltas.add(Collections.<Integer, Integer>emptyMap());
+          bucketDeltas.add(Map.<Integer, Integer>of());
         }
       }
 
@@ -1780,9 +1776,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       proxiedUser = "root";
       if (forwardAsRootWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
-            "No authenticated user in the security context while forwarding a write to the leader (db=%s): "
-                + "this is expected for embedded/in-process callers and the command is forwarded as 'root'. "
-                + "This notice is logged only once.", getName());
+            """
+            No authenticated user in the security context while forwarding a write to the leader (db=%s): \
+            this is expected for embedded/in-process callers and the command is forwarded as 'root'. \
+            This notice is logged only once.""", getName());
     }
     builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
 

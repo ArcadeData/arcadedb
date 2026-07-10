@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.optimizer.plan;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -60,9 +59,9 @@ public class LogicalRelationship {
     this.variable = variable;
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
-    this.types = types != null ? types : Collections.emptyList();
+    this.types = types != null ? types : List.of();
     this.direction = direction != null ? direction : Direction.BOTH;
-    this.properties = properties != null ? properties : Collections.emptyMap();
+    this.properties = properties != null ? properties : Map.of();
     this.minHops = minHops;
     this.maxHops = maxHops;
     this.isVariableLength = minHops != null || maxHops != null;
@@ -123,7 +122,7 @@ public class LogicalRelationship {
   }
 
   public String getFirstType() {
-    return types.isEmpty() ? null : types.get(0);
+    return types.isEmpty() ? null : types.getFirst();
   }
 
   @Override

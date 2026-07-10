@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import com.mongodb.MongoClient;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;

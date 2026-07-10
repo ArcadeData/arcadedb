@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
@@ -524,7 +525,7 @@ class WithAndUnwindTest {
       result.close();
 
       assertThat(rows).as("query() should produce exactly 6 rows (2 names x 3 range values)").hasSize(6);
-      assertThat(rows.get(0)).containsEntry("personName", "Alice").containsEntry("i", 1L);
+      assertThat(rows.getFirst()).containsEntry("personName", "Alice").containsEntry("i", 1L);
       assertThat(rows.get(1)).containsEntry("personName", "Alice").containsEntry("i", 2L);
       assertThat(rows.get(2)).containsEntry("personName", "Alice").containsEntry("i", 3L);
       assertThat(rows.get(3)).containsEntry("personName", "Charlie").containsEntry("i", 1L);
@@ -586,7 +587,7 @@ class WithAndUnwindTest {
     result.close();
 
     assertThat(rows).as("Should return 2 rows after SKIP 1 LIMIT 2").hasSize(2);
-    assertThat(rows.get(0)).containsEntry("x", 1L).containsEntry("y", 11L);
+    assertThat(rows.getFirst()).containsEntry("x", 1L).containsEntry("y", 11L);
     assertThat(rows.get(1)).containsEntry("x", 2L).containsEntry("y", 12L);
 
     // Test via command() (HTTP /command endpoint path)
@@ -658,7 +659,7 @@ class WithAndUnwindTest {
       result.close();
 
       assertThat(rows).as("Should return 2 rows (Bob c=1, Carol c=0)").hasSize(2);
-      assertThat(rows.get(0)).containsEntry("name", "Bob").containsEntry("c", 1L);
+      assertThat(rows.getFirst()).containsEntry("name", "Bob").containsEntry("c", 1L);
       assertThat(rows.get(1)).containsEntry("name", "Carol").containsEntry("c", 0L);
     } finally {
       db.drop();

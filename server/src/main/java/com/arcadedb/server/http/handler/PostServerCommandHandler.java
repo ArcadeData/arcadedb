@@ -27,19 +27,16 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
-import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.server.*;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
-import com.arcadedb.server.HAReplicatedDatabase;
-import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -58,7 +55,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -366,11 +362,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException("Auto-backup is not configured");
 
     String backupDirectory = plugin.getBackupConfig().getBackupDirectory();
-    final Path backupPath = Paths.get(backupDirectory);
+    final Path backupPath = Path.of(backupDirectory);
     if (!backupPath.isAbsolute())
-      backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
+      backupDirectory = Path.of(server.getRootPath(), backupDirectory).toString();
 
-    final Path dbBackupDir = Paths.get(backupDirectory, databaseName).normalize();
+    final Path dbBackupDir = Path.of(backupDirectory, databaseName).normalize();
     final Path resolved = dbBackupDir.resolve(fileName).normalize();
 
     // Defence in depth: the resolved file must still live inside the database backup directory.
@@ -920,7 +916,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       response.put("config", config != null ? config.toJSON() : JSONObject.NULL);
     } else {
       // Plugin not enabled at startup - try to read config from file directly
-      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+      final Path configPath = Path.of(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
       if (Files.exists(configPath)) {
         try {
           final String content = Files.readString(configPath);
@@ -958,7 +954,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
 
     // Save configuration to file
-    final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+    final Path configPath = Path.of(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
 
     // Write configuration atomically so a crash mid-write leaves the previous valid file intact.
     // atomicWriteFile also creates the parent config directory if needed.
@@ -975,7 +971,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
   private void validateBackupDirectory(final String backupDir) {
     // Use consolidated validation from AutoBackupSchedulerPlugin
-    final Path serverRoot = Paths.get(httpServer.getServer().getRootPath()).toAbsolutePath().normalize();
+    final Path serverRoot = Path.of(httpServer.getServer().getRootPath()).toAbsolutePath().normalize();
     AutoBackupSchedulerPlugin.validateAndResolveBackupPath(backupDir, serverRoot);
   }
 
@@ -995,11 +991,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       if (config != null) {
         // Resolve backup directory
         String backupDirectory = config.getBackupDirectory();
-        final Path backupPath = Paths.get(backupDirectory);
+        final Path backupPath = Path.of(backupDirectory);
         if (!backupPath.isAbsolute())
-          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
+          backupDirectory = Path.of(server.getRootPath(), backupDirectory).toString();
 
-        final Path dbBackupDir = Paths.get(backupDirectory, databaseName);
+        final Path dbBackupDir = Path.of(backupDirectory, databaseName);
         if (Files.exists(dbBackupDir) && Files.isDirectory(dbBackupDir)) {
           final Pattern pattern = Pattern.compile(".*-backup-(\\d{8})-(\\d{6})\\.zip$");
           final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
@@ -1072,7 +1068,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     // If plugin not enabled, try to read from config file directly
     if (backupDirectory == null) {
-      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+      final Path configPath = Path.of(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
       if (Files.exists(configPath)) {
         try {
           final String content = Files.readString(configPath);
@@ -1091,9 +1087,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         validateBackupDirectory(backupDirectory);
 
         // Resolve relative path
-        final Path backupPath = Paths.get(backupDirectory);
+        final Path backupPath = Path.of(backupDirectory);
         if (!backupPath.isAbsolute())
-          backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
+          backupDirectory = Path.of(server.getRootPath(), backupDirectory).toString();
 
         // Perform backup using reflection (same as BackupTask)
         final Database database = server.getDatabase(databaseName);
@@ -1103,7 +1099,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
             .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
 
-        final Path dbBackupPath = Paths.get(backupDirectory, databaseName);
+        final Path dbBackupPath = Path.of(backupDirectory, databaseName);
         // Use Files.createDirectories to avoid TOCTOU race condition
         Files.createDirectories(dbBackupPath);
         final String dbBackupDir = dbBackupPath.toString();
@@ -1197,8 +1193,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
   private AutoBackupSchedulerPlugin getBackupPlugin(final ArcadeDBServer server) {
     for (final ServerPlugin plugin : server.getPlugins()) {
-      if (plugin instanceof AutoBackupSchedulerPlugin)
-        return (AutoBackupSchedulerPlugin) plugin;
+      if (plugin instanceof AutoBackupSchedulerPlugin schedulerPlugin)
+        return schedulerPlugin;
     }
     return null;
   }

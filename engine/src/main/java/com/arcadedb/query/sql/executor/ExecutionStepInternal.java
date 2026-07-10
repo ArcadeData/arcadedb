@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -84,11 +83,11 @@ public interface ExecutionStepInternal extends ExecutionStep {
   }
 
   default List<ExecutionStep> getSubSteps() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   default List<ExecutionPlan> getSubExecutionPlans() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   default void reset() {

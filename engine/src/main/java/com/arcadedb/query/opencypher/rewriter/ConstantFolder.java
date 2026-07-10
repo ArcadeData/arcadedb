@@ -110,20 +110,20 @@ public class ConstantFolder extends ExpressionRewriter {
   private Object foldArithmetic(final Object left, final Object right, final ArithmeticExpression.Operator op) {
     // List concatenation/append (must be checked before string concatenation)
     if (op == ArithmeticExpression.Operator.ADD) {
-      if (left instanceof List && right instanceof List) {
-        final List<Object> combined = new ArrayList<>((List<?>) left);
-        combined.addAll((List<?>) right);
+      if (left instanceof List<?> list && right instanceof List<?> list1) {
+        final List<Object> combined = new ArrayList<>(list);
+        combined.addAll(list1);
         return combined;
       }
-      if (left instanceof List) {
-        final List<Object> appended = new ArrayList<>((List<?>) left);
+      if (left instanceof List<?> list2) {
+        final List<Object> appended = new ArrayList<>(list2);
         appended.add(right);
         return appended;
       }
-      if (right instanceof List) {
+      if (right instanceof List<?> list3) {
         final List<Object> prepended = new ArrayList<>();
         prepended.add(left);
-        prepended.addAll((List<?>) right);
+        prepended.addAll(list3);
         return prepended;
       }
     }
@@ -168,9 +168,9 @@ public class ConstantFolder extends ExpressionRewriter {
       return null;
 
     // Numeric comparison
-    if (left instanceof Number && right instanceof Number) {
-      final double l = ((Number) left).doubleValue();
-      final double r = ((Number) right).doubleValue();
+    if (left instanceof Number number && right instanceof Number number1) {
+      final double l = number.doubleValue();
+      final double r = number1.doubleValue();
 
       return switch (op) {
         case EQUALS -> l == r;
@@ -183,8 +183,8 @@ public class ConstantFolder extends ExpressionRewriter {
     }
 
     // Boolean comparison
-    if (left instanceof Boolean && right instanceof Boolean) {
-      final int cmp = Boolean.compare((Boolean) left, (Boolean) right);
+    if (left instanceof Boolean boolean1 && right instanceof Boolean boolean2) {
+      final int cmp = Boolean.compare(boolean1, boolean2);
       return switch (op) {
         case EQUALS -> cmp == 0;
         case NOT_EQUALS -> cmp != 0;
@@ -196,8 +196,8 @@ public class ConstantFolder extends ExpressionRewriter {
     }
 
     // String comparison
-    if (left instanceof String && right instanceof String) {
-      final int cmp = ((String) left).compareTo((String) right);
+    if (left instanceof String string && right instanceof String string1) {
+      final int cmp = string.compareTo(string1);
       return switch (op) {
         case EQUALS -> cmp == 0;
         case NOT_EQUALS -> cmp != 0;

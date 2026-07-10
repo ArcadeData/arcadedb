@@ -62,23 +62,23 @@ public abstract class AbstractDateFunction implements StatelessFunction {
     if (timestamp == null) {
       return System.currentTimeMillis();
     }
-    if (timestamp instanceof Long) {
-      return (Long) timestamp;
+    if (timestamp instanceof Long long1) {
+      return long1;
     }
-    if (timestamp instanceof Number) {
-      return ((Number) timestamp).longValue();
+    if (timestamp instanceof Number number) {
+      return number.longValue();
     }
-    if (timestamp instanceof Date) {
-      return ((Date) timestamp).getTime();
+    if (timestamp instanceof Date date) {
+      return date.getTime();
     }
-    if (timestamp instanceof Instant) {
-      return ((Instant) timestamp).toEpochMilli();
+    if (timestamp instanceof Instant instant) {
+      return instant.toEpochMilli();
     }
-    if (timestamp instanceof ZonedDateTime) {
-      return ((ZonedDateTime) timestamp).toInstant().toEpochMilli();
+    if (timestamp instanceof ZonedDateTime time) {
+      return time.toInstant().toEpochMilli();
     }
-    if (timestamp instanceof LocalDateTime) {
-      return ((LocalDateTime) timestamp).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    if (timestamp instanceof LocalDateTime time1) {
+      return time1.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
     }
     // Try parsing as string
     try {

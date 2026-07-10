@@ -21,6 +21,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;

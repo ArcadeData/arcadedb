@@ -24,12 +24,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.antlr.SQLASTBuilder;
 import com.arcadedb.query.sql.grammar.SQLLexer;
 import com.arcadedb.query.sql.grammar.SQLParser;
-import com.arcadedb.query.sql.antlr.SQLASTBuilder;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Statement;
+
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.junit.jupiter.api.Test;

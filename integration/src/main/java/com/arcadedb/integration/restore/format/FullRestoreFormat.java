@@ -24,8 +24,6 @@ import com.arcadedb.integration.restore.RestoreException;
 import com.arcadedb.integration.restore.RestoreSettings;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
 import javax.crypto.SecretKey;
@@ -33,7 +31,7 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
-
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;

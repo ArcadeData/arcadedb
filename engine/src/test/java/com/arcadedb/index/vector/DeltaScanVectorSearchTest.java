@@ -25,6 +25,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -96,7 +97,7 @@ class DeltaScanVectorSearchTest extends TestHelper {
     assertThat(results).isNotEmpty();
 
     // The closest result should be the nearVector (distance ~1.0 in euclidean)
-    final RID closestRID = results.get(0).getFirst();
+    final RID closestRID = results.getFirst().getFirst();
     // Verify by loading the record and checking its vector
     final Object closestVectorObj = database.lookupByRID(closestRID, true).asDocument().get("vector");
     assertThat(((float[]) closestVectorObj)[0]).isEqualTo(998.0f);
@@ -143,7 +144,7 @@ class DeltaScanVectorSearchTest extends TestHelper {
 
     // Verify it appears in results
     List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
-    final RID nearRID = results.get(0).getFirst();
+    final RID nearRID = results.getFirst().getFirst();
     final Object foundVectorObj = database.lookupByRID(nearRID, true).asDocument().get("vector");
     assertThat(((float[]) foundVectorObj)[0]).isEqualTo(998.0f);
 
@@ -302,7 +303,7 @@ class DeltaScanVectorSearchTest extends TestHelper {
     assertThat(results).hasSize(1);
 
     // findNeighborsFromVector returns L2² distance for EUCLIDEAN, so identical vectors → 0.0
-    assertThat(results.get(0).getSecond()).isEqualTo(0.0f);
+    assertThat(results.getFirst().getSecond()).isEqualTo(0.0f);
   }
 
   @Test
@@ -356,7 +357,7 @@ class DeltaScanVectorSearchTest extends TestHelper {
 
     // Should have at least as many results, and the new one should be first (closest)
     assertThat(updatedRIDs).isNotEmpty();
-    final Object closestVecObj = database.lookupByRID(updatedRIDs.get(0), true).asDocument().get("vector");
+    final Object closestVecObj = database.lookupByRID(updatedRIDs.getFirst(), true).asDocument().get("vector");
     assertThat(((float[]) closestVecObj)[0]).isEqualTo(998.0f);
   }
 

@@ -23,6 +23,7 @@ import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
 import com.arcadedb.engine.timeseries.codec.Simple8bCodec;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,7 +93,7 @@ class TimeSeriesBlockStatsTest {
       // Data should still be readable
       final List<Object[]> results = store.scanRange(1000L, 5000L, null, null);
       assertThat(results).hasSize(5);
-      assertThat((double) results.get(0)[1]).isEqualTo(10.0);
+      assertThat((double) results.getFirst()[1]).isEqualTo(10.0);
       assertThat((double) results.get(4)[1]).isEqualTo(50.0);
     }
   }
@@ -132,7 +133,7 @@ class TimeSeriesBlockStatsTest {
       result.finalizeAvg();
 
       assertThat(result.size()).isEqualTo(1);
-      final long bucket = result.getBucketTimestamps().get(0);
+      final long bucket = result.getBucketTimestamps().getFirst();
       assertThat(bucket).isEqualTo(0L);
 
       // AVG = 150/5 = 30
@@ -230,7 +231,7 @@ class TimeSeriesBlockStatsTest {
       store.aggregateMultiBlocks(1000L, 4000L, requests, 3600000L, result, null, null);
 
       // SUM = 10+20+30+40 = 100
-      final long bucket = result.getBucketTimestamps().get(0);
+      final long bucket = result.getBucketTimestamps().getFirst();
       assertThat(result.getValue(bucket, 0)).isCloseTo(100.0, within(0.01));
       // COUNT = 4
       assertThat(result.getValue(bucket, 1)).isCloseTo(4.0, within(0.01));
@@ -276,7 +277,7 @@ class TimeSeriesBlockStatsTest {
       final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests);
       store.aggregateMultiBlocks(5000L, 6000L, requests, 3600000L, result, null, null);
 
-      final long bucket = result.getBucketTimestamps().get(0);
+      final long bucket = result.getBucketTimestamps().getFirst();
       assertThat(result.getValue(bucket, 0)).isCloseTo(110.0, within(0.01));
       assertThat(result.getValue(bucket, 1)).isCloseTo(50.0, within(0.01));
       assertThat(result.getValue(bucket, 2)).isCloseTo(60.0, within(0.01));
@@ -317,7 +318,7 @@ class TimeSeriesBlockStatsTest {
 
       final List<Object[]> results = store.scanRange(0L, 10000L, null, null);
       assertThat(results).hasSize(2);
-      assertThat((double) results.get(0)[1]).isEqualTo(50.0);
+      assertThat((double) results.getFirst()[1]).isEqualTo(50.0);
       assertThat((double) results.get(1)[1]).isEqualTo(60.0);
     }
   }

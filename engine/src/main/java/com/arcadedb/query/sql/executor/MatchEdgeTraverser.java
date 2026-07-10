@@ -252,7 +252,7 @@ public class MatchEdgeTraverser {
         // set traversal depth in the metadata
         rs.setMetadata("$depth", depth);
         // set traversal path in the metadata
-        rs.setMetadata("$matchPath", pathToHere == null ? Collections.emptyList() : pathToHere);
+        rs.setMetadata("$matchPath", pathToHere == null ? List.of() : pathToHere);
         // add the result to the list
         ((List) result).add(rs);
       }
@@ -387,7 +387,7 @@ public class MatchEdgeTraverser {
     }
 
     if (qR == null) {
-      return Collections.emptyList();
+      return List.of();
     }
     if (qR instanceof Document document) {
       return Set.of(new ResultInternal(document));
@@ -395,18 +395,16 @@ public class MatchEdgeTraverser {
     if (qR instanceof Iterable iterable) {
       final List<ResultInternal> result = new ArrayList<>();
       for (final Object o : iterable) {
-        if (o instanceof Document document) {
-          result.add(new ResultInternal(document));
-        } else if (o instanceof ResultInternal internal) {
-          result.add(internal);
-        } else if (o == null) {
-        } else {
-          throw new UnsupportedOperationException();
+        switch (o) {
+          case null -> {}
+          case Document document -> result.add(new ResultInternal(document));
+          case ResultInternal internal -> result.add(internal);
+          default -> throw new UnsupportedOperationException();
         }
       }
       return result;
     }
-    return Collections.emptyList();
+    return List.of();
   }
 
 }

@@ -90,7 +90,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       // INCLUDE COMPACTED
       compactedSeriesIterators = compacted.newIterators(ascendingOrder, serializedFromKeys, serializedToKeys);
     else
-      compactedSeriesIterators = Collections.emptyList();
+      compactedSeriesIterators = List.of();
 
     final int totalPages = index.getTotalPages();
 

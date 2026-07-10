@@ -427,9 +427,9 @@ public class WALFile extends LockContext {
   }
 
   public Map<String, Object> getStats() {
-    final Map<String, Object> map = new HashMap<>();
-    map.put("pagesWritten", statsPagesWritten);
-    map.put("bytesWritten", statsBytesWritten);
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "pagesWritten", statsPagesWritten,
+        "bytesWritten", statsBytesWritten));
     return map;
   }
 

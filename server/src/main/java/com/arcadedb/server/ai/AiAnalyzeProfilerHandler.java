@@ -29,19 +29,16 @@ import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.URI;
+import java.net.http.*;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
-import java.net.http.HttpClient;
-import java.net.http.HttpConnectTimeoutException;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
-import java.time.Duration;
 import java.util.logging.Level;
 
 /**

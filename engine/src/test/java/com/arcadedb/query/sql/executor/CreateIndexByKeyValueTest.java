@@ -5,6 +5,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.parser.CreateIndexStatement;
 import com.arcadedb.query.sql.parser.StatementCache;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,9 +42,9 @@ class CreateIndexByKeyValueTest {
 
     CreateIndexStatement stmt = (CreateIndexStatement) cache.get(sql);
     assertThat(stmt.propertyList).hasSize(1);
-    assertThat(stmt.propertyList.get(0).name.getStringValue()).isEqualTo("tags");
-    assertThat(stmt.propertyList.get(0).byKey).isTrue();
-    assertThat(stmt.propertyList.get(0).byValue).isFalse();
+    assertThat(stmt.propertyList.getFirst().name.getStringValue()).isEqualTo("tags");
+    assertThat(stmt.propertyList.getFirst().byKey).isTrue();
+    assertThat(stmt.propertyList.getFirst().byValue).isFalse();
   }
 
   @Test
@@ -53,9 +54,9 @@ class CreateIndexByKeyValueTest {
 
     CreateIndexStatement stmt = (CreateIndexStatement) cache.get(sql);
     assertThat(stmt.propertyList).hasSize(1);
-    assertThat(stmt.propertyList.get(0).name.getStringValue()).isEqualTo("data");
-    assertThat(stmt.propertyList.get(0).byKey).isFalse();
-    assertThat(stmt.propertyList.get(0).byValue).isTrue();
+    assertThat(stmt.propertyList.getFirst().name.getStringValue()).isEqualTo("data");
+    assertThat(stmt.propertyList.getFirst().byKey).isFalse();
+    assertThat(stmt.propertyList.getFirst().byValue).isTrue();
   }
 
   @Test
@@ -67,9 +68,9 @@ class CreateIndexByKeyValueTest {
     assertThat(stmt.propertyList).hasSize(2);
 
     // First property: tags BY KEY
-    assertThat(stmt.propertyList.get(0).name.getStringValue()).isEqualTo("tags");
-    assertThat(stmt.propertyList.get(0).byKey).isTrue();
-    assertThat(stmt.propertyList.get(0).byValue).isFalse();
+    assertThat(stmt.propertyList.getFirst().name.getStringValue()).isEqualTo("tags");
+    assertThat(stmt.propertyList.getFirst().byKey).isTrue();
+    assertThat(stmt.propertyList.getFirst().byValue).isFalse();
 
     // Second property: data BY VALUE
     assertThat(stmt.propertyList.get(1).name.getStringValue()).isEqualTo("data");
@@ -84,9 +85,9 @@ class CreateIndexByKeyValueTest {
 
     CreateIndexStatement stmt = (CreateIndexStatement) cache.get(sql);
     assertThat(stmt.propertyList).hasSize(1);
-    assertThat(stmt.propertyList.get(0).name.getStringValue()).isEqualTo("name");
-    assertThat(stmt.propertyList.get(0).byKey).isFalse();
-    assertThat(stmt.propertyList.get(0).byValue).isFalse();
+    assertThat(stmt.propertyList.getFirst().name.getStringValue()).isEqualTo("name");
+    assertThat(stmt.propertyList.getFirst().byKey).isFalse();
+    assertThat(stmt.propertyList.getFirst().byValue).isFalse();
   }
 
   @Test
@@ -95,7 +96,7 @@ class CreateIndexByKeyValueTest {
     String sql = "CREATE INDEX idx ON V (field BY KEY) NOTUNIQUE";
 
     CreateIndexStatement stmt = (CreateIndexStatement) cache.get(sql);
-    String completeKey = stmt.propertyList.get(0).getCompleteKey();
+    String completeKey = stmt.propertyList.getFirst().getCompleteKey();
     assertThat(completeKey).isEqualTo("field by key");
   }
 
@@ -105,7 +106,7 @@ class CreateIndexByKeyValueTest {
     String sql = "CREATE INDEX idx ON V (field BY VALUE) NOTUNIQUE";
 
     CreateIndexStatement stmt = (CreateIndexStatement) cache.get(sql);
-    String completeKey = stmt.propertyList.get(0).getCompleteKey();
+    String completeKey = stmt.propertyList.getFirst().getCompleteKey();
     assertThat(completeKey).isEqualTo("field by value");
   }
 }

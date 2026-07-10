@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.WhereClause;
+
 import org.antlr.v4.runtime.BailErrorStrategy;
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.CharStreams;

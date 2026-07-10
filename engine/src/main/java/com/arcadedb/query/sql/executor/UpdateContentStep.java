@@ -109,8 +109,8 @@ public class UpdateContentStep extends AbstractExecutionStep {
     } else if (inputParameter != null && parameterArray == null) {
       // Initialize parameterArray on first call if the parameter is a List
       final Object val = inputParameter.getValue(context.getInputParameters());
-      if (val instanceof List) {
-        parameterArray = (List<?>) val;
+      if (val instanceof List<?> list) {
+        parameterArray = list;
         // Process first item
         handleContent(record, context);
       } else if (val instanceof Document document) {

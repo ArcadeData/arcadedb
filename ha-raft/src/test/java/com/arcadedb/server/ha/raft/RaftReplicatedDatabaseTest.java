@@ -32,6 +32,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -56,8 +57,8 @@ class RaftReplicatedDatabaseTest {
       results.add(rs.next());
 
     assertThat(results).hasSize(2);
-    assertThat((String) results.get(0).getProperty("name")).isEqualTo("Alice");
-    assertThat((int) results.get(0).getProperty("age")).isEqualTo(30);
+    assertThat((String) results.getFirst().getProperty("name")).isEqualTo("Alice");
+    assertThat((int) results.getFirst().getProperty("age")).isEqualTo(30);
     assertThat((String) results.get(1).getProperty("name")).isEqualTo("Bob");
   }
 
@@ -89,7 +90,7 @@ class RaftReplicatedDatabaseTest {
       results.add(rs.next());
 
     assertThat(results).hasSize(2);
-    assertThat((int) results.get(0).getProperty("value")).isEqualTo(42);
+    assertThat((int) results.getFirst().getProperty("value")).isEqualTo(42);
     assertThat((String) results.get(1).getProperty("value")).isEqualTo("hello");
   }
 
@@ -97,10 +98,12 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionDuplicatedKey() {
-    final String body = "{\"error\":\"Found duplicate key in index\","
-        + "\"detail\":\"Duplicated key [42] found on index 'Account_PK' already assigned to record #7:1\","
-        + "\"exception\":\"com.arcadedb.exception.DuplicatedKeyException\","
-        + "\"exceptionArgs\":\"Account_PK|[42]|#7:1\"}";
+    final String body = """
+        {"error":"Found duplicate key in index",\
+        "detail":"Duplicated key [42] found on index 'Account_PK' already assigned to record #7:1",\
+        "exception":"com.arcadedb.exception.DuplicatedKeyException",\
+        "exceptionArgs":"Account_PK|[42]|#7:1"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(409, body);
 
@@ -113,9 +116,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionNeedRetry() {
-    final String body = "{\"error\":\"Cannot execute command\","
-        + "\"detail\":\"Record has been modified by another transaction\","
-        + "\"exception\":\"com.arcadedb.exception.NeedRetryException\"}";
+    final String body = """
+        {"error":"Cannot execute command",\
+        "detail":"Record has been modified by another transaction",\
+        "exception":"com.arcadedb.exception.NeedRetryException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(503, body);
 
@@ -125,9 +130,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionConcurrentModification() {
-    final String body = "{\"error\":\"Cannot execute command\","
-        + "\"detail\":\"Concurrent modification detected\","
-        + "\"exception\":\"com.arcadedb.exception.ConcurrentModificationException\"}";
+    final String body = """
+        {"error":"Cannot execute command",\
+        "detail":"Concurrent modification detected",\
+        "exception":"com.arcadedb.exception.ConcurrentModificationException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(503, body);
 
@@ -140,9 +147,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionLockTimeoutIsRetryable() {
-    final String body = "{\"error\":\"Cannot execute command\","
-        + "\"detail\":\"Timeout on acquiring lock\","
-        + "\"exception\":\"com.arcadedb.exception.LockTimeoutException\"}";
+    final String body = """
+        {"error":"Cannot execute command",\
+        "detail":"Timeout on acquiring lock",\
+        "exception":"com.arcadedb.exception.LockTimeoutException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(503, body);
 
@@ -154,9 +163,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionTimeoutIsNotRetryable() {
-    final String body = "{\"error\":\"Cannot execute command\","
-        + "\"detail\":\"Query timeout\","
-        + "\"exception\":\"com.arcadedb.exception.TimeoutException\"}";
+    final String body = """
+        {"error":"Cannot execute command",\
+        "detail":"Query timeout",\
+        "exception":"com.arcadedb.exception.TimeoutException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
 
@@ -169,9 +180,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionSqlParsingKeepsSubtype() {
-    final String body = "{\"error\":\"Error on parsing query\","
-        + "\"detail\":\"Syntax error near 'SELCT'\","
-        + "\"exception\":\"com.arcadedb.exception.CommandSQLParsingException\"}";
+    final String body = """
+        {"error":"Error on parsing query",\
+        "detail":"Syntax error near 'SELCT'",\
+        "exception":"com.arcadedb.exception.CommandSQLParsingException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
 
@@ -186,9 +199,11 @@ class RaftReplicatedDatabaseTest {
     // #5064: a follower forwarding a write must hand the caller the SAME do-not-retry contract the
     // leader produced - collapsing it to a generic TransactionException (or worse, a retryable type)
     // would let the client re-drive a transaction the cluster already committed, inserting duplicates.
-    final String body = "{\"error\":\"Transaction committed cluster-wide but the local apply failed - do not retry\","
-        + "\"detail\":\"Transaction TX(1) is committed cluster-wide but the local apply failed. Do NOT retry: reload the records and continue\","
-        + "\"exception\":\"com.arcadedb.exception.TransactionCommittedRemotelyException\"}";
+    final String body = """
+        {"error":"Transaction committed cluster-wide but the local apply failed - do not retry",\
+        "detail":"Transaction TX(1) is committed cluster-wide but the local apply failed. Do NOT retry: reload the records and continue",\
+        "exception":"com.arcadedb.exception.TransactionCommittedRemotelyException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(409, body);
 
@@ -199,9 +214,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionQueryNotIdempotent() {
-    final String body = "{\"error\":\"Cannot execute command\","
-        + "\"detail\":\"Query is not idempotent\","
-        + "\"exception\":\"com.arcadedb.exception.QueryNotIdempotentException\"}";
+    final String body = """
+        {"error":"Cannot execute command",\
+        "detail":"Query is not idempotent",\
+        "exception":"com.arcadedb.exception.QueryNotIdempotentException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
 
@@ -211,9 +228,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionTransactionException() {
-    final String body = "{\"error\":\"Error on transaction commit\","
-        + "\"detail\":\"Commit failed\","
-        + "\"exception\":\"com.arcadedb.exception.TransactionException\"}";
+    final String body = """
+        {"error":"Error on transaction commit",\
+        "detail":"Commit failed",\
+        "exception":"com.arcadedb.exception.TransactionException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
 
@@ -223,9 +242,11 @@ class RaftReplicatedDatabaseTest {
 
   @Test
   void reconstructLeaderExceptionUnknownClass() {
-    final String body = "{\"error\":\"Some error\","
-        + "\"detail\":\"Some detail\","
-        + "\"exception\":\"com.example.SomeUnknownException\"}";
+    final String body = """
+        {"error":"Some error",\
+        "detail":"Some detail",\
+        "exception":"com.example.SomeUnknownException"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
 
@@ -262,9 +283,11 @@ class RaftReplicatedDatabaseTest {
   @Test
   void reconstructLeaderExceptionDuplicatedKeyMalformedArgs() {
     // exceptionArgs with wrong number of segments - should fall back to TransactionException
-    final String body = "{\"error\":\"Found duplicate key in index\","
-        + "\"exception\":\"com.arcadedb.exception.DuplicatedKeyException\","
-        + "\"exceptionArgs\":\"only-one-segment\"}";
+    final String body = """
+        {"error":"Found duplicate key in index",\
+        "exception":"com.arcadedb.exception.DuplicatedKeyException",\
+        "exceptionArgs":"only-one-segment"}\
+        """;
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(409, body);
 

@@ -18,12 +18,12 @@
  */
 package com.arcadedb.server.mcp.tools;
 
-import java.util.Set;
-import java.util.TreeSet;
-
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurityUser;
+
+import java.util.Set;
+import java.util.TreeSet;
 
 public class MCPToolUtils {
 

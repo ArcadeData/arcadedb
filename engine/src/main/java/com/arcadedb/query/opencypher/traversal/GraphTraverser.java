@@ -24,7 +24,6 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.utility.RidHashSet;
 
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
 
@@ -69,7 +68,7 @@ public abstract class GraphTraverser {
       final boolean trackPaths, final PathMode pathMode) {
     this.direction = direction != null ? direction : Direction.BOTH;
     this.relationshipTypes = relationshipTypes;
-    this.edgePropertyFilters = edgePropertyFilters != null ? edgePropertyFilters : Collections.emptyMap();
+    this.edgePropertyFilters = edgePropertyFilters != null ? edgePropertyFilters : Map.of();
     this.minHops = Math.max(0, minHops);
     this.maxHops = maxHops >= 0 ? maxHops : Integer.MAX_VALUE;
     this.trackPaths = trackPaths;
@@ -186,8 +185,8 @@ public abstract class GraphTraverser {
       if (actual == null)
         return false;
       // Handle numeric type coercion (Integer vs Long)
-      if (actual instanceof Number && expected instanceof Number) {
-        if (((Number) actual).longValue() != ((Number) expected).longValue())
+      if (actual instanceof Number number && expected instanceof Number number1) {
+        if (number.longValue() != number1.longValue())
           return false;
       } else if (!actual.equals(expected))
         return false;

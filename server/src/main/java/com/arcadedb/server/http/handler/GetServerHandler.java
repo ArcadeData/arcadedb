@@ -28,13 +28,14 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
@@ -223,12 +224,12 @@ public class GetServerHandler extends AbstractServerHttpHandler {
         // check that leaked arcadedb.ha.clusterToken in clear and enabled cluster-forwarded-auth root
         // impersonation (GHSA-46hj-24h4-j8gf).
         final boolean hidden = cfg.isHidden();
-        final Map<String, Object> map = new LinkedHashMap<>();
-        map.put("key", cfg.getKey());
-        map.put("value", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getValue()));
-        map.put("description", cfg.getDescription());
-        map.put("overridden", contextKeys.contains(cfg.getKey()));
-        map.put("default", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getDefValue()));
+        final Map<String, Object> map = new HashMap<>(Map.of(
+            "key", cfg.getKey(),
+            "value", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getValue()),
+            "description", cfg.getDescription(),
+            "overridden", contextKeys.contains(cfg.getKey()),
+            "default", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getDefValue())));
         settings.add(map);
       }
     }

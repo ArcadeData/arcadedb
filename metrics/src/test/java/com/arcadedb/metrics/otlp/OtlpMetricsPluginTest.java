@@ -19,6 +19,7 @@
 package com.arcadedb.metrics.otlp;
 
 import com.arcadedb.ContextConfiguration;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import org.junit.jupiter.api.AfterEach;

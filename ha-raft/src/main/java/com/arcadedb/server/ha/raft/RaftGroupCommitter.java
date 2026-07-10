@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
+
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;

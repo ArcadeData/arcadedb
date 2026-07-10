@@ -171,39 +171,47 @@ public class UnwindStep extends AbstractExecutionStep {
               continue;
             }
 
-            if (listValue instanceof Collection) {
-              currentListIterator = ((Collection<?>) listValue).iterator();
-            } else if (listValue instanceof Iterable) {
-              currentListIterator = ((Iterable<?>) listValue).iterator();
+            if (listValue instanceof Collection<?> collection) {
+              currentListIterator = collection.iterator();
+            } else if (listValue instanceof Iterable<?> iterable) {
+              currentListIterator = iterable.iterator();
             } else if (listValue.getClass().isArray()) {
               // Convert array to list
               final List<Object> list = new ArrayList<>();
-              if (listValue instanceof Object[]) {
-                for (final Object obj : (Object[]) listValue) {
-                  list.add(obj);
+              switch (listValue) {
+                case Object[] objects -> {
+                  for (final Object obj : objects) {
+                    list.add(obj);
+                  }
                 }
-              } else if (listValue instanceof int[]) {
-                for (final int i : (int[]) listValue) {
-                  list.add(i);
+                case int[] ints -> {
+                  for (final int i : ints) {
+                    list.add(i);
+                  }
                 }
-              } else if (listValue instanceof long[]) {
-                for (final long i : (long[]) listValue) {
-                  list.add(i);
+                case long[] longs -> {
+                  for (final long i : longs) {
+                    list.add(i);
+                  }
                 }
-              } else if (listValue instanceof double[]) {
-                for (final double i : (double[]) listValue) {
-                  list.add(i);
+                case double[] doubles -> {
+                  for (final double i : doubles) {
+                    list.add(i);
+                  }
                 }
-              } else if (listValue instanceof float[]) {
-                // Issue #3864 follow-up: HTTP numeric params arrive as float[] from the optimized
-                // JSON parser; UNWIND on such a param must iterate the primitive array.
-                for (final float i : (float[]) listValue) {
-                  list.add(i);
+                case float[] floats -> {
+                  // Issue #3864 follow-up: HTTP numeric params arrive as float[] from the optimized
+                  // JSON parser; UNWIND on such a param must iterate the primitive array.
+                  for (final float i : floats) {
+                    list.add(i);
+                  }
                 }
-              } else if (listValue instanceof boolean[]) {
-                for (final boolean i : (boolean[]) listValue) {
-                  list.add(i);
+                case boolean[] booleans -> {
+                  for (final boolean i : booleans) {
+                    list.add(i);
+                  }
                 }
+                case null, default -> {}
               }
               currentListIterator = list.iterator();
             } else {

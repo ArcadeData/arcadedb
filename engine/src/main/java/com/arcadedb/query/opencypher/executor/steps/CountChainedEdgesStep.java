@@ -99,8 +99,7 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
         final Object vertexObj = inputRow.getProperty(boundVertexVariable);
         final long totalCount;
 
-        if (vertexObj instanceof Vertex) {
-          final Vertex boundVertex = (Vertex) vertexObj;
+        if (vertexObj instanceof Vertex boundVertex) {
 
           if (provider != null) {
             // GAV/CSR path: array lookups instead of linked list traversal

@@ -298,7 +298,7 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
     }
     assertThat(scores).hasSize(2);
     scores.sort((a, b) -> Float.compare(b, a));
-    assertThat(scores.get(0)).isCloseTo(0.5f, Offset.offset(1e-3f));
+    assertThat(scores.getFirst()).isCloseTo(0.5f, Offset.offset(1e-3f));
     assertThat(scores.get(1)).isCloseTo(0.4f, Offset.offset(1e-3f));
   }
 

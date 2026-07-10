@@ -2,6 +2,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -156,14 +157,14 @@ public class UpdateContentArrayTest extends TestHelper {
     final Map<String, Object> params = new HashMap<>();
     final List<Map<String, Object>> contentArray = new ArrayList<>();
 
-    final Map<String, Object> employee1 = new HashMap<>();
-    employee1.put("name", "john");
-    employee1.put("dept", "IT");
+    final Map<String, Object> employee1 = new HashMap<>(Map.of(
+        "name", "john",
+        "dept", "IT"));
     contentArray.add(employee1);
 
-    final Map<String, Object> employee2 = new HashMap<>();
-    employee2.put("name", "jane");
-    employee2.put("dept", "HR");
+    final Map<String, Object> employee2 = new HashMap<>(Map.of(
+        "name", "jane",
+        "dept", "HR"));
     contentArray.add(employee2);
 
     params.put("content", contentArray);

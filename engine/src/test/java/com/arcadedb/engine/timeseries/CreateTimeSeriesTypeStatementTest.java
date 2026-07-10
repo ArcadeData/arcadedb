@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,7 +84,7 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
     assertThat(tsType.getTsColumns()).hasSize(4); // ts + region + zone + temp
 
     // Verify roles
-    assertThat(tsType.getTsColumns().get(0).getRole()).isEqualTo(ColumnDefinition.ColumnRole.TIMESTAMP);
+    assertThat(tsType.getTsColumns().getFirst().getRole()).isEqualTo(ColumnDefinition.ColumnRole.TIMESTAMP);
     assertThat(tsType.getTsColumns().get(1).getRole()).isEqualTo(ColumnDefinition.ColumnRole.TAG);
     assertThat(tsType.getTsColumns().get(2).getRole()).isEqualTo(ColumnDefinition.ColumnRole.TAG);
     assertThat(tsType.getTsColumns().get(3).getRole()).isEqualTo(ColumnDefinition.ColumnRole.FIELD);

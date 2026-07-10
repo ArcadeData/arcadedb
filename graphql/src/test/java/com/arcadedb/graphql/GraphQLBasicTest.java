@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graphql.schema.GraphQLResult;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;

@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.graph.Vertex;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

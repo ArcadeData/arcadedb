@@ -32,6 +32,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

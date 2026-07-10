@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -429,9 +430,9 @@ class TraverseStatementExecutionTest extends TestHelper {
       RID newVtx0Id = database.command("sql", "CREATE VERTEX TVtx").next().getIdentity().get();
       RID newVtx1Id = database.command("sql", "CREATE VERTEX TVtx").next().getIdentity().get();
 
-      Map<String, Object> params = new HashMap<>();
-      params.put("fromRid", newVtx0Id);
-      params.put("toRid", newVtx1Id);
+      Map<String, Object> params = new HashMap<>(Map.of(
+          "fromRid", newVtx0Id,
+          "toRid", newVtx1Id));
       RID newEdgRid = database.command("sql", "CREATE EDGE TEdg FROM :fromRid TO :toRid", params).next().getIdentity().get();
 
       params.clear();

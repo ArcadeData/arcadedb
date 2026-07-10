@@ -64,10 +64,10 @@ public class CollFlatten extends AbstractCollFunction {
     if (args.length > 1) {
       if (args[1] == null)
         return null;
-      if (args[1] instanceof Number)
-        maxDepth = ((Number) args[1]).intValue();
-      else if (args[1] instanceof Boolean)
-        maxDepth = (Boolean) args[1] ? 1 : -1;
+      if (args[1] instanceof Number number)
+        maxDepth = number.intValue();
+      else if (args[1] instanceof Boolean boolean1)
+        maxDepth = boolean1 ? 1 : -1;
     }
 
     if (maxDepth == 0)

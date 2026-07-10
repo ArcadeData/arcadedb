@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -76,8 +77,8 @@ class OpenCypherMandatoryMatchRelationshipTest extends TestHelper {
         results.add(rs.next());
 
       assertThat(results).hasSize(2);
-      assertThat(results.get(0).<String>getProperty("person")).isEqualTo("Alice");
-      assertThat(results.get(0).<String>getProperty("company")).isEqualTo("Acme");
+      assertThat(results.getFirst().<String>getProperty("person")).isEqualTo("Alice");
+      assertThat(results.getFirst().<String>getProperty("company")).isEqualTo("Acme");
       assertThat(results.get(1).<String>getProperty("person")).isEqualTo("Bob");
       assertThat(results.get(1).<String>getProperty("company")).isEqualTo("Acme");
     }
@@ -106,8 +107,8 @@ class OpenCypherMandatoryMatchRelationshipTest extends TestHelper {
 
       assertThat(results).hasSize(4);
       // Alice -> Acme
-      assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
-      assertThat(results.get(0).<String>getProperty("company")).isEqualTo("Acme");
+      assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(results.getFirst().<String>getProperty("company")).isEqualTo("Acme");
       // Bob -> Acme
       assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Bob");
       assertThat(results.get(1).<String>getProperty("company")).isEqualTo("Acme");

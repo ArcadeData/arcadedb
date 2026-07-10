@@ -58,15 +58,13 @@ class SnapshotWatchdogTimeoutTest {
   void computeWatchdogTimeout_usesDefaultsWithNullServer() {
     // Default HA_ELECTION_TIMEOUT_MAX = 5000ms, floor = 4 * 5000 = 20_000ms
     // Default HA_SNAPSHOT_WATCHDOG_TIMEOUT = 30_000ms -> above floor, so 30_000 wins
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    try {
+    try (ArcadeStateMachine sm = new ArcadeStateMachine()) {
       final long timeout = sm.computeSnapshotWatchdogTimeoutMs();
-      final long expectedFloor = GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsInteger()
+      final long expectedFloor = GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsLong()
           * ArcadeStateMachine.WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER;
       final long configuredTimeout = GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.getValueAsLong();
       assertThat(timeout).isEqualTo(Math.max(configuredTimeout, expectedFloor));
-    } finally {
-      try { sm.close(); } catch (final Exception ignored) {}
+    } catch (final Exception ignored) {
     }
   }
 
@@ -76,13 +74,11 @@ class SnapshotWatchdogTimeoutTest {
     GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.setValue(1_000L);
     GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.setValue(5_000);
 
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    try {
+    try (ArcadeStateMachine sm = new ArcadeStateMachine()) {
       final long timeout = sm.computeSnapshotWatchdogTimeoutMs();
       // Floor = 4 * 5_000 = 20_000ms; configured is 1_000ms, so floor wins
       assertThat(timeout).isEqualTo(20_000L);
-    } finally {
-      try { sm.close(); } catch (final Exception ignored) {}
+    } catch (final Exception ignored) {
     }
   }
 
@@ -91,13 +87,11 @@ class SnapshotWatchdogTimeoutTest {
     GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.setValue(60_000L);
     GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.setValue(5_000);
 
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    try {
+    try (ArcadeStateMachine sm = new ArcadeStateMachine()) {
       final long timeout = sm.computeSnapshotWatchdogTimeoutMs();
       // Floor = 4 * 5_000 = 20_000ms; configured is 60_000ms, so configured wins
       assertThat(timeout).isEqualTo(60_000L);
-    } finally {
-      try { sm.close(); } catch (final Exception ignored) {}
+    } catch (final Exception ignored) {
     }
   }
 
@@ -107,12 +101,10 @@ class SnapshotWatchdogTimeoutTest {
     // Configured == floor: 4 * 5_000 = 20_000ms
     GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.setValue(20_000L);
 
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    try {
+    try (ArcadeStateMachine sm = new ArcadeStateMachine()) {
       final long timeout = sm.computeSnapshotWatchdogTimeoutMs();
       assertThat(timeout).isEqualTo(20_000L);
-    } finally {
-      try { sm.close(); } catch (final Exception ignored) {}
+    } catch (final Exception ignored) {
     }
   }
 
@@ -122,13 +114,11 @@ class SnapshotWatchdogTimeoutTest {
     GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.setValue(30_000);
     GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.setValue(30_000L);
 
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    try {
+    try (ArcadeStateMachine sm = new ArcadeStateMachine()) {
       final long timeout = sm.computeSnapshotWatchdogTimeoutMs();
       // Floor = 4 * 30_000 = 120_000ms; configured 30_000ms < floor
       assertThat(timeout).isEqualTo(120_000L);
-    } finally {
-      try { sm.close(); } catch (final Exception ignored) {}
+    } catch (final Exception ignored) {
     }
   }
 }

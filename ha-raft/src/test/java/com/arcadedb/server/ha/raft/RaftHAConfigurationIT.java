@@ -19,11 +19,10 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.server.ServerException;
+
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.*;
 
 class RaftHAConfigurationIT {
 
@@ -39,7 +38,7 @@ class RaftHAConfigurationIT {
   void twoPartFormatParsed() {
     final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434,host2:2435", 2434);
     assertThat(result.peers()).hasSize(2);
-    assertThat(result.peers().get(0).getAddress()).isEqualTo("host1:2434");
+    assertThat(result.peers().getFirst().getAddress()).isEqualTo("host1:2434");
     assertThat(result.peers().get(1).getAddress()).isEqualTo("host2:2435");
     assertThat(result.httpAddresses()).isEmpty();
   }
@@ -49,15 +48,15 @@ class RaftHAConfigurationIT {
     final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434:2480,host2:2435:2481",
         2434);
     assertThat(result.peers()).hasSize(2);
-    assertThat(result.peers().get(0).getAddress()).isEqualTo("host1:2434");
-    assertThat(result.httpAddresses().get(result.peers().get(0).getId())).isEqualTo("host1:2480");
+    assertThat(result.peers().getFirst().getAddress()).isEqualTo("host1:2434");
+    assertThat(result.httpAddresses().get(result.peers().getFirst().getId())).isEqualTo("host1:2480");
   }
 
   @Test
   void fourPartFormatWithPriorityParsed() {
     final RaftPeerAddressResolver.ParsedPeerList result = RaftPeerAddressResolver.parsePeerList("host1:2434:2480:10", 2434);
     assertThat(result.peers()).hasSize(1);
-    assertThat(result.peers().get(0).getPriority()).isEqualTo(10);
+    assertThat(result.peers().getFirst().getPriority()).isEqualTo(10);
   }
 
   @Test

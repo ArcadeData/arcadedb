@@ -37,8 +37,8 @@ public class SignFunction implements StatelessFunction {
       throw new CommandExecutionException("sign() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Number) {
-      final double value = ((Number) args[0]).doubleValue();
+    if (args[0] instanceof Number number) {
+      final double value = number.doubleValue();
       if (value > 0)
         return 1L;
       else if (value < 0)

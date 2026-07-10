@@ -33,17 +33,14 @@ import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.transport.RequestReplyReceiverContext;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.util.HeaderValues;
-import io.undertow.util.Headers;
-import io.undertow.util.HttpString;
-import io.undertow.util.PathTemplateMatch;
-import io.undertow.util.StatusCodes;
+import io.undertow.util.*;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;

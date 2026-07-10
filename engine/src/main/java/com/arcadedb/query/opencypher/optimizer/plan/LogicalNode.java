@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.optimizer.plan;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -39,8 +38,8 @@ public class LogicalNode {
   public LogicalNode(final String variable, final List<String> labels, final Map<String, Object> properties,
       final boolean labelDisjunction) {
     this.variable = variable;
-    this.labels = labels != null ? labels : Collections.emptyList();
-    this.properties = properties != null ? properties : Collections.emptyMap();
+    this.labels = labels != null ? labels : List.of();
+    this.properties = properties != null ? properties : Map.of();
     this.labelDisjunction = labelDisjunction;
   }
 
@@ -69,7 +68,7 @@ public class LogicalNode {
   }
 
   public String getFirstLabel() {
-    return labels.isEmpty() ? null : labels.get(0);
+    return labels.isEmpty() ? null : labels.getFirst();
   }
 
   @Override

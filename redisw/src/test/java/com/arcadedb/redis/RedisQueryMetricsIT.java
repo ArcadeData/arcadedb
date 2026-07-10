@@ -20,6 +20,7 @@ package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.AfterEach;

@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -223,7 +224,7 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void filterByBucket() {
     database.transaction(() -> {
-      final String bucketName = database.getSchema().getType("V1").getBuckets(false).get(0).getName();
+      final String bucketName = database.getSchema().getType("V1").getBuckets(false).getFirst().getName();
       final ResultSet rs = database.query("sql", "SELECT FROM bucket:" + bucketName);
       int count = 0;
       while (rs.hasNext()) {

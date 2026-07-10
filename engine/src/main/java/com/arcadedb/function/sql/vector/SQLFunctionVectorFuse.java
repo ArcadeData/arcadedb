@@ -30,7 +30,6 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -209,7 +208,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
   @SuppressWarnings("unchecked")
   private static List<RidScore> materializeSource(final String functionName, final Object src, final int sourceIdx) {
     if (src == null)
-      return Collections.emptyList();
+      return List.of();
     if (!(src instanceof Iterable<?> iter))
       throw new CommandSQLParsingException(
           functionName + " source[" + sourceIdx + "] must be a list of rows, got: " + src.getClass().getSimpleName());

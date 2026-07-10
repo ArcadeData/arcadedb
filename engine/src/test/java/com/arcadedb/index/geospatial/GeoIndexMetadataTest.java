@@ -20,6 +20,7 @@ package com.arcadedb.index.geospatial;
 
 import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

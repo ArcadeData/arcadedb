@@ -25,25 +25,17 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
+
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.proto.RaftProtos;
-import org.apache.ratis.protocol.Message;
-import org.apache.ratis.protocol.RaftClientReply;
-import org.apache.ratis.protocol.RaftGroup;
-import org.apache.ratis.protocol.RaftGroupId;
-import org.apache.ratis.protocol.RaftPeer;
-import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.*;
 import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
-import org.apache.ratis.server.DivisionInfo;
-import org.apache.ratis.server.RaftServer;
-import org.apache.ratis.server.RaftServerConfigKeys;
-import org.apache.ratis.server.RaftServerRpc;
-import org.apache.ratis.server.RaftServerRpcWithProxy;
+import org.apache.ratis.server.*;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
@@ -65,12 +57,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -133,7 +120,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          RaftClient                raftClient;
   private          RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
-  private          RaftClusterStatusExporter statusExporter;
+  private final          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
@@ -144,7 +131,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile PeerAddressAllowlistFilter allowlistFilter;
   private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
-  private          RaftClusterManager        clusterManager;
+  private final          RaftClusterManager        clusterManager;
   private final    Object                    recoveryLock          = new Object();
   private volatile boolean                   shutdownRequested     = false;
   private volatile LifeCycle.State           forcedStateForTesting = null;
@@ -209,8 +196,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       peers = Collections.unmodifiableList(augmented);
       resolvedLocalPeerId = synthesized.getId();
       LogManager.instance().log(this, Level.INFO,
-          "K8s scale-up detected: node '%s' is beyond the configured server list (%d peers). "
-              + "Synthesized local Raft peer %s; it will auto-join the existing cluster.",
+          """
+          K8s scale-up detected: node '%s' is beyond the configured server list (%d peers). \
+          Synthesized local Raft peer %s; it will auto-join the existing cluster.""",
           serverName, configuredPeers, synthesized.getId());
     }
     this.localPeerId = resolvedLocalPeerId;
@@ -539,7 +527,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final boolean persistStorage = resolvePersistStorage(configuration);
     if (storageDir.exists() && !persistStorage)
       deleteRecursive(storageDir);
-    RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
+    RaftServerConfigKeys.setStorageDir(properties, List.of(storageDir));
 
     this.tokenProvider = new ClusterTokenProvider(configuration);
     this.tokenProvider.initClusterToken();
@@ -799,9 +787,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final ArcadeStateMachine sm = stateMachine;
     final TermIndex applied = sm != null ? sm.getLastAppliedTermIndex() : null;
     LogManager.instance().log(this, Level.WARNING,
-        "Follower stuck at a stale term (currentTerm=%d, appliedTerm=%d, appliedIndex=%d, commitIndex=%d); "
-            + "reformatting Raft storage and rejoining so the leader can reconcile it via snapshot-install. "
-            + "If this recurs without a genuine log divergence, suspect a sustained one-sided outage to the leader.",
+        """
+        Follower stuck at a stale term (currentTerm=%d, appliedTerm=%d, appliedIndex=%d, commitIndex=%d); \
+        reformatting Raft storage and rejoining so the leader can reconcile it via snapshot-install. \
+        If this recurs without a genuine log divergence, suspect a sustained one-sided outage to the leader.""",
         getCurrentTerm(), applied != null ? applied.getTerm() : -1L, applied != null ? applied.getIndex() : -1L,
         getCommitIndex());
     restartRatis(true);
@@ -905,7 +894,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
         final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
         final File storageDir = getRaftStorageDir();
-        RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
+        RaftServerConfigKeys.setStorageDir(properties, List.of(storageDir));
 
         // For a divergence reformat (#4741) discard the local Raft log so this peer rejoins as a fresh
         // bootstrapping member; otherwise recover the existing log in place (CLOSED/EXCEPTION path).
@@ -1203,10 +1192,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   public Map<String, Object> getStats() {
-    final Map<String, Object> stats = new HashMap<>();
-    stats.put("localPeerId", localPeerId.toString());
-    stats.put("isLeader", isLeader());
-    stats.put("configuredServers", getConfiguredServers());
+    final Map<String, Object> stats = new HashMap<>(Map.of(
+        "localPeerId", localPeerId.toString(),
+        "isLeader", isLeader(),
+        "configuredServers", getConfiguredServers()));
 
     if (clusterMonitor != null) {
       final Map<String, Long> lags = clusterMonitor.getReplicaLags();
@@ -1219,9 +1208,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final List<Map<String, String>> replicas = new ArrayList<>();
     for (final RaftPeer peer : raftGroup.getPeers()) {
       if (!peer.getId().equals(statsExcludeId)) {
-        final Map<String, String> replicaInfo = new HashMap<>();
-        replicaInfo.put("id", peer.getId().toString());
-        replicaInfo.put("address", peer.getAddress());
+        final Map<String, String> replicaInfo = new HashMap<>(Map.of(
+            "id", peer.getId().toString(),
+            "address", peer.getAddress()));
         final String httpAddr = resolveHttpAddress(peer);
         if (httpAddr != null)
           replicaInfo.put("httpAddress", httpAddr);
@@ -1319,9 +1308,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String derived = deriveBoltAddress(peerRaftAddress(peerId), localBoltPort);
     if (derived != null && boltFallbackWarned.compareAndSet(false, true))
       LogManager.instance().log(this, Level.WARNING,
-          "HA Bolt routing addresses are not configured in '%s': deriving peer Bolt endpoints from each peer's Raft host plus this node's Bolt port (%d). "
-              + "This is correct only when every node listens on the same Bolt port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous "
-              + "Bolt ports, declare them explicitly using the 'host:{raft:..,bolt:..}' object syntax in %s.",
+          """
+          HA Bolt routing addresses are not configured in '%s': deriving peer Bolt endpoints from each peer's Raft host plus this node's Bolt port (%d). \
+          This is correct only when every node listens on the same Bolt port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous \
+          Bolt ports, declare them explicitly using the 'host:{raft:..,bolt:..}' object syntax in %s.""",
           GlobalConfiguration.HA_SERVER_LIST.getKey(), localBoltPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
     return derived;
   }
@@ -1346,9 +1336,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String derived = deriveHttpAddress(raftAddress, httpPort);
     if (derived != null && httpFallbackWarned.compareAndSet(false, true))
       LogManager.instance().log(this, Level.WARNING,
-          "HA HTTP addresses are not configured in '%s': deriving peer HTTP endpoints from each peer's Raft host plus this node's HTTP port (%d). "
-              + "This is correct only when every node listens on the same HTTP port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous "
-              + "HTTP ports, declare them explicitly using the 'host:raftPort:httpPort' syntax in %s.",
+          """
+          HA HTTP addresses are not configured in '%s': deriving peer HTTP endpoints from each peer's Raft host plus this node's HTTP port (%d). \
+          This is correct only when every node listens on the same HTTP port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous \
+          HTTP ports, declare them explicitly using the 'host:raftPort:httpPort' syntax in %s.""",
           GlobalConfiguration.HA_SERVER_LIST.getKey(), httpPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
     return derived;
   }
@@ -1378,10 +1369,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String derived = deriveHttpAddress(raftAddress, httpsPort);
     if (derived != null && httpsFallbackWarned.compareAndSet(false, true))
       LogManager.instance().log(this, Level.INFO,
-          "HA HTTPS endpoints are not configured in '%s': deriving peer HTTPS endpoints for encrypted snapshot transfer "
-              + "from each peer's Raft host plus this node's HTTPS port (%d). This is correct only when every node listens on the "
-              + "same HTTPS port (e.g. a Kubernetes StatefulSet). For heterogeneous clusters, declare them explicitly using the "
-              + "'host:raftPort:httpPort:priority:httpsPort' syntax in %s.",
+          """
+          HA HTTPS endpoints are not configured in '%s': deriving peer HTTPS endpoints for encrypted snapshot transfer \
+          from each peer's Raft host plus this node's HTTPS port (%d). This is correct only when every node listens on the \
+          same HTTPS port (e.g. a Kubernetes StatefulSet). For heterogeneous clusters, declare them explicitly using the \
+          'host:raftPort:httpPort:priority:httpsPort' syntax in %s.""",
           GlobalConfiguration.HA_SERVER_LIST.getKey(), httpsPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
     return derived;
   }
@@ -2003,11 +1995,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final List<Map<String, Object>> result = new ArrayList<>(before.size());
     for (int i = 0; i < before.size(); i++) {
-      final Map<String, Object> state = new LinkedHashMap<>();
-      state.put("peerId", before.get(i).getId().getId().toStringUtf8());
-      state.put("matchIndex", matchIndices[i]);
-      state.put("nextIndex", nextIndices[i]);
-      state.put("lastRpcElapsedMs", before.get(i).getLastRpcElapsedTimeMs());
+      final Map<String, Object> state = new HashMap<>(Map.of(
+          "peerId", before.get(i).getId().getId().toStringUtf8(),
+          "matchIndex", matchIndices[i],
+          "nextIndex", nextIndices[i],
+          "lastRpcElapsedMs", before.get(i).getLastRpcElapsedTimeMs()));
       result.add(state);
     }
     return result;
@@ -2022,9 +2014,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static List<Map<String, Object>> degradedFollowerStates(final List<RaftProtos.ServerRpcProto> followerInfos) {
     final List<Map<String, Object>> result = new ArrayList<>(followerInfos.size());
     for (final RaftProtos.ServerRpcProto follower : followerInfos) {
-      final Map<String, Object> state = new LinkedHashMap<>();
-      state.put("peerId", follower.getId().getId().toStringUtf8());
-      state.put("lastRpcElapsedMs", follower.getLastRpcElapsedTimeMs());
+      final Map<String, Object> state = new HashMap<>(Map.of(
+          "peerId", follower.getId().getId().toStringUtf8(),
+          "lastRpcElapsedMs", follower.getLastRpcElapsedTimeMs()));
       result.add(state);
     }
     return result;

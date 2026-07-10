@@ -21,6 +21,7 @@ package com.arcadedb.function.path;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -66,11 +67,10 @@ public class PathSlice extends AbstractPathFunction {
       final Map<String, Object> pathMap = (Map<String, Object>) args[0];
       nodes = (List<Object>) pathMap.get("nodes");
       rels = (List<Object>) pathMap.get("relationships");
-    } else if (args[0] instanceof List) {
+    } else if (args[0] instanceof List<?> elements) {
       // Assume alternating node/rel list
       nodes = new ArrayList<>();
       rels = new ArrayList<>();
-      final List<?> elements = (List<?>) args[0];
       for (int i = 0; i < elements.size(); i++) {
         if (i % 2 == 0) {
           nodes.add(elements.get(i));
@@ -104,11 +104,11 @@ public class PathSlice extends AbstractPathFunction {
       slicedRels.add(rels.get(i));
     }
 
-    final Map<String, Object> result = new LinkedHashMap<>();
-    result.put("_type", "path");
-    result.put("nodes", slicedNodes);
-    result.put("relationships", slicedRels);
-    result.put("length", slicedRels.size());
+    final Map<String, Object> result = new HashMap<>(Map.of(
+        "_type", "path",
+        "nodes", slicedNodes,
+        "relationships", slicedRels,
+        "length", slicedRels.size()));
 
     return result;
   }

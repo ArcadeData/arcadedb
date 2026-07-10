@@ -21,6 +21,7 @@ package com.arcadedb.server.security;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -48,7 +49,7 @@ class PolyglotScriptingAuthorizationIT extends BaseGraphServerTest {
 
   @Test
   void readerCannotExecuteScript() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createReaderUser(serverIndex);
       try {
         final String readerAuth = basicAuth(READER_USER, READER_PWD);
@@ -70,11 +71,10 @@ class PolyglotScriptingAuthorizationIT extends BaseGraphServerTest {
 
   @Test
   void adminCanStillExecuteScript() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex ->
       // Positive control: an administrator (root) must not be blocked by the new check.
       assertThat(command(serverIndex, basicAuth("root", DEFAULT_PASSWORD_FOR_TESTS), "js", "1 + 1"))
-          .as("admin must still execute js").isEqualTo(200);
-    });
+          .as("admin must still execute js").isEqualTo(200));
   }
 
   /**
@@ -85,7 +85,7 @@ class PolyglotScriptingAuthorizationIT extends BaseGraphServerTest {
    */
   @Test
   void schemaAdminCannotDefineJsFunctionButRootCan() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createSchemaAdminUser(serverIndex);
       try {
         final String schemaAdminAuth = basicAuth(SCHEMA_ADMIN_USER, SCHEMA_ADMIN_PWD);

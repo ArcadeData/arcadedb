@@ -26,26 +26,14 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
-import com.arcadedb.query.opencypher.temporal.CypherDate;
-import com.arcadedb.query.opencypher.temporal.CypherDateTime;
-import com.arcadedb.query.opencypher.temporal.CypherDuration;
-import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
-import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
-import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.OffsetDateTime;
-import java.time.OffsetTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
+import java.sql.Time;
+import java.time.*;
 import java.util.*;
 
 /**
@@ -225,7 +213,7 @@ public class BoltStructureMapper {
     final Map<RID, Integer> relIndex = new HashMap<>();
     final List<Long> indices = new ArrayList<>(edges.size() * 2);
 
-    addPathNode(vertices.get(0), nodes, nodeIndex);
+    addPathNode(vertices.getFirst(), nodes, nodeIndex);
 
     // Invariant: vertices.size() == edges.size() + 1, guaranteed by TraversalPath construction, so
     // vertices.get(i + 1) below is always in range for i < edges.size().
@@ -503,7 +491,7 @@ public class BoltStructureMapper {
     // throws UnsupportedOperationException on them, so map to the date-only / time-only value first.
     if (value instanceof java.sql.Date sqlDate)
       return toTemporalStructure(sqlDate.toLocalDate());
-    if (value instanceof java.sql.Time sqlTime)
+    if (value instanceof Time sqlTime)
       return toTemporalStructure(sqlTime.toLocalTime());
     if (value instanceof Date date)
       return dateTimeWithOffset(LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC), ZoneOffset.UTC);
@@ -583,47 +571,47 @@ public class BoltStructureMapper {
     try {
       switch (signature) {
       case SIG_DATE:
-        return LocalDate.ofEpochDay(asLong(f.get(0)));
+        return LocalDate.ofEpochDay(asLong(f.getFirst()));
 
       case SIG_LOCAL_TIME:
-        return LocalTime.ofNanoOfDay(asLong(f.get(0)));
+        return LocalTime.ofNanoOfDay(asLong(f.getFirst()));
 
       case SIG_TIME:
-        return OffsetTime.of(LocalTime.ofNanoOfDay(asLong(f.get(0))), ZoneOffset.ofTotalSeconds((int) asLong(f.get(1))));
+        return OffsetTime.of(LocalTime.ofNanoOfDay(asLong(f.getFirst())), ZoneOffset.ofTotalSeconds((int) asLong(f.get(1))));
 
       case SIG_LOCAL_DATE_TIME:
-        return LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+        return LocalDateTime.ofEpochSecond(asLong(f.getFirst()), (int) asLong(f.get(1)), ZoneOffset.UTC);
 
       case SIG_DATE_TIME_OFFSET_LEGACY: {
         // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset.
-        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.getFirst()), (int) asLong(f.get(1)), ZoneOffset.UTC);
         return OffsetDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
       }
 
       case SIG_DATE_TIME_ZONEID_LEGACY: {
-        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.getFirst()), (int) asLong(f.get(1)), ZoneOffset.UTC);
         return ZonedDateTime.of(local, ZoneId.of(String.valueOf(f.get(2))));
       }
 
       case SIG_DATE_TIME_OFFSET_UTC: {
         // UTC (Bolt 5.0+): seconds is the true UTC epoch-second.
-        final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
+        final Instant instant = Instant.ofEpochSecond(asLong(f.getFirst()), asLong(f.get(1)));
         return OffsetDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
       }
 
       case SIG_DATE_TIME_ZONEID_UTC: {
-        final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
+        final Instant instant = Instant.ofEpochSecond(asLong(f.getFirst()), asLong(f.get(1)));
         return ZonedDateTime.ofInstant(instant, ZoneId.of(String.valueOf(f.get(2))));
       }
 
       case SIG_DURATION:
-        return new CypherDuration(asLong(f.get(0)), asLong(f.get(1)), asLong(f.get(2)), (int) asLong(f.get(3)));
+        return new CypherDuration(asLong(f.getFirst()), asLong(f.get(1)), asLong(f.get(2)), (int) asLong(f.get(3)));
 
       case SIG_POINT_2D:
-        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), null);
+        return pointMap((int) asLong(f.getFirst()), asDouble(f.get(1)), asDouble(f.get(2)), null);
 
       case SIG_POINT_3D:
-        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), asDouble(f.get(3)));
+        return pointMap((int) asLong(f.getFirst()), asDouble(f.get(1)), asDouble(f.get(2)), asDouble(f.get(3)));
 
       default:
         // Not a recognized temporal, Duration or Point signature: leave as-is.
@@ -667,10 +655,10 @@ public class BoltStructureMapper {
    * native Bolt Point rather than a generic map.
    */
   private static Map<String, Object> pointMap(final int srid, final double x, final double y, final Double z) {
-    final Map<String, Object> m = new LinkedHashMap<>();
-    m.put("srid", srid);
-    m.put("x", x);
-    m.put("y", y);
+    final Map<String, Object> m = new HashMap<>(Map.of(
+        "srid", srid,
+        "x", x,
+        "y", y));
     if (z != null)
       m.put("z", z);
     m.put("crs", crsForSrid(srid, z != null));

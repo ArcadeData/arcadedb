@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
@@ -27,7 +28,6 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -118,7 +118,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public Map<String, Object> propertiesAsMap() {
     if (database == null || buffer == null)
-      return Collections.emptyMap();
+      return Map.of();
     buffer.position(propertiesStartingPosition);
     return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
   }
@@ -133,7 +133,7 @@ public class ImmutableDocument extends BaseDocument {
    */
   public Map<String, Object> propertiesAsMap(final String... fieldNames) {
     if (database == null || buffer == null)
-      return Collections.emptyMap();
+      return Map.of();
     if (fieldNames == null || fieldNames.length == 0)
       return propertiesAsMap();
     buffer.position(propertiesStartingPosition);

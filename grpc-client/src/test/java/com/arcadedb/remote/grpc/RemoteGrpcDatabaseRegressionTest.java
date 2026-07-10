@@ -28,6 +28,7 @@ import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -164,10 +165,10 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
   }
 
   private Map<String, Object> row(String id, String name, int n) {
-    Map<String, Object> m = new HashMap<>();
-    m.put("id", id);
-    m.put("name", name);
-    m.put("n", n);
+    Map<String, Object> m = new HashMap<>(Map.of(
+        "id", id,
+        "name", name,
+        "n", n));
     return m;
   }
 
@@ -177,10 +178,10 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
   @DisplayName("Bulk insert via gRPC is idempotent by key and supports updates on conflict")
   void bulkInsertIdempotentAndUpdate() {
     // Prepare rows
-    List<Map<String, Object>> rows = new ArrayList<>();
-    rows.add(row("r1", "alpha", 1));
-    rows.add(row("r2", "beta", 2));
-    rows.add(row("r3", "gamma", 3));
+    List<Map<String, Object>> rows = new ArrayList<>(List.of(
+        row("r1", "alpha", 1),
+        row("r2", "beta", 2),
+        row("r3", "gamma", 3)));
 
     grpc.begin();
     InsertOptions opts = defaultInsertOptions(TYPE, List.of("id"), Arrays.asList("name", "n"));
@@ -281,7 +282,7 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
       List<?> props = (List<?>) propsObj;
       assertThat(props.isEmpty()).as("properties list should not be empty").isFalse();
 
-      Object first = props.get(0);
+      Object first = props.getFirst();
       assertThat(first).as("each property is expected to be a Map").isInstanceOf(Map.class);
 
       Map<?, ?> p0 = (Map<?, ?>) first;
@@ -297,12 +298,12 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
   void embeddedAuditMetadataRoundTrip() {
 
     final String recId = "audit1";
-    final Map<String, Object> audit = new LinkedHashMap<>();
+    final Map<String, Object> audit = new HashMap<>(Map.of(
 
-    audit.put("createdDate", 1720225210408L);
-    audit.put("createdByUser", "service-account-empower-platform-admin");
-    audit.put("lastModifiedDate", 1741795459718L);
-    audit.put("lastModifiedByUser", "service-account-empower-platform-admin");
+        "createdDate", 1720225210408L,
+        "createdByUser", "service-account-empower-platform-admin",
+        "lastModifiedDate", 1741795459718L,
+        "lastModifiedByUser", "service-account-empower-platform-admin"));
 
     grpc.command("sql", "INSERT INTO `" + TYPE + "` SET id = :id, name = :name, n = :n, _auditMetadata = :audit",
         Map.of("id", recId, "name", "with-audit", "n", 1, "audit", audit));

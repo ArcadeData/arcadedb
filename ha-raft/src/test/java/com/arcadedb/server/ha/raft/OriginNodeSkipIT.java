@@ -44,7 +44,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -91,7 +90,7 @@ class OriginNodeSkipIT {
       final RaftProperties properties = new RaftProperties();
       final Path storagePath = tempDir.resolve("node" + i);
       Files.createDirectories(storagePath);
-      RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storagePath.toFile()));
+      RaftServerConfigKeys.setStorageDir(properties, List.of(storagePath.toFile()));
       GrpcConfigKeys.Server.setPort(properties, BASE_PORT + i);
       properties.set("raft.server.rpc.type", "GRPC");
 
@@ -145,8 +144,8 @@ class OriginNodeSkipIT {
     waitForAllStateMachines(1);
 
     // node0 is the origin - should have skipped
-    assertThat(stateMachines.get(0).getAppliedEntries()).isEmpty();
-    assertThat(stateMachines.get(0).getSkippedEntries()).containsExactly("tx-1");
+    assertThat(stateMachines.getFirst().getAppliedEntries()).isEmpty();
+    assertThat(stateMachines.getFirst().getSkippedEntries()).containsExactly("tx-1");
 
     // node1 and node2 are not the origin - should have applied
     assertThat(stateMachines.get(1).getAppliedEntries()).containsExactly("tx-1");
@@ -176,8 +175,8 @@ class OriginNodeSkipIT {
     waitForAllStateMachines(2);
 
     // node0: skipped "before-change" (origin), applied "after-change" (not origin)
-    assertThat(stateMachines.get(0).getSkippedEntries()).containsExactly("before-change");
-    assertThat(stateMachines.get(0).getAppliedEntries()).containsExactly("after-change");
+    assertThat(stateMachines.getFirst().getSkippedEntries()).containsExactly("before-change");
+    assertThat(stateMachines.getFirst().getAppliedEntries()).containsExactly("after-change");
 
     // node1: applied "before-change" (not origin), skipped "after-change" (origin)
     assertThat(stateMachines.get(1).getAppliedEntries()).containsExactly("before-change");

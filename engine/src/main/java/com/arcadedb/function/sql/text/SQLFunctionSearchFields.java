@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -30,7 +31,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextQueryExecutor;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -74,8 +74,8 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
     final List<String> fieldNames = new ArrayList<>();
     final Object fieldsParam = iParams[0];
 
-    if (fieldsParam instanceof Collection) {
-      for (final Object f : (Collection<?>) fieldsParam) {
+    if (fieldsParam instanceof Collection<?> collection) {
+      for (final Object f : collection) {
         fieldNames.add(f.toString());
       }
     } else if (fieldsParam.getClass().isArray()) {
@@ -128,8 +128,8 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
 
       // Execute search using the found index
       for (final Index bucketIndex : matchingIndex.getIndexesOnBuckets()) {
-        if (bucketIndex instanceof LSMTreeFullTextIndex) {
-          final FullTextQueryExecutor executor = new FullTextQueryExecutor((LSMTreeFullTextIndex) bucketIndex);
+        if (bucketIndex instanceof LSMTreeFullTextIndex index) {
+          final FullTextQueryExecutor executor = new FullTextQueryExecutor(index);
           final IndexCursor cursor = executor.search(queryString, -1);
 
           while (cursor.hasNext()) {

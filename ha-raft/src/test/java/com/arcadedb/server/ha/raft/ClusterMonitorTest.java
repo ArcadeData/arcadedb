@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -148,7 +149,7 @@ class ClusterMonitorTest {
 
     final List<CapturedLine> severe = captured.linesAtLevel(Level.SEVERE);
     assertThat(severe).hasSize(1);
-    assertThat(severe.get(0).message).contains("STALLED").contains("replica1");
+    assertThat(severe.getFirst().message).contains("STALLED").contains("replica1");
   }
 
   /**
@@ -168,7 +169,7 @@ class ClusterMonitorTest {
 
     final List<CapturedLine> warns = captured.linesAtLevel(Level.WARNING);
     assertThat(warns).hasSize(1);
-    assertThat(warns.get(0).message).contains("falling behind").contains("replica1");
+    assertThat(warns.getFirst().message).contains("falling behind").contains("replica1");
     assertThat(captured.linesAtLevel(Level.SEVERE)).isEmpty();
   }
 
@@ -543,7 +544,7 @@ class ClusterMonitorTest {
     assertThat(resets).hasSize(ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS);
     final List<CapturedLine> gaveUp = captured.linesAtLevel(Level.SEVERE);
     assertThat(gaveUp).hasSize(1);
-    assertThat(gaveUp.get(0).message).contains("giving up").contains("replica-2");
+    assertThat(gaveUp.getFirst().message).contains("giving up").contains("replica-2");
   }
 
   @Test
@@ -579,7 +580,7 @@ class ClusterMonitorTest {
     new ClusterMonitor(10L, 0L, null, false, 0L, 30_000L, s -> { });
     final List<CapturedLine> warnings = captured.linesAtLevel(Level.WARNING);
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.get(0).message).contains("peerChannelResetDuration").contains("peerUnreachableThreshold");
+    assertThat(warnings.getFirst().message).contains("peerChannelResetDuration").contains("peerUnreachableThreshold");
   }
 
   @Test

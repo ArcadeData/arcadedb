@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -47,7 +48,7 @@ class WindowFunctionTest extends TestHelper {
     final List<Object> prev = (List<Object>) rs.next().getProperty("prev");
 
     assertThat(prev).hasSize(5);
-    assertThat(prev.get(0)).isNull();
+    assertThat(prev.getFirst()).isNull();
     assertThat(prev.get(1)).isEqualTo(10.0);
     assertThat(prev.get(2)).isEqualTo(20.0);
     assertThat(prev.get(3)).isEqualTo(30.0);
@@ -72,7 +73,7 @@ class WindowFunctionTest extends TestHelper {
     final List<Object> prev = (List<Object>) rs.next().getProperty("prev");
 
     assertThat(prev).hasSize(5);
-    assertThat(prev.get(0)).isNull();
+    assertThat(prev.getFirst()).isNull();
     assertThat(prev.get(1)).isNull();
     assertThat(prev.get(2)).isEqualTo(10.0);
     assertThat(prev.get(3)).isEqualTo(20.0);
@@ -97,7 +98,7 @@ class WindowFunctionTest extends TestHelper {
     final List<Object> prev = (List<Object>) rs.next().getProperty("prev");
 
     assertThat(prev).hasSize(5);
-    assertThat(prev.get(0)).isEqualTo(-1);
+    assertThat(prev.getFirst()).isEqualTo(-1);
     assertThat(prev.get(1)).isEqualTo(10.0);
     assertThat(prev.get(2)).isEqualTo(20.0);
     assertThat(prev.get(3)).isEqualTo(30.0);
@@ -122,7 +123,7 @@ class WindowFunctionTest extends TestHelper {
     final List<Object> next = (List<Object>) rs.next().getProperty("next");
 
     assertThat(next).hasSize(5);
-    assertThat(next.get(0)).isEqualTo(20.0);
+    assertThat(next.getFirst()).isEqualTo(20.0);
     assertThat(next.get(1)).isEqualTo(30.0);
     assertThat(next.get(2)).isEqualTo(40.0);
     assertThat(next.get(3)).isEqualTo(50.0);
@@ -147,7 +148,7 @@ class WindowFunctionTest extends TestHelper {
     final List<Object> next = (List<Object>) rs.next().getProperty("next");
 
     assertThat(next).hasSize(5);
-    assertThat(next.get(0)).isEqualTo(20.0);
+    assertThat(next.getFirst()).isEqualTo(20.0);
     assertThat(next.get(1)).isEqualTo(30.0);
     assertThat(next.get(2)).isEqualTo(40.0);
     assertThat(next.get(3)).isEqualTo(50.0);
@@ -242,7 +243,7 @@ class WindowFunctionTest extends TestHelper {
       assertThat(prev).isNotNull();
       assertThat(prev).hasSize(3);
       // First element in each bucket should be null (no previous)
-      assertThat(prev.get(0)).isNull();
+      assertThat(prev.getFirst()).isNull();
       count++;
     }
     assertThat(count).isEqualTo(2);
@@ -255,29 +256,29 @@ class WindowFunctionTest extends TestHelper {
     final ResultSet lagRs = database.query("sql", "SELECT ts.lag(temperature, 1, ts) AS prev FROM EmptyWin");
     if (lagRs.hasNext()) {
       final Object prev = lagRs.next().getProperty("prev");
-      if (prev instanceof List)
-        assertThat((List<?>) prev).isEmpty();
+      if (prev instanceof List<?> list)
+        assertThat(list).isEmpty();
     }
 
     final ResultSet leadRs = database.query("sql", "SELECT ts.lead(temperature, 1, ts) AS next FROM EmptyWin");
     if (leadRs.hasNext()) {
       final Object next = leadRs.next().getProperty("next");
-      if (next instanceof List)
-        assertThat((List<?>) next).isEmpty();
+      if (next instanceof List<?> list1)
+        assertThat(list1).isEmpty();
     }
 
     final ResultSet rnRs = database.query("sql", "SELECT ts.rowNumber(ts) AS rn FROM EmptyWin");
     if (rnRs.hasNext()) {
       final Object rn = rnRs.next().getProperty("rn");
-      if (rn instanceof List)
-        assertThat((List<?>) rn).isEmpty();
+      if (rn instanceof List<?> list2)
+        assertThat(list2).isEmpty();
     }
 
     final ResultSet rankRs = database.query("sql", "SELECT ts.rank(temperature, ts) AS rnk FROM EmptyWin");
     if (rankRs.hasNext()) {
       final Object rnk = rankRs.next().getProperty("rnk");
-      if (rnk instanceof List)
-        assertThat((List<?>) rnk).isEmpty();
+      if (rnk instanceof List<?> list3)
+        assertThat(list3).isEmpty();
     }
   }
 
@@ -296,7 +297,7 @@ class WindowFunctionTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final List<Object> prev = (List<Object>) lagRs.next().getProperty("prev");
     assertThat(prev).hasSize(10);
-    assertThat(prev.get(0)).isNull();
+    assertThat(prev.getFirst()).isNull();
     assertThat(prev.get(1)).isEqualTo(10.0);
     assertThat(prev.get(9)).isEqualTo(90.0);
 
@@ -306,7 +307,7 @@ class WindowFunctionTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final List<Object> next = (List<Object>) leadRs.next().getProperty("next");
     assertThat(next).hasSize(10);
-    assertThat(next.get(0)).isEqualTo(20.0);
+    assertThat(next.getFirst()).isEqualTo(20.0);
     assertThat(next.get(8)).isEqualTo(100.0);
     assertThat(next.get(9)).isNull();
   }

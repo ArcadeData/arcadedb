@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

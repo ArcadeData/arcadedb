@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.utility.CodeUtils;
+
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -40,8 +41,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * robust capture mechanism.
  */
 @Tag("slow")
-@Disabled("Live-cluster log capture is timing/logging-config fragile; catch-up narrative verified via "
-    + "FollowerResyncProgressTrackerTest and HealthMonitorTest. Revisit with robust capture.")
+@Disabled("""
+    Live-cluster log capture is timing/logging-config fragile; catch-up narrative verified via \
+    FollowerResyncProgressTrackerTest and HealthMonitorTest. Revisit with robust capture.""")
 class RaftFollowerCatchupLoggingIT extends BaseRaftHATest {
 
   @Override

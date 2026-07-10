@@ -62,8 +62,8 @@ public class ExistsExpression implements Expression {
           final Object value = result.getProperty(propertyName);
           params.put(propertyName, value);
 
-          if (value instanceof Identifiable) {
-            final String rid = ((Identifiable) value).getIdentity().toString();
+          if (value instanceof Identifiable identifiable) {
+            final String rid = identifiable.getIdentity().toString();
             final String paramName = "__exists_" + propertyName;
             params.put(paramName, rid);
 

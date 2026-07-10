@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -149,10 +150,10 @@ public class InsertContentEmptyArrayTest extends TestHelper {
 
     // Test using parameter with empty array
     Map<String, Object> params = new HashMap<>();
-    Map<String, Object> content = new HashMap<>();
-    content.put("name", "paramTest");
-    content.put("emptyList", new ArrayList<>());
-    content.put("emptyArray", new Object[0]);
+    Map<String, Object> content = new HashMap<>(Map.of(
+        "name", "paramTest",
+        "emptyList", new ArrayList<>(),
+        "emptyArray", new Object[0]));
     params.put("content", content);
 
     final String sql = "INSERT INTO " + className + " CONTENT :content";
@@ -219,8 +220,8 @@ public class InsertContentEmptyArrayTest extends TestHelper {
       assertThat(matrix).hasSize(4);
 
       // First array: [1,2]
-      assertThat(matrix.get(0)).isInstanceOf(List.class);
-      List<Integer> first = (List<Integer>) matrix.get(0);
+      assertThat(matrix.getFirst()).isInstanceOf(List.class);
+      List<Integer> first = (List<Integer>) matrix.getFirst();
       assertThat(first).containsExactly(1, 2);
 
       // Second array: empty

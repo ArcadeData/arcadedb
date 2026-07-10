@@ -39,9 +39,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.schema.Property.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -213,12 +211,13 @@ public class GraphQLResultSet implements ResultSet {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
-            if (o instanceof Document document)
-              item = mapBySelections(new ResultInternal(document), selectionSet);
-            else if (o instanceof Result result)
-              item = mapBySelections(result, selectionSet);
-            else
+            switch (o) {
+              case Document document -> item = mapBySelections(new ResultInternal(document), selectionSet);
+              case Result result -> item = mapBySelections(result, selectionSet);
+            case null, default -> {
               continue;
+            }
+            }
 
             subResults.add(item);
           }
@@ -237,12 +236,13 @@ public class GraphQLResultSet implements ResultSet {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
-            if (o instanceof Document document)
-              item = mapByReturnType(new ResultInternal(document), projectionType);
-            else if (o instanceof Result result)
-              item = mapByReturnType(result, projectionType);
-            else
-              continue;
+            switch (o) {
+              case Document document -> item = mapByReturnType(new ResultInternal(document), projectionType);
+              case Result result -> item = mapByReturnType(result, projectionType);
+              case null, default -> {
+                continue;
+              }
+            }
 
             subResults.add(item);
           }

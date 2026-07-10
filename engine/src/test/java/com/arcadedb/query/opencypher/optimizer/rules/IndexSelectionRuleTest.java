@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -71,7 +72,7 @@ class IndexSelectionRuleTest {
 
   @Test
   void isNotApplicableWithoutNodes() {
-    final LogicalPlan emptyPlan = LogicalPlan.forTesting(Collections.emptyMap());
+    final LogicalPlan emptyPlan = LogicalPlan.forTesting(Map.of());
 
     assertThat(rule.isApplicable(emptyPlan)).isFalse();
   }

@@ -29,6 +29,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.text.SimpleDateFormat;
@@ -439,9 +440,9 @@ class DocumentValidationTest extends TestHelper {
     d.set("short", 10);
     d.set("string", "yeah");
     d.set("embeddedList", Arrays.asList("a", "b"));
-    final HashMap<String, String> cont = new HashMap<String, String>();
-    cont.put("one", "one");
-    cont.put("two", "one");
+    final HashMap<String, String> cont = new HashMap<>(Map.of(
+        "one", "one",
+        "two", "one"));
     d.set("embeddedMap", cont);
 
     d.validate();
@@ -461,10 +462,10 @@ class DocumentValidationTest extends TestHelper {
     checkFieldValue(d, "short", 20);
     checkFieldValue(d, "string", "0123456789101112");
     checkFieldValue(d, "embeddedList", Arrays.asList("a", "b", "d"));
-    final HashMap<String, String> con1 = new HashMap<>();
-    con1.put("one", "one");
-    con1.put("two", "one");
-    con1.put("three", "one");
+    final HashMap<String, String> con1 = new HashMap<>(Map.of(
+        "one", "one",
+        "two", "one",
+        "three", "one"));
 
     checkFieldValue(d, "embeddedMap", con1);
   }

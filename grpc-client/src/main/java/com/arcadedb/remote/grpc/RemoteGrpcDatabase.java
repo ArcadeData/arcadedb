@@ -81,6 +81,7 @@ import com.arcadedb.server.grpc.TransactionContext;
 import com.arcadedb.server.grpc.TransactionIsolation;
 import com.arcadedb.server.grpc.UpdateRecordRequest;
 import com.arcadedb.server.grpc.UpdateRecordResponse;
+
 import com.google.protobuf.Int32Value;
 import io.grpc.Status;
 import io.grpc.StatusException;
@@ -1796,18 +1797,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   private TransactionIsolation mapIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL level) {
-    switch (level) {
+    return switch (level) {
 //      case READ_UNCOMMITTED:
 //        return TransactionIsolation.READ_UNCOMMITTED;
-      case READ_COMMITTED:
-        return TransactionIsolation.READ_COMMITTED;
-      case REPEATABLE_READ:
-        return TransactionIsolation.REPEATABLE_READ;
+      case READ_COMMITTED -> TransactionIsolation.READ_COMMITTED;
+      case REPEATABLE_READ -> TransactionIsolation.REPEATABLE_READ;
 //      case SERIALIZABLE:
 //        return TransactionIsolation.SERIALIZABLE;
-      default:
-        return TransactionIsolation.READ_COMMITTED;
-    }
+      default -> TransactionIsolation.READ_COMMITTED;
+    };
   }
 
   // ---- TX helpers -------------------------------------------------------------
@@ -1994,20 +1992,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // --- Debug helpers (client) ---
   private static String summarize(final Object o) {
     try {
-      switch (o) {
-        case null:
-          return "null";
-        case CharSequence s:
-          return "String(" + s.length() + ")";
-        case byte[] b:
-          return "bytes[" + b.length + "]";
-        case Collection<?> c:
-          return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
-        case Map<?, ?> m:
-          return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
-        default:
-          return o.getClass().getSimpleName();
-      }
+      return switch (o) {
+        case null -> "null";
+        case CharSequence s -> "String(" + s.length() + ")";
+        case byte[] b -> "bytes[" + b.length + "]";
+        case Collection<?> c -> o.getClass().getSimpleName() + "[size=" + c.size() + "]";
+        case Map<?, ?> m -> o.getClass().getSimpleName() + "[size=" + m.size() + "]";
+        default -> o.getClass().getSimpleName();
+      };
     } catch (Exception e) {
       return o.getClass().getSimpleName();
     }

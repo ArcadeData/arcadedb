@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -92,7 +93,7 @@ class OpenCypherBugFixesTest extends TestHelper {
       @SuppressWarnings("unchecked")
       final List<Object> result = rs.next().getProperty("result");
       assertThat(result).hasSize(2);
-      assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+      assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
       assertThat(((Number) result.get(1)).longValue()).isEqualTo(3L);
     }
   }

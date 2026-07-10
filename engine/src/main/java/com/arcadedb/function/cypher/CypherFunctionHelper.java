@@ -55,8 +55,8 @@ public final class CypherFunctionHelper {
   public static int cypherTypeRank(final Object value) {
     if (value == null)
       return 9;
-    if (value instanceof Number) {
-      final double d = ((Number) value).doubleValue();
+    if (value instanceof Number number) {
+      final double d = number.doubleValue();
       return Double.isNaN(d) ? 8 : 7;
     }
     if (value instanceof Boolean)
@@ -87,15 +87,13 @@ public final class CypherFunctionHelper {
     if (rankA != rankB)
       return Integer.compare(rankA, rankB);
     // Same type category - compare within type
-    if (a instanceof Number && b instanceof Number)
-      return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
-    if (a instanceof String && b instanceof String)
-      return ((String) a).compareTo((String) b);
-    if (a instanceof Boolean && b instanceof Boolean)
-      return Boolean.compare((Boolean) a, (Boolean) b);
-    if (a instanceof List && b instanceof List) {
-      final List<?> la = (List<?>) a;
-      final List<?> lb = (List<?>) b;
+    if (a instanceof Number number && b instanceof Number number1)
+      return Double.compare(number.doubleValue(), number1.doubleValue());
+    if (a instanceof String string && b instanceof String string1)
+      return string.compareTo(string1);
+    if (a instanceof Boolean boolean1 && b instanceof Boolean boolean2)
+      return Boolean.compare(boolean1, boolean2);
+    if (a instanceof List<?> la && b instanceof List<?> lb) {
       for (int i = 0; i < Math.min(la.size(), lb.size()); i++) {
         final int cmp = cypherCompare(la.get(i), lb.get(i));
         if (cmp != 0)
@@ -103,9 +101,9 @@ public final class CypherFunctionHelper {
       }
       return Integer.compare(la.size(), lb.size());
     }
-    if (a instanceof Comparable && b instanceof Comparable) {
+    if (a instanceof Comparable comparable && b instanceof Comparable) {
       try {
-        return ((Comparable) a).compareTo(b);
+        return comparable.compareTo(b);
       } catch (final ClassCastException e) {
         return 0;
       }
@@ -138,14 +136,14 @@ public final class CypherFunctionHelper {
    * Wrap a java.time value from ArcadeDB storage into the corresponding CypherTemporalValue.
    */
   public static CypherTemporalValue wrapTemporal(final Object val) {
-    if (val instanceof CypherTemporalValue)
-      return (CypherTemporalValue) val;
-    if (val instanceof LocalDate)
-      return new CypherDate((LocalDate) val);
-    if (val instanceof LocalDateTime)
-      return new CypherLocalDateTime((LocalDateTime) val);
-    if (val instanceof ZonedDateTime)
-      return new CypherDateTime((ZonedDateTime) val);
+    if (val instanceof CypherTemporalValue value)
+      return value;
+    if (val instanceof LocalDate date)
+      return new CypherDate(date);
+    if (val instanceof LocalDateTime time)
+      return new CypherLocalDateTime(time);
+    if (val instanceof ZonedDateTime time1)
+      return new CypherDateTime(time1);
     throw new CommandExecutionException("Expected temporal value but got: " + (val == null ? "null" : val.getClass().getSimpleName()));
   }
 

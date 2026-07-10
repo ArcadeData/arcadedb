@@ -23,6 +23,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -39,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5091EmptyArrayListTest extends TestHelper {
+class Issue5091EmptyArrayListTest extends TestHelper {
 
   @Override
   protected void beginTest() {

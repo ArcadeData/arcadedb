@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -97,9 +98,10 @@ class PatternPredicateGhostEdgeTest {
     // PatternPredicateExpression.checkRelationshipExists -> edge.getIn().
     assertThatCode(() -> database.transaction(() ->
         database.command("opencypher",
-            "MATCH (a:Account {number: $accountNumber}), (t:Transaction {id: $id}) "
-                + "WHERE NOT EXISTS ((a)-[:INITIATED {transaction_id: $id}]->(t)) "
-                + "CREATE (a)-[:INITIATED {transaction_id: $id, channel: $channel}]->(t)",
+            """
+            MATCH (a:Account {number: $accountNumber}), (t:Transaction {id: $id}) \
+            WHERE NOT EXISTS ((a)-[:INITIATED {transaction_id: $id}]->(t)) \
+            CREATE (a)-[:INITIATED {transaction_id: $id, channel: $channel}]->(t)""",
             Map.of("accountNumber", "ACC-1", "id", "TX-1", "channel", "web")))
     ).doesNotThrowAnyException();
 
@@ -108,8 +110,9 @@ class PatternPredicateGhostEdgeTest {
     // record frees its slot, which CREATE may reuse, so the total is an allocation artifact. That a
     // genuinely-dangling ghost never surfaces as a result row is proven by matchExpandSkipsGhostEdge.
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH (a:Account {number: 'ACC-1'})-[r:INITIATED]->(t:Transaction {id: 'TX-1'}) "
-            + "WHERE r.channel = 'web' RETURN count(r) AS c")) {
+        """
+        MATCH (a:Account {number: 'ACC-1'})-[r:INITIATED]->(t:Transaction {id: 'TX-1'}) \
+        WHERE r.channel = 'web' RETURN count(r) AS c""")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("c")).intValue()).isGreaterThanOrEqualTo(1);
     }

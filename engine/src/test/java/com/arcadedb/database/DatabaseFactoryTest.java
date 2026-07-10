@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.security.SecurityManager;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;

@@ -21,8 +21,8 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
 import com.arcadedb.index.Index;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.serializer.json.JSONObject;
 

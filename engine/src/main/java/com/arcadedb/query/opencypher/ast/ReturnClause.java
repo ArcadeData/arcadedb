@@ -83,7 +83,7 @@ public class ReturnClause {
    * Check if this is a RETURN * (return all variables).
    */
   public boolean isReturnAll() {
-    return items.size() == 1 && "*".equals(items.get(0).getOutputName());
+    return items.size() == 1 && "*".equals(items.getFirst().getOutputName());
   }
 
   /**

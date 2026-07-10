@@ -21,9 +21,9 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,7 +43,7 @@ class LabelsTest extends TestHelper {
 
   @Test
   void getCompositeTypeNameWithEmptyList() {
-    assertThat(Labels.getCompositeTypeName(Collections.emptyList())).isEqualTo("V");
+    assertThat(Labels.getCompositeTypeName(List.of())).isEqualTo("V");
   }
 
   @Test
@@ -96,7 +96,7 @@ class LabelsTest extends TestHelper {
   @Test
   void ensureCompositeTypeWithEmptyList() {
     database.transaction(() -> {
-      String typeName = Labels.ensureCompositeType(database.getSchema(), Collections.emptyList());
+      String typeName = Labels.ensureCompositeType(database.getSchema(), List.of());
       assertThat(typeName).isEqualTo("V");
     });
   }

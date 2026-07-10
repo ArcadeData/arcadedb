@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -59,7 +60,7 @@ class TimeSeriesRetentionTest extends TestHelper {
     );
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -107,10 +108,8 @@ class TimeSeriesRetentionTest extends TestHelper {
       database.begin();
       final List<Object[]> allAfter = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
       assertThat(allAfter).hasSize(4);
-      assertThat((long) allAfter.get(0)[0]).isEqualTo(3000L);
+      assertThat((long) allAfter.getFirst()[0]).isEqualTo(3000L);
       database.commit();
-    } finally {
-      engine.close();
     }
   }
 
@@ -129,7 +128,7 @@ class TimeSeriesRetentionTest extends TestHelper {
     );
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -144,8 +143,6 @@ class TimeSeriesRetentionTest extends TestHelper {
       final List<Object[]> allData = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
       assertThat(allData).hasSize(3);
       database.commit();
-    } finally {
-      engine.close();
     }
   }
 
@@ -164,7 +161,7 @@ class TimeSeriesRetentionTest extends TestHelper {
     );
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -179,8 +176,6 @@ class TimeSeriesRetentionTest extends TestHelper {
       final List<Object[]> allData = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
       assertThat(allData).isEmpty();
       database.commit();
-    } finally {
-      engine.close();
     }
   }
 
@@ -200,7 +195,7 @@ class TimeSeriesRetentionTest extends TestHelper {
     );
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.getShard(0).compact();
       database.commit();
@@ -267,8 +262,6 @@ class TimeSeriesRetentionTest extends TestHelper {
       for (final Object[] row : allAfter)
         assertThat((long) row[0]).isGreaterThanOrEqualTo(3000L);
       database.commit();
-    } finally {
-      engine.close();
     }
   }
 
@@ -281,7 +274,7 @@ class TimeSeriesRetentionTest extends TestHelper {
     final TimeSeriesEngine engine = new TimeSeriesEngine(db, "retention_empty_test", columns, 1);
     database.commit();
 
-    try {
+    try (engine) {
       // Apply retention on empty engine — should not throw
       engine.applyRetention(5000L);
 
@@ -291,8 +284,6 @@ class TimeSeriesRetentionTest extends TestHelper {
       final List<Object[]> allData = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
       assertThat(allData).isEmpty();
       database.commit();
-    } finally {
-      engine.close();
     }
   }
 }

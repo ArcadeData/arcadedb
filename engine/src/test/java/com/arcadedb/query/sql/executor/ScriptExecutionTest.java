@@ -27,9 +27,10 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
-  import org.junit.jupiter.api.Test;
+import com.arcadedb.query.sql.SQLQueryEngine;
+
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -285,7 +286,6 @@ class ScriptExecutionTest extends TestHelper {
         LET $retries = $retries + 1;
         COMMIT;
         """.formatted(typeName);
-    ;
     final int TOTAL = 10_000;
     for (int i = 0; i < TOTAL; i++) {
       database.async().command("sqlscript", script, null);
@@ -311,7 +311,6 @@ class ScriptExecutionTest extends TestHelper {
         LET $retries = $retries + 1;
         COMMIT RETRY 100;
         """.formatted(typeName);
-    ;
     for (int i = 0; i < TOTAL; i++) {
       database.async().command("sqlscript", script, null);
     }
@@ -374,8 +373,6 @@ class ScriptExecutionTest extends TestHelper {
           COMMIT RETRY 10 ELSE CONTINUE;
           INSERT INTO %s set name = 'foo';
           """.formatted(typeName, typeName);
-      ;
-
       database.command("sqlscript", script);
 
       ResultSet result = database.query("sql", "select from " + typeName);

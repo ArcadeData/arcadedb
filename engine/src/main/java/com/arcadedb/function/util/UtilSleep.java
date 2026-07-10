@@ -54,8 +54,8 @@ public class UtilSleep extends AbstractUtilFunction {
       return null;
 
     final long milliseconds;
-    if (args[0] instanceof Number) {
-      milliseconds = ((Number) args[0]).longValue();
+    if (args[0] instanceof Number number) {
+      milliseconds = number.longValue();
     } else {
       milliseconds = Long.parseLong(args[0].toString());
     }

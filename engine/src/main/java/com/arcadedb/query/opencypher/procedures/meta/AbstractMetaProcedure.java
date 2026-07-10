@@ -36,18 +36,18 @@ import java.util.Map;
 public abstract class AbstractMetaProcedure implements CypherProcedure {
 
   protected Map<String, Object> typeToMap(final DocumentType type) {
-    final Map<String, Object> result = new HashMap<>();
-    result.put("name", type.getName());
-    result.put("type", type.getClass().getSimpleName().replace("Type", "").toUpperCase());
+    final Map<String, Object> result = new HashMap<>(Map.of(
+        "name", type.getName(),
+        "type", type.getClass().getSimpleName().replace("Type", "").toUpperCase()));
 
     final List<Map<String, Object>> properties = new ArrayList<>();
     for (final String propName : type.getPropertyNames()) {
       final Property property = type.getProperty(propName);
-      final Map<String, Object> propMap = new HashMap<>();
-      propMap.put("name", propName);
-      propMap.put("type", property.getType().name());
-      propMap.put("mandatory", property.isMandatory());
-      propMap.put("readOnly", property.isReadonly());
+      final Map<String, Object> propMap = new HashMap<>(Map.of(
+          "name", propName,
+          "type", property.getType().name(),
+          "mandatory", property.isMandatory(),
+          "readOnly", property.isReadonly()));
       if (property.getDefaultValue() != null) {
         propMap.put("defaultValue", property.getDefaultValue());
       }

@@ -23,6 +23,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.parser.SelectStatement;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

@@ -3,6 +3,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -33,7 +34,7 @@ class ArrayConcatNestedProjectionTest extends TestHelper {
       final List<?> resultList = (List<?>) result;
       assertThat(resultList).hasSize(1);
 
-      final Object firstElement = resultList.get(0);
+      final Object firstElement = resultList.getFirst();
       assertThat(firstElement).isInstanceOf(Map.class);
 
       final Map<?, ?> map = (Map<?, ?>) firstElement;

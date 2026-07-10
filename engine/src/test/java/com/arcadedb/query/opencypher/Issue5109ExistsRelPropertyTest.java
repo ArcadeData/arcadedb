@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,15 +43,15 @@ class Issue5109ExistsRelPropertyTest {
   @BeforeEach
   void setUp() {
     database = new DatabaseFactory("./target/databases/issue-5109-exists-rel-property").create();
-    database.transaction(() -> {
+    database.transaction(() ->
       // Alice -[:R {w: 3}]-> Bob, Alice -[:R {w: 5}]-> Dave. No w=999 anywhere.
-      database.command("opencypher", "CREATE "
-          + "(a:X {name: 'Alice'}),"
-          + "(b:X {name: 'Bob'}),"
-          + "(d:X {name: 'Dave'}),"
-          + "(a)-[:R {w: 3}]->(b),"
-          + "(a)-[:R {w: 5}]->(d)");
-    });
+      database.command("opencypher", """
+          CREATE \
+          (a:X {name: 'Alice'}),\
+          (b:X {name: 'Bob'}),\
+          (d:X {name: 'Dave'}),\
+          (a)-[:R {w: 3}]->(b),\
+          (a)-[:R {w: 5}]->(d)"""));
   }
 
   @AfterEach
@@ -96,13 +97,15 @@ class Issue5109ExistsRelPropertyTest {
   void whereExistsWithBoundEndNodeEnforcesRelProperty() {
     // Bob is the end of the w=3 edge; a w=999 filter to a bound Bob must not match.
     final ResultSet rs = database.query("opencypher",
-        "MATCH (a:X {name: 'Alice'}), (b:X {name: 'Bob'}) "
-            + "WHERE exists((a)-[:R {w: 999}]->(b)) RETURN a.name AS name");
+        """
+        MATCH (a:X {name: 'Alice'}), (b:X {name: 'Bob'}) \
+        WHERE exists((a)-[:R {w: 999}]->(b)) RETURN a.name AS name""");
     assertThat(rs.hasNext()).isFalse();
 
     final ResultSet rs2 = database.query("opencypher",
-        "MATCH (a:X {name: 'Alice'}), (b:X {name: 'Bob'}) "
-            + "WHERE exists((a)-[:R {w: 3}]->(b)) RETURN a.name AS name");
+        """
+        MATCH (a:X {name: 'Alice'}), (b:X {name: 'Bob'}) \
+        WHERE exists((a)-[:R {w: 3}]->(b)) RETURN a.name AS name""");
     assertThat(rs2.hasNext()).isTrue();
   }
 

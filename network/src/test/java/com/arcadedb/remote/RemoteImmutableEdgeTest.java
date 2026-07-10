@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.schema.Property;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
@@ -51,13 +52,13 @@ class RemoteImmutableEdgeTest {
     when(mockType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
     when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
 
-    final Map<String, Object> attributes = new HashMap<>();
-    attributes.put(Property.TYPE_PROPERTY, "TestEdge");
-    attributes.put(Property.CAT_PROPERTY, "e");
-    attributes.put(Property.OUT_PROPERTY, "#1:0");
-    attributes.put(Property.IN_PROPERTY, "#2:0");
-    attributes.put("weight", 10);
-    attributes.put(Property.RID_PROPERTY, "#5:0");
+    final Map<String, Object> attributes = new HashMap<>(Map.of(
+        Property.TYPE_PROPERTY, "TestEdge",
+        Property.CAT_PROPERTY, "e",
+        Property.OUT_PROPERTY, "#1:0",
+        Property.IN_PROPERTY, "#2:0",
+        "weight", 10,
+        Property.RID_PROPERTY, "#5:0"));
 
     edge = new RemoteImmutableEdge(mockDatabase, attributes);
   }

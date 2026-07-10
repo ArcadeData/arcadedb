@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalTransactionExplicitLock;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;

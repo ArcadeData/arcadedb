@@ -23,6 +23,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,7 +39,7 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create a type and insert some records
       final DocumentType type = database.getSchema().createDocumentType("TestTruncateBucket");
-      final Bucket bucket = type.getBuckets(false).get(0);
+      final Bucket bucket = type.getBuckets(false).getFirst();
       final String bucketName = bucket.getName();
 
       // Insert records
@@ -67,7 +68,7 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create a type with a name that needs backticks
       final DocumentType type = database.getSchema().createDocumentType("TestTruncate_Bucket_Name");
-      final Bucket bucket = type.getBuckets(false).get(0);
+      final Bucket bucket = type.getBuckets(false).getFirst();
       final String bucketName = bucket.getName();
 
       // Insert records
@@ -93,7 +94,7 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create a type with an empty bucket
       final DocumentType type = database.getSchema().createDocumentType("TestTruncateEmptyBucket");
-      final Bucket bucket = type.getBuckets(false).get(0);
+      final Bucket bucket = type.getBuckets(false).getFirst();
       final String bucketName = bucket.getName();
 
       // Verify bucket is empty
@@ -114,7 +115,7 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create a vertex type and insert vertices
       database.getSchema().createVertexType("TestTruncateVertexBucket");
-      final String bucketName = database.getSchema().getType("TestTruncateVertexBucket").getBuckets(false).get(0).getName();
+      final String bucketName = database.getSchema().getType("TestTruncateVertexBucket").getBuckets(false).getFirst().getName();
 
       // Insert vertices
       database.command("sql", "CREATE VERTEX TestTruncateVertexBucket SET name = 'v1'");
@@ -158,7 +159,7 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
 
       database.command("sql", "CREATE EDGE TestTruncateEdgeE FROM " + v1Rid + " TO " + v2Rid);
 
-      final String edgeBucketName = database.getSchema().getType("TestTruncateEdgeE").getBuckets(false).get(0).getName();
+      final String edgeBucketName = database.getSchema().getType("TestTruncateEdgeE").getBuckets(false).getFirst().getName();
 
       // Verify edge exists
       assertThat(database.countBucket(edgeBucketName)).isEqualTo(1);
@@ -192,7 +193,7 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
     database.transaction(() -> {
       // Create a type
       final DocumentType type = database.getSchema().createDocumentType("TestTruncateMultiple");
-      final String bucketName = type.getBuckets(false).get(0).getName();
+      final String bucketName = type.getBuckets(false).getFirst().getName();
 
       // Insert, truncate, insert again
       for (int i = 0; i < 5; i++) {

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

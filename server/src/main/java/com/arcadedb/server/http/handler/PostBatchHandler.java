@@ -30,6 +30,7 @@ import com.arcadedb.server.http.handler.batch.BatchRecordStream;
 import com.arcadedb.server.http.handler.batch.CsvBatchRecordStream;
 import com.arcadedb.server.http.handler.batch.JsonlBatchRecordStream;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 
@@ -38,11 +39,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.logging.Level;
 
 /**

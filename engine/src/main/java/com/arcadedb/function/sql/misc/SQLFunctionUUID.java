@@ -19,8 +19,8 @@
 package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.UUID;
 

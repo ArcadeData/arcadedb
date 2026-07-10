@@ -24,12 +24,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.integration.importer.format.FormatImporter;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.Type;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.*;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;

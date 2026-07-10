@@ -25,6 +25,7 @@ import com.arcadedb.server.grpc.DatabaseCredentials;
 import com.arcadedb.server.grpc.DropDatabaseRequest;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
 import com.arcadedb.server.grpc.ListDatabasesResponse;
+
 import io.grpc.CallCredentials;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptor;
@@ -304,7 +305,7 @@ public class RemoteGrpcServer implements AutoCloseable {
     if (host == null || host.isBlank())
       return false;
     final String h = host.trim();
-    if (h.equalsIgnoreCase("localhost"))
+    if ("localhost".equalsIgnoreCase(h))
       return true;
     try {
       return InetAddress.getByName(h).isLoopbackAddress();

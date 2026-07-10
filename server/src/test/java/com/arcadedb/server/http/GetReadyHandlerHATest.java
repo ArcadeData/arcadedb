@@ -26,11 +26,11 @@ import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -205,7 +205,7 @@ class GetReadyHandlerHATest extends StaticBaseServerTest {
 
     @Override
     public Map<String, Object> getStats() {
-      return Collections.emptyMap();
+      return Map.of();
     }
 
     @Override

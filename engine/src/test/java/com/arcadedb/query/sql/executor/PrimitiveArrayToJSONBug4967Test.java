@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.serializer.json.JSONArray;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +36,7 @@ class PrimitiveArrayToJSONBug4967Test {
 
   @Test
   void projectedPrimitiveArraySerializesAsJsonArray() throws Exception {
-    TestHelper.executeInNewDatabase("primitiveArrayJson4967", (db) -> {
+    TestHelper.executeInNewDatabase("primitiveArrayJson4967", db -> {
       db.command("sql", "CREATE DOCUMENT TYPE Item");
       db.command("sql", "CREATE PROPERTY Item.emb ARRAY_OF_FLOATS");
       db.command("sql", "INSERT INTO Item SET emb = [1.5, 2.5]");
@@ -60,7 +61,7 @@ class PrimitiveArrayToJSONBug4967Test {
 
   @Test
   void allPrimitiveArrayTypesSerializeAsJsonArray() throws Exception {
-    TestHelper.executeInNewDatabase("primitiveArrayJson4967Types", (db) -> {
+    TestHelper.executeInNewDatabase("primitiveArrayJson4967Types", db -> {
       db.command("sql", "CREATE DOCUMENT TYPE Item");
       db.command("sql", "CREATE PROPERTY Item.floats ARRAY_OF_FLOATS");
       db.command("sql", "CREATE PROPERTY Item.doubles ARRAY_OF_DOUBLES");
@@ -68,8 +69,9 @@ class PrimitiveArrayToJSONBug4967Test {
       db.command("sql", "CREATE PROPERTY Item.longs ARRAY_OF_LONGS");
       db.command("sql", "CREATE PROPERTY Item.shorts ARRAY_OF_SHORTS");
       db.command("sql",
-          "INSERT INTO Item SET floats = [1.5, 2.5], doubles = [3.5, 4.5], ints = [1, 2, 3], "
-              + "longs = [10, 20], shorts = [5, 6]");
+          """
+          INSERT INTO Item SET floats = [1.5, 2.5], doubles = [3.5, 4.5], ints = [1, 2, 3], \
+          longs = [10, 20], shorts = [5, 6]""");
 
       try (final ResultSet rs = db.query("sql", "SELECT floats, doubles, ints, longs, shorts FROM Item")) {
         final var json = rs.next().toJSON();

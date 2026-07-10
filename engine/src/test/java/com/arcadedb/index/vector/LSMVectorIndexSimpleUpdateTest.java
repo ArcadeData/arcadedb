@@ -25,6 +25,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

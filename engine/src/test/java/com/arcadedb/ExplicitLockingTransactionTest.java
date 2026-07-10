@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

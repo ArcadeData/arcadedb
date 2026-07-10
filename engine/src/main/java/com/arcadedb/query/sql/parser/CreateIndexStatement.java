@@ -217,8 +217,8 @@ public class CreateIndexStatement extends DDLStatement {
       // Build the HNSW graph immediately unless explicitly disabled
       if (buildGraphNow)
         for (final Index idx : typeIndex.getIndexesOnBuckets())
-          if (idx instanceof LSMVectorIndex)
-            ((LSMVectorIndex) idx).buildVectorGraphNow();
+          if (idx instanceof LSMVectorIndex index)
+            index.buildVectorGraphNow();
 
     } else if (indexType == Schema.INDEX_TYPE.FULL_TEXT && metadata != null) {
       // Handle full-text index metadata

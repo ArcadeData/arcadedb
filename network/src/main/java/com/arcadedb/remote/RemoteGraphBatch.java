@@ -267,8 +267,8 @@ public class RemoteGraphBatch implements AutoCloseable {
   static void appendJsonValue(final StringBuilder sb, final Object value) {
     if (value == null)
       sb.append("null");
-    else if (value instanceof String)
-      appendJsonString(sb, (String) value);
+    else if (value instanceof String string)
+      appendJsonString(sb, string);
     else if (value instanceof Number || value instanceof Boolean)
       sb.append(value);
     else

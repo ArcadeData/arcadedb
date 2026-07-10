@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.rewriter;
 
 import com.arcadedb.query.opencypher.ast.*;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;

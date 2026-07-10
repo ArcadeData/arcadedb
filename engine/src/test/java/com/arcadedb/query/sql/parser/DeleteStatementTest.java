@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -49,10 +50,10 @@ public class DeleteStatementTest extends TestHelper {
     doc2.save();
     doc3.save();
 
-    final List<Document> list = new ArrayList<>();
-    list.add(doc1);
-    list.add(doc2);
-    list.add(doc3);
+    final List<Document> list = new ArrayList<>(List.of(
+        doc1,
+        doc2,
+        doc3));
     final MutableDocument bar = database.newDocument("Bar").set("arr", list);
     bar.save();
 

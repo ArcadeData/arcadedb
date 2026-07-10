@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.parser.InOperator;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

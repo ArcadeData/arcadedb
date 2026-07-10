@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;

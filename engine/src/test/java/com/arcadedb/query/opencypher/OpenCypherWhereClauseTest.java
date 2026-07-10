@@ -18,19 +18,6 @@
  */
 package com.arcadedb.query.opencypher;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandParsingException;
@@ -38,7 +25,18 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for WHERE clause with logical operators, NULL checks, and regex matching.
@@ -512,7 +510,7 @@ public class OpenCypherWhereClauseTest {
 
       assertThat(allIds).hasSize(5);
 
-      List<Number> queryIds = List.of(allIds.get(0), allIds.get(2), allIds.get(4));
+      List<Number> queryIds = List.of(allIds.getFirst(), allIds.get(2), allIds.get(4));
 
       result = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE ID(n) IN $ids RETURN n.text as text, ID(n) as id",
@@ -542,7 +540,7 @@ public class OpenCypherWhereClauseTest {
         allIds.add(id);
       }
 
-      List<Number> queryIds = List.of(allIds.get(2), allIds.get(1), allIds.get(0), allIds.get(4), allIds.get(3));
+      List<Number> queryIds = List.of(allIds.get(2), allIds.get(1), allIds.getFirst(), allIds.get(4), allIds.get(3));
 
       result = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE ID(n) IN $ids RETURN n.text as text, ID(n) as id",
@@ -629,7 +627,7 @@ public class OpenCypherWhereClauseTest {
         results.add(result.next());
 
       assertThat(results).hasSize(1);
-      assertThat(results.get(0).<String>getProperty("n.name")).isEqualTo("Alice");
+      assertThat(results.getFirst().<String>getProperty("n.name")).isEqualTo("Alice");
     }
 
     @Test
@@ -640,7 +638,7 @@ public class OpenCypherWhereClauseTest {
         results.add(result.next());
 
       assertThat(results).hasSize(2);
-      assertThat(results.get(0).<String>getProperty("n.name")).isEqualTo("Alice");
+      assertThat(results.getFirst().<String>getProperty("n.name")).isEqualTo("Alice");
       assertThat(results.get(1).<String>getProperty("n.name")).isEqualTo("Bob");
     }
   }

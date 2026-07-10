@@ -793,11 +793,11 @@ class ExternalPropertyTest extends TestHelper {
     type.createProperty("name", Type.STRING);
     type.createProperty("tags", Type.LIST).setExternal(true);
 
-    final List<Object> tags = new ArrayList<>();
-    tags.add("alpha");
-    tags.add(42);
-    tags.add(3.14);
-    tags.add("very-long-string-".repeat(50));
+    final List<Object> tags = new ArrayList<>(List.of(
+        "alpha",
+        42,
+        3.14,
+        "very-long-string-".repeat(50)));
 
     final RID[] saved = new RID[1];
     database.transaction(() -> {
@@ -841,11 +841,11 @@ class ExternalPropertyTest extends TestHelper {
     type.createProperty("name", Type.STRING);
     type.createProperty("attrs", Type.MAP).setExternal(true);
 
-    final Map<String, Object> attrs = new LinkedHashMap<>();
-    attrs.put("city", "Rome");
-    attrs.put("zip", 100);
-    attrs.put("score", 9.81);
-    attrs.put("notes", "lorem ipsum ".repeat(80));
+    final Map<String, Object> attrs = Map.of(
+        "city", "Rome",
+        "zip", 100,
+        "score", 9.81,
+        "notes", "lorem ipsum ".repeat(80));
 
     final RID[] saved = new RID[1];
     database.transaction(() -> {

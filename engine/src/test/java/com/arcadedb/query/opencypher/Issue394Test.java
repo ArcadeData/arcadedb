@@ -25,6 +25,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -103,8 +104,9 @@ class Issue394Test {
     // deleted slot.
     assertThatCode(() -> database.transaction(() ->
         database.command("opencypher",
-            "MATCH (a:Account {number: $number}), (t:Transaction {id: $id}) " +
-                "MERGE (a)-[r:RECEIVED_BY {received_at: $received_at, holds_applied: $holds_applied}]->(t)",
+            """
+            MATCH (a:Account {number: $number}), (t:Transaction {id: $id}) \
+            MERGE (a)-[r:RECEIVED_BY {received_at: $received_at, holds_applied: $holds_applied}]->(t)""",
             Map.of("number", "ACC-1", "id", "TX-1", "received_at", "2024-01-01", "holds_applied", false))
     )).doesNotThrowAnyException();
   }
@@ -122,8 +124,9 @@ class Issue394Test {
 
     assertThatCode(() -> database.transaction(() ->
         database.command("opencypher",
-            "MATCH (a:Account {number: $number}), (t:Transaction {id: $id}) " +
-                "MERGE (a)-[r:RECEIVED_BY {received_at: $received_at, holds_applied: $holds_applied}]->(t)",
+            """
+            MATCH (a:Account {number: $number}), (t:Transaction {id: $id}) \
+            MERGE (a)-[r:RECEIVED_BY {received_at: $received_at, holds_applied: $holds_applied}]->(t)""",
             Map.of("number", "ACC-2", "id", "TX-2", "received_at", "2024-01-02", "holds_applied", true))
     )).doesNotThrowAnyException();
 
@@ -165,15 +168,17 @@ class Issue394Test {
     // Add a second valid edge with identical properties.
     database.transaction(() ->
         database.command("opencypher",
-            "MATCH (a:Account {number: 'ACC-3'}), (t:Transaction {id: 'TX-3'}) " +
-                "CREATE (a)-[:RECEIVED_BY {received_at: '2024-01-03', holds_applied: false}]->(t)")
+            """
+            MATCH (a:Account {number: 'ACC-3'}), (t:Transaction {id: 'TX-3'}) \
+            CREATE (a)-[:RECEIVED_BY {received_at: '2024-01-03', holds_applied: false}]->(t)""")
     );
 
     // MERGE must find the surviving valid edge (no throw, no duplicate created).
     assertThatCode(() -> database.transaction(() ->
         database.command("opencypher",
-            "MATCH (a:Account {number: $number}), (t:Transaction {id: $id}) " +
-                "MERGE (a)-[r:RECEIVED_BY {received_at: $received_at, holds_applied: $holds_applied}]->(t)",
+            """
+            MATCH (a:Account {number: $number}), (t:Transaction {id: $id}) \
+            MERGE (a)-[r:RECEIVED_BY {received_at: $received_at, holds_applied: $holds_applied}]->(t)""",
             Map.of("number", "ACC-3", "id", "TX-3", "received_at", "2024-01-03", "holds_applied", false))
     )).doesNotThrowAnyException();
 

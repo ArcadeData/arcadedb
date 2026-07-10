@@ -21,12 +21,13 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Base64;
-import java.util.Collections;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -138,7 +139,7 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPayload(connection, "opencypher", "MATCH (u:DefaultSerTest) RETURN u", null, Collections.emptyMap());
+      formatPayload(connection, "opencypher", "MATCH (u:DefaultSerTest) RETURN u", null, Map.of());
       connection.connect();
 
       assertThat(connection.getResponseCode())

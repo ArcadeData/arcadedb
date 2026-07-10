@@ -297,30 +297,32 @@ public class ArrayRangeSelector extends SimpleNode {
       return;
     }
     final int range = to - from;
-    if (currentValue instanceof List list) {
-      for (int i = 0; i < range; i++) {
-        if (list.size() > from) {
-          list.remove(from);
-        } else {
-          break;
-        }
-      }
-    } else if (currentValue instanceof Set set) {
-      final Iterator iter = set.iterator();
-      int count = 0;
-      while (iter.hasNext()) {
-        iter.next();
-        if (count >= from) {
-          if (count < to) {
-            iter.remove();
+    switch (currentValue) {
+      case List list -> {
+        for (int i = 0;i < range;i++) {
+          if (list.size() > from) {
+            list.remove(from);
           } else {
             break;
           }
         }
-        count++;
       }
-    } else {
-      throw new CommandExecutionException("Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
+      case Set set -> {
+        final Iterator iter = set.iterator();
+        int count = 0;
+        while (iter.hasNext()) {
+          iter.next();
+          if (count >= from) {
+            if (count < to) {
+              iter.remove();
+            } else {
+              break;
+            }
+          }
+          count++;
+        }
+      }
+      case null, default -> throw new CommandExecutionException("Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
     }
   }
   @Override

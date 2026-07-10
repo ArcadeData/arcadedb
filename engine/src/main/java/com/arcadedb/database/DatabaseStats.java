@@ -41,23 +41,23 @@ public class DatabaseStats {
   public final AtomicLong countBucket   = new AtomicLong();
 
   public Map<String, Object> toMap() {
-    final Map<String, Object> map = new HashMap<>();
-    map.put("writeTx", writeTx.get());
-    map.put("readTx", readTx.get());
-    map.put("txRollbacks", txRollbacks.get());
-    map.put("createRecord", createRecord.get());
-    map.put("readRecord", readRecord.get());
-    map.put("updateRecord", updateRecord.get());
-    map.put("deleteRecord", deleteRecord.get());
-    map.put("existsRecord", existsRecord.get());
-    map.put("queries", queries.get());
-    map.put("commands", commands.get());
-    map.put("scanType", scanType.get());
-    map.put("scanBucket", scanBucket.get());
-    map.put("iterateType", iterateType.get());
-    map.put("iterateBucket", iterateBucket.get());
-    map.put("countType", countType.get());
-    map.put("countBucket", countBucket.get());
+    final Map<String, Object> map = new HashMap<>(Map.ofEntries(
+        Map.entry("writeTx", writeTx.get()),
+        Map.entry("readTx", readTx.get()),
+        Map.entry("txRollbacks", txRollbacks.get()),
+        Map.entry("createRecord", createRecord.get()),
+        Map.entry("readRecord", readRecord.get()),
+        Map.entry("updateRecord", updateRecord.get()),
+        Map.entry("deleteRecord", deleteRecord.get()),
+        Map.entry("existsRecord", existsRecord.get()),
+        Map.entry("queries", queries.get()),
+        Map.entry("commands", commands.get()),
+        Map.entry("scanType", scanType.get()),
+        Map.entry("scanBucket", scanBucket.get()),
+        Map.entry("iterateType", iterateType.get()),
+        Map.entry("iterateBucket", iterateBucket.get()),
+        Map.entry("countType", countType.get()),
+        Map.entry("countBucket", countBucket.get())));
     return map;
   }
 }

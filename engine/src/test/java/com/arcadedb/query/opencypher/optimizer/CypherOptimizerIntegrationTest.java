@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -119,7 +120,7 @@ class CypherOptimizerIntegrationTest {
     final LogicalPlan plan = LogicalPlan.forTesting(CollectionUtils.singletonMap("p", node));
 
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
-    stats.collectStatistics(Collections.singletonList("Person"));
+    stats.collectStatistics(List.of("Person"));
 
     final CostModel costModel = new CostModel(stats);
     final AnchorSelector selector = new AnchorSelector(stats, costModel);
@@ -141,7 +142,7 @@ class CypherOptimizerIntegrationTest {
     final LogicalPlan plan = LogicalPlan.forTesting(CollectionUtils.singletonMap("p", node));
 
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
-    stats.collectStatistics(Collections.singletonList("Person"));
+    stats.collectStatistics(List.of("Person"));
 
     final CostModel costModel = new CostModel(stats);
     final AnchorSelector selector = new AnchorSelector(stats, costModel);
@@ -158,13 +159,13 @@ class CypherOptimizerIntegrationTest {
   void anchorSelectorPrefersSmallerType() {
     // Given: Plan with two types
     final LogicalNode person = new LogicalNode("p", Arrays.asList("Person"),
-        Collections.emptyMap());
+        Map.of());
     final LogicalNode company = new LogicalNode("c", Arrays.asList("Company"),
-        Collections.emptyMap());
+        Map.of());
 
-    final Map<String, LogicalNode> nodes = new HashMap<>();
-    nodes.put("p", person);
-    nodes.put("c", company);
+    final Map<String, LogicalNode> nodes = new HashMap<>(Map.of(
+        "p", person,
+        "c", company));
     final LogicalPlan plan = LogicalPlan.forTesting(nodes);
 
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
@@ -202,7 +203,7 @@ class CypherOptimizerIntegrationTest {
   void indexStatisticsCollection() {
     // Given: StatisticsProvider
     final StatisticsProvider stats = new StatisticsProvider((DatabaseInternal) database);
-    stats.collectStatistics(Collections.singletonList("Person"));
+    stats.collectStatistics(List.of("Person"));
 
     // When: Query index statistics
     final var indexes = stats.getIndexesForType("Person");
@@ -227,7 +228,7 @@ class CypherOptimizerIntegrationTest {
     rules.add(new JoinOrderRule(stats, costModel));
 
     // Then: Rules should be in priority order
-    assertThat(rules.get(0).getPriority()).isEqualTo(10); // IndexSelection
+    assertThat(rules.getFirst().getPriority()).isEqualTo(10); // IndexSelection
     assertThat(rules.get(1).getPriority()).isEqualTo(20); // FilterPushdown
     assertThat(rules.get(2).getPriority()).isEqualTo(30); // ExpandInto
     assertThat(rules.get(3).getPriority()).isEqualTo(40); // JoinOrder

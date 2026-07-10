@@ -22,12 +22,14 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,7 +60,7 @@ class LSMVectorIndexInheritanceTest extends TestHelper {
     database.transaction(() -> {
       final float[] testVector = new float[1024];
       for (int i = 0; i < 1024; i++) {
-        testVector[i] = (float) Math.random();
+        testVector[i] = (float) ThreadLocalRandom.current().nextDouble();
       }
 
       database.command("sql", "INSERT INTO EMBEDDING SET vector = ?", (Object) testVector);
@@ -72,7 +74,7 @@ class LSMVectorIndexInheritanceTest extends TestHelper {
     database.transaction(() -> {
       final float[] testVector = new float[1024];
       for (int i = 0; i < 1024; i++) {
-        testVector[i] = (float) Math.random();
+        testVector[i] = (float) ThreadLocalRandom.current().nextDouble();
       }
 
       database.command("sql", "INSERT INTO CHUNK_EMBEDDING SET vector = ?", (Object) testVector);

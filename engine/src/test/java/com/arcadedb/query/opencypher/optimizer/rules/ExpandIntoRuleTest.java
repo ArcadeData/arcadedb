@@ -23,6 +23,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -59,9 +60,9 @@ class ExpandIntoRuleTest {
     final LogicalNode nodeB = new LogicalNode("b", Arrays.asList("Person"),
         CollectionUtils.singletonMap("id", 2));
 
-    final Map<String, LogicalNode> nodes = new HashMap<>();
-    nodes.put("a", nodeA);
-    nodes.put("b", nodeB);
+    final Map<String, LogicalNode> nodes = new HashMap<>(Map.of(
+        "a", nodeA,
+        "b", nodeB));
 
     final LogicalPlan plan = LogicalPlan.forTesting(nodes);
     // Note: LogicalPlan doesn't have public API to add relationships for testing
@@ -78,11 +79,11 @@ class ExpandIntoRuleTest {
     final LogicalNode boundNode = new LogicalNode("a", Arrays.asList("Person"),
         CollectionUtils.singletonMap("id", 1));
     final LogicalNode unboundNode = new LogicalNode("b", Arrays.asList("Person"),
-        Collections.emptyMap());
+        Map.of());
 
-    final Map<String, LogicalNode> nodes = new HashMap<>();
-    nodes.put("a", boundNode);
-    nodes.put("b", unboundNode);
+    final Map<String, LogicalNode> nodes = new HashMap<>(Map.of(
+        "a", boundNode,
+        "b", unboundNode));
 
     final LogicalPlan plan = LogicalPlan.forTesting(nodes);
 
@@ -103,12 +104,12 @@ class ExpandIntoRuleTest {
     final LogicalNode nodeB = new LogicalNode("b", Arrays.asList("Person"),
         CollectionUtils.singletonMap("id", 2));
     final LogicalNode nodeC = new LogicalNode("c", Arrays.asList("Company"),
-        Collections.emptyMap());
+        Map.of());
 
-    final Map<String, LogicalNode> nodes = new HashMap<>();
-    nodes.put("a", nodeA);
-    nodes.put("b", nodeB);
-    nodes.put("c", nodeC);
+    final Map<String, LogicalNode> nodes = new HashMap<>(Map.of(
+        "a", nodeA,
+        "b", nodeB,
+        "c", nodeC));
 
     final LogicalPlan plan = LogicalPlan.forTesting(nodes);
 
@@ -126,7 +127,7 @@ class ExpandIntoRuleTest {
     // Setup: Both source and target are bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
-        Collections.emptyMap(), null, null
+        Map.of(), null, null
     );
 
     final Set<String> boundVars = new HashSet<>(Arrays.asList("a", "b"));
@@ -143,10 +144,10 @@ class ExpandIntoRuleTest {
     // Setup: Only source is bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
-        Collections.emptyMap(), null, null
+        Map.of(), null, null
     );
 
-    final Set<String> boundVars = new HashSet<>(Collections.singletonList("a"));
+    final Set<String> boundVars = new HashSet<>(List.of("a"));
 
     // When: Check if should use ExpandInto
     final boolean shouldUse = rule.shouldUseExpandInto(rel, boundVars);
@@ -160,10 +161,10 @@ class ExpandIntoRuleTest {
     // Setup: Only target is bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
-        Collections.emptyMap(), null, null
+        Map.of(), null, null
     );
 
-    final Set<String> boundVars = new HashSet<>(Collections.singletonList("b"));
+    final Set<String> boundVars = new HashSet<>(List.of("b"));
 
     // When: Check if should use ExpandInto
     final boolean shouldUse = rule.shouldUseExpandInto(rel, boundVars);
@@ -177,7 +178,7 @@ class ExpandIntoRuleTest {
     // Setup: Neither endpoint is bound
     final LogicalRelationship rel = new LogicalRelationship(
         "r", "a", "b", Arrays.asList("KNOWS"), Direction.OUT,
-        Collections.emptyMap(), null, null
+        Map.of(), null, null
     );
 
     final Set<String> boundVars = new HashSet<>();
@@ -192,7 +193,7 @@ class ExpandIntoRuleTest {
   @Test
   void determineBoundVariablesEmptyPlan() {
     // Create empty plan
-    final LogicalPlan plan = LogicalPlan.forTesting(Collections.emptyMap());
+    final LogicalPlan plan = LogicalPlan.forTesting(Map.of());
 
     // When: Determine bound variables
     final Set<String> boundVars = rule.determineBoundVariables(plan, "anchor");

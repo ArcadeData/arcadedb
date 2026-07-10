@@ -25,9 +25,11 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -120,7 +122,7 @@ class Word2VecImporterLSMIT {
             final var vertex = rs.next().toElement().asVertex().modify();
             final float[] newVector = new float[100];
             for (int i = 0; i < 100; i++) {
-              newVector[i] = (float) Math.random();
+              newVector[i] = (float) ThreadLocalRandom.current().nextDouble();
             }
             vertex.set("vector", newVector);
             vertex.save();
@@ -185,7 +187,7 @@ class Word2VecImporterLSMIT {
             final var vertex = rs.next().toElement().asVertex().modify();
             final float[] newVector = new float[100];
             for (int i = 0; i < 100; i++) {
-              newVector[i] = (float) (Math.random() + batchNum);
+              newVector[i] = (float) (ThreadLocalRandom.current().nextDouble() + batchNum);
             }
             vertex.set("vector", newVector);
             vertex.save();

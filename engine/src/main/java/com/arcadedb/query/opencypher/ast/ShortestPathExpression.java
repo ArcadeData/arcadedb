@@ -19,11 +19,11 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -62,7 +62,7 @@ public class ShortestPathExpression implements Expression {
       throw new IllegalArgumentException("shortestPath pattern must have exactly 2 nodes, got: " + pathPattern.getNodes().size());
     }
 
-    final NodePattern startNode = pathPattern.getNodes().get(0);
+    final NodePattern startNode = pathPattern.getNodes().getFirst();
     final NodePattern endNode = pathPattern.getNodes().get(1);
 
     // Get the bound vertex values from the result
@@ -89,7 +89,7 @@ public class ShortestPathExpression implements Expression {
     // are silently dropped (issue #4190).
     List<String> edgeTypes = null;
     if (pathPattern.getRelationships().size() == 1) {
-      final RelationshipPattern rel = pathPattern.getRelationships().get(0);
+      final RelationshipPattern rel = pathPattern.getRelationships().getFirst();
       if (rel.getTypes() != null && !rel.getTypes().isEmpty())
         edgeTypes = rel.getTypes();
     }
@@ -97,7 +97,7 @@ public class ShortestPathExpression implements Expression {
     // Get direction
     String direction = "BOTH";
     if (pathPattern.getRelationships().size() == 1) {
-      final RelationshipPattern rel = pathPattern.getRelationships().get(0);
+      final RelationshipPattern rel = pathPattern.getRelationships().getFirst();
       switch (rel.getDirection()) {
         case OUT:
           direction = "OUT";
@@ -117,7 +117,7 @@ public class ShortestPathExpression implements Expression {
     if (edgeTypes == null || edgeTypes.isEmpty())
       edgeTypeParam = null;
     else if (edgeTypes.size() == 1)
-      edgeTypeParam = edgeTypes.get(0);
+      edgeTypeParam = edgeTypes.getFirst();
     else
       edgeTypeParam = edgeTypes;
 
@@ -131,17 +131,11 @@ public class ShortestPathExpression implements Expression {
       return allPaths ? new ArrayList<>() : null;
 
     // Resolve vertex RIDs and find connecting edges to build a proper path
-    final Vertex.DIRECTION vertexDirection;
-    switch (direction) {
-      case "OUT":
-        vertexDirection = Vertex.DIRECTION.OUT;
-        break;
-      case "IN":
-        vertexDirection = Vertex.DIRECTION.IN;
-        break;
-      default:
-        vertexDirection = Vertex.DIRECTION.BOTH;
-    }
+    final Vertex.DIRECTION vertexDirection = switch (direction) {
+      case "OUT" -> Vertex.DIRECTION.OUT;
+      case "IN" -> Vertex.DIRECTION.IN;
+      default -> Vertex.DIRECTION.BOTH;
+    };
 
     final List<Object> resolved = ShortestPathStep.resolvePathWithEdges(pathRids, vertexDirection, edgeTypes,
         context.getDatabase());

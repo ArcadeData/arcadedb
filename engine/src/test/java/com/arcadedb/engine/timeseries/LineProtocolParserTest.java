@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.engine.timeseries.LineProtocolParser.Precision;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -40,7 +41,7 @@ class LineProtocolParserTest {
         "weather,location=us-midwest temperature=82 1465839830100400200", Precision.NANOSECONDS);
 
     assertThat(samples).hasSize(1);
-    final Sample s = samples.get(0);
+    final Sample s = samples.getFirst();
     assertThat(s.getMeasurement()).isEqualTo("weather");
     assertThat(s.getTags()).containsEntry("location", "us-midwest");
     assertThat(s.getFields()).containsEntry("temperature", 82.0);
@@ -56,7 +57,7 @@ class LineProtocolParserTest {
         """;
     final List<Sample> samples = LineProtocolParser.parse(text, Precision.NANOSECONDS);
     assertThat(samples).hasSize(3);
-    assertThat(samples.get(0).getTags().get("host")).isEqualTo("serverA");
+    assertThat(samples.getFirst().getTags().get("host")).isEqualTo("serverA");
     assertThat(samples.get(1).getTags().get("host")).isEqualTo("serverB");
     assertThat(samples.get(2).getTags().get("host")).isEqualTo("serverC");
   }
@@ -67,7 +68,7 @@ class LineProtocolParserTest {
         "test value_double=1.5,value_int=42i,value_str=\"hello\",value_bool=true 1000", Precision.MILLISECONDS);
 
     assertThat(samples).hasSize(1);
-    final Sample s = samples.get(0);
+    final Sample s = samples.getFirst();
     assertThat(s.getFields().get("value_double")).isEqualTo(1.5);
     assertThat(s.getFields().get("value_int")).isEqualTo(42L);
     assertThat(s.getFields().get("value_str")).isEqualTo("hello");
@@ -80,10 +81,10 @@ class LineProtocolParserTest {
         "sensor,region=us-east,zone=1a,rack=42 temp=22.5 1000", Precision.MILLISECONDS);
 
     assertThat(samples).hasSize(1);
-    assertThat(samples.get(0).getTags()).hasSize(3);
-    assertThat(samples.get(0).getTags().get("region")).isEqualTo("us-east");
-    assertThat(samples.get(0).getTags().get("zone")).isEqualTo("1a");
-    assertThat(samples.get(0).getTags().get("rack")).isEqualTo("42");
+    assertThat(samples.getFirst().getTags()).hasSize(3);
+    assertThat(samples.getFirst().getTags().get("region")).isEqualTo("us-east");
+    assertThat(samples.getFirst().getTags().get("zone")).isEqualTo("1a");
+    assertThat(samples.getFirst().getTags().get("rack")).isEqualTo("42");
   }
 
   @Test
@@ -92,10 +93,10 @@ class LineProtocolParserTest {
         "metric value=100.0 5000", Precision.MILLISECONDS);
 
     assertThat(samples).hasSize(1);
-    assertThat(samples.get(0).getMeasurement()).isEqualTo("metric");
-    assertThat(samples.get(0).getTags()).isEmpty();
-    assertThat(samples.get(0).getFields().get("value")).isEqualTo(100.0);
-    assertThat(samples.get(0).getTimestampMs()).isEqualTo(5000L);
+    assertThat(samples.getFirst().getMeasurement()).isEqualTo("metric");
+    assertThat(samples.getFirst().getTags()).isEmpty();
+    assertThat(samples.getFirst().getFields().get("value")).isEqualTo(100.0);
+    assertThat(samples.getFirst().getTimestampMs()).isEqualTo(5000L);
   }
 
   @Test
@@ -105,26 +106,26 @@ class LineProtocolParserTest {
 
     assertThat(samples).hasSize(1);
     // Timestamp should be approximately "now"
-    assertThat(samples.get(0).getTimestampMs()).isGreaterThan(0L);
+    assertThat(samples.getFirst().getTimestampMs()).isGreaterThan(0L);
   }
 
   @Test
   void precisionConversion() {
     // Nanoseconds
     List<Sample> ns = LineProtocolParser.parse("m v=1.0 1000000000", Precision.NANOSECONDS);
-    assertThat(ns.get(0).getTimestampMs()).isEqualTo(1000L); // 1 second
+    assertThat(ns.getFirst().getTimestampMs()).isEqualTo(1000L); // 1 second
 
     // Microseconds
     List<Sample> us = LineProtocolParser.parse("m v=1.0 1000000", Precision.MICROSECONDS);
-    assertThat(us.get(0).getTimestampMs()).isEqualTo(1000L); // 1 second
+    assertThat(us.getFirst().getTimestampMs()).isEqualTo(1000L); // 1 second
 
     // Milliseconds
     List<Sample> ms = LineProtocolParser.parse("m v=1.0 1000", Precision.MILLISECONDS);
-    assertThat(ms.get(0).getTimestampMs()).isEqualTo(1000L); // 1 second
+    assertThat(ms.getFirst().getTimestampMs()).isEqualTo(1000L); // 1 second
 
     // Seconds
     List<Sample> s = LineProtocolParser.parse("m v=1.0 1", Precision.SECONDS);
-    assertThat(s.get(0).getTimestampMs()).isEqualTo(1000L); // 1 second
+    assertThat(s.getFirst().getTimestampMs()).isEqualTo(1000L); // 1 second
   }
 
   /**
@@ -155,7 +156,7 @@ class LineProtocolParserTest {
 
     // Only the two valid lines survive; the overflowing one is dropped, none stored as a negative epoch.
     assertThat(samples).hasSize(2);
-    assertThat(samples.get(0).getTimestampMs()).isEqualTo(5000L);
+    assertThat(samples.getFirst().getTimestampMs()).isEqualTo(5000L);
     assertThat(samples.get(1).getTimestampMs()).isEqualTo(7000L);
     assertThat(samples).allSatisfy(sample -> assertThat(sample.getTimestampMs()).isPositive());
   }
@@ -178,10 +179,10 @@ class LineProtocolParserTest {
     final List<Sample> samples = LineProtocolParser.parse(
         "test a=true,b=false,c=t,d=f 1000", Precision.MILLISECONDS);
 
-    assertThat(samples.get(0).getFields().get("a")).isEqualTo(true);
-    assertThat(samples.get(0).getFields().get("b")).isEqualTo(false);
-    assertThat(samples.get(0).getFields().get("c")).isEqualTo(true);
-    assertThat(samples.get(0).getFields().get("d")).isEqualTo(false);
+    assertThat(samples.getFirst().getFields().get("a")).isEqualTo(true);
+    assertThat(samples.getFirst().getFields().get("b")).isEqualTo(false);
+    assertThat(samples.getFirst().getFields().get("c")).isEqualTo(true);
+    assertThat(samples.getFirst().getFields().get("d")).isEqualTo(false);
   }
 
   @Test
@@ -189,10 +190,10 @@ class LineProtocolParserTest {
     final List<Sample> samples = LineProtocolParser.parse(
         "system,host=server1 cpu=55.3,mem=8192i,disk=75.2 1000", Precision.MILLISECONDS);
 
-    assertThat(samples.get(0).getFields()).hasSize(3);
-    assertThat(samples.get(0).getFields().get("cpu")).isEqualTo(55.3);
-    assertThat(samples.get(0).getFields().get("mem")).isEqualTo(8192L);
-    assertThat(samples.get(0).getFields().get("disk")).isEqualTo(75.2);
+    assertThat(samples.getFirst().getFields()).hasSize(3);
+    assertThat(samples.getFirst().getFields().get("cpu")).isEqualTo(55.3);
+    assertThat(samples.getFirst().getFields().get("mem")).isEqualTo(8192L);
+    assertThat(samples.getFirst().getFields().get("disk")).isEqualTo(75.2);
   }
 
   @Test
@@ -213,7 +214,7 @@ class LineProtocolParserTest {
     final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
     // Bad line is skipped; good lines are still parsed
     assertThat(samples).hasSize(2);
-    assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);
+    assertThat(samples.getFirst().getTimestampMs()).isEqualTo(1000L);
     assertThat(samples.get(1).getTimestampMs()).isEqualTo(3000L);
   }
 
@@ -227,7 +228,7 @@ class LineProtocolParserTest {
         "metric value=3.0 3000\n";
     final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
     assertThat(samples).hasSize(2);
-    assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);
+    assertThat(samples.getFirst().getTimestampMs()).isEqualTo(1000L);
     assertThat(samples.get(1).getTimestampMs()).isEqualTo(3000L);
   }
 
@@ -246,7 +247,7 @@ class LineProtocolParserTest {
         """;
     final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
     assertThat(samples).hasSize(3);
-    assertThat(samples.get(0).getTimestampMs()).isEqualTo(1000L);
+    assertThat(samples.getFirst().getTimestampMs()).isEqualTo(1000L);
     assertThat(samples.get(1).getTimestampMs()).isEqualTo(2000L);
     assertThat(samples.get(1).getFields().get("overflow")).isEqualTo(-1L); // max uint64 stored as signed bit-pattern
     assertThat(samples.get(2).getTimestampMs()).isEqualTo(3000L);

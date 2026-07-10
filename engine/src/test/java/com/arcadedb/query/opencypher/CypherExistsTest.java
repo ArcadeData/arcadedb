@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -255,7 +256,7 @@ class CypherExistsTest {
       final List<Result> rows = collect(database.query("opencypher",
           "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) WHERE c.flag = true RETURN c.id AS id"));
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+      assertThat((String) rows.getFirst().getProperty("id")).isEqualTo("c");
     }
 
     // Issue #4126: control - two-MATCH plus boolean OR EXISTS returns the row
@@ -267,7 +268,7 @@ class CypherExistsTest {
           WHERE c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) } \
           RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+      assertThat((String) rows.getFirst().getProperty("id")).isEqualTo("c");
     }
 
     // Issue #4126: two-MATCH plus (bool OR EXISTS) AND NOT EXISTS returns the row when no excluded edges exist
@@ -280,7 +281,7 @@ class CypherExistsTest {
             AND NOT EXISTS { MATCH (u)-[:excl]->(c) } \
           RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+      assertThat((String) rows.getFirst().getProperty("id")).isEqualTo("c");
     }
 
     // Issue #4126: two-MATCH plus grouped exclusion AND NOT (EXISTS OR EXISTS) returns the row
@@ -294,7 +295,7 @@ class CypherExistsTest {
                   OR EXISTS { MATCH (u)-[:excl*1..3]->(c) }) \
           RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+      assertThat((String) rows.getFirst().getProperty("id")).isEqualTo("c");
     }
 
     // Issue #4126: same WHERE shape wrapped in a single outer MATCH with EXISTS body returns the row
@@ -311,7 +312,7 @@ class CypherExistsTest {
           } \
           RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+      assertThat((String) rows.getFirst().getProperty("id")).isEqualTo("c");
     }
 
     private List<Result> collect(final ResultSet rs) {

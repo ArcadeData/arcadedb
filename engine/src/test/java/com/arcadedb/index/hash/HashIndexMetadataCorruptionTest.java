@@ -190,7 +190,7 @@ class HashIndexMetadataCorruptionTest extends TestHelper {
    */
   private void corruptMetadataByte(final int contentOffset, final byte value) {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = ((IndexInternal) db.getSchema().getIndexByName(indexName)).getFileIds().get(0);
+    final int fileId = ((IndexInternal) db.getSchema().getIndexByName(indexName)).getFileIds().getFirst();
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
 
     db.transaction(() -> {

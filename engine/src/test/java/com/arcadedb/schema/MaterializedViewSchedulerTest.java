@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;

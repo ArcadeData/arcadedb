@@ -20,6 +20,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Property;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
@@ -52,12 +53,12 @@ class RemoteImmutableDocumentTest {
     when(mockType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
     when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
 
-    final Map<String, Object> attributes = new HashMap<>();
-    attributes.put(Property.TYPE_PROPERTY, "TestDoc");
-    attributes.put(Property.CAT_PROPERTY, "d");
-    attributes.put("name", "testName");
-    attributes.put("age", 25);
-    attributes.put(Property.RID_PROPERTY, "#1:0");
+    final Map<String, Object> attributes = new HashMap<>(Map.of(
+        Property.TYPE_PROPERTY, "TestDoc",
+        Property.CAT_PROPERTY, "d",
+        "name", "testName",
+        "age", 25,
+        Property.RID_PROPERTY, "#1:0"));
 
     document = new RemoteImmutableDocument(mockDatabase, attributes);
   }
@@ -149,10 +150,10 @@ class RemoteImmutableDocumentTest {
 
   @Test
   void constructorWithNoRid() {
-    final Map<String, Object> attributes = new HashMap<>();
-    attributes.put(Property.TYPE_PROPERTY, "TestDoc");
-    attributes.put(Property.CAT_PROPERTY, "d");
-    attributes.put("field1", "value1");
+    final Map<String, Object> attributes = new HashMap<>(Map.of(
+        Property.TYPE_PROPERTY, "TestDoc",
+        Property.CAT_PROPERTY, "d",
+        "field1", "value1"));
 
     final RemoteImmutableDocument doc = new RemoteImmutableDocument(mockDatabase, attributes);
     assertThat(doc.getIdentity()).isNull();
@@ -160,10 +161,10 @@ class RemoteImmutableDocumentTest {
 
   @Test
   void toMapWithMetadataAndNoRid() {
-    final Map<String, Object> attributes = new HashMap<>();
-    attributes.put(Property.TYPE_PROPERTY, "TestDoc");
-    attributes.put(Property.CAT_PROPERTY, "d");
-    attributes.put("field1", "value1");
+    final Map<String, Object> attributes = new HashMap<>(Map.of(
+        Property.TYPE_PROPERTY, "TestDoc",
+        Property.CAT_PROPERTY, "d",
+        "field1", "value1"));
 
     final RemoteImmutableDocument doc = new RemoteImmutableDocument(mockDatabase, attributes);
     final Map<String, Object> map = doc.toMap(true);

@@ -28,6 +28,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.classic.ParseException;
@@ -406,8 +407,9 @@ public class FullTextQueryExecutor {
     final long last = lastExpansionWarnMs.get();
     if (now - last >= EXPANSION_WARN_THROTTLE_MS && lastExpansionWarnMs.compareAndSet(last, now))
       LogManager.instance().log(this, Level.WARNING,
-          "Full-text query expanded to more than %d scoring terms on index '%s'; additional terms are matched but not BM25-scored. "
-              + "Consider a more specific query (narrower wildcard/fuzzy). (throttled, logged at most once per %d s)",
+          """
+          Full-text query expanded to more than %d scoring terms on index '%s'; additional terms are matched but not BM25-scored. \
+          Consider a more specific query (narrower wildcard/fuzzy). (throttled, logged at most once per %d s)""",
           MAX_EXPANDED_SCORING_TERMS, index.getName(), EXPANSION_WARN_THROTTLE_MS / 1000);
   }
 
@@ -419,8 +421,9 @@ public class FullTextQueryExecutor {
     final long last = lastPureNegativeWarnMs.get();
     if (now - last >= EXPANSION_WARN_THROTTLE_MS && lastPureNegativeWarnMs.compareAndSet(last, now))
       LogManager.instance().log(this, Level.WARNING,
-          "Pure-negative full-text query on index '%s' materialized %d documents (the whole index) to compute the complement. "
-              + "Add a positive clause to bound the scan. (throttled, logged at most once per %d s)",
+          """
+          Pure-negative full-text query on index '%s' materialized %d documents (the whole index) to compute the complement. \
+          Add a positive clause to bound the scan. (throttled, logged at most once per %d s)""",
           index.getName(), universeSize, EXPANSION_WARN_THROTTLE_MS / 1000);
   }
 
@@ -433,7 +436,7 @@ public class FullTextQueryExecutor {
   private boolean isUnqualified(final String field) {
     if (field == null || field.isEmpty() || DEFAULT_FIELD.equals(field))
       return true;
-    return propertyNames.size() == 1 && propertyNames.get(0).equals(field);
+    return propertyNames.size() == 1 && propertyNames.getFirst().equals(field);
   }
 
   /**

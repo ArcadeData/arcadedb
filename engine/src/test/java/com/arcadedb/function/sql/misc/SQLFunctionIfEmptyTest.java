@@ -21,10 +21,10 @@ package com.arcadedb.function.sql.misc;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,7 +60,7 @@ class SQLFunctionIfEmptyTest extends TestHelper {
     assertThat(result3).isEqualTo(nonEmptyList);
 
     // Case 4: Empty collection
-    List<String> emptyList = Collections.emptyList();
+    List<String> emptyList = List.of();
     Object result4 = function.execute(null, null, null, new Object[] { emptyList, "defaultValue" }, null);
     assertThat(result4).isEqualTo("defaultValue");
 

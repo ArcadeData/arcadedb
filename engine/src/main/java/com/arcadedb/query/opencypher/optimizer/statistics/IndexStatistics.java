@@ -73,7 +73,7 @@ public class IndexStatistics {
    * For composite indexes, only the first property can be used for seeks.
    */
   public boolean canBeUsedForProperty(final String propertyName) {
-    return !propertyNames.isEmpty() && propertyNames.get(0).equals(propertyName);
+    return !propertyNames.isEmpty() && propertyNames.getFirst().equals(propertyName);
   }
 
   /**

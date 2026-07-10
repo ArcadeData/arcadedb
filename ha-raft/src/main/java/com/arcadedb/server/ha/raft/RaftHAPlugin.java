@@ -20,23 +20,21 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerException;
-import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 
 import io.undertow.server.handlers.PathHandler;
-
-import com.arcadedb.database.DatabaseInternal;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -145,10 +143,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
         return;
 
       LogManager.instance().log(this, Level.WARNING,
-          "HA database '%s' has %d type(s) backed by a single bucket: %s. In a cluster all writes "
-              + "execute on the leader, so these types serialize concurrent writers on the same page and cause "
-              + "MVCC retries. Increase buckets (e.g. CREATE VERTEX TYPE <name> BUCKETS 16) and set "
-              + "'ALTER TYPE <name> BucketSelectionStrategy `thread`' to remove the contention.",
+          """
+          HA database '%s' has %d type(s) backed by a single bucket: %s. In a cluster all writes \
+          execute on the leader, so these types serialize concurrent writers on the same page and cause \
+          MVCC retries. Increase buckets (e.g. CREATE VERTEX TYPE <name> BUCKETS 16) and set \
+          'ALTER TYPE <name> BucketSelectionStrategy `thread`' to remove the contention.""",
           db.getName(), singleBucketTypes.size(), singleBucketTypes);
     } catch (final RuntimeException e) {
       // Diagnostic only: never let it interfere with wrapping a database for HA.
@@ -243,7 +242,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public Map<String, Object> getStats() {
-    return raftHAServer != null ? raftHAServer.getStats() : Collections.emptyMap();
+    return raftHAServer != null ? raftHAServer.getStats() : Map.of();
   }
 
   @Override

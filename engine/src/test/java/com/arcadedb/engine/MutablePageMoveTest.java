@@ -19,6 +19,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.BasicDatabase;
+
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 

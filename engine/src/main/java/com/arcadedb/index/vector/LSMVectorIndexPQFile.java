@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.quantization.PQVectors;

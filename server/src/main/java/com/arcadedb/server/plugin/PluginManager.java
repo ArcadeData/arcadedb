@@ -28,16 +28,7 @@ import com.arcadedb.utility.CodeUtils;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.ServiceLoader;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -308,9 +299,9 @@ public class PluginManager {
     for (final Map.Entry<String, PluginDescriptor> entry : pluginList) {
       final PluginDescriptor descriptor = entry.getValue();
       final ClassLoader classLoader = descriptor.getClassLoader();
-      if (classLoader instanceof PluginClassLoader) {
+      if (classLoader instanceof PluginClassLoader loader) {
         try {
-          ((PluginClassLoader) classLoader).close();
+          loader.close();
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.WARNING, "Error closing class loader for plugin: %s",
               e, descriptor.getPluginName());

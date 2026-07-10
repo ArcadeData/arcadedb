@@ -41,7 +41,7 @@ public class LastFunction implements StatelessFunction {
     // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
     final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
     if (list != null)
-      return list.isEmpty() ? null : list.get(list.size() - 1);
+      return list.isEmpty() ? null : list.getLast();
     return null;
   }
 }

@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

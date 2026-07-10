@@ -37,8 +37,7 @@ public class EndNodeFunction implements StatelessFunction {
     if (args.length != 1) {
       throw new CommandExecutionException("endNode() requires exactly one argument");
     }
-    if (args[0] instanceof Edge) {
-      final Edge edge = (Edge) args[0];
+    if (args[0] instanceof Edge edge) {
       // getInVertex() returns the actual Vertex, not just a RID
       return edge.getInVertex();
     }

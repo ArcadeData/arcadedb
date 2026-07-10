@@ -21,6 +21,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -80,7 +81,7 @@ class OrderByWithNullsTest extends TestHelper {
     }
     assertThat(countWithOrderAsc).as("SELECT with ORDER BY ASC should return all 3 records").isEqualTo(3);
     // NULL values should be first in ASC order (NULLS FIRST is the default for ASC in ArcadeDB)
-    assertThat(valuesAsc.get(0)).as("First value in ASC order should be NULL").isNull();
+    assertThat(valuesAsc.getFirst()).as("First value in ASC order should be NULL").isNull();
 
     // Test 3: With ORDER BY DESC - should also return 3 records
     int countWithOrderDesc;
@@ -95,7 +96,7 @@ class OrderByWithNullsTest extends TestHelper {
     }
     assertThat(countWithOrderDesc).as("SELECT with ORDER BY DESC should return all 3 records").isEqualTo(3);
     // NULL values should be last in DESC order
-    assertThat(valuesDesc.get(valuesDesc.size() - 1)).as("Last value in DESC order should be NULL").isNull();
+    assertThat(valuesDesc.getLast()).as("Last value in DESC order should be NULL").isNull();
   }
 
   @Test
@@ -225,6 +226,6 @@ class OrderByWithNullsTest extends TestHelper {
       }
     }
     assertThat(countWithOrder).as("SELECT with ORDER BY on non-indexed property should return all 3 records").isEqualTo(3);
-    assertThat(values.get(0)).as("First value should be NULL").isNull();
+    assertThat(values.getFirst()).as("First value should be NULL").isNull();
   }
 }

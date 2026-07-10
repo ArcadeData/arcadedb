@@ -68,9 +68,10 @@ class Issue4960LSMReloadCompactionCounterTest extends TestHelper {
     final LSMTreeIndexMutable after = bucketMutableIndex();
     assertThat(after.getTotalPages()).isEqualTo(pagesBeforeReopen);
     assertThat(after.getCurrentMutablePages())
-        .as("after a reload the mutable-pages counter must track the file's page count (approximate: "
-            + "getTotalPages() includes the header/root page, which is fine for a pacing-only signal), "
-            + "otherwise auto-compaction is deferred by a full threshold every restart")
+        .as("""
+            after a reload the mutable-pages counter must track the file's page count (approximate: \
+            getTotalPages() includes the header/root page, which is fine for a pacing-only signal), \
+            otherwise auto-compaction is deferred by a full threshold every restart""")
         .isEqualTo(after.getTotalPages());
   }
 

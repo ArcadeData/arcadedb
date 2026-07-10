@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.text;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

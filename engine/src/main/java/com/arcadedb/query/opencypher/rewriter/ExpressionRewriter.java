@@ -49,68 +49,68 @@ public abstract class ExpressionRewriter {
 
     // Dispatch to specific visit methods based on concrete type
     // BooleanExpression implementers
-    if (expression instanceof BooleanCoercionExpression)
-      return visitBooleanCoercion((BooleanCoercionExpression) expression);
-    if (expression instanceof ComparisonExpression)
-      return visitComparison((ComparisonExpression) expression);
-    if (expression instanceof LogicalExpression)
-      return visitLogical((LogicalExpression) expression);
-    if (expression instanceof InExpression)
-      return visitIn((InExpression) expression);
-    if (expression instanceof IsNullExpression)
-      return visitIsNull((IsNullExpression) expression);
-    if (expression instanceof StringMatchExpression)
-      return visitStringMatch((StringMatchExpression) expression);
-    if (expression instanceof RegexExpression)
-      return visitRegex((RegexExpression) expression);
-    if (expression instanceof LabelCheckExpression)
-      return visitLabelCheck((LabelCheckExpression) expression);
-    if (expression instanceof PatternPredicateExpression)
-      return visitPatternPredicate((PatternPredicateExpression) expression);
+    if (expression instanceof BooleanCoercionExpression coercionExpression)
+      return visitBooleanCoercion(coercionExpression);
+    if (expression instanceof ComparisonExpression comparisonExpression)
+      return visitComparison(comparisonExpression);
+    if (expression instanceof LogicalExpression logicalExpression)
+      return visitLogical(logicalExpression);
+    if (expression instanceof InExpression inExpression)
+      return visitIn(inExpression);
+    if (expression instanceof IsNullExpression nullExpression)
+      return visitIsNull(nullExpression);
+    if (expression instanceof StringMatchExpression matchExpression)
+      return visitStringMatch(matchExpression);
+    if (expression instanceof RegexExpression regexExpression)
+      return visitRegex(regexExpression);
+    if (expression instanceof LabelCheckExpression checkExpression)
+      return visitLabelCheck(checkExpression);
+    if (expression instanceof PatternPredicateExpression predicateExpression)
+      return visitPatternPredicate(predicateExpression);
 
     // Expression implementers
-    if (expression instanceof ArithmeticExpression)
-      return visitArithmetic((ArithmeticExpression) expression);
-    if (expression instanceof FunctionCallExpression)
-      return visitFunctionCall((FunctionCallExpression) expression);
-    if (expression instanceof PropertyAccessExpression)
-      return visitPropertyAccess((PropertyAccessExpression) expression);
-    if (expression instanceof VariableExpression)
-      return visitVariable((VariableExpression) expression);
-    if (expression instanceof LiteralExpression)
-      return visitLiteral((LiteralExpression) expression);
-    if (expression instanceof ListExpression)
-      return visitList((ListExpression) expression);
-    if (expression instanceof MapExpression)
-      return visitMap((MapExpression) expression);
-    if (expression instanceof CaseExpression)
-      return visitCase((CaseExpression) expression);
-    if (expression instanceof ListComprehensionExpression)
-      return visitListComprehension((ListComprehensionExpression) expression);
-    if (expression instanceof PatternComprehensionExpression)
-      return visitPatternComprehension((PatternComprehensionExpression) expression);
-    if (expression instanceof ReduceExpression)
-      return visitReduce((ReduceExpression) expression);
-    if (expression instanceof AllReduceExpression)
-      return visitAllReduce((AllReduceExpression) expression);
-    if (expression instanceof ListPredicateExpression)
-      return visitListPredicate((ListPredicateExpression) expression);
-    if (expression instanceof ExistsExpression)
-      return visitExists((ExistsExpression) expression);
-    if (expression instanceof ListIndexExpression)
-      return visitListIndex((ListIndexExpression) expression);
-    if (expression instanceof ListSliceExpression)
-      return visitListSlice((ListSliceExpression) expression);
-    if (expression instanceof BooleanWrapperExpression)
-      return visitBooleanWrapper((BooleanWrapperExpression) expression);
-    if (expression instanceof MapProjectionExpression)
-      return visitMapProjection((MapProjectionExpression) expression);
-    if (expression instanceof ParameterExpression)
-      return visitParameter((ParameterExpression) expression);
-    if (expression instanceof ShortestPathExpression)
-      return visitShortestPath((ShortestPathExpression) expression);
-    if (expression instanceof StarExpression)
-      return visitStar((StarExpression) expression);
+    if (expression instanceof ArithmeticExpression arithmeticExpression)
+      return visitArithmetic(arithmeticExpression);
+    if (expression instanceof FunctionCallExpression callExpression)
+      return visitFunctionCall(callExpression);
+    if (expression instanceof PropertyAccessExpression accessExpression)
+      return visitPropertyAccess(accessExpression);
+    if (expression instanceof VariableExpression variableExpression)
+      return visitVariable(variableExpression);
+    if (expression instanceof LiteralExpression literalExpression)
+      return visitLiteral(literalExpression);
+    if (expression instanceof ListExpression listExpression)
+      return visitList(listExpression);
+    if (expression instanceof MapExpression mapExpression)
+      return visitMap(mapExpression);
+    if (expression instanceof CaseExpression caseExpression)
+      return visitCase(caseExpression);
+    if (expression instanceof ListComprehensionExpression comprehensionExpression)
+      return visitListComprehension(comprehensionExpression);
+    if (expression instanceof PatternComprehensionExpression comprehensionExpression1)
+      return visitPatternComprehension(comprehensionExpression1);
+    if (expression instanceof ReduceExpression reduceExpression)
+      return visitReduce(reduceExpression);
+    if (expression instanceof AllReduceExpression reduceExpression1)
+      return visitAllReduce(reduceExpression1);
+    if (expression instanceof ListPredicateExpression predicateExpression1)
+      return visitListPredicate(predicateExpression1);
+    if (expression instanceof ExistsExpression existsExpression)
+      return visitExists(existsExpression);
+    if (expression instanceof ListIndexExpression indexExpression)
+      return visitListIndex(indexExpression);
+    if (expression instanceof ListSliceExpression sliceExpression)
+      return visitListSlice(sliceExpression);
+    if (expression instanceof BooleanWrapperExpression wrapperExpression)
+      return visitBooleanWrapper(wrapperExpression);
+    if (expression instanceof MapProjectionExpression projectionExpression)
+      return visitMapProjection(projectionExpression);
+    if (expression instanceof ParameterExpression parameterExpression)
+      return visitParameter(parameterExpression);
+    if (expression instanceof ShortestPathExpression pathExpression)
+      return visitShortestPath(pathExpression);
+    if (expression instanceof StarExpression starExpression)
+      return visitStar(starExpression);
 
     // Unknown expression type: return as-is
     return expression;

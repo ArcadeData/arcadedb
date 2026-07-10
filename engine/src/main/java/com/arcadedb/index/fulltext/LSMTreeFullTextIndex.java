@@ -36,9 +36,9 @@ import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
@@ -47,6 +47,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
@@ -169,8 +170,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       // index whose persisted counters are not trustworthy will do a full type scan (under a short lock) on its first query.
       if (!metadata.isCountersValid())
         LogManager.instance().log(this, Level.WARNING,
-            "BM25 full-text index '%s' opened with no valid corpus counters; the first query will run a full type scan. "
-                + "Pre-warm with REBUILD INDEX <name> WITH statsOnly = true before serving traffic to avoid a first-query stall.",
+            """
+            BM25 full-text index '%s' opened with no valid corpus counters; the first query will run a full type scan. \
+            Pre-warm with REBUILD INDEX <name> WITH statsOnly = true before serving traffic to avoid a first-query stall.""",
             null, index.getName());
     }
   }
@@ -405,8 +407,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // nothing. Log at FINE so this surfaces when debugging an unexpected empty result, without spamming normal queries.
     if (queryText.indexOf('^') >= 0)
       LogManager.instance().log(this, Level.FINE,
-          "Full-text get() query '%s' contains a caret; the direct lookup path does not support Lucene syntax (caret/boolean/"
-              + "phrase/wildcard) - use SEARCH_INDEX(...) for that.", null, queryText);
+          """
+          Full-text get() query '%s' contains a caret; the direct lookup path does not support Lucene syntax (caret/boolean/\
+          phrase/wildcard) - use SEARCH_INDEX(...) for that.""", null, queryText);
     final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
 
     // Build the scoring tokens (stored-key form) with their field boost, then delegate to the shared scorer. No candidate set:
@@ -1366,12 +1369,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
     } catch (final IOException e) {
       throw new IndexException("Error on tokenizer", e);
-    } finally {
-      try {
-        tokenizer.close();
-      } catch (final IOException e) {
-        // IGNORE IT
-      }
+        } finally {
+          try {
+            tokenizer.close();
+          } catch (final IOException e) {
+            // IGNORE IT
+          }
     }
   }
 
@@ -1429,7 +1432,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
 
     if (termFreqs.isEmpty())
-      return new TempIndexCursor(Collections.emptyList());
+      return new TempIndexCursor(List.of());
 
     // Step 3: Get document frequencies for each term
     final Map<String, Integer> docFreqs = new HashMap<>();
@@ -1453,7 +1456,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final List<String> topTerms = queryBuilder.selectTopTerms(termFreqs, docFreqs, totalDocs);
 
     if (topTerms.isEmpty())
-      return new TempIndexCursor(Collections.emptyList());
+      return new TempIndexCursor(List.of());
 
     // Step 5: Execute OR query and accumulate scores
     final Map<RID, Integer> scoreMap = new HashMap<>();

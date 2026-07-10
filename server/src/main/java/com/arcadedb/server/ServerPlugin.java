@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.http.HttpServer;
+
 import io.undertow.server.handlers.PathHandler;
 
 import static com.arcadedb.server.ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON;

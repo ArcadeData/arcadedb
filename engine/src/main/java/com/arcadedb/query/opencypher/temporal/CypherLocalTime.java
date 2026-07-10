@@ -73,14 +73,13 @@ public class CypherLocalTime implements CypherTemporalValue {
     LocalTime base = null;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
-      if (timeVal instanceof CypherLocalTime)
-        base = ((CypherLocalTime) timeVal).value;
-      else if (timeVal instanceof CypherTime)
-        base = ((CypherTime) timeVal).getValue().toLocalTime();
-      else if (timeVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) timeVal).getValue().toLocalTime();
-      else if (timeVal instanceof CypherDateTime)
-        base = ((CypherDateTime) timeVal).getValue().toLocalTime();
+      switch (timeVal) {
+        case CypherLocalTime time3 -> base = time3.value;
+        case CypherTime time2 -> base = time2.getValue().toLocalTime();
+        case CypherLocalDateTime time1 -> base = time1.getValue().toLocalTime();
+        case CypherDateTime time -> base = time.getValue().toLocalTime();
+        case null, default -> {}
+      }
     }
 
     final int hour = map.containsKey("hour") ? toInt(map.get("hour")) : (base != null ? base.getHour() : 0);
@@ -110,8 +109,8 @@ public class CypherLocalTime implements CypherTemporalValue {
 
   @Override
   public int compareTo(final CypherTemporalValue other) {
-    if (other instanceof CypherLocalTime)
-      return value.compareTo(((CypherLocalTime) other).value);
+    if (other instanceof CypherLocalTime time)
+      return value.compareTo(time.value);
     throw new IllegalArgumentException("Cannot compare LocalTime with " + other.getClass().getSimpleName());
   }
 

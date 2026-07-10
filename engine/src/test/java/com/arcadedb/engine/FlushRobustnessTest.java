@@ -20,14 +20,17 @@ package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageManagerFlushThread.PagesToFlush;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -131,7 +134,7 @@ class FlushRobustnessTest extends TestHelper {
   void closeWithUnflushablePagesPreservesWalAndRecoversOnNextOpen() throws Exception {
     // Dedicated throwaway database: this test wedges ITS close, which must not disturb the shared test db.
     final String dbPath = database.getDatabasePath() + "_walpreserve";
-    final com.arcadedb.database.DatabaseFactory factory = new com.arcadedb.database.DatabaseFactory(dbPath);
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
     if (factory.exists())
       factory.open().drop();
 
@@ -185,7 +188,7 @@ class FlushRobustnessTest extends TestHelper {
     // WITHOUT its WAL ack, so pageIndex is empty and a later CLEAN close believes everything was flushed.
     // Deleting the WAL then would silently lose the committed change. The close-time ack gate must catch it.
     final String dbPath = database.getDatabasePath() + "_ackgate";
-    final com.arcadedb.database.DatabaseFactory factory = new com.arcadedb.database.DatabaseFactory(dbPath);
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
     if (factory.exists())
       factory.open().drop();
 
@@ -198,13 +201,13 @@ class FlushRobustnessTest extends TestHelper {
       // Simulate the contained failure's ack state: one WAL page acknowledged to the committer but never
       // flushed (notifyPageFlushed never called). Reflection on the live WAL pool mirrors the counter state
       // the real IOException containment leaves behind.
-      final java.lang.reflect.Field poolField = TransactionManager.class.getDeclaredField("activeWALFilePool");
+      final Field poolField = TransactionManager.class.getDeclaredField("activeWALFilePool");
       poolField.setAccessible(true);
       final WALFile[] pool = (WALFile[]) poolField.get(db.getTransactionManager());
-      final java.lang.reflect.Field pendingField = WALFile.class.getDeclaredField("pagesToFlush");
+      final Field pendingField = WALFile.class.getDeclaredField("pagesToFlush");
       pendingField.setAccessible(true);
-      final java.util.concurrent.atomic.AtomicInteger pending =
-          (java.util.concurrent.atomic.AtomicInteger) pendingField.get(pool[0]);
+      final AtomicInteger pending =
+          (AtomicInteger) pendingField.get(pool[0]);
       pending.incrementAndGet();
 
       // The pipeline is empty, so the flush wait succeeds - but the ack gate must still preserve the WAL.
@@ -259,6 +262,6 @@ class FlushRobustnessTest extends TestHelper {
     // Restore the counter so this synthetic ack does not skew the shared database's close-time gate.
     final Field pendingField = WALFile.class.getDeclaredField("pagesToFlush");
     pendingField.setAccessible(true);
-    ((java.util.concurrent.atomic.AtomicInteger) pendingField.get(wal)).incrementAndGet();
+    ((AtomicInteger) pendingField.get(wal)).incrementAndGet();
   }
 }

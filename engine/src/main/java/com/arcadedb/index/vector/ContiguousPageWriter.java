@@ -24,6 +24,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.log.LogManager;
+
 import io.github.jbellis.jvector.disk.IndexWriter;
 
 import java.io.IOException;

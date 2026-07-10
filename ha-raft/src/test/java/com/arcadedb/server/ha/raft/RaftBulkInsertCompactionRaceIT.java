@@ -31,6 +31,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

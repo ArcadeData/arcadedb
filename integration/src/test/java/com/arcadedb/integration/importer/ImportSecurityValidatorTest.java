@@ -19,14 +19,13 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * Regression test for the SSRF (CWE-918) and arbitrary local file read (CWE-22) hardening of {@code IMPORT DATABASE}.

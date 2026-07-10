@@ -274,8 +274,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
     for (Object o : sources) {
       Class<?> type = null;
       if (o != null) {
-        if (o instanceof IterableGraph)
-          type = ((IterableGraph<?>) o).getEntryType();
+        if (o instanceof IterableGraph<?> graph)
+          type = graph.getEntryType();
         else if (o instanceof Collection<?> collection && !collection.isEmpty()) {
           final Object first = collection.iterator().next();
           if (first != null)

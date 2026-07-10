@@ -19,15 +19,11 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.ImmutableLightEdge;
-import com.arcadedb.graph.IterableGraph;
-import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.*;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;

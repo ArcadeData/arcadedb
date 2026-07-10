@@ -23,11 +23,11 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.TimeZone;
@@ -445,10 +445,10 @@ class RemoteSchemaTest {
     r.setProperty("name", name);
     r.setProperty("type", typeCode);
     r.setProperty("records", 0L);
-    r.setProperty("buckets", Collections.emptyList());
+    r.setProperty("buckets", List.of());
     r.setProperty("bucketSelectionStrategy", "round-robin");
-    r.setProperty("parentTypes", Collections.emptyList());
-    r.setProperty("properties", Collections.emptyList());
+    r.setProperty("parentTypes", List.of());
+    r.setProperty("properties", List.of());
     r.setProperty("custom", new HashMap<>());
     return r;
   }

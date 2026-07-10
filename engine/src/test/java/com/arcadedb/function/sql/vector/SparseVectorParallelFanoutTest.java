@@ -110,14 +110,14 @@ class SparseVectorParallelFanoutTest extends TestHelper {
 
     // Use the corpus's first record as the query so the answer is deterministic and the score is
     // bounded by self-similarity at rank 0.
-    final int[]   queryIdx = docIndices.get(0);
-    final float[] queryVal = docValues.get(0);
+    final int[]   queryIdx = docIndices.getFirst();
+    final float[] queryVal = docValues.getFirst();
 
     final long completedBefore = SparseVectorScoringPool.getInstance().getPoolStats().completedTasks();
 
     final List<RID> indexRids = runQuery(idxName, queryIdx, queryVal, K);
     assertThat(indexRids).hasSize(K);
-    assertThat(indexRids.get(0)).as("self-query must return self at rank 0").isEqualTo(docRids.get(0));
+    assertThat(indexRids.getFirst()).as("self-query must return self at rank 0").isEqualTo(docRids.getFirst());
 
     final long completedAfter = SparseVectorScoringPool.getInstance().getPoolStats().completedTasks();
     assertThat(completedAfter)

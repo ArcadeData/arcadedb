@@ -18,7 +18,6 @@
  */
 package com.arcadedb.engine.timeseries;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
@@ -26,6 +25,7 @@ import com.arcadedb.engine.timeseries.codec.Simple8bCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOps;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 
 import java.io.File;

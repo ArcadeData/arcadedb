@@ -31,7 +31,7 @@ import com.arcadedb.schema.EdgeType;
  */
 
 public class RemoteEdgeType extends RemoteDocumentType implements EdgeType {
-  private boolean bidirectional;
+  private final boolean bidirectional;
 
   RemoteEdgeType(final RemoteDatabase remoteDatabase, final Result record, final boolean bidirectional) {
     super(remoteDatabase, record);

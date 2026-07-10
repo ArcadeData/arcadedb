@@ -66,8 +66,8 @@ public class ListSliceExpression implements Expression {
     final int size;
     if (isListLike)
       size = MultiValue.getSize(listValue);
-    else if (listValue instanceof String)
-      size = ((String) listValue).length();
+    else if (listValue instanceof String string)
+      size = string.length();
     else
       throw new IllegalArgumentException("Cannot slice type: " + listValue.getClass().getSimpleName());
 
@@ -77,8 +77,8 @@ public class ListSliceExpression implements Expression {
       final Object fromValue = fromExpression.evaluate(result, context);
       if (fromValue == null)
         return null;
-      if (fromValue instanceof Number)
-        from = ((Number) fromValue).intValue();
+      if (fromValue instanceof Number number)
+        from = number.intValue();
       else
         throw new IllegalArgumentException("Slice index must be a number, got: " + fromValue.getClass().getSimpleName());
     }
@@ -89,8 +89,8 @@ public class ListSliceExpression implements Expression {
       final Object toValue = toExpression.evaluate(result, context);
       if (toValue == null)
         return null;
-      if (toValue instanceof Number)
-        to = ((Number) toValue).intValue();
+      if (toValue instanceof Number number1)
+        to = number1.intValue();
       else
         throw new IllegalArgumentException("Slice index must be a number, got: " + toValue.getClass().getSimpleName());
     }

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -74,7 +75,7 @@ class CypherMapBackticksTest {
     final List<Map<String, Object>> chunks = (List<Map<String, Object>>) row.getProperty("chunks");
     assertThat(chunks).isNotEmpty();
 
-    final Map<String, Object> firstChunk = chunks.get(0);
+    final Map<String, Object> firstChunk = chunks.getFirst();
 
     // The key should be "@rid" without backticks
     assertThat(firstChunk).containsKey("@rid");

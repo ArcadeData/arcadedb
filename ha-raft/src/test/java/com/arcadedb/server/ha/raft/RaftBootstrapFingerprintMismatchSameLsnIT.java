@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 

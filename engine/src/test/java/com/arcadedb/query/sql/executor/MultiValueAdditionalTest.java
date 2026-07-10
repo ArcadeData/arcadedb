@@ -116,9 +116,9 @@ class MultiValueAdditionalTest {
 
   @Test
   void getFirstValueMap() {
-    final Map<String, Integer> map = new LinkedHashMap<>();
-    map.put("first", 1);
-    map.put("second", 2);
+    final Map<String, Integer> map = new HashMap<>(Map.of(
+        "first", 1,
+        "second", 2));
     assertThat(MultiValue.getFirstValue(map)).isEqualTo(1);
   }
 
@@ -157,9 +157,9 @@ class MultiValueAdditionalTest {
 
   @Test
   void getLastValueMap() {
-    final Map<String, Integer> map = new LinkedHashMap<>();
-    map.put("first", 1);
-    map.put("second", 2);
+    final Map<String, Integer> map = new HashMap<>(Map.of(
+        "first", 1,
+        "second", 2));
     assertThat(MultiValue.getLastValue(map)).isEqualTo(2);
   }
 
@@ -192,9 +192,9 @@ class MultiValueAdditionalTest {
 
   @Test
   void getValueFromMap() {
-    final Map<String, Integer> map = new LinkedHashMap<>();
-    map.put("a", 10);
-    map.put("b", 20);
+    final Map<String, Integer> map = new HashMap<>(Map.of(
+        "a", 10,
+        "b", 20));
     assertThat(MultiValue.getValue(map, 1)).isEqualTo(20);
   }
 
@@ -256,9 +256,9 @@ class MultiValueAdditionalTest {
 
   @Test
   void getMultiValueIterableMap() {
-    final Map<String, Integer> map = new LinkedHashMap<>();
-    map.put("a", 1);
-    map.put("b", 2);
+    final Map<String, Integer> map = new HashMap<>(Map.of(
+        "a", 1,
+        "b", 2));
     final Iterable<?> result = MultiValue.getMultiValueIterable(map);
     final List<Object> items = new ArrayList<>();
     result.forEach(items::add);
@@ -412,9 +412,9 @@ class MultiValueAdditionalTest {
 
   @Test
   void toStringMap() {
-    final Map<String, Object> map = new LinkedHashMap<>();
-    map.put("key1", "val1");
-    map.put("key2", 42);
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "key1", "val1",
+        "key2", 42));
     final String result = MultiValue.toString(map);
     assertThat(result).isEqualTo("{key1:val1, key2:42}");
   }
@@ -452,7 +452,7 @@ class MultiValueAdditionalTest {
     final Map<String, Integer> map = Map.of("k", 1);
     MultiValue.add(list, map);
     assertThat(list).hasSize(1);
-    assertThat(list.get(0)).isEqualTo(map);
+    assertThat(list.getFirst()).isEqualTo(map);
   }
 
   @Test
@@ -506,9 +506,9 @@ class MultiValueAdditionalTest {
 
   @Test
   void removeFromMap() {
-    final Map<String, Integer> map = new HashMap<>();
-    map.put("a", 1);
-    map.put("b", 2);
+    final Map<String, Integer> map = new HashMap<>(Map.of(
+        "a", 1,
+        "b", 2));
     MultiValue.remove(map, "a", false);
     assertThat(map).containsOnlyKeys("b");
   }

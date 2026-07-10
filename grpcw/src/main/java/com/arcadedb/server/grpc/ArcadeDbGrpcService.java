@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -28,17 +27,14 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GraphBatch;
-import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -60,7 +56,8 @@ import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
-import io.micrometer.core.instrument.Metrics;
+import com.arcadedb.utility.DateUtils;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
@@ -71,9 +68,8 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
+import io.micrometer.core.instrument.Metrics;
 import org.jspecify.annotations.NonNull;
-
-import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -86,7 +82,6 @@ import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -1078,7 +1073,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Apply updates
 
         final Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
-            : req.hasPartial() ? req.getPartial().getPropertiesMap() : Collections.emptyMap();
+            : req.hasPartial() ? req.getPartial().getPropertiesMap() : Map.of();
 
         // In full-replacement mode (oneof "record") remove the properties that are no longer present, so a
         // client-side save() that dropped a property is mirrored on the server (matches the HTTP "update content"
@@ -1114,7 +1109,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Apply updates
 
         final Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
-            : req.hasPartial() ? req.getPartial().getPropertiesMap() : Collections.emptyMap();
+            : req.hasPartial() ? req.getPartial().getPropertiesMap() : Map.of();
 
         // In full-replacement mode (oneof "record") remove the properties that are no longer present, so a
         // client-side save() that dropped a property is mirrored on the server (matches the HTTP "update content"

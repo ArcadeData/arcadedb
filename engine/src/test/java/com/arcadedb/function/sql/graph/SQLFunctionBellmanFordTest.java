@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -86,7 +87,7 @@ class SQLFunctionBellmanFordTest {
           new Object[] { v1, v4, "'weight'" }, ctx);
 
       assertThat(result).hasSize(4);
-      assertThat(result.get(0)).isEqualTo(v1.getIdentity());
+      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
       assertThat(result.get(1)).isEqualTo(v2.getIdentity());
       assertThat(result.get(2)).isEqualTo(v3.getIdentity());
       assertThat(result.get(3)).isEqualTo(v4.getIdentity());
@@ -128,7 +129,7 @@ class SQLFunctionBellmanFordTest {
 
         // Shortest path A->B->C has weight 5+(-3)=2, shorter than direct A->C=10
         assertThat(result).hasSize(3);
-        assertThat(result.get(0)).isEqualTo(a.getIdentity());
+        assertThat(result.getFirst()).isEqualTo(a.getIdentity());
         assertThat(result.get(1)).isEqualTo(b.getIdentity());
         assertThat(result.get(2)).isEqualTo(c.getIdentity());
       }));

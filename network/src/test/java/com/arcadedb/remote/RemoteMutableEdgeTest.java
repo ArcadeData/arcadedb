@@ -24,6 +24,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
@@ -56,11 +57,11 @@ class RemoteMutableEdgeTest {
     when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
 
     // Build an immutable edge to use as source for the mutable edge
-    final Map<String, Object> attributes = new HashMap<>();
-    attributes.put(Property.TYPE_PROPERTY, "TestEdge");
-    attributes.put(Property.CAT_PROPERTY, "e");
-    attributes.put(Property.OUT_PROPERTY, "#1:0");
-    attributes.put(Property.IN_PROPERTY, "#2:0");
+    final Map<String, Object> attributes = new HashMap<>(Map.of(
+        Property.TYPE_PROPERTY, "TestEdge",
+        Property.CAT_PROPERTY, "e",
+        Property.OUT_PROPERTY, "#1:0",
+        Property.IN_PROPERTY, "#2:0"));
 
     when(mockEdgeType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
 

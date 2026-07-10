@@ -22,10 +22,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,7 +61,7 @@ class LSMVectorIndexExtendedTest extends TestHelper {
 
     final float[] queryVector = new float[DIMENSIONS];
     for (int i = 0; i < DIMENSIONS; i++) {
-      queryVector[i] = (float) Math.random();
+      queryVector[i] = (float) ThreadLocalRandom.current().nextDouble();
     }
 
     final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, 10);
@@ -120,7 +122,7 @@ class LSMVectorIndexExtendedTest extends TestHelper {
         final var doc = database.newVertex("VectorVertex3");
         final float[] vector = new float[16];
         for (int j = 0; j < 16; j++) {
-          vector[j] = (float) (Math.random() * 2 - 1);
+          vector[j] = (float) (ThreadLocalRandom.current().nextDouble() * 2 - 1);
         }
         doc.set("embedding", vector);
         doc.save();
@@ -132,7 +134,7 @@ class LSMVectorIndexExtendedTest extends TestHelper {
 
     final float[] queryVector = new float[16];
     for (int i = 0; i < 16; i++) {
-      queryVector[i] = (float) Math.random();
+      queryVector[i] = (float) ThreadLocalRandom.current().nextDouble();
     }
 
     final List<Pair<RID, Float>> results = index.findNeighborsFromVector(queryVector, 5);
@@ -210,7 +212,7 @@ class LSMVectorIndexExtendedTest extends TestHelper {
         final var doc = database.newVertex("VectorVertex6");
         final float[] vector = new float[32];
         for (int j = 0; j < 32; j++) {
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         }
         doc.set("embedding", vector);
         doc.save();
@@ -222,7 +224,7 @@ class LSMVectorIndexExtendedTest extends TestHelper {
 
     final float[] queryVector = new float[32];
     for (int i = 0; i < 32; i++) {
-      queryVector[i] = (float) Math.random();
+      queryVector[i] = (float) ThreadLocalRandom.current().nextDouble();
     }
 
     // Test approximate search

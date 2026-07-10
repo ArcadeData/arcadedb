@@ -1,6 +1,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
+
 import io.github.jbellis.jvector.util.Bits;
 
 import java.util.Set;

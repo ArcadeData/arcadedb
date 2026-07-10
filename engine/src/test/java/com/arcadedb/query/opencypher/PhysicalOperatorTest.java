@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -157,7 +158,7 @@ class PhysicalOperatorTest {
       final List<Result> resultList = collectResults(results);
       assertThat(resultList.size()).as("Should find exactly 1 Person with id=1").isEqualTo(1);
 
-      final Result result = resultList.get(0);
+      final Result result = resultList.getFirst();
       assertThat(result.hasProperty("n")).as("Result should have 'n' property").isTrue();
       final Vertex vertex = result.getProperty("n");
       assertThat((int) vertex.get("id")).as("Vertex should have id=1").isEqualTo(1);
@@ -257,7 +258,7 @@ class PhysicalOperatorTest {
       final List<Result> resultList = collectResults(results);
       assertThat(resultList.size()).as("Should find KNOWS relationship from Alice to Bob").isEqualTo(1);
 
-      final Result result = resultList.get(0);
+      final Result result = resultList.getFirst();
       assertThat(result.hasProperty("a")).as("Result should have 'a' (Alice)").isTrue();
       assertThat(result.hasProperty("b")).as("Result should have 'b' (Bob)").isTrue();
       assertThat(result.hasProperty("r")).as("Result should have 'r' (edge)").isTrue();
@@ -328,7 +329,7 @@ class PhysicalOperatorTest {
       final List<Result> resultList = collectResults(results);
       assertThat(resultList.size()).as("Should find 1 match where Alice joins with herself").isEqualTo(1);
 
-      final Result result = resultList.get(0);
+      final Result result = resultList.getFirst();
       final Vertex person = result.getProperty("person");
       assertThat((int) person.get("id")).as("Should be Alice").isEqualTo(1);
     });

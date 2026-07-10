@@ -57,7 +57,7 @@ public class PathPattern {
     }
 
     this.nodes = new ArrayList<>(nodes);
-    this.relationships = relationships != null ? new ArrayList<>(relationships) : Collections.emptyList();
+    this.relationships = relationships != null ? new ArrayList<>(relationships) : List.of();
     this.pathVariable = pathVariable;
     this.pathMode = pathMode;
   }
@@ -74,7 +74,7 @@ public class PathPattern {
    * Creates a simple path pattern with a single node.
    */
   public PathPattern(final NodePattern node) {
-    this(Collections.singletonList(node), Collections.emptyList(), null, null);
+    this(List.of(node), List.of(), null, null);
   }
 
   /**
@@ -183,7 +183,7 @@ public class PathPattern {
    * @return first node pattern
    */
   public NodePattern getFirstNode() {
-    return nodes.get(0);
+    return nodes.getFirst();
   }
 
   /**
@@ -192,7 +192,7 @@ public class PathPattern {
    * @return last node pattern
    */
   public NodePattern getLastNode() {
-    return nodes.get(nodes.size() - 1);
+    return nodes.getLast();
   }
 
   /**
