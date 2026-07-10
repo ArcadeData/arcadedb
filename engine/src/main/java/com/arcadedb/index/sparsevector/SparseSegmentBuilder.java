@@ -18,11 +18,14 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
@@ -31,10 +34,22 @@ import java.util.List;
 import java.util.zip.CRC32;
 
 /**
- * Builds a sealed sparse segment by allocating pages on a {@link SparseSegmentComponent}. Pages
- * are written through ArcadeDB's transaction context, so the resulting segment is fully durable
- * via the page WAL the moment its enclosing transaction commits - no separate fsync, no
- * flush-on-commit, no sparse-vector-specific recovery code.
+ * Builds a sealed sparse segment by streaming pages straight to the {@link SparseSegmentComponent}
+ * file. Completed pages are flushed to disk in RAM-bounded chunks via
+ * {@code PageManager.writePages(pages, false)} - <b>outside any transaction WAL</b> - exactly like
+ * {@link com.arcadedb.index.lsm.LSMTreeIndexCompactor} writes compacted index pages. This keeps the
+ * builder's heap footprint bounded (a segment can be far larger than RAM) and sidesteps the
+ * {@code WALFile} 2 GB per-transaction ceiling that a single {@code database.transaction(...)} build
+ * would hit at scale (issue #5189). Durability/replication does not rely on the transaction WAL: on
+ * a Raft leader the finished file's pages are shipped to followers by
+ * {@code RaftReplicatedDatabase.serializeFilePagesAsWal}, which reads the on-disk pages directly;
+ * on a hard crash mid-build the partial file is a never-published orphan that
+ * {@code PaginatedSparseVectorEngine.loadExistingSegments} skips on reopen.
+ * <p>
+ * <b>Write-once page invariant.</b> Only page 0 (the header, back-patched at {@link #finish()}) and
+ * the single currently-open page are ever mutated; every other page is complete the moment the next
+ * page is allocated. That is what lets the builder retire completed pages to disk mid-build and hold
+ * only page 0 plus the active page (plus a small pending-flush batch) in memory.
  * <p>
  * <b>On-page layout</b> (in order of pages produced):
  * <pre>
@@ -52,9 +67,22 @@ import java.util.zip.CRC32;
  */
 public final class SparseSegmentBuilder implements AutoCloseable {
 
+  /**
+   * Default RAM budget for buffered-but-unflushed segment pages when a caller does not pass one
+   * explicitly. Kept modest (64 MiB) so a builder created outside the engine's config-aware path
+   * (e.g. a unit test) still streams to disk rather than accumulating the whole segment in heap.
+   * The engine passes {@code INDEX_COMPACTION_RAM_MB} instead, matching the LSM compactor's budget.
+   */
+  static final long DEFAULT_MAX_UNFLUSHED_BYTES = 64L * 1024 * 1024;
+
   private final SparseSegmentComponent component;
   private final SegmentParameters       params;
   private final int                     pageContentSize;
+  private final DatabaseInternal        database;
+  private final int                     fileId;
+  private final int                     pageSize;
+  /** RAM ceiling for pages buffered in {@link #pendingFlush} before a batched write to disk. */
+  private final long                    maxUnflushedBytes;
 
   // Manifest fields, fixed once before any dim is started.
   private long   segmentId             = 0L;
@@ -82,10 +110,18 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   private final boolean[] blockTombstones;
   private int             blockCursor;
 
-  // Allocated pages, in order. Held in memory until the enclosing transaction commits.
-  private final List<MutablePage> pages = new ArrayList<>();
-  private int                     currentWritePage      = -1;
+  // Streaming page state. Per the write-once invariant only page 0 and the current page are ever
+  // mutated, so we keep just those two live plus a small batch of completed pages waiting to be
+  // flushed to disk. {@code allocatedPageCount} is the next page number to hand out (replaces the
+  // old {@code pages.size()}).
+  private MutablePage             page0;
+  private MutablePage             currentPage;
+  private int                     currentPageNum        = -1;
+  private int                     allocatedPageCount;
   private int                     currentWritePageFree;
+  // Completed pages (never page 0) buffered for the next batched writePages() call.
+  private final List<MutablePage> pendingFlush          = new ArrayList<>();
+  private long                    pendingFlushBytes;
 
   // Index entries for the dim_index page: {dim_id, trailer_page_num, trailer_offset_in_page}.
   private final List<int[]> dimIndex = new ArrayList<>();
@@ -113,12 +149,23 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   private final ByteBuffer payloadBuf;
 
   public SparseSegmentBuilder(final SparseSegmentComponent component, final SegmentParameters params) {
+    this(component, params, DEFAULT_MAX_UNFLUSHED_BYTES);
+  }
+
+  public SparseSegmentBuilder(final SparseSegmentComponent component, final SegmentParameters params,
+      final long maxUnflushedBytes) {
     if (component.getPageSize() != params.pageSize())
       throw new IllegalArgumentException(
           "component page size (" + component.getPageSize() + ") does not match params (" + params.pageSize() + ")");
     this.component = component;
     this.params = params;
     this.pageContentSize = component.pageContentSize();
+    this.database = component.getDatabase();
+    this.fileId = component.getFileId();
+    this.pageSize = component.getPageSize();
+    // Floor the budget at a single page so a pathologically small configured value still makes
+    // progress (a chunk always holds at least the page currently being retired).
+    this.maxUnflushedBytes = Math.max(maxUnflushedBytes, pageSize);
     this.blockRids = new RID[params.blockSize()];
     this.blockWeights = new float[params.blockSize()];
     this.blockTombstones = new boolean[params.blockSize()];
@@ -222,9 +269,9 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     final int trailerSize = computeDimTrailerSize();
     if (currentWritePageFree < trailerSize)
       allocateNewPage();
-    final int trailerPage = currentWritePage;
+    final int trailerPage = currentPageNum;
     final int trailerOffset = pageContentSize - currentWritePageFree;
-    writeDimTrailer(trailerPage, trailerOffset);
+    writeDimTrailer(trailerOffset);
     dimIndex.add(new int[] { currentDimId, trailerPage, trailerOffset });
     totalPostings += currentDimPostingCount;
     currentDimId = -1;
@@ -242,31 +289,40 @@ public final class SparseSegmentBuilder implements AutoCloseable {
 
     // Dim index always starts on a fresh page so its locator from the manifest can address it cleanly.
     allocateNewPage();
-    final int dimIndexPage = currentWritePage;
-    writeDimIndex(dimIndexPage);
+    final int dimIndexPage = currentPageNum;
+    writeDimIndex();
 
     // Manifest gets its own (final) page.
     allocateNewPage();
-    final int manifestPage = currentWritePage;
-    writeManifest(manifestPage);
+    final int manifestPage = currentPageNum;
+    writeManifest();
 
     // Back-patch page 0 header now that all pointers are known.
-    writeHeader(pages.getFirst(), manifestPage, dimIndexPage);
+    writeHeader(page0, manifestPage, dimIndexPage);
+
+    // Flush the tail: the still-open manifest page, then page 0 (its header is now final). Any
+    // earlier completed pages already went to disk via the mid-build batched flushes; this drains
+    // whatever remains so the whole segment is on disk before finish() returns.
+    if (currentPage != null && currentPage != page0)
+      enqueueForFlush(currentPage);
+    enqueueForFlush(page0);
+    flushPending();
     finished = true;
   }
 
   @Override
   public void close() {
-    // Builder owns no I/O resources outside the transaction's MutablePage list. The only thing
-    // close() can usefully do is loud-fail an obvious misuse: if a caller wrote one or more
-    // dims (so dimIndex is non-empty) but never called finish(), the segment file is registered
-    // with the schema yet missing its manifest, dim_index and back-patched header - a future
-    // reader would throw a magic / CRC mismatch much later, far from the bug. Throwing here
-    // is safe under try-with-resources: when the body has already thrown, Java's resource
-    // cleanup attaches this exception via {@link Throwable#addSuppressed} rather than masking
-    // the body's primary throwable. The engine's flush() and compactInputs() catch the throw
-    // and drop the partial component (see PaginatedSparseVectorEngine), so the orphan file
-    // never escapes a single transaction.
+    // Buffered-but-unflushed pages (if any) are just heap the GC reclaims - close() intentionally
+    // does NOT flush them, because a builder reaching close() without finish() produced an
+    // incomplete segment that must not be persisted. The only thing close() can usefully do is
+    // loud-fail an obvious misuse: if a caller wrote one or more dims (so dimIndex is non-empty)
+    // but never called finish(), the segment file is registered with the schema yet missing its
+    // manifest, dim_index and back-patched header - a future reader would throw a magic / CRC
+    // mismatch much later, far from the bug. Throwing here is safe under try-with-resources: when
+    // the body has already thrown, Java's resource cleanup attaches this exception via
+    // {@link Throwable#addSuppressed} rather than masking the body's primary throwable. The
+    // engine's flush() and compactInputs() catch the throw and drop the partial component (see
+    // PaginatedSparseVectorEngine), so the orphan file never escapes the build.
     if (!finished && !dimIndex.isEmpty())
       throw new IllegalStateException(
           "SparseSegmentBuilder for component '" + component.getName() + "' was closed with " + dimIndex.size()
@@ -282,17 +338,54 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   }
 
   private void allocateNewPage() {
-    final int nextPageNum = pages.size();
-    final MutablePage page = component.allocatePage(nextPageNum);
-    pages.add(page);
-    currentWritePage = nextPageNum;
+    // The page we are leaving is now complete (write-once invariant). Retire it to the pending
+    // batch unless it is page 0, which stays live until finish() back-patches its header.
+    if (currentPage != null && currentPage != page0)
+      enqueueForFlush(currentPage);
+
+    final int nextPageNum = allocatedPageCount++;
+    // Create a plain page bound to no transaction: the builder owns its durability via the
+    // batched writePages() below, so a page must never ride an ambient transaction's WAL.
+    final MutablePage page = new MutablePage(new PageId(database, fileId, nextPageNum), pageSize);
+    if (page0 == null)
+      page0 = page;
+    currentPage = page;
+    currentPageNum = nextPageNum;
     currentWritePageFree = pageContentSize;
+  }
+
+  /**
+   * Buffer a completed page for the next batched disk write. When the buffered bytes cross
+   * {@link #maxUnflushedBytes} the batch is flushed synchronously so the builder's live heap stays
+   * bounded regardless of segment size.
+   */
+  private void enqueueForFlush(final MutablePage page) {
+    pendingFlush.add(page);
+    pendingFlushBytes += pageSize;
+    if (pendingFlushBytes >= maxUnflushedBytes)
+      flushPending();
+  }
+
+  /** Write all buffered pages to disk (no WAL) and clear the batch. */
+  private void flushPending() {
+    if (pendingFlush.isEmpty())
+      return;
+    try {
+      database.getPageManager().writePages(pendingFlush, false);
+    } catch (final IOException e) {
+      throw new IndexException("Sparse segment '" + component.getName() + "': error writing segment pages to disk", e);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IndexException("Sparse segment '" + component.getName() + "': interrupted while writing segment pages", e);
+    }
+    pendingFlush.clear();
+    pendingFlushBytes = 0L;
   }
 
   /** Write {@code length} bytes into the active page starting at the current free offset; advance. */
   private int writeBytesAtPageCursor(final byte[] source, final int length) {
     final int offset = pageContentSize - currentWritePageFree;
-    pages.get(currentWritePage).writeByteArray(offset, source, 0, length);
+    currentPage.writeByteArray(offset, source, 0, length);
     currentWritePageFree -= length;
     return offset;
   }
@@ -409,7 +502,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       currentDimBlockPageNums = Arrays.copyOf(currentDimBlockPageNums, newCap);
       currentDimBlockOffsets  = Arrays.copyOf(currentDimBlockOffsets, newCap);
     }
-    currentDimBlockPageNums[currentDimBlockLocatorCount] = currentWritePage;
+    currentDimBlockPageNums[currentDimBlockLocatorCount] = currentPageNum;
     currentDimBlockOffsets[currentDimBlockLocatorCount] = (short) offsetInPage;
     currentDimBlockLocatorCount++;
     currentDimBlockHeaders.add(new BlockHeader(blockRids[0], blockRids[blockCursor - 1], blockCursor, blockMaxForBmw,
@@ -430,7 +523,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
         + skipEntries * SegmentFormat.SKIP_ENTRY_SIZE;
   }
 
-  private void writeDimTrailer(final int pageNum, final int offsetInPage) {
+  private void writeDimTrailer(final int offsetInPage) {
     final int blockCount = currentDimBlockHeaders.size();
     final int skipEntries = (blockCount + params.skipStride() - 1) / params.skipStride();
 
@@ -471,12 +564,12 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       payloadBuf.putInt(firstBlock);
     }
 
-    pages.get(pageNum).writeByteArray(offsetInPage, payloadScratch, 0, trailerSize);
+    currentPage.writeByteArray(offsetInPage, payloadScratch, 0, trailerSize);
     currentWritePageFree -= trailerSize;
   }
 
   /**
-   * Writes the dim_index across one or more contiguous pages starting at {@code firstPageNum}.
+   * Writes the dim_index across one or more contiguous pages starting at the current page.
    * <p>
    * Layout:
    * <ul>
@@ -487,12 +580,11 @@ public final class SparseSegmentBuilder implements AutoCloseable {
    * roll to a freshly-allocated page. The entry count + entry size is enough for the reader to
    * compute which page each entry lives on, so no per-page metadata is needed.
    */
-  private void writeDimIndex(final int firstPageNum) {
+  private void writeDimIndex() {
     final int entrySize = PaginatedSegmentFormat.DIM_INDEX_ENTRY_SIZE;
     final int total = dimIndex.size();
     int writtenEntries = 0;
-    int pageNum = firstPageNum;
-    int offsetInPage = 0;
+    int offsetInPage;
 
     // Reuse {@link #payloadScratch} (sized at construction to {@code >= pageContentSize}, so a
     // full page of dim_index entries always fits) instead of allocating a fresh ByteBuffer per
@@ -502,14 +594,13 @@ public final class SparseSegmentBuilder implements AutoCloseable {
 
     // Page 0: write the count header first.
     payloadBuf.putInt(total);
-    pages.get(pageNum).writeByteArray(0, payloadScratch, 0, 4);
+    currentPage.writeByteArray(0, payloadScratch, 0, 4);
     offsetInPage = 4;
 
     while (writtenEntries < total) {
       // Roll to a new page if the next entry can't fit in the remaining space on this page.
       if (offsetInPage + entrySize > pageContentSize) {
         allocateNewPage();
-        pageNum = currentWritePage;
         offsetInPage = 0;
       }
       // Pack as many entries as fit on the current page in one writeByteArray call.
@@ -523,16 +614,15 @@ public final class SparseSegmentBuilder implements AutoCloseable {
         payloadBuf.putInt(entry[1]);              // trailer page_num
         payloadBuf.putShort((short) entry[2]);    // trailer offset_in_page
       }
-      pages.get(pageNum).writeByteArray(offsetInPage, payloadScratch, 0, entriesOnThisPage * entrySize);
+      currentPage.writeByteArray(offsetInPage, payloadScratch, 0, entriesOnThisPage * entrySize);
       offsetInPage += entriesOnThisPage * entrySize;
       writtenEntries += entriesOnThisPage;
     }
 
-    currentWritePage = pageNum;
     currentWritePageFree = pageContentSize - offsetInPage;
   }
 
-  private void writeManifest(final int pageNum) {
+  private void writeManifest() {
     final int parentCount = parentSegments.length;
     final int size = 8 + 4 + parentCount * 8 + 8 + 8 + 4;
     if (size > pageContentSize)
@@ -558,7 +648,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     final CRC32 crc = new CRC32();
     crc.update(payloadScratch, 0, size - 4);
     payloadBuf.putInt((int) crc.getValue());
-    pages.get(pageNum).writeByteArray(0, payloadScratch, 0, size);
+    currentPage.writeByteArray(0, payloadScratch, 0, size);
     currentWritePageFree = pageContentSize - size;
   }
 
