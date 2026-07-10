@@ -4682,7 +4682,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case LINK_VALUE:
         return "LINK(" + v.getLinkValue().getRid() + ")";
       case DECIMAL_VALUE:
-        return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+        return "DECIMAL(" + GrpcTypeConverter.toBigDecimal(v.getDecimalValue()) + ")";
       case KIND_NOT_SET:
       default:
         return "GrpcValue(KIND_NOT_SET)";
@@ -4736,10 +4736,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             return b.setInt64Value(l).build();
           } catch (ArithmeticException ignore) {
           }
-          return b.setDecimalValue(GrpcTypeConverter.toGrpcDecimal(bd)).build();
-        } else {
-          return b.setDecimalValue(GrpcTypeConverter.toGrpcDecimal(bd)).build();
         }
+        return b.setDecimalValue(GrpcTypeConverter.toGrpcDecimal(bd)).build();
       }
       if (p.isString())
         return b.setStringValue(p.getAsString()).build();

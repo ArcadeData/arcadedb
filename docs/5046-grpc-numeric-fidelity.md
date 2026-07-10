@@ -39,3 +39,11 @@
 ## Impact
 - Small decimals still encode via `unscaled` sint64 (backward compatible on the wire).
 - No behavior change for values that already fit in 63 bits; large decimals now lossless.
+
+## Upgrade / version-skew note
+- The `unscaled_bytes` field (tag 3) is only ever populated for `BigDecimal` values whose unscaled
+  magnitude exceeds 63 bits. Peers built before this change ignore the unknown field and would decode
+  such a value as `unscaled=0` (its default), reconstructing `BigDecimal(0, scale)`. Before this change
+  those same values arrived as a `String`, so mixed-version deployments should upgrade gRPC client and
+  server together when high-precision (>63-bit unscaled) decimals are in use. Decimals that fit in 63
+  bits are unaffected and fully backward compatible.

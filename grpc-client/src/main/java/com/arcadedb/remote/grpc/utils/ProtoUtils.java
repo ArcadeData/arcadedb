@@ -137,7 +137,7 @@ public class ProtoUtils {
     case LINK_VALUE:
       return "LINK(" + v.getLinkValue().getRid() + ")";
     case DECIMAL_VALUE:
-      return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+      return "DECIMAL(" + toBigDecimal(v.getDecimalValue()) + ")";
     case KIND_NOT_SET:
     default:
       return "GrpcValue(KIND_NOT_SET)";
