@@ -66,6 +66,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
+import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -2421,6 +2422,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             totals.updated = 0;
           }
         } finally {
+          // Issue #5041 (TX-4): detach the transaction from this (shared) pool thread before
+          // returning, so it is not left parked in the thread-local DatabaseContext between
+          // callbacks where an unrelated request reusing the thread would roll it back. onNext /
+          // onCompleted re-bind it via bindToCurrentThread().
+          final InsertContext parkedCtx = ctxRef.get();
+          if (parkedCtx != null)
+            parkedCtx.unbindFromCurrentThread();
           if (!cancelled.get())
             call.request(1);
         }
@@ -2795,6 +2803,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean started = new AtomicBoolean(false);
 
+    // Issue #5041 (CON-1): capture the gRPC Context here, on the inbound thread where the auth
+    // interceptor has attached it, so the header/Bearer-authenticated user (USER_CONTEXT_KEY) is
+    // visible to resolvedUsername() on the single-thread executor below. Without this the executor
+    // thread runs under Context.ROOT and header-only auth resolves to null.
+    final Context grpcContext = Context.current();
+
     // Single-threaded executor ensures all database operations for this stream happen on the same thread.
     // This is critical because ArcadeDB transactions are ThreadLocal - if begin() and commit() happen
     // on different threads, the transaction context is lost.
@@ -2814,13 +2828,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       cancelled.set(true);
       out.markTerminated();
       try {
-        streamExecutor.submit(() -> {
+        streamExecutor.submit(grpcContext.wrap(() -> {
           final InsertContext ctx = ref.getAndSet(null);
           if (ctx != null) {
             sessionWatermark.remove(ctx.sessionId);
             ctx.closeQuietly();
           }
-        });
+        }));
       } catch (RejectedExecutionException ignore) {
         // Executor already shut down - cleanup was already done
       }
@@ -2837,9 +2851,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (cancelled.get())
           return;
 
-        // Submit all message processing to the single-threaded executor
-        // to ensure transaction ThreadLocal context is preserved
-        streamExecutor.submit(() -> {
+        // Process every message on the single-threaded executor so the transaction ThreadLocal
+        // context is preserved. Issue #5041 (CON-1): the task is wrapped with the captured gRPC
+        // Context at submit time so header/Bearer auth survives the thread hop.
+        final Runnable task = () -> {
           if (cancelled.get())
             return;
 
@@ -2850,6 +2865,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 if (!started.compareAndSet(false, true)) {
                   out.onError(
                       Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
+                  // Issue #5041: this is a terminal error - clean up any in-flight context (rolling
+                  // back its transaction) and stop the per-stream executor so its thread does not leak.
+                  final InsertContext existing = ref.getAndSet(null);
+                  if (existing != null) {
+                    sessionWatermark.remove(existing.sessionId);
+                    existing.closeQuietly();
+                  }
+                  streamExecutor.shutdown();
                   return;
                 }
 
@@ -2933,6 +2956,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   sessionWatermark.remove(ctx.sessionId);
                   ctx.closeQuietly();
                   ref.set(null);
+                  // Issue #5041: COMMIT (success or failure) is terminal - stop the per-stream
+                  // executor so its thread does not leak when the client does not half-close.
+                  streamExecutor.shutdown();
                 }
               }
 
@@ -2949,8 +2975,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
             }
+            // Issue #5041: an unexpected failure is terminal - stop the per-stream executor so its
+            // thread does not leak after the error is delivered to the client.
+            streamExecutor.shutdown();
           }
-        });
+        };
+
+        // Issue #5041 (CON-4): guard the submit against a RejectedExecutionException thrown when a
+        // racing cancel shut the executor down between the cancelled check above and this submit
+        // (onCompleted already guards this).
+        try {
+          streamExecutor.submit(grpcContext.wrap(task));
+        } catch (final RejectedExecutionException ignore) {
+          // a racing cancel shut the executor down; drop the message instead of throwing out of the callback
+        }
       }
 
       @Override
@@ -2960,21 +2998,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       @Override
       public void onCompleted() {
-        // Define your policy for half-close without COMMIT:
+        // Issue #5041 (TX-6): half-close WITHOUT an explicit COMMIT must roll back. The previous
+        // flushCommit(false) actually COMMITTED the buffered rows for PER_ROW/PER_BATCH
+        // (db.commit();db.begin()) and left the open transaction leaked for PER_STREAM, contradicting
+        // the "commit only on explicit COMMIT" contract. closeQuietly() -> close() rebinds and rolls
+        // back the still-open transaction (a no-op if a prior per-batch commit already terminated it)
+        // for every mode, then drops the thread-local context - a single rollback path.
         try {
-          streamExecutor.submit(() -> {
+          streamExecutor.submit(grpcContext.wrap(() -> {
             final InsertContext ctx = ref.getAndSet(null);
             if (ctx != null) {
-              try {
-                // Safer default is rollback; if you prefer auto-commit on close, call
-                // flushCommit(true)
-                ctx.flushCommit(false); // or ctx.rollbackQuietly() if you have a helper
-              } catch (Exception ignore) {
-              }
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
             }
-          });
+          }));
         } catch (RejectedExecutionException ignore) {
           // Executor already shut down
         }
@@ -3741,6 +3778,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     /**
+     * Issue #5041 (TX-4): detach the captured transaction from the current thread's
+     * {@link DatabaseContext} WITHOUT rolling it back, so a still-open insert-stream transaction is
+     * never left parked on a shared gRPC pool thread between callbacks. Left parked, an unrelated
+     * request that reuses the same pool thread calls {@link DatabaseContext#init(DatabaseInternal)},
+     * which rolls back whatever transaction it finds bound to the thread - silently discarding this
+     * stream's rows. {@link #bindToCurrentThread()} re-attaches the transaction on the next callback.
+     * The captured {@code tx} handle keeps the transaction (and its buffered rows) alive across the
+     * detach. No-op when there is no captured transaction or it is not bound to this thread.
+     */
+    void unbindFromCurrentThread() {
+      if (tx == null)
+        return;
+
+      final DatabaseContext.DatabaseContextTL tl = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath());
+      if (tl != null && tl.getLastTransaction() == tx)
+        DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
+    }
+
+    /**
      * Issue #4644: snapshot the transaction (and its security user) currently bound to this thread so
      * it can be re-bound on the next callback thread by {@link #bindToCurrentThread()}.
      */
@@ -3833,8 +3889,42 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .setFailed(c.failed).addAllErrors(c.errors).setStartedAt(ts(startedAtMs)).setFinishedAt(ts(now)).build();
     }
 
+    /**
+     * Issue #5041 (TX-3): roll back any still-active captured transaction. Previously this was an
+     * empty no-op, so {@link #closeQuietly()} on every error/cancel path (insertStream.onError, the
+     * cancel handler, insertBidirectional cleanup, bulkInsert try-with-resources) left the
+     * transaction begun in the ctor active and bound to a pooled gRPC thread. It is not tracked in
+     * {@code activeTransactions}, so the reaper cannot reclaim it either; the next unrelated request
+     * reusing that thread would silently join the orphaned transaction. Rebind the transaction onto
+     * this thread first (it may have been detached by {@link #unbindFromCurrentThread()} or begun on
+     * another callback thread) so the rollback releases its locks. Idempotent: after a successful
+     * {@link #flushCommit(boolean)} the transaction handle is already {@code null} and this is a
+     * no-op.
+     * <p>
+     * When a transaction WAS captured, {@link #bindToCurrentThread()} above binds it to the current
+     * thread, so the current thread's {@link DatabaseContext} entry is provably ours: drop it to
+     * release the stale per-thread state (currentUser, querySession, temporary buffers) left on the
+     * pooled gRPC thread. We deliberately do NOT remove the context on the {@code tx == null} path:
+     * {@code close()} can then be running on a different pooled callback thread (e.g. the
+     * {@code streamFailed} branch of {@code insertStream.onCompleted}), where the entry may belong to
+     * an unrelated request - the same "don't touch a foreign pooled thread's transaction" caution the
+     * surrounding code observes.
+     */
     @Override
     public void close() {
+      final boolean hadTransaction = tx != null;
+      try {
+        if (hadTransaction) {
+          bindToCurrentThread();
+          abortTransaction();
+        }
+      } catch (final RuntimeException ignore) {
+        // best-effort cleanup: the engine may already have terminated the transaction
+      } finally {
+        tx = null;
+        if (hadTransaction)
+          DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
+      }
     }
 
     void closeQuietly() {
