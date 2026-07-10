@@ -105,13 +105,17 @@ public class StripedEdgeList extends EdgeLinkedList {
         return true;
       } catch (final Exception e) {
         LogManager.instance()
-            .log(StripedEdgeList.class, Level.WARNING, "Cannot create super-node stripe buckets for type '%s': promotion skipped (%s)",
-                typeName, e.getMessage());
+            .log(StripedEdgeList.class, Level.WARNING, "Cannot create super-node stripe buckets for type '%s': promotion skipped", e,
+                typeName);
         return false;
       }
     }
 
-    // WRAPPED (SERVER/HA) DATABASE: DEFER THE DDL OUTSIDE THE CURRENT TRANSACTION
+    // WRAPPED (SERVER/HA) DATABASE: DEFER THE DDL OUTSIDE THE CURRENT TRANSACTION. The guard key is released
+    // in the helper thread's finally: if that thread ever HUNG inside the schema call (rather than throwing),
+    // the key would stay pinned and the type could not promote until restart - acceptable, because a hung
+    // schema operation means the database has bigger problems than a deferred promotion, and promotion is a
+    // pure optimisation (the classic layout keeps working).
     final String key = database.getDatabasePath() + '|' + typeName;
     if (POOLS_IN_CREATION.add(key)) {
       // NOTE (concurrency): not engine data-path parallelism but a once-per-type lifecycle action, hence a
@@ -121,8 +125,8 @@ public class StripedEdgeList extends EdgeLinkedList {
           createStripePool(database, typeName, stripes);
         } catch (final Exception e) {
           LogManager.instance()
-              .log(StripedEdgeList.class, Level.WARNING, "Error creating super-node stripe buckets for type '%s': promotion deferred (%s)",
-                  typeName, e.getMessage());
+              .log(StripedEdgeList.class, Level.WARNING, "Error creating super-node stripe buckets for type '%s': promotion deferred", e,
+                  typeName);
         } finally {
           POOLS_IN_CREATION.remove(key);
         }

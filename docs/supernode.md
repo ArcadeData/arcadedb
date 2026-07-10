@@ -61,7 +61,14 @@ Implementation notes that refined the A.1 design (2026-07-10):
   NON-retryable generic `TransactionException`, so commit-lock contention failed
   transactions to the caller instead of retrying. The catch now rethrows every
   `NeedRetryException` as-is. This affects any heavily concurrent workload on
-  main, independent of striping.
+  main, independent of striping. RELEASE-NOTE MATERIAL (semantic change to
+  commit error handling): callers that caught `TransactionException` around a
+  commit now see the retryable subclass instead; the HTTP handler already
+  catches `NeedRetryException` first and maps it to 503 (retry), so server
+  clients get a proper retry signal where they previously got a generic
+  transaction error. Also for the release notes: edge iteration order on
+  PROMOTED vertices is approximate (newest-generation-first), relaxing the #689
+  reverse-insertion guarantee for super-nodes only.
 - **Cross-file commit publication is not atomic for uncoordinated readers**: a
   concurrent commit's directory page can become visible a moment before the
   stripe chunk page of the same commit (pages are published one at a time and a

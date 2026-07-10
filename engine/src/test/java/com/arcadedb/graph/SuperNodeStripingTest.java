@@ -359,6 +359,73 @@ class SuperNodeStripingTest extends TestHelper {
     });
   }
 
+  /**
+   * Appends must actually SPREAD across the stripes (placement by neighbour-RID hash): a regression in
+   * {@link StripeDirectory#stripeOf} concentrating everything on one stripe would silently re-serialise the
+   * writers the layout exists to parallelise.
+   */
+  @Test
+  void appendsSpreadAcrossStripes() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+    createSchema();
+    final RID hubRID = createHub();
+
+    final int total = 2_000;
+    insertEdges(hubRID, total);
+    final StripeDirectory directory = (StripeDirectory) loadInHead(hubRID);
+
+    database.transaction(() -> {
+      final int stripes = directory.getStripes(1);
+      long striped = 0;
+      long min = Long.MAX_VALUE;
+      for (int slot = 0; slot < stripes; slot++) {
+        long entries = 0;
+        RID chunkRID = directory.getHead(1, slot);
+        while (chunkRID != null) {
+          final EdgeSegment chunk = (EdgeSegment) database.lookupByRID(chunkRID, true);
+          entries += chunk.count(null);
+          chunkRID = chunk.getPreviousRID();
+        }
+        striped += entries;
+        min = Math.min(min, entries);
+      }
+      // Every stripe must have received a fair share: with ~uniform hashing over distinct source RIDs the
+      // expected per-stripe load is striped/stripes; a stripe below a QUARTER of it means the hash regressed.
+      assertThat(striped).isGreaterThan(total / 2);
+      assertThat(min).isGreaterThanOrEqualTo(striped / stripes / 4);
+    });
+  }
+
+  /**
+   * Promotion is ONE-WAY: an already-promoted vertex must keep working (reads AND writes) when promotion is
+   * later disabled ({@code threshold=0}) - the setting only stops FUTURE promotions.
+   */
+  @Test
+  void promotedVertexKeepsWorkingWithPromotionDisabled() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+    createSchema();
+    final RID hubRID = createHub();
+    insertEdges(hubRID, 300);
+    assertThat(loadInHead(hubRID)).isInstanceOf(StripeDirectory.class);
+
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(0);
+
+    final List<RID> after = insertEdges(hubRID, 100);
+    database.transaction(() -> {
+      final Vertex hub = hubRID.asVertex(true);
+      assertThat(hub.countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(400);
+      assertThat(hub.isConnectedTo(after.getLast(), Vertex.DIRECTION.IN)).isTrue();
+      final Set<RID> found = new HashSet<>();
+      for (final Vertex v : hub.getVertices(Vertex.DIRECTION.IN, "LINK"))
+        assertThat(found.add(v.getIdentity())).isTrue();
+      assertThat(found).hasSize(400);
+    });
+
+    // AND STILL ACCEPTS REMOVALS
+    database.transaction(() -> after.getFirst().asVertex(true).getEdges(Vertex.DIRECTION.OUT, "LINK").iterator().next().delete());
+    database.transaction(() -> assertThat(hubRID.asVertex(true).countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(399));
+  }
+
   @Test
   void dropTypeRemovesStripePool() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
