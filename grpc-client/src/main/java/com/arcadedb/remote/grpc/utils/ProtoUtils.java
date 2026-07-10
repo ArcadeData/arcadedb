@@ -405,6 +405,9 @@ public class ProtoUtils {
       // symmetrically with the encode side (UTC-anchored), instead of collapsing every Timestamp
       // to a bare Long epoch-millis - which lost sub-millisecond precision (DATETIME_MICROS/NANOS)
       // and the temporal type identity, and forced consumers to re-apply a timezone (off-by-one risk).
+      // The UTC-anchored temporal encoding (epochDay * 86400 for "date"; toInstant(UTC) for
+      // "datetime") is shared with the server encoder GrpcTypeConverter.toGrpcValue in the grpcw
+      // module and this class's own toGrpcValue above; keep all three in sync when changing it.
       final Timestamp ts = v.getTimestampValue();
       final String logical = v.getLogicalType();
       if ("date".equalsIgnoreCase(logical))
