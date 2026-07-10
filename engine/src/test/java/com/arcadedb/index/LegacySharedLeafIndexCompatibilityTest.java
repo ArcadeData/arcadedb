@@ -74,12 +74,14 @@ class LegacySharedLeafIndexCompatibilityTest {
   }
 
   private void assertCounts(final Database database) {
-    final ResultSet scan = database.query("sql", "SELECT count(*) AS c FROM Tok WHERE word.trim() = 'dup'");
-    assertThat(((Number) scan.next().getProperty("c")).longValue()).as("full scan count").isEqualTo(EXPECTED_DUPLICATES);
+    try (final ResultSet scan = database.query("sql", "SELECT count(*) AS c FROM Tok WHERE word.trim() = 'dup'")) {
+      assertThat(((Number) scan.next().getProperty("c")).longValue()).as("full scan count").isEqualTo(EXPECTED_DUPLICATES);
+    }
 
-    final ResultSet indexed = database.query("sql", "SELECT count(*) AS c FROM Tok WHERE word = 'dup' AND lang = 'xx'");
-    assertThat(((Number) indexed.next().getProperty("c")).longValue()).as("legacy compacted-index lookup count")
-        .isEqualTo(EXPECTED_DUPLICATES);
+    try (final ResultSet indexed = database.query("sql", "SELECT count(*) AS c FROM Tok WHERE word = 'dup' AND lang = 'xx'")) {
+      assertThat(((Number) indexed.next().getProperty("c")).longValue()).as("legacy compacted-index lookup count")
+          .isEqualTo(EXPECTED_DUPLICATES);
+    }
 
     final TypeIndex index = database.getSchema().getType("Tok").getIndexByProperties("word", "lang");
     final Object[] fullKey = { "dup", "xx" };
