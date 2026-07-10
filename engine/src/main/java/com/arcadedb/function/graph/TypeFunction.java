@@ -19,6 +19,7 @@
 package com.arcadedb.function.graph;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
@@ -48,8 +49,12 @@ public class TypeFunction implements StatelessFunction {
         return relType;
       DeletedEntityMarker.checkNotDeleted(args[0]);
     }
-    // Type validation: type() only works on relationships
-    throw new CommandExecutionException(
+    // Type validation: type() only works on relationships. This is a client-side type error (the query
+    // passes a node/scalar where a relationship is expected), classified by the openCypher TCK as a
+    // runtime TypeError/InvalidArgumentValue. Throw a CommandSemanticException so the transport layer
+    // reports it as a 400 client error with the descriptive message, not a 500 transaction-commit
+    // failure. See issue #5204.
+    throw new CommandSemanticException(
         "TypeError: type() requires a relationship argument, got " + args[0].getClass().getSimpleName());
   }
 }
