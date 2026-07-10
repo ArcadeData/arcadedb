@@ -24,4 +24,16 @@ Lower-severity lifecycle bugs and housekeeping across the gRPC modules:
 - `Issue5050ProtoUtilsNoStdoutTest` (grpc-client): `toProtoRecord` writes nothing to stdout.
 
 ## Impact
-Removes a per-restart daemon-thread + transaction-registry leak in "both" mode, a stdout data leak on the client hot path, a shutdown-window race, misleading proto docs, and a dead maintenance trap. No API/behavior change for callers.
+Removes a per-restart daemon-thread + transaction-registry leak in "both" mode, a stdout data leak on the client hot path, a shutdown-window race, misleading proto docs, and a latent no-op explicit-lock. Note CODE-1 was also a latent correctness bug (the nested stub made `acquireLock()` return a no-op lock), not merely cleanup. No API/behavior change for callers.
+
+## PR
+https://github.com/ArcadeData/arcadedb/pull/5197
+
+## Review cycles
+- **Cycle 1** (`472d49a0`): gemini (medium) - make `configureServer` synchronized; claude (LGTM, 3 non-blocking) - single-use `stopped` guard, hoist stdout assert out of tx, healthManager-reuse test gap. Applied: synchronized `configureServer`, single-use lifecycle comment, test hoist. Skipped w/ rationale: stopService "at most once" note, healthManager-getter test (avoid widening API).
+- **Cycle 2** (`23f8b7d8`): claude re-review - verified all fixes correct (LGTM); asked to drop the internal `review-deferred-*.md` scratch notes from the tree (also matches repo convention). Applied: removed the scratch file.
+- **Cycle 3** (`ca50f229`): claude re-review - LGTM; nits: FQN in test (`Type`), `shutdownHook` volatile asymmetry, add cross-builder reuse comment. Applied: imported `Type`, made `shutdownHook` volatile, documented the shared-service invariant.
+- **Cycle 4** (`65fd8352`): final polish pushed; no confirming re-review arrived within the 15-min window (the bots did not re-trigger for the trivial style/comment push). Max cycles reached.
+
+## Final state
+max-cycles-reached (converged: claude's last full review was an explicit LGTM and every actionable item is resolved). Open item for the developer at merge: the `Co-Authored-By: Claude` commit trailers - claude flagged them against CLAUDE.md, but they cannot be removed without rewriting pushed history (forbidden by the skill constraints), so strip them at squash-merge if desired.
