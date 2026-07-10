@@ -163,6 +163,9 @@ class GrpcTypeConverter {
     // Without these branches the read path falls through to String.valueOf(o), emitting
     // string_value at LocalDateTime#toString precision rather than timestamp_value at the
     // column's declared precision.
+    // Issue #5045: this UTC-anchored temporal encoding (epochDay * 86400 for "date";
+    // toInstant(UTC) for "datetime") is the inverse of the client decoder
+    // ProtoUtils.fromGrpcValue in the grpc-client module; keep the two in sync when changing it.
     if (o instanceof LocalDate ld) {
       final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
       return b.setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
