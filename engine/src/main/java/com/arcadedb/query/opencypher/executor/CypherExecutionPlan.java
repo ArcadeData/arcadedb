@@ -23,10 +23,16 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
+import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.CaseAlternative;
+import com.arcadedb.query.opencypher.ast.CaseExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
@@ -34,9 +40,16 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.IsNullExpression;
+import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.ListIndexExpression;
+import com.arcadedb.query.opencypher.ast.ListSliceExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
@@ -51,7 +64,10 @@ import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.StarExpression;
+import com.arcadedb.query.opencypher.ast.RegexExpression;
+import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
@@ -3324,15 +3340,12 @@ public class CypherExecutionPlan {
     } else
       return null;
 
-    // Grouping expressions must not reference the counted variable
-    if (countArgVar != null) {
-      for (final ReturnClause.ReturnItem item : groupingItems) {
-        final String text = item.getExpression().getText();
-        // Check for exact variable reference or property access (e.g., "a" or "a.name")
-        if (text.equals(countArgVar) || text.startsWith(countArgVar + "."))
-          return null;
-      }
-    }
+    // Grouping expressions are evaluated on the anchor row only, so they must not reference
+    // any other variable (the counted node, a named relationship, etc.). Anything else must
+    // fall back to the general GroupByAggregationStep that sees the fully expanded rows (#5206).
+    for (final ReturnClause.ReturnItem item : groupingItems)
+      if (!referencesOnlyVariable(item.getExpression(), anchorVar))
+        return null;
 
     // Edge types
     final List<String> relTypes = relPattern.getTypes();
@@ -3375,6 +3388,100 @@ public class CypherExecutionPlan {
         expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null);
     countStep.setPrevious(nodeStep);
     return countStep;
+  }
+
+  /**
+   * Returns true only if the expression is guaranteed to reference no variable other than
+   * {@code allowedVar}. Used to validate the count-edges fast path (#5206): grouping
+   * expressions are evaluated on the anchor row alone, so a reference to any other pattern
+   * variable (counted node, named relationship) would silently evaluate to null. Unknown
+   * expression types are conservatively treated as referencing other variables.
+   */
+  private static boolean referencesOnlyVariable(final Expression expr, final String allowedVar) {
+    if (expr == null)
+      return true;
+    if (expr instanceof LiteralExpression || expr instanceof ParameterExpression || expr instanceof StarExpression)
+      return true;
+    if (expr instanceof VariableExpression varExpr)
+      return varExpr.getVariableName().equals(allowedVar);
+    if (expr instanceof PropertyAccessExpression propAccess)
+      return propAccess.getVariableName().equals(allowedVar);
+    if (expr instanceof FunctionCallExpression funcExpr) {
+      for (final Expression arg : funcExpr.getArguments())
+        if (!referencesOnlyVariable(arg, allowedVar))
+          return false;
+      return true;
+    }
+    if (expr instanceof ArithmeticExpression arith)
+      return referencesOnlyVariable(arith.getLeft(), allowedVar) && referencesOnlyVariable(arith.getRight(), allowedVar);
+    if (expr instanceof CaseExpression caseExpr) {
+      if (!referencesOnlyVariable(caseExpr.getCaseExpression(), allowedVar))
+        return false;
+      for (final CaseAlternative alternative : caseExpr.getAlternatives())
+        if (!referencesOnlyVariable(alternative.getWhenExpression(), allowedVar)
+            || !referencesOnlyVariable(alternative.getThenExpression(), allowedVar))
+          return false;
+      return referencesOnlyVariable(caseExpr.getElseExpression(), allowedVar);
+    }
+    if (expr instanceof ListExpression listExpr) {
+      for (final Expression element : listExpr.getElements())
+        if (!referencesOnlyVariable(element, allowedVar))
+          return false;
+      return true;
+    }
+    if (expr instanceof ListIndexExpression listIndex)
+      return referencesOnlyVariable(listIndex.getListExpression(), allowedVar)
+          && referencesOnlyVariable(listIndex.getIndexExpression(), allowedVar);
+    if (expr instanceof ListSliceExpression listSlice)
+      return referencesOnlyVariable(listSlice.getListExpression(), allowedVar)
+          && referencesOnlyVariable(listSlice.getFromExpression(), allowedVar)
+          && referencesOnlyVariable(listSlice.getToExpression(), allowedVar);
+    if (expr instanceof MapExpression mapExpr) {
+      for (final Expression value : mapExpr.getEntries().values())
+        if (!referencesOnlyVariable(value, allowedVar))
+          return false;
+      return true;
+    }
+    if (expr instanceof TernaryLogicalExpression ternary)
+      return referencesOnlyVariable(ternary.getLeft(), allowedVar) && referencesOnlyVariable(ternary.getRight(), allowedVar);
+    if (expr instanceof BooleanWrapperExpression boolWrapper)
+      return booleanReferencesOnlyVariable(boolWrapper.getBooleanExpression(), allowedVar);
+    if (expr instanceof ComparisonExpressionWrapper compWrapper)
+      return booleanReferencesOnlyVariable(compWrapper.getComparison(), allowedVar);
+    // Unknown expression type: assume it may reference other variables
+    return false;
+  }
+
+  private static boolean booleanReferencesOnlyVariable(final BooleanExpression expr, final String allowedVar) {
+    if (expr == null)
+      return true;
+    if (expr instanceof ComparisonExpression comp)
+      return referencesOnlyVariable(comp.getLeft(), allowedVar) && referencesOnlyVariable(comp.getRight(), allowedVar);
+    if (expr instanceof LogicalExpression logical)
+      return booleanReferencesOnlyVariable(logical.getLeft(), allowedVar)
+          && booleanReferencesOnlyVariable(logical.getRight(), allowedVar);
+    if (expr instanceof IsNullExpression isNull)
+      return referencesOnlyVariable(isNull.getExpression(), allowedVar);
+    if (expr instanceof BooleanCoercionExpression coercion)
+      return referencesOnlyVariable(coercion.getExpression(), allowedVar);
+    if (expr instanceof InExpression inExpr) {
+      if (!referencesOnlyVariable(inExpr.getExpression(), allowedVar))
+        return false;
+      for (final Expression element : inExpr.getList())
+        if (!referencesOnlyVariable(element, allowedVar))
+          return false;
+      return true;
+    }
+    if (expr instanceof StringMatchExpression strMatch)
+      return referencesOnlyVariable(strMatch.getExpression(), allowedVar)
+          && referencesOnlyVariable(strMatch.getPattern(), allowedVar);
+    if (expr instanceof RegexExpression regex)
+      return referencesOnlyVariable(regex.getExpression(), allowedVar)
+          && referencesOnlyVariable(regex.getPattern(), allowedVar);
+    if (expr instanceof LabelCheckExpression labelCheck)
+      return referencesOnlyVariable(labelCheck.getVariableExpression(), allowedVar);
+    // Unknown boolean expression type: assume it may reference other variables
+    return false;
   }
 
   /**
