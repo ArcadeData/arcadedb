@@ -142,21 +142,22 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
               }
             }
 
-            if (finalVal instanceof RID rid) {
-              try {
-                // A DatabaseRID carries its origin database, so asDocument() resolves directly. For bare RIDs, route through the query's command-context
-                // database instead of rid.asDocument() — the latter falls back to the thread-local active database, which is ambiguous and can pick the wrong
-                // schema when multiple databases are open on the same thread.
-                nextItem = new ResultInternal(
-                    rid instanceof DatabaseRID ? rid.asDocument() : (Document) context.getDatabase().lookupByRID(rid, true));
-              } catch (final RecordNotFoundException e) {
-                LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, finalVal);
-                continue;
+            switch (finalVal) {
+              case RID rid -> {
+                try {
+                  // A DatabaseRID carries its origin database, so asDocument() resolves directly. For bare RIDs, route through the query's command-context
+                  // database instead of rid.asDocument() — the latter falls back to the thread-local active database, which is ambiguous and can pick the wrong
+                  // schema when multiple databases are open on the same thread.
+                  nextItem = new ResultInternal(
+                      rid instanceof DatabaseRID ? rid.asDocument() : (Document) context.getDatabase().lookupByRID(rid, true));
+                } catch (final RecordNotFoundException e) {
+                  LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, finalVal);
+                  continue;
+                }
               }
-            } else if (finalVal instanceof Document document) {
-              nextItem = new ResultInternal(document);
-            } else if (finalVal instanceof Result result) {
-              nextItem = result;
+              case Document document -> nextItem = new ResultInternal(document);
+              case Result result -> nextItem = result;
+              case null, default -> {}
             }
             break;
           } finally {

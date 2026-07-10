@@ -54,7 +54,7 @@ public class RemoteDocumentType implements DocumentType {
   private         String                      bucketSelectionStrategy;
   private         List<String>                parentTypes;
   private         Map<String, RemoteProperty> properties;
-  private         Set<String>                 aliases = Collections.emptySet();
+  private         Set<String>                 aliases = Set.of();
   private         Map<String, Object>         custom  = new HashMap<>();
   private         boolean                     needsRepartition;
 
@@ -346,7 +346,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public List<TypeIndex> getIndexesByProperties(Collection<String> properties) {
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override

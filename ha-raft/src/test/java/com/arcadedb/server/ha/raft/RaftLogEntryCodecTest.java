@@ -136,8 +136,8 @@ class RaftLogEntryCodecTest {
 
     assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
     assertThat(decoded.walEntries()).hasSize(1);
-    assertThat(decoded.walEntries().get(0)).isEqualTo(fakeWal);
-    assertThat(decoded.bucketDeltas().get(0)).isEqualTo(fakeDelta);
+    assertThat(decoded.walEntries().getFirst()).isEqualTo(fakeWal);
+    assertThat(decoded.bucketDeltas().getFirst()).isEqualTo(fakeDelta);
   }
 
   @Test
@@ -223,7 +223,7 @@ class RaftLogEntryCodecTest {
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
 
     assertThat(decoded.walEntries()).hasSize(1);
-    assertThat(decoded.walEntries().get(0)).isEqualTo(fakeWal);
+    assertThat(decoded.walEntries().getFirst()).isEqualTo(fakeWal);
   }
 
   @Test
@@ -428,10 +428,10 @@ class RaftLogEntryCodecTest {
 
     assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
     assertThat(decoded.sealedFileBlobs()).hasSize(2);
-    assertThat(decoded.sealedFileBlobs().get(0).typeName()).isEqualTo("weather");
-    assertThat(decoded.sealedFileBlobs().get(0).shardIndex()).isEqualTo(0);
-    assertThat(decoded.sealedFileBlobs().get(0).fileName()).isEqualTo("weather_shard_0.ts.sealed");
-    assertThat(decoded.sealedFileBlobs().get(0).bytes()).isEqualTo(sealed0);
+    assertThat(decoded.sealedFileBlobs().getFirst().typeName()).isEqualTo("weather");
+    assertThat(decoded.sealedFileBlobs().getFirst().shardIndex()).isEqualTo(0);
+    assertThat(decoded.sealedFileBlobs().getFirst().fileName()).isEqualTo("weather_shard_0.ts.sealed");
+    assertThat(decoded.sealedFileBlobs().getFirst().bytes()).isEqualTo(sealed0);
     assertThat(decoded.sealedFileBlobs().get(1).shardIndex()).isEqualTo(1);
     assertThat(decoded.sealedFileBlobs().get(1).bytes()).isEqualTo(sealed1);
   }
@@ -458,10 +458,10 @@ class RaftLogEntryCodecTest {
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
 
     assertThat(decoded.walEntries()).hasSize(1);
-    assertThat(decoded.walEntries().get(0)).isEqualTo(clearWal);
-    assertThat(decoded.bucketDeltas().get(0)).isEqualTo(delta);
+    assertThat(decoded.walEntries().getFirst()).isEqualTo(clearWal);
+    assertThat(decoded.bucketDeltas().getFirst()).isEqualTo(delta);
     assertThat(decoded.sealedFileBlobs()).hasSize(1);
-    assertThat(decoded.sealedFileBlobs().get(0).bytes()).isEqualTo(sealed);
+    assertThat(decoded.sealedFileBlobs().getFirst().bytes()).isEqualTo(sealed);
   }
 
   @Test

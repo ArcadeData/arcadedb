@@ -21,12 +21,14 @@ package com.arcadedb.query.opencypher.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.index.Index;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
@@ -45,7 +47,6 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -53,8 +54,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
-import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
-import com.arcadedb.index.Index;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -218,17 +218,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
       // DDL statements (constraints) are executed directly without the planner pipeline
-      if (statement instanceof CypherDDLStatement)
-        return executeDDL((CypherDDLStatement) statement);
+      if (statement instanceof CypherDDLStatement lStatement)
+        return executeDDL(lStatement);
 
       // Admin statements (user management) are executed directly against the security manager
-      if (statement instanceof CypherAdminStatement)
-        return executeAdmin((CypherAdminStatement) statement);
+      if (statement instanceof CypherAdminStatement adminStatement)
+        return executeAdmin(adminStatement);
 
       // Transaction control statements (START TRANSACTION/COMMIT/ROLLBACK) are executed directly
       // against the database transaction API, bypassing the planner's auto-commit pipeline.
-      if (statement instanceof CypherTransactionStatement)
-        return executeTransaction((CypherTransactionStatement) statement);
+      if (statement instanceof CypherTransactionStatement transactionStatement)
+        return executeTransaction(transactionStatement);
 
       // Make any session parameters (SESSION SET) visible to this command as $name. Resolve the session
       // once and thread it to both the merge and executeSession (avoids a second thread-context lookup).
@@ -238,8 +238,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       // Session management statements (SESSION SET/RESET/CLOSE) operate on the server session bound to
       // the current thread; executed directly, no planner pipeline.
-      if (statement instanceof CypherSessionStatement)
-        return executeSession((CypherSessionStatement) statement, session, effectiveParameters);
+      if (statement instanceof CypherSessionStatement sessionStatement)
+        return executeSession(sessionStatement, session, effectiveParameters);
 
       return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {

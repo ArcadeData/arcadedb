@@ -18,9 +18,11 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.log.LogManager;
+
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
-import com.arcadedb.log.LogManager;
+
 import java.util.logging.Level;
 
 /**

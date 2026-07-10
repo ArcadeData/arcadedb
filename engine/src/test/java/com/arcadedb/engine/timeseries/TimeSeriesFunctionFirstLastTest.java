@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -89,8 +90,8 @@ class TimeSeriesFunctionFirstLastTest extends TestHelper {
       results.add(rs.next());
 
     assertThat(results).hasSize(2);
-    assertThat(((Number) results.get(0).getProperty("first_val")).doubleValue()).isEqualTo(10.0);
-    assertThat(((Number) results.get(0).getProperty("last_val")).doubleValue()).isEqualTo(30.0);
+    assertThat(((Number) results.getFirst().getProperty("first_val")).doubleValue()).isEqualTo(10.0);
+    assertThat(((Number) results.getFirst().getProperty("last_val")).doubleValue()).isEqualTo(30.0);
     assertThat(((Number) results.get(1).getProperty("first_val")).doubleValue()).isEqualTo(200.0);
     assertThat(((Number) results.get(1).getProperty("last_val")).doubleValue()).isEqualTo(400.0);
   }

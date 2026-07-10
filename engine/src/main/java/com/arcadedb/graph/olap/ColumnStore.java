@@ -74,18 +74,13 @@ public class ColumnStore {
     if (column == null || column.isNull(nodeId))
       return null;
 
-    switch (column.getType()) {
-    case INT:
-      return column.getInt(nodeId);
-    case LONG:
-      return column.getLong(nodeId);
-    case DOUBLE:
-      return column.getDouble(nodeId);
-    case STRING:
-      return column.getString(nodeId);
-    default:
-      return null;
-    }
+    return switch (column.getType()) {
+    case INT -> column.getInt(nodeId);
+    case LONG -> column.getLong(nodeId);
+    case DOUBLE -> column.getDouble(nodeId);
+    case STRING -> column.getString(nodeId);
+    default -> null;
+    };
   }
 
   /**

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.compression.LZ4Compression;
+import com.arcadedb.database.BaseDocument;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DataEncryption;
@@ -29,6 +30,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentInternal;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.EmbeddedModifierProperty;
@@ -40,6 +42,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableEdge;
@@ -48,9 +51,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.function.sql.geo.GeoUtils;
-import com.arcadedb.database.BaseDocument;
-import com.arcadedb.database.DocumentInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Property;
@@ -444,13 +444,12 @@ public class BinarySerializer {
       content.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
       break;
     case BinaryTypes.TYPE_DATE:
-      if (value instanceof Date date)
-        content.putUnsignedNumber(date.getTime() / DateUtils.MS_IN_A_DAY);
-      else if (value instanceof LocalDate date)
-        content.putUnsignedNumber(date.toEpochDay());
-      else
-        throw new IllegalArgumentException(
+      switch (value) {
+        case Date date -> content.putUnsignedNumber(date.getTime() / DateUtils.MS_IN_A_DAY);
+        case LocalDate date -> content.putUnsignedNumber(date.toEpochDay());
+        case null, default -> throw new IllegalArgumentException(
             "Cannot serialize " + value.getClass() + " as DATE; expected java.util.Date or java.time.LocalDate");
+      }
       break;
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME:
@@ -1235,14 +1234,14 @@ public class BinarySerializer {
   public Map<String, RID> findExistingExternalRids(final Database database, final Document record) {
     final RID identity = record.getIdentity();
     if (identity == null)
-      return Collections.emptyMap();
+      return Map.of();
     if (!(record instanceof BaseDocument))
-      return Collections.emptyMap();
+      return Map.of();
     if (!(record.getType() instanceof LocalDocumentType ldt) || !ldt.hasExternalBuckets())
-      return Collections.emptyMap();
+      return Map.of();
     final Binary buf = ((BaseRecord) record).getBuffer();
     if (buf == null)
-      return Collections.emptyMap();
+      return Map.of();
 
     // Scan the record's own buffer in place (no copy). The buffer is the read-side of the record's content,
     // which by the time serializeProperties reaches us has finished its own reads (it pulls the property map
@@ -1256,7 +1255,7 @@ public class BinarySerializer {
       final int headerEndOffset = buf.getInt();
       final int properties = (int) buf.getUnsignedNumber();
       if (properties <= 0)
-        return Collections.emptyMap();
+        return Map.of();
 
       final Dictionary dictionary = database.getSchema().getDictionary();
       Map<String, RID> result = null;
@@ -1280,7 +1279,7 @@ public class BinarySerializer {
 
         buf.position(afterHeader);
       }
-      return result == null ? Collections.emptyMap() : result;
+      return result == null ? Map.of() : result;
     } catch (Exception e) {
       // Bump the JVM-cumulative counter so CHECK DATABASE surfaces the leak rate without waiting for the
       // next paired-bucket scan. The orphan blob (if any) will eventually be caught by the orphan scan,
@@ -1291,7 +1290,7 @@ public class BinarySerializer {
           Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this \
           record may be orphaned in the paired bucket. (cumulative scan failures since process start: %d)""",
           e, identity, e.getMessage(), externalRidScanFailures.get());
-      return Collections.emptyMap();
+      return Map.of();
     } finally {
       buf.position(savedPosition);
     }
@@ -1369,34 +1368,39 @@ public class BinarySerializer {
    * This is much more efficient than WKT strings (e.g., "POINT(48.856 2.352)" = 20+ chars).
    */
   private void serializeGeometryBinary(final Binary content, final Shape shape) {
-    if (shape instanceof Point point) {
-      // Point: 1 byte subtype + 16 bytes (2 doubles)
-      content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_POINT);
-      content.putNumber(Double.doubleToLongBits(point.getX()));
-      content.putNumber(Double.doubleToLongBits(point.getY()));
+    switch (shape) {
+      case Point point -> {
+        // Point: 1 byte subtype + 16 bytes (2 doubles)
+        content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_POINT);
+        content.putNumber(Double.doubleToLongBits(point.getX()));
+        content.putNumber(Double.doubleToLongBits(point.getY()));
 
-    } else if (shape instanceof Circle circle) {
-      // Circle: 1 byte subtype + 24 bytes (3 doubles)
-      content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_CIRCLE);
-      content.putNumber(Double.doubleToLongBits(circle.getCenter().getX()));
-      content.putNumber(Double.doubleToLongBits(circle.getCenter().getY()));
-      content.putNumber(Double.doubleToLongBits(circle.getRadius()));
+      }
+      case Circle circle -> {
+        // Circle: 1 byte subtype + 24 bytes (3 doubles)
+        content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_CIRCLE);
+        content.putNumber(Double.doubleToLongBits(circle.getCenter().getX()));
+        content.putNumber(Double.doubleToLongBits(circle.getCenter().getY()));
+        content.putNumber(Double.doubleToLongBits(circle.getRadius()));
 
-    } else if (shape instanceof Rectangle rect) {
-      // Rectangle: 1 byte subtype + 32 bytes (4 doubles)
-      content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_RECTANGLE);
-      content.putNumber(Double.doubleToLongBits(rect.getMinX()));
-      content.putNumber(Double.doubleToLongBits(rect.getMinY()));
-      content.putNumber(Double.doubleToLongBits(rect.getMaxX()));
-      content.putNumber(Double.doubleToLongBits(rect.getMaxY()));
+      }
+      case Rectangle rect -> {
+        // Rectangle: 1 byte subtype + 32 bytes (4 doubles)
+        content.putByte(BinaryTypes.GEOMETRY_SUBTYPE_RECTANGLE);
+        content.putNumber(Double.doubleToLongBits(rect.getMinX()));
+        content.putNumber(Double.doubleToLongBits(rect.getMinY()));
+        content.putNumber(Double.doubleToLongBits(rect.getMaxX()));
+        content.putNumber(Double.doubleToLongBits(rect.getMaxY()));
 
-    } else {
-      // Unknown shape type - fall back to WKT string for compatibility
-      LogManager.instance().log(this, Level.WARNING,
-          "Unknown shape type %s, falling back to WKT string serialization", shape.getClass().getName());
-      // Write a special subtype 0 to indicate WKT fallback
-      content.putByte((byte) 0);
-      content.putString(convertShapeToWKT(shape));
+      }
+      case null, default -> {
+        // Unknown shape type - fall back to WKT string for compatibility
+        LogManager.instance().log(this, Level.WARNING,
+            "Unknown shape type %s, falling back to WKT string serialization", shape.getClass().getName());
+        // Write a special subtype 0 to indicate WKT fallback
+        content.putByte((byte) 0);
+        content.putString(convertShapeToWKT(shape));
+      }
     }
   }
 

@@ -62,14 +62,13 @@ public class ListIndexExpression implements Expression {
     final boolean isListLike = listValue instanceof Collection || listValue.getClass().isArray();
 
     // Map/Document property access via bracket notation: map['key']
-    if (indexValue instanceof String) {
-      final String key = (String) indexValue;
-      if (listValue instanceof Map)
-        return ((Map<?, ?>) listValue).get(key);
-      if (listValue instanceof Document)
-        return ((Document) listValue).get(key);
-      if (listValue instanceof Result)
-        return ((Result) listValue).getProperty(key);
+    if (indexValue instanceof String key) {
+      if (listValue instanceof Map<?, ?> map)
+        return map.get(key);
+      if (listValue instanceof Document document)
+        return document.get(key);
+      if (listValue instanceof Result result1)
+        return result1.getProperty(key);
       // List with string index is a type error in Cypher
       if (isListLike)
         throw new IllegalArgumentException("List index must be a number, got: String");
@@ -89,8 +88,8 @@ public class ListIndexExpression implements Expression {
       if (isListLike)
         throw new IllegalArgumentException("TypeError: list index must be an integer, got Boolean");
       return null;
-    } else if (indexValue instanceof Number)
-      index = ((Number) indexValue).intValue();
+    } else if (indexValue instanceof Number number)
+      index = number.intValue();
     else {
       if (isListLike)
         throw new IllegalArgumentException("TypeError: list index must be an integer, got " + indexValue.getClass().getSimpleName());

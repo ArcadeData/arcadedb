@@ -22,11 +22,14 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -35,15 +38,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
-import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.MultiIterator;
-
-import com.arcadedb.query.OperationType;
 
 import java.util.Iterator;
 import java.util.Map;
@@ -248,8 +247,9 @@ public class SQLQueryEngine implements QueryEngine {
     if (sqlFunction == null) {
       if ("distinct".equalsIgnoreCase(name))
         throw new CommandExecutionException(
-            "'distinct' is supported only as the whole SELECT projection (e.g. `SELECT distinct(field)` or `SELECT DISTINCT field`), "
-                + "not nested inside another function or as the base of a method");
+            """
+            'distinct' is supported only as the whole SELECT projection (e.g. `SELECT distinct(field)` or `SELECT DISTINCT field`), \
+            not nested inside another function or as the base of a method""");
       throw new CommandExecutionException("Unknown function name '" + name + "'");
     }
 

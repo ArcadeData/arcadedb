@@ -144,14 +144,13 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
 
   private void addNextEntryPoints(final Object nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
       final CommandContext context) {
-    if (nextStep instanceof Identifiable identifiable)
-      addNextEntryPoint(identifiable, depth, path, stack, context);
-    else if (nextStep instanceof Iterable iterable)
-      addNextEntryPoints(iterable.iterator(), depth, path, stack, context);
-    else if (nextStep instanceof Map map)
-      addNextEntryPoints(map.values().iterator(), depth, path, stack, context);
-    else if (nextStep instanceof Result result)
-      addNextEntryPoint(result, depth, path, stack, context);
+    switch (nextStep) {
+      case Identifiable identifiable -> addNextEntryPoint(identifiable, depth, path, stack, context);
+      case Iterable iterable -> addNextEntryPoints(iterable.iterator(), depth, path, stack, context);
+      case Map map -> addNextEntryPoints(map.values().iterator(), depth, path, stack, context);
+      case Result result -> addNextEntryPoint(result, depth, path, stack, context);
+      case null, default -> {}
+    }
   }
 
   private void addNextEntryPoints(final Iterator nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,

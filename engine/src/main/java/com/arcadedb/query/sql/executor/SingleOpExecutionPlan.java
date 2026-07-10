@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.SimpleExecStatement;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -99,7 +98,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public List<ExecutionStep> getSteps() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override

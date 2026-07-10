@@ -21,6 +21,7 @@ package performance;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.RidSet;
 import com.arcadedb.utility.RidHashSet;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

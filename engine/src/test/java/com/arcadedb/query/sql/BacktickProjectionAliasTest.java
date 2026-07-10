@@ -21,6 +21,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -71,7 +72,7 @@ class BacktickProjectionAliasTest extends TestHelper {
       assertThat(rows).hasSize(2);
 
       // The grouped column must be keyed "col1" (no backticks) and must not be null.
-      final Result first = rows.get(0);
+      final Result first = rows.getFirst();
       assertThat(first.getPropertyNames()).contains("col1");
       assertThat(first.<Integer>getProperty("col1")).isNotNull().isEqualTo(1);
       assertThat(first.<Number>getProperty("n").longValue()).isEqualTo(2L);
@@ -117,8 +118,8 @@ class BacktickProjectionAliasTest extends TestHelper {
         rows.add(rs.next());
 
       assertThat(rows).hasSize(2);
-      assertThat(rows.get(0).<Integer>getProperty("col1")).isEqualTo(3);
-      assertThat(rows.get(0).<Number>getProperty("n").longValue()).isEqualTo(2L);
+      assertThat(rows.getFirst().<Integer>getProperty("col1")).isEqualTo(3);
+      assertThat(rows.getFirst().<Number>getProperty("n").longValue()).isEqualTo(2L);
       assertThat(rows.get(1).<Integer>getProperty("col1")).isEqualTo(5);
       assertThat(rows.get(1).<Number>getProperty("n").longValue()).isEqualTo(1L);
     });

@@ -21,6 +21,7 @@ package com.arcadedb.server.security;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -73,7 +74,7 @@ class SecurityUserFileRepositoryTest {
 
     final List<JSONObject> reloaded = new SecurityUserFileRepository(TEST_CONFIG_PATH).getUsers();
     assertThat(reloaded).hasSize(5);
-    assertThat(reloaded.get(0).getString("name")).isEqualTo("user0");
+    assertThat(reloaded.getFirst().getString("name")).isEqualTo("user0");
     assertThat(reloaded.get(4).getString("name")).isEqualTo("user4");
   }
 

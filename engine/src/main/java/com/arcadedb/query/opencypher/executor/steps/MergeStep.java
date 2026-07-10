@@ -28,13 +28,14 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
-import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -46,7 +47,6 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
@@ -221,8 +221,8 @@ public class MergeStep extends AbstractExecutionStep {
       for (final Result r : results) {
         final boolean wasCreated = Boolean.TRUE.equals(r.getProperty("  wasCreated"));
         // Remove internal flag
-        if (r instanceof ResultInternal)
-          ((ResultInternal) r).removeProperty("  wasCreated");
+        if (r instanceof ResultInternal internal)
+          internal.removeProperty("  wasCreated");
         if (wasCreated && mergeClause.hasOnCreateSet())
           applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r);
         else if (!wasCreated && mergeClause.hasOnMatchSet())
@@ -408,7 +408,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (!relPattern.hasTypes())
       return false; // can't filter candidate's edges without a relationship type
 
-    final String label = unboundPattern.getLabels().get(0);
+    final String label = unboundPattern.getLabels().getFirst();
     if (!context.getDatabase().getSchema().existsType(label))
       return false;
 
@@ -1033,7 +1033,7 @@ public class MergeStep extends AbstractExecutionStep {
     final List<String> labels = nodePattern.getLabels();
 
     if (labels.size() > 1) {
-      final String firstLabel = labels.get(0);
+      final String firstLabel = labels.getFirst();
       if (!context.getDatabase().getSchema().existsType(firstLabel))
         return matches;
       @SuppressWarnings("unchecked")
@@ -1050,7 +1050,7 @@ public class MergeStep extends AbstractExecutionStep {
       return matches;
     }
 
-    final String label = labels.get(0);
+    final String label = labels.getFirst();
     if (!context.getDatabase().getSchema().existsType(label))
       return matches;
 
@@ -1131,9 +1131,9 @@ public class MergeStep extends AbstractExecutionStep {
       return true;
     // Numeric type-safe comparison: Integer(1) equals Long(1). Float vs Double may report unequal
     // after widening (0.1f != 0.1d): conservative on purpose, the only cost is a redundant write.
-    if (a instanceof Number && b instanceof Number)
-      return ((Number) a).longValue() == ((Number) b).longValue()
-          && Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue()) == 0;
+    if (a instanceof Number number && b instanceof Number number1)
+      return number.longValue() == number1.longValue()
+          && Double.compare(number.doubleValue(), number1.doubleValue()) == 0;
     return false;
   }
 
@@ -1240,22 +1240,14 @@ public class MergeStep extends AbstractExecutionStep {
       Object value = entry.getValue();
 
       // If the value is an Expression object, evaluate it in the current result context
-      if (value instanceof Expression) {
-        value = TemporalUtil.toCoreJavaType(evaluator.evaluate((Expression) value, result, context));
-      }
-      // Resolve parameter references (e.g., $username -> actual value from context)
-      else if (value instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
-        if (context.getInputParameters() != null)
-          value = TemporalUtil.toCoreJavaType(context.getInputParameters().get(paramName));
-      }
-      // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
-      // try to evaluate it against the current result context
-      else if (value instanceof String) {
-        final String strValue = (String) value;
-
-        // Check if it's a property access pattern: variable.property
-        if (strValue.contains(".") && !strValue.startsWith("'") && !strValue.startsWith("\"")) {
+      switch (value) {
+        case Expression expression -> value = TemporalUtil.toCoreJavaType(evaluator.evaluate(expression, result, context));
+        case CypherASTBuilder.ParameterReference reference -> {
+          final String paramName = reference.getName();
+          if (context.getInputParameters() != null)
+            value = TemporalUtil.toCoreJavaType(context.getInputParameters().get(paramName));
+        }
+        case String strValue when strValue.contains(".") && !strValue.startsWith("'") && !strValue.startsWith("\"") -> {
           final String[] parts = strValue.split("\\.", 2);
           if (parts.length == 2) {
             final String variable = parts[0];
@@ -1265,20 +1257,23 @@ public class MergeStep extends AbstractExecutionStep {
             final Object obj = result.getProperty(variable);
             if (obj != null) {
               // If it's a map (like unwound data), get the property
-              if (obj instanceof Map) {
-                value = ((Map<?, ?>) obj).get(property);
-              } else if (obj instanceof Document) {
-                value = ((Document) obj).get(property);
+              if (obj instanceof Map<?, ?> map) {
+                value = map.get(property);
+              } else if (obj instanceof Document document) {
+                value = document.get(property);
               }
             }
           }
-        } else if (!strValue.startsWith("'") && !strValue.startsWith("\"")) {
+        }
+        case String strValue when !strValue.startsWith("'") && !strValue.startsWith("\"") -> {
           // It might be a simple variable reference
           final Object obj = result.getProperty(strValue);
           if (obj != null) {
             value = obj;
           }
         }
+        case String strValue -> {}
+        case null, default -> {}
       }
 
       evaluated.put(key, value);

@@ -22,8 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 
-import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -61,7 +61,7 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
     }
 
     if (qR == null) {
-      return Collections.emptyList();
+      return List.of();
     }
     if (qR instanceof Identifiable identifiable) {
       return Set.of(new ResultInternal(identifiable.getRecord()));
@@ -109,6 +109,6 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
         }
       };
     }
-    return Collections.emptyList();
+    return List.of();
   }
 }

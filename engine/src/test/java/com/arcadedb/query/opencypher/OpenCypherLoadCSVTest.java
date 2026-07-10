@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -89,7 +90,7 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(3);
-    @SuppressWarnings("unchecked") final List<String> firstRow = results.get(0).getProperty("row");
+    @SuppressWarnings("unchecked") final List<String> firstRow = results.getFirst().getProperty("row");
     assertThat(firstRow).containsExactly("Alice", "30");
     @SuppressWarnings("unchecked") final List<String> secondRow = results.get(1).getProperty("row");
     assertThat(secondRow).containsExactly("Bob", "25");
@@ -113,8 +114,8 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
-    assertThat(results.get(0).<String>getProperty("age")).isEqualTo("30");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("age")).isEqualTo("30");
     assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Bob");
     assertThat(results.get(1).<String>getProperty("age")).isEqualTo("25");
   }
@@ -135,8 +136,8 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
-    assertThat(results.get(0).<String>getProperty("age")).isEqualTo("30");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("age")).isEqualTo("30");
   }
 
   @Test
@@ -162,8 +163,8 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
-    assertThat(results.get(0).<Object>getProperty("age")).isEqualTo(30L);
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.getFirst().<Object>getProperty("age")).isEqualTo(30L);
     assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Bob");
     assertThat(results.get(1).<Object>getProperty("age")).isEqualTo(25L);
   }
@@ -185,9 +186,9 @@ class OpenCypherLoadCSVTest {
 
     assertThat(results).hasSize(3);
     // file() should return the URL
-    assertThat(results.get(0).<String>getProperty("f")).isEqualTo(url);
+    assertThat(results.getFirst().<String>getProperty("f")).isEqualTo(url);
     // linenumber() should be 1-based line numbers
-    assertThat(results.get(0).<Object>getProperty("ln")).isEqualTo(1);
+    assertThat(results.getFirst().<Object>getProperty("ln")).isEqualTo(1);
     assertThat(results.get(1).<Object>getProperty("ln")).isEqualTo(2);
     assertThat(results.get(2).<Object>getProperty("ln")).isEqualTo(3);
   }
@@ -208,8 +209,8 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Smith, Jr.");
-    assertThat(results.get(0).<String>getProperty("title")).isEqualTo("Manager");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Smith, Jr.");
+    assertThat(results.getFirst().<String>getProperty("title")).isEqualTo("Manager");
     assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Alice");
   }
 
@@ -249,7 +250,7 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(1);
-    @SuppressWarnings("unchecked") final List<String> row = results.get(0).getProperty("row");
+    @SuppressWarnings("unchecked") final List<String> row = results.getFirst().getProperty("row");
     assertThat(row).containsExactly("hello", "world");
   }
 
@@ -288,7 +289,7 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(1);
-    @SuppressWarnings("unchecked") final List<String> row = results.get(0).getProperty("row");
+    @SuppressWarnings("unchecked") final List<String> row = results.getFirst().getProperty("row");
     assertThat(row).containsExactly("hello", "world");
   }
 
@@ -350,7 +351,7 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(1);
-    @SuppressWarnings("unchecked") final List<String> row = results.get(0).getProperty("row");
+    @SuppressWarnings("unchecked") final List<String> row = results.getFirst().getProperty("row");
     assertThat(row).containsExactly("hello", "world");
   }
 
@@ -396,8 +397,8 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
-    assertThat(results.get(0).<String>getProperty("age")).isEqualTo("30");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("age")).isEqualTo("30");
     assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Bob");
     assertThat(results.get(1).<String>getProperty("age")).isEqualTo("25");
   }
@@ -424,8 +425,8 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Charlie");
-    assertThat(results.get(0).<String>getProperty("age")).isEqualTo("40");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Charlie");
+    assertThat(results.getFirst().<String>getProperty("age")).isEqualTo("40");
     assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Diana");
     assertThat(results.get(1).<String>getProperty("age")).isEqualTo("35");
   }
@@ -449,8 +450,8 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
-    assertThat(results.get(0).<String>getProperty("quote")).isEqualTo("She said \"hello\"");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("quote")).isEqualTo("She said \"hello\"");
     assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Bob");
     assertThat(results.get(1).<String>getProperty("quote")).isEqualTo("world");
   }
@@ -488,7 +489,7 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(1);
-    assertThat(results.get(0).<Long>getProperty("cnt")).isEqualTo(100L);
+    assertThat(results.getFirst().<Long>getProperty("cnt")).isEqualTo(100L);
   }
 
   @Test
@@ -522,6 +523,6 @@ class OpenCypherLoadCSVTest {
     });
 
     assertThat(results).hasSize(1);
-    assertThat(results.get(0).<Long>getProperty("cnt")).isEqualTo(50L);
+    assertThat(results.getFirst().<Long>getProperty("cnt")).isEqualTo(50L);
   }
 }

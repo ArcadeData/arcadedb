@@ -77,13 +77,13 @@ public class SQLFunctionVectorHybridScore extends SQLFunctionVectorAbstract {
 
     // Parse alpha weight. Accept either a plain number or an options map { alpha: <float> }.
     final float alpha;
-    if (alphaObj instanceof Map<?, ?> rawMap) {
-      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
-      alpha = (float) opts.getDouble("alpha", Float.NaN);
-    } else if (alphaObj instanceof Number num3) {
-      alpha = num3.floatValue();
-    } else {
-      throw new CommandSQLParsingException("Alpha weight must be a number, found: " + alphaObj.getClass().getSimpleName());
+    switch (alphaObj) {
+      case Map<?, ?> rawMap -> {
+        final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+        alpha = (float) opts.getDouble("alpha", Float.NaN);
+      }
+      case Number num3 -> alpha = num3.floatValue();
+      case null, default -> throw new CommandSQLParsingException("Alpha weight must be a number, found: " + alphaObj.getClass().getSimpleName());
     }
 
     // Validate alpha is in [0, 1]

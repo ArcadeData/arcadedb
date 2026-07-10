@@ -178,7 +178,7 @@ public class CollectionUtils {
    */
   public static <K, V> Map<K, V> immutableMap(final Map<K, V> map) {
     if (map == null || map.isEmpty())
-      return Collections.emptyMap();
+      return Map.of();
 
     if (map.size() == 1) {
       final Map.Entry<K, V> entry = map.entrySet().iterator().next();

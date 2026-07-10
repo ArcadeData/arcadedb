@@ -140,9 +140,9 @@ public class ComparisonExpression implements BooleanExpression {
     // single instanceof pair, and memoizes an invariant temporal operand to avoid per-row allocation.
     final Object leftTemporal = coerceTemporal(left);
     final Object rightTemporal = coerceTemporal(right);
-    if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
+    if (leftTemporal instanceof CypherTemporalValue value && rightTemporal instanceof CypherTemporalValue value1) {
       try {
-        final int cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);
+        final int cmp = value.compareTo(value1);
         return switch (operator) {
           case EQUALS -> cmp == 0;
           case NOT_EQUALS -> cmp != 0;
@@ -160,12 +160,12 @@ public class ComparisonExpression implements BooleanExpression {
     }
 
     // Numeric comparison
-    if (left instanceof Number && right instanceof Number) {
+    if (left instanceof Number number && right instanceof Number number1) {
       // Use long comparison when both are integer types to avoid precision loss
       if ((left instanceof Long || left instanceof Integer) &&
           (right instanceof Long || right instanceof Integer)) {
-        final long leftNum = ((Number) left).longValue();
-        final long rightNum = ((Number) right).longValue();
+        final long leftNum = number.longValue();
+        final long rightNum = number1.longValue();
         return switch (operator) {
           case EQUALS -> leftNum == rightNum;
           case NOT_EQUALS -> leftNum != rightNum;
@@ -175,8 +175,8 @@ public class ComparisonExpression implements BooleanExpression {
           case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
         };
       }
-      final double leftNum = ((Number) left).doubleValue();
-      final double rightNum = ((Number) right).doubleValue();
+      final double leftNum = number.doubleValue();
+      final double rightNum = number1.doubleValue();
       return switch (operator) {
         case EQUALS -> leftNum == rightNum;
         case NOT_EQUALS -> leftNum != rightNum;
@@ -188,9 +188,9 @@ public class ComparisonExpression implements BooleanExpression {
     }
 
     // Boolean comparison (booleans only compare with booleans)
-    if (left instanceof Boolean && right instanceof Boolean) {
+    if (left instanceof Boolean boolean1 && right instanceof Boolean boolean2) {
       // false < true in Cypher
-      final int cmp = Boolean.compare((Boolean) left, (Boolean) right);
+      final int cmp = Boolean.compare(boolean1, boolean2);
       return switch (operator) {
         case EQUALS -> cmp == 0;
         case NOT_EQUALS -> cmp != 0;
@@ -202,8 +202,8 @@ public class ComparisonExpression implements BooleanExpression {
     }
 
     // String comparison (strings only compare with strings)
-    if (left instanceof String && right instanceof String) {
-      final int comparison = ((String) left).compareTo((String) right);
+    if (left instanceof String string && right instanceof String string1) {
+      final int comparison = string.compareTo(string1);
       return switch (operator) {
         case EQUALS -> comparison == 0;
         case NOT_EQUALS -> comparison != 0;
@@ -276,9 +276,7 @@ public class ComparisonExpression implements BooleanExpression {
     }
 
     // Map comparison with 3VL null propagation
-    if (left instanceof Map && right instanceof Map) {
-      final Map<?, ?> leftMap = (Map<?, ?>) left;
-      final Map<?, ?> rightMap = (Map<?, ?>) right;
+    if (left instanceof Map<?, ?> leftMap && right instanceof Map<?, ?> rightMap) {
       if (operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) {
         // Different key sets means definitely not equal
         if (!leftMap.keySet().equals(rightMap.keySet()))

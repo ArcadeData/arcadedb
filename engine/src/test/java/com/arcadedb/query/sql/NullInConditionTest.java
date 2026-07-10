@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -91,9 +92,9 @@ class NullInConditionTest extends TestHelper {
   @Test
   void notInWithNullParameterListExcludesEveryRow() {
     final Map<String, Object> params = new HashMap<>();
-    final List<Object> list = new ArrayList<>();
-    list.add(1);
-    list.add(2);
+    final List<Object> list = new ArrayList<>(List.of(
+        1,
+        2));
     list.add(null);
     params.put("list", list);
     final List<Integer> result = values("SELECT FROM Num4591 WHERE v NOT IN :list", params);
@@ -103,9 +104,9 @@ class NullInConditionTest extends TestHelper {
   @Test
   void inWithNullParameterListKeepsOnlyMatches() {
     final Map<String, Object> params = new HashMap<>();
-    final List<Object> list = new ArrayList<>();
-    list.add(1);
-    list.add(2);
+    final List<Object> list = new ArrayList<>(List.of(
+        1,
+        2));
     list.add(null);
     params.put("list", list);
     final List<Integer> result = values("SELECT FROM Num4591 WHERE v IN :list", params);

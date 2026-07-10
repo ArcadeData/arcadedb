@@ -20,15 +20,11 @@ package com.arcadedb.server.mcp.tools;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.server.mcp.MCPConfiguration;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.*;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 /**

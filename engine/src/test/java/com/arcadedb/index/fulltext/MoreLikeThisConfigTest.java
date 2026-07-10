@@ -18,6 +18,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

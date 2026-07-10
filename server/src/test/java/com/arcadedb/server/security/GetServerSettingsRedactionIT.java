@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -50,7 +51,7 @@ class GetServerSettingsRedactionIT extends BaseGraphServerTest {
 
   @Test
   void clusterTokenIsRedactedInServerSettings() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = getServerInfo(serverIndex);
 
       // The raw secret must not appear anywhere in the response.

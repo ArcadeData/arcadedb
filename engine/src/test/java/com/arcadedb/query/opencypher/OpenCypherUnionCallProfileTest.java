@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -115,7 +116,7 @@ class OpenCypherUnionCallProfileTest {
     }
 
     assertThat(names).hasSize(1);
-    assertThat(names.get(0)).isEqualTo("Same");
+    assertThat(names.getFirst()).isEqualTo("Same");
   }
 
   @Test

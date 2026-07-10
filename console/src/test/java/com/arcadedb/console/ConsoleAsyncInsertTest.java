@@ -39,6 +39,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -188,8 +189,11 @@ public class ConsoleAsyncInsertTest {
     try {
       ServerSecurity serverSecurity = arcadeDBServer.getSecurity();
       if (serverSecurity.getUser(userName) == null) {
-        serverSecurity.createUser(new JSONObject().put("name", userName).put("password", serverSecurity.encodePassword(password))
-            .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
+        serverSecurity.createUser(new JSONObject()
+            .put("name", userName)
+            .put("password", serverSecurity.encodePassword(password))
+            .put("databases", new JSONObject()
+                .put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
       }
       Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
       database.async().setParallelLevel(PARALLEL_LEVEL);

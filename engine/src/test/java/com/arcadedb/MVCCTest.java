@@ -32,6 +32,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

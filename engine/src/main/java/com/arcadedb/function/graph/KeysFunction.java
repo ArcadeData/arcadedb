@@ -24,7 +24,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,12 +43,11 @@ public class KeysFunction implements StatelessFunction {
     }
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Document) {
-      final Document doc = (Document) args[0];
+    if (args[0] instanceof Document doc) {
       return new ArrayList<>(doc.getPropertyNames());
     }
-    if (args[0] instanceof Map)
-      return new ArrayList<>(((Map<?, ?>) args[0]).keySet());
-    return Collections.emptyList();
+    if (args[0] instanceof Map<?, ?> map)
+      return new ArrayList<>(map.keySet());
+    return List.of();
   }
 }

@@ -21,16 +21,16 @@ package com.arcadedb.server.mcp.tools;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.Collections;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -89,7 +89,7 @@ public class ExecuteCommandTool {
     // GraphQL) analyzed.execute() returns null and the command is re-parsed by database.command().
     final JSONArray records = new JSONArray();
     database.transaction(() -> {
-      final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
+      final ResultSet analyzedResultSet = analyzed.execute(Map.of());
       try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.command(language, command)) {
         int count = 0;
         while (resultSet.hasNext() && count < limit) {

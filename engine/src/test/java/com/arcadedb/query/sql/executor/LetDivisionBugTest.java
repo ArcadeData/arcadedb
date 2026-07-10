@@ -25,8 +25,8 @@ class LetDivisionBugTest extends TestHelper {
 
       // The ratio should be 1.0 since both expressions are mathematically equivalent
       assertThat(ratio).isNotNull();
-      if (ratio instanceof Number) {
-        double ratioValue = ((Number) ratio).doubleValue();
+      if (ratio instanceof Number number) {
+        double ratioValue = number.doubleValue();
         // System.out.println("Ratio value: " + ratioValue);
         assertThat(ratioValue).isCloseTo(1.0, Offset.offset(0.0001));
       }
@@ -43,9 +43,9 @@ class LetDivisionBugTest extends TestHelper {
       // System.out.println("$val1: " + val1);
       // System.out.println("$val2: " + val2);
 
-      if (val1 instanceof Number && val2 instanceof Number) {
-        double v1 = ((Number) val1).doubleValue();
-        double v2 = ((Number) val2).doubleValue();
+      if (val1 instanceof Number number1 && val2 instanceof Number number2) {
+        double v1 = number1.doubleValue();
+        double v2 = number2.doubleValue();
         // System.out.println("$val1 (double): " + v1);
         // System.out.println("$val2 (double): " + v2);
         // System.out.println("Calculated ratio: " + (v2 / v1));
@@ -71,9 +71,9 @@ class LetDivisionBugTest extends TestHelper {
       // System.out.println("Direct val1: " + val1);
       // System.out.println("Direct val2: " + val2);
 
-      if (val1 instanceof Number && val2 instanceof Number) {
-        double v1 = ((Number) val1).doubleValue();
-        double v2 = ((Number) val2).doubleValue();
+      if (val1 instanceof Number number && val2 instanceof Number number1) {
+        double v1 = number.doubleValue();
+        double v2 = number1.doubleValue();
         // System.out.println("Direct val1 (double): " + v1);
         // System.out.println("Direct val2 (double): " + v2);
       }
@@ -102,9 +102,9 @@ class LetDivisionBugTest extends TestHelper {
       result3.close();
 
       // Now assert that val1 and val2 should be equal
-      if (val1 instanceof Number && val2 instanceof Number) {
-        double v1 = ((Number) val1).doubleValue();
-        double v2 = ((Number) val2).doubleValue();
+      if (val1 instanceof Number number2 && val2 instanceof Number number3) {
+        double v1 = number2.doubleValue();
+        double v2 = number3.doubleValue();
         assertThat(v1).isCloseTo(v2, Percentage.withPercentage(0.01));
       }
     });

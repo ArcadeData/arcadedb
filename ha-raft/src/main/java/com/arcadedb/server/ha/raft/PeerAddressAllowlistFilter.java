@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+
 import org.apache.ratis.thirdparty.io.grpc.Attributes;
 import org.apache.ratis.thirdparty.io.grpc.Grpc;
 import org.apache.ratis.thirdparty.io.grpc.ServerTransportFilter;
@@ -28,13 +29,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -98,7 +93,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   private final long                         createdMs;
   private final LongSupplier                 clock;
   private final HostResolver                 resolver;
-  private final AtomicReference<Set<String>> allowedIps = new AtomicReference<>(Collections.emptySet());
+  private final AtomicReference<Set<String>> allowedIps = new AtomicReference<>(Set.of());
   // Per-host last successfully-resolved IPs and the time they were resolved, for sticky retention.
   // Only mutated inside the synchronized doResolve(); never read outside it.
   private final Map<String, Set<String>>     lastKnownIps = new HashMap<>();
@@ -181,8 +176,9 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     final long now = clock.getAsLong();
     if (!everQuorumResolved && startupGraceMs > 0 && now - createdMs < startupGraceMs) {
       LogManager.instance().log(this, Level.WARNING,
-          "Accepting Raft gRPC connection from %s during startup grace: peer allowlist below quorum "
-              + "(resolved %d/%d hosts, quorum=%d, allowed=%s). Will enforce once a quorum of peers resolves or after %dms.",
+          """
+          Accepting Raft gRPC connection from %s during startup grace: peer allowlist below quorum \
+          (resolved %d/%d hosts, quorum=%d, allowed=%s). Will enforce once a quorum of peers resolves or after %dms.""",
           ip, lastKnownIps.size(), peerHosts.size(), resolveQuorum, allowedIps.get(), startupGraceMs);
       return true;
     }
@@ -302,7 +298,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
    */
   static List<String> extractPeerHosts(final String serverList) {
     if (serverList == null || serverList.isBlank())
-      return Collections.emptyList();
+      return List.of();
 
     final List<String> entries = RaftPeerAddressResolver.splitEntries(serverList);
     final List<String> hosts = new ArrayList<>(entries.size());

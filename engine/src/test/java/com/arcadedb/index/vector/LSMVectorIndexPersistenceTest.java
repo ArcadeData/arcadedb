@@ -24,12 +24,14 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,9 +66,9 @@ class LSMVectorIndexPersistenceTest {
       // Create vector index using SQL command
       database.command("sql",
           """
-          CREATE INDEX ON Word (vector) LSM_VECTOR METADATA \
-          {dimensions: 100, similarity: 'COSINE', maxConnections: 16, beamWidth: 100, idPropertyName: 'name'}\
-          """);
+              CREATE INDEX ON Word (vector) LSM_VECTOR METADATA \
+              {dimensions: 100, similarity: 'COSINE', maxConnections: 16, beamWidth: 100, idPropertyName: 'name'}\
+              """);
 
       // Verify index exists
       Index index = database.getSchema().getIndexByName("Word[vector]");
@@ -78,7 +80,7 @@ class LSMVectorIndexPersistenceTest {
       for (int i = 0; i < 10; i++) {
         float[] vector = new float[100];
         for (int j = 0; j < 100; j++) {
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         }
         database.newDocument("Word")
             .set("name", "word" + i)
@@ -98,7 +100,7 @@ class LSMVectorIndexPersistenceTest {
     String schemaPath = DB_PATH + "/schema.json";
     assertThat(new File(schemaPath).exists()).as("schema.json should exist").isTrue();
 
-    String schemaContent = Files.readString(Paths.get(schemaPath));
+    String schemaContent = Files.readString(Path.of(schemaPath));
     JSONObject schema = new JSONObject(schemaContent);
 
     // Navigate to the index definition in schema.json
@@ -138,7 +140,7 @@ class LSMVectorIndexPersistenceTest {
       // Verify we can query using the index directly (not via SQL function)
       float[] queryVector = new float[100];
       for (int i = 0; i < 100; i++) {
-        queryVector[i] = (float) Math.random();
+        queryVector[i] = (float) ThreadLocalRandom.current().nextDouble();
       }
 
       // Use the index's get() method directly instead of SQL function
@@ -182,7 +184,7 @@ class LSMVectorIndexPersistenceTest {
       for (int i = 0; i < 100; i++) {
         float[] vector = new float[50];
         for (int j = 0; j < 50; j++) {
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         }
         database.newDocument("Word")
             .set("name", "word" + i)

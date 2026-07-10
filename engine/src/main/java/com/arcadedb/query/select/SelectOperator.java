@@ -173,7 +173,7 @@ public enum SelectOperator {
   public final   String                      name;
   public final   boolean                     logicOperator;
   public final   int                         precedence;
-  private static Map<String, SelectOperator> NAMES = new ConcurrentHashMap<>();
+  private static final Map<String, SelectOperator> NAMES = new ConcurrentHashMap<>();
 
   SelectOperator(final String name, final boolean logicOperator, final int precedence) {
     this.name = name;

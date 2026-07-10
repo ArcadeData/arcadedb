@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -127,7 +128,7 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
       final var cursor = lsm.get(new Object[] { byteQuery }, 5);
       assertThat(cursor.hasNext()).isTrue();
       final RID byteTopRid = (RID) cursor.next();
-      assertThat(byteTopRid).isEqualTo(floatResults.get(0).getFirst());
+      assertThat(byteTopRid).isEqualTo(floatResults.getFirst().getFirst());
     });
   }
 
@@ -192,8 +193,8 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
 
       // The seed-0 record must be the top hit in both indexes - lossy int8 quantization shifts
       // scores but should not displace the perfect-match neighbour from rank 1.
-      final int floatTopId = ((Number) floatHits.get(0).getFirst().asDocument().get("id")).intValue();
-      final int byteTopId = ((Number) byteHits.get(0).getFirst().asDocument().get("id")).intValue();
+      final int floatTopId = ((Number) floatHits.getFirst().getFirst().asDocument().get("id")).intValue();
+      final int byteTopId = ((Number) byteHits.getFirst().getFirst().asDocument().get("id")).intValue();
       assertThat(floatTopId).isEqualTo(0);
       assertThat(byteTopId).isEqualTo(0);
     });
@@ -373,7 +374,7 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
       final List<Pair<RID, Float>> hits = lsm.findNeighborsFromVector(
           generateNormalizedTestVector(DIMENSIONS, 0), 5);
       assertThat(hits).isNotEmpty();
-      final int topId = ((Number) hits.get(0).getFirst().asDocument().get("id")).intValue();
+      final int topId = ((Number) hits.getFirst().getFirst().asDocument().get("id")).intValue();
       assertThat(topId).isEqualTo(0);
     });
   }

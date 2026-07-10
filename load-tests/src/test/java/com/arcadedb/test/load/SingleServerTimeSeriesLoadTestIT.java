@@ -21,6 +21,7 @@ package com.arcadedb.test.load;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
 import com.arcadedb.test.support.TimeSeriesDatabaseWrapper;
+
 import io.micrometer.core.instrument.Metrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -64,12 +65,9 @@ class SingleServerTimeSeriesLoadTestIT extends ContainersTestTemplate {
       for (int t = 0; t < NUM_THREADS; t++) {
         final int threadIndex = t;
         executor.submit(() -> {
-          final TimeSeriesDatabaseWrapper w = new TimeSeriesDatabaseWrapper(server, protocol);
-          try {
+          try (final TimeSeriesDatabaseWrapper w = new TimeSeriesDatabaseWrapper(server, protocol)) {
             final long base = 1_000_000_000L + threadIndex * 100_000_000L;
             w.ingestSeries("sensor-" + threadIndex, "region-" + (threadIndex % 3), base, POINTS_PER_THREAD);
-          } finally {
-            w.close();
           }
         });
       }

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,15 +45,14 @@ class CypherCaseOptionalMatchRelIssue5137Test {
   void setup() {
     database = new DatabaseFactory("./target/databases/cyphercase5137").create();
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher", """
           CREATE
             (a:User {id: 1, active: true}),
             (b:User {id: 2, active: true}),
             (c:User {active: false}),
             (a)-[:FRIEND]->(c)
-          """);
-    });
+          """));
   }
 
   @AfterEach
@@ -115,13 +115,12 @@ class CypherCaseOptionalMatchRelIssue5137Test {
 
   @Test
   void directSetWithCase() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher", """
           MATCH (u:User {active: true})
           OPTIONAL MATCH (u)-[r:FRIEND]->(:User)
           SET u.boundary = CASE WHEN r IS NOT NULL THEN 1 ELSE 0 END
-          """);
-    });
+          """));
 
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher", """
@@ -142,14 +141,13 @@ class CypherCaseOptionalMatchRelIssue5137Test {
 
   @Test
   void withCasePredicateThenSet() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher", """
           MATCH (u:User {active: true})
           OPTIONAL MATCH (u)-[r:FRIEND]->(:User)
           WITH u, CASE WHEN r IS NOT NULL THEN 1 ELSE 0 END AS b
           SET u.boundary = b
-          """);
-    });
+          """));
 
     database.transaction(() -> {
       final ResultSet rs = database.query("opencypher", """

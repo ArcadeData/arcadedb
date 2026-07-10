@@ -25,7 +25,7 @@ import com.arcadedb.utility.FileUtils;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.logging.Level;
 
@@ -128,6 +128,6 @@ public class AiConfiguration {
   }
 
   private File getConfigFile() {
-    return Paths.get(rootPath, "config", "ai.json").toFile();
+    return Path.of(rootPath, "config", "ai.json").toFile();
   }
 }

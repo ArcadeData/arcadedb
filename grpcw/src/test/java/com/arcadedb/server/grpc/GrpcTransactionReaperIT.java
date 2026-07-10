@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -166,6 +167,6 @@ public class GrpcTransactionReaperIT extends BaseGraphServerTest {
         .setQuery("SELECT FROM Person WHERE name = 'Abandoned " + txId + "'")
         .build();
     final ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
-    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isEmpty();
+    assertThat(queryResponse.getResultsList().getFirst().getRecordsList()).isEmpty();
   }
 }

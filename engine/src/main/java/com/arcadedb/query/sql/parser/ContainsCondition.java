@@ -41,20 +41,20 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   public boolean execute(final Object left, Object right) {
-    if (left instanceof Collection) {
-      if (right instanceof Collection) {
-        if (((Collection<?>) right).size() == 1) {
-          Object item = ((Collection<?>) right).iterator().next();
-          if (item instanceof Result && ((Result) item).getPropertyNames().size() == 1) {
-            final Object propValue = ((Result) item).getProperty(((Result) item).getPropertyNames().iterator().next());
+    if (left instanceof Collection<?> collection1) {
+      if (right instanceof Collection<?> collection) {
+        if (collection.size() == 1) {
+          Object item = collection.iterator().next();
+          if (item instanceof Result result && result.getPropertyNames().size() == 1) {
+            final Object propValue = result.getProperty(result.getPropertyNames().iterator().next());
             if (((Collection<?>) left).contains(propValue))
               return true;
           }
           if (((Collection<?>) left).contains(item))
             return true;
 
-          if (item instanceof Result)
-            item = ((Result) item).getElement().orElse(null);
+          if (item instanceof Result result1)
+            item = result1.getElement().orElse(null);
 
           if (item instanceof Identifiable && ((Collection<?>) left).contains(item))
             return true;
@@ -63,17 +63,17 @@ public class ContainsCondition extends BooleanExpression {
         return MultiValue.contains(left, right);
       }
 
-      if (right instanceof Iterable)
-        right = ((Iterable<?>) right).iterator();
+      if (right instanceof Iterable<?> iterable)
+        right = iterable.iterator();
 
       if (right instanceof Iterator<?> iterator) {
         while (iterator.hasNext()) {
           final Object next = iterator.next();
-          if (!((Collection<?>) left).contains(next))
+          if (!collection1.contains(next))
             return false;
         }
       }
-      for (final Object o : (Collection<?>) left) {
+      for (final Object o : collection1) {
         if (equalsInContainsSpace(o, right))
           return true;
       }
@@ -81,10 +81,10 @@ public class ContainsCondition extends BooleanExpression {
     }
 
     Iterator<?> leftIterator = null;
-    if (left instanceof Iterable)
-      leftIterator = ((Iterable<?>) left).iterator();
-    else if (left instanceof Iterator)
-      leftIterator = (Iterator<?>) left;
+    if (left instanceof Iterable<?> iterable1)
+      leftIterator = iterable1.iterator();
+    else if (left instanceof Iterator<?> iterator)
+      leftIterator = iterator;
 
     if (leftIterator != null) {
       if (!(right instanceof Iterable))
@@ -111,8 +111,8 @@ public class ContainsCondition extends BooleanExpression {
         // if left at input is iterator result can be invalid
         // TODO what if left is Iterator!!!???, should we make temporary Collection , to be able to
         // iterate from beginning
-        if (left instanceof Iterable)
-          leftIterator = ((Iterable<?>) left).iterator();
+        if (left instanceof Iterable<?> iterable2)
+          leftIterator = iterable2.iterator();
       }
       return true;
     }
@@ -150,11 +150,11 @@ public class ContainsCondition extends BooleanExpression {
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable identifiable && condition.evaluate(identifiable, context))
           return true;
-        else if (item instanceof Result && condition.evaluate((Result) item, context))
+        else if (item instanceof Result result && condition.evaluate(result, context))
           return true;
-        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), context))
+        else if (item instanceof Map map && condition.evaluate(new ResultInternal(map), context))
           return true;
       }
       return false;
@@ -174,11 +174,11 @@ public class ContainsCondition extends BooleanExpression {
       final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         final Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, context))
+        if (item instanceof Identifiable identifiable && condition.evaluate(identifiable, context))
           return true;
-        else if (item instanceof Result && condition.evaluate((Result) item, context))
+        else if (item instanceof Result result && condition.evaluate(result, context))
           return true;
-        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), context))
+        else if (item instanceof Map map && condition.evaluate(new ResultInternal(map), context))
           return true;
         else if (condition.evaluate(new ResultInternal(item), context))
           return true;

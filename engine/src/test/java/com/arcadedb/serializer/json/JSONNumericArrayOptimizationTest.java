@@ -82,7 +82,7 @@ class JSONNumericArrayOptimizationTest {
 
     final List<?> batch = (List<?>) map.get("batch");
     assertThat(batch).hasSize(2);
-    final Map<?, ?> first = (Map<?, ?>) batch.get(0);
+    final Map<?, ?> first = (Map<?, ?>) batch.getFirst();
     assertThat(first.get("vector")).isInstanceOf(float[].class);
     assertThat((float[]) first.get("vector")).containsExactly(1.0f, 2.0f);
     final Map<?, ?> second = (Map<?, ?>) batch.get(1);
@@ -97,7 +97,7 @@ class JSONNumericArrayOptimizationTest {
 
     assertThat(map.get("vector")).isInstanceOf(List.class);
     final List<?> list = (List<?>) map.get("vector");
-    assertThat(list.get(0)).isInstanceOf(Double.class);
+    assertThat(list.getFirst()).isInstanceOf(Double.class);
     assertThat((List<Object>) list).containsExactly(1.5, 2.5, 3.5);
   }
 

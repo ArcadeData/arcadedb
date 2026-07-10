@@ -51,17 +51,13 @@ public class PerformanceInsertMTStressTest {
     DatabaseConfig dbConfig = new DatabaseConfig();
 
     configureSystemProperties();
-    Database db = initializeDatabase(dbConfig);
-
-    try {
+    try (Database db = initializeDatabase(dbConfig)) {
       setupDatabaseSchema(db, runConfig.getThreadCount());
 
       long executionTime = executeDataInsertion(db, runConfig);
       System.out.println("\nInserting took " + executionTime + " ms");
 
       queryAndPrintResults(db, "Resource");
-    } finally {
-      db.close();
     }
   }
 

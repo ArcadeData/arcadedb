@@ -19,9 +19,9 @@
 package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.function.sql.SQLAggregatedFunction;
 
 /**
  * Computes the aggregate "or" over a field.

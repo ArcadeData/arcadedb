@@ -22,8 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.graph.CSRVertexIterable;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -31,7 +32,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.ArrayList;

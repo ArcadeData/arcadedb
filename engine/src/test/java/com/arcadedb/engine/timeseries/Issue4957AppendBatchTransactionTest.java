@@ -50,8 +50,7 @@ class Issue4957AppendBatchTransactionTest extends TestHelper {
   @Test
   void appendBatchInsideEnclosingTransactionRunsInThread() throws Exception {
     final String typeName = "tx_batch";
-    final TimeSeriesEngine engine = createEngine(typeName);
-    try {
+    try (final TimeSeriesEngine engine = createEngine(typeName)) {
       final int n = 10;
       final long[] timestamps = new long[n];
       final Object[][] columnValues = new Object[1][n];
@@ -78,16 +77,13 @@ class Issue4957AppendBatchTransactionTest extends TestHelper {
       assertThat(rows).hasSize(n);
       for (int i = 0; i < n; i++)
         assertThat((long) rows.get(i)[0]).isEqualTo(1000L + i);
-    } finally {
-      engine.close();
     }
   }
 
   @Test
   void appendBatchOutsideTransactionStillWritesAllSamplesInParallel() throws Exception {
     final String typeName = "notx_batch";
-    final TimeSeriesEngine engine = createEngine(typeName);
-    try {
+    try (final TimeSeriesEngine engine = createEngine(typeName)) {
       final int n = 25;
       final long[] timestamps = new long[n];
       final Object[][] columnValues = new Object[1][n];
@@ -110,8 +106,6 @@ class Issue4957AppendBatchTransactionTest extends TestHelper {
       assertThat(rows).hasSize(n);
       for (int i = 0; i < n; i++)
         assertThat((long) rows.get(i)[0]).isEqualTo(1000L + i);
-    } finally {
-      engine.close();
     }
   }
 

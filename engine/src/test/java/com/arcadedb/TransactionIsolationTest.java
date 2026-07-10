@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;

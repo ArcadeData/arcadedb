@@ -23,6 +23,7 @@ import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.LineString;
@@ -62,40 +63,48 @@ public class SQLFunctionGeoAsGeoJson extends SQLFunctionAbstract {
   private JSONObject toGeoJson(final Geometry geometry) {
     final JSONObject result = new JSONObject();
 
-    if (geometry instanceof Point point) {
-      result.put("type", "Point");
-      result.put("coordinates", coordToArray(point.getCoordinate()));
-    } else if (geometry instanceof LineString lineString) {
-      result.put("type", "LineString");
-      result.put("coordinates", coordsToArray(lineString.getCoordinates()));
-    } else if (geometry instanceof Polygon polygon) {
-      result.put("type", "Polygon");
-      result.put("coordinates", polygonToArray(polygon));
-    } else if (geometry instanceof MultiPoint multiPoint) {
-      result.put("type", "MultiPoint");
-      final JSONArray coords = new JSONArray();
-      for (int i = 0; i < multiPoint.getNumGeometries(); i++)
-        coords.put(coordToArray(((Point) multiPoint.getGeometryN(i)).getCoordinate()));
-      result.put("coordinates", coords);
-    } else if (geometry instanceof MultiLineString multiLineString) {
-      result.put("type", "MultiLineString");
-      final JSONArray coords = new JSONArray();
-      for (int i = 0; i < multiLineString.getNumGeometries(); i++)
-        coords.put(coordsToArray(multiLineString.getGeometryN(i).getCoordinates()));
-      result.put("coordinates", coords);
-    } else if (geometry instanceof MultiPolygon multiPolygon) {
-      result.put("type", "MultiPolygon");
-      final JSONArray coords = new JSONArray();
-      for (int i = 0; i < multiPolygon.getNumGeometries(); i++)
-        coords.put(polygonToArray((Polygon) multiPolygon.getGeometryN(i)));
-      result.put("coordinates", coords);
-    } else {
-      // GeometryCollection fallback
-      result.put("type", "GeometryCollection");
-      final JSONArray geometries = new JSONArray();
-      for (int i = 0; i < geometry.getNumGeometries(); i++)
-        geometries.put(toGeoJson(geometry.getGeometryN(i)));
-      result.put("geometries", geometries);
+    switch (geometry) {
+      case Point point -> {
+        result.put("type", "Point");
+        result.put("coordinates", coordToArray(point.getCoordinate()));
+      }
+      case LineString lineString -> {
+        result.put("type", "LineString");
+        result.put("coordinates", coordsToArray(lineString.getCoordinates()));
+      }
+      case Polygon polygon -> {
+        result.put("type", "Polygon");
+        result.put("coordinates", polygonToArray(polygon));
+      }
+      case MultiPoint multiPoint -> {
+        result.put("type", "MultiPoint");
+        final JSONArray coords = new JSONArray();
+        for (int i = 0;i < multiPoint.getNumGeometries();i++)
+          coords.put(coordToArray(((Point) multiPoint.getGeometryN(i)).getCoordinate()));
+        result.put("coordinates", coords);
+      }
+      case MultiLineString multiLineString -> {
+        result.put("type", "MultiLineString");
+        final JSONArray coords = new JSONArray();
+        for (int i = 0;i < multiLineString.getNumGeometries();i++)
+          coords.put(coordsToArray(multiLineString.getGeometryN(i).getCoordinates()));
+        result.put("coordinates", coords);
+      }
+      case MultiPolygon multiPolygon -> {
+        result.put("type", "MultiPolygon");
+        final JSONArray coords = new JSONArray();
+        for (int i = 0;i < multiPolygon.getNumGeometries();i++)
+          coords.put(polygonToArray((Polygon) multiPolygon.getGeometryN(i)));
+        result.put("coordinates", coords);
+      }
+      case null, default -> {
+        // GeometryCollection fallback
+        result.put("type", "GeometryCollection");
+        final JSONArray geometries = new JSONArray();
+        for (int i = 0;i < geometry.getNumGeometries();i++)
+          geometries.put(toGeoJson(geometry.getGeometryN(i)));
+        result.put("geometries", geometries);
+      }
     }
 
     return result;

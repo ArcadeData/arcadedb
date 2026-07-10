@@ -74,8 +74,7 @@ public class Bolt4908TransientConflictIT extends BaseGraphServerTest {
       final Session s1 = driver.session(SessionConfig.forDatabase(getDatabaseName()));
       final Session s2 = driver.session(SessionConfig.forDatabase(getDatabaseName()));
       final Transaction tx1 = s1.beginTransaction();
-      final Transaction tx2 = s2.beginTransaction();
-      try {
+      try (final Transaction tx2 = s2.beginTransaction()) {
         // Both transactions read the same record at the same page version, then stage a change.
         tx1.run("MATCH (n:ConflictRow {id: 1}) SET n.x = 1").consume();
         tx2.run("MATCH (n:ConflictRow {id: 1}) SET n.x = 2").consume();
@@ -88,11 +87,6 @@ public class Bolt4908TransientConflictIT extends BaseGraphServerTest {
             .isInstanceOf(TransientException.class)
             .satisfies(e -> assertThat(((TransientException) e).code()).isEqualTo("Neo.TransientError.Transaction.DeadlockDetected"));
       } finally {
-        try {
-          tx2.close();
-        } catch (final Exception ignore) {
-          // already failed/closed
-        }
         s1.close();
         s2.close();
       }

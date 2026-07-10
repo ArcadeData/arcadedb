@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicLong;

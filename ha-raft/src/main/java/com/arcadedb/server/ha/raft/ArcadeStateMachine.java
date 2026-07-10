@@ -34,6 +34,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.protocol.Message;
@@ -61,7 +62,6 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -450,9 +450,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // loudly instead: leave lastAppliedIndex untouched so the entry is replayed once this node
         // is upgraded to a version that understands the type, and surface the problem to operators.
         LogManager.instance().log(this, Level.SEVERE,
-            "CRITICAL: Unknown Raft log entry type at index %d (likely written by a newer node version). "
-                + "Refusing to skip a committed entry and halting to prevent silent state divergence; "
-                + "upgrade this node to a compatible version to resume.", index);
+            """
+            CRITICAL: Unknown Raft log entry type at index %d (likely written by a newer node version). \
+            Refusing to skip a committed entry and halting to prevent silent state divergence; \
+            upgrade this node to a compatible version to resume.""", index);
         triggerCriticalHalt();
         return CompletableFuture.failedFuture(new ReplicationException(
             "Unknown Raft log entry type at index " + index + "; node halted to prevent silent divergence"));
@@ -655,14 +656,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
           // add() returns true only the first time, which is when we kick off the targeted resync.
           if (divergedDatabases.add(databaseName)) {
             LogManager.instance().log(this, Level.SEVERE,
-                "Unexpected error applying Raft entry for database '%s' at index %d; quarantining the database and "
-                    + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
+                """
+                Unexpected error applying Raft entry for database '%s' at index %d; quarantining the database and \
+                triggering a targeted snapshot resync instead of halting the node (issue #4797): %s""",
                 databaseName, index, t.getMessage());
             triggerDatabaseResync(databaseName);
           } else {
             LogManager.instance().log(this, Level.SEVERE,
-                "Unexpected error at index %d while database '%s' is quarantined (snapshot resync in progress); "
-                    + "treating as resync condition: %s",
+                """
+                Unexpected error at index %d while database '%s' is quarantined (snapshot resync in progress); \
+                treating as resync condition: %s""",
                 index, databaseName, t.getMessage());
           }
           // Bounded escalation: a node that can never resync (no stable leader) must not swallow
@@ -1215,7 +1218,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           final byte[] walData = walEntries.get(i);
           final Map<Integer, Integer> bucketDelta = bucketDeltas != null && i < bucketDeltas.size()
               ? bucketDeltas.get(i)
-              : Collections.emptyMap();
+              : Map.of();
           final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
           // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
           db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
@@ -1522,8 +1525,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // during restart must not do that - install downloads before touching the live files, so the
       // local copy is intact. Keep it and retry asynchronously.
       LogManager.instance().log(this, Level.SEVERE,
-          "Failed to install snapshot during bootstrap for database '%s': %s. "
-              + "Keeping the local copy and scheduling an async retry once a leader is reachable.",
+          """
+          Failed to install snapshot during bootstrap for database '%s': %s. \
+          Keeping the local copy and scheduling an async retry once a leader is reachable.""",
           dbName, e.getMessage());
       // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
       // This branch should be unreachable on the normal failed-download case - install() is download-before-
@@ -1559,8 +1563,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
         });
       } catch (final RejectedExecutionException ree) {
         LogManager.instance().log(this, Level.WARNING,
-            "Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; "
-                + "the HealthMonitor backstop will retry once the server is available", null, dbName);
+            """
+            Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; \
+            the HealthMonitor backstop will retry once the server is available""", null, dbName);
       }
     }
   }

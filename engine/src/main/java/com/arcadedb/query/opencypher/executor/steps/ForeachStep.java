@@ -142,13 +142,11 @@ public class ForeachStep extends AbstractExecutionStep {
       return;
 
     // Convert to iterable
-    final Iterable<?> iterable;
-    if (listValue instanceof Collection)
-      iterable = (Collection<?>) listValue;
-    else if (listValue instanceof Iterable)
-      iterable = (Iterable<?>) listValue;
-    else
-      iterable = List.of(listValue);
+    final Iterable<?> iterable = switch (listValue) {
+      case Collection<?> collection -> collection;
+      case Iterable<?> iterable1 -> iterable1;
+      case null, default -> List.of(listValue);
+    };
 
     final String variable = foreachClause.getVariable();
 

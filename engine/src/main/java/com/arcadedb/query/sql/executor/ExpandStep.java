@@ -95,19 +95,20 @@ public class ExpandStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Object nextElementObj = nextSubsequence.next();
-          if (nextElementObj instanceof Result result) {
-            nextElement = result;
-          } else if (nextElementObj instanceof Identifiable identifiable) {
-            final Record record = identifiable.getRecord();
-            if (record == null) {
-              continue;
+          switch (nextElementObj) {
+            case Result result -> nextElement = result;
+            case Identifiable identifiable -> {
+              final Record record = identifiable.getRecord();
+              if (record == null) {
+                continue;
+              }
+              nextElement = new ResultInternal(record);
             }
-            nextElement = new ResultInternal(record);
-          } else if (nextElementObj instanceof Map map) {
-            nextElement = new ResultInternal(map);
-          } else {
-            nextElement = new ResultInternal(context.getDatabase());
-            ((ResultInternal) nextElement).setProperty(alias != null ? alias : "value", nextElementObj);
+            case Map map -> nextElement = new ResultInternal(map);
+            case null, default -> {
+              nextElement = new ResultInternal(context.getDatabase());
+              ((ResultInternal) nextElement).setProperty(alias != null ? alias : "value", nextElementObj);
+            }
           }
           // Copy metadata from source result to the expanded result (e.g., LET variables like $nrid)
           if (sourceResult != null && nextElement instanceof ResultInternal resultInternal) {
@@ -148,21 +149,21 @@ public class ExpandStep extends AbstractExecutionStep {
         if (projValue == null) {
           continue;
         }
-        if (projValue instanceof Identifiable identifiable) {
-          final Record rec = identifiable.getRecord();
-          if (rec == null) {
-            continue;
-          }
-          final ResultInternal res = new ResultInternal();
-          res.setElement((Document) rec);
+        switch (projValue) {
+          case Identifiable identifiable -> {
+            final Record rec = identifiable.getRecord();
+            if (rec == null) {
+              continue;
+            }
+            final ResultInternal res = new ResultInternal();
+            res.setElement((Document) rec);
 
-          nextSubsequence = Set.of(res).iterator();
-        } else if (projValue instanceof Result result) {
-          nextSubsequence = Set.of(result).iterator();
-        } else if (projValue instanceof Iterator iterator) {
-          nextSubsequence = iterator;
-        } else if (projValue instanceof Iterable iterable) {
-          nextSubsequence = iterable.iterator();
+            nextSubsequence = Set.of(res).iterator();
+          }
+          case Result result -> nextSubsequence = Set.of(result).iterator();
+          case Iterator iterator -> nextSubsequence = iterator;
+          case Iterable iterable -> nextSubsequence = iterable.iterator();
+          case null, default -> {}
         }
       } finally {
         if (context.isProfiling())

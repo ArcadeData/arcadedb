@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,8 +31,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * Tests for implicit GROUP BY in Cypher.
@@ -100,10 +99,10 @@ class OpenCypherGroupByTest {
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person) RETURN n.city AS city, avg(n.age) AS avgAge ORDER BY city");
 
-    final Map<String, Double> expectedAverages = new HashMap<>();
-    expectedAverages.put("LA", 37.5);
-    expectedAverages.put("NYC", 27.5);
-    expectedAverages.put("SF", 28.0);
+    final Map<String, Double> expectedAverages = new HashMap<>(Map.of(
+        "LA", 37.5,
+        "NYC", 27.5,
+        "SF", 28.0));
 
     while (result.hasNext()) {
       final Result row = result.next();

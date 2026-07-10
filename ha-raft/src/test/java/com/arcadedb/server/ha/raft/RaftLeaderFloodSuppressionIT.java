@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.CodeUtils;
+
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -51,8 +52,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * this end-to-end IT is retained as scaffolding to revisit with a more robust capture mechanism.
  */
 @Tag("slow")
-@Disabled("Live-cluster log capture is timing/logging-config fragile; suppression verified via "
-    + "arcadedb-log.properties and narrative via ClusterMonitorTest. Revisit with robust capture.")
+@Disabled("""
+    Live-cluster log capture is timing/logging-config fragile; suppression verified via \
+    arcadedb-log.properties and narrative via ClusterMonitorTest. Revisit with robust capture.""")
 class RaftLeaderFloodSuppressionIT extends BaseRaftHATest {
 
   @Override

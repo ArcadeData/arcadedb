@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -79,8 +80,8 @@ class CypherCountSubqueryCorrelatedTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
+    assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
+    assertThat(((Number) rows.getFirst().getProperty("older_count")).longValue()).isEqualTo(2L);
     assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Charlie");
     assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(1L);
     assertThat((String) rows.get(2).getProperty("name")).isEqualTo("Diana");
@@ -104,7 +105,7 @@ class CypherCountSubqueryCorrelatedTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
+    assertThat(((Number) rows.getFirst().getProperty("older_count")).longValue()).isEqualTo(2L);
     assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(1L);
     assertThat(((Number) rows.get(2).getProperty("older_count")).longValue()).isEqualTo(0L);
   }
@@ -130,7 +131,7 @@ class CypherCountSubqueryCorrelatedTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
+    assertThat(((Number) rows.getFirst().getProperty("older_count")).longValue()).isEqualTo(2L);
     assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(1L);
     assertThat(((Number) rows.get(2).getProperty("older_count")).longValue()).isEqualTo(0L);
   }
@@ -155,7 +156,7 @@ class CypherCountSubqueryCorrelatedTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("older_count")).longValue()).isEqualTo(2L);
+    assertThat(((Number) rows.getFirst().getProperty("older_count")).longValue()).isEqualTo(2L);
     assertThat(((Number) rows.get(1).getProperty("older_count")).longValue()).isEqualTo(2L);
     assertThat(((Number) rows.get(2).getProperty("older_count")).longValue()).isEqualTo(2L);
   }

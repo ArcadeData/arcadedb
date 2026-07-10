@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.sql.executor.SQLMethod;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

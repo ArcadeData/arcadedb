@@ -617,10 +617,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public Map<String, Long> getStats() {
-    final Map<String, Long> stats = new HashMap<>();
-    stats.put("memtablePostings", engine.memtablePostings());
-    stats.put("totalPostings", engine.totalPostings());
-    stats.put("segmentCount", (long) engine.segmentCount());
+    final Map<String, Long> stats = new HashMap<>(Map.of(
+        "memtablePostings", engine.memtablePostings(),
+        "totalPostings", engine.totalPostings(),
+        "segmentCount", (long) engine.segmentCount()));
     return stats;
   }
 

@@ -26,8 +26,8 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
@@ -141,7 +141,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
           result.add(cursor.next());
         }
       }
-      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
+      return new IndexCursorCollection(result != null ? result : List.of());
     }
   }
 
@@ -196,7 +196,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             return new IndexCursorCollection(result);
         }
       }
-      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
+      return new IndexCursorCollection(result != null ? result : List.of());
     }
   }
 

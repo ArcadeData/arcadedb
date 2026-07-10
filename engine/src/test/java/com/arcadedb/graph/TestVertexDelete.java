@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

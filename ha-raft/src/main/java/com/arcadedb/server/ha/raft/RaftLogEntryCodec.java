@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.compression.CompressionFactory;
+
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.ByteArrayOutputStream;
@@ -27,11 +28,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.zip.CRC32;
 
 /**
@@ -147,7 +144,7 @@ public final class RaftLogEntryCodec {
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
     return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
-        Collections.emptyList());
+        List.of());
   }
 
   /**
@@ -186,7 +183,7 @@ public final class RaftLogEntryCodec {
 
         final Map<Integer, Integer> delta = bucketDeltas != null && i < bucketDeltas.size()
             ? bucketDeltas.get(i)
-            : Collections.emptyMap();
+            : Map.of();
         dos.writeInt(delta.size());
         for (final Map.Entry<Integer, Integer> e : delta.entrySet()) {
           dos.writeInt(e.getKey());
@@ -225,7 +222,7 @@ public final class RaftLogEntryCodec {
    */
   public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove) {
-    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, Collections.emptyList(), Collections.emptyList());
+    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, List.of(), List.of());
   }
 
   /**
@@ -346,7 +343,7 @@ public final class RaftLogEntryCodec {
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
         return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L,
-            Collections.emptyList());
+            List.of());
       final String databaseName = dis.readUTF();
 
       final DecodedEntry result = switch (type) {
@@ -354,7 +351,7 @@ public final class RaftLogEntryCodec {
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
         case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
-            null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList());
+            null, null, null, null, null, null, null, null, false, null, -1L, List.of());
         case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
       };
@@ -392,7 +389,7 @@ public final class RaftLogEntryCodec {
     }
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
-        null, null, null, null, null, null, false, null, -1L, Collections.emptyList());
+        null, null, null, null, null, null, false, null, -1L, List.of());
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -410,8 +407,8 @@ public final class RaftLogEntryCodec {
     // Once any bytes remain the section IS present, so a truncated/misaligned section makes the reads
     // below hit EOF and propagate as corruption rather than silently yielding empty/partial WAL pages
     // (which would apply a schema change with missing index/WAL pages on followers).
-    List<byte[]> walEntries = Collections.emptyList();
-    List<Map<Integer, Integer>> bucketDeltas = Collections.emptyList();
+    List<byte[]> walEntries = List.of();
+    List<Map<Integer, Integer>> bucketDeltas = List.of();
     if (dis.available() > 0) {
       final int walCount = dis.readInt();
       checkCollectionSize(walCount, "SCHEMA_ENTRY WAL entries");
@@ -443,7 +440,7 @@ public final class RaftLogEntryCodec {
     // section is absent (older entry) and is decoded as empty. Once any bytes remain the section IS
     // present, so a truncated/misaligned blob makes the reads below hit EOF and propagate rather than
     // being silently dropped; a CRC mismatch on a fully-read blob is likewise a hard failure.
-    List<TsSealedBlob> sealedFileBlobs = Collections.emptyList();
+    List<TsSealedBlob> sealedFileBlobs = List.of();
     if (dis.available() > 0) {
       final int blobCount = dis.readInt();
       checkCollectionSize(blobCount, "SCHEMA_ENTRY sealed blobs");
@@ -483,7 +480,7 @@ public final class RaftLogEntryCodec {
       forceSnapshot = dis.readBoolean();
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList());
+        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, List.of());
   }
 
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
@@ -495,7 +492,7 @@ public final class RaftLogEntryCodec {
     final String fingerprint = new String(fpBytes, StandardCharsets.UTF_8);
     final long lastTxId = dis.readLong();
     return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList());
+        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, List.of());
   }
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
@@ -505,7 +502,7 @@ public final class RaftLogEntryCodec {
     dis.readFully(bytes);
     final String usersJson = new String(bytes, StandardCharsets.UTF_8);
     return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
-        null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList());
+        null, null, null, null, null, null, null, usersJson, false, null, -1L, List.of());
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

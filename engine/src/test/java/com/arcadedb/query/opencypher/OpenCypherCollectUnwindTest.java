@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -41,8 +42,6 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * Tests for COLLECT aggregation function and UNWIND clause.
@@ -497,7 +496,7 @@ class OpenCypherCollectUnwindTest {
     assertThat(allDocs).as("allDocNames should contain 2 documents").hasSize(2);
     assertThat(allDocs).as("allDocNames should contain both documents")
         .containsExactlyInAnyOrder("Document A", "Document B");
-    assertThat(firstDoc).as("firstDocName should be the first element of allDocNames").isEqualTo(allDocs.get(0));
+    assertThat(firstDoc).as("firstDocName should be the first element of allDocNames").isEqualTo(allDocs.getFirst());
 
     assertThat(result.hasNext()).isFalse();
 
@@ -612,9 +611,9 @@ class OpenCypherCollectUnwindTest {
 
           assertThat(results).hasSize(4);
 
-          assertThat(results.get(0).<String>getProperty("tag1")).isEqualTo("java");
-          assertThat(results.get(0).<String>getProperty("tag2")).isEqualTo("python");
-          assertThat(results.get(0).<Long>getProperty("cooccurs")).isEqualTo(2L);
+          assertThat(results.getFirst().<String>getProperty("tag1")).isEqualTo("java");
+          assertThat(results.getFirst().<String>getProperty("tag2")).isEqualTo("python");
+          assertThat(results.getFirst().<Long>getProperty("cooccurs")).isEqualTo(2L);
 
           assertThat(results.get(1).<String>getProperty("tag1")).isEqualTo("java");
           assertThat(results.get(1).<String>getProperty("tag2")).isEqualTo("sql");
@@ -652,9 +651,9 @@ class OpenCypherCollectUnwindTest {
 
           assertThat(results).hasSize(4);
 
-          assertThat(results.get(0).<String>getProperty("tag1")).isEqualTo("java");
-          assertThat(results.get(0).<String>getProperty("tag2")).isEqualTo("python");
-          assertThat(results.get(0).<Long>getProperty("cooccurs")).isEqualTo(2L);
+          assertThat(results.getFirst().<String>getProperty("tag1")).isEqualTo("java");
+          assertThat(results.getFirst().<String>getProperty("tag2")).isEqualTo("python");
+          assertThat(results.getFirst().<Long>getProperty("cooccurs")).isEqualTo(2L);
 
           assertThat(results.get(1).<String>getProperty("tag1")).isEqualTo("java");
           assertThat(results.get(1).<String>getProperty("tag2")).isEqualTo("sql");
@@ -709,8 +708,8 @@ class OpenCypherCollectUnwindTest {
             results.add(rs.next());
 
           assertThat(results).hasSize(4);
-          assertThat(results.get(0).<String>getProperty("tag")).isEqualTo("java");
-          assertThat(results.get(0).<Long>getProperty("questions")).isEqualTo(2L);
+          assertThat(results.getFirst().<String>getProperty("tag")).isEqualTo("java");
+          assertThat(results.getFirst().<Long>getProperty("questions")).isEqualTo(2L);
           assertThat(results.get(1).<String>getProperty("tag")).isEqualTo("python");
           assertThat(results.get(1).<Long>getProperty("questions")).isEqualTo(2L);
         }
@@ -741,19 +740,19 @@ class OpenCypherCollectUnwindTest {
     void unwindMergeReturnsUniqueRids() {
       final List<Map<String, Object>> batch = new ArrayList<>();
 
-      Map<String, Object> entry1 = new HashMap<>();
-      entry1.put("subtype", "type1");
-      entry1.put("name", "chunk1");
+      Map<String, Object> entry1 = new HashMap<>(Map.of(
+          "subtype", "type1",
+          "name", "chunk1"));
       batch.add(entry1);
 
-      Map<String, Object> entry2 = new HashMap<>();
-      entry2.put("subtype", "type2");
-      entry2.put("name", "chunk2");
+      Map<String, Object> entry2 = new HashMap<>(Map.of(
+          "subtype", "type2",
+          "name", "chunk2"));
       batch.add(entry2);
 
-      Map<String, Object> entry3 = new HashMap<>();
-      entry3.put("subtype", "type1");
-      entry3.put("name", "chunk3");
+      Map<String, Object> entry3 = new HashMap<>(Map.of(
+          "subtype", "type1",
+          "name", "chunk3"));
       batch.add(entry3);
 
       database.transaction(() -> {
@@ -789,19 +788,19 @@ class OpenCypherCollectUnwindTest {
     void unwindMergeWithDuplicates() {
       final List<Map<String, Object>> batch = new ArrayList<>();
 
-      Map<String, Object> entry1 = new HashMap<>();
-      entry1.put("subtype", "type1");
-      entry1.put("name", "chunk1");
+      Map<String, Object> entry1 = new HashMap<>(Map.of(
+          "subtype", "type1",
+          "name", "chunk1"));
       batch.add(entry1);
 
-      Map<String, Object> entry2 = new HashMap<>();
-      entry2.put("subtype", "type1");
-      entry2.put("name", "chunk1");
+      Map<String, Object> entry2 = new HashMap<>(Map.of(
+          "subtype", "type1",
+          "name", "chunk1"));
       batch.add(entry2);
 
-      Map<String, Object> entry3 = new HashMap<>();
-      entry3.put("subtype", "type2");
-      entry3.put("name", "chunk2");
+      Map<String, Object> entry3 = new HashMap<>(Map.of(
+          "subtype", "type2",
+          "name", "chunk2"));
       batch.add(entry3);
 
       database.transaction(() -> {
@@ -824,8 +823,8 @@ class OpenCypherCollectUnwindTest {
 
         assertThat(count).isEqualTo(3);
 
-        assertThat(rids.get(0)).isEqualTo(rids.get(1)).as("First two entries are duplicates, should get same RID");
-        assertThat(rids.get(2)).isNotEqualTo(rids.get(0)).as("Third entry is different, should get different RID");
+        assertThat(rids.getFirst()).isEqualTo(rids.get(1)).as("First two entries are duplicates, should get same RID");
+        assertThat(rids.get(2)).isNotEqualTo(rids.getFirst()).as("Third entry is different, should get different RID");
 
         assertThat(new HashSet<>(rids)).hasSize(2);
       });
@@ -878,9 +877,9 @@ class OpenCypherCollectUnwindTest {
     void unwindMatchMergeCreateRelations() {
       final List<Map<String, Object>> batch = new ArrayList<>();
       for (String sourceId : sourceIds) {
-        Map<String, Object> row = new HashMap<>();
-        row.put("source_id", sourceId);
-        row.put("target_id", targetId);
+        Map<String, Object> row = new HashMap<>(Map.of(
+            "source_id", sourceId,
+            "target_id", targetId));
         batch.add(row);
       }
 
@@ -917,9 +916,9 @@ class OpenCypherCollectUnwindTest {
     void unwindMatchMergeWithCreate() {
       final List<Map<String, Object>> batch = new ArrayList<>();
       for (String sourceId : sourceIds) {
-        Map<String, Object> row = new HashMap<>();
-        row.put("source_id", sourceId);
-        row.put("target_id", targetId);
+        Map<String, Object> row = new HashMap<>(Map.of(
+            "source_id", sourceId,
+            "target_id", targetId));
         batch.add(row);
       }
 
@@ -956,9 +955,9 @@ class OpenCypherCollectUnwindTest {
     void simplifiedUnwindMatchReturnOnly() {
       final List<Map<String, Object>> batch = new ArrayList<>();
       for (String sourceId : sourceIds) {
-        Map<String, Object> row = new HashMap<>();
-        row.put("source_id", sourceId);
-        row.put("target_id", targetId);
+        Map<String, Object> row = new HashMap<>(Map.of(
+            "source_id", sourceId,
+            "target_id", targetId));
         batch.add(row);
       }
 
@@ -986,9 +985,9 @@ class OpenCypherCollectUnwindTest {
     void unwindOnly() {
       final List<Map<String, Object>> batch = new ArrayList<>();
       for (String sourceId : sourceIds) {
-        Map<String, Object> row = new HashMap<>();
-        row.put("source_id", sourceId);
-        row.put("target_id", targetId);
+        Map<String, Object> row = new HashMap<>(Map.of(
+            "source_id", sourceId,
+            "target_id", targetId));
         batch.add(row);
       }
 
@@ -1191,12 +1190,12 @@ class OpenCypherCollectUnwindTest {
         }
       });
 
-      final String sameSourceId = sourceIds.get(0);
+      final String sameSourceId = sourceIds.getFirst();
       final List<Map<String, Object>> batch = new ArrayList<>();
       for (String targetIdItem : targetIds) {
-        Map<String, Object> row = new HashMap<>();
-        row.put("source_id", sameSourceId);
-        row.put("target_id", targetIdItem);
+        Map<String, Object> row = new HashMap<>(Map.of(
+            "source_id", sameSourceId,
+            "target_id", targetIdItem));
         batch.add(row);
       }
 
@@ -1233,11 +1232,11 @@ class OpenCypherCollectUnwindTest {
     /** See issue #1948 */
     @Test
     void issue1948SimpleMatchWithSameSourceId() {
-      final String sameSourceId = sourceIds.get(0);
-      final List<Map<String, Object>> batch = new ArrayList<>();
-      batch.add(Map.of("source_id", sameSourceId));
-      batch.add(Map.of("source_id", sameSourceId));
-      batch.add(Map.of("source_id", sameSourceId));
+      final String sameSourceId = sourceIds.getFirst();
+      final List<Map<String, Object>> batch = new ArrayList<>(List.of(
+          Map.of("source_id", sameSourceId),
+          Map.of("source_id", sameSourceId),
+          Map.of("source_id", sameSourceId)));
 
       final ResultSet rs = database.query("opencypher",
           """
@@ -1285,9 +1284,9 @@ class OpenCypherCollectUnwindTest {
       final Map<String, Object> params = new HashMap<>();
       final List<Map<String, Object>> batch = new ArrayList<>();
 
-      final Map<String, Object> entry = new HashMap<>();
-      entry.put("name", "Alice");
-      entry.put("age", 30);
+      final Map<String, Object> entry = new HashMap<>(Map.of(
+          "name", "Alice",
+          "age", 30));
       batch.add(entry);
 
       params.put("batch", batch);
@@ -1308,9 +1307,9 @@ class OpenCypherCollectUnwindTest {
 
     @Test
     void unwindWithMergePropertyReferences() {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("user_name", "root");
-      params.put("right_0", "OWNER");
+      final Map<String, Object> params = new HashMap<>(Map.of(
+          "user_name", "root",
+          "right_0", "OWNER"));
 
       final ResultSet result = database.command("opencypher",
           """
@@ -1335,9 +1334,9 @@ class OpenCypherCollectUnwindTest {
       final Map<String, Object> params = new HashMap<>();
       final List<Map<String, Object>> batch = new ArrayList<>();
 
-      final Map<String, Object> entry = new HashMap<>();
-      entry.put("value", 42);
-      entry.put("destRID", chunkRid);
+      final Map<String, Object> entry = new HashMap<>(Map.of(
+          "value", 42,
+          "destRID", chunkRid));
       batch.add(entry);
 
       params.put("batch", batch);
@@ -1390,8 +1389,8 @@ class OpenCypherCollectUnwindTest {
       assertThat(vectorProp).isNotNull();
       assertThat(vectorProp).isNotEqualTo("BatchEntry.vector");
 
-      if (vectorProp instanceof float[])
-        assertThat((float[]) vectorProp).containsExactly(0.1f, 0.2f, 0.3f, 0.4f, 0.5f);
+      if (vectorProp instanceof float[] floats)
+        assertThat(floats).containsExactly(0.1f, 0.2f, 0.3f, 0.4f, 0.5f);
       else if (vectorProp instanceof List) {
         @SuppressWarnings("unchecked")
         final List<Number> vectorList = (List<Number>) vectorProp;
@@ -1475,10 +1474,10 @@ class OpenCypherCollectUnwindTest {
       assertThat(vectorProp).isNotEqualTo("BatchEntry.vector");
       assertThat(vectorProp).isNotInstanceOf(String.class);
 
-      if (vectorProp instanceof float[])
-        assertThat((float[]) vectorProp).hasSize(5);
-      else if (vectorProp instanceof List)
-        assertThat((List<?>) vectorProp).hasSize(5);
+      if (vectorProp instanceof float[] floats)
+        assertThat(floats).hasSize(5);
+      else if (vectorProp instanceof List<?> list)
+        assertThat(list).hasSize(5);
     }
   }
 

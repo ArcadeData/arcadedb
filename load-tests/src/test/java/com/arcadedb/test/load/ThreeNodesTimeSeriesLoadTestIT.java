@@ -23,6 +23,7 @@ import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
 import com.arcadedb.test.support.TimeSeriesDatabaseWrapper;
 import com.arcadedb.test.support.TimeSeriesDatabaseWrapper.Protocol;
+
 import io.micrometer.core.instrument.Metrics;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
@@ -94,12 +95,9 @@ class ThreeNodesTimeSeriesLoadTestIT extends ContainersTestTemplate {
       for (int t = 0; t < NUM_THREADS; t++) {
         final int threadIndex = t;
         executor.submit(() -> {
-          final TimeSeriesDatabaseWrapper w = new TimeSeriesDatabaseWrapper(servers.getFirst(), protocol);
-          try {
+          try (final TimeSeriesDatabaseWrapper w = new TimeSeriesDatabaseWrapper(servers.getFirst(), protocol)) {
             final long base = 1_000_000_000L + threadIndex * 100_000_000L;
             w.ingestSeries("sensor-" + threadIndex, "region-" + (threadIndex % 3), base, POINTS_PER_THREAD);
-          } finally {
-            w.close();
           }
         });
       }

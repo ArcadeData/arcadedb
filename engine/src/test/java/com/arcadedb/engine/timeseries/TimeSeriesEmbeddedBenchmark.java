@@ -25,12 +25,14 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -143,8 +145,8 @@ public class TimeSeriesEmbeddedBenchmark {
         for (int i = 0; i < BATCH_SIZE; i++) {
           timestamps[i] = batchStart + i * 100L;
           sensorIds[i] = "sensor_" + (i % NUM_SENSORS);
-          temperatures[i] = 20.0 + (Math.random() * 15.0);
-          humidities[i] = 40.0 + (Math.random() * 40.0);
+          temperatures[i] = 20.0 + (ThreadLocalRandom.current().nextDouble() * 15.0);
+          humidities[i] = 40.0 + (ThreadLocalRandom.current().nextDouble() * 40.0);
         }
 
         database.async().appendSamples("SensorData", timestamps, sensorIds, temperatures, humidities);
@@ -188,8 +190,7 @@ public class TimeSeriesEmbeddedBenchmark {
       // Reopen database — all queries below are truly cold (no page cache, no JIT warmup on query paths)
       System.out.println("\n--- Cold Queries (after close/reopen, all data from disk) ---");
       final long midTs = baseTimestamp + (long) (TOTAL_POINTS / 2) * 100;
-      final Database coldDb = factory.open();
-      try {
+      try (final Database coldDb = factory.open()) {
         // Data distribution after cold open
         final TimeSeriesEngine coldEngine =
             ((LocalTimeSeriesType) coldDb.getSchema().getType("SensorData")).getEngine();
@@ -305,8 +306,6 @@ public class TimeSeriesEmbeddedBenchmark {
         }
 
         System.out.println("==============================================");
-      } finally {
-        coldDb.close();
       }
 
     } finally {

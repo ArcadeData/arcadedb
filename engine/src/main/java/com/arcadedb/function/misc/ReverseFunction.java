@@ -42,8 +42,7 @@ public class ReverseFunction implements StatelessFunction {
       throw new CommandExecutionException("reverse() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String) {
-      final String str = (String) args[0];
+    if (args[0] instanceof String str) {
       return new StringBuilder(str).reverse().toString();
     }
     // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).

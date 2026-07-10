@@ -26,13 +26,12 @@ import com.arcadedb.query.QueryEngineManager;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
-
-import java.util.function.IntSupplier;
-import java.util.function.LongSupplier;
-
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.MeterBinder;
+
+import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
 
 /**
  * Micrometer binding for the engine's executor pools so they show up in {@code /api/v1/metrics}
@@ -96,8 +95,9 @@ public final class PoolMetrics implements MeterBinder {
     // complementing the throttled WARNING already emitted by GhostEdgeReporter.
     FunctionCounter.builder("arcadedb.graph.ghost_edges_skipped", GhostEdgeReporter.class,
             c -> GhostEdgeReporter.getTotalSkipped())
-        .description("Cumulative ghost (dangling) edges skipped during graph traversal since startup. "
-            + "Sustained growth indicates a data-integrity anomaly, e.g. incomplete HA replication or a partially rolled-back transaction.")
+        .description("""
+            Cumulative ghost (dangling) edges skipped during graph traversal since startup. \
+            Sustained growth indicates a data-integrity anomaly, e.g. incomplete HA replication or a partially rolled-back transaction.""")
         .register(registry);
   }
 

@@ -60,8 +60,7 @@ public class ConvertToMap extends AbstractConvertFunction {
       return new HashMap<>((Map<String, Object>) args[0]);
     }
 
-    if (args[0] instanceof Document) {
-      final Document doc = (Document) args[0];
+    if (args[0] instanceof Document doc) {
       final Map<String, Object> result = new HashMap<>();
       for (final String prop : doc.getPropertyNames()) {
         result.put(prop, doc.get(prop));

@@ -19,9 +19,9 @@
 package com.arcadedb.function.sql.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -271,17 +271,11 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected String[] stringArray(final Object fromObject) {
-    switch (fromObject) {
-      case String s -> {
-        return fromObject.toString().replace("},{", " ,").split(",");
-      }
-      case String[] o -> {
-        return (String[]) fromObject;
-      }
-      case null, default -> {
-        return new String[]{};
-      }
-    }
+    return switch (fromObject) {
+      case String s -> fromObject.toString().replace("},{", " ,").split(",");
+      case String[] o -> (String[]) fromObject;
+      case null, default -> new String[]{};
+    };
   }
 
   protected Boolean booleanOrDefault(final Object fromObject, final boolean defaultValue) {

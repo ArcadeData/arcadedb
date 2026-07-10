@@ -65,12 +65,12 @@ public class ExpressionOptimizer {
     }
 
     // Recursively optimize sub-expressions
-    if (expression instanceof ArithmeticExpression) {
-      return optimizeArithmetic((ArithmeticExpression) expression, sampleContext, context, iterationVariables);
+    if (expression instanceof ArithmeticExpression arithmeticExpression) {
+      return optimizeArithmetic(arithmeticExpression, sampleContext, context, iterationVariables);
     }
 
-    if (expression instanceof FunctionCallExpression) {
-      return optimizeFunction((FunctionCallExpression) expression, sampleContext, context, iterationVariables);
+    if (expression instanceof FunctionCallExpression callExpression) {
+      return optimizeFunction(callExpression, sampleContext, context, iterationVariables);
     }
 
     // No optimization possible
@@ -151,18 +151,16 @@ public class ExpressionOptimizer {
       return true;
     }
 
-    if (expression instanceof VariableExpression) {
-      final String varName = ((VariableExpression) expression).getVariableName();
+    if (expression instanceof VariableExpression variableExpression) {
+      final String varName = variableExpression.getVariableName();
       return !iterationVariables.contains(varName);
     }
 
-    if (expression instanceof ArithmeticExpression) {
-      final ArithmeticExpression arith = (ArithmeticExpression) expression;
+    if (expression instanceof ArithmeticExpression arith) {
       return isConstant(arith.getLeft(), iterationVariables) && isConstant(arith.getRight(), iterationVariables);
     }
 
-    if (expression instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expression;
+    if (expression instanceof FunctionCallExpression func) {
       // Non-deterministic functions (rand, randomuuid) are never constant
       if (!isDeterministicFunction(func.getFunctionName())) {
         return false;

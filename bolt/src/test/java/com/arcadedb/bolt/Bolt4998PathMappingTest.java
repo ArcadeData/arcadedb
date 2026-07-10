@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -82,7 +83,7 @@ class Bolt4998PathMappingTest {
     final BoltPath bp = BoltStructureMapper.toPath(tp);
     assertThat(bp.getNodes()).hasSize(2);
     assertThat(bp.getRelationships()).hasSize(1);
-    assertThat(bp.getIndices().get(0)).isEqualTo(-1L); // backward, negative
+    assertThat(bp.getIndices().getFirst()).isEqualTo(-1L); // backward, negative
     assertThat(bp.getIndices().get(1)).isEqualTo(1L);  // reached node index (a) = 1
   }
 

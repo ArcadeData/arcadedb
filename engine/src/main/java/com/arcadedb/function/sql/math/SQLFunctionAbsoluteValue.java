@@ -45,32 +45,25 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
   public Object execute(final Object self, final Identifiable record, final Object currentResult, final Object[] params, final CommandContext context) {
     final Object inputValue = params[0];
 
-    if (inputValue == null) {
-      result = null;
-    } else if (inputValue instanceof BigDecimal decimal) {
-      result = decimal.abs();
-    } else if (inputValue instanceof BigInteger integer) {
-      result = integer.abs();
-    } else if (inputValue instanceof Integer integer) {
-      result = Math.abs(integer);
-    } else if (inputValue instanceof Long long1) {
-      result = Math.abs(long1);
-    } else if (inputValue instanceof Short short1) {
-      result = (short) Math.abs(short1);
-    } else if (inputValue instanceof Double double1) {
-      result = Math.abs(double1);
-    } else if (inputValue instanceof Float float1) {
-      result = Math.abs(float1);
-    } else if (inputValue instanceof Duration duration) {
-      final int seconds = duration.toSecondsPart();
-      final long nanos = duration.toNanosPart();
-      if (seconds > -1 && nanos > -1)
-        result = inputValue;
-      else {
-        result = Duration.ofSeconds(Math.abs(seconds), Math.abs(nanos));
+    switch (inputValue) {
+      case null -> result = null;
+      case BigDecimal decimal -> result = decimal.abs();
+      case BigInteger integer -> result = integer.abs();
+      case Integer integer -> result = Math.abs(integer);
+      case Long long1 -> result = Math.abs(long1);
+      case Short short1 -> result = (short) Math.abs(short1);
+      case Double double1 -> result = Math.abs(double1);
+      case Float float1 -> result = Math.abs(float1);
+      case Duration duration -> {
+        final int seconds = duration.toSecondsPart();
+        final long nanos = duration.toNanosPart();
+        if (seconds > -1 && nanos > -1)
+          result = inputValue;
+        else {
+          result = Duration.ofSeconds(Math.abs(seconds), Math.abs(nanos));
+        }
       }
-    } else {
-      throw new IllegalArgumentException("Argument to absolute value must be a number");
+      default -> throw new IllegalArgumentException("Argument to absolute value must be a number");
     }
 
     return getResult();

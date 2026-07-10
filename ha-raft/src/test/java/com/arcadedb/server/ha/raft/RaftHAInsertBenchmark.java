@@ -30,6 +30,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -39,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -311,7 +313,7 @@ class RaftHAInsertBenchmark {
         for (int i = bStart; i < bEnd; i++)
           db.newVertex(VERTEX_TYPE)
               .set("sensorId", startId + i)
-              .set("value", Math.random() * 1000)
+              .set("value", ThreadLocalRandom.current().nextDouble() * 1000)
               .set("timestamp", System.currentTimeMillis())
               .save();
       });
@@ -327,7 +329,7 @@ class RaftHAInsertBenchmark {
     for (int i = 0; i < count; i++) {
       final long start = System.nanoTime();
       db.command("SQL", "INSERT INTO " + VERTEX_TYPE + " SET sensorId = ?, value = ?, timestamp = ?",
-          startId + i, Math.random() * 1000, System.currentTimeMillis());
+          startId + i, ThreadLocalRandom.current().nextDouble() * 1000, System.currentTimeMillis());
       latencies[i] = System.nanoTime() - start;
     }
     return latencies;
@@ -351,7 +353,7 @@ class RaftHAInsertBenchmark {
       async.createRecord(
           db.newVertex(VERTEX_TYPE)
               .set("sensorId", startId + i)
-              .set("value", Math.random() * 1000)
+              .set("value", ThreadLocalRandom.current().nextDouble() * 1000)
               .set("timestamp", System.currentTimeMillis()),
           null);
 

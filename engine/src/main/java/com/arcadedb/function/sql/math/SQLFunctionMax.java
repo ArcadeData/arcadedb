@@ -19,8 +19,8 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Type;
 
 import java.util.Collection;

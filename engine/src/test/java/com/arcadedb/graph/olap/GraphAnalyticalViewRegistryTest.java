@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -71,8 +72,7 @@ class GraphAnalyticalViewRegistryTest {
     // On reopen the named GAV is auto-loaded from schema persistence, so only build it once.
     for (int i = 0; i < 3; i++) {
       final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
-      final Database db = factory.exists() ? factory.open() : factory.create();
-      try {
+      try (final Database db = factory.exists() ? factory.open() : factory.create()) {
         db.getSchema().getOrCreateVertexType("Person");
         db.getSchema().getOrCreateEdgeType("FOLLOWS");
 
@@ -85,8 +85,6 @@ class GraphAnalyticalViewRegistryTest {
 
         assertThat(GraphAnalyticalViewRegistry.get(db, "social-graph")).isNotNull();
         assertThat(registrySize()).isEqualTo(baseline + 1);
-      } finally {
-        db.close();
       }
 
       // After close(), shutdownAll() must have removed the database's entry: no accumulation.

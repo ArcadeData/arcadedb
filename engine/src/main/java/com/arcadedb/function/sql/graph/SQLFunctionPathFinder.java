@@ -19,9 +19,9 @@
 package com.arcadedb.function.sql.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 
 import java.util.Collections;
 import java.util.HashMap;

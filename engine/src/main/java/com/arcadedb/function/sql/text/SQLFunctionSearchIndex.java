@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -37,7 +38,6 @@ import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
-import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 

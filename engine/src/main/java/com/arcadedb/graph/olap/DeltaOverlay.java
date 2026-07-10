@@ -72,18 +72,18 @@ class DeltaOverlay {
   @SuppressWarnings("unchecked")
   DeltaOverlay(final int baseNodeCount) {
     this.baseNodeCount = baseNodeCount;
-    this.overflowNodeIds = Collections.emptyMap();
+    this.overflowNodeIds = Map.of();
     this.overflowIdToRID = new RID[0];
     this.overflowProperties = new Map[0];
     this.deletedBaseNodes = new BitSet();
     this.deletedOverflowNodes = new BitSet();
-    this.addedEdgesPerType = Collections.emptyMap();
-    this.deletedEdgesPerType = Collections.emptyMap();
-    this.deletedOutEdgeCounts = Collections.emptyMap();
-    this.deletedInEdgeCounts = Collections.emptyMap();
-    this.propertyOverrides = Collections.emptyMap();
-    this.outNeighborIndex = Collections.emptyMap();
-    this.inNeighborIndex = Collections.emptyMap();
+    this.addedEdgesPerType = Map.of();
+    this.deletedEdgesPerType = Map.of();
+    this.deletedOutEdgeCounts = Map.of();
+    this.deletedInEdgeCounts = Map.of();
+    this.propertyOverrides = Map.of();
+    this.outNeighborIndex = Map.of();
+    this.inNeighborIndex = Map.of();
     this.overflowCount = 0;
     this.deltaEdgeCount = 0;
   }
@@ -171,7 +171,7 @@ class DeltaOverlay {
       final int overflowId = baseNodeCount + newOverflowCount;
       newOverflowIds.put(vd.rid, overflowId);
       overflowRIDsList.add(vd.rid);
-      overflowPropsList.add(vd.properties != null ? new HashMap<>(vd.properties) : Collections.emptyMap());
+      overflowPropsList.add(vd.properties != null ? new HashMap<>(vd.properties) : Map.of());
       newOverflowCount++;
     }
 
@@ -410,7 +410,7 @@ class DeltaOverlay {
   private static Map<String, Map<Integer, int[]>> buildNeighborIndex(
       final Map<String, List<long[]>> addedEdges, final boolean outgoing) {
     if (addedEdges.isEmpty())
-      return Collections.emptyMap();
+      return Map.of();
     final Map<String, Map<Integer, int[]>> result = new HashMap<>();
     for (final var entry : addedEdges.entrySet()) {
       final List<long[]> edges = entry.getValue();
@@ -450,7 +450,7 @@ class DeltaOverlay {
   private static Map<String, IntIntHashMap> buildDeletedEdgeCounts(
       final Map<String, Set<Long>> deletedEdges, final boolean outgoing) {
     if (deletedEdges.isEmpty())
-      return Collections.emptyMap();
+      return Map.of();
     final Map<String, IntIntHashMap> result = new HashMap<>();
     for (final var entry : deletedEdges.entrySet()) {
       final IntIntHashMap counts = new IntIntHashMap();

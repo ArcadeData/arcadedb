@@ -19,6 +19,7 @@ package com.arcadedb.function.polyglot;/*
 
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.log.LogManager;
+
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyObject;
@@ -318,15 +319,11 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
     for (Map.Entry<String, Object> entry : map.entrySet()) {
       final Object value = entry.getValue();
-      if (value instanceof Map subMap) {
-        // If the value is a map, recurse
-        processedMap.put(entry.getKey(), toDeepProxyObject(subMap));
-      } else if (value instanceof List list)
-        // If the value is a list, process its elements
-        processedMap.put(entry.getKey(), toDeepProxyList(list));
-      else
-        // Otherwise, just put the primitive/simple value
-        processedMap.put(entry.getKey(), value);
+      switch (value) {
+        case Map subMap -> processedMap.put(entry.getKey(), toDeepProxyObject(subMap));
+        case List list -> processedMap.put(entry.getKey(), toDeepProxyList(list));
+        case null, default -> processedMap.put(entry.getKey(), value);
+      }
     }
     return ProxyObject.fromMap(processedMap);
   }
@@ -338,8 +335,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     return ProxyArray.fromList(list.stream().map(item -> {
       if (item instanceof Map subMap)
         return toDeepProxyObject(subMap);
-      else if (item instanceof List)
-        return toDeepProxyList((List<?>) item);
+      else if (item instanceof List<?> list1)
+        return toDeepProxyList(list1);
       return item;
     }).collect(Collectors.toList()));
   }

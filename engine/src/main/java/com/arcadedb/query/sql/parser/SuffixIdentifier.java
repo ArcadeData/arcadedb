@@ -381,15 +381,15 @@ public class SuffixIdentifier extends SimpleNode {
       if (currentValue instanceof Result result && result.isElement())
         currentValue = result.toElement();
 
-      if (currentValue instanceof ResultInternal internal) {
-        internal.removeProperty(identifier.getStringValue());
-      } else if (currentValue instanceof Document document) {
-        final MutableDocument doc = document.modify();
-        doc.remove(identifier.getStringValue());
-      } else if (currentValue instanceof Map map) {
-        map.remove(identifier.getStringValue());
-      } else if (currentValue instanceof JSONObject json) {
-        json.remove(identifier.getStringValue());
+      switch (currentValue) {
+        case ResultInternal internal -> internal.removeProperty(identifier.getStringValue());
+        case Document document -> {
+          final MutableDocument doc = document.modify();
+          doc.remove(identifier.getStringValue());
+        }
+      case JSONObject json -> json.remove(identifier.getStringValue());
+      case Map map -> map.remove(identifier.getStringValue());
+      case null, default -> {}
       }
     }
   }

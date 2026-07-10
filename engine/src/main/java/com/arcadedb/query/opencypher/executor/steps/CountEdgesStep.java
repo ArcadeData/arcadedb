@@ -85,8 +85,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
         // Get the vertex and count edges
         final Object vertexObj = inputRow.getProperty(boundVertexVariable);
         final long count;
-        if (vertexObj instanceof Vertex) {
-          final Vertex vertex = (Vertex) vertexObj;
+        if (vertexObj instanceof Vertex vertex) {
           if (provider != null) {
             // GAV/CSR path: O(1) count from offset arrays
             final int nodeId = provider.getNodeId(vertex.getIdentity());

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

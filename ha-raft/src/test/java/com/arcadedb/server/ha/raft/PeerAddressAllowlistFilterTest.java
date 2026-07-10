@@ -150,9 +150,11 @@ class PeerAddressAllowlistFilterTest {
     // Reproduces the exact serverList from issue #4470 comment that produced the bogus
     // 'http'/'https' allowlist hosts.
     final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts(
-        "wxg-arcadedb-0.svc.local:{raft:2434,http:2480,https:2490},"
-            + "wxg-arcadedb-1.svc.local:{raft:2434,http:2480,https:2490},"
-            + "wxg-arcadedb-2.svc.local:{raft:2434,http:2480,https:2490}");
+        """
+        wxg-arcadedb-0.svc.local:{raft:2434,http:2480,https:2490},\
+        wxg-arcadedb-1.svc.local:{raft:2434,http:2480,https:2490},\
+        wxg-arcadedb-2.svc.local:{raft:2434,http:2480,https:2490}\
+        """);
     assertThat(hosts).containsExactly(
         "wxg-arcadedb-0.svc.local", "wxg-arcadedb-1.svc.local", "wxg-arcadedb-2.svc.local");
     assertThat(hosts).doesNotContain("http", "https");

@@ -18,16 +18,6 @@
  */
 package com.arcadedb.database;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import java.time.Clock;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
-
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
-
-import org.junit.jupiter.api.Test;
-
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
@@ -35,6 +25,16 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+
+import org.junit.jupiter.api.Test;
+
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import java.time.Clock;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Pawel Maslej

@@ -24,6 +24,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.graph.CSRVertexIterable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeToVertexIterable;
@@ -34,11 +36,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.function.sql.FunctionOptions;
-import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
-
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayDeque;

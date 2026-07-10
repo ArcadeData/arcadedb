@@ -18,11 +18,12 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ServerDatabase;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 

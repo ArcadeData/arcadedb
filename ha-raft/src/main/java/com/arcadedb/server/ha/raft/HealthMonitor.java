@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
+
 import org.apache.ratis.util.LifeCycle;
 
 import java.util.concurrent.Executors;

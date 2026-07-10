@@ -23,15 +23,14 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.utility.ServerPathUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -48,7 +47,7 @@ class RemoteCollectionTemporalIT {
   @Test
   void temporalElementsInProjectedCollection() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
-    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+    final String rootPath = ServerPathUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -68,7 +67,8 @@ class RemoteCollectionTemporalIT {
       database.command("sql", "CREATE EDGE TYPE EventGroup_events IF NOT EXISTS");
       database.command("sql", "INSERT INTO EventGroup SET id = 'g1'");
       database.command("sql", "INSERT INTO Event SET id = 'e1', startedAt = '2026-01-02 03:04:05'");
-      database.command("sql", "CREATE EDGE EventGroup_events FROM (SELECT FROM EventGroup WHERE id = 'g1') TO (SELECT FROM Event WHERE id = 'e1')");
+      database.command("sql",
+          "CREATE EDGE EventGroup_events FROM (SELECT FROM EventGroup WHERE id = 'g1') TO (SELECT FROM Event WHERE id = 'e1')");
 
       final int httpPort = arcadeDBServer.getHttpServer().getPort();
       final RemoteDatabase remote = new RemoteDatabase("localhost", httpPort, "remotecolltemporal", "root",
@@ -86,8 +86,8 @@ class RemoteCollectionTemporalIT {
           "SELECT out('EventGroup_events').startedAt AS dates FROM EventGroup WHERE id = 'g1'")) {
         final List<?> dates = rs.next().getProperty("dates");
         assertThat(dates).isNotEmpty();
-        assertThat(dates.get(0)).isInstanceOf(LocalDateTime.class);
-        assertThat(dates.get(0)).isEqualTo(LocalDateTime.of(2026, 1, 2, 3, 4, 5));
+        assertThat(dates.getFirst()).isInstanceOf(LocalDateTime.class);
+        assertThat(dates.getFirst()).isEqualTo(LocalDateTime.of(2026, 1, 2, 3, 4, 5));
       }
     } finally {
       arcadeDBServer.stop();
@@ -97,7 +97,7 @@ class RemoteCollectionTemporalIT {
   @Test
   void temporalValuesInProjectedMap() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
-    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+    final String rootPath = ServerPathUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -119,9 +119,9 @@ class RemoteCollectionTemporalIT {
       final LocalDateTime second = LocalDateTime.of(2026, 6, 7, 8, 9, 10);
       database.transaction(() -> {
         final MutableDocument doc = database.newDocument("Rec");
-        final Map<String, Object> moments = new LinkedHashMap<>();
-        moments.put("a", first);
-        moments.put("b", second);
+        final Map<String, Object> moments = Map.of(
+            "a", first,
+            "b", second);
         doc.set("moments", moments);
         doc.save();
       });
@@ -147,7 +147,7 @@ class RemoteCollectionTemporalIT {
   @BeforeEach
   void beginTest() {
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
-    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+    final String rootPath = ServerPathUtils.setRootPath(serverConfiguration);
     final DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotecolltemporal");
     if (databaseFactory.exists())
       databaseFactory.open().drop();

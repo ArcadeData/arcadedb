@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
+
 import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 

@@ -30,6 +30,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -106,7 +107,7 @@ class ParameterTest {
       while (r1.hasNext())
         names.add(r1.next().getProperty("name").toString());
       assertThat(names).as("WHERE clause string equality should return exactly 1 result").hasSize(1);
-      assertThat(names.get(0)).isEqualTo("alpha");
+      assertThat(names.getFirst()).isEqualTo("alpha");
 
       // Non-matching parameter should return 0 results
       final ResultSet r2 = database.query("opencypher",
@@ -318,7 +319,7 @@ class ParameterTest {
       @SuppressWarnings("unchecked")
       final List<Map<String, Object>> batch = (List<Map<String, Object>>) params.get("batch");
       assertThat(batch).hasSize(batchSize);
-      assertThat(batch.get(0).get("vector"))
+      assertThat(batch.getFirst().get("vector"))
           .as("the optimization must yield primitive float[] for the vector field")
           .isInstanceOf(float[].class);
 
@@ -373,8 +374,8 @@ class ParameterTest {
           results.add(rs.next());
 
         assertThat(results).hasSize(1);
-        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
-        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+        assertThat(results.getFirst().<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.getFirst().<String>getProperty("b.f")).isEqualTo("x");
       }
     } finally {
       database.drop();
@@ -394,8 +395,8 @@ class ParameterTest {
           results.add(rs.next());
 
         assertThat(results).hasSize(1);
-        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
-        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+        assertThat(results.getFirst().<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.getFirst().<String>getProperty("b.f")).isEqualTo("x");
       }
     } finally {
       database.drop();
@@ -415,8 +416,8 @@ class ParameterTest {
           results.add(rs.next());
 
         assertThat(results).hasSize(1);
-        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
-        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+        assertThat(results.getFirst().<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.getFirst().<String>getProperty("b.f")).isEqualTo("x");
       }
     } finally {
       database.drop();
@@ -436,8 +437,8 @@ class ParameterTest {
           results.add(rs.next());
 
         assertThat(results).hasSize(1);
-        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
-        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+        assertThat(results.getFirst().<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.getFirst().<String>getProperty("b.f")).isEqualTo("x");
       }
     } finally {
       database.drop();

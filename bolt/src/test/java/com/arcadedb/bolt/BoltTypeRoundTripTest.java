@@ -29,12 +29,8 @@ import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
+import java.time.*;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -84,7 +80,7 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-011] CypherDuration serializes as a native Bolt Duration structure")
-  void type011_durationNative() throws IOException {
+  void type011_durationNative() throws Exception {
     // duration('P1DT2H30M') -> months=0, days=1, seconds=9000, nanos=0
     final CypherDuration d = new CypherDuration(0, 1, 9000, 0);
     final Object out = BoltStructureMapper.toPackStreamValue(d);
@@ -102,11 +98,11 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-012] cartesian Point serializes as a native Bolt Point2D structure")
-  void type012_cartesianPointNative() throws IOException {
-    final Map<String, Object> point = new LinkedHashMap<>();
-    point.put("x", 12.34);
-    point.put("y", 56.78);
-    point.put("crs", "cartesian");
+  void type012_cartesianPointNative() throws Exception {
+    final Map<String, Object> point = new HashMap<>(Map.of(
+        "x", 12.34,
+        "y", 56.78,
+        "crs", "cartesian"));
     final Object out = BoltStructureMapper.toPackStreamValue(point);
     assertThat(out).isInstanceOf(BoltPointStructure.class);
     final BoltPointStructure p = (BoltPointStructure) out;
@@ -125,13 +121,13 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-012] WGS-84 3D Point serializes as a native Bolt Point3D structure")
-  void type012_wgs84Point3DNative() throws IOException {
-    final Map<String, Object> point = new LinkedHashMap<>();
-    point.put("longitude", 12.34);
-    point.put("latitude", 56.78);
-    point.put("height", 100.0);
-    point.put("crs", "WGS-84-3D");
-    point.put("srid", 4979);
+  void type012_wgs84Point3DNative() throws Exception {
+    final Map<String, Object> point = new HashMap<>(Map.of(
+        "longitude", 12.34,
+        "latitude", 56.78,
+        "height", 100.0,
+        "crs", "WGS-84-3D",
+        "srid", 4979));
     final BoltPointStructure p = (BoltPointStructure) BoltStructureMapper.toPackStreamValue(point);
     assertThat(p.getSrid()).isEqualTo(4979);
     assertThat(p.getX()).isEqualTo(12.34);
@@ -150,10 +146,10 @@ class BoltTypeRoundTripTest {
   @DisplayName("[TYPE-012] cartesian Point survives a full encode -> wire -> decode -> re-encode round trip")
   void type012_cartesianPointFullRoundTrip() throws Exception {
     // 1. Build a cartesian point param and encode it.
-    final Map<String, Object> point = new LinkedHashMap<>();
-    point.put("x", 12.34);
-    point.put("y", 56.78);
-    point.put("crs", "cartesian");
+    final Map<String, Object> point = new HashMap<>(Map.of(
+        "x", 12.34,
+        "y", 56.78,
+        "crs", "cartesian"));
     final Object encoded = BoltStructureMapper.toPackStreamValue(point);
     assertThat(encoded).isInstanceOf(BoltPointStructure.class);
 
@@ -180,19 +176,19 @@ class BoltTypeRoundTripTest {
   @Test
   @DisplayName("A plain map without crs is not misdetected as a Point")
   void plainMapIsNotPoint() {
-    final Map<String, Object> m = new LinkedHashMap<>();
-    m.put("a", 1);
-    m.put("b", 2);
+    final Map<String, Object> m = new HashMap<>(Map.of(
+        "a", 1,
+        "b", 2));
     assertThat(BoltStructureMapper.toPackStreamValue(m)).isInstanceOf(Map.class);
   }
 
   @Test
   @DisplayName("A map with an unrecognized crs value and no srid is not misdetected as a Point")
   void unrecognizedCrsIsNotPoint() {
-    final Map<String, Object> m = new LinkedHashMap<>();
-    m.put("crs", "epsg:1234");
-    m.put("x", 1.0);
-    m.put("y", 2.0);
+    final Map<String, Object> m = new HashMap<>(Map.of(
+        "crs", "epsg:1234",
+        "x", 1.0,
+        "y", 2.0));
     assertThat(BoltStructureMapper.toPackStreamValue(m)).isInstanceOf(Map.class);
   }
 

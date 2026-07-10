@@ -26,11 +26,9 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.utility.FileUtils;
-
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -56,7 +54,7 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
 
     return SQLQueryEngine.foreachRecord(iArgument -> {
       if (possibleRIDs != null && possibleRIDs.isEmpty())
-        return Collections.emptyList();
+        return List.of();
 
       final Object result = move(context.getDatabase(), iArgument, labels, context);
       if (result == null || possibleRIDs == null)

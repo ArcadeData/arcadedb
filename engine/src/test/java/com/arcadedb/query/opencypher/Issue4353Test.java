@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -85,7 +86,7 @@ class Issue4353Test {
       endNames.add(row.getProperty("endName"));
     }
     assertThat(endNames).containsExactly("B", "C", "D");
-    assertThat(nodes.get(0)).hasSize(2);
+    assertThat(nodes.getFirst()).hasSize(2);
     assertThat(nodes.get(1)).hasSize(3);
     assertThat(nodes.get(2)).hasSize(4);
     for (final List<?> n : nodes)
@@ -106,7 +107,7 @@ class Issue4353Test {
       final Result row = result.next();
       rels.add((List<?>) row.getProperty("relList"));
     }
-    assertThat(rels.get(0)).hasSize(1);
+    assertThat(rels.getFirst()).hasSize(1);
     assertThat(rels.get(1)).hasSize(2);
     assertThat(rels.get(2)).hasSize(3);
     for (final List<?> r : rels)

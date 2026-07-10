@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,11 +51,12 @@ class Issue5084MultiLabelCountTest {
   @BeforeEach
   void setUp() {
     database = new DatabaseFactory("./target/databases/testissue5084").create();
-    database.command("opencypher", "CREATE "
-        + "(n1:BugNode:BugA:BugB {id: 1}), "
-        + "(n2:BugNode:BugA      {id: 2}), "
-        + "(n3:BugNode:BugB      {id: 3}), "
-        + "(n4:BugNode:BugA:BugB {id: 4})");
+    database.command("opencypher", """
+        CREATE \
+        (n1:BugNode:BugA:BugB {id: 1}), \
+        (n2:BugNode:BugA      {id: 2}), \
+        (n3:BugNode:BugB      {id: 3}), \
+        (n4:BugNode:BugA:BugB {id: 4})""");
   }
 
   @AfterEach

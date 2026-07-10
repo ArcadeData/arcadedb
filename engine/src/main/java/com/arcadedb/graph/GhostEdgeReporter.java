@@ -61,9 +61,10 @@ public final class GhostEdgeReporter {
 
     if (shouldEmitWarning(System.nanoTime()))
       LogManager.instance().log(GhostEdgeReporter.class, Level.WARNING,
-          "Ghost (dangling) edges encountered and skipped during traversal (total skipped since startup=%d). "
-              + "A dangling edge-segment pointer indicates a data-integrity anomaly, e.g. incomplete HA "
-              + "replication or a partially rolled-back transaction.", total);
+          """
+          Ghost (dangling) edges encountered and skipped during traversal (total skipped since startup=%d). \
+          A dangling edge-segment pointer indicates a data-integrity anomaly, e.g. incomplete HA \
+          replication or a partially rolled-back transaction.""", total);
   }
 
   /**

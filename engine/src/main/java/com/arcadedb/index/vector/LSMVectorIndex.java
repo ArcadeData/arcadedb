@@ -21,9 +21,9 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
@@ -63,6 +63,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RidHashSet;
+
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
@@ -93,7 +94,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -142,6 +142,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   protected     LSMVectorIndexMutable  mutable;
   private final ReentrantReadWriteLock lock;
   LSMVectorIndexMetadata metadata; // Package-private for Phase 2 access from ArcadePageVectorValues and
+
   // LSMVectorIndexGraphFile
 
   // Graph lifecycle management (Phase 2: Disk-based graph storage)
@@ -680,13 +681,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       for (int i = 0; i < 1000; i++) {  // Check up to 1000 file IDs
         try {
           final Component comp = database.getSchema().getFileByIdIfExists(i);
-          if (comp instanceof LSMVectorIndexCompacted) {
+          if (comp instanceof LSMVectorIndexCompacted compacted) {
             final String compName = comp.getName();
             if (compName.startsWith(namePrefix + "_") && !compName.equals(componentName)) {
               LogManager.instance()
                   .log(this, Level.SEVERE, "Found existing compacted sub-index in schema: %s (fileId=%d)", compName,
                       comp.getFileId());
-              return (LSMVectorIndexCompacted) comp;
+              return compacted;
             }
           }
         } catch (final Exception e) {
@@ -739,8 +740,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final String compactedName = compactedComponentFile.getComponentName();
       final int compactedFileId = compactedComponentFile.getFileId();
       final String compactedPath = compactedComponentFile.getFilePath();
-      final int pageSize = compactedComponentFile instanceof PaginatedComponentFile ?
-          ((PaginatedComponentFile) compactedComponentFile).getPageSize() :
+      final int pageSize = compactedComponentFile instanceof PaginatedComponentFile pcf ?
+          pcf.getPageSize() :
           mutable.getPageSize();
       final int version = compactedComponentFile.getVersion();
 
@@ -787,8 +788,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (file != null && LSMVectorIndexGraphFile.FILE_EXT.equals(file.getFileExtension()) && file.getComponentName()
             .equals(expectedGraphFileName)) {
 
-          final int pageSize = file instanceof PaginatedComponentFile ?
-              ((PaginatedComponentFile) file).getPageSize() :
+          final int pageSize = file instanceof PaginatedComponentFile pcf ?
+              pcf.getPageSize() :
               mutable.getPageSize();
 
           final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(database, file.getComponentName(),
@@ -1297,7 +1298,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
       final String vectorProp =
-          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
+          metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
               "vector";
 
       // CRITICAL FIX: Validate vectors before building graph to filter out deleted documents
@@ -2877,7 +2878,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             mergeWithDeltaScan(qvf, k, allowedRIDs, results);
             return results;
           }
-          return Collections.emptyList();
+          return List.of();
         }
 
         // Convert query vector to VectorFloat
@@ -3059,7 +3060,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public List<Pair<RID, Float>> findNeighborsFromVectorGrouped(final float[] queryVector, final int limit, final int groupSize,
       final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver) {
     if (limit <= 0 || groupSize <= 0)
-      return Collections.emptyList();
+      return List.of();
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
 
@@ -3087,7 +3088,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       readLockHeld = true;
       try {
         if (graphIndex == null || vectorIndex.size() == 0)
-          return Collections.emptyList();
+          return List.of();
 
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
@@ -3257,7 +3258,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             mergeWithDeltaScan(qvf, k, allowedRIDs, results);
             return results;
           }
-          return Collections.emptyList();
+          return List.of();
         }
 
         // Convert query vector to VectorFloat
@@ -3390,7 +3391,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Perform scored search via findNeighborsFromVector (includes delta scan)
       final List<RID> resultRIDs;
       if (graphIndex == null && deltaVectors.isEmpty()) {
-        resultRIDs = Collections.emptyList();
+        resultRIDs = List.of();
       } else {
         final List<Pair<RID, Float>> scoredResults = findNeighborsFromVector(queryVector, k, null);
         resultRIDs = new ArrayList<>(scoredResults.size());
@@ -3734,7 +3735,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the commit lock set, or its pages pass the version checks without their file lock held.
     if (graphFile != null)
       return List.of(mutable.getFileId(), graphFile.getFileId());
-    return Collections.singletonList(mutable.getFileId());
+    return List.of(mutable.getFileId());
   }
 
   @Override
@@ -4176,20 +4177,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public Map<String, Long> getStats() {
-    final Map<String, Long> stats = new HashMap<>();
+    final Map<String, Long> stats = new HashMap<>(Map.of(
 
-    // Existing metrics
-    stats.put("totalVectors", (long) vectorIndex.size());
-    stats.put("activeVectors", vectorIndex.getActiveCount());
-    stats.put("deletedVectors", (long) vectorIndex.size() - vectorIndex.getActiveCount());
-    stats.put("dimensions", (long) metadata.dimensions);
-    stats.put("maxConnections", (long) metadata.maxConnections);
-    stats.put("beamWidth", (long) metadata.beamWidth);
+        // Existing metrics
+        "totalVectors", (long) vectorIndex.size(),
+        "activeVectors", vectorIndex.getActiveCount(),
+        "deletedVectors", (long) vectorIndex.size() - vectorIndex.getActiveCount(),
+        "dimensions", (long) metadata.dimensions,
+        "maxConnections", (long) metadata.maxConnections,
+        "beamWidth", (long) metadata.beamWidth,
 
-    // NEW: Graph state metrics
-    stats.put("graphState", (long) graphState.ordinal()); // LOADING=0, IMMUTABLE=1, MUTABLE=2
-    stats.put("graphNodeCount", graphIndex != null ? (long) graphIndex.getIdUpperBound() : 0L);
-    stats.put("mutationsSinceRebuild", (long) mutationsSinceSerialize.get());
+        // NEW: Graph state metrics
+        "graphState", (long) graphState.ordinal(), // LOADING=0, IMMUTABLE=1, MUTABLE=2
+        "graphNodeCount", graphIndex != null ? (long) graphIndex.getIdUpperBound() : 0L,
+        "mutationsSinceRebuild", (long) mutationsSinceSerialize.get()));
 
     // Calculate mutations threshold (use configured value or default)
     final int defaultMutationsThreshold = getDatabase().getConfiguration()

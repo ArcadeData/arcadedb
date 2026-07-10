@@ -4,6 +4,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -54,9 +55,9 @@ class CypherCallVectorNeighborsTest extends TestHelper {
 
   @Test
   void callVectorNeighborsWithRawVector() {
-    final Map<String, Object> params = new HashMap<>();
-    params.put("vec", new float[]{0.0f, 0.0f, 1.0f});
-    params.put("k", 3);
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "vec", new float[]{0.0f, 0.0f, 1.0f},
+        "k", 3));
 
     try (ResultSet results = database.query("opencypher",
         "CALL vector.neighbors('Doc[embedding]', $vec, $k) YIELD distance, name RETURN name, distance ORDER BY distance",
@@ -72,7 +73,7 @@ class CypherCallVectorNeighborsTest extends TestHelper {
       assertThat(names).isNotEmpty();
       assertThat(names.size()).isLessThanOrEqualTo(3);
       // docE has vector [0,0,1] which is the query vector, so it should be first (distance ~0)
-      assertThat(names.get(0)).isEqualTo("docE");
+      assertThat(names.getFirst()).isEqualTo("docE");
     }
   }
 
@@ -95,9 +96,9 @@ class CypherCallVectorNeighborsTest extends TestHelper {
 
   @Test
   void callVectorNeighborsReturnWithScore() {
-    final Map<String, Object> params = new HashMap<>();
-    params.put("vec", new float[]{1.0f, 0.0f, 0.0f});
-    params.put("k", 2);
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "vec", new float[]{1.0f, 0.0f, 0.0f},
+        "k", 2));
 
     try (ResultSet results = database.query("opencypher",
         "CALL vector.neighbors('Doc[embedding]', $vec, $k) YIELD name, distance RETURN name AS title, (1 - distance) AS score ORDER BY score DESC",
@@ -117,9 +118,9 @@ class CypherCallVectorNeighborsTest extends TestHelper {
   @Test
   void queryNodesNeo4jCompatible() {
     // Neo4j syntax: CALL db.index.vector.queryNodes(indexName, k, vector) YIELD node, score
-    final Map<String, Object> params = new HashMap<>();
-    params.put("vec", new float[]{0.0f, 0.0f, 1.0f});
-    params.put("k", 3);
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "vec", new float[]{0.0f, 0.0f, 1.0f},
+        "k", 3));
 
     try (ResultSet results = database.query("opencypher",
         "CALL db.index.vector.queryNodes('Doc[embedding]', $k, $vec) YIELD node, score RETURN node.name AS name, score ORDER BY score DESC",
@@ -136,8 +137,8 @@ class CypherCallVectorNeighborsTest extends TestHelper {
       assertThat(names).isNotEmpty();
       assertThat(names.size()).isLessThanOrEqualTo(3);
       // docE has vector [0,0,1] which is the query vector, so it should be first with score ~1.0
-      assertThat(names.get(0)).isEqualTo("docE");
-      assertThat(scores.get(0)).isGreaterThan(0.9);
+      assertThat(names.getFirst()).isEqualTo("docE");
+      assertThat(scores.getFirst()).isGreaterThan(0.9);
 
       // Scores should be in descending order
       for (int i = 1; i < scores.size(); i++)
@@ -170,9 +171,9 @@ class CypherCallVectorNeighborsTest extends TestHelper {
   @Test
   void queryNodesWithReturnPattern() {
     // Exact Neo4j pattern from the user's benchmark query
-    final Map<String, Object> params = new HashMap<>();
-    params.put("vec", new float[]{1.0f, 0.0f, 0.0f});
-    params.put("k", 2);
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "vec", new float[]{1.0f, 0.0f, 0.0f},
+        "k", 2));
 
     try (ResultSet results = database.query("opencypher",
         "CALL db.index.vector.queryNodes('Doc[embedding]', $k, $vec) YIELD node, score RETURN node.name AS title, score",

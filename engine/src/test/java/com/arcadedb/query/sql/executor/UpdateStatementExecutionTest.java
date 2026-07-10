@@ -31,6 +31,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -65,16 +66,16 @@ public class UpdateStatementExecutionTest extends TestHelper {
       doc.set("surname", "surname" + i);
       doc.set("number", 4L);
 
-      final List<String> tagsList = new ArrayList<>();
-      tagsList.add("foo");
-      tagsList.add("bar");
-      tagsList.add("baz");
+      final List<String> tagsList = new ArrayList<>(List.of(
+          "foo",
+          "bar",
+          "baz"));
       doc.set("tagsList", tagsList);
 
-      final Map<String, String> tagsMap = new HashMap<>();
-      tagsMap.put("foo", "foo");
-      tagsMap.put("bar", "bar");
-      tagsMap.put("baz", "baz");
+      final Map<String, String> tagsMap = new HashMap<>(Map.of(
+          "foo", "foo",
+          "bar", "bar",
+          "baz", "baz"));
       doc.set("tagsMap", tagsMap);
 
       doc.save();
@@ -223,10 +224,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
       item = result.next();
       assertThat(item).isNotNull();
       if ("name3".equals(item.getProperty("name"))) {
-        final List<String> tags = new ArrayList<>();
-        tags.add("foo");
-        tags.add("bar");
-        tags.add("baz");
+        final List<String> tags = new ArrayList<>(List.of(
+            "foo",
+            "bar",
+            "baz"));
         tags.add(null);
         tags.add(null);
         tags.add(null);
@@ -257,17 +258,17 @@ public class UpdateStatementExecutionTest extends TestHelper {
       item = result.next();
       assertThat(item).isNotNull();
       if ("name3".equals(item.getProperty("name"))) {
-        final Map<String, String> tags = new HashMap<>();
-        tags.put("foo", "abc");
-        tags.put("bar", "bar");
-        tags.put("baz", "baz");
+        final Map<String, String> tags = new HashMap<>(Map.of(
+            "foo", "abc",
+            "bar", "bar",
+            "baz", "baz"));
         assertThat(item.<Map<String, String>>getProperty("tagsMap")).isEqualTo(tags);
         found = true;
       } else {
-        final Map<String, String> tags = new HashMap<>();
-        tags.put("foo", "foo");
-        tags.put("bar", "bar");
-        tags.put("baz", "baz");
+        final Map<String, String> tags = new HashMap<>(Map.of(
+            "foo", "foo",
+            "bar", "bar",
+            "baz", "baz"));
         assertThat(item.<Map<String, String>>getProperty("tagsMap")).isEqualTo(tags);
       }
     }
@@ -1005,9 +1006,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
     });
 
     assertThatThrownBy(() ->
-      database.transaction(() -> {
-        database.command("sql", "UPDATE doc CONTENT { \"other\": \"new\" } WHERE prop = 'Ho'");
-      })).isInstanceOf(ValidationException.class)
+      database.transaction(() ->
+        database.command("sql", "UPDATE doc CONTENT { \"other\": \"new\" } WHERE prop = 'Ho'"))).isInstanceOf(ValidationException.class)
         .hasMessageContaining("mandatory");
   }
 

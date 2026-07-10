@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -196,8 +197,8 @@ class OpenCypherVariableLengthPathTest {
     }
 
     assertThat(rows).as("collect(r) + VLP should return 2 rows (len=1 and len=2)").hasSize(2);
-    assertThat(rows.get(0).<Long>getProperty("len")).isEqualTo(1L);
-    assertThat(rows.get(0).<Long>getProperty("relationCount")).isEqualTo(1L);
+    assertThat(rows.getFirst().<Long>getProperty("len")).isEqualTo(1L);
+    assertThat(rows.getFirst().<Long>getProperty("relationCount")).isEqualTo(1L);
     assertThat(rows.get(1).<Long>getProperty("len")).isEqualTo(2L);
     assertThat(rows.get(1).<Long>getProperty("relationCount")).isEqualTo(1L);
   }
@@ -218,7 +219,7 @@ class OpenCypherVariableLengthPathTest {
     }
 
     assertThat(rows).as("collect(DISTINCT r) + VLP should return 2 rows").hasSize(2);
-    assertThat(rows.get(0).<Long>getProperty("len")).isEqualTo(1L);
+    assertThat(rows.getFirst().<Long>getProperty("len")).isEqualTo(1L);
     assertThat(rows.get(1).<Long>getProperty("len")).isEqualTo(2L);
   }
 
@@ -451,7 +452,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("rc")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("rc")).longValue()).isEqualTo(1L);
     } finally {
       db.drop();
     }
@@ -479,7 +480,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("rc")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("rc")).longValue()).isEqualTo(1L);
     } finally {
       db.drop();
     }
@@ -507,8 +508,8 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("rc")).longValue()).isEqualTo(1L);
-      final List<Object> rts = rows.get(0).getProperty("rts");
+      assertThat(((Number) rows.getFirst().getProperty("rc")).longValue()).isEqualTo(1L);
+      final List<Object> rts = rows.getFirst().getProperty("rts");
       assertThat(rts).containsExactly("KNOWS3999");
     } finally {
       db.drop();
@@ -544,7 +545,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(resultRef[0]);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("rc")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("rc")).longValue()).isEqualTo(1L);
     } finally {
       db.drop();
     }
@@ -580,9 +581,9 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(resultRef[0]);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("startName")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("endName")).isEqualTo("Bob");
-      assertThat(((Number) rows.get(0).getProperty("relationshipCount")).longValue()).isEqualTo(1L);
+      assertThat((String) rows.getFirst().getProperty("startName")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("endName")).isEqualTo("Bob");
+      assertThat(((Number) rows.getFirst().getProperty("relationshipCount")).longValue()).isEqualTo(1L);
     } finally {
       db.drop();
     }
@@ -610,7 +611,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("rc")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("rc")).longValue()).isEqualTo(1L);
     } finally {
       db.drop();
     }
@@ -638,7 +639,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("c")).longValue()).isEqualTo(32L);
+      assertThat(((Number) rows.getFirst().getProperty("c")).longValue()).isEqualTo(32L);
     } finally {
       db.drop();
     }
@@ -663,7 +664,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("rc")).longValue()).isGreaterThan(0L);
+      assertThat(((Number) rows.getFirst().getProperty("rc")).longValue()).isGreaterThan(0L);
     } finally {
       db.drop();
     }
@@ -725,9 +726,9 @@ class OpenCypherVariableLengthPathTest {
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(2);
 
-      assertThat((String) rows.get(0).getProperty("s")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("f")).isEqualTo("Bob");
-      assertThat((String) rows.get(0).getProperty("d")).isEqualTo("Charlie");
+      assertThat((String) rows.getFirst().getProperty("s")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("f")).isEqualTo("Bob");
+      assertThat((String) rows.getFirst().getProperty("d")).isEqualTo("Charlie");
 
       assertThat((String) rows.get(1).getProperty("s")).isEqualTo("Charlie");
       assertThat((String) rows.get(1).getProperty("f")).isEqualTo("Bob");
@@ -761,9 +762,9 @@ class OpenCypherVariableLengthPathTest {
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(2);
 
-      assertThat((String) rows.get(0).getProperty("p1")).isEqualTo("Dave");
-      assertThat((String) rows.get(0).getProperty("p2")).isEqualTo("Eve");
-      assertThat((String) rows.get(0).getProperty("p3")).isEqualTo("Frank");
+      assertThat((String) rows.getFirst().getProperty("p1")).isEqualTo("Dave");
+      assertThat((String) rows.getFirst().getProperty("p2")).isEqualTo("Eve");
+      assertThat((String) rows.getFirst().getProperty("p3")).isEqualTo("Frank");
 
       assertThat((String) rows.get(1).getProperty("p1")).isEqualTo("Frank");
       assertThat((String) rows.get(1).getProperty("p2")).isEqualTo("Eve");
@@ -795,7 +796,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("c")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("c")).longValue()).isEqualTo(2L);
     } finally {
       db.drop();
     }
@@ -823,7 +824,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("c")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("c")).longValue()).isEqualTo(2L);
     } finally {
       db.drop();
     }
@@ -857,10 +858,10 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat((String) rows.get(0).getProperty("a")).isEqualTo("C1");
-      assertThat((String) rows.get(0).getProperty("b")).isEqualTo("C2");
-      assertThat((String) rows.get(0).getProperty("c")).isEqualTo("C3");
-      assertThat((String) rows.get(0).getProperty("d")).isEqualTo("C4");
+      assertThat((String) rows.getFirst().getProperty("a")).isEqualTo("C1");
+      assertThat((String) rows.getFirst().getProperty("b")).isEqualTo("C2");
+      assertThat((String) rows.getFirst().getProperty("c")).isEqualTo("C3");
+      assertThat((String) rows.getFirst().getProperty("d")).isEqualTo("C4");
     } finally {
       db.drop();
     }
@@ -889,8 +890,8 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(2);
-      assertThat((String) rows.get(0).getProperty("s")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("d")).isEqualTo("Charlie");
+      assertThat((String) rows.getFirst().getProperty("s")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("d")).isEqualTo("Charlie");
       assertThat((String) rows.get(1).getProperty("s")).isEqualTo("Charlie");
       assertThat((String) rows.get(1).getProperty("d")).isEqualTo("Alice");
     } finally {
@@ -924,7 +925,7 @@ class OpenCypherVariableLengthPathTest {
       // Eve has 2 IN edges (Dave->Eve, Frank->Eve). First MATCH binds (a,b)=(Dave,Eve) or
       // (Frank,Eve). Second MATCH binds c independently from b's IN edges. Same edge can
       // legitimately fill the first MATCH's slot AND the second MATCH's slot, giving 4 rows.
-      assertThat(((Number) rows.get(0).getProperty("cnt")).longValue()).isEqualTo(4L);
+      assertThat(((Number) rows.getFirst().getProperty("cnt")).longValue()).isEqualTo(4L);
     } finally {
       db.drop();
     }
@@ -955,10 +956,10 @@ class OpenCypherVariableLengthPathTest {
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(2);
 
-      assertThat((String) rows.get(0).getProperty("a")).isEqualTo("Alice");
-      assertThat((String) rows.get(0).getProperty("b")).isEqualTo("Bob");
-      assertThat((String) rows.get(0).getProperty("c")).isEqualTo("Charlie");
-      assertThat((Boolean) rows.get(0).getProperty("sameRel")).isFalse();
+      assertThat((String) rows.getFirst().getProperty("a")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("b")).isEqualTo("Bob");
+      assertThat((String) rows.getFirst().getProperty("c")).isEqualTo("Charlie");
+      assertThat((Boolean) rows.getFirst().getProperty("sameRel")).isFalse();
 
       assertThat((String) rows.get(1).getProperty("a")).isEqualTo("Charlie");
       assertThat((String) rows.get(1).getProperty("b")).isEqualTo("Bob");
@@ -988,7 +989,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("cnt")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("cnt")).longValue()).isEqualTo(2L);
     } finally {
       db.drop();
     }
@@ -1014,7 +1015,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("cnt")).longValue()).isEqualTo(6L);
+      assertThat(((Number) rows.getFirst().getProperty("cnt")).longValue()).isEqualTo(6L);
     } finally {
       db.drop();
     }
@@ -1040,7 +1041,7 @@ class OpenCypherVariableLengthPathTest {
 
       final List<Result> rows = collect(result);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("cnt")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("cnt")).longValue()).isEqualTo(1L);
     } finally {
       db.drop();
     }
@@ -1298,8 +1299,8 @@ class OpenCypherVariableLengthPathTest {
           "MATCH (a:Area4271 {name:'Glasgow'})-[:PART_OF4271*1..7]->(b:Area4271 {name:'Scotland'}) RETURN a.name AS an, b.name AS bn")) {
         final List<Result> rows = collect(rs);
         assertThat(rows).as("Both literals: should return one match").hasSize(1);
-        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
-        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+        assertThat((String) rows.getFirst().getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.getFirst().getProperty("bn")).isEqualTo("Scotland");
       }
 
       // Query 2 (both parametrized): the regression - target $country was not resolved
@@ -1308,8 +1309,8 @@ class OpenCypherVariableLengthPathTest {
           Map.of("place", "Glasgow", "country", "Scotland"))) {
         final List<Result> rows = collect(rs);
         assertThat(rows).as("Both parametrized: should match like the literal form").hasSize(1);
-        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
-        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+        assertThat((String) rows.getFirst().getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.getFirst().getProperty("bn")).isEqualTo("Scotland");
       }
 
       // Query 3 (only source parametrized): already worked - sanity check it still does
@@ -1318,8 +1319,8 @@ class OpenCypherVariableLengthPathTest {
           Map.of("place", "Glasgow"))) {
         final List<Result> rows = collect(rs);
         assertThat(rows).as("Only source parametrized: still one match").hasSize(1);
-        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
-        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+        assertThat((String) rows.getFirst().getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.getFirst().getProperty("bn")).isEqualTo("Scotland");
       }
 
       // Query 4 (only target parametrized): the failing case from the issue
@@ -1328,8 +1329,8 @@ class OpenCypherVariableLengthPathTest {
           Map.of("country", "Scotland"))) {
         final List<Result> rows = collect(rs);
         assertThat(rows).as("Only target parametrized: must still find the path").hasSize(1);
-        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
-        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+        assertThat((String) rows.getFirst().getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.getFirst().getProperty("bn")).isEqualTo("Scotland");
       }
 
       // Non-matching parameter must filter the result out (sanity check after fix)

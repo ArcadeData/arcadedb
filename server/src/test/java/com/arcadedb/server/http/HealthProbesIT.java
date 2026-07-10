@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;

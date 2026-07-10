@@ -25,7 +25,7 @@ import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,7 +56,7 @@ class ArcadeStateMachinePerDatabaseHaltTest {
       final long term, final long index) {
     // walData content is irrelevant: server.getDatabase() is dereferenced before the WAL is read, so
     // with a null server the apply fails there. An empty payload keeps the entry minimal.
-    final ByteString payload = RaftLogEntryCodec.encodeTxEntry(databaseName, new byte[0], Collections.emptyMap());
+    final ByteString payload = RaftLogEntryCodec.encodeTxEntry(databaseName, new byte[0], Map.of());
     final LogEntryProto logEntry = LogEntryProto.newBuilder()
         .setTerm(term)
         .setIndex(index)

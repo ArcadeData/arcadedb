@@ -20,7 +20,6 @@ package com.arcadedb.function.agg;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -59,7 +58,7 @@ public class AggSlice extends AbstractAggFunction {
     final int to = args.length > 2 && args[2] != null ? ((Number) args[2]).intValue() : list.size();
 
     if (from >= list.size() || from >= to)
-      return Collections.emptyList();
+      return List.of();
 
     final int actualFrom = Math.max(0, from);
     final int actualTo = Math.min(list.size(), to);

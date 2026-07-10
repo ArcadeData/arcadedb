@@ -44,7 +44,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -91,7 +90,7 @@ class RaftHAServerIT {
 
       final Path storagePath = tempDir.resolve("node" + i);
       Files.createDirectories(storagePath);
-      RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storagePath.toFile()));
+      RaftServerConfigKeys.setStorageDir(properties, List.of(storagePath.toFile()));
 
       GrpcConfigKeys.Server.setPort(properties, BASE_PORT + i);
       properties.set("raft.server.rpc.type", "GRPC");

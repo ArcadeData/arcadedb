@@ -24,13 +24,14 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.util.ArrayList;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,9 +103,9 @@ class TimeSeriesAccuracyTest {
     assertThat(rows).hasSize(TOTAL_SAMPLES);
 
     // First sample: ts=0, sensor="s1", value=1.0
-    assertThat((long) rows.get(0)[0]).isEqualTo(0L);
-    assertThat(rows.get(0)[1]).isEqualTo("s1");
-    assertThat((double) rows.get(0)[2]).isEqualTo(1.0);
+    assertThat((long) rows.getFirst()[0]).isEqualTo(0L);
+    assertThat(rows.getFirst()[1]).isEqualTo("s1");
+    assertThat((double) rows.getFirst()[2]).isEqualTo(1.0);
 
     // Last sample: ts=199999*54, sensor="s1", value=200000.0
     final Object[] last = rows.get(TOTAL_SAMPLES - 1);
@@ -130,7 +131,7 @@ class TimeSeriesAccuracyTest {
     results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     // Bucket 0
-    assertBucketAggregates(results.get(0), BUCKET_0_START, BUCKET_0_END);
+    assertBucketAggregates(results.getFirst(), BUCKET_0_START, BUCKET_0_END);
 
     // Bucket 1
     assertBucketAggregates(results.get(1), BUCKET_1_START, BUCKET_1_END);
@@ -236,7 +237,7 @@ class TimeSeriesAccuracyTest {
         ),
         0L, null);
 
-    final long bucketTs = result.getBucketTimestamps().get(0);
+    final long bucketTs = result.getBucketTimestamps().getFirst();
     final double expectedSum = rangeSum(BUCKET_1_START, BUCKET_1_END);
 
     assertThat((long) result.getValue(bucketTs, 1)).isEqualTo(expectedCount);

@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
@@ -34,11 +35,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -155,7 +154,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
               paths = computeAllShortestPaths(sourceVertex, targetVertex, context);
             } else {
               final List<Object> single = computeShortestPath(sourceVertex, targetVertex, context);
-              paths = single == null || single.isEmpty() ? Collections.emptyList() : Collections.singletonList(single);
+              paths = single == null || single.isEmpty() ? List.of() : List.of(single);
             }
 
             for (final List<Object> path : paths) {
@@ -239,7 +238,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (edgeTypes == null || edgeTypes.isEmpty())
       edgeTypeParam = null;
     else if (edgeTypes.size() == 1)
-      edgeTypeParam = edgeTypes.get(0);
+      edgeTypeParam = edgeTypes.getFirst();
     else
       edgeTypeParam = edgeTypes;
 
@@ -303,7 +302,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (sourceRid.equals(targetRid)) {
       final List<Object> singleNode = new ArrayList<>(1);
       singleNode.add(source);
-      return Collections.singletonList(singleNode);
+      return List.of(singleNode);
     }
 
     final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
@@ -357,7 +356,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
 
     if (foundDepth < 0)
-      return Collections.emptyList();
+      return List.of();
 
     // Backtrack from target through every predecessor chain to produce every path of length foundDepth.
     final List<List<RID>> ridPaths = new ArrayList<>();
@@ -387,14 +386,11 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
   private Vertex.DIRECTION patternDirection() {
     if (pattern.getRelationshipCount() > 0) {
-      switch (pattern.getRelationship(0).getDirection()) {
-        case OUT:
-          return Vertex.DIRECTION.OUT;
-        case IN:
-          return Vertex.DIRECTION.IN;
-        default:
-          return Vertex.DIRECTION.BOTH;
-      }
+      return switch (pattern.getRelationship(0).getDirection()) {
+        case OUT -> Vertex.DIRECTION.OUT;
+        case IN -> Vertex.DIRECTION.IN;
+        default -> Vertex.DIRECTION.BOTH;
+      };
     }
     return Vertex.DIRECTION.BOTH;
   }
@@ -419,8 +415,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       final Object expected = entry.getValue();
       if (actual == null)
         return false;
-      if (actual instanceof Number && expected instanceof Number) {
-        if (((Number) actual).longValue() != ((Number) expected).longValue())
+      if (actual instanceof Number number && expected instanceof Number number1) {
+        if (number.longValue() != number1.longValue())
           return false;
       } else if (!actual.equals(expected))
         return false;
@@ -518,7 +514,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (sourceRid.equals(targetRid)) {
       final List<Object> single = new ArrayList<>(1);
       single.add(source);
-      return Collections.singletonList(single);
+      return List.of(single);
     }
 
     final Vertex.DIRECTION[] directions = expandDirections(patternDirection());
@@ -582,7 +578,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
 
     if (foundDepth < 0)
-      return Collections.emptyList();
+      return List.of();
 
     final List<List<Object>> result = new ArrayList<>();
     final Deque<Object> stack = new ArrayDeque<>();
@@ -682,7 +678,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
   public static List<Object> resolvePathWithEdges(final List<RID> vertexRids, final Vertex.DIRECTION direction,
       final String edgeType, final Database database) {
     return resolvePathWithEdges(vertexRids, direction,
-        edgeType == null ? null : Collections.singletonList(edgeType), database);
+        edgeType == null ? null : List.of(edgeType), database);
   }
 
   /**

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -137,7 +138,7 @@ class HeadCollectTest {
     assertThat(documentNames).isInstanceOf(List.class);
     final List<?> namesList = (List<?>) documentNames;
     assertThat(namesList).hasSize(1);
-    assertThat(namesList.get(0)).isEqualTo("ORANO-MAG-2021_205x275_FR_MEL.pdf");
+    assertThat(namesList.getFirst()).isEqualTo("ORANO-MAG-2021_205x275_FR_MEL.pdf");
 
     assertThat(result.hasNext()).isFalse();
   }

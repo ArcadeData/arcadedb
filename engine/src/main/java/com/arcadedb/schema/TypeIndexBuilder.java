@@ -92,8 +92,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * @throws IllegalStateException if withType(FULL_TEXT) has not been called
    */
   public TypeFullTextIndexBuilder withFullTextType() {
-    if (this instanceof TypeFullTextIndexBuilder)
-      return (TypeFullTextIndexBuilder) this;
+    if (this instanceof TypeFullTextIndexBuilder builder)
+      return builder;
     if (indexType != Schema.INDEX_TYPE.FULL_TEXT)
       throw new IllegalStateException("withFullTextType() can only be called after withType(FULL_TEXT)");
     return new TypeFullTextIndexBuilder(this);

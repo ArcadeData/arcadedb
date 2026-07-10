@@ -35,7 +35,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -48,9 +47,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
@@ -111,7 +111,7 @@ class LSMVectorIndexTest extends TestHelper {
         // Create a random DIMENSIONS-dimensional vector
         final float[] vector = new float[DIMENSIONS];
         for (int j = 0; j < DIMENSIONS; j++)
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
 
         doc.set("embedding", vector);
         doc.set("category", "category" + (i % 3));
@@ -1313,8 +1313,8 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       final var result = database.query("sql",
           """
-          SELECT name, `vector.neighbors`('Product[embedding]', embedding, 3) as neighbors \
-          FROM Product WHERE name = 'Product_15'""");
+              SELECT name, `vector.neighbors`('Product[embedding]', embedding, 3) as neighbors \
+              FROM Product WHERE name = 'Product_15'""");
 
       assertThat(result.hasNext()).as("Query should return results").isTrue();
       final var doc = result.next();
@@ -1516,7 +1516,7 @@ class LSMVectorIndexTest extends TestHelper {
       for (int i = 0; i < numEntries; i++) {
         final float[] embedding = new float[256];
         for (int j = 0; j < 256; j++) {
-          embedding[j] = (float) Math.random();
+          embedding[j] = (float) ThreadLocalRandom.current().nextDouble();
         }
         database.command("sql", "INSERT INTO BoundaryTest SET name = ?, embedding = ?", "boundary_" + i, embedding);
       }
@@ -1758,10 +1758,10 @@ class LSMVectorIndexTest extends TestHelper {
   /**
    * Test for GitHub issue #2915: Vector Index Graph Persistence Bug - File Not Closed
    * This test verifies that the vector index graph file is properly flushed to disk when the database closes.
-   *
+   * <p>
    * Bug: graphFile.close() is never called in LSMVectorIndex.close() at line 2131,
-   *      preventing graph data from being flushed to disk
-   *
+   * preventing graph data from being flushed to disk
+   * <p>
    * Expected behavior:
    * - When database closes, graph file should be written to disk
    * - Graph file should exist on filesystem with non-zero size
@@ -1778,8 +1778,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Create database, add vectors, close
     {
-      final var db = new DatabaseFactory(dbPath).create();
-      try {
+      try (final var db = new DatabaseFactory(dbPath).create()) {
         db.transaction(() -> {
           // Create schema with vector index
           db.command("sql", "CREATE VERTEX TYPE VectorTest");
@@ -1848,9 +1847,6 @@ class LSMVectorIndexTest extends TestHelper {
 //          }
 //        }
 
-      } finally {
-        db.close();
-//        System.out.println("\nDatabase closed");
       }
     }
 
@@ -1873,7 +1869,7 @@ class LSMVectorIndexTest extends TestHelper {
       for (final File f : graphFiles) {
 //        System.out.println("  " + f.getName() + " (size: " + f.length() + " bytes)");
         assertThat(f.length()).as(
-            "Graph file should have non-zero size if properly flushed")
+                "Graph file should have non-zero size if properly flushed")
             .isGreaterThan(0);
       }
     }
@@ -1881,16 +1877,16 @@ class LSMVectorIndexTest extends TestHelper {
     // This assertion will FAIL due to Bug: graphFile.close() is never called in LSMVectorIndex.close()
     // Without close() being called, the graph data is never flushed to disk
     assertThat(graphFiles).as(
-        """
-        BUG: Graph file should exist after close, but graphFile.close() is never called in LSMVectorIndex.close() at line 2131. \
-        The graph data remains in memory and is never written to disk.""")
+            """
+                BUG: Graph file should exist after close, but graphFile.close() is never called in LSMVectorIndex.close() at line 2131. \
+                The graph data remains in memory and is never written to disk.""")
         .isNotNull()
         .isNotEmpty();
 
     if (graphFiles != null && graphFiles.length > 0) {
       for (final File f : graphFiles) {
         assertThat(f.length()).as(
-            "BUG: Graph file exists but has zero size because graphFile.close() was never called to flush data")
+                "BUG: Graph file exists but has zero size because graphFile.close() was never called to flush data")
             .isGreaterThan(0);
       }
     }
@@ -1902,7 +1898,7 @@ class LSMVectorIndexTest extends TestHelper {
   /**
    * Test vector index graph file discovery mechanism.
    * This test verifies that graph files are properly discovered when loading an index.
-   *
+   * <p>
    * Bug: discoverAndLoadGraphFile() in LSMVectorIndex fails to find graph files
    */
   @Test
@@ -1917,8 +1913,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Create database with vector index
     {
-      final var db = new DatabaseFactory(dbPath).create();
-      try {
+      try (final var db = new DatabaseFactory(dbPath).create()) {
         db.transaction(() -> {
           db.command("sql", "CREATE VERTEX TYPE DiscoveryTest");
           db.command("sql", "CREATE PROPERTY DiscoveryTest.vec ARRAY_OF_FLOATS");
@@ -1958,15 +1953,12 @@ class LSMVectorIndexTest extends TestHelper {
           }
         });
 
-      } finally {
-        db.close();
       }
     }
 
     // Reopen and check if graph file is discovered
     {
-      final var db = new DatabaseFactory(dbPath).open();
-      try {
+      try (final var db = new DatabaseFactory(dbPath).open()) {
         final TypeIndex typeIndex =
             (TypeIndex) db.getSchema().getIndexByName("DiscoveryTest[vec]");
         assertThat(typeIndex).as("Index should exist after reload").isNotNull();
@@ -1989,11 +1981,9 @@ class LSMVectorIndexTest extends TestHelper {
         // This will FAIL because discoverAndLoadGraphFile() doesn't find the graph file
         // even though it exists on disk
         assertThat(lsmIndex.getVectorIndex().size()).as(
-            "BUG: Vector index should be populated, but graph file discovery failed")
+                "BUG: Vector index should be populated, but graph file discovery failed")
             .isEqualTo(150);
 
-      } finally {
-        db.close();
       }
     }
 
@@ -2004,7 +1994,7 @@ class LSMVectorIndexTest extends TestHelper {
   /**
    * Test that verifies graph persistence with multiple close/reopen cycles.
    * This ensures that the graph file is properly maintained across multiple sessions.
-   *
+   * <p>
    * DISABLED: This test was demonstrating a different bug in JVector graph search (null vector).
    * The persistence fixes are confirmed working - graph file IS saved to disk with proper close().
    * See issue #2915 for context.
@@ -2025,8 +2015,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     // Cycle 1: Create and populate
     {
-      final var db = new DatabaseFactory(dbPath).create();
-      try {
+      try (final var db = new DatabaseFactory(dbPath).create()) {
         db.transaction(() -> {
           db.command("sql", "CREATE VERTEX TYPE CycleTest");
           db.command("sql", "CREATE PROPERTY CycleTest.id STRING");
@@ -2065,15 +2054,12 @@ class LSMVectorIndexTest extends TestHelper {
         assertThat(firstQueryResults).hasSize(10);
 //        System.out.println("Cycle 1 query results: " + firstQueryResults);
 
-      } finally {
-        db.close();
       }
     }
 
     // Cycle 2: Reopen and verify same results
     {
-      final var db = new DatabaseFactory(dbPath).open();
-      try {
+      try (final var db = new DatabaseFactory(dbPath).open()) {
         final TypeIndex typeIndex2 =
             (TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
 
@@ -2091,20 +2077,17 @@ class LSMVectorIndexTest extends TestHelper {
 
         // Results should be identical if graph was properly persisted
         assertThat(secondQueryResults).as(
-            """
-            BUG: Query results should be identical across cycles if graph is persisted, \
-            but differ because graph is rebuilt differently""")
+                """
+                    BUG: Query results should be identical across cycles if graph is persisted, \
+                    but differ because graph is rebuilt differently""")
             .isEqualTo(firstQueryResults);
 
-      } finally {
-        db.close();
       }
     }
 
     // Cycle 3: Another reopen to ensure consistency
     {
-      final var db = new DatabaseFactory(dbPath).open();
-      try {
+      try (final var db = new DatabaseFactory(dbPath).open()) {
         final TypeIndex typeIndex3 =
             (TypeIndex) db.getSchema().getIndexByName("CycleTest[vec]");
 
@@ -2123,8 +2106,6 @@ class LSMVectorIndexTest extends TestHelper {
         assertThat(thirdQueryResults).as("Results should remain consistent across all cycles")
             .isEqualTo(firstQueryResults);
 
-      } finally {
-        db.close();
       }
     }
 
@@ -2193,7 +2174,7 @@ class LSMVectorIndexTest extends TestHelper {
 
     database.transaction(() -> {
       // Query vector close to category A
-      final float[] queryVector = {1.5f, 1.5f, 1.5f};
+      final float[] queryVector = { 1.5f, 1.5f, 1.5f };
 
       // Test 1: Search without filter - should return results from both categories
       final List<Pair<RID, Float>> unfilteredResults =
@@ -2274,8 +2255,7 @@ class LSMVectorIndexTest extends TestHelper {
       assertThat(result.hasNext()).as("Query should return results").isTrue();
       final Object neighbors = result.next().getProperty("neighbors");
       assertThat(neighbors).isNotNull();
-      if (neighbors instanceof Object[]) {
-        final Object[] neighborsArray = (Object[]) neighbors;
+      if (neighbors instanceof Object[] neighborsArray) {
         assertThat(neighborsArray.length).isGreaterThan(0);
       }
     });
@@ -2308,8 +2288,7 @@ class LSMVectorIndexTest extends TestHelper {
       assertThat(result.hasNext()).as("Query should return results").isTrue();
       final Object neighbors = result.next().getProperty("neighbors");
       assertThat(neighbors).isNotNull();
-      if (neighbors instanceof Object[]) {
-        final Object[] neighborsArray = (Object[]) neighbors;
+      if (neighbors instanceof Object[] neighborsArray) {
         assertThat(neighborsArray.length).isGreaterThan(0);
       }
     });
@@ -2346,7 +2325,7 @@ class LSMVectorIndexTest extends TestHelper {
         vertex.set("name", "doc" + i);
         final float[] vector = new float[dimensions3717];
         for (int j = 0; j < dimensions3717; j++)
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         vertex.set("embedding", vector);
         vertex.save();
         insertedRIDs.add(vertex.getIdentity());
@@ -2398,10 +2377,10 @@ class LSMVectorIndexTest extends TestHelper {
           continue;
         }
         final float distance = neighbor.getSecond();
-        final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-        entry.put("record", record);
-        entry.put("@rid", record.getIdentity());
-        entry.put("distance", distance);
+        final Map<String, Object> entry = Map.of(
+            "record", record,
+            "@rid", record.getIdentity(),
+            "distance", distance);
         processedResults.add(entry);
       }
 
@@ -2438,7 +2417,7 @@ class LSMVectorIndexTest extends TestHelper {
         vertex.set("name", "doc" + i);
         final float[] vector = new float[dimensions3717];
         for (int j = 0; j < dimensions3717; j++)
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         vertex.set("embedding", vector);
         vertex.save();
       }
@@ -2448,7 +2427,7 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       final float[] queryVector = new float[dimensions3717];
       for (int j = 0; j < dimensions3717; j++)
-        queryVector[j] = (float) Math.random();
+        queryVector[j] = (float) ThreadLocalRandom.current().nextDouble();
 
       assertThatCode(() -> {
         final ResultSet rs = database.query("sql",

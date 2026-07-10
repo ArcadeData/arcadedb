@@ -228,7 +228,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
       // Find best candidate
       int bestIdx = 0;
-      double bestCost = candidateCosts.get(0);
+      double bestCost = candidateCosts.getFirst();
       for (int ci = 1; ci < candidateCosts.size(); ci++) {
         if (candidateCosts.get(ci) < bestCost) {
           bestCost = candidateCosts.get(ci);

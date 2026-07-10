@@ -21,8 +21,9 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.grpc.StreamQueryRequest;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.grpc.StreamQueryRequest;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -115,7 +116,7 @@ class StreamingQueryIT extends BaseGraphServerTest {
     }
 
     assertThat(results).hasSize(100);
-    assertThat(results.get(0).<Long>getProperty("id")).isEqualTo(0L);
+    assertThat(results.getFirst().<Long>getProperty("id")).isEqualTo(0L);
     assertThat(results.get(99).<Long>getProperty("id")).isEqualTo(99L);
   }
 

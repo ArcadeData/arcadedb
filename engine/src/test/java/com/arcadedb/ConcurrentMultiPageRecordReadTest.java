@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Random;

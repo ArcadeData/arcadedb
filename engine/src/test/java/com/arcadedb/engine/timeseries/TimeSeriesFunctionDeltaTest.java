@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -91,7 +92,7 @@ class TimeSeriesFunctionDeltaTest extends TestHelper {
       results.add(rs.next());
 
     assertThat(results).hasSize(2);
-    assertThat(((Number) results.get(0).getProperty("d")).doubleValue()).isEqualTo(40.0);
+    assertThat(((Number) results.getFirst().getProperty("d")).doubleValue()).isEqualTo(40.0);
     assertThat(((Number) results.get(1).getProperty("d")).doubleValue()).isEqualTo(-20.0);
   }
 }

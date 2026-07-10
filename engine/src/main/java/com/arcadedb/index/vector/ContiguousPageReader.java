@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
+
 import io.github.jbellis.jvector.disk.RandomAccessReader;
 
 import java.io.IOException;

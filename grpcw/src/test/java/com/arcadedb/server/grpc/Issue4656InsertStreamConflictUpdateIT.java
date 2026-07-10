@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -129,8 +130,8 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     final ExecuteQueryResponse resp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
         .setDatabase(getDatabaseName()).setCredentials(credentials()).setQuery(query).build());
     assertThat(resp.getResultsList()).as("query returned no result set: %s", query).isNotEmpty();
-    assertThat(resp.getResultsList().get(0).getRecordsList()).as("query returned no records: %s", query).isNotEmpty();
-    return resp.getResultsList().get(0).getRecordsList().get(0);
+    assertThat(resp.getResultsList().getFirst().getRecordsList()).as("query returned no records: %s", query).isNotEmpty();
+    return resp.getResultsList().getFirst().getRecordsList().getFirst();
   }
 
   private String firstString(final String query, final String prop) {

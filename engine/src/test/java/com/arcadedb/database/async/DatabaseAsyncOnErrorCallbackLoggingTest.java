@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;

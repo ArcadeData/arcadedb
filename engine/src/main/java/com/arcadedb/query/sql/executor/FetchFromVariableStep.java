@@ -67,18 +67,18 @@ public class FetchFromVariableStep extends AbstractExecutionStep {
   }
 
   private void extractRids(final Object value, final List<RID> rids) {
-    if (value instanceof RID rid)
-      rids.add(rid);
-    else if (value instanceof Identifiable identifiable)
-      rids.add(identifiable.getIdentity());
-    else if (value instanceof Result result) {
-      if (result.isElement())
+    switch (value) {
+      case RID rid -> rids.add(rid);
+      case Identifiable identifiable -> rids.add(identifiable.getIdentity());
+      case Result result when result.isElement() ->
         rids.add(result.toElement().getIdentity());
-      else
+      case Result result ->
         result.getIdentity().ifPresent(rids::add);
-    } else if (value instanceof Collection<?> collection) {
-      for (final Object item : collection)
-        extractRids(item, rids);
+      case Collection<?> collection -> {
+        for (final Object item : collection)
+          extractRids(item, rids);
+      }
+      case null, default -> {}
     }
   }
 

@@ -21,7 +21,6 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
-
 import com.arcadedb.query.QueryEngineManager;
 
 import java.lang.invoke.MethodHandles;

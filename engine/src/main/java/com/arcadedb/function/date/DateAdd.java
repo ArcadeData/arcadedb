@@ -52,7 +52,7 @@ public class DateAdd extends AbstractDateFunction {
       return null;
 
     final long timestamp = toMillis(args[0]);
-    final long value = args[1] instanceof Number ? ((Number) args[1]).longValue() : Long.parseLong(args[1].toString());
+    final long value = args[1] instanceof Number n ? n.longValue() : Long.parseLong(args[1].toString());
     final String unit = args[2] != null ? args[2].toString() : UNIT_MS;
 
     try {

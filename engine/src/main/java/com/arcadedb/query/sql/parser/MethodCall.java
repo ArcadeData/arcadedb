@@ -123,13 +123,11 @@ public class MethodCall extends SimpleNode {
 
     final SQLMethod method = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getMethod(name);
     if (method != null) {
-      final Identifiable currentRecord;
-      if (val instanceof Result result)
-        currentRecord = result.getElement().orElse(null);
-      else if (val instanceof Identifiable identifiable)
-        currentRecord = identifiable;
-      else
-        currentRecord = null;
+      final Identifiable currentRecord = switch (val) {
+        case Result result -> result.getElement().orElse(null);
+        case Identifiable identifiable -> identifiable;
+        case null, default -> null;
+      };
 
       return method.execute(targetObjects, currentRecord, context, paramValues.toArray());
     }

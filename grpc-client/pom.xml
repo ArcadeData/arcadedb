@@ -109,9 +109,10 @@
 
         <!-- Required for generated code -->
         <dependency>
-            <groupId>javax.annotation</groupId>
-            <artifactId>javax.annotation-api</artifactId>
+            <groupId>jakarta.annotation</groupId>
+            <artifactId>jakarta.annotation-api</artifactId>
             <version>${javax.annotation-api.version}</version>
+      <scope>provided</scope>
         </dependency>
 
         <!-- gRPC Testing (optional) -->

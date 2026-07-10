@@ -23,6 +23,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,13 +34,7 @@ import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.inOrder;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 /**
  * #5064: the ALL-quorum recovery path. When the MAJORITY durably committed a transaction but the

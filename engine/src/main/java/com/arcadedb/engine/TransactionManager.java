@@ -332,7 +332,7 @@ public class TransactionManager {
             break;
 
           try {
-            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+            applyChanges(walPositions[lowerTx], Map.of(), false);
             // Only advance lastTxId after a successful apply, otherwise a failed transaction
             // would wrongly increment the next-tx counter past data that was never written.
             lastTxId = lowerTxId;
@@ -584,9 +584,7 @@ public class TransactionManager {
 
           // For LSMVectorIndex, incrementally update VectorLocationIndex during replication
           // to keep in-memory metadata synchronized with replicated pages.
-          if (component instanceof LSMVectorIndexMutable) {
-            final LSMVectorIndexMutable vectorMutable =
-                (LSMVectorIndexMutable) component;
+          if (component instanceof LSMVectorIndexMutable vectorMutable) {
             final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
             if (mainIndex != null) {
               mainIndex.applyReplicatedPageUpdate(modifiedPage);
@@ -594,9 +592,9 @@ public class TransactionManager {
               LogManager.instance().log(this, Level.WARNING,
                   "LSMVectorIndexMutable has null mainIndex for fileId=%d", null, txPage.fileId);
             }
-          } else if (component instanceof LSMVectorIndexCompacted) {
+          } else if (component instanceof LSMVectorIndexCompacted compacted) {
             final LSMVectorIndex mainIndex =
-                (LSMVectorIndex) ((LSMVectorIndexCompacted) component).getMainComponent();
+                (LSMVectorIndex) compacted.getMainComponent();
             if (mainIndex != null) {
               mainIndex.applyReplicatedPageUpdate(modifiedPage);
             }

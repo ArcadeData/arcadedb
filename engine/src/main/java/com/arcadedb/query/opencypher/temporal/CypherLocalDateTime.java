@@ -70,10 +70,10 @@ public class CypherLocalDateTime implements CypherTemporalValue {
     if (map.containsKey("datetime") || map.containsKey("localdatetime")) {
       final Object dtVal = map.containsKey("datetime") ? map.get("datetime") : map.get("localdatetime");
       LocalDateTime base = null;
-      if (dtVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) dtVal).getValue();
-      else if (dtVal instanceof CypherDateTime)
-        base = ((CypherDateTime) dtVal).getValue().toLocalDateTime();
+      if (dtVal instanceof CypherLocalDateTime time1)
+        base = time1.getValue();
+      else if (dtVal instanceof CypherDateTime time)
+        base = time.getValue().toLocalDateTime();
       if (base != null) {
         LocalDateTime result = base;
         if (map.containsKey("year"))
@@ -101,26 +101,32 @@ public class CypherLocalDateTime implements CypherTemporalValue {
     int nanos = 0;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
-      if (timeVal instanceof CypherLocalTime clt) {
-        hour = clt.getValue().getHour();
-        minute = clt.getValue().getMinute();
-        second = clt.getValue().getSecond();
-        nanos = clt.getValue().getNano();
-      } else if (timeVal instanceof CypherTime ct) {
-        hour = ct.getValue().getHour();
-        minute = ct.getValue().getMinute();
-        second = ct.getValue().getSecond();
-        nanos = ct.getValue().getNano();
-      } else if (timeVal instanceof CypherLocalDateTime cldt) {
-        hour = cldt.getValue().getHour();
-        minute = cldt.getValue().getMinute();
-        second = cldt.getValue().getSecond();
-        nanos = cldt.getValue().getNano();
-      } else if (timeVal instanceof CypherDateTime cdt) {
-        hour = cdt.getValue().getHour();
-        minute = cdt.getValue().getMinute();
-        second = cdt.getValue().getSecond();
-        nanos = cdt.getValue().getNano();
+      switch (timeVal) {
+        case CypherLocalTime clt -> {
+          hour = clt.getValue().getHour();
+          minute = clt.getValue().getMinute();
+          second = clt.getValue().getSecond();
+          nanos = clt.getValue().getNano();
+        }
+        case CypherTime ct -> {
+          hour = ct.getValue().getHour();
+          minute = ct.getValue().getMinute();
+          second = ct.getValue().getSecond();
+          nanos = ct.getValue().getNano();
+        }
+        case CypherLocalDateTime cldt -> {
+          hour = cldt.getValue().getHour();
+          minute = cldt.getValue().getMinute();
+          second = cldt.getValue().getSecond();
+          nanos = cldt.getValue().getNano();
+        }
+        case CypherDateTime cdt -> {
+          hour = cdt.getValue().getHour();
+          minute = cdt.getValue().getMinute();
+          second = cdt.getValue().getSecond();
+          nanos = cdt.getValue().getNano();
+        }
+        case null, default -> {}
       }
     }
     if (map.containsKey("hour"))

@@ -23,7 +23,6 @@ import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -38,12 +37,12 @@ public class OpenCypherExplainExecutionPlan implements ExecutionPlan {
   private final long cost;
 
   public OpenCypherExplainExecutionPlan(final String planText) {
-    this(planText, Collections.emptyList(), -1);
+    this(planText, List.of(), -1);
   }
 
   public OpenCypherExplainExecutionPlan(final String planText, final List<ExecutionStep> steps, final long cost) {
     this.planText = planText;
-    this.steps = steps != null ? steps : Collections.emptyList();
+    this.steps = steps != null ? steps : List.of();
     this.cost = cost;
   }
 

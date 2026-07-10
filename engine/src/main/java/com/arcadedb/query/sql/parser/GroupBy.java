@@ -73,8 +73,8 @@ public class GroupBy extends SimpleNode {
     if (items != null) {
       final List<Object> itemsJson = new ArrayList<>();
       for (Object item : items) {
-        if (item instanceof SimpleNode) {
-          itemsJson.add(((SimpleNode) item).toJSON());
+        if (item instanceof SimpleNode node) {
+          itemsJson.add(node.toJSON());
         } else {
           itemsJson.add(item);
         }

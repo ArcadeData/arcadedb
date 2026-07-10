@@ -62,8 +62,8 @@ public class ListComprehensionExpression implements Expression {
 
     // Convert to iterable
     final Iterable<?> iterable;
-    if (listValue instanceof Iterable)
-      iterable = (Iterable<?>) listValue;
+    if (listValue instanceof Iterable<?> iterable1)
+      iterable = iterable1;
     else if (listValue.getClass().isArray())
       iterable = arrayToList(listValue);
     else
@@ -107,33 +107,44 @@ public class ListComprehensionExpression implements Expression {
 
   private List<Object> arrayToList(final Object array) {
     final List<Object> list = new ArrayList<>();
-    if (array instanceof Object[]) {
-      for (final Object o : (Object[]) array)
-        list.add(o);
-    } else if (array instanceof int[]) {
-      for (final int i : (int[]) array)
-        list.add(i);
-    } else if (array instanceof long[]) {
-      for (final long l : (long[]) array)
-        list.add(l);
-    } else if (array instanceof double[]) {
-      for (final double d : (double[]) array)
-        list.add(d);
-    } else if (array instanceof float[]) {
-      for (final float f : (float[]) array)
-        list.add(f);
-    } else if (array instanceof boolean[]) {
-      for (final boolean b : (boolean[]) array)
-        list.add(b);
-    } else if (array instanceof byte[]) {
-      for (final byte b : (byte[]) array)
-        list.add(b);
-    } else if (array instanceof short[]) {
-      for (final short s : (short[]) array)
-        list.add(s);
-    } else if (array instanceof char[]) {
-      for (final char c : (char[]) array)
-        list.add(c);
+    switch (array) {
+      case Object[] objects -> {
+        for (final Object o : objects)
+          list.add(o);
+      }
+      case int[] ints -> {
+        for (final int i : ints)
+          list.add(i);
+      }
+      case long[] longs -> {
+        for (final long l : longs)
+          list.add(l);
+      }
+      case double[] doubles -> {
+        for (final double d : doubles)
+          list.add(d);
+      }
+      case float[] floats -> {
+        for (final float f : floats)
+          list.add(f);
+      }
+      case boolean[] booleans -> {
+        for (final boolean b : booleans)
+          list.add(b);
+      }
+      case byte[] bytes -> {
+        for (final byte b : bytes)
+          list.add(b);
+      }
+      case short[] shorts -> {
+        for (final short s : shorts)
+          list.add(s);
+      }
+      case char[] chars -> {
+        for (final char c : chars)
+          list.add(c);
+      }
+      case null, default -> {}
     }
     return list;
   }

@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -1723,7 +1724,7 @@ class GraphAnalyticalViewTest extends TestHelper {
     rs.close();
 
     assertThat(path).hasSize(4); // A, B, C, D
-    assertThat(path.get(0)).isEqualTo(a.getIdentity());
+    assertThat(path.getFirst()).isEqualTo(a.getIdentity());
     assertThat(path.get(3)).isEqualTo(d.getIdentity());
 
     // Verify CSR acceleration is visible in PROFILE output
@@ -2131,8 +2132,7 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     // Reopen database — restoreAll is called during open()
     final DatabaseFactory factory2 = new DatabaseFactory(dbPath);
-    final Database db2 = factory2.open();
-    try {
+    try (final Database db2 = factory2.open()) {
       // Verify the GAV was restored in the in-memory registry (async build)
       final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "cityRoads");
       assertThat(restored).isNotNull();
@@ -2142,8 +2142,6 @@ class GraphAnalyticalViewTest extends TestHelper {
 
       // Clean up
       db2.command("sql", "DROP GRAPH ANALYTICAL VIEW cityRoads");
-    } finally {
-      db2.close();
     }
 
     // Reopen database with the original factory for TestHelper cleanup
@@ -2196,13 +2194,10 @@ class GraphAnalyticalViewTest extends TestHelper {
       // A few open/close cycles let restoreAll race the close path repeatedly.
       for (int i = 0; i < 3; i++) {
         final DatabaseFactory f = new DatabaseFactory(dbPath);
-        final Database db = f.open();
-        try {
+        try (final Database db = f.open()) {
           final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db, "cityRoads4180");
           assertThat(restored).isNotNull();
           // Closing without awaiting ready forces the close-vs-build race in the close path.
-        } finally {
-          db.close();
         }
       }
 
@@ -3133,7 +3128,7 @@ class GraphAnalyticalViewTest extends TestHelper {
     final var targets = (List<?>) rs.next().getProperty("targets");
     // Bob is deleted — only Charlie should appear
     assertThat(targets).hasSize(1);
-    assertThat(targets.get(0).toString()).isEqualTo("Charlie");
+    assertThat(targets.getFirst().toString()).isEqualTo("Charlie");
     rs.close();
 
     gav.drop();

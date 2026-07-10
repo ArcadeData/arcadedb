@@ -23,6 +23,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
+
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 /**

@@ -24,6 +24,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,8 +33,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * End-to-end tests for query execution.
@@ -203,7 +202,7 @@ public class OpenCypherExecutionTest {
     final List<Result> results = collectResults(result);
     assertThat(results).hasSize(1);
 
-    final Result row = results.get(0);
+    final Result row = results.getFirst();
     final List<String> columnOrder = new ArrayList<>(row.getPropertyNames());
 
     // The columns must match the order specified in the RETURN clause: n, r.marriageDate, r.divorceDate, m

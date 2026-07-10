@@ -22,6 +22,7 @@ import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
@@ -29,14 +30,11 @@ import io.grpc.ServerCallHandler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 class GrpcAuthInterceptorTest {
 
@@ -118,7 +116,7 @@ class GrpcAuthInterceptorTest {
     when(mockSessionManager.getSessionByToken("valid-token")).thenReturn(mockSession);
 
     // getUsers() returns Set<String> - need at least one user for security to be enabled
-    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    when(mockSecurity.getUsers()).thenReturn(Set.of("testuser"));
 
     GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
 
@@ -140,7 +138,7 @@ class GrpcAuthInterceptorTest {
   void validateTokenReturnsFalseForInvalidSession() {
     when(mockSessionManager.getSessionByToken("invalid-token")).thenReturn(null);
     // getUsers() returns Set<String> - need at least one user for security to be enabled
-    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    when(mockSecurity.getUsers()).thenReturn(Set.of("testuser"));
 
     GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
 
@@ -161,7 +159,7 @@ class GrpcAuthInterceptorTest {
   @Test
   void validateTokenReturnsFalseWhenSessionManagerIsNull() {
     // getUsers() returns Set<String> - need at least one user for security to be enabled
-    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    when(mockSecurity.getUsers()).thenReturn(Set.of("testuser"));
 
     GrpcAuthInterceptor interceptorWithoutSession = new GrpcAuthInterceptor(mockSecurity, null);
 

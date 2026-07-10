@@ -19,12 +19,13 @@
 package com.arcadedb.server.monitor;
 
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
@@ -64,7 +65,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
   @Test
   void httpRequestsTimerRecordsErrorStatus() throws Exception {
     // An unauthenticated request to a protected endpoint returns 401, exercising the error path.
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/command/graph").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/command/graph").toURL().openConnection();
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Content-Type", "application/json");
@@ -110,7 +111,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
   }
 
   private void issueReady() throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/ready").toURL().openConnection();
     connection.setRequestMethod("GET");
     connection.connect();
     connection.getResponseCode();
@@ -118,7 +119,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
   }
 
   private void issueQuery() throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/query/graph").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/query/graph").toURL().openConnection();
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Authorization",

@@ -20,6 +20,7 @@ package com.arcadedb.server.monitor;
 
 import com.arcadedb.database.QueryTracer;
 import com.arcadedb.log.LogManager;
+
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 

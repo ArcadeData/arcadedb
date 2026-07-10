@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.*;
 
 import java.io.File;
@@ -257,10 +258,10 @@ class OpenCypherUnwindMatchTypeIssue1948Test {
     }
 
     // Create batch with 3 entries all referencing the same CHUNK
-    final List<Map<String, Object>> batch = new ArrayList<>();
-    batch.add(Map.of("id", chunkRid.toString()));
-    batch.add(Map.of("id", chunkRid.toString()));
-    batch.add(Map.of("id", chunkRid.toString()));
+    final List<Map<String, Object>> batch = new ArrayList<>(List.of(
+        Map.of("id", chunkRid.toString()),
+        Map.of("id", chunkRid.toString()),
+        Map.of("id", chunkRid.toString())));
 
     // Simple query: UNWIND + MATCH with type constraint + RETURN
     final String query =
@@ -306,9 +307,9 @@ class OpenCypherUnwindMatchTypeIssue1948Test {
     }
 
     // Create batch with 2 entries with DIFFERENT source_ids
-    final List<Map<String, Object>> batch = new ArrayList<>();
-    batch.add(Map.of("id", chunk1Rid.toString()));
-    batch.add(Map.of("id", chunk2Rid.toString()));
+    final List<Map<String, Object>> batch = new ArrayList<>(List.of(
+        Map.of("id", chunk1Rid.toString()),
+        Map.of("id", chunk2Rid.toString())));
 
     final String query =
         """

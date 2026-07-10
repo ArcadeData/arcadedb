@@ -51,17 +51,17 @@ public class ConvertToFloat extends AbstractConvertFunction {
     if (args[0] == null)
       return null;
 
-    if (args[0] instanceof Number) {
-      return ((Number) args[0]).doubleValue();
+    if (args[0] instanceof Number number) {
+      return number.doubleValue();
     }
 
     if (args[0] instanceof Boolean b) {
       return b ? 1.0 : 0.0;
     }
 
-    if (args[0] instanceof String) {
+    if (args[0] instanceof String string) {
       try {
-        return Double.parseDouble(((String) args[0]).trim());
+        return Double.parseDouble(string.trim());
       } catch (final NumberFormatException e) {
         return null;
       }

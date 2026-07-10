@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 

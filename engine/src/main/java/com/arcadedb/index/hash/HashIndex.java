@@ -50,7 +50,6 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -489,9 +488,9 @@ public class HashIndex implements IndexInternal {
 
   @Override
   public Map<String, Long> getStats() {
-    final Map<String, Long> stats = new HashMap<>();
-    stats.put("totalEntries", (long) bucket.getTotalEntries());
-    stats.put("globalDepth", (long) bucket.getGlobalDepth());
+    final Map<String, Long> stats = new HashMap<>(Map.of(
+        "totalEntries", (long) bucket.getTotalEntries(),
+        "globalDepth", (long) bucket.getGlobalDepth()));
     return stats;
   }
 
@@ -517,7 +516,7 @@ public class HashIndex implements IndexInternal {
 
   @Override
   public List<Integer> getFileIds() {
-    return Collections.singletonList(getFileId());
+    return List.of(getFileId());
   }
 
   @Override

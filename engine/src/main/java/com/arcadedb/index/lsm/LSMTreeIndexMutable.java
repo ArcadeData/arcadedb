@@ -238,7 +238,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
     final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
-      return new TempIndexCursor(Collections.emptyList());
+      return new TempIndexCursor(List.of());
 
     final Set<IndexCursorEntry> set = new HashSet<>();
 
@@ -250,9 +250,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   @Override
   public Map<String, Long> getStats() {
-    final Map<String, Long> stats = new HashMap<>();
-    stats.put("pages", (long) getTotalPages());
-    stats.put("adjacentSteps", statsAdjacentSteps.get());
+    final Map<String, Long> stats = new HashMap<>(Map.of(
+        "pages", (long) getTotalPages(),
+        "adjacentSteps", statsAdjacentSteps.get()));
     return stats;
   }
 

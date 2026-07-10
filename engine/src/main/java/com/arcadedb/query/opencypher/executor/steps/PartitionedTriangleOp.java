@@ -26,11 +26,10 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.RidHashSet;
-
-import com.arcadedb.query.QueryEngineManager;
 
 import java.util.ArrayList;
 import java.util.Arrays;

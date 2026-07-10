@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

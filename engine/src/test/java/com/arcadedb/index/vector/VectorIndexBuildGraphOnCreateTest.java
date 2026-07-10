@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

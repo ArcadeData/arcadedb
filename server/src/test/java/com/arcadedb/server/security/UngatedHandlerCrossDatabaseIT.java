@@ -21,6 +21,7 @@ package com.arcadedb.server.security;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -46,7 +47,7 @@ class UngatedHandlerCrossDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void unauthorizedDatabaseIsRejectedOnUngatedHandlers() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // A real, existing database the scoped user has NO grant for - this is the IDOR target.
       getServer(serverIndex).getOrCreateDatabase(RESTRICTED_DB);
       createScopedUser(serverIndex);

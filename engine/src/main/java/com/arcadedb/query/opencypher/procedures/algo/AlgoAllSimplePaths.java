@@ -128,11 +128,11 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         }
       }
 
-      final Map<String, Object> path = new HashMap<>();
-      path.put("_type", "path");
-      path.put("nodes", nodes);
-      path.put("relationships", relationships);
-      path.put("length", relationships.size());
+      final Map<String, Object> path = new HashMap<>(Map.of(
+          "_type", "path",
+          "nodes", nodes,
+          "relationships", relationships,
+          "length", relationships.size()));
 
       final ResultInternal result = new ResultInternal();
       result.setProperty("path", path);
@@ -142,15 +142,15 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
 
   private Set<String> extractSkipTypes(final Map<String, Object> options, final String optionKey) {
     if (options == null || options.isEmpty())
-      return Collections.emptySet();
+      return Set.of();
 
     final Object value = options.get(optionKey);
     if (value == null)
-      return Collections.emptySet();
+      return Set.of();
 
     final String[] types = extractRelTypes(value);
     if (types == null || types.length == 0)
-      return Collections.emptySet();
+      return Set.of();
 
     final Set<String> result = new HashSet<>(types.length);
     Collections.addAll(result, types);

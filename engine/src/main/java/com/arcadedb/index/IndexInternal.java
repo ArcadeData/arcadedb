@@ -27,7 +27,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -72,7 +71,7 @@ public interface IndexInternal extends Index {
    * proactively, before it manifests as a cryptic failure during a query.
    */
   default List<String> checkIntegrity() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   void close();

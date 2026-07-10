@@ -19,6 +19,7 @@
 package com.arcadedb.log;
 
 import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

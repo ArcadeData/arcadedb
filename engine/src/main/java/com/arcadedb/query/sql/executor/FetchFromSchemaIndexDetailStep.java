@@ -27,7 +27,6 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -66,7 +65,7 @@ public class FetchFromSchemaIndexDetailStep extends AbstractExecutionStep {
       r.setProperty("typeName", index.getTypeName());
 
       if (index.getPropertyNames() != null)
-        r.setProperty("properties", Collections.singletonList(index.getPropertyNames()));
+        r.setProperty("properties", List.of(index.getPropertyNames()));
 
       final List<String> keyTypes = new ArrayList<>();
       if (indexInternal.getKeyTypes() != null)

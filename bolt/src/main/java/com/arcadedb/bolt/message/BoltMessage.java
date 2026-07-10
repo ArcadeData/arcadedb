@@ -99,13 +99,13 @@ public abstract class BoltMessage {
 
   @SuppressWarnings("unchecked")
   private static HelloMessage parseHello(final List<Object> fields) {
-    final Map<String, Object> extra = fields.isEmpty() ? Map.of() : (Map<String, Object>) fields.get(0);
+    final Map<String, Object> extra = fields.isEmpty() ? Map.of() : (Map<String, Object>) fields.getFirst();
     return new HelloMessage(extra);
   }
 
   @SuppressWarnings("unchecked")
   private static RunMessage parseRun(final List<Object> fields) {
-    final String query = (String) fields.get(0);
+    final String query = (String) fields.getFirst();
     // Hydrate temporal PackStream structures (Date/Time/DateTime/...) into java.time values so
     // native temporal query parameters bind correctly instead of being dropped (issue #4905).
     final Map<String, Object> parameters = fields.size() > 1 && fields.get(1) != null ?
@@ -117,31 +117,31 @@ public abstract class BoltMessage {
 
   @SuppressWarnings("unchecked")
   private static BeginMessage parseBegin(final List<Object> fields) {
-    final Map<String, Object> extra = fields.isEmpty() || fields.get(0) == null ? Map.of() : (Map<String, Object>) fields.get(0);
+    final Map<String, Object> extra = fields.isEmpty() || fields.getFirst() == null ? Map.of() : (Map<String, Object>) fields.getFirst();
     return new BeginMessage(extra);
   }
 
   @SuppressWarnings("unchecked")
   private static DiscardMessage parseDiscard(final List<Object> fields) {
-    final Map<String, Object> extra = fields.isEmpty() || fields.get(0) == null ? Map.of() : (Map<String, Object>) fields.get(0);
+    final Map<String, Object> extra = fields.isEmpty() || fields.getFirst() == null ? Map.of() : (Map<String, Object>) fields.getFirst();
     return new DiscardMessage(extra);
   }
 
   @SuppressWarnings("unchecked")
   private static PullMessage parsePull(final List<Object> fields) {
-    final Map<String, Object> extra = fields.isEmpty() || fields.get(0) == null ? Map.of() : (Map<String, Object>) fields.get(0);
+    final Map<String, Object> extra = fields.isEmpty() || fields.getFirst() == null ? Map.of() : (Map<String, Object>) fields.getFirst();
     return new PullMessage(extra);
   }
 
   @SuppressWarnings("unchecked")
   private static LogonMessage parseLogon(final List<Object> fields) {
-    final Map<String, Object> auth = fields.isEmpty() || fields.get(0) == null ? Map.of() : (Map<String, Object>) fields.get(0);
+    final Map<String, Object> auth = fields.isEmpty() || fields.getFirst() == null ? Map.of() : (Map<String, Object>) fields.getFirst();
     return new LogonMessage(auth);
   }
 
   @SuppressWarnings("unchecked")
   private static RouteMessage parseRoute(final List<Object> fields) {
-    final Map<String, Object> routing = fields.isEmpty() || fields.get(0) == null ? Map.of() : (Map<String, Object>) fields.get(0);
+    final Map<String, Object> routing = fields.isEmpty() || fields.getFirst() == null ? Map.of() : (Map<String, Object>) fields.getFirst();
     final List<String> bookmarks = fields.size() > 1 && fields.get(1) != null ? (List<String>) fields.get(1) : List.of();
     final Object thirdField = fields.size() > 2 ? fields.get(2) : null;
     // Bolt <=4.3 sends db::String; Bolt 4.4+ sends extra::Map{db, imp_user} (issue #4916).

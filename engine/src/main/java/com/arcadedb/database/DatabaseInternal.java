@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
@@ -79,8 +80,8 @@ public interface DatabaseInternal extends Database {
    * Ensures consistent identity regardless of wrapper layers.
    */
   static Database unwrap(final Database database) {
-    if (database instanceof DatabaseInternal) {
-      final DatabaseInternal internal = ((DatabaseInternal) database).getWrappedDatabaseInstance();
+    if (database instanceof DatabaseInternal databaseInternal) {
+      final DatabaseInternal internal = databaseInternal.getWrappedDatabaseInstance();
       if (internal != null && internal != database)
         return unwrap(internal);
     }

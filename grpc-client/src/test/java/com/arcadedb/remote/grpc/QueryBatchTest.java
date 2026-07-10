@@ -20,6 +20,7 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -37,9 +38,9 @@ class QueryBatchTest {
 
   @Test
   void shouldCreateBatchWithResults() {
-    final List<Result> results = new ArrayList<>();
-    results.add(new ResultInternal());
-    results.add(new ResultInternal());
+    final List<Result> results = new ArrayList<>(List.of(
+        new ResultInternal(),
+        new ResultInternal()));
 
     final QueryBatch batch = new QueryBatch(results, 2, 2, false);
 
@@ -76,10 +77,10 @@ class QueryBatchTest {
 
   @Test
   void shouldTrackRunningTotal() {
-    final List<Result> results = new ArrayList<>();
-    results.add(new ResultInternal());
-    results.add(new ResultInternal());
-    results.add(new ResultInternal());
+    final List<Result> results = new ArrayList<>(List.of(
+        new ResultInternal(),
+        new ResultInternal(),
+        new ResultInternal()));
 
     final QueryBatch batch = new QueryBatch(results, 3, 15, false);
 
@@ -136,16 +137,16 @@ class QueryBatchTest {
     final QueryBatch batch = new QueryBatch(results, 2, 2, false);
 
     assertThat(batch.results()).hasSize(2);
-    assertThat(batch.results().get(0).<Integer>getProperty("id")).isEqualTo(1);
+    assertThat(batch.results().getFirst().<Integer>getProperty("id")).isEqualTo(1);
     assertThat(batch.results().get(1).<Integer>getProperty("id")).isEqualTo(2);
   }
 
   @Test
   void shouldHandleBatchCountMismatch() {
     // Batch can have totalInBatch different from actual results size
-    final List<Result> results = new ArrayList<>();
-    results.add(new ResultInternal());
-    results.add(new ResultInternal());
+    final List<Result> results = new ArrayList<>(List.of(
+        new ResultInternal(),
+        new ResultInternal()));
 
     final QueryBatch batch = new QueryBatch(results, 5, 5, false);
 
@@ -178,9 +179,9 @@ class QueryBatchTest {
     final List<Result> results1 = new ArrayList<>();
     results1.add(new ResultInternal());
 
-    final List<Result> results2 = new ArrayList<>();
-    results2.add(new ResultInternal());
-    results2.add(new ResultInternal());
+    final List<Result> results2 = new ArrayList<>(List.of(
+        new ResultInternal(),
+        new ResultInternal()));
 
     final QueryBatch batch1 = new QueryBatch(results1, 1, 1, false);
     final QueryBatch batch2 = new QueryBatch(results2, 2, 3, false);

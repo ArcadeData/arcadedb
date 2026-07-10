@@ -25,6 +25,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -41,11 +42,7 @@ import org.neo4j.driver.Values;
 import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.summary.ResultSummary;
 
-import java.io.BufferedReader;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -53,11 +50,7 @@ import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
@@ -202,7 +195,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       final Map<String, Object> rt = BoltRouteTestSupport.readRoutingTable(response);
       final List<String> writers = BoltRouteTestSupport.addressesForRole(rt, "WRITE");
       assertThat(writers).hasSize(1);
-      final String self = writers.get(0);
+      final String self = writers.getFirst();
       assertThat(self).isNotBlank();
       assertThat(BoltRouteTestSupport.addressesForRole(rt, "READ")).containsExactly(self);
       assertThat(BoltRouteTestSupport.addressesForRole(rt, "ROUTE")).containsExactly(self);
@@ -1039,8 +1032,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
 
     // Check for errors
     if (!errors.isEmpty()) {
-      throw new AssertionError("Concurrent test failed with " + errors.size() + " errors: " + errors.get(0).getMessage(),
-          errors.get(0));
+      throw new AssertionError("Concurrent test failed with " + errors.size() + " errors: " + errors.getFirst().getMessage(),
+          errors.getFirst());
     }
   }
 
@@ -1275,7 +1268,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         final Record record = result.next();
         assertThat(record.get("name").asString()).isEqualTo("Neo4j Kernel");
         assertThat(record.get("versions").asList()).isNotEmpty();
-        assertThat(record.get("versions").asList().get(0).toString()).contains("5.");
+        assertThat(record.get("versions").asList().getFirst().toString()).contains("5.");
         assertThat(record.get("edition").asString()).isEqualTo("community");
       }
     }
@@ -1528,7 +1521,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
               Map.of("id", "A001"));
           final List<Record> records1 = r1.list();
           assertThat(records1).as("WHERE clause string parameter should return exactly 1 result").hasSize(1);
-          assertThat(records1.get(0).get("name").asString()).isEqualTo("alpha");
+          assertThat(records1.getFirst().get("name").asString()).isEqualTo("alpha");
 
           // Test 2: WHERE clause with different string parameter value
           final Result r2 = session.run(
@@ -1536,7 +1529,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
               Map.of("id", "C003"));
           final List<Record> records2 = r2.list();
           assertThat(records2).as("WHERE clause string parameter should return exactly 1 result").hasSize(1);
-          assertThat(records2.get(0).get("name").asString()).isEqualTo("gamma");
+          assertThat(records2.getFirst().get("name").asString()).isEqualTo("gamma");
 
           // Test 3: WHERE clause with non-matching parameter returns 0 results
           final Result r3 = session.run(
@@ -1550,7 +1543,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
               Map.of("id", "B002", "name", "beta"));
           final List<Record> records4 = r4.list();
           assertThat(records4).as("WHERE clause with multiple parameters (AND) should return exactly 1 result").hasSize(1);
-          assertThat(records4.get(0).get("id").asString()).isEqualTo("B002");
+          assertThat(records4.getFirst().get("id").asString()).isEqualTo("B002");
 
           // Test 5: WHERE clause with integer parameter
           session.run("CREATE (:WhereParamNode {id: 'D004', seq: 42, name: 'delta'})");
@@ -1559,7 +1552,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
               Map.of("seq", 42));
           final List<Record> records5 = r5.list();
           assertThat(records5).as("WHERE clause integer parameter should return exactly 1 result").hasSize(1);
-          assertThat(records5.get(0).get("name").asString()).isEqualTo("delta");
+          assertThat(records5.getFirst().get("name").asString()).isEqualTo("delta");
         } finally {
           session.run("MATCH (t:WhereParamNode) DETACH DELETE t");
         }
@@ -1675,7 +1668,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
             .findFirst().orElseThrow();
         assertThat(edgeRow.get("entityType").asString()).isEqualTo("RELATIONSHIP");
 
-        assertThat(rows.get(0).keys()).containsExactly("id", "name", "state", "populationPercent", "type",
+        assertThat(rows.getFirst().keys()).containsExactly("id", "name", "state", "populationPercent", "type",
             "entityType", "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
       }
     }
@@ -1705,7 +1698,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final List<Record> rows = session.run("SHOW CONSTRAINTS").list();
         assertThat(rows).as("SHOW CONSTRAINTS should return constraints").isNotEmpty();
-        assertThat(rows.get(0).keys()).containsExactly("id", "name", "type", "entityType", "labelsOrTypes",
+        assertThat(rows.getFirst().keys()).containsExactly("id", "name", "type", "entityType", "labelsOrTypes",
             "properties", "ownedIndex", "propertyType");
 
         final Record uniqueness = rows.stream()

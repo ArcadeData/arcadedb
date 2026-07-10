@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+
 import org.junit.jupiter.api.Test;
 
 /**

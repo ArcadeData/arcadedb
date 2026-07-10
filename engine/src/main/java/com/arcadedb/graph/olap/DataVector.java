@@ -47,7 +47,7 @@ public class DataVector {
   private long[]    longData;
   private double[]  doubleData;
   private String[]  stringData;
-  private boolean[] nullMask;
+  private final boolean[] nullMask;
 
   // Flat mode: when true, only element at flatIndex is valid,
   // logically broadcast to all positions

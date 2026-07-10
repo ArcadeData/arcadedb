@@ -21,7 +21,6 @@ package com.arcadedb.server.ha.raft;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -94,7 +93,7 @@ public class RaftTransactionBroker {
   public void replicateSchema(final String dbName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
-    replicateSchema(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, Collections.emptyList());
+    replicateSchema(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, List.of());
   }
 
   /**

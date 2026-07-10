@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -65,13 +66,13 @@ public class CypherPointFunction implements StatelessFunction {
         return null;
       final double x = coerceCoordinate("x", args[0]);
       final double y = coerceCoordinate("y", args[1]);
-      final Map<String, Object> result = new LinkedHashMap<>();
-      result.put("longitude", x);
-      result.put("latitude", y);
-      result.put("x", x);
-      result.put("y", y);
-      result.put("crs", "WGS-84");
-      result.put("srid", 4326);
+      final Map<String, Object> result = new HashMap<>(Map.of(
+          "longitude", x,
+          "latitude", y,
+          "x", x,
+          "y", y,
+          "crs", "WGS-84",
+          "srid", 4326));
       return result;
     }
 

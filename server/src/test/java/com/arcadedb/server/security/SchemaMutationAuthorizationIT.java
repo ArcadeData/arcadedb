@@ -21,6 +21,7 @@ package com.arcadedb.server.security;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -107,8 +108,9 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
           "CREATE MATERIALIZED VIEW ActiveAccounts AS SELECT name FROM Account WHERE active = true")).isEqualTo(200);
       assertThat(adminCommand(serverIndex,
           "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) SHARDS 1")).isEqualTo(200);
-      assertThat(adminCommand(serverIndex, "CREATE CONTINUOUS AGGREGATE sensor_hourly AS "
-          + "SELECT id, ts.timeBucket('1h', ts) AS hour, avg(value) AS avg_value FROM Sensor GROUP BY id, hour"))
+      assertThat(adminCommand(serverIndex, """
+          CREATE CONTINUOUS AGGREGATE sensor_hourly AS \
+          SELECT id, ts.timeBucket('1h', ts) AS hour, avg(value) AS avg_value FROM Sensor GROUP BY id, hour"""))
           .isEqualTo(200);
 
       final String token = "Bearer " + createReadOnlyToken(serverIndex, "schema-siblings-token");

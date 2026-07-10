@@ -130,8 +130,8 @@ public class PCollection extends SimpleNode {
     if (expressions != null) {
       final List<Object> expressionsJson = new ArrayList<>();
       for (Object item : expressions) {
-        if (item instanceof SimpleNode) {
-          expressionsJson.add(((SimpleNode) item).toJSON());
+        if (item instanceof SimpleNode node) {
+          expressionsJson.add(node.toJSON());
         } else {
           expressionsJson.add(item);
         }

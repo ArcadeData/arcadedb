@@ -25,8 +25,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Locale;
 import java.util.Map;

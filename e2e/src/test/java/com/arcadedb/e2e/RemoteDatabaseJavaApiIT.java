@@ -27,6 +27,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -321,12 +322,10 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     StringBuilder sb = new StringBuilder();
 
     database.transaction(() ->
-      IntStream.range(1, 100001).forEach(i -> {
+      IntStream.range(1, 100001).forEach(i ->
 
         database.command("sql",
-            "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3];".formatted(i));
-
-      }));
+            "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3];".formatted(i))));
     LocalDateTime end = LocalDateTime.now();
     System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
 

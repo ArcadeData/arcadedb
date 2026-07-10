@@ -23,6 +23,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -144,8 +145,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(2);
       // Alice asked 2, Bob asked 1
-      assertThat(((Number) rows.get(0).getProperty("questions")).longValue()).isEqualTo(2L);
-      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
+      assertThat(((Number) rows.getFirst().getProperty("questions")).longValue()).isEqualTo(2L);
+      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
       assertThat(((Number) rows.get(1).getProperty("questions")).longValue()).isEqualTo(1L);
       assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
     }
@@ -162,7 +163,7 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(2);
       // Bob answered 2, Charlie answered 2
-      assertThat(((Number) rows.get(0).getProperty("answers")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("answers")).longValue()).isEqualTo(2L);
       assertThat(((Number) rows.get(1).getProperty("answers")).longValue()).isEqualTo(2L);
     }
   }
@@ -182,8 +183,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       assertThat(rows).isNotEmpty();
       assertThat(rows.size()).isGreaterThanOrEqualTo(1);
       // Bob should be the top accepted answerer with 2
-      assertThat(((Number) rows.get(0).getProperty("accepted")).longValue()).isEqualTo(2L);
-      assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Bob");
+      assertThat(((Number) rows.getFirst().getProperty("accepted")).longValue()).isEqualTo(2L);
+      assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Bob");
     }
   }
 
@@ -198,7 +199,7 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       final List<Result> rows = collectResults(rs);
       // java: q1, q2 => 2; database: q1, q3 => 2
       assertThat(rows).hasSize(2);
-      assertThat(((Number) rows.get(0).getProperty("questions")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("questions")).longValue()).isEqualTo(2L);
       assertThat(((Number) rows.get(1).getProperty("questions")).longValue()).isEqualTo(2L);
     }
   }
@@ -216,7 +217,7 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       final List<Result> rows = collectResults(rs);
       // q1 is tagged with java(10) and database(11), so t1=java, t2=database
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("cooccurs")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("cooccurs")).longValue()).isEqualTo(1L);
     }
   }
 
@@ -230,7 +231,7 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
         ORDER BY score DESC, question_id ASC""")) {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(3);
-      assertThat(((Number) rows.get(0).getProperty("score")).intValue()).isEqualTo(50);
+      assertThat(((Number) rows.getFirst().getProperty("score")).intValue()).isEqualTo(50);
       assertThat(((Number) rows.get(1).getProperty("score")).intValue()).isEqualTo(30);
       assertThat(((Number) rows.get(2).getProperty("score")).intValue()).isEqualTo(10);
     }
@@ -247,8 +248,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).hasSize(3);
       // q1 has 2 answers, q2 has 1, q3 has 1
-      assertThat(((Number) rows.get(0).getProperty("answers")).longValue()).isEqualTo(2L);
-      assertThat(((Number) rows.get(0).getProperty("question_id")).intValue()).isEqualTo(100);
+      assertThat(((Number) rows.getFirst().getProperty("answers")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("question_id")).intValue()).isEqualTo(100);
     }
   }
 
@@ -268,9 +269,9 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       // So: Alice-Bob: 2, Alice-Charlie: 1, Bob-Charlie: 1
       assertThat(rows).isNotEmpty();
       assertThat(rows.size()).isGreaterThanOrEqualTo(1);
-      assertThat(((Number) rows.get(0).getProperty("interactions")).longValue()).isEqualTo(2L);
-      assertThat(((Number) rows.get(0).getProperty("asker_id")).intValue()).isEqualTo(1); // Alice
-      assertThat(((Number) rows.get(0).getProperty("answerer_id")).intValue()).isEqualTo(2); // Bob
+      assertThat(((Number) rows.getFirst().getProperty("interactions")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("asker_id")).intValue()).isEqualTo(1); // Alice
+      assertThat(((Number) rows.getFirst().getProperty("answerer_id")).intValue()).isEqualTo(2); // Bob
     }
   }
 
@@ -285,8 +286,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       final List<Result> rows = collectResults(rs);
       // Student: 3 (Alice, Bob, Charlie); Teacher: 1 (Alice)
       assertThat(rows).hasSize(2);
-      assertThat((String) rows.get(0).getProperty("badge")).isEqualTo("Student");
-      assertThat(((Number) rows.get(0).getProperty("earned")).longValue()).isEqualTo(3L);
+      assertThat((String) rows.getFirst().getProperty("badge")).isEqualTo("Student");
+      assertThat(((Number) rows.getFirst().getProperty("earned")).longValue()).isEqualTo(3L);
       assertThat((String) rows.get(1).getProperty("badge")).isEqualTo("Teacher");
       assertThat(((Number) rows.get(1).getProperty("earned")).longValue()).isEqualTo(1L);
     }
@@ -308,8 +309,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
       final List<Result> rows = collectResults(rs);
       assertThat(rows).isNotEmpty();
       // q1 has 2 direct comments + 1 answer comment = 3
-      assertThat(((Number) rows.get(0).getProperty("question_id")).intValue()).isEqualTo(100);
-      assertThat(((Number) rows.get(0).getProperty("total_comments")).longValue()).isEqualTo(3L);
+      assertThat(((Number) rows.getFirst().getProperty("question_id")).intValue()).isEqualTo(100);
+      assertThat(((Number) rows.getFirst().getProperty("total_comments")).longValue()).isEqualTo(3L);
     }
   }
 
@@ -339,7 +340,7 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY questions DESC, tag_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(2);
-        assertThat(((Number) rows.get(0).getProperty("questions")).longValue()).isEqualTo(2L);
+        assertThat(((Number) rows.getFirst().getProperty("questions")).longValue()).isEqualTo(2L);
         assertThat(((Number) rows.get(1).getProperty("questions")).longValue()).isEqualTo(2L);
       }
     }
@@ -353,8 +354,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY earned DESC, badge ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(2);
-        assertThat((String) rows.get(0).getProperty("badge")).isEqualTo("Student");
-        assertThat(((Number) rows.get(0).getProperty("earned")).longValue()).isEqualTo(3L);
+        assertThat((String) rows.getFirst().getProperty("badge")).isEqualTo("Student");
+        assertThat(((Number) rows.getFirst().getProperty("earned")).longValue()).isEqualTo(3L);
         assertThat((String) rows.get(1).getProperty("badge")).isEqualTo("Teacher");
         assertThat(((Number) rows.get(1).getProperty("earned")).longValue()).isEqualTo(1L);
       }
@@ -371,8 +372,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY accepted DESC, user_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
-        assertThat(((Number) rows.get(0).getProperty("accepted")).longValue()).isEqualTo(2L);
-        assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Bob");
+        assertThat(((Number) rows.getFirst().getProperty("accepted")).longValue()).isEqualTo(2L);
+        assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Bob");
       }
     }
 
@@ -387,9 +388,9 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY interactions DESC, asker_id ASC, answerer_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
-        assertThat(((Number) rows.get(0).getProperty("interactions")).longValue()).isEqualTo(2L);
-        assertThat(((Number) rows.get(0).getProperty("asker_id")).intValue()).isEqualTo(1);
-        assertThat(((Number) rows.get(0).getProperty("answerer_id")).intValue()).isEqualTo(2);
+        assertThat(((Number) rows.getFirst().getProperty("interactions")).longValue()).isEqualTo(2L);
+        assertThat(((Number) rows.getFirst().getProperty("asker_id")).intValue()).isEqualTo(1);
+        assertThat(((Number) rows.getFirst().getProperty("answerer_id")).intValue()).isEqualTo(2);
       }
     }
 
@@ -407,8 +408,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY total_comments DESC, question_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).isNotEmpty();
-        assertThat(((Number) rows.get(0).getProperty("question_id")).intValue()).isEqualTo(100);
-        assertThat(((Number) rows.get(0).getProperty("total_comments")).longValue()).isEqualTo(3L);
+        assertThat(((Number) rows.getFirst().getProperty("question_id")).intValue()).isEqualTo(100);
+        assertThat(((Number) rows.getFirst().getProperty("total_comments")).longValue()).isEqualTo(3L);
       }
     }
 
@@ -489,7 +490,7 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY questions DESC, user_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(2);
-        assertThat(((Number) rows.get(0).getProperty("questions")).longValue()).isEqualTo(2L);
+        assertThat(((Number) rows.getFirst().getProperty("questions")).longValue()).isEqualTo(2L);
       }
     }
 
@@ -504,7 +505,7 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY cooccurs DESC, tag1 ASC, tag2 ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(1);
-        assertThat(((Number) rows.get(0).getProperty("cooccurs")).longValue()).isEqualTo(1L);
+        assertThat(((Number) rows.getFirst().getProperty("cooccurs")).longValue()).isEqualTo(1L);
       }
     }
 
@@ -517,8 +518,8 @@ class OpenCypherStackOverflowWorkloadTest extends TestHelper {
           ORDER BY answers DESC, question_id ASC""")) {
         final List<Result> rows = collectResults(rs);
         assertThat(rows).hasSize(3);
-        assertThat(((Number) rows.get(0).getProperty("answers")).longValue()).isEqualTo(2L);
-        assertThat(((Number) rows.get(0).getProperty("question_id")).intValue()).isEqualTo(100);
+        assertThat(((Number) rows.getFirst().getProperty("answers")).longValue()).isEqualTo(2L);
+        assertThat(((Number) rows.getFirst().getProperty("question_id")).intValue()).isEqualTo(100);
       }
     }
   }

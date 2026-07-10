@@ -23,6 +23,7 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

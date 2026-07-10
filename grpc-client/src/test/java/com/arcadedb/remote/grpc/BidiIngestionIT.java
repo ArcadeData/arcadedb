@@ -20,11 +20,12 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
-import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -111,10 +112,10 @@ class BidiIngestionIT extends BaseGraphServerTest {
   private List<Map<String, Object>> generateRows(int count) {
     List<Map<String, Object>> rows = new ArrayList<>();
     for (int i = 0; i < count; i++) {
-      Map<String, Object> row = new HashMap<>();
-      row.put("id", "row-" + i);
-      row.put("name", "name-" + i);
-      row.put("value", i);
+      Map<String, Object> row = new HashMap<>(Map.of(
+          "id", "row-" + i,
+          "name", "name-" + i,
+          "value", i));
       rows.add(row);
     }
     return rows;
@@ -200,8 +201,8 @@ class BidiIngestionIT extends BaseGraphServerTest {
     assertThat(countRecords()).isEqualTo(20);
 
     // Update some rows
-    rows.get(0).put("name", "updated-name-0");
-    rows.get(0).put("value", 999);
+    rows.getFirst().put("name", "updated-name-0");
+    rows.getFirst().put("value", 999);
 
     InsertSummary summary = database.ingestBidi(opts, rows, 10, 5, 60_000);
 

@@ -73,8 +73,8 @@ public class ReduceExpression implements Expression {
 
     // Convert to iterable
     final Iterable<?> iterable;
-    if (listValue instanceof Iterable)
-      iterable = (Iterable<?>) listValue;
+    if (listValue instanceof Iterable<?> iterable1)
+      iterable = iterable1;
     else if (listValue.getClass().isArray())
       iterable = arrayToList(listValue);
     else
@@ -108,32 +108,41 @@ public class ReduceExpression implements Expression {
 
   private List<Object> arrayToList(final Object array) {
     final List<Object> list = new ArrayList<>();
-    if (array instanceof Object[]) {
-      list.addAll(Arrays.asList((Object[]) array));
-    } else if (array instanceof int[] a) {
-      for (final int i : a)
-        list.add(i);
-    } else if (array instanceof long[] a) {
-      for (final long l : a)
-        list.add(l);
-    } else if (array instanceof double[] a) {
-      for (final double d : a)
-        list.add(d);
-    } else if (array instanceof float[] a) {
-      for (final float f : a)
-        list.add(f);
-    } else if (array instanceof boolean[] a) {
-      for (final boolean b : a)
-        list.add(b);
-    } else if (array instanceof byte[] a) {
-      for (final byte b : a)
-        list.add(b);
-    } else if (array instanceof short[] a) {
-      for (final short s : a)
-        list.add(s);
-    } else if (array instanceof char[] a) {
-      for (final char c : a)
-        list.add(c);
+    switch (array) {
+      case Object[] objects -> list.addAll(Arrays.asList(objects));
+      case int[] a -> {
+        for (final int i : a)
+          list.add(i);
+      }
+      case long[] a -> {
+        for (final long l : a)
+          list.add(l);
+      }
+      case double[] a -> {
+        for (final double d : a)
+          list.add(d);
+      }
+      case float[] a -> {
+        for (final float f : a)
+          list.add(f);
+      }
+      case boolean[] a -> {
+        for (final boolean b : a)
+          list.add(b);
+      }
+      case byte[] a -> {
+        for (final byte b : a)
+          list.add(b);
+      }
+      case short[] a -> {
+        for (final short s : a)
+          list.add(s);
+      }
+      case char[] a -> {
+        for (final char c : a)
+          list.add(c);
+      }
+      case null, default -> {}
     }
     return list;
   }

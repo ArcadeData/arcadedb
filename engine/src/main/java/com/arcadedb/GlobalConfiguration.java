@@ -755,15 +755,17 @@ public enum GlobalConfiguration {
       Integer.class, 65536),
 
   SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS("arcadedb.server.security.importBlockLocalNetworks", SCOPE.SERVER,
-      "When enabled (default), the SQL `IMPORT DATABASE` command refuses HTTP(S) URLs that resolve to loopback, link-local, "
-          + "private (site-local), wildcard or multicast addresses. This mitigates Server-Side Request Forgery (SSRF) against "
-          + "cloud metadata endpoints (e.g. 169.254.169.254) and internal services. Disable only in trusted environments that "
-          + "legitimately import from internal hosts", Boolean.class, true),
+      """
+      When enabled (default), the SQL `IMPORT DATABASE` command refuses HTTP(S) URLs that resolve to loopback, link-local, \
+      private (site-local), wildcard or multicast addresses. This mitigates Server-Side Request Forgery (SSRF) against \
+      cloud metadata endpoints (e.g. 169.254.169.254) and internal services. Disable only in trusted environments that \
+      legitimately import from internal hosts""", Boolean.class, true),
 
   SERVER_SECURITY_IMPORT_ALLOWED_LOCAL_PATHS("arcadedb.server.security.importAllowedLocalPaths", SCOPE.SERVER,
-      "Comma-separated list of directories the SQL `IMPORT DATABASE` command is allowed to read local files from (`file://` "
-          + "and plain paths). When empty (default) no restriction is applied. When set, any import from a path outside the "
-          + "listed directories is rejected, mitigating arbitrary local file read. `classpath://` resources are always allowed",
+      """
+      Comma-separated list of directories the SQL `IMPORT DATABASE` command is allowed to read local files from (`file://` \
+      and plain paths). When empty (default) no restriction is applied. When set, any import from a path outside the \
+      listed directories is rejected, mitigating arbitrary local file read. `classpath://` resources are always allowed""",
       String.class, ""),
 
   // HA

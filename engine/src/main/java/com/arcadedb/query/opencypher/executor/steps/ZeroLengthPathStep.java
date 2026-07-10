@@ -69,8 +69,8 @@ public class ZeroLengthPathStep extends AbstractExecutionStep {
 
         // Create zero-length path from source vertex
         final Object sourceObj = input.getProperty(sourceVariable);
-        if (sourceObj instanceof Vertex)
-          result.setProperty(pathVariable, new TraversalPath((Vertex) sourceObj));
+        if (sourceObj instanceof Vertex vertex)
+          result.setProperty(pathVariable, new TraversalPath(vertex));
         else
           result.setProperty(pathVariable, null);
 

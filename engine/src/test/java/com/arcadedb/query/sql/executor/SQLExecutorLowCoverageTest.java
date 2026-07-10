@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -155,7 +156,7 @@ class SQLExecutorLowCoverageTest extends TestHelper {
   @Test
   void fetchFromMultipleClusters() {
     database.transaction(() -> {
-      final String bucket1 = database.getSchema().getType("Person").getBuckets(false).get(0).getName();
+      final String bucket1 = database.getSchema().getType("Person").getBuckets(false).getFirst().getName();
       final ResultSet rs = database.query("sql", "SELECT FROM bucket:" + bucket1);
       int count = 0;
       while (rs.hasNext()) {
@@ -240,7 +241,7 @@ class SQLExecutorLowCoverageTest extends TestHelper {
   @Test
   void filterBucketName() {
     database.transaction(() -> {
-      final String bucketName = database.getSchema().getType("Person").getBuckets(false).get(0).getName();
+      final String bucketName = database.getSchema().getType("Person").getBuckets(false).getFirst().getName();
       final ResultSet rs = database.query("sql",
           "SELECT FROM bucket:" + bucketName);
       int count = 0;

@@ -18,10 +18,9 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
@@ -50,14 +49,14 @@ public class TimeTruncateFunction implements StatelessFunction {
       throw new CommandExecutionException("time.truncate() requires at least 2 arguments");
     final String unit = args[0].toString();
     final OffsetTime time;
-    if (args[1] instanceof CypherTime)
-      time = ((CypherTime) args[1]).getValue();
-    else if (args[1] instanceof CypherDateTime)
-      time = ((CypherDateTime) args[1]).getValue().toOffsetDateTime().toOffsetTime();
-    else if (args[1] instanceof CypherLocalTime)
-      time = ((CypherLocalTime) args[1]).getValue().atOffset(ZoneOffset.UTC);
-    else if (args[1] instanceof CypherLocalDateTime)
-      time = ((CypherLocalDateTime) args[1]).getValue().toLocalTime().atOffset(ZoneOffset.UTC);
+    if (args[1] instanceof CypherTime cypherTime)
+      time = cypherTime.getValue();
+    else if (args[1] instanceof CypherDateTime dateTime1)
+      time = dateTime1.getValue().toOffsetDateTime().toOffsetTime();
+    else if (args[1] instanceof CypherLocalTime localTime)
+      time = localTime.getValue().atOffset(ZoneOffset.UTC);
+    else if (args[1] instanceof CypherLocalDateTime dateTime)
+      time = dateTime.getValue().toLocalTime().atOffset(ZoneOffset.UTC);
     else
       throw new CommandExecutionException("time.truncate() second argument must be a temporal value with a time");
     LocalTime truncated = TemporalUtil.truncateLocalTime(time.toLocalTime(), unit);

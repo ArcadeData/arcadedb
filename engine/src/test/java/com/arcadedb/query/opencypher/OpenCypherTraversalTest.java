@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -94,7 +95,7 @@ class OpenCypherTraversalTest {
     assertThat(results).hasSize(3);
 
     // BFS should return vertices in order of distance
-    assertThat(results.get(0).get("name")).isEqualTo("Bob");
+    assertThat(results.getFirst().get("name")).isEqualTo("Bob");
     assertThat(results.get(1).get("name")).isEqualTo("Charlie");
     assertThat(results.get(2).get("name")).isEqualTo("David");
   }
@@ -109,7 +110,7 @@ class OpenCypherTraversalTest {
 
     // Should find: Charlie (2 hops), David (3 hops) - Bob is skipped (only 1 hop)
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).get("name")).isEqualTo("Charlie");
+    assertThat(results.getFirst().get("name")).isEqualTo("Charlie");
     assertThat(results.get(1).get("name")).isEqualTo("David");
   }
 
@@ -123,7 +124,7 @@ class OpenCypherTraversalTest {
 
     // Should find: Bob (1 hop), Charlie (2 hops) - David is beyond max hops
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).get("name")).isEqualTo("Bob");
+    assertThat(results.getFirst().get("name")).isEqualTo("Bob");
     assertThat(results.get(1).get("name")).isEqualTo("Charlie");
   }
 
@@ -154,7 +155,7 @@ class OpenCypherTraversalTest {
     assertThat(results).hasSize(3);
 
     // Check first path: Alice -> Bob
-    final TraversalPath path1 = results.get(0);
+    final TraversalPath path1 = results.getFirst();
     assertThat(path1.getVertices()).hasSize(2);
     assertThat(path1.getEdges()).hasSize(1);
     assertThat(path1.length()).isEqualTo(1);
@@ -202,8 +203,8 @@ class OpenCypherTraversalTest {
     assertThat(results).hasSize(2);
 
     // First path should be 2 hops: Alice -> Bob -> Charlie
-    assertThat(results.get(0).length()).isEqualTo(2);
-    assertThat(results.get(0).getEndVertex().get("name")).isEqualTo("Charlie");
+    assertThat(results.getFirst().length()).isEqualTo(2);
+    assertThat(results.getFirst().getEndVertex().get("name")).isEqualTo("Charlie");
 
     // Second path should be 3 hops: Alice -> Bob -> Charlie -> David
     assertThat(results.get(1).length()).isEqualTo(3);

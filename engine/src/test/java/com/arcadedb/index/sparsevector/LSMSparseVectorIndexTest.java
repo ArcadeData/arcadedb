@@ -111,8 +111,8 @@ class LSMSparseVectorIndexTest extends TestHelper {
       }
     });
 
-    final int[]   queryIndices = docIndices.get(0);
-    final float[] queryValues  = docValues.get(0);
+    final int[]   queryIndices = docIndices.getFirst();
+    final float[] queryValues  = docValues.getFirst();
 
     final List<Map.Entry<RID, Float>> sortedBF = bruteForceTopK(queryIndices, queryValues, docIndices, docValues, docRids);
 
@@ -130,7 +130,7 @@ class LSMSparseVectorIndexTest extends TestHelper {
     }
 
     assertThat(indexRids).hasSize(K);
-    assertThat(indexRids.get(0)).as("self-query must return self at rank 0").isEqualTo(docRids.get(0));
+    assertThat(indexRids.getFirst()).as("self-query must return self at rank 0").isEqualTo(docRids.getFirst());
 
     for (int i = 0; i < K; i++) {
       assertThat(indexRids.get(i)).as("rank " + i).isEqualTo(sortedBF.get(i).getKey());
@@ -204,7 +204,7 @@ class LSMSparseVectorIndexTest extends TestHelper {
       indexRids.add((RID) rs.next().getProperty("@rid"));
 
     assertThat(indexRids).hasSize(K);
-    assertThat(indexRids.get(0)).isEqualTo(docRids.get(7));
+    assertThat(indexRids.getFirst()).isEqualTo(docRids.get(7));
     for (int i = 0; i < K; i++)
       assertThat(indexRids.get(i)).as("rank " + i).isEqualTo(sortedBF.get(i).getKey());
   }
@@ -247,7 +247,7 @@ class LSMSparseVectorIndexTest extends TestHelper {
       scores.add(((Number) row.getProperty("score")).floatValue());
     }
     assertThat(rids).hasSize(2);
-    assertThat(scores.get(0)).isCloseTo(0.6f, Offset.offset(1e-4f));
+    assertThat(scores.getFirst()).isCloseTo(0.6f, Offset.offset(1e-4f));
     assertThat(scores.get(1)).isCloseTo(0.3f, Offset.offset(1e-4f));
   }
 
@@ -424,7 +424,7 @@ class LSMSparseVectorIndexTest extends TestHelper {
     while (afterDelete.hasNext())
       remaining.add((RID) afterDelete.next().getProperty("@rid"));
     assertThat(remaining).hasSize(1);
-    assertThat(remaining.get(0)).isEqualTo(rids[1]);
+    assertThat(remaining.getFirst()).isEqualTo(rids[1]);
   }
 
   @Test
@@ -476,14 +476,14 @@ class LSMSparseVectorIndexTest extends TestHelper {
     }
 
     assertThat(rids).hasSize(10);
-    assertThat(rids.get(0)).as("rare-dim doc should rank first under IDF").isEqualTo(rareHit[0]);
+    assertThat(rids.getFirst()).as("rare-dim doc should rank first under IDF").isEqualTo(rareHit[0]);
 
     // The rare-dim contribution to A should dominate. Under df(1)=1, N=10, IDF(1) = ln((10-1+0.5)/(1+0.5)+1) ~ 1.96.
     // Under df(2)=10, N=10, IDF(2) = ln((10-10+0.5)/(10+0.5)+1) ~ 0.046.
     // A's score: 1.0 * 0.1 * 1.96 + 1.0 * 0.5 * 0.046 ~= 0.219.
     // Others' score: 1.0 * 0.5 * 0.046 ~= 0.023.
     // So A's score should be at least 5x the next.
-    assertThat(scores.get(0)).isGreaterThan(scores.get(1) * 5.0f);
+    assertThat(scores.getFirst()).isGreaterThan(scores.get(1) * 5.0f);
   }
 
   @Test

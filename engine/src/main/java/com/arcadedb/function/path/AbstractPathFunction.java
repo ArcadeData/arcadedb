@@ -43,8 +43,7 @@ public abstract class AbstractPathFunction implements StatelessFunction {
     if (obj instanceof List) {
       return true; // Assume list is a path
     }
-    if (obj instanceof Map) {
-      final Map<?, ?> map = (Map<?, ?>) obj;
+    if (obj instanceof Map<?, ?> map) {
       return map.containsKey("_type") && "path".equals(map.get("_type"));
     }
     return false;

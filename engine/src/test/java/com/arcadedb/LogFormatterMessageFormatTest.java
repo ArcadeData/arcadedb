@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.log.LogFormatter;
 import com.arcadedb.utility.AnsiLogFormatter;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Date;

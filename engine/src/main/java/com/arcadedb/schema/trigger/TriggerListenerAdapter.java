@@ -150,8 +150,8 @@ public class TriggerListenerAdapter implements
    * Check if the record matches the trigger's type.
    */
   private boolean matchesType(final Record record) {
-    if (record instanceof Document) {
-      final String typeName = ((Document) record).getTypeName();
+    if (record instanceof Document document) {
+      final String typeName = document.getTypeName();
       return typeName != null && typeName.equals(trigger.getTypeName());
     }
     return false;

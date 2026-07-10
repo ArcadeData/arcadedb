@@ -43,17 +43,15 @@ public class PropertiesFunction implements StatelessFunction {
     }
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Document) {
-      final Document doc = (Document) args[0];
+    if (args[0] instanceof Document doc) {
       final Map<String, Object> props = new LinkedHashMap<>();
       for (final String propName : doc.getPropertyNames())
         props.put(propName, doc.get(propName));
       return props;
     }
-    if (args[0] instanceof Map)
-      return new LinkedHashMap<>((Map<?, ?>) args[0]);
-    if (args[0] instanceof Result) {
-      final Result r = (Result) args[0];
+    if (args[0] instanceof Map<?, ?> map)
+      return new LinkedHashMap<>(map);
+    if (args[0] instanceof Result r) {
       final Map<String, Object> props = new LinkedHashMap<>();
       for (final String propName : r.getPropertyNames())
         props.put(propName, r.getProperty(propName));

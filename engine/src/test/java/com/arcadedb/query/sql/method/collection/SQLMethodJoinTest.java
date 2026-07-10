@@ -19,13 +19,12 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.query.sql.executor.SQLMethod;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodJoinTest {
@@ -45,7 +44,7 @@ class SQLMethodJoinTest {
 
     @Test
     void joinEmptyList() {
-        final Object result = method.execute(Collections.emptyList(), null, null, null);
+        final Object result = method.execute(List.of(), null, null, null);
         assertThat(result).isInstanceOf(String.class);
         assertThat(result).isEqualTo("");
     }

@@ -18,9 +18,9 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import org.junit.jupiter.api.Test;
-
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 

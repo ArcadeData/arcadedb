@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import io.cucumber.datatable.DataTable;
 import io.cucumber.java.After;
 import io.cucumber.java.Before;
@@ -164,7 +165,7 @@ public class TCKStepDefinitions {
     parameters = new HashMap<>();
     for (final List<String> row : dataTable.asLists()) {
       if (row.size() >= 2) {
-        final String key = row.get(0).trim();
+        final String key = row.getFirst().trim();
         final Object value = TCKValueParser.parse(row.get(1).trim());
         parameters.put(key, value);
       }
@@ -298,7 +299,7 @@ public class TCKStepDefinitions {
     final Map<String, Integer> effects = new LinkedHashMap<>();
     for (final List<String> row : dataTable.asLists()) {
       if (row.size() >= 2)
-        effects.put(row.get(0).trim(), Integer.parseInt(row.get(1).trim()));
+        effects.put(row.getFirst().trim(), Integer.parseInt(row.get(1).trim()));
     }
     sideEffectChecker.assertSideEffects(database, effects);
   }

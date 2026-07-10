@@ -24,14 +24,11 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
+import java.io.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 

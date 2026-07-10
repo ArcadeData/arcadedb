@@ -18,25 +18,11 @@
  */
 package com.arcadedb.integration.importer;
 
-import com.arcadedb.integration.importer.format.CSVImporterFormat;
-import com.arcadedb.integration.importer.format.FormatImporter;
-import com.arcadedb.integration.importer.format.GloVeImporterFormat;
-import com.arcadedb.integration.importer.format.JSONImporterFormat;
-import com.arcadedb.integration.importer.format.JsonlImporterFormat;
-import com.arcadedb.integration.importer.format.Neo4jImporterFormat;
-import com.arcadedb.integration.importer.format.OrientDBImporterFormat;
-import com.arcadedb.integration.importer.format.RDFImporterFormat;
-import com.arcadedb.integration.importer.format.Word2VecImporterFormat;
-import com.arcadedb.integration.importer.format.XMLImporterFormat;
+import com.arcadedb.integration.importer.format.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.net.HttpURLConnection;
 import java.net.URL;

@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;

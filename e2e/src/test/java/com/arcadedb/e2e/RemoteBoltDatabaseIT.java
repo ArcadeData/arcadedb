@@ -64,16 +64,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * End-to-end certification of the Bolt protocol against the real
@@ -218,8 +212,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       Thread.currentThread().interrupt();
     }
     if (errors.isEmpty() && barrierFailure.get() != null)
-      throw new IllegalStateException("Two-writer race was inconclusive: the writes never held "
-          + "concurrently (barrier did not sync), so no conflict could form", barrierFailure.get());
+      throw new IllegalStateException("""
+          Two-writer race was inconclusive: the writes never held \
+          concurrently (barrier did not sync), so no conflict could form""", barrierFailure.get());
     return errors;
   }
 
@@ -265,8 +260,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     }
 
     @Test
-    @DisabledOnOs(value = { OS.MAC, OS.WINDOWS }, disabledReason = "neo4j:// single-node routing advertises the container bridge IP, "
-        + "which is not host-routable on Docker Desktop (macOS/Windows); verified in Linux CI only")
+    @DisabledOnOs(value = { OS.MAC, OS.WINDOWS }, disabledReason = """
+        neo4j:// single-node routing advertises the container bridge IP, \
+        which is not host-routable on Docker Desktop (macOS/Windows); verified in Linux CI only""")
     @DisplayName("[CONN-003] neo4j:// routing discovery, single-node")
     void conn003_routingSingleNode() {
       // handleRoute advertises the server's own bound address
@@ -290,8 +286,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     }
 
     @Test
-    @Disabled("[CONN-004] Requires a real 3-node HA cluster; single-node container "
-        + "always returns itself as writer/reader/router (#4890)")
+    @Disabled("""
+        [CONN-004] Requires a real 3-node HA cluster; single-node container \
+        always returns itself as writer/reader/router (#4890)""")
     @DisplayName("[CONN-004] neo4j:// routing reflects HA cluster topology")
     void conn004_haTopology() {
     }
@@ -662,8 +659,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     }
 
     @Test
-    @Disabled("[ERR-003] Driver never sends RUN before LOGON; needs a raw socket. "
-        + "Covered at the bolt-module layer (BoltProtocolIT) if a raw harness exists.")
+    @Disabled("""
+        [ERR-003] Driver never sends RUN before LOGON; needs a raw socket. \
+        Covered at the bolt-module layer (BoltProtocolIT) if a raw harness exists.""")
     @DisplayName("[ERR-003] Unauthenticated request returns Neo.ClientError.Security.Forbidden")
     void err003_forbidden() {
     }

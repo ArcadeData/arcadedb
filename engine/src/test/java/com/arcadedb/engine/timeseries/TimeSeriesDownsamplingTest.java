@@ -55,8 +55,8 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("SensorDDL");
     assertThat(type.getDownsamplingTiers()).hasSize(2);
     // Sorted by afterMs ascending
-    assertThat(type.getDownsamplingTiers().get(0).afterMs()).isEqualTo(7 * 86400000L);
-    assertThat(type.getDownsamplingTiers().get(0).granularityMs()).isEqualTo(3600000L);
+    assertThat(type.getDownsamplingTiers().getFirst().afterMs()).isEqualTo(7 * 86400000L);
+    assertThat(type.getDownsamplingTiers().getFirst().granularityMs()).isEqualTo(3600000L);
     assertThat(type.getDownsamplingTiers().get(1).afterMs()).isEqualTo(30 * 86400000L);
     assertThat(type.getDownsamplingTiers().get(1).granularityMs()).isEqualTo(86400000L);
 
@@ -66,7 +66,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
 
     final LocalTimeSeriesType reopened = (LocalTimeSeriesType) database.getSchema().getType("SensorDDL");
     assertThat(reopened.getDownsamplingTiers()).hasSize(2);
-    assertThat(reopened.getDownsamplingTiers().get(0).afterMs()).isEqualTo(7 * 86400000L);
+    assertThat(reopened.getDownsamplingTiers().getFirst().afterMs()).isEqualTo(7 * 86400000L);
 
     // Drop downsampling policy
     database.command("sql", "ALTER TIMESERIES TYPE SensorDDL DROP DOWNSAMPLING POLICY");
@@ -95,7 +95,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     engine.appendSamples(timestamps, sensors, temps);
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -115,12 +115,10 @@ class TimeSeriesDownsamplingTest extends TestHelper {
       database.commit();
 
       assertThat(result).hasSize(1);
-      assertThat((long) result.get(0)[0]).isEqualTo(0L); // bucket timestamp
-      assertThat((String) result.get(0)[1]).isEqualTo("sensor_A");
+      assertThat((long) result.getFirst()[0]).isEqualTo(0L); // bucket timestamp
+      assertThat((String) result.getFirst()[1]).isEqualTo("sensor_A");
       // AVG of 1..60 = 30.5
-      assertThat((double) result.get(0)[2]).isCloseTo(30.5, Offset.offset(0.001));
-    } finally {
-      engine.close();
+      assertThat((double) result.getFirst()[2]).isCloseTo(30.5, Offset.offset(0.001));
     }
   }
 
@@ -151,7 +149,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     engine.appendSamples(timestamps, sensors, temps);
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -182,8 +180,6 @@ class TimeSeriesDownsamplingTest extends TestHelper {
         if (ts < 200000L)
           assertThat(ts % 60000L).isEqualTo(0L);
       }
-    } finally {
-      engine.close();
     }
   }
 
@@ -207,7 +203,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     engine.appendSamples(timestamps, sensors, temps);
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -237,8 +233,6 @@ class TimeSeriesDownsamplingTest extends TestHelper {
         assertThat((double) secondResult.get(i)[2]).isCloseTo((double) firstResult.get(i)[2],
             Offset.offset(0.001));
       }
-    } finally {
-      engine.close();
     }
   }
 
@@ -264,7 +258,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     engine.appendSamples(timestamps, sensors, temps);
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -302,8 +296,6 @@ class TimeSeriesDownsamplingTest extends TestHelper {
       }
       assertThat(avgA).isCloseTo(20.0, Offset.offset(0.001));
       assertThat(avgB).isCloseTo(200.0, Offset.offset(0.001));
-    } finally {
-      engine.close();
     }
   }
 
@@ -334,7 +326,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     unsortedEngine.appendSamples(timestamps.clone(), sensors.clone(), temps.clone());
     database.commit();
 
-    try {
+    try (sortedEngine) {
       database.begin();
       sortedEngine.compactAll();
       unsortedEngine.compactAll();
@@ -358,7 +350,6 @@ class TimeSeriesDownsamplingTest extends TestHelper {
         assertThat((double) unsorted.get(i)[2]).isCloseTo((double) sorted.get(i)[2], Offset.offset(0.001));
       }
     } finally {
-      sortedEngine.close();
       unsortedEngine.close();
     }
   }
@@ -388,7 +379,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     engine.appendSamples(timestamps, sensors, temps);
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -404,7 +395,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
       assertThat(result).hasSize(2);
 
       // Both at timestamp 0
-      assertThat((long) result.get(0)[0]).isEqualTo(0L);
+      assertThat((long) result.getFirst()[0]).isEqualTo(0L);
       assertThat((long) result.get(1)[0]).isEqualTo(0L);
 
       // Find sensor_A and sensor_B results
@@ -417,8 +408,6 @@ class TimeSeriesDownsamplingTest extends TestHelper {
       }
       assertThat(avgA).isCloseTo(20.0, Offset.offset(0.001));
       assertThat(avgB).isCloseTo(200.0, Offset.offset(0.001));
-    } finally {
-      engine.close();
     }
   }
 
@@ -438,7 +427,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     );
     database.commit();
 
-    try {
+    try (engine) {
       database.begin();
       engine.compactAll();
       database.commit();
@@ -469,8 +458,6 @@ class TimeSeriesDownsamplingTest extends TestHelper {
 
       // Remaining data should be downsampled without errors
       assertThat(result).isNotEmpty();
-    } finally {
-      engine.close();
     }
   }
 
@@ -483,7 +470,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     final TimeSeriesEngine engine = new TimeSeriesEngine(db, "ds_empty", columns, 1);
     database.commit();
 
-    try {
+    try (engine) {
       // Should not throw with empty data
       engine.applyDownsampling(List.of(new DownsamplingTier(1L, 60000L)), 100000L);
       assertThat(engine.getShard(0).getSealedStore().getBlockCount()).isEqualTo(0);
@@ -491,8 +478,6 @@ class TimeSeriesDownsamplingTest extends TestHelper {
       // Should not throw with null/empty tier list
       engine.applyDownsampling(null, 100000L);
       engine.applyDownsampling(List.of(), 100000L);
-    } finally {
-      engine.close();
     }
   }
 }

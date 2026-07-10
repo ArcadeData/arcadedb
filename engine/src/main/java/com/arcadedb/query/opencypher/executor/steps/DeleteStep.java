@@ -119,8 +119,8 @@ public class DeleteStep extends AbstractExecutionStep {
             for (final String variable : deleteClause.getVariables()) {
               if (!variable.contains(".") && !variable.contains("[")) {
                 final Object obj = inputResult.getProperty(variable);
-                if (obj instanceof Edge)
-                  relTypes.put(variable, ((Edge) obj).getTypeName());
+                if (obj instanceof Edge edge)
+                  relTypes.put(variable, edge.getTypeName());
               }
             }
 
@@ -296,14 +296,18 @@ public class DeleteStep extends AbstractExecutionStep {
     if (obj == null || deleted.contains(obj))
       return;
     try {
-      if (obj instanceof Edge e) {
-        e.delete();
-        stats.incRelationshipsDeleted();
-      } else if (obj instanceof Vertex v) {
-        v.delete();
-        stats.incNodesDeleted();
-      } else if (obj instanceof Document)
-        ((Document) obj).delete();
+      switch (obj) {
+        case Edge e -> {
+          e.delete();
+          stats.incRelationshipsDeleted();
+        }
+        case Vertex v -> {
+          v.delete();
+          stats.incNodesDeleted();
+        }
+        case Document document -> document.delete();
+        case null, default -> {}
+      }
       deleted.add(obj);
     } catch (final RecordNotFoundException ignored) {
       deleted.add(obj);
@@ -320,11 +324,11 @@ public class DeleteStep extends AbstractExecutionStep {
         edges.add(e);
       for (final Vertex v : path.getVertices())
         other.add(v);
-    } else if (obj instanceof List) {
-      for (final Object elem : (List<?>) obj)
+    } else if (obj instanceof List<?> list) {
+      for (final Object elem : list)
         collectDeleteTargets(elem, edges, other);
-    } else if (obj instanceof Map) {
-      for (final Object value : ((Map<?, ?>) obj).values())
+    } else if (obj instanceof Map<?, ?> map) {
+      for (final Object value : map.values())
         collectDeleteTargets(value, edges, other);
     } else
       other.add(obj);
@@ -386,10 +390,10 @@ public class DeleteStep extends AbstractExecutionStep {
           propEnd++;
         final String prop = expr.substring(pos, propEnd);
         pos = propEnd;
-        if (current instanceof Map)
-          current = ((Map<?, ?>) current).get(prop);
-        else if (current instanceof Result)
-          current = ((Result) current).getProperty(prop);
+        if (current instanceof Map<?, ?> map)
+          current = map.get(prop);
+        else if (current instanceof Result result1)
+          current = result1.getProperty(prop);
         else
           return null;
       } else if (ch == '[') {
@@ -400,15 +404,14 @@ public class DeleteStep extends AbstractExecutionStep {
           return null;
         String indexStr = expr.substring(pos, closeBracket).trim();
         pos = closeBracket + 1;
-        if (current instanceof List) {
+        if (current instanceof List<?> list) {
           int index;
           if (indexStr.startsWith("$")) {
             final Object paramVal = context.getInputParameters().get(indexStr.substring(1));
-            index = paramVal instanceof Number ? ((Number) paramVal).intValue() : Integer.parseInt(paramVal.toString());
+            index = paramVal instanceof Number n ? n.intValue() : Integer.parseInt(paramVal.toString());
           } else {
             index = Integer.parseInt(indexStr);
           }
-          final List<?> list = (List<?>) current;
           if (index >= 0 && index < list.size())
             current = list.get(index);
           else
@@ -427,46 +430,52 @@ public class DeleteStep extends AbstractExecutionStep {
     if (obj == null || deleted.contains(obj))
       return;
 
-    if (obj instanceof Vertex) {
-      deleted.add(obj);
-      try {
-        deleteVertex((Vertex) obj, deleted);
-      } catch (final RecordNotFoundException e) {
-        // Already deleted - skip
+    switch (obj) {
+      case Vertex vertex -> {
+        deleted.add(obj);
+        try {
+          deleteVertex(vertex, deleted);
+        } catch (final RecordNotFoundException e) {
+          // Already deleted - skip
+        }
       }
-    } else if (obj instanceof Edge) {
-      deleted.add(obj);
-      try {
-        deleteEdge((Edge) obj, deleted);
-      } catch (final RecordNotFoundException e) {
-        // Already deleted - skip
+      case Edge edge -> {
+        deleted.add(obj);
+        try {
+          deleteEdge(edge, deleted);
+        } catch (final RecordNotFoundException e) {
+          // Already deleted - skip
+        }
       }
-    } else if (obj instanceof Document) {
-      deleted.add(obj);
-      try {
-        ((Document) obj).delete();
-      } catch (final RecordNotFoundException e) {
-        // Already deleted - skip
+      case Document document -> {
+        deleted.add(obj);
+        try {
+          document.delete();
+        } catch (final RecordNotFoundException e) {
+          // Already deleted - skip
+        }
       }
-    } else if (obj instanceof TraversalPath path) {
-      // Delete edges first, then vertices (edges must be removed before non-DETACH vertex delete)
-      for (final Edge e : path.getEdges())
-        deleteObject(e, deleted);
-      for (final Vertex v : path.getVertices())
-        deleteObject(v, deleted);
-    } else if (obj instanceof List) {
-      // Delete edges first, then vertices/documents (edges must be removed before non-DETACH vertex delete)
-      final List<?> list = (List<?>) obj;
-      for (final Object elem : list)
-        if (elem instanceof Edge)
-          deleteObject(elem, deleted);
-      for (final Object elem : list)
-        if (!(elem instanceof Edge))
-          deleteObject(elem, deleted);
-    } else if (obj instanceof Map) {
-      // Delete each value in the map
-      for (final Object value : ((Map<?, ?>) obj).values())
-        deleteObject(value, deleted);
+      case TraversalPath path -> {
+        // Delete edges first, then vertices (edges must be removed before non-DETACH vertex delete)
+        for (final Edge e : path.getEdges())
+          deleteObject(e, deleted);
+        for (final Vertex v : path.getVertices())
+          deleteObject(v, deleted);
+      }
+      case List<?> list -> {
+        for (final Object elem : list)
+          if (elem instanceof Edge)
+            deleteObject(elem, deleted);
+        for (final Object elem : list)
+          if (!(elem instanceof Edge))
+            deleteObject(elem, deleted);
+      }
+      case Map<?, ?> map -> {
+        // Delete each value in the map
+        for (final Object value : map.values())
+          deleteObject(value, deleted);
+      }
+      case null, default -> {}
     }
   }
 

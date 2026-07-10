@@ -75,6 +75,7 @@ import com.arcadedb.query.opencypher.rewriter.ConstantFolder;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -267,9 +268,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       constraintKind = CypherDDLStatement.ConstraintKind.NOT_NULL;
     else if (constraintType instanceof Cypher25Parser.ConstraintKeyContext)
       constraintKind = CypherDDLStatement.ConstraintKind.KEY;
-    else if (constraintType instanceof Cypher25Parser.ConstraintTypedContext) {
+    else if (constraintType instanceof Cypher25Parser.ConstraintTypedContext context) {
       constraintKind = CypherDDLStatement.ConstraintKind.TYPED;
-      typedName = extractCypherTypeName(((Cypher25Parser.ConstraintTypedContext) constraintType).type());
+      typedName = extractCypherTypeName(context.type());
     } else
       throw new CommandParsingException("Unsupported constraint type: " + constraintType.getText());
 
@@ -350,16 +351,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   private List<String> extractPropertyNames(final Cypher25Parser.ConstraintTypeContext ctx) {
     // propertyList() is defined on each specific subclass, not on the base ConstraintTypeContext
     final Cypher25Parser.PropertyListContext propList;
-    if (ctx instanceof Cypher25Parser.ConstraintIsUniqueContext)
-      propList = ((Cypher25Parser.ConstraintIsUniqueContext) ctx).propertyList();
-    else if (ctx instanceof Cypher25Parser.ConstraintIsNotNullContext)
-      propList = ((Cypher25Parser.ConstraintIsNotNullContext) ctx).propertyList();
-    else if (ctx instanceof Cypher25Parser.ConstraintKeyContext)
-      propList = ((Cypher25Parser.ConstraintKeyContext) ctx).propertyList();
-    else if (ctx instanceof Cypher25Parser.ConstraintTypedContext)
-      propList = ((Cypher25Parser.ConstraintTypedContext) ctx).propertyList();
-    else
-      throw new CommandParsingException("Unsupported constraint type for property extraction");
+    switch (ctx) {
+      case Cypher25Parser.ConstraintIsUniqueContext context3 -> propList = context3.propertyList();
+      case Cypher25Parser.ConstraintIsNotNullContext context2 -> propList = context2.propertyList();
+      case Cypher25Parser.ConstraintKeyContext context1 -> propList = context1.propertyList();
+      case Cypher25Parser.ConstraintTypedContext context -> propList = context.propertyList();
+      case null, default -> throw new CommandParsingException("Unsupported constraint type for property extraction");
+    }
 
     final List<String> names = new ArrayList<>();
     if (propList.enclosedPropertyList() != null) {
@@ -477,7 +475,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Single query - no UNION
     if (singleQueries.size() == 1)
-      return (CypherStatement) visit(singleQueries.get(0));
+      return (CypherStatement) visit(singleQueries.getFirst());
 
     // Multiple queries - parse as UNION
     final List<CypherStatement> queries = new ArrayList<>();
@@ -648,85 +646,93 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<SetClause.SetItem> items = new ArrayList<>();
 
     for (final Cypher25Parser.SetItemContext itemCtx : ctx.setItem()) {
-      if (itemCtx instanceof Cypher25Parser.SetPropContext propCtx) {
-        // Pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values
-        if (findPatternExpressionRecursive(propCtx.expression()) != null)
-          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
-        final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
-        final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
-        // Build the property name from all property accessors (supports chained access like a.b.c)
-        final StringBuilder propertyName = new StringBuilder();
-        for (final Cypher25Parser.PropertyContext prop : propExprCtx.property())
-          if (propertyName.length() > 0)
-            propertyName.append('.').append(stripBackticks(prop.propertyKeyName().getText()));
-          else
-            propertyName.append(stripBackticks(prop.propertyKeyName().getText()));
-        // Check if the base expression is a simple variable or a complex expression (e.g., CASE)
-        final Cypher25Parser.Expression1Context baseExpr1 = propExprCtx.expression1();
-        if (baseExpr1.variable() != null) {
-          // Simple variable: SET n.prop = value
-          items.add(new SetClause.SetItem(baseExpr1.variable().getText(), propertyName.toString(), valueExpr));
-        } else if (baseExpr1.parenthesizedExpression() != null) {
-          // Check if the parenthesized expression contains just a variable
-          final String innerText = baseExpr1.parenthesizedExpression().expression().getText().trim();
-          // Try to parse as a complex expression (e.g., CASE WHEN ... THEN t END)
-          final Expression targetExpr = expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
-          if (targetExpr instanceof VariableExpression) {
-            items.add(new SetClause.SetItem(((VariableExpression) targetExpr).getVariableName(), propertyName.toString(), valueExpr));
+      switch (itemCtx) {
+        case Cypher25Parser.SetPropContext propCtx -> {
+          // Pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values
+          if (findPatternExpressionRecursive(propCtx.expression()) != null)
+            throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
+          final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
+          final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
+          // Build the property name from all property accessors (supports chained access like a.b.c)
+          final StringBuilder propertyName = new StringBuilder();
+          for (final Cypher25Parser.PropertyContext prop : propExprCtx.property())
+            if (propertyName.length() > 0)
+              propertyName.append('.').append(stripBackticks(prop.propertyKeyName().getText()));
+            else
+              propertyName.append(stripBackticks(prop.propertyKeyName().getText()));
+          // Check if the base expression is a simple variable or a complex expression (e.g., CASE)
+          final Cypher25Parser.Expression1Context baseExpr1 = propExprCtx.expression1();
+          if (baseExpr1.variable() != null) {
+            // Simple variable: SET n.prop = value
+            items.add(new SetClause.SetItem(baseExpr1.variable().getText(), propertyName.toString(), valueExpr));
+          } else if (baseExpr1.parenthesizedExpression() != null) {
+            // Check if the parenthesized expression contains just a variable
+            final String innerText = baseExpr1.parenthesizedExpression().expression().getText().trim();
+            // Try to parse as a complex expression (e.g., CASE WHEN ... THEN t END)
+            final Expression targetExpr = expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
+            if (targetExpr instanceof VariableExpression expression) {
+              items.add(new SetClause.SetItem(expression.getVariableName(), propertyName.toString(), valueExpr));
+            } else {
+              items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
+            }
           } else {
+            // Other expression types as base - parse as expression
+            final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
             items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
           }
-        } else {
-          // Other expression types as base - parse as expression
-          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
-          items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
         }
-      } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
-        // SET n[keyExpr] = value — dynamic property assignment (issue #5141)
-        if (findPatternExpressionRecursive(dynCtx.expression()) != null)
-          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
-        final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
-        final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
-        final Expression valueExpr = expressionBuilder.parseExpression(dynCtx.expression());
-        final Cypher25Parser.Expression1Context baseExpr1 = dynPropExpr.expression1();
-        if (baseExpr1.variable() != null) {
-          items.add(new SetClause.SetItem(baseExpr1.variable().getText(), null, keyExpr, valueExpr));
-        } else {
-          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
-          items.add(new SetClause.SetItem(null, targetExpr, keyExpr, valueExpr));
+        case Cypher25Parser.SetDynamicPropContext dynCtx -> {
+          // SET n[keyExpr] = value — dynamic property assignment (issue #5141)
+          if (findPatternExpressionRecursive(dynCtx.expression()) != null)
+            throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
+          final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
+          final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
+          final Expression valueExpr = expressionBuilder.parseExpression(dynCtx.expression());
+          final Cypher25Parser.Expression1Context baseExpr1 = dynPropExpr.expression1();
+          if (baseExpr1.variable() != null) {
+            items.add(new SetClause.SetItem(baseExpr1.variable().getText(), null, keyExpr, valueExpr));
+          } else {
+            final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+            items.add(new SetClause.SetItem(null, targetExpr, keyExpr, valueExpr));
+          }
         }
-      } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
-        // SET n = {map} — replace all properties
-        final String variable = propsCtx.variable().getText();
-        final Expression valueExpr = expressionBuilder.parseExpression(propsCtx.expression());
-        items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.REPLACE_MAP));
-      } else if (itemCtx instanceof Cypher25Parser.AddPropContext addCtx) {
-        // SET n += {map} — merge properties
-        final String variable = addCtx.variable().getText();
-        final Expression valueExpr = expressionBuilder.parseExpression(addCtx.expression());
-        items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.MERGE_MAP));
-      } else if (itemCtx instanceof Cypher25Parser.SetLabelsContext labelsCtx) {
-        // SET n:Label — add labels
-        final String variable = labelsCtx.variable().getText();
-        final String labelsText = labelsCtx.nodeLabels().getText();
-        final String cleanText = labelsText.replaceAll("^:+", "");
-        final String[] parts = cleanText.split("[:&|]+");
-        final List<String> labelList = new ArrayList<>();
-        for (final String part : parts)
-          if (!part.isEmpty())
-            labelList.add(stripBackticks(part));
-        items.add(new SetClause.SetItem(variable, labelList));
-      } else if (itemCtx instanceof Cypher25Parser.SetLabelsIsContext labelsIsCtx) {
-        // SET n IS Label — add labels (IS syntax)
-        final String variable = labelsIsCtx.variable().getText();
-        final String labelsText = labelsIsCtx.nodeLabelsIs().getText();
-        final String cleanText = labelsText.replaceAll("^\\s*IS\\s+", "").replaceAll("^:+", "");
-        final String[] parts = cleanText.split("[:&|]+");
-        final List<String> labelList = new ArrayList<>();
-        for (final String part : parts)
-          if (!part.isEmpty())
-            labelList.add(stripBackticks(part));
-        items.add(new SetClause.SetItem(variable, labelList));
+        case Cypher25Parser.SetPropsContext propsCtx -> {
+          // SET n = {map} — replace all properties
+          final String variable = propsCtx.variable().getText();
+          final Expression valueExpr = expressionBuilder.parseExpression(propsCtx.expression());
+          items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.REPLACE_MAP));
+        }
+        case Cypher25Parser.AddPropContext addCtx -> {
+          // SET n += {map} — merge properties
+          final String variable = addCtx.variable().getText();
+          final Expression valueExpr = expressionBuilder.parseExpression(addCtx.expression());
+          items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.MERGE_MAP));
+        }
+        case Cypher25Parser.SetLabelsContext labelsCtx -> {
+          // SET n:Label — add labels
+          final String variable = labelsCtx.variable().getText();
+          final String labelsText = labelsCtx.nodeLabels().getText();
+          final String cleanText = labelsText.replaceAll("^:+", "");
+          final String[] parts = cleanText.split("[:&|]+");
+          final List<String> labelList = new ArrayList<>();
+          for (final String part : parts)
+            if (!part.isEmpty())
+              labelList.add(stripBackticks(part));
+          items.add(new SetClause.SetItem(variable, labelList));
+        }
+        case Cypher25Parser.SetLabelsIsContext labelsIsCtx -> {
+          // SET n IS Label — add labels (IS syntax)
+          final String variable = labelsIsCtx.variable().getText();
+          final String labelsText = labelsIsCtx.nodeLabelsIs().getText();
+          final String cleanText = labelsText.replaceAll("^\\s*IS\\s+", "").replaceAll("^:+", "");
+          final String[] parts = cleanText.split("[:&|]+");
+          final List<String> labelList = new ArrayList<>();
+          for (final String part : parts)
+            if (!part.isEmpty())
+              labelList.add(stripBackticks(part));
+          items.add(new SetClause.SetItem(variable, labelList));
+        }
+        case null, default -> {}
       }
     }
 
@@ -750,29 +756,31 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<RemoveClause.RemoveItem> items = new ArrayList<>();
 
     for (final Cypher25Parser.RemoveItemContext itemCtx : ctx.removeItem()) {
-      if (itemCtx instanceof Cypher25Parser.RemovePropContext) {
-        // REMOVE n.property
-        final Cypher25Parser.RemovePropContext propCtx = (Cypher25Parser.RemovePropContext) itemCtx;
-        final String propExpr = propCtx.propertyExpression().getText();
+      switch (itemCtx) {
+        case Cypher25Parser.RemovePropContext propCtx -> {
+          final String propExpr = propCtx.propertyExpression().getText();
 
-        // Parse property expression: variable.property
-        if (propExpr.contains(".")) {
-          final String[] parts = propExpr.split("\\.", 2);
-          items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
+          // Parse property expression: variable.property
+          if (propExpr.contains(".")) {
+            final String[] parts = propExpr.split("\\.", 2);
+            items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
+          }
         }
-      } else if (itemCtx instanceof Cypher25Parser.RemoveDynamicPropContext dynCtx) {
-        // REMOVE n[keyExpr] — dynamic property removal (issue #5141)
-        final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
-        final String variable = dynPropExpr.expression1().getText();
-        final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
-        items.add(new RemoveClause.RemoveItem(variable, keyExpr));
-      } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext) {
-        final Cypher25Parser.RemoveLabelsContext labelsCtx = (Cypher25Parser.RemoveLabelsContext) itemCtx;
-        final String variable = stripBackticks(labelsCtx.variable().getText());
-        final List<String> labels = new ArrayList<>();
-        for (final Cypher25Parser.LabelTypeContext lt : labelsCtx.nodeLabels().labelType())
-          labels.add(stripBackticks(lt.symbolicNameString().getText()));
-        items.add(new RemoveClause.RemoveItem(variable, labels));
+        case Cypher25Parser.RemoveDynamicPropContext dynCtx -> {
+          // REMOVE n[keyExpr] — dynamic property removal (issue #5141)
+          final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
+          final String variable = dynPropExpr.expression1().getText();
+          final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
+          items.add(new RemoveClause.RemoveItem(variable, keyExpr));
+        }
+        case Cypher25Parser.RemoveLabelsContext labelsCtx -> {
+          final String variable = stripBackticks(labelsCtx.variable().getText());
+          final List<String> labels = new ArrayList<>();
+          for (final Cypher25Parser.LabelTypeContext lt : labelsCtx.nodeLabels().labelType())
+            labels.add(stripBackticks(lt.symbolicNameString().getText()));
+          items.add(new RemoveClause.RemoveItem(variable, labels));
+        }
+        case null, default -> {}
       }
       // TODO: Handle RemoveLabelsIs
     }
@@ -1091,10 +1099,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     if (expr11List.size() == 1) {
       // No OR operator, just delegate to expression11
-      return parseBooleanFromExpression11(expr11List.get(0));
+      return parseBooleanFromExpression11(expr11List.getFirst());
     } else if (expr11List.size() > 1) {
       // Multiple expression11 connected with OR
-      BooleanExpression result = parseBooleanFromExpression11(expr11List.get(0));
+      BooleanExpression result = parseBooleanFromExpression11(expr11List.getFirst());
       for (int i = 1; i < expr11List.size(); i++) {
         final BooleanExpression right = parseBooleanFromExpression11(expr11List.get(i));
         result = new LogicalExpression(LogicalExpression.Operator.OR, result, right);
@@ -1108,8 +1116,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   private Cypher25Parser.Expression11Context findExpression11(final ParseTree node) {
-    if (node instanceof Cypher25Parser.Expression11Context) {
-      return (Cypher25Parser.Expression11Context) node;
+    if (node instanceof Cypher25Parser.Expression11Context context) {
+      return context;
     }
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.Expression11Context found = findExpression11(node.getChild(i));
@@ -1120,8 +1128,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   private Cypher25Parser.ParenthesizedExpressionContext findParenthesizedExpressionRecursive(final ParseTree node) {
-    if (node instanceof Cypher25Parser.ParenthesizedExpressionContext) {
-      return (Cypher25Parser.ParenthesizedExpressionContext) node;
+    if (node instanceof Cypher25Parser.ParenthesizedExpressionContext context) {
+      return context;
     }
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.ParenthesizedExpressionContext found =
@@ -1137,8 +1145,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * Pattern expressions are used for pattern predicates in WHERE clauses.
    */
   private Cypher25Parser.PatternExpressionContext findPatternExpressionRecursive(final ParseTree node) {
-    if (node instanceof Cypher25Parser.PatternExpressionContext) {
-      return (Cypher25Parser.PatternExpressionContext) node;
+    if (node instanceof Cypher25Parser.PatternExpressionContext context) {
+      return context;
     }
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.PatternExpressionContext found = findPatternExpressionRecursive(node.getChild(i));
@@ -1206,10 +1214,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<Cypher25Parser.Expression10Context> expr10List = ctx.expression10();
 
     if (expr10List.size() == 1)
-      return parseBooleanFromExpression10(expr10List.get(0));
+      return parseBooleanFromExpression10(expr10List.getFirst());
 
     // Multiple expression10 connected with XOR
-    BooleanExpression result = parseBooleanFromExpression10(expr10List.get(0));
+    BooleanExpression result = parseBooleanFromExpression10(expr10List.getFirst());
     for (int i = 1; i < expr10List.size(); i++) {
       final BooleanExpression right = parseBooleanFromExpression10(expr10List.get(i));
       result = new LogicalExpression(LogicalExpression.Operator.XOR, result, right);
@@ -1223,10 +1231,10 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     if (expr9List.size() == 1) {
       // No AND operator, just delegate
-      return parseBooleanFromExpression9(expr9List.get(0));
+      return parseBooleanFromExpression9(expr9List.getFirst());
     } else if (expr9List.size() > 1) {
       // Multiple expression9 connected with AND
-      BooleanExpression result = parseBooleanFromExpression9(expr9List.get(0));
+      BooleanExpression result = parseBooleanFromExpression9(expr9List.getFirst());
       for (int i = 1; i < expr9List.size(); i++) {
         final BooleanExpression right = parseBooleanFromExpression9(expr9List.get(i));
         result = new LogicalExpression(LogicalExpression.Operator.AND, result, right);
@@ -1285,7 +1293,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           // Simple two-operand comparison
           final Expression left = expressionBuilder.parseExpressionFromText(ctx.expression7(0));
           final Expression right = expressionBuilder.parseExpressionFromText(ctx.expression7(1));
-          return new ComparisonExpression(left, operators.get(0), right);
+          return new ComparisonExpression(left, operators.getFirst(), right);
         }
         // Chained comparison: a < b < c becomes (a < b) AND (b < c)
         BooleanExpression result = null;
@@ -1328,7 +1336,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         public boolean evaluate(final Result result,
             final CommandContext context) {
           final Object value = exists.evaluate(result, context);
-          return value instanceof Boolean && (Boolean) value;
+          return value instanceof Boolean b && b;
         }
 
         @Override
@@ -1374,16 +1382,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
       // Check which alternative of comparisonExpression6 was matched
       // NullComparison: IS NOT? NULL
-      if (compCtx instanceof Cypher25Parser.NullComparisonContext) {
-        final Cypher25Parser.NullComparisonContext nullCtx = (Cypher25Parser.NullComparisonContext) compCtx;
+      if (compCtx instanceof Cypher25Parser.NullComparisonContext nullCtx) {
         final boolean isNot = nullCtx.NOT() != null;
         return new IsNullExpression(leftExpr, isNot);
       }
 
       // StringAndListComparison: (REGEQ | STARTS WITH | ENDS WITH | CONTAINS | IN) expression6
-      if (compCtx instanceof Cypher25Parser.StringAndListComparisonContext) {
-        final Cypher25Parser.StringAndListComparisonContext strListCtx =
-            (Cypher25Parser.StringAndListComparisonContext) compCtx;
+      if (compCtx instanceof Cypher25Parser.StringAndListComparisonContext strListCtx) {
 
         // Check for IN operator
         if (strListCtx.IN() != null) {
@@ -1423,14 +1428,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       }
 
       // LabelComparison: labelExpression (e.g., n:Person, n:Person|Developer)
-      if (compCtx instanceof Cypher25Parser.LabelComparisonContext) {
-        final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) compCtx;
+      if (compCtx instanceof Cypher25Parser.LabelComparisonContext labelCtx) {
         return parseLabelCheckExpression(leftExpr, labelCtx.labelExpression(), ctx.getText());
       }
 
       // TypeComparison: <expr> IS [NOT] TYPED <type>  or  <expr> :: <type>  (issue #3365 section 3.3)
-      if (compCtx instanceof Cypher25Parser.TypeComparisonContext) {
-        return buildIsTypedExpression(leftExpr, (Cypher25Parser.TypeComparisonContext) compCtx);
+      if (compCtx instanceof Cypher25Parser.TypeComparisonContext context) {
+        return buildIsTypedExpression(leftExpr, context);
       }
 
       // Other comparison types (NormalFormComparison)
@@ -1456,7 +1460,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         @Override
         public boolean evaluate(final Result result, final CommandContext context) {
           final Object value = funcExpr.evaluate(result, context);
-          return value instanceof Boolean && (Boolean) value;
+          return value instanceof Boolean b && b;
         }
 
         @Override
@@ -1609,8 +1613,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // If there's a path variable or path mode, create a new PathPattern with them
     if (pathVariable != null || pathMode != null) {
-      if (basePath instanceof ShortestPathPattern) {
-        final ShortestPathPattern shortestBase = (ShortestPathPattern) basePath;
+      if (basePath instanceof ShortestPathPattern shortestBase) {
         return new ShortestPathPattern(basePath.getNodes(), basePath.getRelationships(),
             pathVariable != null ? pathVariable : basePath.getPathVariable(), shortestBase.isAllPaths());
       }
@@ -1658,29 +1661,31 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final int childCount = ctx.getChildCount();
     for (int i = 0; i < childCount; i++) {
       final ParseTree child = ctx.getChild(i);
-      if (child instanceof Cypher25Parser.NodePatternContext) {
-        nodes.add(visitNodePattern((Cypher25Parser.NodePatternContext) child));
-      } else if (child instanceof Cypher25Parser.RelationshipPatternContext) {
-        relationships.add(visitRelationshipPattern((Cypher25Parser.RelationshipPatternContext) child));
-      } else if (child instanceof Cypher25Parser.QuantifierContext) {
-        if (relationships.isEmpty())
-          throw new CommandParsingException("InvalidSyntax: Quantifier has no preceding relationship");
-        final int last = relationships.size() - 1;
-        relationships.set(last, applyQuantifier(relationships.get(last), (Cypher25Parser.QuantifierContext) child));
-      } else if (child instanceof Cypher25Parser.ParenthesizedPathContext) {
-        // GQL Quantified Path Pattern (issue #3365 sections 1.4 and 1.5).
-        // Phase A: lower a single-relationship grouped pattern to a variable-length
-        // relationship that the existing executor already handles.
-        final boolean nextIsOuterNode = (i + 1) < childCount
-            && ctx.getChild(i + 1) instanceof Cypher25Parser.NodePatternContext;
-        absorbParenthesizedPath((Cypher25Parser.ParenthesizedPathContext) child, nodes, relationships, nextIsOuterNode);
+      switch (child) {
+        case Cypher25Parser.NodePatternContext context3 -> nodes.add(visitNodePattern(context3));
+        case Cypher25Parser.RelationshipPatternContext context2 -> relationships.add(visitRelationshipPattern(context2));
+        case Cypher25Parser.QuantifierContext context1 -> {
+          if (relationships.isEmpty())
+            throw new CommandParsingException("InvalidSyntax: Quantifier has no preceding relationship");
+          final int last = relationships.size() - 1;
+          relationships.set(last, applyQuantifier(relationships.get(last), context1));
+        }
+        case Cypher25Parser.ParenthesizedPathContext context -> {
+          // GQL Quantified Path Pattern (issue #3365 sections 1.4 and 1.5).
+          // Phase A: lower a single-relationship grouped pattern to a variable-length
+          // relationship that the existing executor already handles.
+          final boolean nextIsOuterNode = (i + 1) < childCount
+              && ctx.getChild(i + 1) instanceof Cypher25Parser.NodePatternContext;
+          absorbParenthesizedPath(context, nodes, relationships, nextIsOuterNode);
+        }
+        case null, default -> {}
       }
     }
 
     // Build PathPattern
     if (relationships.isEmpty()) {
       // Single node pattern
-      return new PathPattern(nodes.get(0));
+      return new PathPattern(nodes.getFirst());
     } else {
       // Path with relationships
       return new PathPattern(nodes, relationships);
@@ -1913,28 +1918,22 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // For literal expressions, extract the value immediately for backward compatibility
       // For dynamic expressions (property access, variables, etc.), keep as Expression for runtime evaluation
       final Object value;
-      if (expr instanceof LiteralExpression) {
-        Object literalValue = ((LiteralExpression) expr).getValue();
-        // Convert Long to Integer for backward compatibility with tests
-        if (literalValue instanceof Long) {
-          final long longValue = (Long) literalValue;
-          if (longValue >= Integer.MIN_VALUE && longValue <= Integer.MAX_VALUE)
-            literalValue = (int) longValue;
+      switch (expr) {
+        case LiteralExpression expression1 -> {
+          Object literalValue = expression1.getValue();
+          // Convert Long to Integer for backward compatibility with tests
+          if (literalValue instanceof Long longValue) {
+            if (longValue >= Integer.MIN_VALUE && longValue <= Integer.MAX_VALUE)
+              literalValue =  longValue.intValue();
+          }
+          value = literalValue;
         }
-        value = literalValue;
-      } else if (expr instanceof ParameterExpression) {
-        // Convert to ParameterReference for backward compatibility
-        final ParameterExpression paramExpr = (ParameterExpression) expr;
-        value = new ParameterReference(paramExpr.getParameterName());
-      } else if (expr instanceof ListExpression) {
-        // Evaluate list literals immediately, but only if all elements are simple literals
-        if (isStaticListExpression((ListExpression) expr))
+        case ParameterExpression paramExpr -> value = new ParameterReference(paramExpr.getParameterName());
+        case ListExpression expression when isStaticListExpression(expression) ->
           value = expr.evaluate(null, null);
-        else
-          value = expr; // Keep as Expression for runtime evaluation (e.g., [date({...})])
-      } else {
-        // Keep dynamic expressions as Expression objects for runtime evaluation
-        value = expr;
+        case ListExpression expression ->
+          value = expr;
+        case null, default -> value = expr;
       }
 
       map.put(key, value);

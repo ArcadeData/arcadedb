@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.grpc.GrpcDecimal;
 import com.arcadedb.server.grpc.GrpcEmbedded;
 import com.arcadedb.server.grpc.GrpcLink;
@@ -30,12 +31,12 @@ import com.arcadedb.server.grpc.GrpcList;
 import com.arcadedb.server.grpc.GrpcMap;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
-import com.arcadedb.log.LogManager;
 
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
@@ -46,12 +47,11 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
-import java.util.logging.Level;
-
 import java.util.Collection;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.logging.Level;
 
 public class ProtoUtils {
 
@@ -201,8 +201,7 @@ public class ProtoUtils {
     }
 
     // Convert properties
-    if (rec instanceof Document) {
-      Document doc = (Document) rec;
+    if (rec instanceof Document doc) {
       for (String propName : doc.getPropertyNames()) {
         Object value = doc.get(propName);
 

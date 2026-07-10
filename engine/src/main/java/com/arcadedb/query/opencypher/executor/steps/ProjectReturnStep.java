@@ -204,8 +204,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
         final String property = matcher.group(2);
 
         final Object obj = inputResult.getProperty(variable);
-        if (obj instanceof Document) {
-          final Document doc = (Document) obj;
+        if (obj instanceof Document doc) {
           final Object value = doc.get(property);
           result.setProperty(variable + "." + property, value);
         }

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.parser.NeqOperator;
+
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

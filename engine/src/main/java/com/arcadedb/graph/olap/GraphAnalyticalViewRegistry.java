@@ -84,7 +84,7 @@ public class GraphAnalyticalViewRegistry {
   public static Map<String, GraphAnalyticalView> getAll(final Database database) {
     synchronized (REGISTRY) {
       final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
-      return views != null ? Collections.unmodifiableMap(views) : Collections.emptyMap();
+      return views != null ? Collections.unmodifiableMap(views) : Map.of();
     }
   }
 
@@ -95,7 +95,7 @@ public class GraphAnalyticalViewRegistry {
     synchronized (REGISTRY) {
       final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrap(database));
       if (views == null)
-        return Collections.emptyMap();
+        return Map.of();
       final Map<String, GraphAnalyticalView> ready = new HashMap<>();
       for (final Map.Entry<String, GraphAnalyticalView> entry : views.entrySet())
         if (entry.getValue().isReady())

@@ -51,7 +51,7 @@ public class DateConvert extends AbstractDateFunction {
     if (args[0] == null)
       return null;
 
-    final long value = args[0] instanceof Number ? ((Number) args[0]).longValue() : Long.parseLong(args[0].toString());
+    final long value = args[0] instanceof Number n ? n.longValue() : Long.parseLong(args[0].toString());
     final String fromUnit = args[1] != null ? args[1].toString() : UNIT_MS;
     final String toUnit = args[2] != null ? args[2].toString() : UNIT_MS;
 

@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -171,7 +172,7 @@ public class Issue4214InsertStreamConflictIgnoreIT extends BaseGraphServerTest {
           .setQuery("SELECT count(*) as cnt FROM " + typeName)
           .build());
       assertThat(queryResp.getResultsList()).isNotEmpty();
-      final long count = queryResp.getResultsList().get(0).getRecordsList().get(0)
+      final long count = queryResp.getResultsList().getFirst().getRecordsList().getFirst()
           .getPropertiesMap().get("cnt").getInt64Value();
       assertThat(count).isEqualTo(3);
     } finally {
@@ -245,7 +246,7 @@ public class Issue4214InsertStreamConflictIgnoreIT extends BaseGraphServerTest {
           .setQuery("SELECT count(*) as cnt FROM " + typeName)
           .build());
       assertThat(queryResp.getResultsList()).isNotEmpty();
-      final long count = queryResp.getResultsList().get(0).getRecordsList().get(0)
+      final long count = queryResp.getResultsList().getFirst().getRecordsList().getFirst()
           .getPropertiesMap().get("cnt").getInt64Value();
       assertThat(count).isEqualTo(3);
     } finally {
@@ -319,7 +320,7 @@ public class Issue4214InsertStreamConflictIgnoreIT extends BaseGraphServerTest {
           .setQuery("SELECT count(*) as cnt FROM " + typeName)
           .build());
       assertThat(queryResp.getResultsList()).isNotEmpty();
-      final long count = queryResp.getResultsList().get(0).getRecordsList().get(0)
+      final long count = queryResp.getResultsList().getFirst().getRecordsList().getFirst()
           .getPropertiesMap().get("cnt").getInt64Value();
       assertThat(count).isEqualTo(3);
     } finally {

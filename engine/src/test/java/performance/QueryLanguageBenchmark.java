@@ -31,6 +31,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.TestInstance;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -227,25 +229,25 @@ class QueryLanguageBenchmark {
     System.out.println("Benchmark: Java Native API");
     System.out.println("========================================\n");
 
-    final Map<String, BenchmarkResult> results = new LinkedHashMap<>();
+    final Map<String, BenchmarkResult> results = new HashMap<>(Map.of(
 
-    // 1. Full scan with aggregation (AVG age)
-    results.put("Scan (AVG age)", benchmarkJavaAvgAge());
+        // 1. Full scan with aggregation (AVG age)
+        "Scan (AVG age)", benchmarkJavaAvgAge(),
 
-    // 2. Lookup by unique index
-    results.put("Index Lookup", benchmarkJavaIndexLookup());
+        // 2. Lookup by unique index
+        "Index Lookup", benchmarkJavaIndexLookup(),
 
-    // 3. Filter scan
-    results.put("Filter Scan (age > 30)", benchmarkJavaFilterScan());
+        // 3. Filter scan
+        "Filter Scan (age > 30)", benchmarkJavaFilterScan(),
 
-    // 4. Count
-    results.put("Count", benchmarkJavaCount());
+        // 4. Count
+        "Count", benchmarkJavaCount(),
 
-    // 5. 3-level traversal
-    results.put("3-Level Traversal", benchmarkJavaTraversal(3));
+        // 5. 3-level traversal
+        "3-Level Traversal", benchmarkJavaTraversal(3),
 
-    // 6. 5-level traversal
-    results.put("5-Level Traversal", benchmarkJavaTraversal(5));
+        // 6. 5-level traversal
+        "5-Level Traversal", benchmarkJavaTraversal(5)));
 
     benchmarkResults.put("Java Native", results);
   }
@@ -256,14 +258,14 @@ class QueryLanguageBenchmark {
     System.out.println("Benchmark: SQL");
     System.out.println("========================================\n");
 
-    final Map<String, BenchmarkResult> results = new LinkedHashMap<>();
+    final Map<String, BenchmarkResult> results = new HashMap<>(Map.of(
 
-    results.put("Scan (AVG age)", benchmarkSQLAvgAge());
-    results.put("Index Lookup", benchmarkSQLIndexLookup());
-    results.put("Filter Scan (age > 30)", benchmarkSQLFilterScan());
-    results.put("Count", benchmarkSQLCount());
-    results.put("3-Level Traversal", benchmarkSQLTraversal(3));
-    results.put("5-Level Traversal", benchmarkSQLTraversal(5));
+        "Scan (AVG age)", benchmarkSQLAvgAge(),
+        "Index Lookup", benchmarkSQLIndexLookup(),
+        "Filter Scan (age > 30)", benchmarkSQLFilterScan(),
+        "Count", benchmarkSQLCount(),
+        "3-Level Traversal", benchmarkSQLTraversal(3),
+        "5-Level Traversal", benchmarkSQLTraversal(5)));
 
     benchmarkResults.put("SQL", results);
   }
@@ -274,14 +276,14 @@ class QueryLanguageBenchmark {
     System.out.println("Benchmark: OpenCypher");
     System.out.println("========================================\n");
 
-    final Map<String, BenchmarkResult> results = new LinkedHashMap<>();
+    final Map<String, BenchmarkResult> results = new HashMap<>(Map.of(
 
-    results.put("Scan (AVG age)", benchmarkCypherAvgAge());
-    results.put("Index Lookup", benchmarkCypherIndexLookup());
-    results.put("Filter Scan (age > 30)", benchmarkCypherFilterScan());
-    results.put("Count", benchmarkCypherCount());
-    results.put("3-Level Traversal", benchmarkCypherTraversal(3));
-    results.put("5-Level Traversal", benchmarkCypherTraversal(5));
+        "Scan (AVG age)", benchmarkCypherAvgAge(),
+        "Index Lookup", benchmarkCypherIndexLookup(),
+        "Filter Scan (age > 30)", benchmarkCypherFilterScan(),
+        "Count", benchmarkCypherCount(),
+        "3-Level Traversal", benchmarkCypherTraversal(3),
+        "5-Level Traversal", benchmarkCypherTraversal(5)));
 
     benchmarkResults.put("OpenCypher", results);
   }
@@ -488,8 +490,8 @@ class QueryLanguageBenchmark {
       final ResultSet result = database.query("sql", "SELECT AVG(age) as avgAge FROM Account");
       if (result.hasNext()) {
         final Object avgAge = result.next().getProperty("avgAge");
-        if (avgAge instanceof Number)
-          return ((Number) avgAge).doubleValue();
+        if (avgAge instanceof Number number)
+          return number.doubleValue();
       }
       return 0;
     } finally {
@@ -659,8 +661,8 @@ class QueryLanguageBenchmark {
       final ResultSet result = database.query("opencypher", "MATCH (a:Account) RETURN AVG(a.age) as avgAge");
       if (result.hasNext()) {
         final Object avgAge = result.next().getProperty("avgAge");
-        if (avgAge instanceof Number)
-          return ((Number) avgAge).doubleValue();
+        if (avgAge instanceof Number number)
+          return number.doubleValue();
       }
       return 0;
     } finally {

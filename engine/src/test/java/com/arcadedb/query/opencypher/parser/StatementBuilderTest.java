@@ -19,10 +19,10 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.query.opencypher.ast.*;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,19 +49,19 @@ class StatementBuilderTest {
   @Test
   void addMatch() {
     final StatementBuilder builder = new StatementBuilder();
-    final MatchClause match = new MatchClause(Collections.emptyList(), false, null);
+    final MatchClause match = new MatchClause(List.of(), false, null);
 
     builder.addMatch(match);
     final SimpleCypherStatement stmt = builder.build();
 
     assertThat(stmt.getMatchClauses()).hasSize(1);
-    assertThat(stmt.getMatchClauses().get(0)).isEqualTo(match);
+    assertThat(stmt.getMatchClauses().getFirst()).isEqualTo(match);
   }
 
   @Test
   void setCreate() {
     final StatementBuilder builder = new StatementBuilder();
-    final CreateClause create = new CreateClause(Collections.emptyList());
+    final CreateClause create = new CreateClause(List.of());
 
     builder.setCreate(create);
     final SimpleCypherStatement stmt = builder.build();
@@ -73,7 +73,7 @@ class StatementBuilderTest {
   @Test
   void setDelete() {
     final StatementBuilder builder = new StatementBuilder();
-    final DeleteClause delete = new DeleteClause(Collections.singletonList("n"), false);
+    final DeleteClause delete = new DeleteClause(List.of("n"), false);
 
     builder.setDelete(delete);
     final SimpleCypherStatement stmt = builder.build();
@@ -113,7 +113,7 @@ class StatementBuilderTest {
   @Test
   void setOrderBySkipLimit() {
     final StatementBuilder builder = new StatementBuilder();
-    final OrderByClause orderBy = new OrderByClause(Collections.emptyList());
+    final OrderByClause orderBy = new OrderByClause(List.of());
 
     builder.setOrderBy(orderBy);
     builder.setSkip(new LiteralExpression(10, "10"));
@@ -130,8 +130,8 @@ class StatementBuilderTest {
   void clauseOrdering() {
     final StatementBuilder builder = new StatementBuilder();
 
-    final MatchClause match = new MatchClause(Collections.emptyList(), false, null);
-    final CreateClause create = new CreateClause(Collections.emptyList());
+    final MatchClause match = new MatchClause(List.of(), false, null);
+    final CreateClause create = new CreateClause(List.of());
     final List<ReturnClause.ReturnItem> items = new ArrayList<>();
     items.add(new ReturnClause.ReturnItem(new VariableExpression("n"), "n"));
     final ReturnClause returnClause = new ReturnClause(items, false);
@@ -146,7 +146,7 @@ class StatementBuilderTest {
     // Verify clauses are tracked in order
     final List<ClauseEntry> clausesInOrder = stmt.getClausesInOrder();
     assertThat(clausesInOrder).hasSize(3);
-    assertThat(clausesInOrder.get(0).getType()).isEqualTo(ClauseEntry.ClauseType.MATCH);
+    assertThat(clausesInOrder.getFirst().getType()).isEqualTo(ClauseEntry.ClauseType.MATCH);
     assertThat(clausesInOrder.get(1).getType()).isEqualTo(ClauseEntry.ClauseType.CREATE);
     assertThat(clausesInOrder.get(2).getType()).isEqualTo(ClauseEntry.ClauseType.RETURN);
   }
@@ -155,8 +155,8 @@ class StatementBuilderTest {
   void multipleMatchClauses() {
     final StatementBuilder builder = new StatementBuilder();
 
-    final MatchClause match1 = new MatchClause(Collections.emptyList(), false, null);
-    final MatchClause match2 = new MatchClause(Collections.emptyList(), true, null);
+    final MatchClause match1 = new MatchClause(List.of(), false, null);
+    final MatchClause match2 = new MatchClause(List.of(), true, null);
 
     builder.addMatch(match1);
     builder.addMatch(match2);
@@ -164,7 +164,7 @@ class StatementBuilderTest {
     final SimpleCypherStatement stmt = builder.build();
 
     assertThat(stmt.getMatchClauses()).hasSize(2);
-    assertThat(stmt.getMatchClauses().get(0)).isEqualTo(match1);
+    assertThat(stmt.getMatchClauses().getFirst()).isEqualTo(match1);
     assertThat(stmt.getMatchClauses().get(1)).isEqualTo(match2);
   }
 }

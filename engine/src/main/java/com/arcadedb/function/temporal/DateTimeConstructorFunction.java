@@ -18,10 +18,9 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -50,8 +49,7 @@ public class DateTimeConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("datetime");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String) {
-      final String str = (String) args[0];
+    if (args[0] instanceof String str) {
       try {
         return CypherDateTime.parse(str);
       } catch (final Exception e) {
@@ -66,14 +64,14 @@ public class DateTimeConstructorFunction implements StatelessFunction {
       return CypherDateTime.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherDateTime)
       return args[0];
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherDateTime(((CypherLocalDateTime) args[0]).getValue().atZone(ZoneOffset.UTC));
-    if (args[0] instanceof CypherDate)
-      return new CypherDateTime(((CypherDate) args[0]).getValue().atStartOfDay(ZoneOffset.UTC));
-    if (args[0] instanceof LocalDateTime)
-      return new CypherDateTime(((LocalDateTime) args[0]).atZone(ZoneOffset.UTC));
-    if (args[0] instanceof LocalDate)
-      return new CypherDateTime(((LocalDate) args[0]).atStartOfDay(ZoneOffset.UTC));
+    if (args[0] instanceof CypherLocalDateTime time)
+      return new CypherDateTime(time.getValue().atZone(ZoneOffset.UTC));
+    if (args[0] instanceof CypherDate date)
+      return new CypherDateTime(date.getValue().atStartOfDay(ZoneOffset.UTC));
+    if (args[0] instanceof LocalDateTime time1)
+      return new CypherDateTime(time1.atZone(ZoneOffset.UTC));
+    if (args[0] instanceof LocalDate date1)
+      return new CypherDateTime(date1.atStartOfDay(ZoneOffset.UTC));
     throw new CommandExecutionException("datetime() expects a string, map, or temporal argument");
   }
 }

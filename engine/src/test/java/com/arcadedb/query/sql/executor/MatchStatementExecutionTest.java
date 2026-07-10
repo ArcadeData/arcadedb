@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Property;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
@@ -406,10 +407,10 @@ public class MatchStatementExecutionTest extends TestHelper {
     final ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $pathElements");
 
-    final Set<String> expected = new HashSet<>();
-    expected.add("n1");
-    expected.add("n2");
-    expected.add("n4");
+    final Set<String> expected = new HashSet<>(Set.of(
+        "n1",
+        "n2",
+        "n4"));
     for (int i = 0; i < 3; i++) {
       assertThat(qResult.hasNext()).isTrue();
       final Result item = qResult.next();
@@ -889,12 +890,12 @@ public class MatchStatementExecutionTest extends TestHelper {
 
     final ResultSet managedByB = getManagedBy("b");
 
-    final Set<String> expectedNames = new HashSet<String>();
-    expectedNames.add("p2");
-    expectedNames.add("p3");
-    expectedNames.add("p6");
-    expectedNames.add("p7");
-    expectedNames.add("p11");
+    final Set<String> expectedNames = new HashSet<>(Set.of(
+        "p2",
+        "p3",
+        "p6",
+        "p7",
+        "p11"));
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       assertThat(managedByB.hasNext()).isTrue();
@@ -934,12 +935,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     managedByA.close();
     final ResultSet managedByB = getManagedByArrows("b");
 
-    final Set<String> expectedNames = new HashSet<String>();
-    expectedNames.add("p2");
-    expectedNames.add("p3");
-    expectedNames.add("p6");
-    expectedNames.add("p7");
-    expectedNames.add("p11");
+    final Set<String> expectedNames = new HashSet<>(Set.of(
+        "p2",
+        "p3",
+        "p6",
+        "p7",
+        "p11"));
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       assertThat(managedByB.hasNext()).isTrue();
@@ -978,12 +979,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     managedByA.close();
     final ResultSet managedByB = getManagedBy2("b");
 
-    final Set<String> expectedNames = new HashSet<String>();
-    expectedNames.add("p2");
-    expectedNames.add("p3");
-    expectedNames.add("p6");
-    expectedNames.add("p7");
-    expectedNames.add("p11");
+    final Set<String> expectedNames = new HashSet<>(Set.of(
+        "p2",
+        "p3",
+        "p6",
+        "p7",
+        "p11"));
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       assertThat(managedByB.hasNext()).isTrue();
@@ -1024,12 +1025,12 @@ public class MatchStatementExecutionTest extends TestHelper {
     managedByA.close();
     final ResultSet managedByB = getManagedBy2Arrows("b");
 
-    final Set<String> expectedNames = new HashSet<String>();
-    expectedNames.add("p2");
-    expectedNames.add("p3");
-    expectedNames.add("p6");
-    expectedNames.add("p7");
-    expectedNames.add("p11");
+    final Set<String> expectedNames = new HashSet<>(Set.of(
+        "p2",
+        "p3",
+        "p6",
+        "p7",
+        "p11"));
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 5; i++) {
       assertThat(managedByB.hasNext()).isTrue();
@@ -1552,13 +1553,13 @@ public class MatchStatementExecutionTest extends TestHelper {
   void managedElements() {
     final ResultSet managedByB = getManagedElements("b");
 
-    final Set<String> expectedNames = new HashSet<String>();
-    expectedNames.add("b");
-    expectedNames.add("p2");
-    expectedNames.add("p3");
-    expectedNames.add("p6");
-    expectedNames.add("p7");
-    expectedNames.add("p11");
+    final Set<String> expectedNames = new HashSet<>(Set.of(
+        "b",
+        "p2",
+        "p3",
+        "p6",
+        "p7",
+        "p11"));
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 6; i++) {
       assertThat(managedByB.hasNext()).isTrue();
@@ -1588,17 +1589,17 @@ public class MatchStatementExecutionTest extends TestHelper {
   void managedPathElements() {
     final ResultSet managedByB = getManagedPathElements("b");
 
-    final Set<String> expectedNames = new HashSet<String>();
-    expectedNames.add("department1");
-    expectedNames.add("department3");
-    expectedNames.add("department4");
-    expectedNames.add("department8");
-    expectedNames.add("b");
-    expectedNames.add("p2");
-    expectedNames.add("p3");
-    expectedNames.add("p6");
-    expectedNames.add("p7");
-    expectedNames.add("p11");
+    final Set<String> expectedNames = new HashSet<>(Set.of(
+        "department1",
+        "department3",
+        "department4",
+        "department8",
+        "b",
+        "p2",
+        "p3",
+        "p6",
+        "p7",
+        "p11"));
     final Set<String> names = new HashSet<String>();
     for (int i = 0; i < 10; i++) {
       assertThat(managedByB.hasNext()).isTrue();
@@ -1677,12 +1678,15 @@ public class MatchStatementExecutionTest extends TestHelper {
     database.command("sql", "CREATE VERTEX IssueOptionalLeaf SET name = 'leaf'");
     database.command("sql", "CREATE VERTEX IssueOptionalGroup SET name = 'target-group'");
 
-    database.command("sql", "CREATE EDGE IssueRoot_mid FROM (SELECT FROM IssueOptionalRoot WHERE name = 'root-with-middle') "
-        + "TO (SELECT FROM IssueOptionalMid WHERE name = 'middle')");
-    database.command("sql", "CREATE EDGE IssueMid_leaf FROM (SELECT FROM IssueOptionalMid WHERE name = 'middle') "
-        + "TO (SELECT FROM IssueOptionalLeaf WHERE name = 'leaf')");
-    database.command("sql", "CREATE EDGE IssueGroup_leaf FROM (SELECT FROM IssueOptionalGroup WHERE name = 'target-group') "
-        + "TO (SELECT FROM IssueOptionalLeaf WHERE name = 'leaf')");
+    database.command("sql", """
+        CREATE EDGE IssueRoot_mid FROM (SELECT FROM IssueOptionalRoot WHERE name = 'root-with-middle') \
+        TO (SELECT FROM IssueOptionalMid WHERE name = 'middle')""");
+    database.command("sql", """
+        CREATE EDGE IssueMid_leaf FROM (SELECT FROM IssueOptionalMid WHERE name = 'middle') \
+        TO (SELECT FROM IssueOptionalLeaf WHERE name = 'leaf')""");
+    database.command("sql", """
+        CREATE EDGE IssueGroup_leaf FROM (SELECT FROM IssueOptionalGroup WHERE name = 'target-group') \
+        TO (SELECT FROM IssueOptionalLeaf WHERE name = 'leaf')""");
 
     final RID groupRid = database.query("sql", "SELECT @rid AS rid FROM IssueOptionalGroup WHERE name = 'target-group'").next()
         .getProperty("rid");

@@ -205,9 +205,9 @@ class BinarySerializerTest extends TestHelper {
       database.getSchema().createDocumentType("Test");
       database.commit();
 
-      final List<Boolean> listOfBooleans = new ArrayList<>();
-      listOfBooleans.add(true);
-      listOfBooleans.add(false);
+      final List<Boolean> listOfBooleans = new ArrayList<>(List.of(
+          true,
+          false));
 
       final List<Integer> listOfIntegers = new ArrayList<>();
       for (int i = 0; i < 100; ++i)
@@ -233,11 +233,11 @@ class BinarySerializerTest extends TestHelper {
       for (int i = 0; i < 100; ++i)
         listOfStrings.add("" + i);
 
-      final List<Object> listOfMixed = new ArrayList<>();
-      listOfMixed.add(0);
-      listOfMixed.add((long) 1);
-      listOfMixed.add((short) 2);
-      listOfMixed.add("3");
+      final List<Object> listOfMixed = new ArrayList<>(List.of(
+          0,
+          (long) 1,
+          (short) 2,
+          "3"));
 
       database.begin();
       final MutableDocument v = database.newDocument("Test");
@@ -365,9 +365,9 @@ class BinarySerializerTest extends TestHelper {
       database.getSchema().createDocumentType("Test");
       database.commit();
 
-      final Map<String, Boolean> mapOfStringsBooleans = new HashMap<>();
-      mapOfStringsBooleans.put("true", true);
-      mapOfStringsBooleans.put("false", false);
+      final Map<String, Boolean> mapOfStringsBooleans = new HashMap<>(Map.of(
+          "true", true,
+          "false", false));
 
       final Map<Integer, Integer> mapOfIntegers = new LinkedHashMap<>();
       for (int i = 0; i < 100; ++i)
@@ -393,11 +393,11 @@ class BinarySerializerTest extends TestHelper {
       for (int i = 0; i < 100; ++i)
         mapOfStrings.put("" + i, "" + i);
 
-      final Map<Object, Object> mapOfMixed = new HashMap<>();
-      mapOfMixed.put("0", 0);
-      mapOfMixed.put(1l, (long) 1);
-      mapOfMixed.put("2short", (short) 2);
-      mapOfMixed.put("3string", "3");
+      final Map<Object, Object> mapOfMixed = new HashMap<>(Map.of(
+          "0", 0,
+          1l, (long) 1,
+          "2short", (short) 2,
+          "3string", "3"));
 
       database.begin();
       final MutableDocument v = database.newDocument("Test");
@@ -640,10 +640,10 @@ class BinarySerializerTest extends TestHelper {
       final MutableDocument doc = database.newDocument("TestBadMap");
       doc.set("id", 1);
 
-      final Map<String, Object> mixedMap = new LinkedHashMap<>();
-      mixedMap.put("good1", "hello");
-      mixedMap.put("badValue", new StringBuilder("nope"));
-      mixedMap.put("good2", 123);
+      final Map<String, Object> mixedMap = new HashMap<>(Map.of(
+          "good1", "hello",
+          "badValue", new StringBuilder("nope"),
+          "good2", 123));
       doc.set("m", mixedMap);
 
       doc.set("tail", "end");
@@ -683,11 +683,11 @@ class BinarySerializerTest extends TestHelper {
       final MutableDocument doc = database.newDocument("TestBadList");
       doc.set("id", 1);
 
-      final List<Object> mixed = new ArrayList<>();
-      mixed.add("a");
-      mixed.add(new StringBuilder("nope"));
-      mixed.add("b");
-      mixed.add(99);
+      final List<Object> mixed = new ArrayList<>(List.of(
+          "a",
+          new StringBuilder("nope"),
+          "b",
+          99));
       doc.set("l", mixed);
 
       doc.set("tail", "end");

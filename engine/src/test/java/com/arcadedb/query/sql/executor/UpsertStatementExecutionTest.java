@@ -65,16 +65,16 @@ public class UpsertStatementExecutionTest extends TestHelper {
       doc.set("surname", "surname" + i);
       doc.set("number", 4L);
 
-      final List<String> tagsList = new ArrayList<>();
-      tagsList.add("foo");
-      tagsList.add("bar");
-      tagsList.add("baz");
+      final List<String> tagsList = new ArrayList<>(List.of(
+          "foo",
+          "bar",
+          "baz"));
       doc.set("tagsList", tagsList);
 
-      final Map<String, String> tagsMap = new HashMap<>();
-      tagsMap.put("foo", "foo");
-      tagsMap.put("bar", "bar");
-      tagsMap.put("baz", "baz");
+      final Map<String, String> tagsMap = new HashMap<>(Map.of(
+          "foo", "foo",
+          "bar", "bar",
+          "baz", "baz"));
       doc.set("tagsMap", tagsMap);
 
       doc.save();
@@ -258,16 +258,16 @@ public class UpsertStatementExecutionTest extends TestHelper {
       doc.set("surname", "surname" + i);
       doc.set("number", 4L);
 
-      final List<String> tagsList = new ArrayList<>();
-      tagsList.add("foo");
-      tagsList.add("bar");
-      tagsList.add("baz");
+      final List<String> tagsList = new ArrayList<>(List.of(
+          "foo",
+          "bar",
+          "baz"));
       doc.set("tagsList", tagsList);
 
-      final Map<String, String> tagsMap = new HashMap<>();
-      tagsMap.put("foo", "foo");
-      tagsMap.put("bar", "bar");
-      tagsMap.put("baz", "baz");
+      final Map<String, String> tagsMap = new HashMap<>(Map.of(
+          "foo", "foo",
+          "bar", "bar",
+          "baz", "baz"));
       doc.set("tagsMap", tagsMap);
 
       doc.save();

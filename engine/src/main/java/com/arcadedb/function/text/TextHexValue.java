@@ -51,12 +51,11 @@ public class TextHexValue extends AbstractTextFunction {
     if (args[0] == null)
       return null;
 
-    if (args[0] instanceof Number) {
-      return Long.toHexString(((Number) args[0]).longValue());
+    if (args[0] instanceof Number number) {
+      return Long.toHexString(number.longValue());
     }
 
-    if (args[0] instanceof byte[]) {
-      final byte[] bytes = (byte[]) args[0];
+    if (args[0] instanceof byte[] bytes) {
       final StringBuilder hex = new StringBuilder(bytes.length * 2);
       for (final byte b : bytes) {
         hex.append(String.format("%02x", b));

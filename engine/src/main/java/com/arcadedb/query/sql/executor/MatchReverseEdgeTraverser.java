@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
@@ -64,7 +63,7 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
 
     final Object qR = this.item.getMethod().executeReverse(startingPoint, iCommandContext);
     if (qR == null) {
-      return Collections.emptyList();
+      return List.of();
     }
     if (qR instanceof ResultInternal internal) {
       return Set.of(internal);
@@ -75,18 +74,16 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
     if (qR instanceof Iterable iterable) {
       final List<ResultInternal> result = new ArrayList<>();
       for (final Object o : iterable) {
-        if (o instanceof Document document) {
-          result.add(new ResultInternal(document));
-        } else if (o instanceof ResultInternal internal) {
-          result.add(internal);
-        } else if (o == null) {
-        } else {
-          throw new UnsupportedOperationException();
+        switch (o) {
+          case null -> {}
+          case Document document -> result.add(new ResultInternal(document));
+          case ResultInternal internal -> result.add(internal);
+          default -> throw new UnsupportedOperationException();
         }
       }
       return result;
     }
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override

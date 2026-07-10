@@ -40,12 +40,12 @@ public class IsEmptyFunction implements StatelessFunction {
       throw new CommandExecutionException("isEmpty() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof List)
-      return ((List<?>) args[0]).isEmpty();
-    if (args[0] instanceof String)
-      return ((String) args[0]).isEmpty();
-    if (args[0] instanceof Map)
-      return ((Map<?, ?>) args[0]).isEmpty();
+    if (args[0] instanceof List<?> list)
+      return list.isEmpty();
+    if (args[0] instanceof String string)
+      return string.isEmpty();
+    if (args[0] instanceof Map<?, ?> map)
+      return map.isEmpty();
     throw new CommandExecutionException("isEmpty() requires a LIST, MAP, or STRING argument, got " +
         args[0].getClass().getSimpleName());
   }

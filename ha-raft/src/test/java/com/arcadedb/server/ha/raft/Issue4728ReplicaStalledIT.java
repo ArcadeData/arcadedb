@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;

@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -168,7 +167,7 @@ public class Projection extends SimpleNode {
       }
 
       if (excludes == null)
-        excludes = Collections.emptySet();
+        excludes = Set.of();
     }
   }
 

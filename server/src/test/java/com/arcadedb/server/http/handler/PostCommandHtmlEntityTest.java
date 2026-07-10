@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,8 +41,9 @@ class PostCommandHtmlEntityTest extends BaseGraphServerTest {
 
     // The `descr` value mirrors the Discord payload: real double quotes around the HTML attribute are
     // JSON-escaped (\"), while the inner quotes are literal &quot; entities that must survive verbatim.
-    final String descr = "<p><span data-sheets-value=\\\"{&quot;1&quot;:2,&quot;2&quot;:&quot;M&uuml;nchen&quot;}\\\">"
-        + "M&uuml;nchen &amp; Co &lt;b&gt;</span></p>";
+    final String descr = """
+        <p><span data-sheets-value=\\"{&quot;1&quot;:2,&quot;2&quot;:&quot;M&uuml;nchen&quot;}\\">\
+        M&uuml;nchen &amp; Co &lt;b&gt;</span></p>""";
 
     final String command = "insert into Investor content {\"name\":\"munich\",\"descr\":\"" + descr + "\"}";
 
@@ -54,8 +56,9 @@ class PostCommandHtmlEntityTest extends BaseGraphServerTest {
     final String stored = selectResponse.getJSONObject("result").getJSONArray("records").getJSONObject(0).getString("descr");
 
     // The literal entities must round-trip untouched; only the JSON \" escapes are resolved to ".
-    final String expected = "<p><span data-sheets-value=\"{&quot;1&quot;:2,&quot;2&quot;:&quot;M&uuml;nchen&quot;}\">"
-        + "M&uuml;nchen &amp; Co &lt;b&gt;</span></p>";
+    final String expected = """
+        <p><span data-sheets-value="{&quot;1&quot;:2,&quot;2&quot;:&quot;M&uuml;nchen&quot;}">\
+        M&uuml;nchen &amp; Co &lt;b&gt;</span></p>""";
     assertThat(stored).isEqualTo(expected);
   }
 }

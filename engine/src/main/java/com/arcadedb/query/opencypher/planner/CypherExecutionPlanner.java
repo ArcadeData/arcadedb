@@ -72,8 +72,8 @@ public class CypherExecutionPlanner {
    */
   public CypherExecutionPlan createExecutionPlan(final ContextConfiguration configuration) {
     // Handle UNION statements specially
-    if (statement instanceof UnionStatement) {
-      return createUnionExecutionPlan((UnionStatement) statement, configuration);
+    if (statement instanceof UnionStatement unionStatement) {
+      return createUnionExecutionPlan(unionStatement, configuration);
     }
 
     PhysicalPlan physicalPlan = null;
@@ -147,7 +147,7 @@ public class CypherExecutionPlanner {
           allConnected = false;
           break;
         }
-        final PathPattern path = match.getPathPatterns().get(0);
+        final PathPattern path = match.getPathPatterns().getFirst();
         // Collect all node variables from this path
         final Set<String> pathVars = new HashSet<>();
         for (final NodePattern node : path.getNodes())

@@ -111,7 +111,7 @@ public final class FunctionRegistry {
    */
   public static StatelessFunction getStateless(final String name) {
     final Function fn = get(name);
-    return fn instanceof StatelessFunction ? (StatelessFunction) fn : null;
+    return fn instanceof StatelessFunction sf ? sf : null;
   }
 
   /**
@@ -122,7 +122,7 @@ public final class FunctionRegistry {
    */
   public static RecordFunction getRecord(final String name) {
     final Function fn = get(name);
-    return fn instanceof RecordFunction ? (RecordFunction) fn : null;
+    return fn instanceof RecordFunction rf ? rf : null;
   }
 
   /**
@@ -226,7 +226,7 @@ public final class FunctionRegistry {
     return FUNCTIONS.values().stream()
         .filter(f -> f instanceof StatelessFunction)
         .map(f -> (StatelessFunction) f)
-        .collect(Collectors.toUnmodifiableList());
+        .toList();
   }
 
   /**
@@ -238,7 +238,7 @@ public final class FunctionRegistry {
     return FUNCTIONS.values().stream()
         .filter(f -> f instanceof RecordFunction)
         .map(f -> (RecordFunction) f)
-        .collect(Collectors.toUnmodifiableList());
+        .toList();
   }
 
   /**

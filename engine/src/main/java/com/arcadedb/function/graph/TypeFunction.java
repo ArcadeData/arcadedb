@@ -40,10 +40,10 @@ public class TypeFunction implements StatelessFunction {
     }
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Edge)
-      return ((Edge) args[0]).getTypeName();
-    if (args[0] instanceof DeletedEntityMarker) {
-      final String relType = ((DeletedEntityMarker) args[0]).getRelationshipType();
+    if (args[0] instanceof Edge edge)
+      return edge.getTypeName();
+    if (args[0] instanceof DeletedEntityMarker marker) {
+      final String relType = marker.getRelationshipType();
       if (relType != null)
         return relType;
       DeletedEntityMarker.checkNotDeleted(args[0]);

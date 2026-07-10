@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -59,7 +60,7 @@ class DropDatabaseScenarioIT extends ContainersTestTemplate {
     logger.info("Starting all containers");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    final DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
@@ -89,12 +90,12 @@ class DropDatabaseScenarioIT extends ContainersTestTemplate {
       // Await until every node's list-databases response no longer contains the DB
       logger.info("Waiting for drop to propagate to every node");
       Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
-          .until(() -> !databaseExistsOnServer(servers.get(0), DATABASE)
+          .until(() -> !databaseExistsOnServer(servers.getFirst(), DATABASE)
               && !databaseExistsOnServer(servers.get(1), DATABASE)
               && !databaseExistsOnServer(servers.get(2), DATABASE));
 
       // Sanity: a second drop of the same database should return 4xx
-      final int secondDropStatus = postServerCommand(servers.get(0), "drop database " + DATABASE);
+      final int secondDropStatus = postServerCommand(servers.getFirst(), "drop database " + DATABASE);
       assertThat(secondDropStatus).as("second drop HTTP status").isBetween(400, 499);
     } catch (final Exception e) {
       // Ensure wrappers are closed on failure too

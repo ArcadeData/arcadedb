@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -63,7 +64,7 @@ class SchemaDetailQueryTest extends TestHelper {
         database.newDocument("BucketTestType").set("name", "test" + i).save();
     });
 
-    final String bucketName = database.getSchema().getType("BucketTestType").getBuckets(false).get(0).getName();
+    final String bucketName = database.getSchema().getType("BucketTestType").getBuckets(false).getFirst().getName();
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM schema:bucket:" + bucketName)) {
       assertThat(rs.hasNext()).isTrue();

@@ -21,6 +21,7 @@ package com.arcadedb;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.schema.DocumentType;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;

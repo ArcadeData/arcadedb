@@ -23,11 +23,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.function.sql.geo.GeoUtils;
-import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.schema.LocalSchema;
+
 import org.junit.jupiter.api.Test;
 import org.locationtech.spatial4j.shape.Shape;
 

@@ -57,12 +57,12 @@ public class ConvertToBoolean extends AbstractConvertFunction {
       return args[0];
     }
 
-    if (args[0] instanceof Number) {
-      return ((Number) args[0]).doubleValue() != 0.0;
+    if (args[0] instanceof Number number) {
+      return number.doubleValue() != 0.0;
     }
 
-    if (args[0] instanceof String) {
-      final String str = ((String) args[0]).toLowerCase(Locale.ROOT);
+    if (args[0] instanceof String string) {
+      final String str = string.toLowerCase(Locale.ROOT);
       if ("true".equals(str) || "yes".equals(str) || "1".equals(str))
         return Boolean.TRUE;
       if ("false".equals(str) || "no".equals(str) || "0".equals(str))

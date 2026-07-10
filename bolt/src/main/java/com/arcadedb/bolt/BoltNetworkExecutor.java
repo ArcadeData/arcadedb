@@ -78,6 +78,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -118,13 +119,13 @@ public class BoltNetworkExecutor extends Thread {
     INTERRUPTED
   }
 
-  private final ArcadeDBServer      server;
-  private volatile Socket           socket; // Reassigned to the SSLSocket once TLS negotiation completes
-  private final BoltSslHelper       sslHelper;
-  private       BoltChunkedInput    input;
-  private       BoltChunkedOutput   output;
-  private final boolean             debug;
-  private final BoltNetworkListener listener; // For notifying when connection closes
+  private final    ArcadeDBServer      server;
+  private volatile Socket              socket; // Reassigned to the SSLSocket once TLS negotiation completes
+  private final    BoltSslHelper       sslHelper;
+  private          BoltChunkedInput    input;
+  private          BoltChunkedOutput   output;
+  private final    boolean             debug;
+  private final    BoltNetworkListener listener; // For notifying when connection closes
 
   private State              state = State.DISCONNECTED;
   private int                protocolVersion;
@@ -143,14 +144,14 @@ public class BoltNetworkExecutor extends Thread {
    * Thread-safety: This class is designed to handle a single connection in a dedicated thread.
    * All state variables are accessed only by the executor thread and do not require synchronization.
    */
-  private ResultSet          currentResultSet;
-  private List<String>       currentFields;
-  private Result             firstResult; // Buffered first result for field name extraction
-  private List<List<Object>> syntheticResults; // For system queries that return synthetic data
-  private int                recordsStreamed;
-  private long               queryStartTime; // Nanosecond timestamp when query execution started
-  private long               firstRecordTime; // Nanosecond timestamp when first record was retrieved
-  private boolean            isWriteOperation; // Whether the current query performs writes
+  private ResultSet           currentResultSet;
+  private List<String>        currentFields;
+  private Result              firstResult; // Buffered first result for field name extraction
+  private List<List<Object>>  syntheticResults; // For system queries that return synthetic data
+  private int                 recordsStreamed;
+  private long                queryStartTime; // Nanosecond timestamp when query execution started
+  private long                firstRecordTime; // Nanosecond timestamp when first record was retrieved
+  private boolean             isWriteOperation; // Whether the current query performs writes
   // EXPLAIN / PROFILE state, populated in handleRun, surfaced in handlePull SUCCESS metadata
   // so Neo4j drivers can read it via ResultSummary#plan() / #profile().
   private Map<String, Object> currentPlanMetadata;
@@ -284,8 +285,8 @@ public class BoltNetworkExecutor extends Thread {
         } else if (sslHelper.getTlsMode() == BoltSslHelper.TlsMode.REQUIRED) {
           LogManager.instance().log(this, Level.WARNING,
               """
-              BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). \
-              Configure the client to use bolt+s:// or bolt+ssc://""",
+                  BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). \
+                  Configure the client to use bolt+s:// or bolt+ssc://""",
               socket.getRemoteSocketAddress());
           return false;
         } else {
@@ -505,9 +506,9 @@ public class BoltNetworkExecutor extends Thread {
    * Insertion order (server first, then connection_id) is significant for wire equality.
    */
   private Map<String, Object> buildHelloSuccessMetadata() {
-    final Map<String, Object> metadata = new LinkedHashMap<>();
-    metadata.put("server", "Neo4j/5.26.0 compatible (ArcadeDB " + Constants.getRawVersion() + ")");
-    metadata.put("connection_id", "bolt-" + Thread.currentThread().threadId());
+    final Map<String, Object> metadata = Map.of(
+        "server", "Neo4j/5.26.0 compatible (ArcadeDB " + Constants.getRawVersion() + ")",
+        "connection_id", "bolt-" + Thread.currentThread().threadId());
     return metadata;
   }
 
@@ -638,9 +639,9 @@ public class BoltNetworkExecutor extends Thread {
       recordsStreamed = 0;
       isWriteOperation = false;
 
-      final Map<String, Object> metadata = new LinkedHashMap<>();
-      metadata.put("fields", currentFields);
-      metadata.put("t_first", 0L);
+      final Map<String, Object> metadata = Map.of(
+          "fields", currentFields,
+          "t_first", 0L);
       sendSuccess(metadata);
       state = explicitTransaction ? State.TX_STREAMING : State.STREAMING;
       return;
@@ -746,7 +747,7 @@ public class BoltNetworkExecutor extends Thread {
       // Handle synthetic results (from system queries)
       if (syntheticResults != null) {
         while (!syntheticResults.isEmpty() && (n < 0 || count < n)) {
-          sendRecord(syntheticResults.remove(0));
+          sendRecord(syntheticResults.removeFirst());
           count++;
           recordsStreamed++;
         }
@@ -1014,9 +1015,9 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    final Map<String, Object> rt = new LinkedHashMap<>();
-    rt.put("ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong());
-    rt.put("db", message.getDatabase() != null ? message.getDatabase() : databaseName);
+    final Map<String, Object> rt = Map.of(
+        "ttl", GlobalConfiguration.BOLT_ROUTING_TTL.getValueAsLong(),
+        "db", message.getDatabase() != null ? message.getDatabase() : databaseName);
 
     final List<Map<String, Object>> servers = new ArrayList<>();
 
@@ -1065,9 +1066,9 @@ public class BoltNetworkExecutor extends Thread {
    * a Bolt routing role (WRITE, READ, or ROUTE).
    */
   private static Map<String, Object> roleEntry(final List<String> addresses, final String role) {
-    final Map<String, Object> entry = new LinkedHashMap<>();
-    entry.put("addresses", addresses);
-    entry.put("role", role);
+    final Map<String, Object> entry = Map.of(
+        "addresses", addresses,
+        "role", role);
     return entry;
   }
 
@@ -1176,11 +1177,11 @@ public class BoltNetworkExecutor extends Thread {
       // SHOW CURRENT USER or CALL dbms.showCurrentUser()
       currentFields = List.of("user", "roles", "passwordChangeRequired", "suspended", "home");
       syntheticResults = new ArrayList<>();
-      final List<Object> userRecord = new ArrayList<>();
-      userRecord.add(user != null ? user.getName() : "anonymous");
-      userRecord.add(List.of("admin"));
-      userRecord.add(false);
-      userRecord.add(false);
+      final List<Object> userRecord = new ArrayList<>(List.of(
+          user != null ? user.getName() : "anonymous",
+          List.of("admin"),
+          false,
+          false));
       userRecord.add(null); // home database (null = use default)
       syntheticResults.add(userRecord);
       return true;
@@ -1661,11 +1662,11 @@ public class BoltNetworkExecutor extends Thread {
       }
     }
 
-    final Map<String, Object> root = new LinkedHashMap<>();
-    root.put("operatorType", profileMode ? "ArcadeDB.OpenCypher.ProfilePlan" : "ArcadeDB.OpenCypher.Plan");
-    root.put("identifiers", currentFields != null ? currentFields : List.<String>of());
-    root.put("args", args);
-    root.put("children", List.<Map<String, Object>>of());
+    final Map<String, Object> root = new HashMap<>(Map.of(
+        "operatorType", profileMode ? "ArcadeDB.OpenCypher.ProfilePlan" : "ArcadeDB.OpenCypher.Plan",
+        "identifiers", currentFields != null ? currentFields : List.<String>of(),
+        "args", args,
+        "children", List.<Map<String, Object>>of()));
 
     if (profileMode) {
       // ProfilePlan inherits Plan and adds dbHits/rows/pageCacheHits/etc. We do not yet

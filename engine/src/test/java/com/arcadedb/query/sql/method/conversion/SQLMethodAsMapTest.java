@@ -21,11 +21,14 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.schema.LocalVertexType;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,9 +58,9 @@ class SQLMethodAsMapTest {
   @Test
   void map() {
     // The expected behavior is to return the map itself.
-    final HashMap<Object, Object> aMap = new HashMap<Object, Object>();
-    aMap.put("p1", 1);
-    aMap.put("p2", 2);
+    final HashMap<Object, Object> aMap = new HashMap<>(Map.of(
+        "p1", 1,
+        "p2", 2));
     final Object result = function.execute(aMap, null, null, null);
     assertThat(aMap).isEqualTo(result);
   }
@@ -82,17 +85,17 @@ class SQLMethodAsMapTest {
     // The expected behavior is to return a map where the even values (0th,
     // 2nd, 4th, etc) are keys and the odd values (1st, 3rd, etc.) are
     // property values.
-    final ArrayList<Object> aCollection = new ArrayList<Object>();
-    aCollection.add("p1");
-    aCollection.add(1);
-    aCollection.add("p2");
-    aCollection.add(2);
+    final ArrayList<Object> aCollection = new ArrayList<>(List.of(
+        "p1",
+        1,
+        "p2",
+        2));
 
     final Object result = function.execute(aCollection, null, null, null);
 
-    final HashMap<Object, Object> expected = new HashMap<Object, Object>();
-    expected.put("p1", 1);
-    expected.put("p2", 2);
+    final HashMap<Object, Object> expected = new HashMap<>(Map.of(
+        "p1", 1,
+        "p2", 2));
     assertThat(expected).isEqualTo(result);
   }
 
@@ -101,17 +104,17 @@ class SQLMethodAsMapTest {
     // The expected behavior is to return a map where the even values (0th,
     // 2nd, 4th, etc) are keys and the odd values (1st, 3rd, etc.) are
     // property values.
-    final ArrayList<Object> aCollection = new ArrayList<Object>();
-    aCollection.add("p1");
-    aCollection.add(1);
-    aCollection.add("p2");
-    aCollection.add(2);
+    final ArrayList<Object> aCollection = new ArrayList<>(List.of(
+        "p1",
+        1,
+        "p2",
+        2));
 
     final Object result = function.execute(aCollection.iterator(), null, null, null);
 
-    final HashMap<Object, Object> expected = new HashMap<Object, Object>();
-    expected.put("p1", 1);
-    expected.put("p2", 2);
+    final HashMap<Object, Object> expected = new HashMap<>(Map.of(
+        "p1", 1,
+        "p2", 2));
     assertThat(expected).isEqualTo(result);
   }
 

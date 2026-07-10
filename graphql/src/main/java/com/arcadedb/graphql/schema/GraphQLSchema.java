@@ -258,7 +258,7 @@ public class GraphQLSchema {
         else if ("subscriptionType".equals(fieldName))
           schemaResult.setProperty("subscriptionType", null);
         else if ("directives".equals(fieldName))
-          schemaResult.setProperty("directives", Collections.emptyList());
+          schemaResult.setProperty("directives", List.of());
       }
     }
 

@@ -20,6 +20,7 @@ package com.arcadedb.function.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

@@ -21,10 +21,11 @@ package com.arcadedb.engine;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
-import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -61,7 +62,7 @@ class Issue4712ReplicatedWriteLockTest extends TestHelper {
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
@@ -101,7 +102,7 @@ class Issue4712ReplicatedWriteLockTest extends TestHelper {
     final AtomicReference<Throwable> error = new AtomicReference<>();
     final Thread applier = new Thread(() -> {
       try {
-        db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false);
+        db.getTransactionManager().applyChanges(walTx, Map.of(), false);
       } catch (final Throwable t) {
         error.set(t);
       } finally {
@@ -137,7 +138,7 @@ class Issue4712ReplicatedWriteLockTest extends TestHelper {
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
@@ -162,7 +163,7 @@ class Issue4712ReplicatedWriteLockTest extends TestHelper {
     walTx.timestamp = System.currentTimeMillis();
     walTx.pages = new WALFile.WALPage[] { walPage };
 
-    final boolean changed = db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false);
+    final boolean changed = db.getTransactionManager().applyChanges(walTx, Map.of(), false);
     assertThat(changed).isTrue();
 
     db.getPageManager().removePageFromCache(pageId);

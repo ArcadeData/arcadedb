@@ -60,10 +60,9 @@ public class MapFromPairs extends AbstractMapFunction {
     final Map<String, Object> result = new LinkedHashMap<>();
 
     for (final Object pair : pairs) {
-      if (pair instanceof List) {
-        final List<?> p = (List<?>) pair;
+      if (pair instanceof List<?> p) {
         if (p.size() >= 2) {
-          final Object key = p.get(0);
+          final Object key = p.getFirst();
           if (key != null) {
             result.put(key.toString(), p.get(1));
           }

@@ -19,6 +19,7 @@
 package com.arcadedb.server.security.credential;
 
 import com.arcadedb.server.security.ServerSecurityException;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

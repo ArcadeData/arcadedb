@@ -25,6 +25,7 @@ import com.arcadedb.database.TrackableBinary;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
@@ -41,7 +42,7 @@ public class MutablePage extends BasePage implements TrackableContent {
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
   // pending ack - letting the close-time ack gate delete a WAL that still holds unflushed committed data.
-  private final        java.util.concurrent.atomic.AtomicReference<WALFile> walFile = new java.util.concurrent.atomic.AtomicReference<>();
+  private final        AtomicReference<WALFile> walFile = new AtomicReference<>();
 
   static {
     ZERO_BYTES_ARRAY = new byte[GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger()];

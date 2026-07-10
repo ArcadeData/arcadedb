@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

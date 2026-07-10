@@ -184,8 +184,8 @@ public class PatternPredicateExpression implements BooleanExpression {
     }
 
     final Object obj = result.getProperty(variable);
-    if (obj instanceof Vertex) {
-      return (Vertex) obj;
+    if (obj instanceof Vertex vertex) {
+      return vertex;
     }
 
     return null;
@@ -379,12 +379,11 @@ public class PatternPredicateExpression implements BooleanExpression {
       Object expectedValue = entry.getValue();
 
       // Resolve parameter references (e.g., $name -> actual value from context)
-      if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expectedValue).getName();
+      if (expectedValue instanceof CypherASTBuilder.ParameterReference reference) {
+        final String paramName = reference.getName();
         if (context != null && context.getInputParameters() != null)
           expectedValue = context.getInputParameters().get(paramName);
-      } else if (expectedValue instanceof String) {
-        final String strValue = (String) expectedValue;
+      } else if (expectedValue instanceof String strValue) {
         if (strValue.startsWith("$")) {
           final String paramName = strValue.substring(1);
           if (context != null && context.getInputParameters() != null) {
@@ -405,8 +404,8 @@ public class PatternPredicateExpression implements BooleanExpression {
         return false;
       if (!actualValue.equals(expectedValue)) {
         // Numeric type-safe comparison (Integer vs Long)
-        if (actualValue instanceof Number && expectedValue instanceof Number) {
-          if (((Number) actualValue).longValue() != ((Number) expectedValue).longValue())
+        if (actualValue instanceof Number number && expectedValue instanceof Number number1) {
+          if (number.longValue() != number1.longValue())
             return false;
         } else
           return false;

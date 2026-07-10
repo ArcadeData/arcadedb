@@ -22,6 +22,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
+
 import org.antlr.v4.runtime.ParserRuleContext;
 
 import java.util.ArrayList;
@@ -175,13 +176,13 @@ class ExpressionTypeDetector {
       final Cypher25Parser.ComparisonExpression6Context comp = topExpr7.comparisonExpression6();
       if (comp instanceof Cypher25Parser.StringAndListComparisonContext)
         return builder.parseStringComparisonExpression(topExpr7);
-      if (comp instanceof Cypher25Parser.NullComparisonContext)
-        return builder.parseIsNullExpression((Cypher25Parser.NullComparisonContext) comp);
+      if (comp instanceof Cypher25Parser.NullComparisonContext context)
+        return builder.parseIsNullExpression(context);
       if (comp instanceof Cypher25Parser.LabelComparisonContext)
         return builder.parseLabelComparisonExpression(topExpr7);
       // GQL IS [NOT] TYPED type and :: type (issue #3365 section 3.3)
-      if (comp instanceof Cypher25Parser.TypeComparisonContext)
-        return builder.parseIsTypedExpression((Cypher25Parser.TypeComparisonContext) comp);
+      if (comp instanceof Cypher25Parser.TypeComparisonContext context1)
+        return builder.parseIsTypedExpression(context1);
     }
     return null;
   }
@@ -333,28 +334,28 @@ class ExpressionTypeDetector {
     final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
     if (e11List.size() != 1)
       return null;
-    final Cypher25Parser.Expression11Context e11 = e11List.get(0);
+    final Cypher25Parser.Expression11Context e11 = e11List.getFirst();
     final List<Cypher25Parser.Expression10Context> e10List = e11.expression10();
     if (e10List.size() != 1)
       return null;
-    final Cypher25Parser.Expression10Context e10 = e10List.get(0);
+    final Cypher25Parser.Expression10Context e10 = e10List.getFirst();
     if (e10.expression9().size() != 1)
       return null;
-    final Cypher25Parser.Expression9Context e9 = e10.expression9().get(0);
+    final Cypher25Parser.Expression9Context e9 = e10.expression9().getFirst();
     final Cypher25Parser.Expression8Context e8 = e9.expression8();
     if (e8 == null || e8.expression7().size() != 1)
       return null;
-    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
+    final Cypher25Parser.Expression7Context e7 = e8.expression7().getFirst();
     final Cypher25Parser.Expression6Context e6 = e7.expression6();
     if (e6 == null || e6.expression5().size() != 1)
       return null;
-    final Cypher25Parser.Expression5Context e5 = e6.expression5().get(0);
+    final Cypher25Parser.Expression5Context e5 = e6.expression5().getFirst();
     if (e5.expression4().size() != 1)
       return null;
-    final Cypher25Parser.Expression4Context e4 = e5.expression4().get(0);
+    final Cypher25Parser.Expression4Context e4 = e5.expression4().getFirst();
     if (e4.expression3().size() != 1)
       return null;
-    final Cypher25Parser.Expression3Context e3 = e4.expression3().get(0);
+    final Cypher25Parser.Expression3Context e3 = e4.expression3().getFirst();
     final Cypher25Parser.Expression2Context e2 = e3.expression2();
     if (e2 == null || !e2.postFix().isEmpty())
       return null;

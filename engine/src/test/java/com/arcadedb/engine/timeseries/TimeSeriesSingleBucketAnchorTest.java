@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -141,8 +142,8 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
 
     final List<Long> buckets = result.getBucketTimestamps();
     assertThat(buckets).hasSize(1);
-    assertThat(buckets.get(0)).isEqualTo(0L);
-    assertThat(result.getValue(buckets.get(0), 0)).isEqualTo(60.0);
+    assertThat(buckets.getFirst()).isEqualTo(0L);
+    assertThat(result.getValue(buckets.getFirst(), 0)).isEqualTo(60.0);
     database.commit();
   }
 
@@ -190,8 +191,8 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
 
     final List<Long> buckets = result.getBucketTimestamps();
     assertThat(buckets).hasSize(1);
-    assertThat(buckets.get(0)).isEqualTo(0L);
-    assertThat(result.getValue(buckets.get(0), 0)).isEqualTo(100.0);
+    assertThat(buckets.getFirst()).isEqualTo(0L);
+    assertThat(result.getValue(buckets.getFirst(), 0)).isEqualTo(100.0);
     database.commit();
   }
 }

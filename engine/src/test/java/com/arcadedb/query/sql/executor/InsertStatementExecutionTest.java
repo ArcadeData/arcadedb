@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -112,9 +113,9 @@ public class InsertStatementExecutionTest extends TestHelper {
     }
     assertThat(result.hasNext()).isFalse();
 
-    final Set<String> names = new HashSet<>();
-    names.add("name1");
-    names.add("name2");
+    final Set<String> names = new HashSet<>(Set.of(
+        "name1",
+        "name2"));
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 2; i++) {
       assertThat(result.hasNext()).isTrue();
@@ -336,9 +337,9 @@ public class InsertStatementExecutionTest extends TestHelper {
     final String className = "testContentWithParam";
     database.getSchema().createDocumentType(className);
 
-    final Map<String, Object> theContent = new HashMap<>();
-    theContent.put("name", "name1");
-    theContent.put("surname", "surname1");
+    final Map<String, Object> theContent = new HashMap<>(Map.of(
+        "name", "name1",
+        "surname", "surname1"));
     final Map<String, Object> params = new HashMap<>();
     params.put("theContent", theContent);
     ResultSet result = database.command("sql", "insert into " + className + " content :theContent", params);
@@ -702,9 +703,9 @@ public class InsertStatementExecutionTest extends TestHelper {
     result.close();
 
     // Test with parameters (as in the original issue)
-    final Map<String, Object> params = new HashMap<>();
-    params.put("hash", "def");
-    params.put("language", "fr");
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "hash", "def",
+        "language", "fr"));
     result = database.command("sql", "INSERT INTO " + className + " SET hash = :hash, language = :language", params);
     assertThat(result.hasNext()).isTrue();
     item = result.next();
@@ -731,9 +732,9 @@ public class InsertStatementExecutionTest extends TestHelper {
     final String className = "testInsertLanguageScript";
     database.getSchema().createDocumentType(className);
 
-    final Map<String, Object> params = new HashMap<>();
-    params.put("hash", "ghi");
-    params.put("language", "es");
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "hash", "ghi",
+        "language", "es"));
     ResultSet result = database.command("sqlscript",
         "LET $newRecord = INSERT INTO " + className + " SET hash = :hash, language = :language RETURN @rid;\n" +
             "RETURN { \"created\": true, \"rid\": $newRecord['@rid'] };",
@@ -767,9 +768,9 @@ public class InsertStatementExecutionTest extends TestHelper {
     database.getSchema().createDocumentType("DOCUMENT");
 
     // This is the exact query that was failing in the issue
-    final Map<String, Object> params = new HashMap<>();
-    params.put("hash", "test123");
-    params.put("language", "en-US");
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "hash", "test123",
+        "language", "en-US"));
 
     ResultSet result = database.command("sqlscript",
         """

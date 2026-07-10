@@ -22,7 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
-import static org.assertj.core.api.Assertions.assertThat;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -36,6 +36,8 @@ import java.net.URL;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Network partition tests for Raft HA cluster resilience.
@@ -88,7 +90,7 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     DatabaseWrapper[] dbs = { db0, db1, db2 };
@@ -206,7 +208,7 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
@@ -308,7 +310,7 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };

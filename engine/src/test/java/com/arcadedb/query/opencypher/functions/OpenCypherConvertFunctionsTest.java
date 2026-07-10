@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.functions;
 
 import com.arcadedb.function.convert.*;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -156,9 +157,9 @@ class OpenCypherConvertFunctionsTest {
   void convertToJsonFromMap() {
     final ConvertToJson fn = new ConvertToJson();
 
-    final Map<String, Object> map = new LinkedHashMap<>();
-    map.put("name", "Alice");
-    map.put("age", 30);
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "name", "Alice",
+        "age", 30));
 
     final String result = (String) fn.execute(new Object[]{map}, null);
     assertThat(result).contains("\"name\"");
@@ -256,7 +257,7 @@ class OpenCypherConvertFunctionsTest {
     final List<Object> result = (List<Object>) fn.execute(new Object[]{new Object[]{1, 2, 3}}, null);
     // The array is wrapped as a single element
     assertThat(result).hasSize(1);
-    assertThat(result.get(0)).isInstanceOf(Object[].class);
+    assertThat(result.getFirst()).isInstanceOf(Object[].class);
   }
 
   @Test
@@ -301,9 +302,9 @@ class OpenCypherConvertFunctionsTest {
     final ConvertToMap fn = new ConvertToMap();
     assertThat(fn.getName()).isEqualTo("convert.toMap");
 
-    final Map<String, Object> input = new HashMap<>();
-    input.put("a", 1);
-    input.put("b", 2);
+    final Map<String, Object> input = new HashMap<>(Map.of(
+        "a", 1,
+        "b", 2));
 
     @SuppressWarnings("unchecked")
     final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[]{input}, null);

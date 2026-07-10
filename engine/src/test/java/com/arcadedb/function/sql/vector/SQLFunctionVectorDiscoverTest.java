@@ -85,7 +85,7 @@ class SQLFunctionVectorDiscoverTest extends TestHelper {
     final List<String> result = discover(List.of(pair("A", "C")), 4);
     assertThat(result).doesNotContain("A", "C");
     // B is firmly in the positive cluster; must be rank 0.
-    assertThat(result.get(0)).isEqualTo("B");
+    assertThat(result.getFirst()).isEqualTo("B");
     // D is firmly in the negative cluster; must rank below E and F (orthogonal). Specifically,
     // D's discovery score is sharply negative (~-0.94), while E and F's are ~0, so D should be
     // last whenever it appears.
@@ -106,7 +106,7 @@ class SQLFunctionVectorDiscoverTest extends TestHelper {
     // Cluster X has been used as positives (A, B); only E/F (cluster Z) remain. Both should be
     // present in the top-K, in cluster-X-bias-decreasing order: F has 0.0 cos to neg cluster Y,
     // E has 0.1 cos to it. Either order is acceptable; we just assert the result is from {E, F}.
-    assertThat(result.get(0)).isIn("E", "F");
+    assertThat(result.getFirst()).isIn("E", "F");
   }
 
   @Test

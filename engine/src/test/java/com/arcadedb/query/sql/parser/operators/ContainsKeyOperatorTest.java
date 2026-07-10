@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.parser.ContainsKeyOperator;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;

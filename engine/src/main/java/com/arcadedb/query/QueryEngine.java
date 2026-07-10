@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 
@@ -78,7 +77,7 @@ public interface QueryEngine {
    * Optimized overload for queries with no parameters - avoids varargs array allocation.
    */
   default ResultSet query(String query, ContextConfiguration configuration) {
-    return query(query, configuration, Collections.emptyMap());
+    return query(query, configuration, Map.of());
   }
 
   ResultSet query(String query, ContextConfiguration configuration, Object... parameters);
@@ -89,7 +88,7 @@ public interface QueryEngine {
    * Optimized overload for commands with no parameters - avoids varargs array allocation.
    */
   default ResultSet command(String query, ContextConfiguration configuration) {
-    return command(query, configuration, Collections.emptyMap());
+    return command(query, configuration, Map.of());
   }
 
   ResultSet command(String query, ContextConfiguration configuration, Object... parameters);

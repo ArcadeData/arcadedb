@@ -19,6 +19,7 @@
 package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
+
 import org.junit.jupiter.api.Test;
 
 import java.time.*;
@@ -79,9 +80,9 @@ class JSONTest extends TestHelper {
 
   @Test
   void embeddedMaps() {
-    final Map<String, Object> map = new HashMap<>();
-    map.put("first", 1);
-    map.put("2nd", 2);
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "first", 1,
+        "2nd", 2));
     JSONObject json = new JSONObject().put("map", map);
 
     final String serialized = json.toString();
@@ -167,9 +168,9 @@ class JSONTest extends TestHelper {
 
   @Test
   void expressions() {
-    final Map<String, Object> map = new HashMap<>();
-    map.put("first", 1);
-    map.put("second", new JSONArray().put(3).put(5));
+    final Map<String, Object> map = new HashMap<>(Map.of(
+        "first", 1,
+        "second", new JSONArray().put(3).put(5)));
     JSONObject json = new JSONObject().put("map", map);
 
     final String serialized = json.toString();

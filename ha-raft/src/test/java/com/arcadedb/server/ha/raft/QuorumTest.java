@@ -1,6 +1,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ConfigurationException;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

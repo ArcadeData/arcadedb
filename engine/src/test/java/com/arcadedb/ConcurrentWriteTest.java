@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,9 +42,9 @@ class ConcurrentWriteTest {
   private static final int           CONCURRENT_THREADS   = BUCKETS;
   private static final int           TX_RETRY             = CONCURRENT_THREADS * 100;
   private static final String        DATABASE_NAME        = "benchmark";
-  private              AtomicLong    globalCounter        = new AtomicLong();
-  private              AtomicInteger concurrentExceptions = new AtomicInteger();
-  private              AtomicInteger errors               = new AtomicInteger();
+  private final              AtomicLong    globalCounter        = new AtomicLong();
+  private final              AtomicInteger concurrentExceptions = new AtomicInteger();
+  private final              AtomicInteger errors               = new AtomicInteger();
   private              Database      database;
 
   @AfterEach

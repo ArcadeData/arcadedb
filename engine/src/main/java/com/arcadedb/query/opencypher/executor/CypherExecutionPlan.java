@@ -39,8 +39,8 @@ import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
-import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
@@ -52,24 +52,22 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
-import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
+import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
-import com.arcadedb.query.opencypher.executor.steps.CountOp;
-import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
-import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
-import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
-import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
+import com.arcadedb.query.opencypher.executor.steps.CountOp;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
+import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
@@ -83,22 +81,22 @@ import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
 import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
+import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
+import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
+import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
 import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
-import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -110,6 +108,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -279,7 +279,7 @@ public class CypherExecutionPlan {
       // If no RETURN clause (or GQL FINISH was used), return empty results
       // (write side effects still happened). Issue #3365 section 1.3.
       if (statement.getReturnClause() == null || statement.hasFinishClause()) {
-        final IteratorResultSet empty = new IteratorResultSet(Collections.<Result>emptyList().iterator());
+        final IteratorResultSet empty = new IteratorResultSet(List.<Result>of().iterator());
         empty.setStatistics(stats);
         return empty;
       }
@@ -293,7 +293,7 @@ public class CypherExecutionPlan {
     if (statement.hasFinishClause()) {
       while (resultSet.hasNext())
         resultSet.next();
-      return new IteratorResultSet(Collections.<Result>emptyList().iterator());
+      return new IteratorResultSet(List.<Result>of().iterator());
     }
 
     return resultSet;
@@ -425,11 +425,9 @@ public class CypherExecutionPlan {
     // non-union write path), then surface the summed per-branch statistics.
     final ResultSet rs = unionStep.syncPull(context, 100);
     final List<Result> rows = new ArrayList<>();
-    try {
+    try (rs) {
       while (rs.hasNext())
         rows.add(rs.next());
-    } finally {
-      rs.close();
     }
     final IteratorResultSet out = new IteratorResultSet(rows.iterator());
     // Always attach the accumulator for a write UNION, even when no branch actually mutated
@@ -975,7 +973,7 @@ public class CypherExecutionPlan {
     // E.g., RETURN abs(-42), WITH collect([0, 0.0]) AS numbers UNWIND ...
     // Skip this when a seed step is provided (e.g., CALL subquery) since the seed provides input
     final boolean firstClauseIsMatch = !clausesInOrder.isEmpty() &&
-        clausesInOrder.get(0).getType() == ClauseEntry.ClauseType.MATCH;
+        clausesInOrder.getFirst().getType() == ClauseEntry.ClauseType.MATCH;
     if (initialStep == null && !firstClauseIsMatch) {
       // Create a dummy row to evaluate expressions against
       final ResultInternal dummyRow = new ResultInternal();
@@ -1463,8 +1461,8 @@ public class CypherExecutionPlan {
     // once per node. Scoped to a leading, non-optional MATCH (no prior input row) so it never
     // interacts with input-driven reverse-traversal or OPTIONAL null semantics. Cartesian product is
     // commutative, so the result set is unchanged.
-    final List<PathPattern> pathPatterns = (!isOptional && stepBeforeMatch == null
-        && matchClause.getPathPatterns().size() > 1)
+    final List<PathPattern> pathPatterns = !isOptional && stepBeforeMatch == null
+        && matchClause.getPathPatterns().size() > 1
         ? reorderIndependentComponents(matchClause.getPathPatterns())
         : matchClause.getPathPatterns();
 
@@ -1539,9 +1537,7 @@ public class CypherExecutionPlan {
           if (isOptional && matchChainStart == matchStep)
             matchChainStart = zeroPathStep;
         }
-      } else if (pathPattern instanceof ShortestPathPattern) {
-        // Handle shortestPath or allShortestPaths patterns
-        final ShortestPathPattern shortestPathPattern = (ShortestPathPattern) pathPattern;
+      } else if (pathPattern instanceof ShortestPathPattern shortestPathPattern) {
         final NodePattern sourceNode = pathPattern.getFirstNode();
         final NodePattern targetNode = pathPattern.getLastNode();
         final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
@@ -1911,7 +1907,7 @@ public class CypherExecutionPlan {
       final int lb = componentLabelCount(pathPatterns, b);
       if (la != lb)
         return Integer.compare(lb, la);
-      return Integer.compare(a.get(0), b.get(0));
+      return Integer.compare(a.getFirst(), b.getFirst());
     });
 
     return rebuild(pathPatterns, ordered);
@@ -2079,9 +2075,7 @@ public class CypherExecutionPlan {
           for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
             final PathPattern pathPattern = pathPatterns.get(patternIndex);
 
-            if (pathPattern instanceof ShortestPathPattern) {
-              // Handle shortestPath or allShortestPaths patterns in legacy path
-              final ShortestPathPattern shortestPathPattern = (ShortestPathPattern) pathPattern;
+            if (pathPattern instanceof ShortestPathPattern shortestPathPattern) {
               final NodePattern sourceNode = pathPattern.getFirstNode();
               final NodePattern targetNode = pathPattern.getLastNode();
               final String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
@@ -2655,7 +2649,7 @@ public class CypherExecutionPlan {
     if (!firstMatch.hasPathPatterns() || firstMatch.getPathPatterns().size() != 1)
       return null;
 
-    final PathPattern firstPattern = firstMatch.getPathPatterns().get(0);
+    final PathPattern firstPattern = firstMatch.getPathPatterns().getFirst();
     if (firstPattern.getRelationshipCount() != 1)
       return null;
 
@@ -2687,7 +2681,7 @@ public class CypherExecutionPlan {
     if (!secondMatch.hasPathPatterns() || secondMatch.getPathPatterns().size() != 1)
       return null;
 
-    final PathPattern secondPattern = secondMatch.getPathPatterns().get(0);
+    final PathPattern secondPattern = secondMatch.getPathPatterns().getFirst();
     if (secondPattern.getRelationshipCount() != 1)
       return null;
 
@@ -2799,7 +2793,7 @@ public class CypherExecutionPlan {
           return null;
         if (funcExpr.isDistinct())
           return null;
-        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().get(0) instanceof VariableExpression))
+        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().getFirst() instanceof VariableExpression))
           return null;
         countExpr = funcExpr;
         countAlias = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
@@ -2812,7 +2806,7 @@ public class CypherExecutionPlan {
       return null;
 
     // Count argument must be the target variable
-    final String countArgVariable = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+    final String countArgVariable = ((VariableExpression) countExpr.getArguments().getFirst()).getVariableName();
     if (!countArgVariable.equals(targetVar))
       return null;
 
@@ -2936,7 +2930,7 @@ public class CypherExecutionPlan {
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
 
-    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
 
     // 2. Must have exactly one relationship (single hop, not variable-length)
     if (pathPattern.getRelationshipCount() != 1)
@@ -2992,7 +2986,7 @@ public class CypherExecutionPlan {
         if (funcExpr.isDistinct())
           return null;
         // count argument must be a simple variable
-        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().get(0) instanceof VariableExpression))
+        if (funcExpr.getArguments().size() != 1 || !(funcExpr.getArguments().getFirst() instanceof VariableExpression))
           return null;
         countExpr = funcExpr;
         countAlias = item.getAlias() != null ? item.getAlias() : item.getExpression().getText();
@@ -3005,7 +2999,7 @@ public class CypherExecutionPlan {
       return null;
 
     // Get the count argument variable name
-    final String countArgVariable = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+    final String countArgVariable = ((VariableExpression) countExpr.getArguments().getFirst()).getVariableName();
 
     // 6/7. Identify bound and unbound endpoints
     final NodePattern firstNode = pathPattern.getFirstNode();
@@ -3221,7 +3215,7 @@ public class CypherExecutionPlan {
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
 
-    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
     if (pathPattern.getRelationshipCount() != 1)
       return null;
 
@@ -3270,9 +3264,9 @@ public class CypherExecutionPlan {
           return null;
 
         // Accept count(variable) or count(*) — in a single-hop MATCH, count(*) equals count(targetVar)
-        if (funcExpr.getArguments().size() == 1 && funcExpr.getArguments().get(0) instanceof VariableExpression) {
+        if (funcExpr.getArguments().size() == 1 && funcExpr.getArguments().getFirst() instanceof VariableExpression) {
           // count(variable) — variable must be target or source (the expand endpoint)
-        } else if (funcExpr.getArguments().size() == 1 && funcExpr.getArguments().get(0) instanceof StarExpression) {
+        } else if (funcExpr.getArguments().size() == 1 && funcExpr.getArguments().getFirst() instanceof StarExpression) {
           // count(*) — equivalent to counting edges in single-hop MATCH
         } else
           return null;
@@ -3290,10 +3284,10 @@ public class CypherExecutionPlan {
     // Standard pattern: MATCH (anchor)-[:TYPE]->(counted) RETURN anchor.prop, count(counted)
     // Reverse pattern: MATCH (:Type)-[:TYPE]->(anchor) RETURN anchor.prop, count(*)
     final String countArgVar;
-    if (countExpr.getArguments().get(0) instanceof StarExpression)
+    if (countExpr.getArguments().getFirst() instanceof StarExpression)
       countArgVar = null; // count(*) — edges will be counted from anchor side
     else
-      countArgVar = ((VariableExpression) countExpr.getArguments().get(0)).getVariableName();
+      countArgVar = ((VariableExpression) countExpr.getArguments().getFirst()).getVariableName();
 
     // Determine the anchor variable: the one used in grouping (non-aggregated RETURN items)
     // For normal pattern: anchor=sourceVar, counted=targetVar
@@ -3367,7 +3361,7 @@ public class CypherExecutionPlan {
 
     // Determine target label for filtering (the counted node's label, if any)
     final NodePattern countedNode = anchorNode == sourceNode ? targetNode : sourceNode;
-    final String targetLabel = countedNode.hasLabels() ? countedNode.getLabels().get(0) : null;
+    final String targetLabel = countedNode.hasLabels() ? countedNode.getLabels().getFirst() : null;
 
     final CountEdgesReturnStep countStep = new CountEdgesReturnStep(
         anchorVar, countDirection, edgeTypes, countAlias, targetLabel,
@@ -3400,7 +3394,7 @@ public class CypherExecutionPlan {
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
 
-    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
 
     // Must not be OPTIONAL MATCH
     if (matchClause.isOptional())
@@ -3414,7 +3408,7 @@ public class CypherExecutionPlan {
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
 
-    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
 
     // Must be a single node pattern (not a relationship pattern)
     if (!pathPattern.isSingleNode())
@@ -3443,7 +3437,7 @@ public class CypherExecutionPlan {
     if (variable == null)
       return null;
 
-    final String typeName = nodePattern.getLabels().get(0);
+    final String typeName = nodePattern.getLabels().getFirst();
 
     // Must have RETURN clause
     if (statement.getReturnClause() == null)
@@ -3453,7 +3447,7 @@ public class CypherExecutionPlan {
     if (statement.getReturnClause().getReturnItems().size() != 1)
       return null;
 
-    final ReturnClause.ReturnItem returnItem = statement.getReturnClause().getReturnItems().get(0);
+    final ReturnClause.ReturnItem returnItem = statement.getReturnClause().getReturnItems().getFirst();
     final Expression returnExpr = returnItem.getExpression();
 
     // Must be a function call
@@ -3471,7 +3465,7 @@ public class CypherExecutionPlan {
     if (funcExpr.getArguments().size() != 1)
       return null;
 
-    final Expression countArg = funcExpr.getArguments().get(0);
+    final Expression countArg = funcExpr.getArguments().getFirst();
 
     // Argument must be a variable reference
     if (!(countArg instanceof VariableExpression))
@@ -3631,7 +3625,7 @@ public class CypherExecutionPlan {
     final String name = func.getFunctionName();
     if (!("id".equalsIgnoreCase(name) || "elementid".equalsIgnoreCase(name)) || func.getArguments().size() != 1)
       return false;
-    if (!(func.getArguments().get(0) instanceof VariableExpression))
+    if (!(func.getArguments().getFirst() instanceof VariableExpression))
       return false;
     if (valueSide instanceof LiteralExpression)
       return true;
@@ -4102,8 +4096,8 @@ public class CypherExecutionPlan {
       return false; // Without labels, can't prove disjointness
 
     // Use the first label from each node for the check
-    final String label1 = node1.getLabels().get(0);
-    final String label2 = node2.getLabels().get(0);
+    final String label1 = node1.getLabels().getFirst();
+    final String label2 = node2.getLabels().getFirst();
 
     if (label1.equals(label2))
       return false; // Same label → not disjoint
@@ -4188,13 +4182,13 @@ public class CypherExecutionPlan {
     final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
     if (items.size() != 1)
       return null;
-    final ReturnClause.ReturnItem item = items.get(0);
+    final ReturnClause.ReturnItem item = items.getFirst();
     if (!(item.getExpression() instanceof FunctionCallExpression))
       return null;
     final FunctionCallExpression func = (FunctionCallExpression) item.getExpression();
     if (!"count".equals(func.getFunctionName()))
       return null;
-    if (func.getArguments().size() != 1 || !(func.getArguments().get(0) instanceof StarExpression))
+    if (func.getArguments().size() != 1 || !(func.getArguments().getFirst() instanceof StarExpression))
       return null;
     return item.getAlias() != null ? item.getAlias() : "count(*)";
   }
@@ -4267,7 +4261,7 @@ public class CypherExecutionPlan {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
-    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
     if (matchClause.isOptional())
       return null;
 
@@ -4286,7 +4280,7 @@ public class CypherExecutionPlan {
     // Exactly one path pattern with at least one relationship
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
-    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
     if (pathPattern.getRelationshipCount() < 1)
       return null;
     if (pathPattern.hasPathVariable())
@@ -4300,7 +4294,7 @@ public class CypherExecutionPlan {
 
     for (int i = 0; i <= hopCount; i++) {
       final NodePattern node = pathPattern.getNode(i);
-      nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
+      nodeLabels[i] = node.hasLabels() ? node.getLabels().getFirst() : null;
     }
 
     for (int i = 0; i < hopCount; i++) {
@@ -4314,7 +4308,7 @@ public class CypherExecutionPlan {
       if (!rel.hasTypes() || rel.getTypes().size() != 1)
         return null;
 
-      edgeTypes[i] = rel.getTypes().get(0);
+      edgeTypes[i] = rel.getTypes().getFirst();
       final Direction dir = rel.getDirection();
       if (dir == Direction.OUT)
         directions[i] = Vertex.DIRECTION.OUT;
@@ -4414,7 +4408,7 @@ public class CypherExecutionPlan {
         for (int i = 0; i <= pp.getRelationshipCount(); i++) {
           final NodePattern node = pp.getNode(i);
           if (centralVar.equals(node.getVariable()) && node.hasLabels()) {
-            centralLabel = node.getLabels().get(0);
+            centralLabel = node.getLabels().getFirst();
             break;
           }
         }
@@ -4517,7 +4511,7 @@ public class CypherExecutionPlan {
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
         continue;
-      final PathPattern pp = mc.getPathPatterns().get(0);
+      final PathPattern pp = mc.getPathPatterns().getFirst();
       if (pp.getRelationshipCount() < 3)
         continue;
       final String firstVar = pp.getFirstNode().getVariable();
@@ -4534,8 +4528,8 @@ public class CypherExecutionPlan {
             break;
           }
           if (edgeType == null)
-            edgeType = rel.getTypes().get(0);
-          else if (!edgeType.equals(rel.getTypes().get(0))) {
+            edgeType = rel.getTypes().getFirst();
+          else if (!edgeType.equals(rel.getTypes().getFirst())) {
             valid = false;
             break;
           }
@@ -4564,7 +4558,7 @@ public class CypherExecutionPlan {
         continue;
       if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
         continue;
-      final PathPattern pp = mc.getPathPatterns().get(0);
+      final PathPattern pp = mc.getPathPatterns().getFirst();
       if (pp.isSingleNode() && pp.getFirstNode().getVariable() != null) {
         anchorVar = pp.getFirstNode().getVariable();
         break;
@@ -4581,7 +4575,7 @@ public class CypherExecutionPlan {
         continue;
       if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
         continue;
-      final PathPattern pp = mc.getPathPatterns().get(0);
+      final PathPattern pp = mc.getPathPatterns().getFirst();
       if (pp.isSingleNode())
         continue; // anchor match
 
@@ -4604,7 +4598,7 @@ public class CypherExecutionPlan {
           valid = false;
           break;
         }
-        chainET[i] = rel.getTypes().get(0);
+        chainET[i] = rel.getTypes().getFirst();
         final Direction d = rel.getDirection();
         chainDir[i] = d == Direction.OUT ? Vertex.DIRECTION.OUT
             : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
@@ -4649,7 +4643,7 @@ public class CypherExecutionPlan {
     // Exactly one non-optional MATCH with exactly 2 path patterns
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
-    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
     if (matchClause.isOptional() || matchClause.hasWhereClause())
       return null;
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 2)
@@ -4658,7 +4652,7 @@ public class CypherExecutionPlan {
       return null;
 
     // Identify probe (single-hop) and build (multi-hop) patterns
-    final PathPattern pp0 = matchClause.getPathPatterns().get(0);
+    final PathPattern pp0 = matchClause.getPathPatterns().getFirst();
     final PathPattern pp1 = matchClause.getPathPatterns().get(1);
 
     PathPattern probePattern, buildPattern;
@@ -4677,7 +4671,7 @@ public class CypherExecutionPlan {
       return null;
     if (probeRel.getVariable() != null && !probeRel.getVariable().isEmpty())
       return null;
-    final String probeEdgeType = probeRel.getTypes().get(0);
+    final String probeEdgeType = probeRel.getTypes().getFirst();
     final Direction probeDir = probeRel.getDirection();
     final Vertex.DIRECTION probeDirection = probeDir == Direction.OUT ? Vertex.DIRECTION.OUT
         : probeDir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
@@ -4718,7 +4712,7 @@ public class CypherExecutionPlan {
 
     // Determine the build chain start label
     final NodePattern startNode = buildPattern.getNode(startNodeIdx);
-    final String buildStartLabel = startNode.hasLabels() ? startNode.getLabels().get(0) : null;
+    final String buildStartLabel = startNode.hasLabels() ? startNode.getLabels().getFirst() : null;
     if (buildStartLabel == null)
       return null;
 
@@ -4735,12 +4729,12 @@ public class CypherExecutionPlan {
       if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1
           || (rel.getVariable() != null && !rel.getVariable().isEmpty()))
         return null;
-      bwdET.add(rel.getTypes().get(0));
+      bwdET.add(rel.getTypes().getFirst());
       final Direction d = rel.getDirection().reverse();
       bwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
           : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
       final NodePattern targetNode = buildPattern.getNode(i);
-      bwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
+      bwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().getFirst() : null);
       final String nodeVar = targetNode.getVariable();
       if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
         bwdEndpointVar = nodeVar;
@@ -4758,12 +4752,12 @@ public class CypherExecutionPlan {
       if (rel.isVariableLength() || !rel.hasTypes() || rel.getTypes().size() != 1
           || (rel.getVariable() != null && !rel.getVariable().isEmpty()))
         return null;
-      fwdET.add(rel.getTypes().get(0));
+      fwdET.add(rel.getTypes().getFirst());
       final Direction d = rel.getDirection();
       fwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
           : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
       final NodePattern targetNode = buildPattern.getNode(i + 1);
-      fwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
+      fwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().getFirst() : null);
       final String nodeVar = targetNode.getVariable();
       if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
         fwdEndpointVar = nodeVar;
@@ -4839,7 +4833,7 @@ public class CypherExecutionPlan {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
-    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
     if (matchClause.isOptional())
       return null;
 
@@ -4856,7 +4850,7 @@ public class CypherExecutionPlan {
     // Exactly one path pattern with at least one relationship
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
-    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
     if (pathPattern.getRelationshipCount() < 2) // need at least 2 hops for anti-join to make sense
       return null;
     if (pathPattern.hasPathVariable())
@@ -4870,7 +4864,7 @@ public class CypherExecutionPlan {
 
     for (int i = 0; i <= hopCount; i++) {
       final NodePattern node = pathPattern.getNode(i);
-      nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
+      nodeLabels[i] = node.hasLabels() ? node.getLabels().getFirst() : null;
     }
 
     for (int i = 0; i < hopCount; i++) {
@@ -4884,7 +4878,7 @@ public class CypherExecutionPlan {
       if (!rel.hasTypes() || rel.getTypes().size() != 1)
         return null;
 
-      edgeTypes[i] = rel.getTypes().get(0);
+      edgeTypes[i] = rel.getTypes().getFirst();
       final Direction dir = rel.getDirection();
       if (dir == Direction.OUT)
         directions[i] = Vertex.DIRECTION.OUT;
@@ -4986,8 +4980,7 @@ public class CypherExecutionPlan {
       return extractFromPatternPredicate(directNeg, null, null);
 
     // Case 2: AND of two conditions (anti-join + inequality, in either order)
-    if (condition instanceof LogicalExpression) {
-      final LogicalExpression logical = (LogicalExpression) condition;
+    if (condition instanceof LogicalExpression logical) {
       if (logical.getOperator() != LogicalExpression.Operator.AND)
         return null;
 
@@ -4996,16 +4989,16 @@ public class CypherExecutionPlan {
 
       // Try: left = anti-join, right = inequality
       final PatternPredicateExpression leftNeg = extractNegatedPattern(left);
-      if (leftNeg != null && right instanceof ComparisonExpression) {
-        final String[] ineq = extractInequalityFromComparison((ComparisonExpression) right);
+      if (leftNeg != null && right instanceof ComparisonExpression expression) {
+        final String[] ineq = extractInequalityFromComparison(expression);
         if (ineq != null)
           return extractFromPatternPredicate(leftNeg, ineq[0], ineq[1]);
       }
 
       // Try: left = inequality, right = anti-join
       final PatternPredicateExpression rightNeg = extractNegatedPattern(right);
-      if (rightNeg != null && left instanceof ComparisonExpression) {
-        final String[] ineq = extractInequalityFromComparison((ComparisonExpression) left);
+      if (rightNeg != null && left instanceof ComparisonExpression expression1) {
+        final String[] ineq = extractInequalityFromComparison(expression1);
         if (ineq != null)
           return extractFromPatternPredicate(rightNeg, ineq[0], ineq[1]);
       }
@@ -5025,12 +5018,10 @@ public class CypherExecutionPlan {
    * @return the pattern predicate (always with isNegated semantics), or null
    */
   private static PatternPredicateExpression extractNegatedPattern(final BooleanExpression expr) {
-    if (expr instanceof PatternPredicateExpression) {
-      final PatternPredicateExpression ppe = (PatternPredicateExpression) expr;
+    if (expr instanceof PatternPredicateExpression ppe) {
       return ppe.isNegated() ? ppe : null;
     }
-    if (expr instanceof LogicalExpression) {
-      final LogicalExpression logical = (LogicalExpression) expr;
+    if (expr instanceof LogicalExpression logical) {
       if (logical.getOperator() == LogicalExpression.Operator.NOT
           && logical.getLeft() instanceof PatternPredicateExpression) {
         // NOT wrapping a non-negated pattern predicate = negated pattern
@@ -5067,7 +5058,7 @@ public class CypherExecutionPlan {
     if (sourceVar == null || targetVar == null)
       return null;
 
-    final String edgeType = rel.getTypes().get(0);
+    final String edgeType = rel.getTypes().getFirst();
     final Direction dir = rel.getDirection();
     final Vertex.DIRECTION direction = dir == Direction.OUT ? Vertex.DIRECTION.OUT
         : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
@@ -5105,7 +5096,7 @@ public class CypherExecutionPlan {
       if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
           || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
         return null;
-      edgeTypes[i] = rel.getTypes().get(0);
+      edgeTypes[i] = rel.getTypes().getFirst();
       final Direction dir = rel.getDirection();
       directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
           : dir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
@@ -5128,7 +5119,7 @@ public class CypherExecutionPlan {
       if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())
           || rel.hasProperties() || !rel.hasTypes() || rel.getTypes().size() != 1)
         return null;
-      edgeTypes[i] = rel.getTypes().get(0);
+      edgeTypes[i] = rel.getTypes().getFirst();
       // Reverse direction since we're traversing the arm in the opposite direction
       final Direction dir = rel.getDirection().reverse();
       directions[i] = dir == Direction.OUT ? Vertex.DIRECTION.OUT
@@ -5157,19 +5148,16 @@ public class CypherExecutionPlan {
       return null;
 
     // Check if this is a comparison expression (ID(var) = value)
-    if (expr instanceof ComparisonExpression) {
-      final ComparisonExpression compExpr = (ComparisonExpression) expr;
+    if (expr instanceof ComparisonExpression compExpr) {
 
       // Check if left side is ID(variable) or elementId(variable)
       final Expression left = compExpr.getLeft();
-      if (left instanceof FunctionCallExpression) {
-        final FunctionCallExpression funcExpr = (FunctionCallExpression) left;
+      if (left instanceof FunctionCallExpression funcExpr) {
         final String funcName = funcExpr.getFunctionName();
         if (("id".equalsIgnoreCase(funcName) || "elementid".equalsIgnoreCase(funcName))
             && funcExpr.getArguments().size() == 1) {
-          final Expression arg = funcExpr.getArguments().get(0);
-          if (arg instanceof VariableExpression) {
-            final VariableExpression varExpr = (VariableExpression) arg;
+          final Expression arg = funcExpr.getArguments().getFirst();
+          if (arg instanceof VariableExpression varExpr) {
             if (variable.equals(varExpr.getVariableName())) {
               // Found ID(variable) - extract the value from right side
               final Expression right = compExpr.getRight();
@@ -5181,8 +5169,7 @@ public class CypherExecutionPlan {
     }
 
     // Check if this is a logical AND expression - recursively search both sides
-    if (expr instanceof LogicalExpression) {
-      final LogicalExpression logExpr = (LogicalExpression) expr;
+    if (expr instanceof LogicalExpression logExpr) {
       if (logExpr.getOperator() == LogicalExpression.Operator.AND) {
         final String leftResult = extractIdFilterFromExpression(logExpr.getLeft(), variable);
         if (leftResult != null)
@@ -5204,15 +5191,13 @@ public class CypherExecutionPlan {
     // Handle literal values: strings already have the RID format; numeric literals come from id()
     // (Long-encoded RID, issue #4183) and must be decoded back to a #bucketId:offset string so the
     // downstream MatchNodeStep can resolve the record via newRID.
-    if (expr instanceof LiteralExpression) {
-      final LiteralExpression litExpr = (LiteralExpression) expr;
+    if (expr instanceof LiteralExpression litExpr) {
       final Object value = litExpr.getValue();
       return toRidString(value);
     }
 
     // Handle parameter references
-    if (expr instanceof ParameterExpression) {
-      final ParameterExpression paramExpr = (ParameterExpression) expr;
+    if (expr instanceof ParameterExpression paramExpr) {
       final String paramName = paramExpr.getParameterName();
       if (parameters != null && parameters.containsKey(paramName)) {
         final Object value = parameters.get(paramName);

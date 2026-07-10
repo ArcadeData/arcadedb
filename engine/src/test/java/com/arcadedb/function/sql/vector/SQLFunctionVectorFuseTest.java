@@ -142,7 +142,7 @@ class SQLFunctionVectorFuseTest extends TestHelper {
 
     // Doc A is first in both rankings (dense rank 1, sparse rank 1) so RRF must surface it first.
     assertThat(ranked).as("fused results").contains(rids[0]);
-    assertThat(ranked.get(0)).as("rank 0").isEqualTo(rids[0]);
+    assertThat(ranked.getFirst()).as("rank 0").isEqualTo(rids[0]);
     // Doc E is absent from sparse (no shared dim with query) and last on dense, so it must rank below
     // anything that appears in both lists.
     if (ranked.contains(rids[4]))
@@ -196,7 +196,7 @@ class SQLFunctionVectorFuseTest extends TestHelper {
       scores.add(((Number) row.getProperty("score")).floatValue());
     }
 
-    assertThat(ranked.get(0)).as("LINEAR top-1").isEqualTo(rids[0]);
+    assertThat(ranked.getFirst()).as("LINEAR top-1").isEqualTo(rids[0]);
     // Scores must be in non-increasing order.
     for (int i = 1; i < scores.size(); i++)
       assertThat(scores.get(i)).isLessThanOrEqualTo(scores.get(i - 1));
@@ -221,7 +221,7 @@ class SQLFunctionVectorFuseTest extends TestHelper {
       ranked.add((RID) rs.next().getProperty("@rid"));
 
     // DBSF must surface doc A (top of both distributions after normalization).
-    assertThat(ranked.get(0)).isEqualTo(rids[0]);
+    assertThat(ranked.getFirst()).isEqualTo(rids[0]);
   }
 
   @Test
@@ -249,7 +249,7 @@ class SQLFunctionVectorFuseTest extends TestHelper {
     }
 
     assertThat(groups.size()).as("each group appears at most once").isEqualTo(ranked.size());
-    assertThat(ranked.get(0)).as("best member of best group is first").isEqualTo(rids[0]);
+    assertThat(ranked.getFirst()).as("best member of best group is first").isEqualTo(rids[0]);
   }
 
   @Test
@@ -299,7 +299,7 @@ class SQLFunctionVectorFuseTest extends TestHelper {
       ranked.add((RID) rs.next().getProperty("@rid"));
 
     // A wins under RRF: rank 1 in dense, rank 1 in sparse, rank 1 in plain SQL (alphabetical).
-    assertThat(ranked.get(0)).as("three-way RRF top-1").isEqualTo(rids[0]);
+    assertThat(ranked.getFirst()).as("three-way RRF top-1").isEqualTo(rids[0]);
     assertThat(ranked).hasSize(5);
   }
 
@@ -322,6 +322,6 @@ class SQLFunctionVectorFuseTest extends TestHelper {
       ranked.add((RID) rs.next().getProperty("@rid"));
 
     assertThat(ranked).hasSizeLessThanOrEqualTo(2);
-    assertThat(ranked.get(0)).isEqualTo(rids[0]);
+    assertThat(ranked.getFirst()).isEqualTo(rids[0]);
   }
 }

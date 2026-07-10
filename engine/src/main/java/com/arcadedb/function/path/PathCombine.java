@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,9 +83,7 @@ public class PathCombine extends AbstractPathFunction {
         if (rels != null) {
           allRels.addAll(rels);
         }
-      } else if (pathObj instanceof List) {
-        // Assume alternating node/rel list
-        final List<?> elements = (List<?>) pathObj;
+      } else if (pathObj instanceof List<?> elements) {
         for (int i = 0; i < elements.size(); i++) {
           if (i % 2 == 0) {
             if (allNodes.isEmpty() || i > 0) {
@@ -97,11 +96,11 @@ public class PathCombine extends AbstractPathFunction {
       }
     }
 
-    final Map<String, Object> result = new LinkedHashMap<>();
-    result.put("_type", "path");
-    result.put("nodes", allNodes);
-    result.put("relationships", allRels);
-    result.put("length", allRels.size());
+    final Map<String, Object> result = new HashMap<>(Map.of(
+        "_type", "path",
+        "nodes", allNodes,
+        "relationships", allRels,
+        "length", allRels.size()));
 
     return result;
   }
@@ -111,8 +110,8 @@ public class PathCombine extends AbstractPathFunction {
     if (input instanceof List)
       return (List<Object>) input;
 
-    if (input instanceof Collection)
-      return new ArrayList<>((Collection<?>) input);
+    if (input instanceof Collection<?> collection)
+      return new ArrayList<>(collection);
 
     final List<Object> result = new ArrayList<>();
     result.add(input);

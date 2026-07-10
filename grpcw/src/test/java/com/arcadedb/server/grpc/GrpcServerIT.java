@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -32,11 +33,10 @@ import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import io.grpc.stub.StreamObserver;
 
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -203,9 +203,9 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
 
     assertThat(response.getResultsList()).isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList()).isNotEmpty();
+    assertThat(response.getResultsList().getFirst().getRecordsList()).isNotEmpty();
 
-    GrpcRecord record = response.getResultsList().get(0).getRecordsList().get(0);
+    GrpcRecord record = response.getResultsList().getFirst().getRecordsList().getFirst();
     assertThat(record.getPropertiesMap()).containsKey("name");
     assertThat(record.getPropertiesMap().get("name").getStringValue()).isEqualTo("V1");
   }
@@ -222,7 +222,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
 
     assertThat(response.getResultsList()).isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList()).isNotEmpty();
+    assertThat(response.getResultsList().getFirst().getRecordsList()).isNotEmpty();
   }
 
   @Test
@@ -236,7 +236,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
 
     assertThat(response.getResultsList()).isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList()).isEmpty();
+    assertThat(response.getResultsList().getFirst().getRecordsList()).isEmpty();
   }
 
   @Test
@@ -306,7 +306,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
         .build();
 
     ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
-    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isNotEmpty();
+    assertThat(queryResponse.getResultsList().getFirst().getRecordsList()).isNotEmpty();
   }
 
   @Test
@@ -566,7 +566,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
 
     ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
 
-    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isNotEmpty();
+    assertThat(queryResponse.getResultsList().getFirst().getRecordsList()).isNotEmpty();
   }
 
   @Test
@@ -616,7 +616,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
 
     ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
 
-    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isEmpty();
+    assertThat(queryResponse.getResultsList().getFirst().getRecordsList()).isEmpty();
   }
 
   // Streaming query tests
@@ -744,19 +744,19 @@ public class GrpcServerIT extends BaseGraphServerTest {
     authenticatedStub.executeCommand(createUniqueIndexRequest);
 
     // Insert records with duplicates
-    List<GrpcRecord> records = new ArrayList<>();
-    records.add(GrpcRecord.newBuilder()
-        .setType(typeName)
-        .putProperties("uniqueKey", stringValue("key1"))
-        .build());
-    records.add(GrpcRecord.newBuilder()
-        .setType(typeName)
-        .putProperties("uniqueKey", stringValue("key1")) // duplicate
-        .build());
-    records.add(GrpcRecord.newBuilder()
-        .setType(typeName)
-        .putProperties("uniqueKey", stringValue("key2"))
-        .build());
+    List<GrpcRecord> records = new ArrayList<>(List.of(
+        GrpcRecord.newBuilder()
+            .setType(typeName)
+            .putProperties("uniqueKey", stringValue("key1"))
+            .build(),
+        GrpcRecord.newBuilder()
+            .setType(typeName)
+            .putProperties("uniqueKey", stringValue("key1")) // duplicate
+            .build(),
+        GrpcRecord.newBuilder()
+            .setType(typeName)
+            .putProperties("uniqueKey", stringValue("key2"))
+            .build()));
 
     BulkInsertRequest request = BulkInsertRequest.newBuilder()
         .setOptions(InsertOptions.newBuilder()
@@ -910,7 +910,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
         .setDatabase(getDatabaseName())
         .setQuery("SELECT FROM BatchPerson")
         .build());
-    assertThat(queryResp.getResultsList().get(0).getRecordsList()).hasSize(2);
+    assertThat(queryResp.getResultsList().getFirst().getRecordsList()).hasSize(2);
   }
 
   @Test
@@ -1146,9 +1146,9 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
 
     assertThat(response.getResultsList()).isNotEmpty();
-    QueryResult resultSet = response.getResultsList().get(0);
+    QueryResult resultSet = response.getResultsList().getFirst();
     assertThat(resultSet.getRecordsList()).isNotEmpty();
-    GrpcRecord record = resultSet.getRecordsList().get(0);
+    GrpcRecord record = resultSet.getRecordsList().getFirst();
 
     // The key "r" must be present even though sqrt(-4) is null.
     assertThat(record.getPropertiesMap()).containsKey("r");
@@ -1168,9 +1168,9 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
 
     assertThat(response.getResultsList()).isNotEmpty();
-    QueryResult resultSet2 = response.getResultsList().get(0);
+    QueryResult resultSet2 = response.getResultsList().getFirst();
     assertThat(resultSet2.getRecordsList()).isNotEmpty();
-    GrpcRecord record = resultSet2.getRecordsList().get(0);
+    GrpcRecord record = resultSet2.getRecordsList().getFirst();
 
     // Both columns must be present regardless of their value.
     assertThat(record.getPropertiesMap()).containsKey("null_col");

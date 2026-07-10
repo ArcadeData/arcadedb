@@ -139,7 +139,7 @@ public class SelectParallelIteratorTest extends TestHelper {
   }
 
   @Test
-  void timeoutIsEnforcedWhileStreaming() throws InterruptedException {
+  void timeoutIsEnforcedWhileStreaming() throws Exception {
     // THE DATASET FITS IN THE HAND-OFF QUEUE: THE PRODUCERS COMPLETE QUICKLY AND NEVER STALL, SO THE ONLY WAY THE
     // TIMEOUT CAN FIRE IS THE PER-FETCH CHECK ON THE STREAMING PATH (REGRESSION: THE CHECK WAS ONLY REACHED WHEN THE
     // QUEUE WAS EMPTY, SO A SLOW CONSUMER OF AN ALWAYS-READY QUEUE COULD RUN UNBOUNDED PAST ITS timeout())
@@ -162,7 +162,7 @@ public class SelectParallelIteratorTest extends TestHelper {
   }
 
   @Test
-  void nonThrowingTimeoutTruncatesWhileStreaming() throws InterruptedException {
+  void nonThrowingTimeoutTruncatesWhileStreaming() throws Exception {
     // SAME SCENARIO WITH exceptionOnTimeout=false: THE ITERATION MUST END EARLY RETURNING WHAT WAS FETCHED SO FAR
     final SelectIterator<Vertex> iterator = database.select().fromType("Small")//
         .timeout(100, TimeUnit.MILLISECONDS, false)//

@@ -25,8 +25,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -133,8 +133,7 @@ public class FindReferencesStatement extends SimpleExecStatement {
     if (subQuery == null)
       throw new CommandExecutionException("FIND REFERENCES: missing target");
 
-    final ResultSet rs = subQuery.execute(context.getDatabase(), (Map<String, Object>) null, context, false);
-    try {
+    try (final ResultSet rs = subQuery.execute(context.getDatabase(), (Map<String, Object>) null, context, false)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
         // Prefer the RID of an Identifiable element when present.
@@ -153,8 +152,6 @@ public class FindReferencesStatement extends SimpleExecStatement {
             ids.add(identifiable.getIdentity());
         }
       }
-    } finally {
-      rs.close();
     }
     return ids;
   }

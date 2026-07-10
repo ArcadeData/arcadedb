@@ -80,9 +80,9 @@ public class AggMinItems extends AbstractAggFunction {
       }
     }
 
-    final Map<String, Object> result = new HashMap<>();
-    result.put("value", minValue);
-    result.put("items", minItems);
+    final Map<String, Object> result = new HashMap<>(Map.of(
+        "value", minValue,
+        "items", minItems));
     return result;
   }
 }

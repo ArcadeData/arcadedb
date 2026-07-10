@@ -24,8 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
-import org.junit.jupiter.api.AfterEach;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -59,7 +59,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     if (backupFile.exists())
       backupFile.delete();
 
-    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + getDatabaseName());) {
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + getDatabaseName())) {
       try (final Database database = factory.create()) {
 
         database.getSchema().createDocumentType("testDoc");

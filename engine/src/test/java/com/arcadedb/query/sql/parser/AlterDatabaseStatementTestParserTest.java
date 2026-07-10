@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 class AlterDatabaseStatementTestParserTest extends AbstractParserTest {

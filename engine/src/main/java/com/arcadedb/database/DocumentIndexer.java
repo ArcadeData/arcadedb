@@ -256,13 +256,13 @@ public class DocumentIndexer {
               if (nestedValue == null) {
                 break;
               }
-              if (nestedValue instanceof Document doc) {
-                nestedValue = doc.get(pathParts[j]);
-              } else if (nestedValue instanceof Map map) {
-                nestedValue = map.get(pathParts[j]);
-              } else {
-                nestedValue = null;
-                break;
+              switch (nestedValue) {
+                case Document doc -> nestedValue = doc.get(pathParts[j]);
+                case Map map -> nestedValue = map.get(pathParts[j]);
+                case null, default -> {
+                  nestedValue = null;
+                  break;
+                }
               }
             }
             keyValues[i] = nestedValue;
@@ -728,13 +728,13 @@ public class DocumentIndexer {
         for (int j = 1; j < pathParts.length; j++) {
           if (value == null)
             break;
-          if (value instanceof Document doc) {
-            value = doc.get(pathParts[j]);
-          } else if (value instanceof Map<?, ?> map) {
-            value = map.get(pathParts[j]);
-          } else {
-            value = null;
-            break;
+          switch (value) {
+            case Document doc -> value = doc.get(pathParts[j]);
+            case Map<?, ?> map -> value = map.get(pathParts[j]);
+            case null, default -> {
+              value = null;
+              break;
+            }
           }
         }
         return value;
@@ -911,13 +911,13 @@ public class DocumentIndexer {
             for (int j = 1; j < pathParts.length; j++) {
               if (nestedValue == null)
                 break;
-              if (nestedValue instanceof Document doc) {
-                nestedValue = doc.get(pathParts[j]);
-              } else if (nestedValue instanceof Map map) {
-                nestedValue = map.get(pathParts[j]);
-              } else {
-                nestedValue = null;
-                break;
+              switch (nestedValue) {
+                case Document doc -> nestedValue = doc.get(pathParts[j]);
+                case Map map -> nestedValue = map.get(pathParts[j]);
+                case null, default -> {
+                  nestedValue = null;
+                  break;
+                }
               }
             }
             keyValues[i] = nestedValue;

@@ -56,18 +56,18 @@ public class PropertyAccessExpression implements Expression {
       // Only resolve to Document when a property is actually accessed.
       final Object rawValue = rid.asVertex().get(propertyName);
       return convertFromStorage(rawValue);
-    } else if (variable instanceof Document) {
-      final Object rawValue = ((Document) variable).get(propertyName);
+    } else if (variable instanceof Document document) {
+      final Object rawValue = document.get(propertyName);
       return convertFromStorage(rawValue);
-    } else if (variable instanceof Map) {
+    } else if (variable instanceof Map<?, ?> map) {
       // Handle Map types (e.g., from UNWIND with parameter maps)
-      return ((Map<?, ?>) variable).get(propertyName);
-    } else if (variable instanceof Result) {
+      return map.get(propertyName);
+    } else if (variable instanceof Result result1) {
       // Handle Result types (nested results)
-      return ((Result) variable).getProperty(propertyName);
-    } else if (variable instanceof CypherTemporalValue) {
+      return result1.getProperty(propertyName);
+    } else if (variable instanceof CypherTemporalValue value) {
       // Handle temporal value property access (e.g., date.year, time.hour)
-      return ((CypherTemporalValue) variable).getTemporalProperty(propertyName);
+      return value.getTemporalProperty(propertyName);
     } else if (variable instanceof Temporal || variable instanceof Date) {
       // Native java.time / java.util.Date value (e.g. a temporal parameter or a stored
       // ZonedDateTime/Date) → wrap into its Cypher temporal type for component access (date.year, ...).

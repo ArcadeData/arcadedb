@@ -19,9 +19,9 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 import com.arcadedb.utility.MultiIterator;
 
 import java.util.ArrayList;

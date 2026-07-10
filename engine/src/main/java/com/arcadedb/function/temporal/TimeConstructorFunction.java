@@ -18,10 +18,9 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
@@ -49,8 +48,7 @@ public class TimeConstructorFunction implements StatelessFunction {
       return CypherFunctionHelper.getStatementTime(context).get("time");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof String) {
-      final String str = (String) args[0];
+    if (args[0] instanceof String str) {
       try {
         return CypherTime.parse(str);
       } catch (final Exception e) {
@@ -65,12 +63,12 @@ public class TimeConstructorFunction implements StatelessFunction {
       return CypherTime.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherTime)
       return args[0];
-    if (args[0] instanceof CypherDateTime)
-      return new CypherTime(((CypherDateTime) args[0]).getValue().toOffsetDateTime().toOffsetTime());
-    if (args[0] instanceof CypherLocalTime)
-      return new CypherTime(((CypherLocalTime) args[0]).getValue().atOffset(ZoneOffset.UTC));
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherTime(((CypherLocalDateTime) args[0]).getValue().toLocalTime().atOffset(ZoneOffset.UTC));
+    if (args[0] instanceof CypherDateTime time)
+      return new CypherTime(time.getValue().toOffsetDateTime().toOffsetTime());
+    if (args[0] instanceof CypherLocalTime time1)
+      return new CypherTime(time1.getValue().atOffset(ZoneOffset.UTC));
+    if (args[0] instanceof CypherLocalDateTime time2)
+      return new CypherTime(time2.getValue().toLocalTime().atOffset(ZoneOffset.UTC));
     throw new CommandExecutionException("time() expects a string, map, or temporal argument");
   }
 }

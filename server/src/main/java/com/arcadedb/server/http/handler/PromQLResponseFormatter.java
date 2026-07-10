@@ -19,11 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.engine.timeseries.promql.PromQLResult;
-import com.arcadedb.engine.timeseries.promql.PromQLResult.InstantVector;
-import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixResult;
-import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixSeries;
-import com.arcadedb.engine.timeseries.promql.PromQLResult.ScalarResult;
-import com.arcadedb.engine.timeseries.promql.PromQLResult.VectorSample;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.*;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -45,18 +41,23 @@ final class PromQLResponseFormatter {
     response.put("status", "success");
 
     final JSONObject data = new JSONObject();
-    if (result instanceof InstantVector iv) {
-      data.put("resultType", "vector");
-      data.put("result", formatVector(iv));
-    } else if (result instanceof MatrixResult mr) {
-      data.put("resultType", "matrix");
-      data.put("result", formatMatrix(mr));
-    } else if (result instanceof ScalarResult sr) {
-      data.put("resultType", "scalar");
-      final JSONArray val = new JSONArray();
-      val.put(sr.timestampMs() / 1000.0);
-      val.put(doubleToString(sr.value()));
-      data.put("result", val);
+    switch (result) {
+      case InstantVector iv -> {
+        data.put("resultType", "vector");
+        data.put("result", formatVector(iv));
+      }
+      case MatrixResult mr -> {
+        data.put("resultType", "matrix");
+        data.put("result", formatMatrix(mr));
+      }
+      case ScalarResult sr -> {
+        data.put("resultType", "scalar");
+        final JSONArray val = new JSONArray();
+        val.put(sr.timestampMs() / 1000.0);
+        val.put(doubleToString(sr.value()));
+        data.put("result", val);
+      }
+      case null, default -> {}
     }
 
     response.put("data", data);

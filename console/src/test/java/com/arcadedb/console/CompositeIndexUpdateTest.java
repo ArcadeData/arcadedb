@@ -36,17 +36,18 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.time.LocalDateTime;
-import java.util.logging.Level;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -55,7 +56,7 @@ import static org.assertj.core.api.Assertions.fail;
  * Issue https://github.com/ArcadeData/arcadedb/issues/1233
  */
 public class CompositeIndexUpdateTest {
-  private AtomicInteger autoIncrementOrderId = new AtomicInteger();
+  private final AtomicInteger autoIncrementOrderId = new AtomicInteger();
 
   private static class CandidateOrder {
     private final String        processor;

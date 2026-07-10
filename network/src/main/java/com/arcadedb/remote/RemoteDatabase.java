@@ -50,7 +50,6 @@ import com.arcadedb.utility.Pair;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -799,7 +798,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   private static Map<String, ColumnTypeHint> parsePropertyTypes(final String propTypesAsString) {
     if (propTypesAsString == null || propTypesAsString.isEmpty())
-      return Collections.emptyMap();
+      return Map.of();
 
     final Map<String, ColumnTypeHint> propTypes = new HashMap<>();
     for (final String entry : propTypesAsString.split(",")) {

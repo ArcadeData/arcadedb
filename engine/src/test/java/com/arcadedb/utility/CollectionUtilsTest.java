@@ -20,7 +20,10 @@ package com.arcadedb.utility;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,13 +56,13 @@ class CollectionUtilsTest {
 
   @Test
   void compareEqualMaps() {
-    final Map<String, Comparable> map1 = new HashMap<>();
-    map1.put("key1", "value1");
-    map1.put("key2", 42);
+    final Map<String, Comparable> map1 = new HashMap<>(Map.of(
+        "key1", "value1",
+        "key2", 42));
 
-    final Map<String, Comparable> map2 = new HashMap<>();
-    map2.put("key1", "value1");
-    map2.put("key2", 42);
+    final Map<String, Comparable> map2 = new HashMap<>(Map.of(
+        "key1", "value1",
+        "key2", 42));
 
     assertThat(CollectionUtils.compare(map1, map2)).isEqualTo(0);
   }
@@ -80,9 +83,9 @@ class CollectionUtilsTest {
     final Map<String, Comparable> map1 = new HashMap<>();
     map1.put("key1", "value1");
 
-    final Map<String, Comparable> map2 = new HashMap<>();
-    map2.put("key1", "value1");
-    map2.put("key2", "value2");
+    final Map<String, Comparable> map2 = new HashMap<>(Map.of(
+        "key1", "value1",
+        "key2", "value2"));
 
     assertThat(CollectionUtils.compare(map1, map2)).isLessThan(0);
     assertThat(CollectionUtils.compare(map2, map1)).isGreaterThan(0);
@@ -96,7 +99,7 @@ class CollectionUtilsTest {
 
   @Test
   void countEntriesWithEmptyIterator() {
-    final List<String> list = Collections.emptyList();
+    final List<String> list = List.of();
     assertThat(CollectionUtils.countEntries(list.iterator())).isEqualTo(0);
   }
 
@@ -107,7 +110,7 @@ class CollectionUtilsTest {
 
   @Test
   void isNotEmptyWithEmptyCollection() {
-    assertThat(CollectionUtils.isNotEmpty(Collections.emptyList())).isFalse();
+    assertThat(CollectionUtils.isNotEmpty(List.of())).isFalse();
   }
 
   @Test
@@ -117,7 +120,7 @@ class CollectionUtilsTest {
 
   @Test
   void isEmptyWithEmptyCollection() {
-    assertThat(CollectionUtils.isEmpty(Collections.emptyList())).isTrue();
+    assertThat(CollectionUtils.isEmpty(List.of())).isTrue();
   }
 
   @Test
@@ -135,7 +138,7 @@ class CollectionUtilsTest {
     final String[] array = {"a", "b", "c"};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.getFirst()).isEqualTo("a");
     assertThat(result.get(1)).isEqualTo("b");
     assertThat(result.get(2)).isEqualTo("c");
   }
@@ -145,7 +148,7 @@ class CollectionUtilsTest {
     final int[] array = {1, 2, 3};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo(1);
+    assertThat(result.getFirst()).isEqualTo(1);
     assertThat(result.get(1)).isEqualTo(2);
     assertThat(result.get(2)).isEqualTo(3);
   }
@@ -155,7 +158,7 @@ class CollectionUtilsTest {
     final long[] array = {1L, 2L, 3L};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo(1L);
+    assertThat(result.getFirst()).isEqualTo(1L);
     assertThat(result.get(1)).isEqualTo(2L);
     assertThat(result.get(2)).isEqualTo(3L);
   }
@@ -165,7 +168,7 @@ class CollectionUtilsTest {
     final double[] array = {1.0, 2.0, 3.0};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo(1.0);
+    assertThat(result.getFirst()).isEqualTo(1.0);
   }
 
   @Test
@@ -173,7 +176,7 @@ class CollectionUtilsTest {
     final float[] array = {1.0f, 2.0f, 3.0f};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo(1.0f);
+    assertThat(result.getFirst()).isEqualTo(1.0f);
   }
 
   @Test
@@ -181,7 +184,7 @@ class CollectionUtilsTest {
     final boolean[] array = {true, false, true};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo(true);
+    assertThat(result.getFirst()).isEqualTo(true);
     assertThat(result.get(1)).isEqualTo(false);
   }
 
@@ -190,7 +193,7 @@ class CollectionUtilsTest {
     final byte[] array = {1, 2, 3};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo((byte) 1);
+    assertThat(result.getFirst()).isEqualTo((byte) 1);
   }
 
   @Test
@@ -198,7 +201,7 @@ class CollectionUtilsTest {
     final short[] array = {1, 2, 3};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo((short) 1);
+    assertThat(result.getFirst()).isEqualTo((short) 1);
   }
 
   @Test
@@ -206,7 +209,7 @@ class CollectionUtilsTest {
     final char[] array = {'a', 'b', 'c'};
     final List<?> result = CollectionUtils.arrayToList(array);
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo('a');
+    assertThat(result.getFirst()).isEqualTo('a');
     assertThat(result.get(1)).isEqualTo('b');
     assertThat(result.get(2)).isEqualTo('c');
   }
@@ -217,7 +220,7 @@ class CollectionUtilsTest {
     final List<String> result = CollectionUtils.addToUnmodifiableList(original, "c");
 
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.getFirst()).isEqualTo("a");
     assertThat(result.get(1)).isEqualTo("b");
     assertThat(result.get(2)).isEqualTo("c");
   }
@@ -228,7 +231,7 @@ class CollectionUtilsTest {
     final List<String> result = CollectionUtils.removeFromUnmodifiableList(original, "b");
 
     assertThat(result).hasSize(2);
-    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.getFirst()).isEqualTo("a");
     assertThat(result.get(1)).isEqualTo("c");
   }
 
@@ -238,7 +241,7 @@ class CollectionUtilsTest {
     final List<String> result = CollectionUtils.removeFromUnmodifiableList(original, "c");
 
     assertThat(result).hasSize(2);
-    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.getFirst()).isEqualTo("a");
     assertThat(result.get(1)).isEqualTo("b");
   }
 
@@ -259,7 +262,7 @@ class CollectionUtilsTest {
     final List<String> result = CollectionUtils.removeAllFromUnmodifiableList(original, toRemove);
 
     assertThat(result).hasSize(2);
-    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.getFirst()).isEqualTo("a");
     assertThat(result.get(1)).isEqualTo("c");
   }
 

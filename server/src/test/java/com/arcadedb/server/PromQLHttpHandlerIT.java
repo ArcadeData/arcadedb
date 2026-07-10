@@ -24,6 +24,7 @@ import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
+
 import org.junit.jupiter.api.Test;
 import org.xerial.snappy.Snappy;
 

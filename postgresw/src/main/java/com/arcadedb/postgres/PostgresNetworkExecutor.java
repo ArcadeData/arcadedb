@@ -35,12 +35,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.query.sql.SQLQueryEngine;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.IteratorResultSet;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.server.ArcadeDBServer;
@@ -48,11 +43,12 @@ import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
-import io.micrometer.core.instrument.Metrics;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+
+import io.micrometer.core.instrument.Metrics;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -74,11 +70,7 @@ import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.IN_PROPERTY;
-import static com.arcadedb.schema.Property.OUT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.schema.Property.*;
 
 /**
  * Postgres Reference for Protocol Messages: https://www.postgresql.org/docs/9.6/protocol-message-formats.html
@@ -720,7 +712,7 @@ public class PostgresNetworkExecutor extends Thread {
       // Only return a result if we matched an array type and have data to return
       if (!map.isEmpty() && elemOid > 0) {
         final Result result = new ResultInternal(map);
-        return Collections.singletonList(result);
+        return List.of(result);
       }
     }
 
@@ -745,7 +737,7 @@ public class PostgresNetworkExecutor extends Thread {
         case "varchar" -> { map.put("oid", 1043); map.put("typelem", 0); }
         default -> {
           // Return empty result for unknown types
-          return Collections.emptyList();
+          return List.of();
         }
       }
 
@@ -753,13 +745,13 @@ public class PostgresNetworkExecutor extends Thread {
         map.put("typname", typeName);
         map.put("typdelim", ",");
         final Result result = new ResultInternal(map);
-        return Collections.singletonList(result);
+        return List.of(result);
       }
     }
 
     // For other pg_type queries we don't specifically handle, return empty result
     // This prevents errors from trying to query non-existent tables
-    return Collections.emptyList();
+    return List.of();
   }
 
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
@@ -858,12 +850,12 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       // If no rows exist, fall back to schema-defined properties
-      final Map<String, PostgresType> columns = new LinkedHashMap<>();
+      final Map<String, PostgresType> columns = new HashMap<>(Map.of(
 
-      // Add system properties first (these are returned for document/vertex types)
-      columns.put(RID_PROPERTY, PostgresType.VARCHAR);
-      columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
-      columns.put(CAT_PROPERTY, PostgresType.CHAR);
+          // Add system properties first (these are returned for document/vertex types)
+          RID_PROPERTY, PostgresType.VARCHAR,
+          TYPE_PROPERTY, PostgresType.VARCHAR,
+          CAT_PROPERTY, PostgresType.CHAR));
 
       // Add all defined properties from the type
       for (final String propName : docType.getPropertyNames()) {
@@ -953,7 +945,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (resultFormats == null || resultFormats.isEmpty())
       return 0;
     if (resultFormats.size() == 1)
-      return resultFormats.get(0).shortValue();
+      return resultFormats.getFirst().shortValue();
     if (colIndex < resultFormats.size())
       return resultFormats.get(colIndex).shortValue();
     return 0;
@@ -1134,7 +1126,7 @@ public class PostgresNetworkExecutor extends Thread {
           if (portal.parameterFormats == null || portal.parameterFormats.isEmpty()) {
             formatCode = 0; // Default to text format
           } else if (portal.parameterFormats.size() == 1) {
-            formatCode = portal.parameterFormats.get(0); // Single format for all
+            formatCode = portal.parameterFormats.getFirst(); // Single format for all
           } else {
             formatCode = portal.parameterFormats.get(i); // Per-parameter format
           }
@@ -1305,17 +1297,17 @@ public class PostgresNetworkExecutor extends Thread {
           portal.executed = true;
           portal.cachedResultSet = new ArrayList<>();
           for (final DocumentType t : database.getSchema().getTypes()) {
-            final Map<String, Object> map = new HashMap<>();
-            map.put("TABLE_CAT", "");
-            map.put("TABLE_SCHEM", "");
-            map.put("TABLE_TYPE", "TABLE");
-            map.put("TABLE_NAME", t.getName());
-            map.put("REMARKS", "");
-            map.put("TYPE_CAT", "");
-            map.put("TYPE_SCHEM", "");
-            map.put("TYPE_NAME", "");
-            map.put("SELF_REFERENCING_COL_NAME", "");
-            map.put("REF_GENERATION", "");
+            final Map<String, Object> map = new HashMap<>(Map.of(
+                "TABLE_CAT", "",
+                "TABLE_SCHEM", "",
+                "TABLE_TYPE", "TABLE",
+                "TABLE_NAME", t.getName(),
+                "REMARKS", "",
+                "TYPE_CAT", "",
+                "TYPE_SCHEM", "",
+                "TYPE_NAME", "",
+                "SELF_REFERENCING_COL_NAME", "",
+                "REF_GENERATION", ""));
 
             final Result result = new ResultInternal(map);
             portal.cachedResultSet.add(result);
@@ -1336,10 +1328,10 @@ public class PostgresNetworkExecutor extends Thread {
       } else if ("select distinct GRANTEE as USER_NAME, 'N' as IS_EXPIRED, 'N' as IS_LOCKED from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by GRANTEE asc".equals(portal.query)) {
         portal.executed = true;
         portal.cachedResultSet = new ArrayList<>();
-        final Map<String, Object> map = new HashMap<>();
-        map.put("USER_NAME", "root");
-        map.put("IS_EXPIRED", 'N');
-        map.put("IS_LOCKED", 'N');
+        final Map<String, Object> map = new HashMap<>(Map.of(
+            "USER_NAME", "root",
+            "IS_EXPIRED", 'N',
+            "IS_LOCKED", 'N'));
         final Result result = new ResultInternal(map);
         portal.cachedResultSet.add(result);
 
@@ -1351,9 +1343,9 @@ public class PostgresNetworkExecutor extends Thread {
       } else if ("select CHARACTER_SET_NAME as CHARSET_NAME, -1 as MAX_LENGTH from INFORMATION_SCHEMA.CHARACTER_SETS order by CHARACTER_SET_NAME asc".equals(portal.query)) {
         portal.executed = true;
         portal.cachedResultSet = new ArrayList<>();
-        final Map<String, Object> map = new HashMap<>();
-        map.put("CHARSET_NAME", "UTF-8");
-        map.put("MAX_LENGTH", -1);
+        final Map<String, Object> map = new HashMap<>(Map.of(
+            "CHARSET_NAME", "UTF-8",
+            "MAX_LENGTH", -1));
         final Result result = new ResultInternal(map);
         portal.cachedResultSet.add(result);
 
@@ -1368,11 +1360,11 @@ public class PostgresNetworkExecutor extends Thread {
         portal.cachedResultSet = new ArrayList<>();
 
         for (final String dbName : server.getDatabaseNames()) {
-          final Map<String, Object> map = new HashMap<>();
-          map.put("SCHEMA_NAME", dbName);
-          map.put("IS_PUBLIC", "Y");
-          map.put("IS_SYSTEM", "N");
-          map.put("IS_EMPTY", "N");
+          final Map<String, Object> map = new HashMap<>(Map.of(
+              "SCHEMA_NAME", dbName,
+              "IS_PUBLIC", "Y",
+              "IS_SYSTEM", "N",
+              "IS_EMPTY", "N"));
           final Result result = new ResultInternal(map);
           portal.cachedResultSet.add(result);
         }
@@ -1388,9 +1380,9 @@ public class PostgresNetworkExecutor extends Thread {
         portal.cachedResultSet = new ArrayList<>();
 
         for (final DocumentType t : database.getSchema().getTypes()) {
-          final Map<String, Object> map = new HashMap<>();
-          map.put("TABLE_SCHEM", t.getName());
-          map.put("TABLE_CATALOG", database.getName());
+          final Map<String, Object> map = new HashMap<>(Map.of(
+              "TABLE_SCHEM", t.getName(),
+              "TABLE_CATALOG", database.getName()));
           final Result result = new ResultInternal(map);
           portal.cachedResultSet.add(result);
         }
@@ -1494,7 +1486,7 @@ public class PostgresNetworkExecutor extends Thread {
   private void setEmptyResultSet(final PostgresPortal portal) {
     portal.executed = true;
     portal.isExpectingResult = true;
-    portal.cachedResultSet = Collections.emptyList();
+    portal.cachedResultSet = List.of();
     portal.columns = getColumns(portal.cachedResultSet);
   }
 

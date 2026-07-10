@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -189,10 +190,10 @@ class SQLFunctionShortestPathTest {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
-      final Map<String, Object> options = new HashMap<>();
-      options.put("direction", "BOTH");
-      options.put("edgeTypeNames", asList("Edge1", "Edge2"));
-      options.put("maxDepth", 10);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          "direction", "BOTH",
+          "edgeTypeNames", asList("Edge1", "Edge2"),
+          "maxDepth", 10));
 
       final List<RID> result = function.execute(null, null, null,
           new Object[] { vertices.get(1), vertices.get(4), options }, new BasicCommandContext());
@@ -220,9 +221,9 @@ class SQLFunctionShortestPathTest {
 
       function = new SQLFunctionShortestPath();
 
-      final Map<String, Object> options = new HashMap<>();
-      options.put("direction", "BOTH");
-      options.put("edge", true);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          "direction", "BOTH",
+          "edge", true));
 
       final List<RID> result = function.execute(null, null, null, new Object[] { verts[0], verts[1], options },
           new BasicCommandContext());
@@ -254,9 +255,9 @@ class SQLFunctionShortestPathTest {
 
       function = new SQLFunctionShortestPath();
 
-      final Map<String, Object> options = new HashMap<>();
-      options.put("direction", "BOTH");
-      options.put("edge", true);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          "direction", "BOTH",
+          "edge", true));
 
       // search b -> a
       final List<RID> result = function.execute(null, null, null, new Object[] { verts[1], verts[0], options },
@@ -288,9 +289,9 @@ class SQLFunctionShortestPathTest {
 
       function = new SQLFunctionShortestPath();
 
-      final Map<String, Object> options = new HashMap<>();
-      options.put("direction", "IN");
-      options.put("edge", true);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          "direction", "IN",
+          "edge", true));
 
       // a -OUT-> b, so from b the IN edge leads to a
       final List<RID> result = function.execute(null, null, null, new Object[] { verts[1], verts[0], options },
@@ -350,9 +351,9 @@ class SQLFunctionShortestPathTest {
       graph.transaction(() -> graph.getSchema().getBucketById(ghost[0].getBucketId()).deleteRecord(ghost[0]));
 
       function = new SQLFunctionShortestPath();
-      final Map<String, Object> options = new HashMap<>();
-      options.put("direction", "OUT");
-      options.put("edge", true);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          "direction", "OUT",
+          "edge", true));
 
       final List<RID> result = function.execute(null, null, null, new Object[] { v[0], v[1], options },
           new BasicCommandContext());
@@ -360,7 +361,7 @@ class SQLFunctionShortestPathTest {
       // The ghost A->B is skipped, so the only surviving route is A -[edge]-> C -[edge]-> B, which in
       // edge mode is exactly the 5 elements [A, edge(A->C), C, edge(C->B), B].
       assertThat(result).hasSize(5);
-      assertThat(result.get(0)).isEqualTo(v[0].getIdentity()); // A
+      assertThat(result.getFirst()).isEqualTo(v[0].getIdentity()); // A
       assertThat(result.get(2)).isEqualTo(v[2].getIdentity()); // C (routed around the ghost)
       assertThat(result.get(4)).isEqualTo(v[1].getIdentity()); // B
       assertThat(result).doesNotContain(ghost[0]);

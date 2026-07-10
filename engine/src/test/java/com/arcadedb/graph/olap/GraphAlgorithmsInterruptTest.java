@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.exception.CommandExecutionException;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;

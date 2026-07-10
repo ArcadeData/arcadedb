@@ -105,9 +105,9 @@ class SQLFunctionVectorNestedGroupByTest extends TestHelper {
 
         // 90 documents have a populated `metadata` map; 10 are deliberately missing the field.
         if (i < 90) {
-          final Map<String, Object> meta = new HashMap<>();
-          meta.put("author", "author_" + (i % 5));
-          meta.put("category", "cat_" + (i % 4));
+          final Map<String, Object> meta = new HashMap<>(Map.of(
+              "author", "author_" + (i % 5),
+              "category", "cat_" + (i % 4)));
           doc.set("metadata", meta);
         }
         doc.save();

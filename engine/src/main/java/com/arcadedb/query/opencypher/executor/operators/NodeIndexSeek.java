@@ -22,13 +22,12 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-
-import com.arcadedb.query.opencypher.ast.ParameterExpression;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -113,8 +112,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
           // Resolve property value at runtime (parameters change per execution)
           Object resolvedValue = propertyValue;
-          if (resolvedValue instanceof ParameterExpression) {
-            final String paramName = ((ParameterExpression) resolvedValue).getParameterName();
+          if (resolvedValue instanceof ParameterExpression expression) {
+            final String paramName = expression.getParameterName();
             if (context.getInputParameters() != null)
               resolvedValue = context.getInputParameters().get(paramName);
           }

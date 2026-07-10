@@ -26,6 +26,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -56,9 +57,8 @@ class InsertGraphIndexTest extends TestHelper {
       final Vertex[] cachedVertices = loadVertices();
       checkGraph(cachedVertices);
       database.transaction(() ->
-        database.select().fromType(EDGE_TYPE_NAME).edges().toList().forEach(e -> {
-          e.delete();
-        }));
+        database.select().fromType(EDGE_TYPE_NAME).edges().toList().forEach(e ->
+          e.delete()));
     }
     database.close();
   }

@@ -20,6 +20,7 @@ package com.arcadedb.server.ai;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -89,7 +90,7 @@ class AiConfigurationTest {
 
   @Test
   void handlesCorruptConfigFile() throws Exception {
-    final File configDir = Paths.get(TEST_ROOT, "config").toFile();
+    final File configDir = Path.of(TEST_ROOT, "config").toFile();
     configDir.mkdirs();
     try (final OutputStreamWriter writer = new OutputStreamWriter(
         new FileOutputStream(new File(configDir, "ai.json")), StandardCharsets.UTF_8)) {
@@ -114,13 +115,13 @@ class AiConfigurationTest {
     assertThat(reloaded.getSubscriptionToken()).isEqualTo("token-abc");
 
     // The atomic write must not leave any temporary files behind.
-    final File configDir = Paths.get(TEST_ROOT, "config").toFile();
+    final File configDir = Path.of(TEST_ROOT, "config").toFile();
     final File[] leftovers = configDir.listFiles((dir, name) -> name.endsWith(".tmp"));
     assertThat(leftovers).isNullOrEmpty();
   }
 
   private void writeConfigFile(final JSONObject json) throws Exception {
-    final File configDir = Paths.get(TEST_ROOT, "config").toFile();
+    final File configDir = Path.of(TEST_ROOT, "config").toFile();
     configDir.mkdirs();
     try (final OutputStreamWriter writer = new OutputStreamWriter(
         new FileOutputStream(new File(configDir, "ai.json")), StandardCharsets.UTF_8)) {

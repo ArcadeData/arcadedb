@@ -20,8 +20,10 @@ package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.LocalTimeSeriesType;
+
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,7 +77,7 @@ class PageManagerFlushQueueRaceTest extends TestHelper {
       for (int i = 0; i < BATCH_SIZE; i++) {
         timestamps[i] = batchStart + i * 100L;
         sensorIds[i] = "sensor_" + (i % NUM_SENSORS);
-        temperatures[i] = 20.0 + (Math.random() * 15.0);
+        temperatures[i] = 20.0 + (ThreadLocalRandom.current().nextDouble() * 15.0);
       }
 
       database.async().appendSamples("SensorData", timestamps, sensorIds, temperatures);

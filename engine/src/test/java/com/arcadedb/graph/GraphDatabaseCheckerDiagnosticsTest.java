@@ -21,12 +21,10 @@ package com.arcadedb.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.DatabaseChecker;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 

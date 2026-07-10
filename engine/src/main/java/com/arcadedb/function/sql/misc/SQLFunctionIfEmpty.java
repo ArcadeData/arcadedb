@@ -19,9 +19,9 @@
 package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.function.sql.SQLFunctionAbstract;
 
 import java.util.Collection;
 
@@ -76,7 +76,7 @@ public class SQLFunctionIfEmpty extends SQLFunctionAbstract {
      */
     if ((params[0] instanceof String && params[0].toString().length() == 0)
         || (params[0] instanceof Collection<?> && MultiValue.getSize(params[0]) == 0)
-        || (params[0] instanceof Object[] && ((Object[]) params[0]).length == 0)) {
+        || (params[0] instanceof Object[] objects && objects.length == 0)) {
       return params[1];
     }
     if (params.length == 3) {

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;

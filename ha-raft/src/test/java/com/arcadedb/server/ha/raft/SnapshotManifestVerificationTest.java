@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -81,7 +82,7 @@ class SnapshotManifestVerificationTest {
   }
 
   private static Map<String, byte[]> sampleFiles() {
-    final Map<String, byte[]> files = new LinkedHashMap<>();
+    final Map<String, byte[]> files = new HashMap<>();
     files.put("configuration.json", "{\"k\":\"v\"}".getBytes(StandardCharsets.UTF_8));
     files.put("schema.json", "{\"types\":[]}".getBytes(StandardCharsets.UTF_8));
     final byte[] page = new byte[40_000];
@@ -158,9 +159,9 @@ class SnapshotManifestVerificationTest {
   @Test
   void manifestPresentButFileMissingIsRejected(@TempDir final Path dir) throws Exception {
     // Build a manifest listing a file that is NOT in the ZIP body.
-    final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
-    manifest.add(new SnapshotManager.ManifestEntry("present.bin", 3, crcOf(new byte[] { 1, 2, 3 })));
-    manifest.add(new SnapshotManager.ManifestEntry("missing.bin", 5, 12345L));
+    final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>(List.of(
+        new SnapshotManager.ManifestEntry("present.bin", 3, crcOf(new byte[]{1, 2, 3})),
+        new SnapshotManager.ManifestEntry("missing.bin", 5, 12345L)));
 
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     try (final ZipOutputStream zos = new ZipOutputStream(baos)) {
@@ -204,9 +205,9 @@ class SnapshotManifestVerificationTest {
 
   @Test
   void manifestRoundTrips() throws Exception {
-    final List<SnapshotManager.ManifestEntry> entries = new ArrayList<>();
-    entries.add(new SnapshotManager.ManifestEntry("a.bucket", 1024L, 4242L));
-    entries.add(new SnapshotManager.ManifestEntry("b.dict", 65_536L, 99L));
+    final List<SnapshotManager.ManifestEntry> entries = new ArrayList<>(List.of(
+        new SnapshotManager.ManifestEntry("a.bucket", 1024L, 4242L),
+        new SnapshotManager.ManifestEntry("b.dict", 65_536L, 99L)));
 
     final String json = SnapshotManager.buildManifest(entries);
     final List<SnapshotManager.ManifestEntry> parsed = SnapshotManager.parseManifest(json);

@@ -21,12 +21,12 @@ package com.arcadedb.function.procedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -218,7 +218,7 @@ class ProcedureRegistryTest {
 
     @Override
     public List<String> getYieldFields() {
-      return Collections.singletonList("result");
+      return List.of("result");
     }
 
     @Override

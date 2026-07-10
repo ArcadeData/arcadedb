@@ -27,6 +27,7 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseOperationException;
+
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.io.IOException;
@@ -355,10 +356,10 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
               if (record != null) {
                 // Get vector from document property
                 final String vectorPropertyName = mainIndex.getPropertyNames() != null && !mainIndex.getPropertyNames().isEmpty() ?
-                    mainIndex.getPropertyNames().get(0) : "vector";
+                    mainIndex.getPropertyNames().getFirst() : "vector";
                 final Object vectorObj = record.get(vectorPropertyName);
-                if (vectorObj instanceof float[]) {
-                  vector = (float[]) vectorObj;
+                if (vectorObj instanceof float[] floats) {
+                  vector = floats;
                 }
               }
             } catch (final Exception e) {

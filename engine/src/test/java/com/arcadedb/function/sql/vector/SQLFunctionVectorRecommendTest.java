@@ -80,7 +80,7 @@ class SQLFunctionVectorRecommendTest extends TestHelper {
   void positivesOnlyReturnsClusterMatesExcludingExamples() {
     final List<String> names = recommend(List.of(ridByName.get("A")), List.of(), 3);
     assertThat(names).doesNotContain("A");
-    assertThat(names.get(0)).as("B is A's near-neighbor in the +X cluster").isEqualTo("B");
+    assertThat(names.getFirst()).as("B is A's near-neighbor in the +X cluster").isEqualTo("B");
   }
 
   /**
@@ -101,7 +101,7 @@ class SQLFunctionVectorRecommendTest extends TestHelper {
     // centroid (~[0.95, 0.05, 0]) and -1.0 for C&D centroid (~[0.05, 0.95, 0]), the query
     // vector is ~[0.9, -0.9, 0]. Of the remaining {E, F}, F is closest because F has a small
     // +X component. We assert F or E (depending on similarity definition) appears at rank 0.
-    assertThat(names.get(0)).isIn("F", "E");
+    assertThat(names.getFirst()).isIn("F", "E");
   }
 
   @Test
@@ -121,7 +121,7 @@ class SQLFunctionVectorRecommendTest extends TestHelper {
         List.of(),
         3);
     // A is excluded as an example; B is the next-closest cluster mate.
-    assertThat(names.get(0)).isEqualTo("B");
+    assertThat(names.getFirst()).isEqualTo("B");
   }
 
   @Test

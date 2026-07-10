@@ -27,6 +27,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -190,10 +191,10 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"}));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v4, "'weight'", options }, ctx);
@@ -215,10 +216,10 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"}));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
@@ -238,11 +239,11 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
-      options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"},
+          SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[]{"lat", "lon"}));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
@@ -263,11 +264,11 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
-      options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon", "alt" });
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"},
+          SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[]{"lat", "lon", "alt"}));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v1, v6, "'weight'", options }, ctx);
@@ -288,11 +289,11 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
-      options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"},
+          SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[]{"lat", "lon"}));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v3, v5, "'weight'", options }, ctx);
@@ -313,11 +314,11 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
-      options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"},
+          SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[]{"lat", "lon"}));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
@@ -341,12 +342,12 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
-      options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
-      options.put(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, "EucliDEAN");
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"},
+          SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[]{"lat", "lon"},
+          SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, "EucliDEAN"));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
@@ -370,13 +371,13 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_TIE_BREAKER, false);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
-      options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
-      options.put(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, SQLHeuristicFormula.EUCLIDEANNOSQR);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_TIE_BREAKER, false,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"},
+          SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[]{"lat", "lon"},
+          SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, SQLHeuristicFormula.EUCLIDEANNOSQR));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
@@ -399,13 +400,13 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<String, Object>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "both");
-      options.put(SQLFunctionAstar.PARAM_PARALLEL, true);
-      options.put(SQLFunctionAstar.PARAM_TIE_BREAKER, false);
-      options.put(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[] { "has_path" });
-      options.put(SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[] { "lat", "lon" });
-      options.put(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, SQLHeuristicFormula.MAXAXIS);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "both",
+          SQLFunctionAstar.PARAM_PARALLEL, true,
+          SQLFunctionAstar.PARAM_TIE_BREAKER, false,
+          SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES, new String[]{"has_path"},
+          SQLFunctionAstar.PARAM_VERTEX_AXIS_NAMES, new String[]{"lat", "lon"},
+          SQLFunctionAstar.PARAM_HEURISTIC_FORMULA, SQLHeuristicFormula.MAXAXIS));
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
       final List<RID> result = functionAstar.execute(null, null, null, new Object[] { v6, v1, "'weight'", options }, ctx);
@@ -449,9 +450,9 @@ class SQLFunctionAstarTest {
       setUpDatabase(graph);
       functionAstar = new SQLFunctionAstar();
 
-      final Map<String, Object> options = new HashMap<>();
-      options.put(SQLFunctionAstar.PARAM_DIRECTION, "out");
-      options.put("whoops", 1);
+      final Map<String, Object> options = new HashMap<>(Map.of(
+          SQLFunctionAstar.PARAM_DIRECTION, "out",
+          "whoops", 1));
 
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);

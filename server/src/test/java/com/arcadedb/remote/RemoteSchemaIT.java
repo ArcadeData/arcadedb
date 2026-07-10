@@ -19,14 +19,10 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Type;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.*;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.AfterEach;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

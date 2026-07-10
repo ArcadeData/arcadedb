@@ -253,7 +253,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
       return false;
     for (final String relVar : sameClausePrecedingRelVars) {
       final Object val = row.getProperty(relVar);
-      if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
+      if (val instanceof Edge edge && edge.getIdentity().equals(edgeRid))
         return true;
     }
     return false;

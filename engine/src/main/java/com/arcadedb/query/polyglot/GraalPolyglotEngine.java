@@ -20,6 +20,7 @@ package com.arcadedb.query.polyglot;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
+
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.EnvironmentAccess;
@@ -32,7 +33,6 @@ import org.graalvm.polyglot.io.IOAccess;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
@@ -72,7 +72,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
       final List<String> allowedPackages, final List<String> restrictedPackages, final long maxExecutionTimeMs) {
     this.database = database;
     this.language = language;
-    this.allowedPackages = allowedPackages == null ? Collections.emptyList() : allowedPackages;
+    this.allowedPackages = allowedPackages == null ? List.of() : allowedPackages;
     this.restrictedPackages = restrictedPackages;
 
     // DISABLED LIMIT BECAUSE THE CONTEXT IS INVOKED MULTIPLE TIMES
@@ -143,7 +143,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
             result = PolyglotEngineManager.getInstance().getSharedEngine().getLanguages().keySet();
           } catch (Throwable e) {
             LogManager.instance().log(GraalPolyglotEngine.class, Level.WARNING, "GraalVM Polyglot Engine: no languages found");
-            result = Collections.emptySet();
+            result = Set.of();
           }
           supportedLanguages = result;
         }

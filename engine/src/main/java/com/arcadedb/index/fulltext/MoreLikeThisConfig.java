@@ -74,8 +74,8 @@ public class MoreLikeThisConfig {
     }
     if (json.has("maxDocFreqPercent")) {
       final Object value = json.get("maxDocFreqPercent");
-      if (value instanceof Number) {
-        config.maxDocFreqPercent = ((Number) value).floatValue();
+      if (value instanceof Number number) {
+        config.maxDocFreqPercent = number.floatValue();
       }
     }
     if (json.has("maxQueryTerms")) {

@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -94,7 +95,7 @@ class AlgoBFSTest {
 
     // B and E are at depth 1, C at depth 2, D at depth 3
     assertThat(results).hasSize(4);
-    assertThat(((Number) results.get(0).getProperty("depth")).intValue()).isEqualTo(1);
+    assertThat(((Number) results.getFirst().getProperty("depth")).intValue()).isEqualTo(1);
     assertThat(((Number) results.get(1).getProperty("depth")).intValue()).isEqualTo(1);
     assertThat(((Number) results.get(2).getProperty("depth")).intValue()).isEqualTo(2);
     assertThat(((Number) results.get(3).getProperty("depth")).intValue()).isEqualTo(3);

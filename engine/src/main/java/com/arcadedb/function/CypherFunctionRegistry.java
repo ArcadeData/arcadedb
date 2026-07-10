@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.function.agg.*;
 import com.arcadedb.function.coll.*;
 import com.arcadedb.function.convert.*;
@@ -40,6 +39,7 @@ import com.arcadedb.function.rel.RelStartNode;
 import com.arcadedb.function.rel.RelType;
 import com.arcadedb.function.text.*;
 import com.arcadedb.function.util.*;
+import com.arcadedb.log.LogManager;
 
 import java.util.Collection;
 import java.util.Collections;

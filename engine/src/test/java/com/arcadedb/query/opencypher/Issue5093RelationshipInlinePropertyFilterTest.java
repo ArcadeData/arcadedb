@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -83,7 +84,7 @@ class Issue5093RelationshipInlinePropertyFilterTest {
         "MATCH (a:BugNode)-[r:LINK {w: 1}]->(b:BugNode) RETURN a.id AS a_id, b.id AS b_id ORDER BY a_id, b_id");
 
     assertThat(pairs).hasSize(3);
-    assertThat(pairs.get(0)).containsExactly(1, 2);
+    assertThat(pairs.getFirst()).containsExactly(1, 2);
     assertThat(pairs.get(1)).containsExactly(2, 4);
     assertThat(pairs.get(2)).containsExactly(4, 5);
   }
@@ -108,7 +109,7 @@ class Issue5093RelationshipInlinePropertyFilterTest {
         "MATCH (a:BugNode)-[:LINK {w: 1}]->(b:BugNode) RETURN a.id AS a_id, b.id AS b_id ORDER BY a_id, b_id");
 
     assertThat(pairs).hasSize(3);
-    assertThat(pairs.get(0)).containsExactly(1, 2);
+    assertThat(pairs.getFirst()).containsExactly(1, 2);
     assertThat(pairs.get(1)).containsExactly(2, 4);
     assertThat(pairs.get(2)).containsExactly(4, 5);
   }
@@ -120,7 +121,7 @@ class Issue5093RelationshipInlinePropertyFilterTest {
         "MATCH (a:BugNode)-[r:LINK {w: 2}]->(b:BugNode) RETURN a.id AS a_id, b.id AS b_id ORDER BY a_id, b_id");
 
     assertThat(pairs).hasSize(1);
-    assertThat(pairs.get(0)).containsExactly(1, 3);
+    assertThat(pairs.getFirst()).containsExactly(1, 3);
   }
 
   private List<int[]> runPairs(final String cypher) {

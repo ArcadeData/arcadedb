@@ -21,6 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

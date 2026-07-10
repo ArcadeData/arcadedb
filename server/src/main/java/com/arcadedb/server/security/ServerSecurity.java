@@ -40,9 +40,9 @@ import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -52,10 +52,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY;
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
+import static com.arcadedb.GlobalConfiguration.*;
 
 public class ServerSecurity implements ServerPlugin, SecurityManager {
 
@@ -345,9 +342,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final ServerSecurityUser user = users.get(userName);
     if (user == null)
       return null;
-    final Map<String, Object> info = new HashMap<>();
-    info.put("name", user.getName());
-    info.put("databases", user.getAuthorizedDatabases());
+    final Map<String, Object> info = new HashMap<>(Map.of(
+        "name", user.getName(),
+        "databases", user.getAuthorizedDatabases()));
     return info;
   }
 

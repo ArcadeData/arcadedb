@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -234,7 +235,7 @@ class DoubleUpdateInTransactionIndexTest extends TestHelper {
 
   @Test
   void listByItemIndexDoubleUpdateComputesDeltaAcrossSaves() {
-    database.getSchema().createDocumentType(TYPE_NAME).createProperty("tags", java.util.List.class);
+    database.getSchema().createDocumentType(TYPE_NAME).createProperty("tags", List.class);
     database.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (tags BY ITEM) NOTUNIQUE");
 
     final MutableDocument[] holder = new MutableDocument[1];
@@ -262,7 +263,7 @@ class DoubleUpdateInTransactionIndexTest extends TestHelper {
 
   @Test
   void inPlaceListMutationBetweenSavesUpdatesIndex() {
-    database.getSchema().createDocumentType(TYPE_NAME).createProperty("tags", java.util.List.class);
+    database.getSchema().createDocumentType(TYPE_NAME).createProperty("tags", List.class);
     database.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (tags BY ITEM) NOTUNIQUE");
 
     final MutableDocument[] holder = new MutableDocument[1];

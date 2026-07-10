@@ -27,6 +27,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.*;

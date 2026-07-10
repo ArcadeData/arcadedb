@@ -94,7 +94,7 @@ public class TimeSeriesEngine implements AutoCloseable {
           }
         }
       }
-      throw e instanceof IOException ? (IOException) e : new IOException("Failed to initialize shards for " + typeName, e);
+      throw e instanceof IOException ioe ? ioe : new IOException("Failed to initialize shards for " + typeName, e);
     }
   }
 
@@ -289,8 +289,8 @@ public class TimeSeriesEngine implements AutoCloseable {
       final long bucketTs = bucketIntervalMs > 0 ? Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
       final double value;
 
-      if (columnIndex + 1 < row.length && row[columnIndex + 1] instanceof Number)
-        value = ((Number) row[columnIndex + 1]).doubleValue();
+      if (columnIndex + 1 < row.length && row[columnIndex + 1] instanceof Number number)
+        value = number.doubleValue();
       else
         value = 0.0;
 

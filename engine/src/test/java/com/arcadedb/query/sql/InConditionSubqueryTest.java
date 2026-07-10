@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.WhereClause;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

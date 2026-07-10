@@ -48,7 +48,7 @@ class ConcurrentEdgeAppendMergeTest extends TestHelper {
   private static final int TOTAL            = THREADS * EDGES_PER_THREAD;
 
   @Test
-  void concurrentAppendsAllSurviveAndIntegrityIsClean() throws InterruptedException {
+  void concurrentAppendsAllSurviveAndIntegrityIsClean() throws Exception {
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {
@@ -120,7 +120,7 @@ class ConcurrentEdgeAppendMergeTest extends TestHelper {
    * final IN-degree must equal the pre-created pool size and the integrity check must be clean.
    */
   @Test
-  void concurrentAppendsAndRemovesStayConsistent() throws InterruptedException {
+  void concurrentAppendsAndRemovesStayConsistent() throws Exception {
     final int threads = 6;
     final int perThread = 500;
     final int pool = threads * perThread; // exactly one removal per iteration drains the pool
@@ -203,7 +203,7 @@ class ConcurrentEdgeAppendMergeTest extends TestHelper {
    * edges per run with the merge off.)
    */
   @Test
-  void edgeDropFixHoldsWithMergeDisabled() throws InterruptedException {
+  void edgeDropFixHoldsWithMergeDisabled() throws Exception {
     final boolean savedMerge = GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean();
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.setValue(false);

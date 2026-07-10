@@ -20,6 +20,7 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.WALFile;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;

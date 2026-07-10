@@ -33,6 +33,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Array;
@@ -2232,10 +2233,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       final MutableDocument doc = database.newDocument(className);
       doc.set("i", i);
-      final List<Integer> iSeq = new ArrayList<>();
-      iSeq.add(i);
-      iSeq.add(i * 2);
-      iSeq.add(i * 4);
+      final List<Integer> iSeq = new ArrayList<>(List.of(
+          i,
+          i * 2,
+          i * 4));
       doc.set("iSeq", iSeq);
       doc.save();
     }
@@ -3188,9 +3189,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.save();
     database.commit();
 
-    final Map<String, Object> params = new HashMap<>();
-    params.put("a", 0);
-    params.put("b", 3);
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "a", 0,
+        "b", 3));
     final ResultSet result = database.query("sql", "select name[:a..:b] as names from " + className, params);
 
     for (int i = 0; i < 1; i++) {
@@ -3323,10 +3324,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type " + className).close();
     database.begin();
     final MutableDocument elem1 = database.newDocument(className);
-    final List<String> coll = new ArrayList<>();
-    coll.add("foo");
-    coll.add("bar");
-    coll.add("baz");
+    final List<String> coll = new ArrayList<>(List.of(
+        "foo",
+        "bar",
+        "baz"));
     elem1.set("coll", coll);
     elem1.save();
     database.commit();
@@ -3368,10 +3369,10 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type " + className).close();
     database.begin();
     final MutableDocument elem1 = database.newDocument(className);
-    List<Long> coll = new ArrayList<>();
-    coll.add(1L);
-    coll.add(3L);
-    coll.add(5L);
+    List<Long> coll = new ArrayList<>(List.of(
+        1L,
+        3L,
+        5L));
     elem1.set("coll", coll);
     elem1.save();
 
@@ -3548,9 +3549,9 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "insert into " + className + " set name = 'Bar', surname = 'Bax'").close();
 
     database.commit();
-    final Map<String, Object> params = new HashMap<>();
-    params.put("p1", "Foo");
-    params.put("p2", "Fox");
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "p1", "Foo",
+        "p2", "Fox"));
     final ResultSet result = database.query("sql", "select from " + className + " where name = :p1 and surname = :p2", params);
     assertThat(result.hasNext()).isTrue();
     result.next();
@@ -3906,9 +3907,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isTrue();
     }
 
-    final List<String> params = new ArrayList<>();
-    params.add("foo");
-    params.add("bar");
+    final List<String> params = new ArrayList<>(List.of(
+        "foo",
+        "bar"));
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
       assertThat(result.hasNext()).isTrue();
       result.next();
@@ -3951,9 +3952,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep)).isFalse();
     }
 
-    final List<String> params = new ArrayList<>();
-    params.add("foo");
-    params.add("bar");
+    final List<String> params = new ArrayList<>(List.of(
+        "foo",
+        "bar"));
     try (final ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
       assertThat(result.hasNext()).isTrue();
       result.next();

@@ -24,6 +24,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -91,7 +92,7 @@ class CypherInlinePropertyFilterTest {
     rs.close();
 
     assertThat(results).hasSize(1);
-    final Vertex s = results.get(0).getProperty("s");
+    final Vertex s = results.getFirst().getProperty("s");
     assertThat(s.getString("name")).isEqualTo("one");
   }
 

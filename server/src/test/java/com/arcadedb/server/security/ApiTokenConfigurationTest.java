@@ -21,6 +21,7 @@ package com.arcadedb.server.security;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -134,7 +135,7 @@ class ApiTokenConfigurationTest {
 
     final List<JSONObject> tokens = config2.listTokens();
     assertThat(tokens).hasSize(1);
-    assertThat(tokens.get(0).getString("name")).isEqualTo("Persistent");
+    assertThat(tokens.getFirst().getString("name")).isEqualTo("Persistent");
   }
 
   @Test
@@ -150,7 +151,7 @@ class ApiTokenConfigurationTest {
 
     final List<JSONObject> tokens = config2.listTokens();
     assertThat(tokens).hasSize(1);
-    assertThat(tokens.get(0).getString("name")).isEqualTo("StillValid");
+    assertThat(tokens.getFirst().getString("name")).isEqualTo("StillValid");
   }
 
   @Test

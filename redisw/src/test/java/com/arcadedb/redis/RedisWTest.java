@@ -22,8 +22,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
@@ -33,10 +34,7 @@ import redis.clients.jedis.exceptions.JedisDataException;
 import java.util.ArrayList;
 import java.util.List;
 
-import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.PROPERTY_TYPES_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
+import static com.arcadedb.schema.Property.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -329,7 +327,7 @@ public class RedisWTest extends BaseGraphServerTest {
     // Select the test database (using sendCommand because Jedis select() expects int)
     final Object selectResult = jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
     // sendCommand returns byte[] for simple strings
-    final String resultStr = selectResult instanceof byte[] ? new String((byte[]) selectResult) : selectResult.toString();
+    final String resultStr = selectResult instanceof byte[] bs ? new String(bs) : selectResult.toString();
     assertThat(resultStr).isEqualTo("OK");
 
     // Set a value via Redis wire protocol
@@ -504,7 +502,7 @@ public class RedisWTest extends BaseGraphServerTest {
     final List<String> results = jedis.hmget(getDatabaseName(), "mget1", "mget2", "mget3", "nonExistent");
     assertThat(results).hasSize(4);
 
-    final JSONObject first = new JSONObject(results.get(0));
+    final JSONObject first = new JSONObject(results.getFirst());
     assertThat(first.getString("name")).isEqualTo("First");
 
     final JSONObject second = new JSONObject(results.get(1));

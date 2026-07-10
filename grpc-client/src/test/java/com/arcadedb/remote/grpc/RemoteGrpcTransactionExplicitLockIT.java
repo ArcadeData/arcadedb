@@ -20,6 +20,7 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -196,7 +197,7 @@ class RemoteGrpcTransactionExplicitLockIT extends BaseGraphServerTest {
       final var schema = database.getSchema();
       final var type = schema.getType("TestVertex");
       if (type != null && !type.getBuckets(false).isEmpty()) {
-        final String bucketName = type.getBuckets(false).get(0).getName();
+        final String bucketName = type.getBuckets(false).getFirst().getName();
         lock.bucket(bucketName);
         lock.lock();
       }

@@ -30,12 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
+import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
@@ -48,7 +43,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class SimpleGloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
   private static final String  FILE_NAME      = "/Users/frank/Downloads/glove.twitter.27B/glove.twitter.27B.100d.txt";
-  private              boolean USE_SQL        = true;
+  private final              boolean USE_SQL        = true;
 
   public static void main(String[] args) {
     new SimpleGloVeTest();
@@ -59,7 +54,7 @@ public class SimpleGloVeTest {
     final DatabaseFactory factory = new DatabaseFactory("databases/glovedb");
     final Database database;
 
-    try {
+    try (factory) {
 
       database = importDataSet(factory);
 
@@ -67,8 +62,6 @@ public class SimpleGloVeTest {
           database.getSchema().getIndexByName("Word[vector]").countEntries());
 
       querySQL(database);
-    } finally {
-      factory.close();
     }
     System.exit(0);
   }

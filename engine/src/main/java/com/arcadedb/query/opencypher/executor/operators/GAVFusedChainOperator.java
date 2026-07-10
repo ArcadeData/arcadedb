@@ -23,16 +23,15 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
-import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.LongLongHashMap;
-
-import com.arcadedb.query.QueryEngineManager;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -66,8 +65,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
   // Chain hops: [0] = first expand, [n-1] = last expand
   private final Vertex.DIRECTION[] hopDirections;
-  private final String[][] hopEdgeTypes;
-  private final String[] hopTargetVariables;
+  private final String[][]         hopEdgeTypes;
+  private final String[]           hopTargetVariables;
 
   // Target label filter per hop: bucket IDs for type checking (null = no filter)
   private final int[][] hopTargetBucketIds;
@@ -84,7 +83,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   // groupKeyProperties = property to read from each variable for grouping (e.g., ["Id", "Id"]), null = use variable identity
   // countOutputName = output alias for count(*) (e.g., "interactions")
   private String[] groupKeyVariables;
-  private String countOutputName;
+  private String   countOutputName;
   private String[] groupKeyOutputNames;
 
   public GAVFusedChainOperator(final PhysicalOperator child,
@@ -120,9 +119,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * Enables fused aggregation: the parallel DFS counts per group internally
    * instead of producing individual rows. The downstream GroupByAggregationStep is bypassed.
    *
-   * @param groupKeyVariables  variables to group by (must be materialized)
+   * @param groupKeyVariables   variables to group by (must be materialized)
    * @param groupKeyOutputNames output aliases for each grouping key
-   * @param countOutputName    output alias for count(*)
+   * @param countOutputName     output alias for count(*)
    */
   public void setFusedAggregation(final String[] groupKeyVariables, final String[] groupKeyOutputNames,
       final String countOutputName) {
@@ -152,12 +151,13 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       final Result inputResult = inputResults.next();
       final Object sourceObj = inputResult.getProperty(sourceVariable);
       final int nodeId;
-      if (sourceObj instanceof GAVVertex)
-        nodeId = ((GAVVertex) sourceObj).getNodeId();
-      else if (sourceObj instanceof Vertex)
-        nodeId = provider.getNodeId(((Vertex) sourceObj).getIdentity());
-      else
+      switch (sourceObj) {
+      case GAVVertex vertex1 -> nodeId = vertex1.getNodeId();
+      case Vertex vertex -> nodeId = provider.getNodeId(vertex.getIdentity());
+      case null, default -> {
         continue;
+      }
+      }
       if (nodeId >= 0) {
         if (sourceCount == sourceNodeIdsBuf.length)
           sourceNodeIdsBuf = Arrays.copyOf(sourceNodeIdsBuf, sourceNodeIdsBuf.length * 2);
@@ -311,9 +311,19 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
     final Iterator<Result> iter = results.iterator();
     return new ResultSet() {
-      @Override public boolean hasNext() { return iter.hasNext(); }
-      @Override public Result next() { return iter.next(); }
-      @Override public void close() { }
+      @Override
+      public boolean hasNext() {
+        return iter.hasNext();
+      }
+
+      @Override
+      public Result next() {
+        return iter.next();
+      }
+
+      @Override
+      public void close() {
+      }
     };
   }
 
@@ -515,8 +525,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final List<String> names = new ArrayList<>();
     if (materializeVariable[0])
       names.add(sourceVariable);
-    // When source is not materialized, we pass through input properties — those names come at runtime
-    // For now, add source variable name as placeholder
+      // When source is not materialized, we pass through input properties — those names come at runtime
+      // For now, add source variable name as placeholder
     else
       names.add(sourceVariable);
 

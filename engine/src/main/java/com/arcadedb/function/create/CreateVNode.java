@@ -67,10 +67,10 @@ public class CreateVNode extends AbstractCreateFunction {
         : new HashMap<>();
 
     // Create a virtual node representation
-    final Map<String, Object> vNode = new HashMap<>();
-    vNode.put("_type", "vNode");
-    vNode.put("_id", "vNode:" + (++virtualIdCounter));
-    vNode.put("_labels", labels);
+    final Map<String, Object> vNode = new HashMap<>(Map.of(
+        "_type", "vNode",
+        "_id", "vNode:" + (++virtualIdCounter),
+        "_labels", labels));
     vNode.putAll(properties);
 
     return vNode;
@@ -82,10 +82,10 @@ public class CreateVNode extends AbstractCreateFunction {
     if (input == null)
       return labels;
 
-    if (input instanceof String) {
-      labels.add((String) input);
-    } else if (input instanceof Collection) {
-      for (final Object item : (Collection<?>) input) {
+    if (input instanceof String string) {
+      labels.add(string);
+    } else if (input instanceof Collection<?> collection) {
+      for (final Object item : collection) {
         if (item != null)
           labels.add(item.toString());
       }

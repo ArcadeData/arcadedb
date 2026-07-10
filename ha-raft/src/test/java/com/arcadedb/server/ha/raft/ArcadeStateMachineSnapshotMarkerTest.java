@@ -68,8 +68,7 @@ class ArcadeStateMachineSnapshotMarkerTest {
     final RaftGroupId groupId = RaftGroupId.valueOf(UUID.randomUUID());
     final RaftStorage raftStorage = newFormattedStorage(tempDir);
 
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    try {
+    try (final ArcadeStateMachine sm = new ArcadeStateMachine()) {
       sm.initialize(stubServer(), groupId, raftStorage);
 
       // Simulate having applied entries up to (appliedTerm, appliedIndex), as applyTransaction would.
@@ -86,24 +85,21 @@ class ArcadeStateMachineSnapshotMarkerTest {
       assertThat(live.getIndex()).isEqualTo(appliedIndex);
       assertThat(live.getTerm()).isEqualTo(appliedTerm);
     } finally {
-      sm.close();
       raftStorage.close();
     }
 
     // Simulate a restart: a brand-new storage opened on the same directory must rediscover the marker.
-    final RaftStorage reopened = newRecoveredStorage(tempDir);
-    try {
+    try (final RaftStorage reopened = newRecoveredStorage(tempDir)) {
       final SimpleStateMachineStorage freshStorage = new SimpleStateMachineStorage();
       freshStorage.init(reopened);
       final SingleFileSnapshotInfo discovered = freshStorage.getLatestSnapshot();
       assertThat(discovered)
-          .as("after restart the snapshot marker written by takeSnapshot() must be rediscovered "
-              + "(was null before the #4829 fix, orphaning purged log state)")
+          .as("""
+              after restart the snapshot marker written by takeSnapshot() must be rediscovered \
+              (was null before the #4829 fix, orphaning purged log state)""")
           .isNotNull();
       assertThat(discovered.getIndex()).isEqualTo(appliedIndex);
       assertThat(discovered.getTerm()).isEqualTo(appliedTerm);
-    } finally {
-      reopened.close();
     }
   }
 
@@ -117,8 +113,7 @@ class ArcadeStateMachineSnapshotMarkerTest {
     final RaftGroupId groupId = RaftGroupId.valueOf(UUID.randomUUID());
     final RaftStorage raftStorage = newFormattedStorage(tempDir);
 
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    try {
+    try (final ArcadeStateMachine sm = new ArcadeStateMachine()) {
       sm.initialize(stubServer(), groupId, raftStorage);
 
       final long reported = sm.takeSnapshot();
@@ -129,7 +124,6 @@ class ArcadeStateMachineSnapshotMarkerTest {
           .as("no snapshot marker must be written when nothing has been applied")
           .isNull();
     } finally {
-      sm.close();
       raftStorage.close();
     }
   }

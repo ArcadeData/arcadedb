@@ -19,16 +19,17 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +39,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
 /**
  * #4936/#4937: the WAL append must be the commit's point of no return. Phase 2 used to append the
@@ -101,12 +101,7 @@ class WalCommitOrderingTest {
       PageManager.INSTANCE.putPageInReadCache(new CachedPage(conflicting, false));
 
       final long walBytesBefore = totalWalBytes();
-      try {
-        tx.commit2ndPhase(phase1);
-        fail("phase 2 must fail validation against the conflicting version");
-      } catch (final ConcurrentModificationException e) {
-        // expected
-      }
+      assertThatThrownBy(() -> tx.commit2ndPhase(phase1)).isInstanceOf(ConcurrentModificationException.class);
 
       assertThat(totalWalBytes())
           .as("a transaction that failed validation must leave NO record in the WAL (#4936)")
@@ -172,8 +167,7 @@ class WalCommitOrderingTest {
     if (factory.exists())
       factory.open().drop();
 
-    final DatabaseInternal db = (DatabaseInternal) factory.create();
-    try {
+    try (final DatabaseInternal db = (DatabaseInternal) factory.create()) {
       db.getSchema().createDocumentType("Doc");
       db.transaction(() -> db.newDocument("Doc").set("v", 1).save());
 
@@ -202,8 +196,6 @@ class WalCommitOrderingTest {
       assertThatThrownBy(() -> db.transaction(() -> db.newDocument("Doc").set("v", 3).save()))
           .hasMessageContaining("fenced");
     } finally {
-      // close() must still complete on a fenced database (it is the recovery entry point).
-      db.close();
       factory.close();
     }
   }
@@ -219,8 +211,7 @@ class WalCommitOrderingTest {
     if (factory.exists())
       factory.open().drop();
 
-    final DatabaseInternal db = (DatabaseInternal) factory.create();
-    try {
+    try (final DatabaseInternal db = (DatabaseInternal) factory.create()) {
       db.getSchema().createDocumentType("Doc");
 
       db.begin();
@@ -239,7 +230,6 @@ class WalCommitOrderingTest {
       // The database keeps working.
       db.transaction(() -> db.newDocument("Doc").set("v", 2).save());
     } finally {
-      db.close();
       factory.close();
     }
   }
@@ -253,8 +243,7 @@ class WalCommitOrderingTest {
     if (factory.exists())
       factory.open().drop();
 
-    final DatabaseInternal db = (DatabaseInternal) factory.create();
-    try {
+    try (final DatabaseInternal db = (DatabaseInternal) factory.create()) {
       db.getSchema().createDocumentType("Doc");
 
       db.begin();
@@ -270,7 +259,6 @@ class WalCommitOrderingTest {
           .as("a publish failure AFTER a real WAL append must fence: the tx is durable and only replay reconciles")
           .isTrue();
     } finally {
-      db.close();
       factory.close();
     }
   }

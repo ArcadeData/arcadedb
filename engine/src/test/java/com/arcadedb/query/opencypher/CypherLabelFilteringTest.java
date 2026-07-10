@@ -25,13 +25,13 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.VertexType;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-
 import java.util.List;
 import java.util.Map;
 
@@ -212,7 +212,7 @@ class CypherLabelFilteringTest {
 
       // searchedChunks should contain exactly 1 CHUNK vertex
       assertThat(searchedChunks.size()).as("Expected 1 CHUNK in searchedChunks").isEqualTo(1);
-      assertThat(((Vertex) searchedChunks.get(0)).getTypeName()).isEqualTo("CHUNK");
+      assertThat(((Vertex) searchedChunks.getFirst()).getTypeName()).isEqualTo("CHUNK");
 
       // sourceDocs should contain exactly 1 DOCUMENT vertex
       assertThat(sourceDocs.size()).as("Expected 1 DOCUMENT in sourceDocs").isEqualTo(1);
@@ -225,7 +225,7 @@ class CypherLabelFilteringTest {
 
       // nerTwos should contain 1 NER vertex (ner2, connected from ner1 via "related")
       assertThat(nerTwos.size()).as("Expected 1 NER in nerTwos").isEqualTo(1);
-      assertThat(((Vertex) nerTwos.get(0)).getTypeName()).isEqualTo("NER");
+      assertThat(((Vertex) nerTwos.getFirst()).getTypeName()).isEqualTo("NER");
 
       // themes should contain 2 THEME vertices
       assertThat(themes.size()).as("Expected 2 THEME in themes").isEqualTo(2);

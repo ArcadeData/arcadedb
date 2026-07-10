@@ -90,12 +90,12 @@ public class GraphTraversalProviderRegistry {
    */
   public static List<GraphTraversalProvider> getProviders(final Database database) {
     if (!hasAnyProviders)
-      return Collections.emptyList();
+      return List.of();
     final Database key = unwrap(database);
     synchronized (REGISTRY) {
       final CopyOnWriteArrayList<GraphTraversalProvider> list = REGISTRY.get(key);
       // CopyOnWriteArrayList's iterator already returns a snapshot — no need to copy into a new ArrayList
-      return list != null ? Collections.unmodifiableList(list) : Collections.emptyList();
+      return list != null ? Collections.unmodifiableList(list) : List.of();
     }
   }
 
@@ -174,11 +174,11 @@ public class GraphTraversalProviderRegistry {
     for (final GraphTraversalProvider provider : list) {
       if (provider.isReady())
         continue;
-      if (provider instanceof GraphAnalyticalView) {
+      if (provider instanceof GraphAnalyticalView view) {
         final long remainingNanos = deadlineNanos - System.nanoTime();
         if (remainingNanos <= 0)
           return false;
-        if (!((GraphAnalyticalView) provider).awaitReady(remainingNanos, TimeUnit.NANOSECONDS))
+        if (!view.awaitReady(remainingNanos, TimeUnit.NANOSECONDS))
           return false;
       }
     }

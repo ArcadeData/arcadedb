@@ -197,8 +197,9 @@ public final class SnapshotInstaller {
     final String inFlightKey = dbPath.toString();
     if (!INSTALLS_IN_FLIGHT.add(inFlightKey))
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-          "Concurrent snapshot install detected for '%s'; the install lifecycle assumes these never overlap "
-              + "for the same database - this may indicate a coordination bug in the HA layer", null, databaseName);
+          """
+          Concurrent snapshot install detected for '%s'; the install lifecycle assumes these never overlap \
+          for the same database - this may indicate a coordination bug in the HA layer""", null, databaseName);
 
     try {
       // Clean up any leftover state from a previous failed attempt
@@ -413,8 +414,9 @@ public final class SnapshotInstaller {
         validateSnapshotOpens(staging, server);
       } catch (final IOException validationEx) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-            "Acquired snapshot for new database '%s' failed validation; discarding it and leaving the database "
-                + "absent (it will be re-acquired on the next reconcile): %s", null, databaseName, validationEx.getMessage());
+            """
+            Acquired snapshot for new database '%s' failed validation; discarding it and leaving the database \
+            absent (it will be re-acquired on the next reconcile): %s""", null, databaseName, validationEx.getMessage());
         deleteDirectoryIfExists(staging);
         throw validationEx;
       }
@@ -435,8 +437,9 @@ public final class SnapshotInstaller {
         server.getDatabase(databaseName);
       } catch (final RuntimeException openEx) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-            "Acquired snapshot for new database '%s' was validated but failed to open after publish; removing it "
-                + "and leaving the database absent", openEx, databaseName);
+            """
+            Acquired snapshot for new database '%s' was validated but failed to open after publish; removing it \
+            and leaving the database absent""", openEx, databaseName);
         server.removeDatabase(databaseName);
         deleteDirectoryIfExists(dbPath);
         throw new IOException("Acquired snapshot for new database '" + databaseName + "' failed to open after publish", openEx);
@@ -578,8 +581,9 @@ public final class SnapshotInstaller {
       // so recoverPendingSnapshotSwaps reconciles dbPath from the retained backup on the next startup -
       // call this out so operators know that marker is the recovery hook to look for.
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-          "Failed to roll back snapshot install for %s: %s. Leaving the .snapshot-pending marker so startup "
-              + "recovery (recoverPendingSnapshotSwaps) restores the backup on the next restart", e, dbPath, e.getMessage());
+          """
+          Failed to roll back snapshot install for %s: %s. Leaving the .snapshot-pending marker so startup \
+          recovery (recoverPendingSnapshotSwaps) restores the backup on the next restart""", e, dbPath, e.getMessage());
     }
   }
 
@@ -749,9 +753,10 @@ public final class SnapshotInstaller {
         endpoint = leaderHttpAddrSupplier.get();
         if (useSSL && endpoint != null && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
           LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-              "SSL is enabled but no HTTPS endpoint is known for snapshot download of '%s'; falling back to plain HTTP on %s. "
-                  + "Declare an httpsPort (the optional 5th field 'host:raftPort:httpPort:priority:httpsPort') in '%s' to "
-                  + "transfer snapshots encrypted.",
+              """
+              SSL is enabled but no HTTPS endpoint is known for snapshot download of '%s'; falling back to plain HTTP on %s. \
+              Declare an httpsPort (the optional 5th field 'host:raftPort:httpPort:priority:httpsPort') in '%s' to \
+              transfer snapshots encrypted.""",
               null, databaseName, endpoint, GlobalConfiguration.HA_SERVER_LIST.getKey());
       }
       if (endpoint == null) {
@@ -790,11 +795,11 @@ public final class SnapshotInstaller {
       throw new IOException("Invalid snapshot URL: " + snapshotUrl, e);
     }
 
-    if (connection instanceof HttpsURLConnection) {
+    if (connection instanceof HttpsURLConnection lConnection) {
       if (!https)
         throw new ReplicationException("Snapshot URL is HTTPS but plain HTTP was expected: " + snapshotUrl);
       final SSLContext sslContext = buildSSLContext(server);
-      ((HttpsURLConnection) connection).setSSLSocketFactory(sslContext.getSocketFactory());
+      lConnection.setSSLSocketFactory(sslContext.getSocketFactory());
     }
 
     connection.setRequestMethod("GET");

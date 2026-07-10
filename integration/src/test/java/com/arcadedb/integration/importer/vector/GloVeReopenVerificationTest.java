@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -46,9 +47,7 @@ class GloVeReopenVerificationTest {
       return;
     }
 
-    Database db = factory.open();
-
-    try {
+    try (Database db = factory.open()) {
       // Start a read transaction to ensure pages are accessible
       db.begin();
 
@@ -84,7 +83,7 @@ class GloVeReopenVerificationTest {
         assertThat(results.isEmpty()).as("Vector search should return results").isFalse();
 
         // Verify first result is the same word (distance should be ~0)
-        var firstResult = results.get(0);
+        var firstResult = results.getFirst();
         var firstWord = firstResult.getFirst().asVertex();
         String firstName = firstWord.getString("name");
         float firstDistance = firstResult.getSecond();
@@ -98,8 +97,6 @@ class GloVeReopenVerificationTest {
         System.out.println("✓ SUCCESS: Vector index works correctly after database restart!");
       }
 
-    } finally {
-      db.close();
     }
   }
 }

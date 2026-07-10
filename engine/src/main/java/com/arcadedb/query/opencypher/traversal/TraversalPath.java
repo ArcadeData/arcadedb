@@ -99,7 +99,7 @@ public class TraversalPath {
    * @return first vertex
    */
   public Vertex getStartVertex() {
-    return vertices.isEmpty() ? null : vertices.get(0);
+    return vertices.isEmpty() ? null : vertices.getFirst();
   }
 
   /**
@@ -108,7 +108,7 @@ public class TraversalPath {
    * @return last vertex
    */
   public Vertex getEndVertex() {
-    return vertices.isEmpty() ? null : vertices.get(vertices.size() - 1);
+    return vertices.isEmpty() ? null : vertices.getLast();
   }
 
   /**

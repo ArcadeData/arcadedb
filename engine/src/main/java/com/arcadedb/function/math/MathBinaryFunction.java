@@ -49,8 +49,8 @@ public class MathBinaryFunction implements StatelessFunction {
       throw new CommandExecutionException(name + "() requires exactly two arguments");
     if (args[0] == null || args[1] == null)
       return null;
-    if (args[0] instanceof Number && args[1] instanceof Number) {
-      final double result = op.applyAsDouble(((Number) args[0]).doubleValue(), ((Number) args[1]).doubleValue());
+    if (args[0] instanceof Number number && args[1] instanceof Number number1) {
+      final double result = op.applyAsDouble(number.doubleValue(), number1.doubleValue());
       // Return integer type only when the result is a whole number that fits in a long.
       // Without the range guard, large doubles (e.g. 1e30) saturate to Long.MAX_VALUE on cast.
       if (result >= Long.MIN_VALUE && result <= Long.MAX_VALUE

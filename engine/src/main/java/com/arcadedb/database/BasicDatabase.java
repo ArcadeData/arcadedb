@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.RecordNotFoundException;

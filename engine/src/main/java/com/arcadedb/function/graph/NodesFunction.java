@@ -25,7 +25,6 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -43,16 +42,15 @@ public class NodesFunction implements StatelessFunction {
       throw new CommandExecutionException("nodes() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof TraversalPath)
-      return new ArrayList<>(((TraversalPath) args[0]).getVertices());
-    if (args[0] instanceof List) {
-      final List<?> path = (List<?>) args[0];
+    if (args[0] instanceof TraversalPath path)
+      return new ArrayList<>(path.getVertices());
+    if (args[0] instanceof List<?> path) {
       final List<Vertex> nodes = new ArrayList<>();
       for (final Object element : path)
-        if (element instanceof Vertex)
-          nodes.add((Vertex) element);
+        if (element instanceof Vertex vertex)
+          nodes.add(vertex);
       return nodes;
     }
-    return Collections.emptyList();
+    return List.of();
   }
 }

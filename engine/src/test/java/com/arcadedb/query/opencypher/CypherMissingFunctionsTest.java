@@ -59,7 +59,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(3);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
   }
@@ -81,7 +81,7 @@ class CypherMissingFunctionsTest {
     final List<Object> result = rs.next().getProperty("result");
     // One level flatten: ['a', 'b', ['c']]
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.getFirst()).isEqualTo("a");
     assertThat(result.get(1)).isEqualTo("b");
     assertThat(result.get(2)).isInstanceOf(List.class);
   }
@@ -94,7 +94,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(2);
-    assertThat(result.get(0)).isEqualTo("a");
+    assertThat(result.getFirst()).isEqualTo("a");
     assertThat(result.get(1)).isInstanceOf(List.class);
   }
 
@@ -114,7 +114,7 @@ class CypherMissingFunctionsTest {
     final List<Object> result = rs.next().getProperty("result");
     // Default depth=1: flattens one level, so [4, 5] stays nested
     assertThat(result).hasSize(4);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
     assertThat(result.get(3)).isInstanceOf(List.class);
@@ -143,7 +143,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(4);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
     assertThat(((Number) result.get(3)).longValue()).isEqualTo(4L);
@@ -180,7 +180,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(3);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(3L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(4L);
   }
@@ -192,7 +192,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(3);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(4L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(5L);
   }
@@ -205,7 +205,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(5);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
     assertThat(((Number) result.get(3)).longValue()).isEqualTo(4L);
@@ -249,7 +249,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo(true);
+    assertThat(result.getFirst()).isEqualTo(true);
     assertThat(result.get(1)).isEqualTo(false);
   }
 
@@ -261,7 +261,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(3);
-    assertThat(((Number) result.get(0)).doubleValue()).isEqualTo(1.5);
+    assertThat(((Number) result.getFirst()).doubleValue()).isEqualTo(1.5);
     assertThat(((Number) result.get(1)).doubleValue()).isEqualTo(2.5);
   }
 
@@ -273,7 +273,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(3);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
     assertThat(((Number) result.get(2)).longValue()).isEqualTo(3L);
   }
@@ -286,7 +286,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(3);
-    assertThat(result.get(0)).isEqualTo("1");
+    assertThat(result.getFirst()).isEqualTo("1");
     assertThat(result.get(1)).isEqualTo("2");
     assertThat(result.get(2)).isEqualTo("3");
   }
@@ -396,7 +396,7 @@ class CypherMissingFunctionsTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
     assertThat(result).hasSize(2);
-    assertThat(((Number) result.get(0)).longValue()).isEqualTo(1L);
+    assertThat(((Number) result.getFirst()).longValue()).isEqualTo(1L);
     assertThat(((Number) result.get(1)).longValue()).isEqualTo(2L);
   }
 

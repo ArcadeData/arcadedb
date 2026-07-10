@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import com.google.protobuf.Timestamp;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -149,9 +150,9 @@ public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
             .build());
 
     assertThat(response.getResultsList()).as("query must return at least one result group").isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList()).as("result group must contain records").isNotEmpty();
+    assertThat(response.getResultsList().getFirst().getRecordsList()).as("result group must contain records").isNotEmpty();
 
-    final GrpcRecord record = response.getResultsList().get(0).getRecordsList().get(0);
+    final GrpcRecord record = response.getResultsList().getFirst().getRecordsList().getFirst();
     assertThat(record.getPropertiesMap()).as("'d' property must be present (not missing due to corruption)").containsKey("d");
     final GrpcValue dValue = record.getPropertiesMap().get("d");
     assertThat(dValue.hasTimestampValue()).as("DATE property must come back as a Timestamp").isTrue();
@@ -184,8 +185,8 @@ public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
             .build());
 
     assertThat(response.getResultsList()).isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList()).isNotEmpty();
-    final GrpcRecord record = response.getResultsList().get(0).getRecordsList().get(0);
+    assertThat(response.getResultsList().getFirst().getRecordsList()).isNotEmpty();
+    final GrpcRecord record = response.getResultsList().getFirst().getRecordsList().getFirst();
 
     // The sibling 'name' property must be readable (corruption broke this too)
     assertThat(record.getPropertiesMap()).containsKey("name");

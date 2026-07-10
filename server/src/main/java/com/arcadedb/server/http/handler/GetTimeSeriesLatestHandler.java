@@ -28,6 +28,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 
 import java.util.Deque;
@@ -89,7 +90,7 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     if (rows.isEmpty()) {
       result.put("latest", JSONObject.NULL);
     } else {
-      final Object[] lastRow = rows.get(rows.size() - 1);
+      final Object[] lastRow = rows.getLast();
       final JSONArray latestArray = new JSONArray();
       for (final Object val : lastRow)
         latestArray.put(val);

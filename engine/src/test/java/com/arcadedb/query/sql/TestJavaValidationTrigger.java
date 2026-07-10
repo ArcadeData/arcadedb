@@ -34,8 +34,7 @@ public class TestJavaValidationTrigger implements JavaTrigger {
 
   @Override
   public boolean execute(final Database database, final Record record, final Record oldRecord) throws Exception {
-    if (record instanceof Document) {
-      final Document doc = (Document) record;
+    if (record instanceof Document doc) {
       final String email = doc.getString("email");
 
       if (email == null || !email.contains("@")) {

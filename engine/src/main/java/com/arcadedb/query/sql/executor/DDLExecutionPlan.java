@@ -22,7 +22,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.DDLStatement;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -81,7 +80,7 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public List<ExecutionStep> getSteps() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override

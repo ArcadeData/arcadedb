@@ -56,26 +56,25 @@ public class ConvertToList extends AbstractConvertFunction {
     if (args[0] == null)
       return null;
 
-    if (args[0] instanceof List) {
-      return new ArrayList<>((List<?>) args[0]);
+    if (args[0] instanceof List<?> list) {
+      return new ArrayList<>(list);
     }
 
-    if (args[0] instanceof Collection) {
-      return new ArrayList<>((Collection<?>) args[0]);
+    if (args[0] instanceof Collection<?> collection) {
+      return new ArrayList<>(collection);
     }
 
-    if (args[0] instanceof Iterator) {
+    if (args[0] instanceof Iterator<?> iter) {
       final List<Object> result = new ArrayList<>();
-      final Iterator<?> iter = (Iterator<?>) args[0];
       while (iter.hasNext()) {
         result.add(iter.next());
       }
       return result;
     }
 
-    if (args[0] instanceof Iterable) {
+    if (args[0] instanceof Iterable<?> iterable) {
       final List<Object> result = new ArrayList<>();
-      for (final Object item : (Iterable<?>) args[0]) {
+      for (final Object item : iterable) {
         result.add(item);
       }
       return result;

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.method.collection;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.SQLMethod;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;

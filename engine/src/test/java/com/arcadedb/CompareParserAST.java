@@ -54,8 +54,7 @@ public class CompareParserAST {
 
   private static void printJSON(Object obj, int indent) {
     String indentStr = "  ".repeat(indent);
-    if (obj instanceof Map) {
-      Map<?, ?> map = (Map<?, ?>) obj;
+    if (obj instanceof Map<?, ?> map) {
       for (Map.Entry<?, ?> entry : map.entrySet()) {
         if (entry.getValue() instanceof Map) {
           System.out.println(indentStr + entry.getKey() + ":");

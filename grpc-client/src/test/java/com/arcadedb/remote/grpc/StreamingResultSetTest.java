@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcValue;
 import com.arcadedb.server.grpc.QueryResult;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

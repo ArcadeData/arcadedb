@@ -57,7 +57,7 @@ public class LocalDocumentType implements DocumentType {
   protected final LocalSchema                       schema;
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
-  private         Set<String>                       aliases                      = Collections.emptySet();
+  private         Set<String>                       aliases                      = Set.of();
   protected final Map<String, Property>             properties                   = new HashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
@@ -68,7 +68,7 @@ public class LocalDocumentType implements DocumentType {
   protected       List<Integer>                     bucketIds                    = new ArrayList<>();
   protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
-  protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
+  protected       Set<String>                       propertiesWithDefaultDefined = Set.of();
   // Map: primary bucket id -> external bucket id. Populated lazily when the first EXTERNAL property is
   // set on the type, and persisted in schema.json under the per-type "externalBuckets" key.
   protected final Map<Integer, Integer>             externalBucketIdByPrimaryBucketId = new ConcurrentHashMap<>();
@@ -296,7 +296,7 @@ public class LocalDocumentType implements DocumentType {
   public DocumentType setSuperTypes(List<DocumentType> newSuperTypes) {
     checkForSchemaMutation();
     if (newSuperTypes == null)
-      newSuperTypes = Collections.emptyList();
+      newSuperTypes = List.of();
 
     final List<DocumentType> commonSuperTypes = new ArrayList<>(superTypes);
     commonSuperTypes.retainAll(newSuperTypes);
@@ -889,7 +889,7 @@ public class LocalDocumentType implements DocumentType {
     if (superTypes.isEmpty()) {
       // MOST COMMON CASES, OPTIMIZATION AVOIDING CREATING NEW LISTS
       if (r == null)
-        return Collections.emptyList();
+        return List.of();
       else
         // MOST COMMON CASE, SAVE CREATING AND COPYING TO A NEW ARRAY
         return Collections.unmodifiableList(r);

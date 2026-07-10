@@ -19,8 +19,9 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
+
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
@@ -29,17 +30,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -187,7 +178,7 @@ class PostgresTypeTest {
   @Test
   void getTypeForValueEmptyCollection() {
     assertThat(PostgresType.getTypeForValue(new ArrayList<>())).isEqualTo(PostgresType.ARRAY_TEXT);
-    assertThat(PostgresType.getTypeForValue(Collections.emptyList())).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeForValue(List.of())).isEqualTo(PostgresType.ARRAY_TEXT);
   }
 
   @Test
@@ -1004,7 +995,7 @@ class PostgresTypeTest {
     @SuppressWarnings("unchecked")
     ArrayList<String> list = (ArrayList<String>) result;
     assertThat(list).hasSize(3);
-    assertThat(list.get(0)).isEqualTo("foo");
+    assertThat(list.getFirst()).isEqualTo("foo");
     assertThat(list.get(1)).isNull();
     assertThat(list.get(2)).isEqualTo("baz");
   }
@@ -1319,10 +1310,10 @@ class PostgresTypeTest {
   void serializeAsTextCollectionAllNonNull() {
     // Test with non-null values only (null handling in arrays has a known limitation)
     Binary buffer = new Binary();
-    List<Object> list = new ArrayList<>();
-    list.add(1);
-    list.add(2);
-    list.add(3);
+    List<Object> list = new ArrayList<>(List.of(
+        1,
+        2,
+        3));
     PostgresType.ARRAY_INT.serializeAsText(PostgresType.ARRAY_INT, buffer, list);
     buffer.flip();
     int length = buffer.getInt();

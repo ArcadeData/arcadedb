@@ -19,12 +19,17 @@
 package com.arcadedb.index;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.util.Objects;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -46,6 +51,7 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
 
   private static final String TYPE_NAME = "Doc";
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // Disable AUTO compaction (see LSMTreeCompactionCorrectnessTest: the database snapshots this into its own
@@ -70,11 +76,11 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
    * leak: count the REAL registered files instead, and pair it with the on-disk temp-file check below.
    */
   private long registeredFiles() {
-    return ((DatabaseInternal) database).getFileManager().getFiles().stream().filter(java.util.Objects::nonNull).count();
+    return ((DatabaseInternal) database).getFileManager().getFiles().stream().filter(Objects::nonNull).count();
   }
 
-  private java.io.File[] tempFilesOnDisk() {
-    return new java.io.File(((DatabaseInternal) database).getDatabasePath())
+  private File[] tempFilesOnDisk() {
+    return new File(((DatabaseInternal) database).getDatabasePath())
         .listFiles((d, n) -> n.contains("temp_"));
   }
 
@@ -142,8 +148,9 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
     compactExpectingRootOverflow(index);
 
     assertThat(index.getMutableIndex().getSubIndex().getTotalPages())
-        .as("the failed round must roll the in-RAM page count back, or the next successful round's "
-            + "setCompactedTotalPages() publishes the orphan pages as live series content (#4946)")
+        .as("""
+            the failed round must roll the in-RAM page count back, or the next successful round's \
+            setCompactedTotalPages() publishes the orphan pages as live series content (#4946)""")
         .isEqualTo(pagesBeforeFailedRound);
 
     // The data is still fully correct after the failed round (served by round 1's series + the mutable side).

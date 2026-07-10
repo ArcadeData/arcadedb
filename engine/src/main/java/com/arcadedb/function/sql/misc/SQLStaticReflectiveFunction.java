@@ -20,9 +20,9 @@ package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.function.sql.SQLFunctionAbstract;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;

@@ -31,6 +31,7 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.NumberLiteral;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.StringLiteral;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +59,7 @@ class PromQLParserTest {
     final VectorSelector vs = (VectorSelector) expr;
     assertThat(vs.metricName()).isEqualTo("http_requests");
     assertThat(vs.matchers()).hasSize(2);
-    assertThat(vs.matchers().get(0)).isEqualTo(new LabelMatcher("job", MatchOp.EQ, "api"));
+    assertThat(vs.matchers().getFirst()).isEqualTo(new LabelMatcher("job", MatchOp.EQ, "api"));
     assertThat(vs.matchers().get(1)).isEqualTo(new LabelMatcher("status", MatchOp.NEQ, "500"));
   }
 

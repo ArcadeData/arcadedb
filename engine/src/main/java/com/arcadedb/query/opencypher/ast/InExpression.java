@@ -65,7 +65,7 @@ public class InExpression implements BooleanExpression {
 
     if (list.size() == 1) {
       // Single expression on RHS (e.g., x IN listVar, x IN func(), x IN [1,2,3]). Evaluate and unwrap.
-      final Expression listItem = list.get(0);
+      final Expression listItem = list.getFirst();
       final Object listValue;
       if (listItem instanceof FunctionCallExpression)
         listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
@@ -124,9 +124,7 @@ public class InExpression implements BooleanExpression {
 
     // List equality: must use 3VL element-wise comparison (not Java equals)
     // because Java's ArrayList.equals treats null==null as true, but Cypher requires null
-    if (a instanceof List && b instanceof List) {
-      final List<?> listA = (List<?>) a;
-      final List<?> listB = (List<?>) b;
+    if (a instanceof List<?> listA && b instanceof List<?> listB) {
       if (listA.size() != listB.size())
         return false;
       boolean hasNull = false;
@@ -145,10 +143,10 @@ public class InExpression implements BooleanExpression {
       return true;
 
     // Numeric comparison (handles int/long/double cross-type)
-    if (a instanceof Number && b instanceof Number) {
+    if (a instanceof Number number && b instanceof Number number1) {
       if ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer))
-        return ((Number) a).longValue() == ((Number) b).longValue();
-      return ((Number) a).doubleValue() == ((Number) b).doubleValue();
+        return number.longValue() == number1.longValue();
+      return number.doubleValue() == number1.doubleValue();
     }
 
     // id()/elementId() interop (issue #4183): id() now returns a Long-encoded RID, but legacy queries

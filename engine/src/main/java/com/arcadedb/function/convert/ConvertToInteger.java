@@ -51,21 +51,21 @@ public class ConvertToInteger extends AbstractConvertFunction {
     if (args[0] == null)
       return null;
 
-    if (args[0] instanceof Number) {
-      return ((Number) args[0]).longValue();
+    if (args[0] instanceof Number number) {
+      return number.longValue();
     }
 
     if (args[0] instanceof Boolean b) {
       return b ? 1L : 0L;
     }
 
-    if (args[0] instanceof String) {
+    if (args[0] instanceof String string) {
       try {
-        return Long.parseLong(((String) args[0]).trim());
+        return Long.parseLong(string.trim());
       } catch (final NumberFormatException e) {
         try {
           // Try parsing as double first then truncate
-          return (long) Double.parseDouble(((String) args[0]).trim());
+          return (long) Double.parseDouble(string.trim());
         } catch (final NumberFormatException e2) {
           return null;
         }

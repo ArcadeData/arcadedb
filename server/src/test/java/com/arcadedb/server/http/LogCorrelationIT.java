@@ -20,6 +20,7 @@ package com.arcadedb.server.http;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
@@ -28,7 +29,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -64,7 +65,7 @@ class LogCorrelationIT extends BaseGraphServerTest {
     attachRequestIdProbe(seenRequestIds);
 
     final String requestId = "corr-test-echo-42";
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/ready").toURL().openConnection();
     c.setRequestMethod("GET");
     c.setRequestProperty("X-Request-Id", requestId);
     c.connect();
@@ -80,7 +81,7 @@ class LogCorrelationIT extends BaseGraphServerTest {
 
   @Test
   void requestIdIsGeneratedWhenAbsent() throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/ready").toURL().openConnection();
     c.setRequestMethod("GET");
     c.connect();
     assertThat(c.getResponseCode()).isEqualTo(204);

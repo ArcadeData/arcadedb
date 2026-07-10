@@ -23,8 +23,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -57,7 +57,7 @@ public class NodeRelationshipTypes extends AbstractNodeFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     final Vertex vertex = toVertex(args[0]);
     if (vertex == null)
-      return Collections.emptyList();
+      return List.of();
 
     final Vertex.DIRECTION direction = args.length > 1 && args[1] != null
         ? parseDirection(args[1].toString())

@@ -394,7 +394,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     if (c == null)
       return 0L;
     long df = 0L;
-    try {
+    try (c) {
       c.start();
       while (!c.isExhausted()) {
         if (!c.isTombstone())
@@ -402,8 +402,6 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         if (!c.advance())
           break;
       }
-    } finally {
-      c.close();
     }
     return df;
   }
@@ -1406,7 +1404,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         // those sizes that the heap's pointer-chasing tends to lose on small {@code n}.
         while (!sources.isEmpty()) {
           // Find the smallest currentRid across live sources.
-          RID minRid = sources.get(0).cursor.currentRid();
+          RID minRid = sources.getFirst().cursor.currentRid();
           for (int i = 1; i < sources.size(); i++) {
             final RID r = sources.get(i).cursor.currentRid();
             if (SparseSegmentBuilder.compareRid(r, minRid) < 0)

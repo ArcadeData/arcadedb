@@ -182,7 +182,7 @@ public class PatternComprehensionExpression implements Expression {
     if (startLabels != null && !startLabels.isEmpty()) {
       // Use the first label as the iteration root; remaining labels are checked per vertex.
       // Polymorphic iteration so subtypes (e.g. composite multi-label types) are visited.
-      final String typeName = startLabels.get(0);
+      final String typeName = startLabels.getFirst();
       if (!context.getDatabase().getSchema().existsType(typeName))
         return;
       candidates = () -> context.getDatabase().iterateType(typeName, true);
@@ -360,8 +360,8 @@ public class PatternComprehensionExpression implements Expression {
    */
   private boolean valueMatches(final Object actual, Object expected, final CommandContext context) {
     // Resolve parameter references (e.g., $param -> actual value from context)
-    if (expected instanceof CypherASTBuilder.ParameterReference) {
-      final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
+    if (expected instanceof CypherASTBuilder.ParameterReference reference) {
+      final String paramName = reference.getName();
       if (context.getInputParameters() != null)
         expected = context.getInputParameters().get(paramName);
     } else if (expected instanceof final String s && s.startsWith("$") && s.length() > 1) {
@@ -379,8 +379,8 @@ public class PatternComprehensionExpression implements Expression {
     if (actual.equals(expected))
       return true;
     // Numeric type-safe comparison (e.g. Integer stored value vs Long inline literal)
-    if (actual instanceof Number && expected instanceof Number)
-      return ((Number) actual).longValue() == ((Number) expected).longValue();
+    if (actual instanceof Number number && expected instanceof Number number1)
+      return number.longValue() == number1.longValue();
     return false;
   }
 
@@ -466,8 +466,8 @@ public class PatternComprehensionExpression implements Expression {
     if (variable == null || variable.isEmpty())
       return null;
     final Object obj = result.getProperty(variable);
-    if (obj instanceof Vertex)
-      return (Vertex) obj;
+    if (obj instanceof Vertex vertex)
+      return vertex;
     return null;
   }
 

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -123,15 +124,15 @@ class CypherSequentialDeleteSetIssue5097Test {
       }
     }
 
-    final long edgesBefore = ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").get(0).getProperty("cnt")).longValue();
+    final long edgesBefore = ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").getFirst().getProperty("cnt")).longValue();
     assertThat(edgesBefore).isEqualTo((long) hubs * fanout);
 
     // The reporter's exact delete pattern, now over many edges per source vertex: the lazy edge
     // iterator in MatchRelationshipStep is advanced while DeleteStep removes edges from the same list.
     cmd("MATCH (a:BugU {active:true})-[r:FRIEND]->(b:BugU {active:false}) DELETE r");
 
-    final long edgesAfter = ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").get(0).getProperty("cnt")).longValue();
-    final long nodesAfter = ((Number) cmd("MATCH (n:BugU) RETURN count(n) AS cnt").get(0).getProperty("cnt")).longValue();
+    final long edgesAfter = ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").getFirst().getProperty("cnt")).longValue();
+    final long nodesAfter = ((Number) cmd("MATCH (n:BugU) RETURN count(n) AS cnt").getFirst().getProperty("cnt")).longValue();
 
     assertThat(edgesAfter).as("all FRIEND edges must be deleted").isEqualTo(0L);
     assertThat(nodesAfter).as("no vertex may be lost").isEqualTo((long) hubs * (fanout + 1));
@@ -159,13 +160,14 @@ class CypherSequentialDeleteSetIssue5097Test {
     for (int loop = 0; loop < iterations; loop++) {
       // Setup
       cmd("MATCH (n) DETACH DELETE n");
-      cmd("CREATE (a:BugU {id:1, active:true}), (b:BugU {id:2, active:false}), "
-          + "(c:BugU {id:3, active:true}), (d:BugU {id:4, active:false}), "
-          + "(a)-[:FRIEND]->(b), (c)-[:FRIEND]->(d)");
+      cmd("""
+          CREATE (a:BugU {id:1, active:true}), (b:BugU {id:2, active:false}), \
+          (c:BugU {id:3, active:true}), (d:BugU {id:4, active:false}), \
+          (a)-[:FRIEND]->(b), (c)-[:FRIEND]->(d)""");
 
       // Verify setup
-      final long setupNodes = (long) ((Number) cmd("MATCH (n:BugU) RETURN count(n) AS cnt").get(0).getProperty("cnt")).longValue();
-      final long setupEdges = (long) ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").get(0).getProperty("cnt")).longValue();
+      final long setupNodes = (long) ((Number) cmd("MATCH (n:BugU) RETURN count(n) AS cnt").getFirst().getProperty("cnt")).longValue();
+      final long setupEdges = (long) ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").getFirst().getProperty("cnt")).longValue();
       assertThat(setupNodes).as("setup nodes at loop %d", loop).isEqualTo(4L);
       assertThat(setupEdges).as("setup edges at loop %d", loop).isEqualTo(2L);
 
@@ -175,8 +177,8 @@ class CypherSequentialDeleteSetIssue5097Test {
       cmd("MATCH (u:BugU {active:false}) SET u.active = true");
 
       // Verify final state
-      final long postNodes = ((Number) cmd("MATCH (n:BugU) RETURN count(n) AS cnt").get(0).getProperty("cnt")).longValue();
-      final long postEdges = ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").get(0).getProperty("cnt")).longValue();
+      final long postNodes = ((Number) cmd("MATCH (n:BugU) RETURN count(n) AS cnt").getFirst().getProperty("cnt")).longValue();
+      final long postEdges = ((Number) cmd("MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt").getFirst().getProperty("cnt")).longValue();
 
       if (postNodes != 4 || postEdges != 0) {
         final List<Result> dump = cmd("MATCH (n) RETURN labels(n) AS labels, n.id AS id, n.active AS active, n.flagged AS flagged ORDER BY id");

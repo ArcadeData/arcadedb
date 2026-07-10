@@ -49,7 +49,7 @@ class Issue5147SuperNodeChunkRaceTest extends TestHelper {
   private static final int TOTAL            = THREADS * EDGES_PER_THREAD;
 
   @Test
-  void concurrentAppendsToSuperNodeDoNotLoseEdges() throws InterruptedException {
+  void concurrentAppendsToSuperNodeDoNotLoseEdges() throws Exception {
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {

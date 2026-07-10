@@ -120,7 +120,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
 
   private static List<String> jsonArrayToList(final JSONArray array) {
     if (array == null || array.length() == 0)
-      return Collections.emptyList();
+      return List.of();
     final List<String> list = new ArrayList<>(array.length());
     for (int i = 0; i < array.length(); i++)
       list.add(array.getString(i));

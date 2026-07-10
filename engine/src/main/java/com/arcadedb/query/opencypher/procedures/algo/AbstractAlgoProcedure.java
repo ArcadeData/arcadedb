@@ -423,11 +423,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         relationships.add(doc);
     }
 
-    final Map<String, Object> path = new HashMap<>();
-    path.put("_type", "path");
-    path.put("nodes", nodes);
-    path.put("relationships", relationships);
-    path.put("length", relationships.size());
+    final Map<String, Object> path = new HashMap<>(Map.of(
+        "_type", "path",
+        "nodes", nodes,
+        "relationships", relationships,
+        "length", relationships.size()));
     return path;
   }
 }

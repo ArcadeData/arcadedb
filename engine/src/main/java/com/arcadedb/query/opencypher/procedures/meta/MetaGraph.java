@@ -88,12 +88,12 @@ public class MetaGraph extends AbstractMetaProcedure {
     // Create virtual nodes for each vertex type
     for (final DocumentType type : schema.getTypes()) {
       if (type instanceof VertexType) {
-        final Map<String, Object> node = new HashMap<>();
-        node.put("_type", "vNode");
-        node.put("_id", "meta:" + type.getName());
-        node.put("_labels", List.of(type.getName()));
-        node.put("name", type.getName());
-        node.put("count", database.countType(type.getName(), true));
+        final Map<String, Object> node = new HashMap<>(Map.of(
+            "_type", "vNode",
+            "_id", "meta:" + type.getName(),
+            "_labels", List.of(type.getName()),
+            "name", type.getName(),
+            "count", database.countType(type.getName(), true)));
 
         // Add property info
         final List<String> propertyNames = new ArrayList<>(type.getPropertyNames());
@@ -106,11 +106,11 @@ public class MetaGraph extends AbstractMetaProcedure {
     // Create virtual relationships for each edge type
     for (final DocumentType type : schema.getTypes()) {
       if (type instanceof EdgeType) {
-        final Map<String, Object> rel = new HashMap<>();
-        rel.put("_type", "vRelationship");
-        rel.put("_id", "meta_rel:" + type.getName());
-        rel.put("type", type.getName());
-        rel.put("count", database.countType(type.getName(), true));
+        final Map<String, Object> rel = new HashMap<>(Map.of(
+            "_type", "vRelationship",
+            "_id", "meta_rel:" + type.getName(),
+            "type", type.getName(),
+            "count", database.countType(type.getName(), true)));
 
         // Add property info
         final List<String> propertyNames = new ArrayList<>(type.getPropertyNames());

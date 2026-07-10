@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -91,7 +92,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final DatabaseWrapper[] dbs = { db0, db1, db2 };
@@ -172,7 +173,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     final ServerWrapper restartedServer = new ServerWrapper(nodeContainers[leaderIdx]);
     final DatabaseWrapper dbRestarted = new DatabaseWrapper(restartedServer, idSupplier, wordSupplier);
     servers = List.of(
-        leaderIdx == 0 ? restartedServer : servers.get(0),
+        leaderIdx == 0 ? restartedServer : servers.getFirst(),
         leaderIdx == 1 ? restartedServer : servers.get(1),
         leaderIdx == 2 ? restartedServer : servers.get(2));
     final List<ServerWrapper> healedServers = servers;
@@ -186,7 +187,7 @@ class SplitBrainIT extends ContainersTestTemplate {
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final long users0 = countUsersViaHttp(healedServers.get(0));
+            final long users0 = countUsersViaHttp(healedServers.getFirst());
             final long users1 = countUsersViaHttp(healedServers.get(1));
             final long users2 = countUsersViaHttp(healedServers.get(2));
             logger.info("Reformation check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
@@ -199,7 +200,7 @@ class SplitBrainIT extends ContainersTestTemplate {
         });
 
     logger.info("Verifying final consistency");
-    assertThat(countUsersViaHttp(healedServers.get(0))).isEqualTo(majorityCount);
+    assertThat(countUsersViaHttp(healedServers.getFirst())).isEqualTo(majorityCount);
     assertThat(countUsersViaHttp(healedServers.get(1))).isEqualTo(majorityCount);
     assertThat(countUsersViaHttp(healedServers.get(2))).isEqualTo(majorityCount);
 
@@ -220,7 +221,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
@@ -308,7 +309,7 @@ class SplitBrainIT extends ContainersTestTemplate {
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final long users0 = countUsersViaHttp(reformedServers.get(0));
+            final long users0 = countUsersViaHttp(reformedServers.getFirst());
             final long users1 = countUsersViaHttp(reformedServers.get(1));
             final long users2 = countUsersViaHttp(reformedServers.get(2));
             logger.info("Convergence check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
@@ -321,7 +322,7 @@ class SplitBrainIT extends ContainersTestTemplate {
         });
 
     logger.info("Verifying final consistency");
-    assertThat(countUsersViaHttp(reformedServers.get(0))).isEqualTo(leaderCount);
+    assertThat(countUsersViaHttp(reformedServers.getFirst())).isEqualTo(leaderCount);
     assertThat(countUsersViaHttp(reformedServers.get(1))).isEqualTo(leaderCount);
     assertThat(countUsersViaHttp(reformedServers.get(2))).isEqualTo(leaderCount);
 
@@ -342,7 +343,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     DatabaseWrapper[] dbs = { db0, db1, db2 };
@@ -415,7 +416,7 @@ class SplitBrainIT extends ContainersTestTemplate {
       // Update servers list so subsequent cycles and convergence checks use new mapped ports
       final List<ServerWrapper> prevServers = servers;
       servers = List.of(
-          isolatedIdx == 0 ? restartedServer : prevServers.get(0),
+          isolatedIdx == 0 ? restartedServer : prevServers.getFirst(),
           isolatedIdx == 1 ? restartedServer : prevServers.get(1),
           isolatedIdx == 2 ? restartedServer : prevServers.get(2));
 
@@ -433,7 +434,7 @@ class SplitBrainIT extends ContainersTestTemplate {
           .pollInterval(3, TimeUnit.SECONDS)
           .until(() -> {
             try {
-              final long users0 = countUsersViaHttp(currentServers.get(0));
+              final long users0 = countUsersViaHttp(currentServers.getFirst());
               final long users1 = countUsersViaHttp(currentServers.get(1));
               final long users2 = countUsersViaHttp(currentServers.get(2));
               logger.info("Cycle {}: {} / {} / {} (expected={})", currentCycle, users0, users1, users2, cycleLeaderCount);
@@ -448,7 +449,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     }
 
     logger.info("Verifying final consistency after {} reformation cycles", 3);
-    final long finalCount = countUsersViaHttp(servers.get(0));
+    final long finalCount = countUsersViaHttp(servers.getFirst());
     assertThat(countUsersViaHttp(servers.get(1))).isEqualTo(finalCount);
     assertThat(countUsersViaHttp(servers.get(2))).isEqualTo(finalCount);
 
@@ -469,7 +470,7 @@ class SplitBrainIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     List<ServerWrapper> servers = startCluster();
 
-    DatabaseWrapper db0 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
+    DatabaseWrapper db0 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     DatabaseWrapper db1 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     DatabaseWrapper db2 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
@@ -553,7 +554,7 @@ class SplitBrainIT extends ContainersTestTemplate {
         .pollInterval(5, TimeUnit.SECONDS)
         .until(() -> {
           try {
-            final long users0 = countUsersViaHttp(recoveredServers.get(0));
+            final long users0 = countUsersViaHttp(recoveredServers.getFirst());
             final long users1 = countUsersViaHttp(recoveredServers.get(1));
             final long users2 = countUsersViaHttp(recoveredServers.get(2));
             logger.info("Quorum recovery check: arcadedb-0={}, arcadedb-1={}, arcadedb-2={} (expected={})",
@@ -566,7 +567,7 @@ class SplitBrainIT extends ContainersTestTemplate {
         });
 
     logger.info("Verifying cluster fully recovered after quorum loss");
-    assertThat(countUsersViaHttp(recoveredServers.get(0))).isEqualTo(leaderCount);
+    assertThat(countUsersViaHttp(recoveredServers.getFirst())).isEqualTo(leaderCount);
     assertThat(countUsersViaHttp(recoveredServers.get(1))).isEqualTo(leaderCount);
     assertThat(countUsersViaHttp(recoveredServers.get(2))).isEqualTo(leaderCount);
 

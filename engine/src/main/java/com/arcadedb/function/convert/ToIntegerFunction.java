@@ -39,12 +39,12 @@ public class ToIntegerFunction implements StatelessFunction {
       return null;
     if (args[0] instanceof Boolean b)
       return b ? 1L : 0L;
-    if (args[0] instanceof Number)
-      return ((Number) args[0]).longValue();
-    if (args[0] instanceof String) {
+    if (args[0] instanceof Number number)
+      return number.longValue();
+    if (args[0] instanceof String string) {
       try {
         // Try integer first, then float (truncating)
-        final String s = ((String) args[0]).trim();
+        final String s = string.trim();
         if (s.contains(".") || s.contains("e") || s.contains("E"))
           return (long) Double.parseDouble(s);
         return Long.parseLong(s);

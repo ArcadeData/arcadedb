@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -89,7 +90,7 @@ class AlgoVoteRankTest {
       results.add(rs.next());
 
     if (!results.isEmpty()) {
-      final Object val = results.get(0).getProperty("rank");
+      final Object val = results.getFirst().getProperty("rank");
       assertThat(((Number) val).intValue()).isEqualTo(1);
     }
   }

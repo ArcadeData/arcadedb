@@ -136,11 +136,11 @@ public class CypherDateTime implements CypherTemporalValue {
       final Object dtVal = map.get("datetime");
       ZonedDateTime base = null;
       boolean baseHasTimezone = false;
-      if (dtVal instanceof CypherDateTime) {
-        base = ((CypherDateTime) dtVal).getValue();
+      if (dtVal instanceof CypherDateTime time1) {
+        base = time1.getValue();
         baseHasTimezone = true;
-      } else if (dtVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) dtVal).getValue().atZone(ZoneOffset.UTC);
+      } else if (dtVal instanceof CypherLocalDateTime time)
+        base = time.getValue().atZone(ZoneOffset.UTC);
       if (base != null) {
         // Apply timezone conversion FIRST if specified
         if (map.containsKey("timezone")) {
@@ -184,30 +184,36 @@ public class CypherDateTime implements CypherTemporalValue {
     boolean timeHasTimezone = false;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
-      if (timeVal instanceof CypherTime ct) {
-        hour = ct.getValue().getHour();
-        minute = ct.getValue().getMinute();
-        second = ct.getValue().getSecond();
-        nanos = ct.getValue().getNano();
-        timeZone = ct.getValue().getOffset();
-        timeHasTimezone = true;
-      } else if (timeVal instanceof CypherLocalTime clt) {
-        hour = clt.getValue().getHour();
-        minute = clt.getValue().getMinute();
-        second = clt.getValue().getSecond();
-        nanos = clt.getValue().getNano();
-      } else if (timeVal instanceof CypherLocalDateTime cldt) {
-        hour = cldt.getValue().getHour();
-        minute = cldt.getValue().getMinute();
-        second = cldt.getValue().getSecond();
-        nanos = cldt.getValue().getNano();
-      } else if (timeVal instanceof CypherDateTime cdt) {
-        hour = cdt.getValue().getHour();
-        minute = cdt.getValue().getMinute();
-        second = cdt.getValue().getSecond();
-        nanos = cdt.getValue().getNano();
-        timeZone = cdt.getValue().getZone();
-        timeHasTimezone = true;
+      switch (timeVal) {
+        case CypherTime ct -> {
+          hour = ct.getValue().getHour();
+          minute = ct.getValue().getMinute();
+          second = ct.getValue().getSecond();
+          nanos = ct.getValue().getNano();
+          timeZone = ct.getValue().getOffset();
+          timeHasTimezone = true;
+        }
+        case CypherLocalTime clt -> {
+          hour = clt.getValue().getHour();
+          minute = clt.getValue().getMinute();
+          second = clt.getValue().getSecond();
+          nanos = clt.getValue().getNano();
+        }
+        case CypherLocalDateTime cldt -> {
+          hour = cldt.getValue().getHour();
+          minute = cldt.getValue().getMinute();
+          second = cldt.getValue().getSecond();
+          nanos = cldt.getValue().getNano();
+        }
+        case CypherDateTime cdt -> {
+          hour = cdt.getValue().getHour();
+          minute = cdt.getValue().getMinute();
+          second = cdt.getValue().getSecond();
+          nanos = cdt.getValue().getNano();
+          timeZone = cdt.getValue().getZone();
+          timeHasTimezone = true;
+        }
+        case null, default -> {}
       }
     }
     if (map.containsKey("hour"))

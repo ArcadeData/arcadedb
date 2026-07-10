@@ -27,6 +27,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -125,7 +126,7 @@ class LSMVectorIndexQuantizationTest extends TestHelper {
       assertThat(results.size()).isLessThanOrEqualTo(10);
 
       // Verify we can retrieve the top result
-      final RID topResultRid = results.get(0).getFirst();
+      final RID topResultRid = results.getFirst().getFirst();
       final Document topDoc = topResultRid.asDocument();
       assertThat(topDoc).isNotNull();
       assertThat(topDoc.get("id")).isNotNull();

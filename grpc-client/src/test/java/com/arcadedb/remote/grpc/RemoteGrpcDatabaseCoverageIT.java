@@ -28,12 +28,13 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.remote.RemoteTransactionExplicitLock;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.grpc.StreamQueryRequest;
-import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -312,7 +313,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
       final Result typeInfo = rs.next();
       final List<?> buckets = typeInfo.getProperty("buckets");
       assertThat(buckets).isNotEmpty();
-      final String bucketName = buckets.get(0).toString();
+      final String bucketName = buckets.getFirst().toString();
 
       final long count = grpc.countBucket(bucketName);
       assertThat(count).isGreaterThanOrEqualTo(1);
@@ -467,10 +468,10 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
   @Test
   @DisplayName("ingestStream inserts documents via client streaming")
   void ingestStreamDocuments() throws Exception {
-    final List<Map<String, Object>> rows = new ArrayList<>();
-    rows.add(Map.of("name", "stream1", "value", 10));
-    rows.add(Map.of("name", "stream2", "value", 20));
-    rows.add(Map.of("name", "stream3", "value", 30));
+    final List<Map<String, Object>> rows = new ArrayList<>(List.of(
+        Map.of("name", "stream1", "value", 10),
+        Map.of("name", "stream2", "value", 20),
+        Map.of("name", "stream3", "value", 30)));
 
     final InsertOptions opts = InsertOptions.newBuilder()
         .setDatabase(getDatabaseName())

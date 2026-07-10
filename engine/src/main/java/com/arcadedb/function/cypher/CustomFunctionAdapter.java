@@ -65,8 +65,7 @@ public class CustomFunctionAdapter implements StatelessFunction {
     // Case-insensitive search - iterate through all functions in library
     final var library = database.getSchema().getFunctionLibrary(libraryName);
     for (final Object funcObj : library.getFunctions()) {
-      if (funcObj instanceof FunctionDefinition) {
-        final FunctionDefinition func = (FunctionDefinition) funcObj;
+      if (funcObj instanceof FunctionDefinition func) {
         if (func.getName().equalsIgnoreCase(functionName))
           return func.execute(args);
       }

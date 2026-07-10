@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -79,8 +80,8 @@ class CypherCollectSubqueryCorrelatedTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
-    assertThat((List<Object>) rows.get(0).getProperty("xs")).containsExactlyInAnyOrder("Charlie", "Diana");
+    assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
+    assertThat((List<Object>) rows.getFirst().getProperty("xs")).containsExactlyInAnyOrder("Charlie", "Diana");
     assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Charlie");
     assertThat((List<Object>) rows.get(1).getProperty("xs")).containsExactly("Diana");
     assertThat((String) rows.get(2).getProperty("name")).isEqualTo("Diana");
@@ -108,7 +109,7 @@ class CypherCollectSubqueryCorrelatedTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat((List<Object>) rows.get(0).getProperty("xs")).containsExactlyInAnyOrder("Charlie", "Diana");
+    assertThat((List<Object>) rows.getFirst().getProperty("xs")).containsExactlyInAnyOrder("Charlie", "Diana");
     assertThat((List<Object>) rows.get(1).getProperty("xs")).containsExactly("Diana");
     assertThat((List<Object>) rows.get(2).getProperty("xs")).isEmpty();
   }

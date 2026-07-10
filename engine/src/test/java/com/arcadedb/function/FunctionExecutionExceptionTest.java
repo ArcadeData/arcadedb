@@ -19,6 +19,7 @@
 package com.arcadedb.function;
 
 import com.arcadedb.exception.ArcadeDBException;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

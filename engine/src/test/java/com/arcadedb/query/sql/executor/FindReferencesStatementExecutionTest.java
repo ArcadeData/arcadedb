@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -152,7 +153,7 @@ class FindReferencesStatementExecutionTest extends TestHelper {
       h1.save();
       database.newDocument("Holder2_buk").set("link", target.getIdentity()).save();
 
-      final String h1Bucket = database.getSchema().getType("Holder1_buk").getBuckets(false).get(0).getName();
+      final String h1Bucket = database.getSchema().getType("Holder1_buk").getBuckets(false).getFirst().getName();
 
       final ResultSet rs = database.query("sql", "FIND REFERENCES " + target.getIdentity() + " [bucket:" + h1Bucket + "]");
       assertThat(rs.hasNext()).isTrue();

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.query.sql.parser.*;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -115,8 +116,8 @@ class SQLGrammarRegressionTest {
   void returnEmpty() {
     final List<Statement> statements = parser.parseScript("RETURN;");
     assertThat(statements.size()).isEqualTo(1);
-    assertThat(statements.get(0)).isInstanceOf(ReturnStatement.class);
-    final ReturnStatement ret = (ReturnStatement) statements.get(0);
+    assertThat(statements.getFirst()).isInstanceOf(ReturnStatement.class);
+    final ReturnStatement ret = (ReturnStatement) statements.getFirst();
     assertThat(ret.expression).as("RETURN without value should have null expression").isNull();
   }
 
@@ -124,8 +125,8 @@ class SQLGrammarRegressionTest {
   void returnWithValue() {
     final List<Statement> statements = parser.parseScript("RETURN $result;");
     assertThat(statements.size()).isEqualTo(1);
-    assertThat(statements.get(0)).isInstanceOf(ReturnStatement.class);
-    final ReturnStatement ret = (ReturnStatement) statements.get(0);
+    assertThat(statements.getFirst()).isInstanceOf(ReturnStatement.class);
+    final ReturnStatement ret = (ReturnStatement) statements.getFirst();
     assertThat(ret.expression).as("RETURN with value should have expression").isNotNull();
   }
 
@@ -253,7 +254,7 @@ class SQLGrammarRegressionTest {
         """;
     final List<Statement> statements = parser.parseScript(script);
     assertThat(statements.size()).isEqualTo(1);
-    assertThat(statements.get(0)).isInstanceOf(ForEachBlock.class);
+    assertThat(statements.getFirst()).isInstanceOf(ForEachBlock.class);
   }
 
   @Test
@@ -268,7 +269,7 @@ class SQLGrammarRegressionTest {
         """;
     final List<Statement> statements = parser.parseScript(script);
     assertThat(statements.size()).isEqualTo(1);
-    assertThat(statements.get(0)).isInstanceOf(WhileBlock.class);
+    assertThat(statements.getFirst()).isInstanceOf(WhileBlock.class);
   }
 
   @Test
@@ -333,7 +334,7 @@ class SQLGrammarRegressionTest {
         """;
     final List<Statement> statements = parser.parseScript(script);
     assertThat(statements.size()).isEqualTo(3);
-    assertThat(statements.get(0)).isInstanceOf(BeginStatement.class);
+    assertThat(statements.getFirst()).isInstanceOf(BeginStatement.class);
     assertThat(statements.get(1)).isInstanceOf(InsertStatement.class);
     assertThat(statements.get(2)).isInstanceOf(CommitStatement.class);
   }
@@ -347,7 +348,7 @@ class SQLGrammarRegressionTest {
     final String script = "LET $a = INSERT INTO MyType SET x = 1";
     final List<Statement> statements = parser.parseScript(script);
     assertThat(statements.size()).isEqualTo(1);
-    assertThat(statements.get(0)).isInstanceOf(LetStatement.class);
+    assertThat(statements.getFirst()).isInstanceOf(LetStatement.class);
   }
 
   @Test
@@ -355,7 +356,7 @@ class SQLGrammarRegressionTest {
     final String script = "LET $result = SELECT * FROM MyType";
     final List<Statement> statements = parser.parseScript(script);
     assertThat(statements.size()).isEqualTo(1);
-    assertThat(statements.get(0)).isInstanceOf(LetStatement.class);
+    assertThat(statements.getFirst()).isInstanceOf(LetStatement.class);
   }
 
   @Test
@@ -363,7 +364,7 @@ class SQLGrammarRegressionTest {
     final String script = "LET $result = (SELECT * FROM MyType)";
     final List<Statement> statements = parser.parseScript(script);
     assertThat(statements.size()).isEqualTo(1);
-    assertThat(statements.get(0)).isInstanceOf(LetStatement.class);
+    assertThat(statements.getFirst()).isInstanceOf(LetStatement.class);
   }
 
   // ============================================================================

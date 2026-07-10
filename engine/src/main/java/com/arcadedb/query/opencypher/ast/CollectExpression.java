@@ -68,8 +68,8 @@ public class CollectExpression implements Expression {
           final Object value = result.getProperty(propertyName);
           params.put(propertyName, value);
 
-          if (value instanceof Identifiable) {
-            final String rid = ((Identifiable) value).getIdentity().toString();
+          if (value instanceof Identifiable identifiable) {
+            final String rid = identifiable.getIdentity().toString();
             final String paramName = "__collect_" + propertyName;
             params.put(paramName, rid);
 
@@ -106,7 +106,7 @@ public class CollectExpression implements Expression {
               visibleNames.add(n);
           }
           if (visibleNames.size() == 1) {
-            collected.add(row.getProperty(visibleNames.get(0)));
+            collected.add(row.getProperty(visibleNames.getFirst()));
           } else {
             final List<Object> rowValues = new ArrayList<>(visibleNames.size());
             for (final String n : visibleNames)

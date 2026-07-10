@@ -20,7 +20,6 @@
 package com.arcadedb.query.sql.parser;
 
 import javax.annotation.processing.Generated;
-
 import java.util.ArrayList;
 import java.util.List;
 

@@ -203,7 +203,7 @@ class PackStreamTest {
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) reader.readValue();
     assertThat(result).hasSize(4);
-    assertThat(result.get(0)).isEqualTo(1L);
+    assertThat(result.getFirst()).isEqualTo(1L);
     assertThat(result.get(1)).isEqualTo("hello");
     assertThat(result.get(2)).isEqualTo(true);
     assertThat((Double) result.get(3)).isCloseTo(3.14, Offset.offset(0.001));

@@ -5329,13 +5329,11 @@ private int jjMoveNfa_0(int startState, int curPos)
    return toRet;
 }
 private int jjMoveStringLiteralDfa0_2(){
-   switch(curChar)
+   return switch(curChar)
    {
-      case 42:
-         return jjMoveStringLiteralDfa1_2(0x200L);
-      default :
-         return 1;
-   }
+      case 42 -> jjMoveStringLiteralDfa1_2(0x200L);
+      default  -> 1;
+   };
 }
 private int jjMoveStringLiteralDfa1_2(long active0){
    try { curChar = input_stream.readChar(); }
@@ -5354,13 +5352,11 @@ private int jjMoveStringLiteralDfa1_2(long active0){
    return 2;
 }
 private int jjMoveStringLiteralDfa0_1(){
-   switch(curChar)
+   return switch(curChar)
    {
-      case 42:
-         return jjMoveStringLiteralDfa1_1(0x100L);
-      default :
-         return 1;
-   }
+      case 42 -> jjMoveStringLiteralDfa1_1(0x100L);
+      default  -> 1;
+   };
 }
 private int jjMoveStringLiteralDfa1_1(long active0){
    try { curChar = input_stream.readChar(); }
@@ -5442,13 +5438,11 @@ static final int[] jjnextStates = {
 };
 private static final boolean jjCanMove_0(int hiByte, int i1, int i2, long l1, long l2)
 {
-   switch(hiByte)
+   return switch(hiByte)
    {
-      case 0:
-         return (jjbitVec2[i2] & l2) != 0L;
-      default :
-        return (jjbitVec0[i1] & l1) != 0L;
-   }
+      case 0 -> (jjbitVec2[i2] & l2) != 0L;
+      default  -> (jjbitVec0[i1] & l1) != 0L;
+   };
 }
 
 int curLexState = 0;

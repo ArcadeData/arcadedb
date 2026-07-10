@@ -65,15 +65,17 @@ public final class HAReplicationMetrics implements MeterBinder {
 
     Gauge.builder("arcadedb.ha.follower.max_last_contact_ms", () -> stats().maxFollowerLastContactMs())
         .description(
-            "Worst time (ms) since the leader last exchanged an RPC with any follower. Leading indicator of election churn: "
-                + "as it approaches arcadedb.ha.electionTimeoutMin a follower is about to start a new election. -1 when not leader.")
+            """
+            Worst time (ms) since the leader last exchanged an RPC with any follower. Leading indicator of election churn: \
+            as it approaches arcadedb.ha.electionTimeoutMin a follower is about to start a new election. -1 when not leader.""")
         .baseUnit("milliseconds")
         .register(registry);
 
     Gauge.builder("arcadedb.ha.follower.max_replication_lag", () -> stats().maxFollowerReplicationLag())
         .description(
-            "Worst number of committed entries any follower is behind the leader's commit index. Sustained growth means a "
-                + "follower cannot keep up with the write rate (apply backpressure / reduce batch size). -1 when not leader.")
+            """
+            Worst number of committed entries any follower is behind the leader's commit index. Sustained growth means a \
+            follower cannot keep up with the write rate (apply backpressure / reduce batch size). -1 when not leader.""")
         .register(registry);
 
     Gauge.builder("arcadedb.ha.followers.tracked", () -> stats().trackedFollowers())
@@ -92,17 +94,20 @@ public final class HAReplicationMetrics implements MeterBinder {
    */
   private void bindPerFollowerGauges(final MeterRegistry registry) {
     final MultiGauge lastContact = MultiGauge.builder("arcadedb.ha.follower.last_contact_ms")
-        .description("Per-follower ms since the leader last exchanged an RPC with it (tag peer=<id>). "
-            + "Approaching arcadedb.ha.electionTimeoutMin means that node is about to trigger an election.")
+        .description("""
+            Per-follower ms since the leader last exchanged an RPC with it (tag peer=<id>). \
+            Approaching arcadedb.ha.electionTimeoutMin means that node is about to trigger an election.""")
         .baseUnit("milliseconds")
         .register(registry);
     final MultiGauge replicationLag = MultiGauge.builder("arcadedb.ha.follower.replication_lag")
-        .description("Per-follower committed-entry lag behind the leader (tag peer=<id>). "
-            + "Sustained growth on one node identifies the cluster's replication bottleneck.")
+        .description("""
+            Per-follower committed-entry lag behind the leader (tag peer=<id>). \
+            Sustained growth on one node identifies the cluster's replication bottleneck.""")
         .register(registry);
     final MultiGauge laggingFor = MultiGauge.builder("arcadedb.ha.follower.lagging_for_ms")
-        .description("Per-follower ms it has been continuously non-HEALTHY (tag peer=<id>); 0 when healthy. "
-            + "Distinguishes a constantly-slow node from a transient blip.")
+        .description("""
+            Per-follower ms it has been continuously non-HEALTHY (tag peer=<id>); 0 when healthy. \
+            Distinguishes a constantly-slow node from a transient blip.""")
         .baseUnit("milliseconds")
         .register(registry);
 

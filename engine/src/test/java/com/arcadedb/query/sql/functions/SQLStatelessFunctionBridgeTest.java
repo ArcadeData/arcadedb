@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -74,8 +75,8 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
     final List<Result> results = rs.stream().toList();
     assertThat(results).hasSize(4);
     // "John" should have score 1.0
-    assertThat(((Number) results.get(0).getProperty("score")).doubleValue()).isCloseTo(1.0, within(0.001));
-    assertThat((String) results.get(0).getProperty("name")).isEqualTo("John");
+    assertThat(((Number) results.getFirst().getProperty("score")).doubleValue()).isCloseTo(1.0, within(0.001));
+    assertThat((String) results.getFirst().getProperty("name")).isEqualTo("John");
   }
 
   @Test

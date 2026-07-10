@@ -26,6 +26,7 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
@@ -46,7 +47,7 @@ class PageManagerStressTest {
     final int parallel = 2;
 
     Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open();
-    try {
+    try  {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         database.begin();
 

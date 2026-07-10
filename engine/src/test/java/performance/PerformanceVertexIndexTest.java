@@ -33,7 +33,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-
 import java.io.IOException;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -84,7 +83,7 @@ public class PerformanceVertexIndexTest {
     final int parallel = 4;
 
     Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open();
-    try {
+    try  {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         database.begin();
 
@@ -193,7 +192,7 @@ public class PerformanceVertexIndexTest {
     final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(ComponentFile.MODE.READ_ONLY);
     long begin = System.currentTimeMillis();
 
-    try {
+    try (database) {
       LogManager.instance().log(this, Level.INFO, "TEST: Lookup for keys...");
 
       begin = System.currentTimeMillis();
@@ -220,7 +219,6 @@ public class PerformanceVertexIndexTest {
         }
       }
     } finally {
-      database.close();
       LogManager.instance().log(this, Level.INFO, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
     }
   }

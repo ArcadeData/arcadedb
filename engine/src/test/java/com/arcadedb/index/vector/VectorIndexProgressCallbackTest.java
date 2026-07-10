@@ -20,8 +20,10 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
+
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +60,7 @@ class VectorIndexProgressCallbackTest extends TestHelper {
         // Create random 128-dimensional vector
         final float[] vector = new float[128];
         for (int j = 0; j < 128; j++) {
-          vector[j] = (float) Math.random();
+          vector[j] = (float) ThreadLocalRandom.current().nextDouble();
         }
         vertex.set("embedding", vector);
         vertex.save();
@@ -169,7 +171,7 @@ class VectorIndexProgressCallbackTest extends TestHelper {
         final var vertex = database.newVertex("RebuildDoc");
         final float[] vector = new float[16];
         for (int j = 0; j < 16; j++) {
-          vector[j] = (float) (Math.random() * 100);
+          vector[j] = (float) (ThreadLocalRandom.current().nextDouble() * 100);
         }
         vertex.set("vec", vector);
         vertex.save();

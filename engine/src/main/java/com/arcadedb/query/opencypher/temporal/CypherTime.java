@@ -76,16 +76,19 @@ public class CypherTime implements CypherTemporalValue {
     boolean baseHasTimezone = false;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
-      if (timeVal instanceof CypherTime) {
-        base = ((CypherTime) timeVal).value;
-        baseHasTimezone = true;
-      } else if (timeVal instanceof CypherLocalTime)
-        base = ((CypherLocalTime) timeVal).getValue().atOffset(ZoneOffset.UTC);
-      else if (timeVal instanceof CypherDateTime) {
-        base = ((CypherDateTime) timeVal).getValue().toOffsetDateTime().toOffsetTime();
-        baseHasTimezone = true;
-      } else if (timeVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) timeVal).getValue().toLocalTime().atOffset(ZoneOffset.UTC);
+      switch (timeVal) {
+        case CypherTime time3 -> {
+          base = time3.value;
+          baseHasTimezone = true;
+        }
+        case CypherLocalTime time2 -> base = time2.getValue().atOffset(ZoneOffset.UTC);
+        case CypherDateTime time1 -> {
+          base = time1.getValue().toOffsetDateTime().toOffsetTime();
+          baseHasTimezone = true;
+        }
+        case CypherLocalDateTime time -> base = time.getValue().toLocalTime().atOffset(ZoneOffset.UTC);
+        case null, default -> {}
+      }
     }
 
     final int hour = map.containsKey("hour") ? toInt(map.get("hour")) : (base != null ? base.getHour() : 0);
@@ -139,8 +142,8 @@ public class CypherTime implements CypherTemporalValue {
 
   @Override
   public int compareTo(final CypherTemporalValue other) {
-    if (other instanceof CypherTime)
-      return value.compareTo(((CypherTime) other).value);
+    if (other instanceof CypherTime time)
+      return value.compareTo(time.value);
     throw new IllegalArgumentException("Cannot compare Time with " + other.getClass().getSimpleName());
   }
 

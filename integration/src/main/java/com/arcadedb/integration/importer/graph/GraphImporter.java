@@ -36,12 +36,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -122,9 +117,7 @@ public class GraphImporter implements AutoCloseable {
     final JSONObject config = new JSONObject(json);
 
     FileUtils.deleteRecursively(new File(dbPath));
-    final Database database = new DatabaseFactory(dbPath).create();
-
-    try {
+    try (final Database database = new DatabaseFactory(dbPath).create()) {
       // Auto-create schema from the JSON config
       createSchemaFromConfig(database, config);
 
@@ -135,8 +128,6 @@ public class GraphImporter implements AutoCloseable {
 
       // Execute post-import commands (e.g., CREATE GRAPH ANALYTICAL VIEW)
       executePostImportCommands(database, config);
-    } finally {
-      database.close();
     }
   }
 

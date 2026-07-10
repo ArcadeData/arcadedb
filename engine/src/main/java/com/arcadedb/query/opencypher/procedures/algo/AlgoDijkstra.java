@@ -21,13 +21,13 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -113,7 +113,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     final String[] edgeTypeFilter = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
 
     final List<RID> pathWithEdges = new ArrayList<>(pathRids.size() * 2 - 1);
-    pathWithEdges.add(pathRids.get(0));
+    pathWithEdges.add(pathRids.getFirst());
 
     double totalWeight = 0.0;
     for (int i = 0; i < pathRids.size() - 1; i++) {

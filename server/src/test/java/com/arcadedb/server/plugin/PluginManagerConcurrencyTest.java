@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -104,7 +105,7 @@ class PluginManagerConcurrencyTest {
   }
 
   @Test
-  void getPluginNamesIterationSurvivesConcurrentRegistration() throws InterruptedException {
+  void getPluginNamesIterationSurvivesConcurrentRegistration() throws Exception {
     // A registrar continuously mutates the map while an iterator repeatedly reads and walks the names.
     // Kept modest so the test stays fast and lightweight; the deterministic test above is the primary gate.
     final int registrations = 20_000;

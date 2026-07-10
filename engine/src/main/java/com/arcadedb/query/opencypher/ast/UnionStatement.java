@@ -89,7 +89,7 @@ public class UnionStatement implements CypherStatement {
    * Returns the first query (used for determining column structure).
    */
   public CypherStatement getFirstQuery() {
-    return queries.get(0);
+    return queries.getFirst();
   }
 
   // Delegate CypherStatement methods to the first query

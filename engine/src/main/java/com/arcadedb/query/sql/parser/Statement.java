@@ -22,11 +22,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
-
-import com.arcadedb.query.OperationType;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Map;

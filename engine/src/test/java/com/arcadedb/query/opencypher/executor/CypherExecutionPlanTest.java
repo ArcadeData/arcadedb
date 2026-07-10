@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -113,7 +114,7 @@ class CypherExecutionPlanTest {
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSize(3);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Bob");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Bob");
     assertThat(results.get(1).<String>getProperty("name")).isEqualTo("Alice");
     assertThat(results.get(2).<String>getProperty("name")).isEqualTo("Charlie");
   }
@@ -134,7 +135,7 @@ class CypherExecutionPlanTest {
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSize(2);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
   }
 
   @Test
@@ -144,7 +145,7 @@ class CypherExecutionPlanTest {
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSize(1);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Alice");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Alice");
   }
 
   @Test
@@ -534,7 +535,7 @@ class CypherExecutionPlanTest {
 
     final var results = resultSet.stream().toList();
     assertThat(results).hasSize(3);
-    assertThat(results.get(0).<String>getProperty("name")).isEqualTo("Charlie");
+    assertThat(results.getFirst().<String>getProperty("name")).isEqualTo("Charlie");
   }
 
   @Test

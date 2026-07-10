@@ -21,11 +21,12 @@ package com.arcadedb.tracing;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,7 +56,7 @@ class TracingBadEndpointIT extends BaseGraphServerTest {
     assertThat(getServer(0).isStarted()).isTrue();
 
     // And the server still serves requests with tracing silently disabled.
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/ready").toURL().openConnection();
     c.setRequestMethod("GET");
     c.connect();
     assertThat(c.getResponseCode()).isEqualTo(204);

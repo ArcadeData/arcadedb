@@ -49,9 +49,9 @@ public class CollectDistinctFunction implements StatelessFunction {
     final Object value = args[0];
     // Only add non-null values, and use identity for Identifiable objects
     if (value != null) {
-      if (value instanceof Identifiable)
+      if (value instanceof Identifiable identifiable)
         // Use RID as the key for deduplication to handle proxies and loaded records
-        distinctValues.add(new IdentifiableWrapper((Identifiable) value));
+        distinctValues.add(new IdentifiableWrapper(identifiable));
       else
         distinctValues.add(value);
     }
@@ -68,8 +68,8 @@ public class CollectDistinctFunction implements StatelessFunction {
     // Unwrap IdentifiableWrapper back to the original objects
     final List<Object> result = new ArrayList<>(distinctValues.size());
     for (final Object value : distinctValues) {
-      if (value instanceof IdentifiableWrapper)
-        result.add(((IdentifiableWrapper) value).getIdentifiable());
+      if (value instanceof IdentifiableWrapper wrapper)
+        result.add(wrapper.getIdentifiable());
       else
         result.add(value);
     }

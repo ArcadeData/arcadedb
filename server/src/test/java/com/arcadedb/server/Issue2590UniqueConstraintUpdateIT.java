@@ -23,6 +23,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
+
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 

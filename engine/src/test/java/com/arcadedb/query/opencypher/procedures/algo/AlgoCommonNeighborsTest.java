@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -130,7 +131,7 @@ class AlgoCommonNeighborsTest {
       results.add(rs.next());
 
     assertThat(results).hasSize(1);
-    final Object nameObj = results.get(0).getProperty("name");
+    final Object nameObj = results.getFirst().getProperty("name");
     assertThat(nameObj).isEqualTo("E");
   }
 

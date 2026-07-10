@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -84,8 +85,8 @@ class CypherCountSubqueryTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
-    assertThat(((Number) rows.get(0).getProperty("dogCount")).longValue()).isEqualTo(1L);
+    assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
+    assertThat(((Number) rows.getFirst().getProperty("dogCount")).longValue()).isEqualTo(1L);
     assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
     assertThat(((Number) rows.get(1).getProperty("dogCount")).longValue()).isEqualTo(1L);
     assertThat((String) rows.get(2).getProperty("name")).isEqualTo("Charlie");
@@ -108,7 +109,7 @@ class CypherCountSubqueryTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("dogCount")).longValue()).isEqualTo(1L);
+    assertThat(((Number) rows.getFirst().getProperty("dogCount")).longValue()).isEqualTo(1L);
     assertThat(((Number) rows.get(1).getProperty("dogCount")).longValue()).isEqualTo(1L);
     assertThat(((Number) rows.get(2).getProperty("dogCount")).longValue()).isEqualTo(0L);
   }
@@ -136,8 +137,8 @@ class CypherCountSubqueryTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat((String) rows.get(0).getProperty("name")).isEqualTo("Alice");
-    assertThat(((Number) rows.get(0).getProperty("rexCount")).longValue()).isEqualTo(1L);
+    assertThat((String) rows.getFirst().getProperty("name")).isEqualTo("Alice");
+    assertThat(((Number) rows.getFirst().getProperty("rexCount")).longValue()).isEqualTo(1L);
     assertThat((String) rows.get(1).getProperty("name")).isEqualTo("Bob");
     assertThat(((Number) rows.get(1).getProperty("rexCount")).longValue()).isEqualTo(0L);
     assertThat((String) rows.get(2).getProperty("name")).isEqualTo("Charlie");
@@ -159,7 +160,7 @@ class CypherCountSubqueryTest {
     final List<Result> rows = collect(results);
 
     assertThat(rows).hasSize(3);
-    assertThat(((Number) rows.get(0).getProperty("rexCount")).longValue()).isEqualTo(1L);
+    assertThat(((Number) rows.getFirst().getProperty("rexCount")).longValue()).isEqualTo(1L);
     assertThat(((Number) rows.get(1).getProperty("rexCount")).longValue()).isEqualTo(0L);
     assertThat(((Number) rows.get(2).getProperty("rexCount")).longValue()).isEqualTo(0L);
   }

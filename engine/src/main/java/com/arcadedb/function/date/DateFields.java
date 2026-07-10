@@ -87,18 +87,18 @@ public class DateFields extends AbstractDateFunction {
     final LocalDateTime localDateTime = LocalDateTime.parse(dateStr, formatter);
     final ZonedDateTime dateTime = localDateTime.atZone(zoneId);
 
-    final Map<String, Object> fields = new HashMap<>();
-    fields.put("year", (long) dateTime.getYear());
-    fields.put("month", (long) dateTime.getMonthValue());
-    fields.put("day", (long) dateTime.getDayOfMonth());
-    fields.put("hour", (long) dateTime.getHour());
-    fields.put("minute", (long) dateTime.getMinute());
-    fields.put("second", (long) dateTime.getSecond());
-    fields.put("millisecond", (long) (dateTime.getNano() / 1_000_000));
-    fields.put("dayOfWeek", (long) dateTime.getDayOfWeek().getValue());
-    fields.put("dayOfYear", (long) dateTime.getDayOfYear());
-    fields.put("weekOfYear", (long) dateTime.get(WeekFields.ISO.weekOfYear()));
-    fields.put("timezone", dateTime.getZone().getId());
+    final Map<String, Object> fields = new HashMap<>(Map.ofEntries(
+        Map.entry("year", (long) dateTime.getYear()),
+        Map.entry("month", (long) dateTime.getMonthValue()),
+        Map.entry("day", (long) dateTime.getDayOfMonth()),
+        Map.entry("hour", (long) dateTime.getHour()),
+        Map.entry("minute", (long) dateTime.getMinute()),
+        Map.entry("second", (long) dateTime.getSecond()),
+        Map.entry("millisecond", (long) (dateTime.getNano() / 1_000_000)),
+        Map.entry("dayOfWeek", (long) dateTime.getDayOfWeek().getValue()),
+        Map.entry("dayOfYear", (long) dateTime.getDayOfYear()),
+        Map.entry("weekOfYear", (long) dateTime.get(WeekFields.ISO.weekOfYear())),
+        Map.entry("timezone", dateTime.getZone().getId())));
 
     return fields;
   }

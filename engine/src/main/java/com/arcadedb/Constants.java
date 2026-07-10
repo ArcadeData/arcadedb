@@ -33,19 +33,10 @@ public class Constants {
   private static final Properties properties = new Properties();
 
   static {
-    final InputStream inputStream = Constants.class.getResourceAsStream("/com/arcadedb/arcadedb.properties");
-    try {
+    try (final InputStream inputStream = Constants.class.getResourceAsStream("/com/arcadedb/arcadedb.properties")) {
       properties.load(inputStream);
     } catch (final IOException e) {
       LogManager.instance().log(Constants.class, Level.SEVERE, "Failed to load ArcadeDB properties", e);
-    } finally {
-      if (inputStream != null) {
-        try {
-          inputStream.close();
-        } catch (final IOException ignore) {
-          // Ignore
-        }
-      }
     }
 
   }

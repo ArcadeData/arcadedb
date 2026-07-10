@@ -21,6 +21,7 @@ package com.arcadedb.server.ai;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.HttpServerExchange;
@@ -151,7 +152,7 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
   }
 
   private int fakeGatewayPort() {
-    return ((InetSocketAddress) fakeGateway.getListenerInfo().get(0).getAddress()).getPort();
+    return ((InetSocketAddress) fakeGateway.getListenerInfo().getFirst().getAddress()).getPort();
   }
 
   @Test
@@ -193,7 +194,7 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
 
     // The handler should NOT forward arcadedb.url/sessionId to the gateway in this mode.
     assertThat(gatewayRequestBodies).hasSize(1);
-    final JSONObject gatewayReq = new JSONObject(gatewayRequestBodies.get(0));
+    final JSONObject gatewayReq = new JSONObject(gatewayRequestBodies.getFirst());
     assertThat(gatewayReq.has("arcadedb")).isFalse();
     assertThat(gatewayReq.getBoolean("stream", false)).isTrue();
 

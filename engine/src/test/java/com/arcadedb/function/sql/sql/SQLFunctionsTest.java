@@ -23,19 +23,20 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLFunction;
-import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
-import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.method.misc.SQLMethodHash;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -614,9 +615,9 @@ class SQLFunctionsTest {
       database.newDocument("THEME").set("identity", "Hello World Theme").save();
     });
 
-    final Map<String, Object> params = new HashMap<>();
-    params.put("keyWordIdentifier_0", "Hello");
-    params.put("keyWordIdentifier_1", "World");
+    final Map<String, Object> params = new HashMap<>(Map.of(
+        "keyWordIdentifier_0", "Hello",
+        "keyWordIdentifier_1", "World"));
 
     final ResultSet result = database.query("sql",
         """

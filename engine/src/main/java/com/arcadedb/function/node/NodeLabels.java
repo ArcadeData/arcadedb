@@ -23,7 +23,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -56,7 +55,7 @@ public class NodeLabels extends AbstractNodeFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     final Vertex vertex = toVertex(args[0]);
     if (vertex == null)
-      return Collections.emptyList();
+      return List.of();
 
     final DocumentType type = vertex.getType();
     final List<String> labels = new ArrayList<>();

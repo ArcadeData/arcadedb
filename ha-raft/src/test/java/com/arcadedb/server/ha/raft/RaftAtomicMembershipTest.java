@@ -20,12 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
-import org.apache.ratis.protocol.RaftClientReply;
-import org.apache.ratis.protocol.RaftGroup;
-import org.apache.ratis.protocol.RaftGroupId;
-import org.apache.ratis.protocol.RaftPeer;
-import org.apache.ratis.protocol.RaftPeerId;
-import org.apache.ratis.protocol.SetConfigurationRequest;
+import org.apache.ratis.protocol.*;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -78,7 +73,7 @@ class RaftAtomicMembershipTest {
     assertThat(args.getMode()).isEqualTo(SetConfigurationRequest.Mode.ADD);
     // A delta: only the new peer is in the request, NOT the full rebuilt list.
     assertThat(args.getServersInNewConf()).hasSize(1);
-    assertThat(args.getServersInNewConf().get(0).getId().toString()).isEqualTo("D");
+    assertThat(args.getServersInNewConf().getFirst().getId().toString()).isEqualTo("D");
   }
 
   @Test

@@ -19,6 +19,7 @@
 package com.arcadedb.log;
 
 import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

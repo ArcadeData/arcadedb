@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -71,7 +72,7 @@ class LocalSchemaOrphanIndexLoadTest extends TestHelper {
     final List<String> originalNames = new ArrayList<>(indexes.keySet());
     assertThat(originalNames).isNotEmpty();
 
-    final String firstName = originalNames.get(0);
+    final String firstName = originalNames.getFirst();
     final int last = firstName.lastIndexOf('_');
     final String bucketPrefix = firstName.substring(0, last);
     final String renamedName = bucketPrefix + "_" + (System.nanoTime() + 1);

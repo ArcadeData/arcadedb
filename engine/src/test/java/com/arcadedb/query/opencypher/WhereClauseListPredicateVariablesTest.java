@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -86,7 +87,7 @@ class WhereClauseListPredicateVariablesTest {
 
   private static Set<String> collect(final String query) {
     final CypherStatement stmt = PARSER.parse(query);
-    final WhereClause where = stmt.getMatchClauses().get(0).getWhereClause();
+    final WhereClause where = stmt.getMatchClauses().getFirst().getWhereClause();
     return WhereClause.collectVariables(where.getConditionExpression());
   }
 }

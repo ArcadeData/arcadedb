@@ -37,8 +37,8 @@ import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
-import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -79,7 +79,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // return null gracefully. Shared static because it is only ever read; the immutable backing map makes
   // any accidental write fail fast (UnsupportedOperationException) instead of racing shared state across
   // concurrent queries (issue #4909).
-  private static final Result       EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
+  private static final Result       EMPTY_RESULT = new ResultInternal(Map.of());
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
   // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
   // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
@@ -175,7 +175,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final String name = func.getFunctionName();
     if (!("id".equalsIgnoreCase(name) || "elementid".equalsIgnoreCase(name)) || func.getArguments().size() != 1)
       return false;
-    final Expression arg = func.getArguments().get(0);
+    final Expression arg = func.getArguments().getFirst();
     return arg instanceof VariableExpression varExpr && variable.equals(varExpr.getVariableName());
   }
 
@@ -240,14 +240,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
               // In this case, use the bound vertex directly instead of scanning all vertices.
               if (variable != null && currentInputResult.getPropertyNames().contains(variable)) {
                 final Object boundValue = currentInputResult.getProperty(variable);
-                if (boundValue instanceof Vertex) {
-                  final Vertex boundVertex = (Vertex) boundValue;
+                if (boundValue instanceof Vertex boundVertex) {
                   if (matchesAllLabelsBound(boundVertex, currentInputResult) && matchesProperties(boundVertex, currentInputResult))
-                    iterator = Collections.singletonList((Identifiable) boundVertex).iterator();
+                    iterator = List.of((Identifiable) boundVertex).iterator();
                   else
-                    iterator = Collections.<Identifiable>emptyList().iterator();
+                    iterator = List.<Identifiable>of().iterator();
                 } else {
-                  iterator = Collections.<Identifiable>emptyList().iterator();
+                  iterator = List.<Identifiable>of().iterator();
                 }
               } else {
                 iterator = getVertexIterator(currentInputResult);
@@ -264,8 +263,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 final Identifiable identifiable = iterator.next();
                 // Load the record if it's not already loaded
                 final Document record = identifiable.asDocument();
-                if (record instanceof Vertex) {
-                  final Vertex vertex = (Vertex) record;
+                if (record instanceof Vertex vertex) {
 
                   // Apply label and property filters
                   if (!matchesAllLabels(vertex, currentInputResult) || !matchesProperties(vertex, currentInputResult))
@@ -310,8 +308,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
               // Load the record if it's not already loaded
               final Document record = identifiable.asDocument();
-              if (record instanceof Vertex) {
-                final Vertex vertex = (Vertex) record;
+              if (record instanceof Vertex vertex) {
 
                 // Apply label and property filters
                 if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
@@ -365,12 +362,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
         && dynamicIdExpression != null && currentInputResult != null) {
       final Object resolved = evaluator.evaluate(dynamicIdExpression, currentInputResult, context);
       if (resolved != null) {
-        if (resolved instanceof Identifiable identifiable)
-          effectiveIdFilter = identifiable.getIdentity().toString();
-        else if (resolved instanceof Number number)
-          effectiveIdFilter = IdFunction.decodeLongToRidString(number.longValue());
-        else
-          effectiveIdFilter = resolved.toString();
+        switch (resolved) {
+          case Identifiable identifiable -> effectiveIdFilter = identifiable.getIdentity().toString();
+          case Number number -> effectiveIdFilter = IdFunction.decodeLongToRidString(number.longValue());
+          case null, default -> effectiveIdFilter = resolved.toString();
+        }
       }
     }
 
@@ -396,7 +392,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // Single label - polymorphic iteration (existing behavior). Resolve the type once and
         // reuse the reference: every {@code getSchema().getType(label)} walks the type map, and
         // this block runs per MATCH iteration, so the redundant lookups landed on a hot path.
-        final String label = labels.get(0);
+        final String label = labels.getFirst();
 
         // If the label does not exist in the schema, the match yields no rows
         // (matches Neo4j semantics, issue #4090). Skip all index/iteration logic.
@@ -605,8 +601,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
       Object propertyValue = entry.getValue();
 
       // Resolve parameter references
-      if (propertyValue instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) propertyValue).getName();
+      if (propertyValue instanceof CypherASTBuilder.ParameterReference reference) {
+        final String paramName = reference.getName();
         if (context.getInputParameters() != null) {
           final Object paramValue = context.getInputParameters().get(paramName);
           if (paramValue != null)
@@ -614,14 +610,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
         }
       }
       // Resolve dynamic expressions (e.g., e.src_id from UNWIND) against the current input result.
-      else if (propertyValue instanceof Expression) {
+      else if (propertyValue instanceof Expression expression) {
         if (currentInputResult != null)
-          propertyValue = evaluator.evaluate((Expression) propertyValue, currentInputResult, context);
+          propertyValue = evaluator.evaluate(expression, currentInputResult, context);
         else {
           // No input row: a parameter map field like $edge_data.uuid still resolves from the context.
           // If it can't resolve (a genuinely row-dependent expression), skip the index and fall back to
           // scan, preserving the previous no-row behavior. Issue #4909.
-          propertyValue = evaluator.evaluate((Expression) propertyValue, EMPTY_RESULT, context);
+          propertyValue = evaluator.evaluate(expression, EMPTY_RESULT, context);
           if (propertyValue == null)
             return null;
         }
@@ -748,8 +744,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @return the Expression that evaluates to the RID, or null if no ID pattern found
    */
   private Expression findIdValueExpression(final BooleanExpression expr) {
-    if (expr instanceof ComparisonExpression) {
-      final ComparisonExpression comp = (ComparisonExpression) expr;
+    if (expr instanceof ComparisonExpression comp) {
       if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
         return null;
 
@@ -758,8 +753,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return comp.getRight();
       if (isIdFunctionOnVariable(comp.getRight()))
         return comp.getLeft();
-    } else if (expr instanceof LogicalExpression) {
-      final LogicalExpression logical = (LogicalExpression) expr;
+    } else if (expr instanceof LogicalExpression logical) {
       if (logical.getOperator() == LogicalExpression.Operator.AND) {
         final Expression left = findIdValueExpression(logical.getLeft());
         if (left != null)
@@ -774,12 +768,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Checks if an expression is a call to id() or elementId() on this step's variable.
    */
   private boolean isIdFunctionOnVariable(final Expression expr) {
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
+    if (expr instanceof FunctionCallExpression func) {
       final String name = func.getFunctionName();
       if (("id".equalsIgnoreCase(name) || "elementid".equalsIgnoreCase(name)) && func.getArguments().size() == 1) {
-        final Expression arg = func.getArguments().get(0);
-        return arg instanceof VariableExpression && variable.equals(((VariableExpression) arg).getVariableName());
+        final Expression arg = func.getArguments().getFirst();
+        return arg instanceof VariableExpression ve && variable.equals(ve.getVariableName());
       }
     }
     return false;
@@ -791,8 +784,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
    */
   private void extractEqualityPredicates(final BooleanExpression expr,
       final Map<String, Object> predicates, final Result currentInputResult) {
-    if (expr instanceof ComparisonExpression) {
-      final ComparisonExpression comp = (ComparisonExpression) expr;
+    if (expr instanceof ComparisonExpression comp) {
       if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
         return;
 
@@ -829,8 +821,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
           // Unresolvable predicate value: skip it for index selection (correctness preserved by whereFilter).
         }
       }
-    } else if (expr instanceof LogicalExpression) {
-      final LogicalExpression logical = (LogicalExpression) expr;
+    } else if (expr instanceof LogicalExpression logical) {
       if (logical.getOperator() == LogicalExpression.Operator.AND) {
         extractEqualityPredicates(logical.getLeft(), predicates, currentInputResult);
         extractEqualityPredicates(logical.getRight(), predicates, currentInputResult);
@@ -917,15 +908,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private static void appendResolvedLabels(final List<String> labels, final Object resolved) {
     if (resolved == null)
       return;
-    if (resolved instanceof String) {
-      labels.add((String) resolved);
-    } else if (resolved instanceof Iterable) {
-      for (final Object item : (Iterable<?>) resolved) {
-        if (item != null)
-          labels.add(item.toString());
+    switch (resolved) {
+      case String string -> labels.add(string);
+      case Iterable<?> iterable -> {
+        for (final Object item : iterable) {
+          if (item != null)
+            labels.add(item.toString());
+        }
       }
-    } else {
-      labels.add(resolved.toString());
+      case null, default -> labels.add(resolved.toString());
     }
   }
 
@@ -947,16 +938,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // $edge_data.uuid). Parameter-based expressions resolve from the context alone, so a bare MATCH
       // with no input row still binds; an empty result makes row-dependent lookups return null
       // gracefully, which is no worse than the previous no-match behavior. Issue #4909.
-      if (expectedValue instanceof Expression)
-        expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult != null ? currentResult : EMPTY_RESULT, context);
+      if (expectedValue instanceof Expression expression)
+        expectedValue = evaluator.evaluate(expression, currentResult != null ? currentResult : EMPTY_RESULT, context);
 
       // Resolve parameter references (e.g., $username -> actual value from context)
-      if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expectedValue).getName();
+      if (expectedValue instanceof CypherASTBuilder.ParameterReference reference) {
+        final String paramName = reference.getName();
         if (context.getInputParameters() != null)
           expectedValue = context.getInputParameters().get(paramName);
-      } else if (expectedValue instanceof String) {
-        final String strValue = (String) expectedValue;
+      } else if (expectedValue instanceof String strValue) {
 
         // Legacy parameter reference encoded as "$name"
         if (strValue.startsWith("$") && strValue.length() > 1) {
@@ -976,8 +966,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       if (!actualValue.equals(expectedValue)) {
         // Numeric type-safe comparison (Integer vs Long)
-        if (actualValue instanceof Number && expectedValue instanceof Number) {
-          if (((Number) actualValue).longValue() != ((Number) expectedValue).longValue())
+        if (actualValue instanceof Number number && expectedValue instanceof Number number1) {
+          if (number.longValue() != number1.longValue())
             return false;
         } else
           return false;

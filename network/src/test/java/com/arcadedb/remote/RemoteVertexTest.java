@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -34,9 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 class RemoteVertexTest {
 
@@ -204,7 +203,7 @@ class RemoteVertexTest {
     final List<String> queries = sqlCaptor.getAllValues();
     assertThat(queries).hasSize(3);
     // skip=0 is omitted (redundant); skip>0 is always emitted
-    assertThat(queries.get(0)).doesNotContain("SKIP").contains("LIMIT 2");
+    assertThat(queries.getFirst()).doesNotContain("SKIP").contains("LIMIT 2");
     assertThat(queries.get(1)).contains("SKIP 2").contains("LIMIT 2");
     assertThat(queries.get(2)).contains("SKIP 4").contains("LIMIT 2");
   }
@@ -243,7 +242,7 @@ class RemoteVertexTest {
 
     assertThat(collected).hasSize(2);
     final List<String> queries = sqlCaptor.getAllValues();
-    assertThat(queries.get(0)).contains("outE(").doesNotContain("SKIP").contains("LIMIT 2");
+    assertThat(queries.getFirst()).contains("outE(").doesNotContain("SKIP").contains("LIMIT 2");
     assertThat(queries.get(1)).contains("SKIP 2").contains("LIMIT 2");
   }
 

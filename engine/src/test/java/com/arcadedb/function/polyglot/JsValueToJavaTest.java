@@ -25,7 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -63,7 +63,7 @@ class JsValueToJavaTest {
 
   @Test
   void hostMapMutatedFromJsDoesNotLeakInterfaceMethodNames() {
-    final LinkedHashMap<String, Object> seed = new LinkedHashMap<>();
+    final Map<String, Object> seed = new HashMap<>();
     seed.put("status", "DRAFT");
     seed.put("notes", "secret");
     context.getBindings("js").putMember("order", seed);
@@ -95,12 +95,12 @@ class JsValueToJavaTest {
   void jsArrayOfHostMapsRoundTripsAsListOfPlainMaps() {
     // Production shape: each element is a Java LinkedHashMap that JS mutated. The fix has to
     // recurse into the array correctly so each element drops the method-name leakage.
-    final LinkedHashMap<String, Object> a = new LinkedHashMap<>();
-    a.put("id", "a-1");
-    a.put("status", "PAYMENT_PENDING");
-    final LinkedHashMap<String, Object> b = new LinkedHashMap<>();
-    b.put("id", "b-1");
-    b.put("status", "DRAFT");
+    final Map<String, Object> a = new HashMap<>(Map.of(
+        "id", "a-1",
+        "status", "PAYMENT_PENDING"));
+    final Map<String, Object> b = new HashMap<>(Map.of(
+        "id", "b-1",
+        "status", "DRAFT"));
 
     context.getBindings("js").putMember("a", a);
     context.getBindings("js").putMember("b", b);
@@ -116,7 +116,7 @@ class JsValueToJavaTest {
     assertThat(list).hasSize(2);
 
     @SuppressWarnings("unchecked")
-    final Map<String, Object> first = (Map<String, Object>) list.get(0);
+    final Map<String, Object> first = (Map<String, Object>) list.getFirst();
     @SuppressWarnings("unchecked")
     final Map<String, Object> second = (Map<String, Object>) list.get(1);
 

@@ -19,6 +19,7 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

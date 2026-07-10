@@ -26,26 +26,15 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Query;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.QueryResult;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.ReadRequest;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.ReadResponse;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.*;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 import org.xerial.snappy.Snappy;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * HTTP handler for Prometheus remote_read protocol.

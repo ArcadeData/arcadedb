@@ -75,14 +75,13 @@ class ArcadeStateMachineLifecycleTest {
             return null;
           throw new UnsupportedOperationException("Stub: " + method.getName());
         });
-    try {
+    try (sm) {
       sm.initialize(raftServer, groupId, raftStorage);
 
       assertThat(sm.getLifeCycleState())
           .as("initialize() must start the lifecycle so pause() can later transition to PAUSED")
           .isEqualTo(LifeCycle.State.RUNNING);
     } finally {
-      sm.close();
       raftStorage.close();
     }
   }

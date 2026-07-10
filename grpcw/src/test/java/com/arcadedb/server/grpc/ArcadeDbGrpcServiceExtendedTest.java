@@ -534,21 +534,21 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGraphServerTest {
 
   @Test
   void bulkInsertWithMixedValidAndInvalidData() {
-    final List<GrpcRecord> records = new ArrayList<>();
+    final List<GrpcRecord> records = new ArrayList<>(List.of(
 
-    // Add valid record
-    records.add(GrpcRecord.newBuilder()
-        .setType("Person")
-        .putProperties("name", stringValue("Valid"))
-        .putProperties("age", intValue(30))
-        .build());
+        // Add valid record
+        GrpcRecord.newBuilder()
+            .setType("Person")
+            .putProperties("name", stringValue("Valid"))
+            .putProperties("age", intValue(30))
+            .build(),
 
-    // Add another valid record
-    records.add(GrpcRecord.newBuilder()
-        .setType("Person")
-        .putProperties("name", stringValue("AlsoValid"))
-        .putProperties("age", intValue(35))
-        .build());
+        // Add another valid record
+        GrpcRecord.newBuilder()
+            .setType("Person")
+            .putProperties("name", stringValue("AlsoValid"))
+            .putProperties("age", intValue(35))
+            .build()));
 
     final BulkInsertRequest request = BulkInsertRequest.newBuilder()
         .setOptions(InsertOptions.newBuilder()

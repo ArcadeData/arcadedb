@@ -40,8 +40,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -617,7 +617,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (list.isEmpty())
         return null;
       if (list.size() == 1)
-        return buildNeighborViewFromCSR(list.get(0), n, direction);
+        return buildNeighborViewFromCSR(list.getFirst(), n, direction);
       indices = list;
     } else {
       indices = snap.csrPerType.values();
@@ -821,7 +821,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (totalLen == 0)
       return new int[0];
     if (segments.size() == 1)
-      return segments.get(0);
+      return segments.getFirst();
 
     final int[] result = new int[totalLen];
     int pos = 0;
@@ -1186,10 +1186,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Map<String, Object> edgeTypeStats = new HashMap<>();
     for (final var entry : snap.csrPerType.entrySet()) {
       final CSRAdjacencyIndex csr = entry.getValue();
-      final Map<String, Object> etStat = new HashMap<>();
-      etStat.put("edgeCount", csr.getEdgeCount());
-      etStat.put("nodeCount", csr.getNodeCount());
-      etStat.put("memoryBytes", csr.getMemoryUsageBytes());
+      final Map<String, Object> etStat = new HashMap<>(Map.of(
+          "edgeCount", csr.getEdgeCount(),
+          "nodeCount", csr.getNodeCount(),
+          "memoryBytes", csr.getMemoryUsageBytes()));
       edgeTypeStats.put(entry.getKey(), etStat);
     }
     stats.put("edgeTypes", edgeTypeStats);

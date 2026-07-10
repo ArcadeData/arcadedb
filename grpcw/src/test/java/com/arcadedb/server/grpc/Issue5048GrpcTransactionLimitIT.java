@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -149,7 +150,7 @@ public class Issue5048GrpcTransactionLimitIT extends BaseGraphServerTest {
       assertThat(service.getActiveTransactionCount()).isEqualTo(Integer.parseInt(MAX_TX));
 
       // Releasing a slot (rollback) must let a new transaction start again.
-      rollback(open.remove(0));
+      rollback(open.removeFirst());
       final String reopened = begin();
       assertThat(reopened).isNotEmpty();
       open.add(reopened);

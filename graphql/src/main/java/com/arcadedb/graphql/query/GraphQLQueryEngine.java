@@ -29,8 +29,8 @@ import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.HashMap;

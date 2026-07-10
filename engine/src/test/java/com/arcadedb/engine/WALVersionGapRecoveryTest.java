@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.WALVersionGapException;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -29,7 +30,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,7 +57,7 @@ class WALVersionGapRecoveryTest extends TestHelper {
     database.transaction(() -> database.newDocument("GapTestType").set("k", 1).save());
 
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = db.getSchema().getType("GapTestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("GapTestType").getBuckets(false).getFirst().getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
 
@@ -71,7 +72,7 @@ class WALVersionGapRecoveryTest extends TestHelper {
     tx.timestamp = System.currentTimeMillis();
     tx.pages = new WALFile.WALPage[] { gappedPage };
 
-    assertThatThrownBy(() -> db.getTransactionManager().applyChanges(tx, Collections.emptyMap(), false))
+    assertThatThrownBy(() -> db.getTransactionManager().applyChanges(tx, Map.of(), false))
         .isInstanceOf(WALVersionGapException.class);
   }
 
@@ -80,7 +81,7 @@ class WALVersionGapRecoveryTest extends TestHelper {
     database.transaction(() -> database.newDocument("GapTestType").set("k", 2).save());
 
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = db.getSchema().getType("GapTestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("GapTestType").getBuckets(false).getFirst().getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
 
@@ -95,7 +96,7 @@ class WALVersionGapRecoveryTest extends TestHelper {
     tx.timestamp = System.currentTimeMillis();
     tx.pages = new WALFile.WALPage[] { gappedPage };
 
-    assertThatThrownBy(() -> db.getTransactionManager().applyChanges(tx, Collections.emptyMap(), false))
+    assertThatThrownBy(() -> db.getTransactionManager().applyChanges(tx, Map.of(), false))
         .isInstanceOf(WALVersionGapException.class);
 
     // Page must be unchanged - the exception must have prevented the write
@@ -115,7 +116,7 @@ class WALVersionGapRecoveryTest extends TestHelper {
 
     final DatabaseInternal db = (DatabaseInternal) database;
     final String dbPath = database.getDatabasePath();
-    final int fileId = db.getSchema().getType("GapTestType").getBuckets(false).get(0).getFileId();
+    final int fileId = db.getSchema().getType("GapTestType").getBuckets(false).getFirst().getFileId();
 
     // Simulate a crash: kill without flush, WAL files remain
     db.kill();

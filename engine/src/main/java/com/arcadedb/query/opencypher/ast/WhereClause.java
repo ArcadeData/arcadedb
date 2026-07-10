@@ -156,43 +156,47 @@ public class WhereClause {
   }
 
   private static void collectExpressionVariables(final Expression expr, final Set<String> vars) {
-    if (expr instanceof PropertyAccessExpression propAccess)
-      vars.add(propAccess.getVariableName());
-    else if (expr instanceof VariableExpression varExpr)
-      vars.add(varExpr.getVariableName());
-    else if (expr instanceof FunctionCallExpression funcExpr) {
-      for (final Expression arg : funcExpr.getArguments())
-        collectExpressionVariables(arg, vars);
-    } else if (expr instanceof ListComprehensionExpression listComp) {
-      collectExpressionVariables(listComp.getListExpression(), vars);
-      if (listComp.getWhereExpression() != null) {
-        final Set<String> innerVars = new HashSet<>();
-        collectExpressionVariables(listComp.getWhereExpression(), innerVars);
-        innerVars.remove(listComp.getVariable()); // exclude loop-scoped iterator
-        vars.addAll(innerVars);
+    switch (expr) {
+      case PropertyAccessExpression propAccess -> vars.add(propAccess.getVariableName());
+      case VariableExpression varExpr -> vars.add(varExpr.getVariableName());
+      case FunctionCallExpression funcExpr -> {
+        for (final Expression arg : funcExpr.getArguments())
+          collectExpressionVariables(arg, vars);
       }
-      if (listComp.getMapExpression() != null) {
-        final Set<String> innerVars = new HashSet<>();
-        collectExpressionVariables(listComp.getMapExpression(), innerVars);
-        innerVars.remove(listComp.getVariable()); // exclude loop-scoped iterator
-        vars.addAll(innerVars);
+      case ListComprehensionExpression listComp -> {
+        collectExpressionVariables(listComp.getListExpression(), vars);
+        if (listComp.getWhereExpression() != null) {
+          final Set<String> innerVars = new HashSet<>();
+          collectExpressionVariables(listComp.getWhereExpression(), innerVars);
+          innerVars.remove(listComp.getVariable()); // exclude loop-scoped iterator
+          vars.addAll(innerVars);
+        }
+        if (listComp.getMapExpression() != null) {
+          final Set<String> innerVars = new HashSet<>();
+          collectExpressionVariables(listComp.getMapExpression(), innerVars);
+          innerVars.remove(listComp.getVariable()); // exclude loop-scoped iterator
+          vars.addAll(innerVars);
+        }
       }
-    } else if (expr instanceof ArithmeticExpression arith) {
-      collectExpressionVariables(arith.getLeft(), vars);
-      collectExpressionVariables(arith.getRight(), vars);
-    } else if (expr instanceof ListExpression listExpr) {
-      for (final Expression element : listExpr.getElements())
-        collectExpressionVariables(element, vars);
-    } else if (expr instanceof BooleanWrapperExpression bwe) {
-      collectVariablesRecursive(bwe.getBooleanExpression(), vars);
-    } else if (expr instanceof ListPredicateExpression listPred) {
-      collectExpressionVariables(listPred.getListExpression(), vars);
-      if (listPred.getWhereExpression() != null) {
-        final Set<String> innerVars = new HashSet<>();
-        collectExpressionVariables(listPred.getWhereExpression(), innerVars);
-        innerVars.remove(listPred.getVariable());
-        vars.addAll(innerVars);
+      case ArithmeticExpression arith -> {
+        collectExpressionVariables(arith.getLeft(), vars);
+        collectExpressionVariables(arith.getRight(), vars);
       }
+      case ListExpression listExpr -> {
+        for (final Expression element : listExpr.getElements())
+          collectExpressionVariables(element, vars);
+      }
+      case BooleanWrapperExpression bwe -> collectVariablesRecursive(bwe.getBooleanExpression(), vars);
+      case ListPredicateExpression listPred -> {
+        collectExpressionVariables(listPred.getListExpression(), vars);
+        if (listPred.getWhereExpression() != null) {
+          final Set<String> innerVars = new HashSet<>();
+          collectExpressionVariables(listPred.getWhereExpression(), innerVars);
+          innerVars.remove(listPred.getVariable());
+          vars.addAll(innerVars);
+        }
+      }
+      case null, default -> {}
     }
   }
 

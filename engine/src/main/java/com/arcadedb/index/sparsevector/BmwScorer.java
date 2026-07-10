@@ -126,7 +126,7 @@ public final class BmwScorer {
         break;
 
       final RID pivotRid = live.get(pivot).cursor.currentRid();
-      if (live.get(0).cursor.currentRid().equals(pivotRid)) {
+      if (live.getFirst().cursor.currentRid().equals(pivotRid)) {
         // Score the doc.
         boolean tombstoned = false;
         float score = 0.0f;
@@ -259,7 +259,7 @@ public final class BmwScorer {
         break;
 
       final RID pivotRid = live.get(pivot).cursor.currentRid();
-      if (live.get(0).cursor.currentRid().equals(pivotRid)) {
+      if (live.getFirst().cursor.currentRid().equals(pivotRid)) {
         if (filterActive && !allowedRIDs.contains(pivotRid)) {
           // Whitelist rejected. Skip the doc; advance every aligned cursor.
           for (final DimEntry e : live) {
@@ -392,7 +392,7 @@ public final class BmwScorer {
       w++;
     }
     while (live.size() > w)
-      live.remove(live.size() - 1);
+      live.removeLast();
   }
 
   /**

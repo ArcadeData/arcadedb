@@ -18,8 +18,8 @@
  */
 package com.arcadedb.function.sql;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.function.sql.misc.SQLStaticReflectiveFunction;
+import com.arcadedb.log.LogManager;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;

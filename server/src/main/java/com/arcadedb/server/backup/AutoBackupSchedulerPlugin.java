@@ -29,7 +29,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Set;
 import java.util.logging.Level;
 
@@ -92,7 +91,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
 
     // Validate and resolve backup directory using consolidated security validation
     String backupDirectory = backupConfig.getBackupDirectory();
-    final Path serverRoot = Paths.get(server.getRootPath()).toAbsolutePath().normalize();
+    final Path serverRoot = Path.of(server.getRootPath()).toAbsolutePath().normalize();
 
     // Validate and get the resolved, secure path
     final Path resolvedPath = validateAndResolveBackupPath(backupDirectory, serverRoot);
@@ -274,7 +273,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     if (backupDir == null || backupDir.isEmpty())
       throw new IllegalArgumentException("Backup directory cannot be empty");
 
-    final Path inputPath = Paths.get(backupDir);
+    final Path inputPath = Path.of(backupDir);
 
     // 1. Reject absolute paths
     if (inputPath.isAbsolute())

@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -162,7 +163,7 @@ class OpenCypherSubqueryTest {
       rows.add(result.next());
 
     assertThat(rows).hasSize(1);
-    final Result row = rows.get(0);
+    final Result row = rows.getFirst();
     assertThat((Object) row.getProperty("name")).as("name should not be null, props=" + row.getPropertyNames()).isNotNull();
     assertThat((Object) row.getProperty("val")).as("val should not be null, props=" + row.getPropertyNames()).isNotNull();
     assertThat(((Number) row.getProperty("val")).longValue()).isEqualTo(10L);
@@ -191,7 +192,7 @@ class OpenCypherSubqueryTest {
         rows.add(result.next());
 
       assertThat(rows).as("Expected one row with success1=true, got empty result set").hasSize(1);
-      assertThat((Boolean) rows.get(0).getProperty("success1")).isTrue();
+      assertThat((Boolean) rows.getFirst().getProperty("success1")).isTrue();
     });
   }
 
@@ -213,7 +214,7 @@ class OpenCypherSubqueryTest {
       rows.add(result.next());
 
     assertThat(rows).as("WHERE on empty list should pass through").hasSize(1);
-    assertThat((Boolean) rows.get(0).getProperty("success1")).isTrue();
+    assertThat((Boolean) rows.getFirst().getProperty("success1")).isTrue();
   }
 
   /**
@@ -340,7 +341,7 @@ class OpenCypherSubqueryTest {
         rows.add(result.next());
 
       assertThat(rows).as("Unit CALL subquery must not multiply outer rows by inner UNWIND cardinality").hasSize(3);
-      assertThat((String) rows.get(0).getProperty("person")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("person")).isEqualTo("Alice");
       assertThat((String) rows.get(1).getProperty("person")).isEqualTo("Bob");
       assertThat((String) rows.get(2).getProperty("person")).isEqualTo("Charlie");
     });
@@ -375,7 +376,7 @@ class OpenCypherSubqueryTest {
         rows.add(result.next());
 
       assertThat(rows).as("Unit CALL subquery must produce exactly one row per outer row").hasSize(2);
-      assertThat((String) rows.get(0).getProperty("person")).isEqualTo("Alice");
+      assertThat((String) rows.getFirst().getProperty("person")).isEqualTo("Alice");
       assertThat((String) rows.get(1).getProperty("person")).isEqualTo("Bob");
     });
   }
@@ -416,8 +417,8 @@ class OpenCypherSubqueryTest {
 
     assertThat(rows).as("Implicit-scope CALL with inner MATCH reusing outer name must scan all persons")
         .hasSize(3);
-    assertThat((String) rows.get(0).getProperty("outerName")).isEqualTo("Bob");
-    assertThat((String) rows.get(0).getProperty("location")).isEqualTo("Berlin");
+    assertThat((String) rows.getFirst().getProperty("outerName")).isEqualTo("Bob");
+    assertThat((String) rows.getFirst().getProperty("location")).isEqualTo("Berlin");
     assertThat((String) rows.get(1).getProperty("outerName")).isEqualTo("Bob");
     assertThat((String) rows.get(1).getProperty("location")).isEqualTo("London");
     assertThat((String) rows.get(2).getProperty("outerName")).isEqualTo("Bob");
@@ -454,8 +455,8 @@ class OpenCypherSubqueryTest {
       rows.add(result.next());
 
     assertThat(rows).hasSize(3);
-    assertThat((String) rows.get(0).getProperty("outerName")).isEqualTo("Bob");
-    assertThat((String) rows.get(0).getProperty("location")).isEqualTo("Berlin");
+    assertThat((String) rows.getFirst().getProperty("outerName")).isEqualTo("Bob");
+    assertThat((String) rows.getFirst().getProperty("location")).isEqualTo("Berlin");
     assertThat((String) rows.get(1).getProperty("location")).isEqualTo("London");
     assertThat((String) rows.get(2).getProperty("location")).isEqualTo("Paris");
   }
@@ -471,7 +472,7 @@ class OpenCypherSubqueryTest {
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("score")).longValue()).isEqualTo(2L);
     });
   }
 
@@ -486,7 +487,7 @@ class OpenCypherSubqueryTest {
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(1);
-      final Vertex n = (Vertex) rows.get(0).getElement().get();
+      final Vertex n = (Vertex) rows.getFirst().getElement().get();
       assertThat(((Number) n.get("score")).longValue()).isEqualTo(2L);
     });
   }
@@ -501,12 +502,12 @@ class OpenCypherSubqueryTest {
 
     final List<Result> rows = drainResults(rs);
     assertThat(rows).hasSize(1);
-    final Vertex n = (Vertex) rows.get(0).getElement().get();
+    final Vertex n = (Vertex) rows.getFirst().getElement().get();
     final Object vector = n.get("vector");
     assertThat(vector).isNotNull();
     final List<?> values = (List<?>) vector;
     assertThat(values).hasSize(3);
-    assertThat(((Number) values.get(0)).doubleValue()).isEqualTo(4.0d);
+    assertThat(((Number) values.getFirst()).doubleValue()).isEqualTo(4.0d);
     assertThat(((Number) values.get(1)).doubleValue()).isEqualTo(5.0d);
     assertThat(((Number) values.get(2)).doubleValue()).isEqualTo(6.0d);
   }
@@ -522,7 +523,7 @@ class OpenCypherSubqueryTest {
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.getFirst().getProperty("score")).longValue()).isEqualTo(2L);
     });
   }
 
@@ -539,8 +540,8 @@ class OpenCypherSubqueryTest {
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("k")).longValue()).isEqualTo(42L);
-      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(7L);
+      assertThat(((Number) rows.getFirst().getProperty("k")).longValue()).isEqualTo(42L);
+      assertThat(((Number) rows.getFirst().getProperty("score")).longValue()).isEqualTo(7L);
     });
   }
 
@@ -558,7 +559,7 @@ class OpenCypherSubqueryTest {
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(3);
-      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(110L);
+      assertThat(((Number) rows.getFirst().getProperty("score")).longValue()).isEqualTo(110L);
       assertThat(((Number) rows.get(1).getProperty("score")).longValue()).isEqualTo(120L);
       assertThat(((Number) rows.get(2).getProperty("score")).longValue()).isEqualTo(130L);
     });
@@ -609,7 +610,7 @@ class OpenCypherSubqueryTest {
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(1);
-      assertThat(((Number) rows.get(0).getProperty("x")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("x")).longValue()).isEqualTo(1L);
     });
   }
 
@@ -625,7 +626,7 @@ class OpenCypherSubqueryTest {
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(3);
-      assertThat(((Number) rows.get(0).getProperty("id")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.getFirst().getProperty("id")).longValue()).isEqualTo(1L);
       assertThat(((Number) rows.get(1).getProperty("id")).longValue()).isEqualTo(2L);
       assertThat(((Number) rows.get(2).getProperty("id")).longValue()).isEqualTo(3L);
 

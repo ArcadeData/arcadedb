@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLMethod;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -129,7 +130,7 @@ class SQLMethodValuesTest extends TestHelper {
     // Bug on line 51: wraps each document's values in List.of(), so we get 2 Collections instead of 4+ values
     assertThat(flattenedValues).hasSize(2);
     // Each element is a Collection containing all properties (including internal ones)
-    assertThat(flattenedValues.get(0)).isInstanceOf(Collection.class);
+    assertThat(flattenedValues.getFirst()).isInstanceOf(Collection.class);
     assertThat(flattenedValues.get(1)).isInstanceOf(Collection.class);
   }
 

@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -229,7 +230,7 @@ class OpenCypherExpressionTest {
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
     assertThat(list.size()).isEqualTo(3);
-    assertThat(list.get(0)).isEqualTo(Long.valueOf(2L));
+    assertThat(list.getFirst()).isEqualTo(Long.valueOf(2L));
     assertThat(list.get(1)).isEqualTo(Long.valueOf(4L));
     assertThat(list.get(2)).isEqualTo(Long.valueOf(6L));
     assertThat(resultSet.hasNext()).isFalse();
@@ -247,7 +248,7 @@ class OpenCypherExpressionTest {
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
     assertThat(list.size()).isEqualTo(3);
-    assertThat(list.get(0)).isEqualTo(Long.valueOf(30L));
+    assertThat(list.getFirst()).isEqualTo(Long.valueOf(30L));
     assertThat(list.get(1)).isEqualTo(Long.valueOf(40L));
     assertThat(list.get(2)).isEqualTo(Long.valueOf(50L));
     assertThat(resultSet.hasNext()).isFalse();
@@ -265,7 +266,7 @@ class OpenCypherExpressionTest {
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
     assertThat(list.size()).isEqualTo(5);
-    assertThat(list.get(0)).isEqualTo(Long.valueOf(1L));
+    assertThat(list.getFirst()).isEqualTo(Long.valueOf(1L));
     assertThat(list.get(1)).isEqualTo(Long.valueOf(4L));
     assertThat(list.get(2)).isEqualTo(Long.valueOf(9L));
     assertThat(list.get(3)).isEqualTo(Long.valueOf(16L));
@@ -285,7 +286,7 @@ class OpenCypherExpressionTest {
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
     assertThat(list.size()).isEqualTo(2);
-    assertThat(list.get(0)).isEqualTo(Long.valueOf(4L));
+    assertThat(list.getFirst()).isEqualTo(Long.valueOf(4L));
     assertThat(list.get(1)).isEqualTo(Long.valueOf(5L));
     assertThat(resultSet.hasNext()).isFalse();
   }
@@ -323,7 +324,7 @@ class OpenCypherExpressionTest {
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
     assertThat(list).containsExactly(4L);
-    assertThat(list.get(0)).isInstanceOf(Long.class);
+    assertThat(list.getFirst()).isInstanceOf(Long.class);
     assertThat(resultSet.hasNext()).isFalse();
   }
 
@@ -342,7 +343,7 @@ class OpenCypherExpressionTest {
     @SuppressWarnings("unchecked")
     final List<Object> list = (List<Object>) listObj;
     assertThat(list).containsExactly(2L, 4L, 8L);
-    assertThat(list.get(0)).isInstanceOf(Long.class);
+    assertThat(list.getFirst()).isInstanceOf(Long.class);
     assertThat(resultSet.hasNext()).isFalse();
   }
 

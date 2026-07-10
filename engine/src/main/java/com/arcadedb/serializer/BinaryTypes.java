@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+
 import org.locationtech.spatial4j.shape.Shape;
 
 import java.lang.reflect.Array;

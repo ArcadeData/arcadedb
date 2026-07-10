@@ -51,16 +51,16 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.hash.HashIndex;
-import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
+import com.arcadedb.index.hash.HashIndex;
+import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndex;
-import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
-import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
+import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
+import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.trigger.*;
@@ -1525,7 +1525,7 @@ public class LocalSchema implements Schema {
 
         final Set<String> aliases = !schemaType.isNull("aliases") ?
             new HashSet<>(schemaType.getJSONArray("aliases").toListOfStrings()) :
-            Collections.emptySet();
+            Set.of();
         type.setAliases(aliases);
 
         final JSONArray schemaParent = schemaType.getJSONArray("parents");

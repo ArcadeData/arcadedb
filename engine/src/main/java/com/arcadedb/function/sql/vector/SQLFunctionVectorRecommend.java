@@ -27,7 +27,6 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -192,25 +191,24 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
    */
   private static List<RID> parseRidList(final Object raw, final String role) {
     if (raw == null)
-      return Collections.emptyList();
+      return List.of();
     final List<RID> out = new ArrayList<>();
-    if (raw instanceof RID rid) {
-      out.add(rid);
-    } else if (raw instanceof Identifiable id) {
-      out.add(id.getIdentity());
-    } else if (raw instanceof Iterable<?> iter) {
-      for (final Object o : iter)
-        addOne(out, o, role);
-    } else if (raw instanceof Object[] arr) {
-      // Java-API callers may hand in an Object[]; the SQL parser produces List/Iterable so the
-      // primitive-array reflection path the previous version had is unreachable in practice.
-      // Direct cast + loop is faster and avoids the reflection import.
-      for (final Object o : arr)
-        addOne(out, o, role);
-    } else if (raw instanceof String s) {
-      out.add(parseStringAsRid(s, role));
-    } else {
-      throw new CommandSQLParsingException(NAME + " " + role + " must be a RID, list of RIDs, or array, got: "
+    switch (raw) {
+      case RID rid -> out.add(rid);
+      case Identifiable id -> out.add(id.getIdentity());
+      case Iterable<?> iter -> {
+        for (final Object o : iter)
+          addOne(out, o, role);
+      }
+      case Object[] arr -> {
+        // Java-API callers may hand in an Object[]; the SQL parser produces List/Iterable so the
+        // primitive-array reflection path the previous version had is unreachable in practice.
+        // Direct cast + loop is faster and avoids the reflection import.
+        for (final Object o : arr)
+          addOne(out, o, role);
+      }
+      case String s -> out.add(parseStringAsRid(s, role));
+      case null, default -> throw new CommandSQLParsingException(NAME + " " + role + " must be a RID, list of RIDs, or array, got: "
           + raw.getClass().getSimpleName());
     }
     return out;
@@ -219,15 +217,13 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
   private static void addOne(final List<RID> out, final Object o, final String role) {
     if (o == null)
       return;
-    if (o instanceof RID rid)
-      out.add(rid);
-    else if (o instanceof Identifiable id)
-      out.add(id.getIdentity());
-    else if (o instanceof String s)
-      out.add(parseStringAsRid(s, role));
-    else
-      throw new CommandSQLParsingException(
+    switch (o) {
+      case RID rid -> out.add(rid);
+      case Identifiable id -> out.add(id.getIdentity());
+      case String s -> out.add(parseStringAsRid(s, role));
+      case null, default -> throw new CommandSQLParsingException(
           NAME + " " + role + " entry must be a RID or RID-string, got: " + o.getClass().getSimpleName());
+    }
   }
 
   private static RID parseStringAsRid(final String s, final String role) {

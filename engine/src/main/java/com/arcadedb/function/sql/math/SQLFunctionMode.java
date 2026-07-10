@@ -19,9 +19,9 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.function.sql.SQLAggregatedFunction;
 
 import java.util.ArrayList;
 import java.util.HashMap;

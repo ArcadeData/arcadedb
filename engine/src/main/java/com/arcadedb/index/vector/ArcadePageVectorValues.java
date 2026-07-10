@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
@@ -162,9 +163,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     if (lsmIndex != null && lsmIndex.metadata.storeVectorsInGraph && vectorSnapshot == null) {
       try {
         final ImmutableGraphIndex graph = lsmIndex.getGraphIndex();
-        if (graph instanceof OnDiskGraphIndex) {
-          final OnDiskGraphIndex diskGraph =
-              (OnDiskGraphIndex) graph;
+        if (graph instanceof OnDiskGraphIndex diskGraph) {
           // Read vector directly from graph file (no RID lookup needed!)
           final VectorFloat<?> vector = diskGraph.getView().getVector(ordinal);
           if (vector != null) {

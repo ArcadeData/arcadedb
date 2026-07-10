@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -46,7 +47,7 @@ class HttpAuthSessionManagerConcurrencyTest {
   }
 
   @Test
-  void concurrentReadsAndWritesDoNotThrow() throws InterruptedException {
+  void concurrentReadsAndWritesDoNotThrow() throws Exception {
     final HttpAuthSessionManager manager = new HttpAuthSessionManager(30_000L);
     try {
       final ServerSecurityUser user = createMockUser("stress");

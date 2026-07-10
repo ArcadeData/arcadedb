@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -56,8 +57,8 @@ class TimeSeriesShardTest extends TestHelper {
     database.begin();
     final List<Object[]> results = shard.scanRange(1000L, 3000L, null, null);
     assertThat(results).hasSize(3);
-    assertThat((long) results.get(0)[0]).isEqualTo(1000L);
-    assertThat((double) results.get(0)[2]).isEqualTo(20.0);
+    assertThat((long) results.getFirst()[0]).isEqualTo(1000L);
+    assertThat((double) results.getFirst()[2]).isEqualTo(20.0);
     database.commit();
 
     shard.close();
@@ -87,7 +88,7 @@ class TimeSeriesShardTest extends TestHelper {
     final List<Object[]> results = shard.scanRange(1000L, 3000L, null, null);
     assertThat(results).hasSize(3);
     // Sealed results should be sorted
-    assertThat((long) results.get(0)[0]).isEqualTo(1000L);
+    assertThat((long) results.getFirst()[0]).isEqualTo(1000L);
     assertThat((long) results.get(1)[0]).isEqualTo(2000L);
     assertThat((long) results.get(2)[0]).isEqualTo(3000L);
     database.commit();
@@ -112,7 +113,7 @@ class TimeSeriesShardTest extends TestHelper {
     final TagFilter filter = TagFilter.eq(0, "A");
     final List<Object[]> results = shard.scanRange(1000L, 4000L, null, filter);
     assertThat(results).hasSize(2);
-    assertThat((String) results.get(0)[1]).isEqualTo("A");
+    assertThat((String) results.getFirst()[1]).isEqualTo("A");
     assertThat((String) results.get(1)[1]).isEqualTo("A");
     database.commit();
 

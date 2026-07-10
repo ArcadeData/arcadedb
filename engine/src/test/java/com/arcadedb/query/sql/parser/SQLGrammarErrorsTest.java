@@ -1,6 +1,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

@@ -19,15 +19,16 @@
 package com.arcadedb.tracing;
 
 import com.arcadedb.server.BaseGraphServerTest;
-import io.opentelemetry.api.common.AttributeKey;
+
 import io.micrometer.observation.ObservationRegistry;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
@@ -57,7 +58,7 @@ class ServerTracingIT extends BaseGraphServerTest {
 
     try {
       final String parentTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
-      final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+      final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/ready").toURL().openConnection();
       c.setRequestMethod("GET");
       c.setRequestProperty("traceparent", "00-" + parentTraceId + "-00f067aa0ba902b7-01");
       c.connect();
@@ -96,7 +97,7 @@ class ServerTracingIT extends BaseGraphServerTest {
     plugin.attachForTest(registry, exporter);
 
     try {
-      final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/command/graph").openConnection();
+      final HttpURLConnection c = (HttpURLConnection) URI.create("http://localhost:2480/api/v1/command/graph").toURL().openConnection();
       c.setRequestMethod("POST");
       c.setDoOutput(true);
       c.setRequestProperty("Authorization",

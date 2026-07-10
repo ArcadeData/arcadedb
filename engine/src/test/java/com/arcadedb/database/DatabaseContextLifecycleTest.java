@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -461,7 +462,7 @@ class DatabaseContextLifecycleTest extends TestHelper {
 
       assertThat(tx.rollbacks.get()).isEqualTo(1);
       assertThat(warnings).hasSize(1);
-      final String message = warnings.get(0).getMessage();
+      final String message = warnings.getFirst().getMessage();
       assertThat(message).contains("1 abandoned transaction");
       assertThat(message).contains("threadId=" + worker.threadId());
       assertThat(message).contains(internal.getDatabasePath());

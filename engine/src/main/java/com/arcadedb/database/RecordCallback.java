@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 @ExcludeFromJacocoGeneratedReport

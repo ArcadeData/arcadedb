@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+
 import org.junit.jupiter.api.Test;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;

@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
@@ -37,7 +38,6 @@ import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
@@ -401,14 +401,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private Object[] convertToObjectArray(final Object value) {
-    final Object[] result;
-
-    if (value instanceof Object[] objects)
-      result = objects;
-    else if (value instanceof Collection collection)
-      result = collection.toArray();
-    else
-      result = new Object[] { value };
+    final Object[] result = switch (value) {
+      case Object[] objects -> objects;
+      case Collection collection -> collection.toArray();
+      case null, default -> new Object[]{value};
+    };
 
     return result;
   }

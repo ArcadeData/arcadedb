@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -386,7 +387,7 @@ class SQLCaseTest {
       names.add(results.next().getProperty("name"));
     }
     // Alice (age=15) -> 0, Bob (age=25) -> 1, Charlie/Dave -> 2
-    assertThat(names.get(0)).isEqualTo("Alice");
+    assertThat(names.getFirst()).isEqualTo("Alice");
     assertThat(names.get(1)).isEqualTo("Bob");
   }
 }

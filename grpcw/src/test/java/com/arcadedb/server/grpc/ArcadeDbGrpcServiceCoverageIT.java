@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Int32Value;
 import com.google.protobuf.Timestamp;
@@ -423,7 +424,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
         .setQuery("SELECT FROM Person WHERE name = 'ExplicitTx'")
         .build();
     final ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(query);
-    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isNotEmpty();
+    assertThat(queryResponse.getResultsList().getFirst().getRecordsList()).isNotEmpty();
   }
 
   @Test
@@ -450,7 +451,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
         .setQuery("SELECT FROM Person WHERE name = '" + uniqueName + "'")
         .build();
     final ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(query);
-    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isEmpty();
+    assertThat(queryResponse.getResultsList().getFirst().getRecordsList()).isEmpty();
   }
 
   @Test
@@ -482,7 +483,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
 
     final ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
     assertThat(response.getResultsList()).isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList().size()).isLessThanOrEqualTo(2);
+    assertThat(response.getResultsList().getFirst().getRecordsList().size()).isLessThanOrEqualTo(2);
   }
 
   @Test
@@ -499,7 +500,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
 
     final ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
     assertThat(response.getResultsList()).isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList()).isNotEmpty();
+    assertThat(response.getResultsList().getFirst().getRecordsList()).isNotEmpty();
   }
 
   @Test
@@ -516,7 +517,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
 
     final ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
     assertThat(response.getResultsList()).isNotEmpty();
-    assertThat(response.getResultsList().get(0).getRecordsList()).isNotEmpty();
+    assertThat(response.getResultsList().getFirst().getRecordsList()).isNotEmpty();
   }
 
   @Test
@@ -895,7 +896,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
         .setQuery("SELECT FROM " + typeName + " WHERE name = 'ValidateOnly'")
         .build();
     final ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(query);
-    assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isEmpty();
+    assertThat(queryResponse.getResultsList().getFirst().getRecordsList()).isEmpty();
   }
 
   @Test

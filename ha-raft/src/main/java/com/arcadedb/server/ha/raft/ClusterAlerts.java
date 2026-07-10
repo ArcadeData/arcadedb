@@ -79,7 +79,7 @@ public class ClusterAlerts {
    * (issue #4727). Pass {@code null} for the non-HA / pre-start path.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine) {
-    return scan(server, stateMachine, Collections.emptyList());
+    return scan(server, stateMachine, List.of());
   }
 
   /**
@@ -140,10 +140,11 @@ public class ClusterAlerts {
                 : "They are FALLING_BEHIND (lag is growing), which raises replication backpressure and risks election "
                     + "churn if it continues.")
             + " The slowest node is the bottleneck for the whole cluster.")
-        .put("recommendation", "Investigate the named node(s): check CPU, disk I/O, GC pauses and network to the leader. "
-            + "If the node is healthy but the write rate is simply too high, reduce per-batch size or raise "
-            + "arcadedb.ha.electionTimeoutMin/Max. A persistently STALLED node should be resynced "
-            + "(POST /api/v1/cluster/resync/{database}) or replaced.")
+        .put("recommendation", """
+            Investigate the named node(s): check CPU, disk I/O, GC pauses and network to the leader. \
+            If the node is healthy but the write rate is simply too high, reduce per-batch size or raise \
+            arcadedb.ha.electionTimeoutMin/Max. A persistently STALLED node should be resynced \
+            (POST /api/v1/cluster/resync/{database}) or replaced.""")
         .put("details", new JSONObject().put("nodes", nodes)));
   }
 
@@ -183,8 +184,9 @@ public class ClusterAlerts {
         .put("message", failed.size() + " database(s) could not be acquired/refreshed from the leader after repeated "
             + "attempts and are not present on this node. They will only be retried on the next snapshot install, so "
             + "they may stay absent even after the leader's copy is healthy.")
-        .put("recommendation", "Once the leader's copy is healthy, force a fresh download on this node "
-            + "(POST /api/v1/cluster/resync/{database}). Check the logs for the underlying acquisition error.")
+        .put("recommendation", """
+            Once the leader's copy is healthy, force a fresh download on this node \
+            (POST /api/v1/cluster/resync/{database}). Check the logs for the underlying acquisition error.""")
         .put("details", new JSONObject().put("databases", names)));
   }
 
@@ -204,8 +206,9 @@ public class ClusterAlerts {
         .put("message", "This node holds " + missing.size() + " database(s) that the current leader does not have. "
             + "They were kept (never dropped), but the cluster cannot auto-replicate them to other nodes while the "
             + "leader lacks them, so new/empty nodes will not receive them.")
-        .put("recommendation", "Transfer leadership to a node that holds these databases (POST /api/v1/cluster/leader), "
-            + "then resync the nodes that are missing them (POST /api/v1/cluster/resync/{database}).")
+        .put("recommendation", """
+            Transfer leadership to a node that holds these databases (POST /api/v1/cluster/leader), \
+            then resync the nodes that are missing them (POST /api/v1/cluster/resync/{database}).""")
         .put("details", new JSONObject().put("databases", names)));
   }
 
@@ -241,10 +244,11 @@ public class ClusterAlerts {
             + " type(s) are backed by a single bucket, so concurrent inserts and updates contend on the same page and "
             + "trigger MVCC retries (\"Concurrent modification on page ...\"). This is the main cause of write-retry "
             + "storms under heavy parallel load.")
-        .put("recommendation", "Give these types more buckets and a contention-free selection strategy, sized to the "
-            + "number of concurrent writer threads on the leader. Example: CREATE VERTEX TYPE <name> BUCKETS 16 (or "
-            + "ALTER TYPE <name> BUCKET <name>_1 ... to grow an existing type), then "
-            + "ALTER TYPE <name> BucketSelectionStrategy `thread`.")
+        .put("recommendation", """
+            Give these types more buckets and a contention-free selection strategy, sized to the \
+            number of concurrent writer threads on the leader. Example: CREATE VERTEX TYPE <name> BUCKETS 16 (or \
+            ALTER TYPE <name> BUCKET <name>_1 ... to grow an existing type), then \
+            ALTER TYPE <name> BucketSelectionStrategy `thread`.""")
         .put("details", new JSONObject().put("databases", byDatabase)));
   }
 

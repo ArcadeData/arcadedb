@@ -86,7 +86,7 @@ public final class Labels {
     if (labels == null || labels.isEmpty())
       return "V";
     if (labels.size() == 1)
-      return labels.get(0);
+      return labels.getFirst();
 
     // Use TreeSet to both deduplicate and sort alphabetically
     final Set<String> uniqueSorted = new TreeSet<>(labels);

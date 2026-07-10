@@ -24,7 +24,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.logging.Level;
 
 /**
@@ -38,15 +38,15 @@ public class BackupConfigLoader {
   private final String databasesPath;
 
   public BackupConfigLoader(final String configPath, final String databasesPath) {
-    this.configPath = Paths.get(configPath).toString();
-    this.databasesPath = Paths.get(databasesPath).toString();
+    this.configPath = Path.of(configPath).toString();
+    this.databasesPath = Path.of(databasesPath).toString();
   }
 
   /**
    * Checks if the backup configuration file exists.
    */
   public boolean configExists() {
-    final File configFile = Paths.get(configPath, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
+    final File configFile = Path.of(configPath, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
     return configFile.exists();
   }
 
@@ -56,7 +56,7 @@ public class BackupConfigLoader {
    * @return AutoBackupConfig or null if configuration doesn't exist
    */
   public AutoBackupConfig loadConfig() {
-    final File configFile = Paths.get(configPath, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
+    final File configFile = Path.of(configPath, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
 
     if (!configFile.exists()) {
       LogManager.instance().log(this, Level.FINE, "Backup config file not found: %s", configFile.getAbsolutePath());
@@ -86,7 +86,7 @@ public class BackupConfigLoader {
    * @return DatabaseBackupConfig or null if no database-specific config exists
    */
   public DatabaseBackupConfig loadDatabaseConfig(final String databaseName) {
-    final File dbConfigFile = Paths.get(databasesPath, databaseName, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
+    final File dbConfigFile = Path.of(databasesPath, databaseName, AutoBackupConfig.CONFIG_FILE_NAME).toFile();
 
     if (!dbConfigFile.exists())
       return null;

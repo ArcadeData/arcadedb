@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -107,16 +106,16 @@ public class TCKResultMatcher {
       return false;
 
     // TCK node comparison
-    if (expected instanceof TCKValueParser.TCKNode)
-      return nodeMatches(actual, (TCKValueParser.TCKNode) expected);
+    if (expected instanceof TCKValueParser.TCKNode node)
+      return nodeMatches(actual, node);
 
     // TCK relationship comparison
-    if (expected instanceof TCKValueParser.TCKRelationship)
-      return relationshipMatches(actual, (TCKValueParser.TCKRelationship) expected);
+    if (expected instanceof TCKValueParser.TCKRelationship relationship)
+      return relationshipMatches(actual, relationship);
 
     // TCK path comparison
-    if (expected instanceof TCKValueParser.TCKPath)
-      return pathMatches(actual, (TCKValueParser.TCKPath) expected);
+    if (expected instanceof TCKValueParser.TCKPath path)
+      return pathMatches(actual, path);
 
     // List comparison
     if (expected instanceof List) {
@@ -149,8 +148,8 @@ public class TCKResultMatcher {
     }
 
     // Numeric comparison (handle int/long/double mismatches)
-    if (expected instanceof Number && actual instanceof Number)
-      return numbersMatch((Number) actual, (Number) expected);
+    if (expected instanceof Number number && actual instanceof Number number1)
+      return numbersMatch(number1, number);
 
     // String comparison
     if (expected instanceof String && actual instanceof String)
@@ -185,20 +184,19 @@ public class TCKResultMatcher {
 
   private static boolean nodeMatches(final Object actual, final TCKValueParser.TCKNode expected) {
     Document doc = null;
-    if (actual instanceof Result) {
-      final Result r = (Result) actual;
+    if (actual instanceof Result r) {
       if (r.isElement())
         doc = r.toElement();
-    } else if (actual instanceof Document)
-      doc = (Document) actual;
+    } else if (actual instanceof Document document)
+      doc = document;
 
     if (doc == null)
       return false;
 
     // Check labels (exact match: node must have all expected labels and no extras)
     if (!expected.labels.isEmpty()) {
-      if (doc instanceof Vertex) {
-        final List<String> actualLabels = Labels.getLabels((Vertex) doc);
+      if (doc instanceof Vertex vertex) {
+        final List<String> actualLabels = Labels.getLabels(vertex);
         // Check exact label set match
         if (actualLabels.size() != expected.labels.size())
           return false;
@@ -230,8 +228,8 @@ public class TCKResultMatcher {
     if (doc.getTypeName().equals(label))
       return true;
     // Use Labels utility for robust multi-label checking
-    if (doc instanceof Vertex)
-      return Labels.hasLabel((Vertex) doc, label);
+    if (doc instanceof Vertex vertex)
+      return Labels.hasLabel(vertex, label);
     // Fallback to type hierarchy check
     try {
       return doc.getType().instanceOf(label);
@@ -242,12 +240,11 @@ public class TCKResultMatcher {
 
   private static boolean relationshipMatches(final Object actual, final TCKValueParser.TCKRelationship expected) {
     Edge edge = null;
-    if (actual instanceof Result) {
-      final Result r = (Result) actual;
+    if (actual instanceof Result r) {
       if (r.isEdge())
         edge = r.getEdge().orElse(null);
-    } else if (actual instanceof Edge)
-      edge = (Edge) actual;
+    } else if (actual instanceof Edge edge1)
+      edge = edge1;
 
     if (edge == null)
       return false;
@@ -268,8 +265,7 @@ public class TCKResultMatcher {
 
   private static boolean pathMatches(final Object actual, final TCKValueParser.TCKPath expected) {
     // Path matching: compare structural elements (nodes, relationships, directions)
-    if (actual instanceof TraversalPath) {
-      final TraversalPath path = (TraversalPath) actual;
+    if (actual instanceof TraversalPath path) {
       return pathStructureMatches(path, expected.rawPattern);
     }
     // Paths may also come as List<Object> alternating vertices/edges
@@ -364,22 +360,21 @@ public class TCKResultMatcher {
   static Object normalizeValue(final Object value) {
     if (value == null)
       return null;
-    if (value instanceof Integer)
-      return ((Integer) value).longValue();
-    if (value instanceof Short)
-      return ((Short) value).longValue();
-    if (value instanceof Byte)
-      return ((Byte) value).longValue();
-    if (value instanceof Float)
-      return ((Float) value).doubleValue();
+    if (value instanceof Integer integer)
+      return integer.longValue();
+    if (value instanceof Short short1)
+      return short1.longValue();
+    if (value instanceof Byte byte1)
+      return byte1.longValue();
+    if (value instanceof Float float1)
+      return float1.doubleValue();
     if (value instanceof CypherTemporalValue)
       return value.toString();
     if (value instanceof LocalDate)
       return value.toString();
     if (value instanceof LocalDateTime)
       return value.toString();
-    if (value instanceof Result) {
-      final Result r = (Result) value;
+    if (value instanceof Result r) {
       if (r.isElement())
         return r.toElement();
       return r;

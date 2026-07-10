@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
@@ -51,8 +52,6 @@ public class DeleteDropUserHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"User name parameter is null\"}");
 
     Metrics.counter("http.drop-user").increment();
-    ;
-
     final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
     if (!result)
       throw new RuntimeException("User '" + userName + "' not found on server");

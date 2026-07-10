@@ -21,11 +21,14 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.schema.LocalVertexType;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,9 +51,9 @@ class SQLMethodAsSetTest {
   @Test
   void set() {
     // The expected behavior is to return the set itself.
-    final HashSet<Object> aSet = new HashSet<Object>();
-    aSet.add(1);
-    aSet.add("2");
+    final HashSet<Object> aSet = new HashSet<>(Set.of(
+        1,
+        "2"));
     final Object result = function.execute(aSet, null, null, null);
     assertThat(aSet).isEqualTo(result);
   }
@@ -66,14 +69,14 @@ class SQLMethodAsSetTest {
   void collection() {
     // The expected behavior is to return a set with all of the elements
     // of the collection in it.
-    final ArrayList<Object> aCollection = new ArrayList<Object>();
-    aCollection.add(1);
-    aCollection.add("2");
+    final ArrayList<Object> aCollection = new ArrayList<>(List.of(
+        1,
+        "2"));
     final Object result = function.execute(aCollection, null, null, null);
 
-    final HashSet<Object> expected = new HashSet<Object>();
-    expected.add(1);
-    expected.add("2");
+    final HashSet<Object> expected = new HashSet<>(Set.of(
+        1,
+        "2"));
     assertThat(expected).isEqualTo(result);
   }
 
@@ -81,16 +84,16 @@ class SQLMethodAsSetTest {
   void iterable() {
     // The expected behavior is to return a set with all of the elements
     // of the iterable in it.
-    final ArrayList<Object> values = new ArrayList<Object>();
-    values.add(1);
-    values.add("2");
+    final ArrayList<Object> values = new ArrayList<>(List.of(
+        1,
+        "2"));
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(values);
     final Object result = function.execute(anIterable, null, null, null);
 
-    final HashSet<Object> expected = new HashSet<Object>();
-    expected.add(1);
-    expected.add("2");
+    final HashSet<Object> expected = new HashSet<>(Set.of(
+        1,
+        "2"));
 
     assertThat(expected).isEqualTo(result);
   }
@@ -99,16 +102,16 @@ class SQLMethodAsSetTest {
   void iterator() {
     // The expected behavior is to return a set with all of the elements
     // of the iterator in it.
-    final ArrayList<Object> values = new ArrayList<Object>();
-    values.add(1);
-    values.add("2");
+    final ArrayList<Object> values = new ArrayList<>(List.of(
+        1,
+        "2"));
 
     final TestIterable<Object> anIterable = new TestIterable<Object>(values);
     final Object result = function.execute(anIterable.iterator(), null, null, null);
 
-    final HashSet<Object> expected = new HashSet<Object>();
-    expected.add(1);
-    expected.add("2");
+    final HashSet<Object> expected = new HashSet<>(Set.of(
+        1,
+        "2"));
 
     assertThat(expected).isEqualTo(result);
   }

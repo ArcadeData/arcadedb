@@ -23,13 +23,10 @@ import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltDateTimeStructure;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
+
 import org.junit.jupiter.api.Test;
 
-import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
+import java.time.*;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,7 +61,7 @@ class BoltDateTimeStructureTest {
         LOCAL.toEpochSecond(ZoneOffset.UTC), LOCAL.toEpochSecond(OFFSET), LOCAL.getNano(), OFFSET.getTotalSeconds());
     final PackStreamReader.StructureValue v = roundTrip(s, 4);
     assertThat(v.getSignature()).isEqualTo((byte) 0x46);              // 'F'
-    assertThat(((Number) v.getFields().get(0)).longValue())
+    assertThat(((Number) v.getFields().getFirst()).longValue())
         .isEqualTo(LOCAL.toEpochSecond(ZoneOffset.UTC));             // local epoch-second
     assertThat(((Number) v.getFields().get(2)).longValue()).isEqualTo(7200L);
   }
@@ -75,7 +72,7 @@ class BoltDateTimeStructureTest {
         LOCAL.toEpochSecond(ZoneOffset.UTC), LOCAL.toEpochSecond(OFFSET), LOCAL.getNano(), OFFSET.getTotalSeconds());
     final PackStreamReader.StructureValue v = roundTrip(s, 5);
     assertThat(v.getSignature()).isEqualTo((byte) 0x49);              // 'I'
-    assertThat(((Number) v.getFields().get(0)).longValue())
+    assertThat(((Number) v.getFields().getFirst()).longValue())
         .isEqualTo(LOCAL.toEpochSecond(OFFSET));                     // true UTC epoch-second
     assertThat(((Number) v.getFields().get(2)).longValue()).isEqualTo(7200L);
   }
@@ -89,8 +86,8 @@ class BoltDateTimeStructureTest {
     assertThat(v4.getSignature()).isEqualTo((byte) 0x66); // 'f'
     assertThat(v5.getSignature()).isEqualTo((byte) 0x69); // 'i'
     // v4 emits the local epoch-second (wall clock treated as UTC); v5 emits the true UTC epoch-second.
-    assertThat(((Number) v4.getFields().get(0)).longValue()).isEqualTo(LOCAL.toEpochSecond(ZoneOffset.UTC));
-    assertThat(((Number) v5.getFields().get(0)).longValue()).isEqualTo(LOCAL.toEpochSecond(OFFSET));
+    assertThat(((Number) v4.getFields().getFirst()).longValue()).isEqualTo(LOCAL.toEpochSecond(ZoneOffset.UTC));
+    assertThat(((Number) v5.getFields().getFirst()).longValue()).isEqualTo(LOCAL.toEpochSecond(OFFSET));
     assertThat(List.of("Europe/Rome")).contains((String) v5.getFields().get(2));
   }
 
@@ -103,7 +100,7 @@ class BoltDateTimeStructureTest {
     final OffsetDateTime odt = OffsetDateTime.of(2024, 1, 15, 10, 30, 45, 0, ZoneOffset.ofHours(2));
     final PackStreamReader.StructureValue v = mapperRoundTrip(odt, 5);
     assertThat(v.getSignature()).isEqualTo((byte) 0x49);              // 'I'
-    assertThat(((Number) v.getFields().get(0)).longValue()).isEqualTo(odt.toEpochSecond()); // true UTC epoch
+    assertThat(((Number) v.getFields().getFirst()).longValue()).isEqualTo(odt.toEpochSecond()); // true UTC epoch
     assertThat(((Number) v.getFields().get(2)).longValue()).isEqualTo(7200L);
   }
 
@@ -112,7 +109,7 @@ class BoltDateTimeStructureTest {
     final OffsetDateTime odt = OffsetDateTime.of(2024, 1, 15, 10, 30, 45, 0, ZoneOffset.ofHours(2));
     final PackStreamReader.StructureValue v = mapperRoundTrip(odt, 4);
     assertThat(v.getSignature()).isEqualTo((byte) 0x46);              // 'F'
-    assertThat(((Number) v.getFields().get(0)).longValue())
+    assertThat(((Number) v.getFields().getFirst()).longValue())
         .isEqualTo(odt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC)); // local epoch (wall clock as UTC)
     assertThat(((Number) v.getFields().get(2)).longValue()).isEqualTo(7200L);
   }
@@ -124,7 +121,7 @@ class BoltDateTimeStructureTest {
     final ZonedDateTime zdt = ZonedDateTime.of(2024, 6, 15, 10, 30, 45, 0, ZoneId.of("Europe/Rome"));
     final PackStreamReader.StructureValue v = mapperRoundTrip(zdt, 5);
     assertThat(v.getSignature()).isEqualTo((byte) 0x69);              // 'i'
-    assertThat(((Number) v.getFields().get(0)).longValue()).isEqualTo(zdt.toEpochSecond()); // true UTC epoch
+    assertThat(((Number) v.getFields().getFirst()).longValue()).isEqualTo(zdt.toEpochSecond()); // true UTC epoch
     assertThat((String) v.getFields().get(2)).isEqualTo("Europe/Rome");
   }
 
@@ -133,7 +130,7 @@ class BoltDateTimeStructureTest {
     final ZonedDateTime zdt = ZonedDateTime.of(2024, 6, 15, 10, 30, 45, 0, ZoneId.of("Europe/Rome"));
     final PackStreamReader.StructureValue v = mapperRoundTrip(zdt, 4);
     assertThat(v.getSignature()).isEqualTo((byte) 0x66);              // 'f'
-    assertThat(((Number) v.getFields().get(0)).longValue())
+    assertThat(((Number) v.getFields().getFirst()).longValue())
         .isEqualTo(zdt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC)); // local epoch (wall clock as UTC)
     assertThat((String) v.getFields().get(2)).isEqualTo("Europe/Rome");
   }

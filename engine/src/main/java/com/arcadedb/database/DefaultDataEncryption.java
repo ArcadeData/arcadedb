@@ -18,10 +18,8 @@
  */
 package com.arcadedb.database;
 
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.KeySpec;
+import com.arcadedb.exception.EncryptionException;
+
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.NoSuchPaddingException;
@@ -30,8 +28,10 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
-
-import com.arcadedb.exception.EncryptionException;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.KeySpec;
 
 /**
  * Provides configurable default with implementation for data encryption and decryption.
@@ -50,10 +50,10 @@ public class DefaultDataEncryption implements DataEncryption {
   public static final  int          DEFAULT_TAG_SIZE  = 128;
   private static final SecureRandom SECURE_RANDOM     = new SecureRandom();
 
-  private SecretKey secretKey;
-  private String    algorithm;
-  private int       ivSize;
-  private int       tagSize;
+  private final SecretKey secretKey;
+  private final String    algorithm;
+  private final int       ivSize;
+  private final int       tagSize;
 
   public DefaultDataEncryption(SecretKey secretKey, String algorithm, int ivSize, int tagSize)
       throws NoSuchAlgorithmException, NoSuchPaddingException {

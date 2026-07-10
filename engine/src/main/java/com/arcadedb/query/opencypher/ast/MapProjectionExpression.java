@@ -135,28 +135,30 @@ public class MapProjectionExpression implements Expression {
   }
 
   private void addAllProperties(final Object source, final Map<String, Object> target) {
-    if (source instanceof Document) {
-      final Document doc = (Document) source;
-      for (final String prop : doc.getPropertyNames())
-        target.put(prop, doc.get(prop));
-    } else if (source instanceof Map) {
-      final Map<?, ?> map = (Map<?, ?>) source;
-      for (final Map.Entry<?, ?> entry : map.entrySet())
-        target.put(String.valueOf(entry.getKey()), entry.getValue());
-    } else if (source instanceof Result) {
-      final Result res = (Result) source;
-      for (final String prop : res.getPropertyNames())
-        target.put(prop, res.getProperty(prop));
+    switch (source) {
+      case Document doc -> {
+        for (final String prop : doc.getPropertyNames())
+          target.put(prop, doc.get(prop));
+      }
+      case Map<?, ?> map -> {
+        for (final Map.Entry<?, ?> entry : map.entrySet())
+          target.put(String.valueOf(entry.getKey()), entry.getValue());
+      }
+      case Result res -> {
+        for (final String prop : res.getPropertyNames())
+          target.put(prop, res.getProperty(prop));
+      }
+      case null, default -> {}
     }
   }
 
   private Object getProperty(final Object source, final String propertyName) {
-    if (source instanceof Document)
-      return ((Document) source).get(propertyName);
-    else if (source instanceof Map)
-      return ((Map<?, ?>) source).get(propertyName);
-    else if (source instanceof Result)
-      return ((Result) source).getProperty(propertyName);
+    if (source instanceof Document document)
+      return document.get(propertyName);
+    else if (source instanceof Map<?, ?> map)
+      return map.get(propertyName);
+    else if (source instanceof Result result)
+      return result.getProperty(propertyName);
     return null;
   }
 

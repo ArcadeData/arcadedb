@@ -29,15 +29,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
+
 import org.assertj.core.api.Assertions;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadLocalRandom;
@@ -56,7 +52,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class GloVeTest {
   private final static int     PARALLEL_LEVEL = 8;
   private static final String  FILE_NAME      = "/tmp/glove.twitter.27B.100d.txt";
-  private              boolean USE_SQL        = false;
+  private final              boolean USE_SQL        = false;
 
   public static void main(String[] args) {
     new GloVeTest();

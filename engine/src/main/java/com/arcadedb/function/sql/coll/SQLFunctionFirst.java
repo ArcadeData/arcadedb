@@ -19,9 +19,9 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 
 /**
  * Extract the first item of multi values (arrays, collections and maps) or return the same value for non multi-value types.

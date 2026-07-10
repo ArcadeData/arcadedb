@@ -20,6 +20,7 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.server.grpc.QueryResult;
+
 import io.grpc.stub.BlockingClientCall;
 
 import java.util.Iterator;

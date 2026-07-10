@@ -22,6 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -30,8 +32,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.fulltext.MoreLikeThisConfig;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.function.sql.FunctionOptions;
-import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
@@ -207,8 +207,8 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
   private List<String> parseFieldNames(final Object fieldsParam) {
     final List<String> fieldNames = new ArrayList<>();
 
-    if (fieldsParam instanceof Collection) {
-      for (final Object f : (Collection<?>) fieldsParam) {
+    if (fieldsParam instanceof Collection<?> collection) {
+      for (final Object f : collection) {
         fieldNames.add(f.toString());
       }
     } else if (fieldsParam.getClass().isArray()) {
@@ -225,20 +225,18 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
   private Set<RID> parseSourceRIDs(final Object sourceRIDsParam) {
     final Set<RID> result = new HashSet<>();
 
-    if (sourceRIDsParam instanceof Collection) {
-      for (final Object item : (Collection<?>) sourceRIDsParam) {
-        if (item instanceof RID) {
-          result.add((RID) item);
-        } else if (item instanceof Identifiable) {
-          result.add(((Identifiable) item).getIdentity());
-        } else {
-          result.add(new RID(item.toString()));
+    switch (sourceRIDsParam) {
+      case Collection<?> collection -> {
+        for (final Object item : collection) {
+          switch (item) {
+            case RID iD -> result.add(iD);
+            case Identifiable identifiable -> result.add(identifiable.getIdentity());
+            case null, default -> result.add(new RID(item.toString()));
+          }
         }
       }
-    } else if (sourceRIDsParam instanceof RID) {
-      result.add((RID) sourceRIDsParam);
-    } else {
-      throw new CommandExecutionException("sourceRIDs must be a Collection of RIDs");
+      case RID iD1 -> result.add(iD1);
+      case null, default -> throw new CommandExecutionException("sourceRIDs must be a Collection of RIDs");
     }
 
     return result;

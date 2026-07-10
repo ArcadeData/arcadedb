@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
+
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,7 @@ import java.io.File;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -190,10 +191,10 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
     // Byte-level equality: every server's users file should be identical because all nodes
     // apply the same ordered sequence of Raft log entries, so the final file content is the same.
     final byte[] reference = Files.readAllBytes(
-        Paths.get(getServer(0).getRootPath(), "config", "server-users.jsonl"));
+        Path.of(getServer(0).getRootPath(), "config", "server-users.jsonl"));
     for (int i = 1; i < getServerCount(); i++) {
       final byte[] other = Files.readAllBytes(
-          Paths.get(getServer(i).getRootPath(), "config", "server-users.jsonl"));
+          Path.of(getServer(i).getRootPath(), "config", "server-users.jsonl"));
       assertThat(other).as("server %d users file byte equality", i).isEqualTo(reference);
     }
   }

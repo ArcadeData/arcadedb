@@ -149,31 +149,31 @@ public class CypherFunctionFactory {
    * Many functions have the same name, but some need mapping.
    */
   private Map<String, String> createFunctionMapping() {
-    final Map<String, String> mapping = new HashMap<>();
+    final Map<String, String> mapping = new HashMap<>(Map.ofEntries(
 
-    // Direct mappings (same name in Cypher and SQL)
-    // Math functions
-    mapping.put("abs", "abs");
-    mapping.put("ceil", "ceil");
-    mapping.put("floor", "floor");
-    mapping.put("round", "round");
-    mapping.put("sqrt", "sqrt");
-    // rand() is handled as Cypher-specific (returns float 0.0-1.0)
+        // Direct mappings (same name in Cypher and SQL)
+        // Math functions
+        Map.entry("abs", "abs"),
+        Map.entry("ceil", "ceil"),
+        Map.entry("floor", "floor"),
+        Map.entry("round", "round"),
+        Map.entry("sqrt", "sqrt"),
+        // rand() is handled as Cypher-specific (returns float 0.0-1.0)
 
-    // Aggregation functions
-    mapping.put("count", "count");
-    mapping.put("sum", "sum");
-    // avg is handled as Cypher-specific (always returns Double, matching Neo4j)
-    // min/max handled as Cypher-specific to support mixed-type comparison
-    mapping.put("stdev", "stddev");
-    mapping.put("stdevp", "stddevp");
-    // Aliases for stdev/stdevp
-    mapping.put("stdev_samp", "stddev");
-    mapping.put("stdev_pop", "stddevp");
+        // Aggregation functions
+        Map.entry("count", "count"),
+        Map.entry("sum", "sum"),
+        // avg is handled as Cypher-specific (always returns Double, matching Neo4j)
+        // min/max handled as Cypher-specific to support mixed-type comparison
+        Map.entry("stdev", "stddev"),
+        Map.entry("stdevp", "stddevp"),
+        // Aliases for stdev/stdevp
+        Map.entry("stdev_samp", "stddev"),
+        Map.entry("stdev_pop", "stddevp"),
 
-    // String functions - need to check if SQL has these
-    mapping.put("toupper", "upper");
-    mapping.put("tolower", "lower");
+        // String functions - need to check if SQL has these
+        Map.entry("toupper", "upper"),
+        Map.entry("tolower", "lower")));
     // trim and replace are handled as Cypher-specific functions
 
     // Date/Time functions

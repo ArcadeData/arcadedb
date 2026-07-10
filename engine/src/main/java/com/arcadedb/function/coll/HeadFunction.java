@@ -41,7 +41,7 @@ public class HeadFunction implements StatelessFunction {
     // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
     final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
     if (list != null)
-      return list.isEmpty() ? null : list.get(0);
+      return list.isEmpty() ? null : list.getFirst();
     return null;
   }
 }

@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -66,8 +67,8 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
 
     assertThat(results).hasSize(2);
     // Sensor A: first=0, last=9
-    assertThat(((Number) results.get(0).getProperty("first_val")).doubleValue()).isEqualTo(0.0);
-    assertThat(((Number) results.get(0).getProperty("last_val")).doubleValue()).isEqualTo(9.0);
+    assertThat(((Number) results.getFirst().getProperty("first_val")).doubleValue()).isEqualTo(0.0);
+    assertThat(((Number) results.getFirst().getProperty("last_val")).doubleValue()).isEqualTo(9.0);
     // Sensor B: first=100, last=91
     assertThat(((Number) results.get(1).getProperty("first_val")).doubleValue()).isEqualTo(100.0);
     assertThat(((Number) results.get(1).getProperty("last_val")).doubleValue()).isEqualTo(91.0);
@@ -84,7 +85,7 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
 
     assertThat(results).hasSize(2);
     // Sensor A: (9-0)/(9000ms) * 1000 = 1.0 per second
-    assertThat(((Number) results.get(0).getProperty("r")).doubleValue()).isCloseTo(1.0, within(0.001));
+    assertThat(((Number) results.getFirst().getProperty("r")).doubleValue()).isCloseTo(1.0, within(0.001));
     // Sensor B: (91-100)/(9000ms) * 1000 = -1.0 per second
     assertThat(((Number) results.get(1).getProperty("r")).doubleValue()).isCloseTo(-1.0, within(0.001));
   }
@@ -99,7 +100,7 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
       results.add(rs.next());
 
     assertThat(results).hasSize(2);
-    assertThat(((Number) results.get(0).getProperty("d")).doubleValue()).isEqualTo(9.0);
+    assertThat(((Number) results.getFirst().getProperty("d")).doubleValue()).isEqualTo(9.0);
     assertThat(((Number) results.get(1).getProperty("d")).doubleValue()).isEqualTo(-9.0);
   }
 
@@ -149,7 +150,7 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
 
     assertThat(results).hasSize(2);
     // Both buckets should have rate of 1.0/s
-    assertThat(((Number) results.get(0).getProperty("r")).doubleValue()).isCloseTo(1.0, within(0.001));
+    assertThat(((Number) results.getFirst().getProperty("r")).doubleValue()).isCloseTo(1.0, within(0.001));
     assertThat(((Number) results.get(1).getProperty("r")).doubleValue()).isCloseTo(1.0, within(0.001));
   }
 
@@ -167,7 +168,7 @@ class TimeSeriesPhase2SQLTest extends TestHelper {
       results.add(rs.next());
 
     assertThat(results).hasSize(2);
-    final Result a = results.get(0);
+    final Result a = results.getFirst();
     assertThat(((Number) a.getProperty("first_val")).doubleValue()).isEqualTo(0.0);
     assertThat(((Number) a.getProperty("last_val")).doubleValue()).isEqualTo(9.0);
     assertThat(((Number) a.getProperty("r")).doubleValue()).isCloseTo(1.0, within(0.001));

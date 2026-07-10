@@ -67,10 +67,10 @@ class SQLFunctionVectorRerankTest extends TestHelper {
     // Stage-1 candidates in INTENTIONALLY-WRONG order (far first, near last). The rerank stage
     // must still put 'near' at rank 0 because it's the actually-closest to (1,0,0).
     final List<Map<String, Object>> stage1 = new ArrayList<>();
-    for (final RID r : List.of(rids.get(1), rids.get(2), rids.get(0))) {
-      final LinkedHashMap<String, Object> row = new LinkedHashMap<>();
-      row.put("@rid", r);
-      row.put("score", 0.5f);  // bogus uniform score from stage 1
+    for (final RID r : List.of(rids.get(1), rids.get(2), rids.getFirst())) {
+      final Map<String, Object> row = Map.of(
+          "@rid", r,
+          "score", 0.5f);  // bogus uniform score from stage 1
       stage1.add(row);
     }
 
@@ -121,9 +121,9 @@ class SQLFunctionVectorRerankTest extends TestHelper {
 
     // Inject a phantom RID alongside the live one. The function must skip the phantom rather
     // than failing the query.
-    final RID phantom = new RID(rids.get(0).getBucketId(), 999_999L);
+    final RID phantom = new RID(rids.getFirst().getBucketId(), 999_999L);
     final List<Map<String, Object>> stage1 = new ArrayList<>();
-    for (final RID r : List.of(rids.get(0), phantom)) {
+    for (final RID r : List.of(rids.getFirst(), phantom)) {
       final LinkedHashMap<String, Object> row = new LinkedHashMap<>();
       row.put("@rid", r);
       stage1.add(row);
@@ -149,7 +149,7 @@ class SQLFunctionVectorRerankTest extends TestHelper {
 
     final List<Map<String, Object>> stage1 = new ArrayList<>();
     final LinkedHashMap<String, Object> row = new LinkedHashMap<>();
-    row.put("@rid", rids.get(0));
+    row.put("@rid", rids.getFirst());
     stage1.add(row);
 
     // Query is 4-dim but candidate embeddings are 3-dim. Must throw rather than silently scoring 0.

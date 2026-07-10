@@ -23,6 +23,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -109,14 +110,12 @@ public class Issue4358GrpcDateTimeIT extends BaseGraphServerTest {
       // The gRPC wire layer returns TIMESTAMP_VALUE as epoch milliseconds (Long).
       // Convert back to LocalDateTime at UTC for comparison.
       final LocalDateTime fechaBack;
-      if (fechaRaw instanceof LocalDateTime ldt)
-        fechaBack = ldt;
-      else if (fechaRaw instanceof Date d)
-        fechaBack = d.toInstant().atOffset(ZoneOffset.UTC).toLocalDateTime();
-      else if (fechaRaw instanceof Long epochMs)
-        fechaBack = LocalDateTime.ofEpochSecond(epochMs / 1000, (int) ((epochMs % 1000) * 1_000_000), ZoneOffset.UTC);
-      else
-        throw new AssertionError("Unexpected type for 'fecha': " + fechaRaw.getClass());
+      switch (fechaRaw) {
+        case LocalDateTime ldt -> fechaBack = ldt;
+        case Date d -> fechaBack = d.toInstant().atOffset(ZoneOffset.UTC).toLocalDateTime();
+        case Long epochMs -> fechaBack = LocalDateTime.ofEpochSecond(epochMs / 1000, (int) ((epochMs % 1000) * 1_000_000), ZoneOffset.UTC);
+        case null, default -> throw new AssertionError("Unexpected type for 'fecha': " + fechaRaw.getClass());
+      }
 
       assertThat(fechaBack).isEqualTo(target);
     }
@@ -141,14 +140,12 @@ public class Issue4358GrpcDateTimeIT extends BaseGraphServerTest {
       // The gRPC wire layer returns TIMESTAMP_VALUE as epoch milliseconds (Long).
       // Convert back to LocalDate at UTC for comparison.
       final LocalDate dateBack;
-      if (dateRaw instanceof LocalDate ld)
-        dateBack = ld;
-      else if (dateRaw instanceof Date d)
-        dateBack = d.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
-      else if (dateRaw instanceof Long epochMs)
-        dateBack = LocalDate.ofEpochDay(epochMs / 86_400_000L);
-      else
-        throw new AssertionError("Unexpected type for 'startDate': " + dateRaw.getClass());
+      switch (dateRaw) {
+        case LocalDate ld -> dateBack = ld;
+        case Date d -> dateBack = d.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
+        case Long epochMs -> dateBack = LocalDate.ofEpochDay(epochMs / 86_400_000L);
+        case null, default -> throw new AssertionError("Unexpected type for 'startDate': " + dateRaw.getClass());
+      }
 
       assertThat(dateBack).isEqualTo(targetDate);
     }

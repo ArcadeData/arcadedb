@@ -25,9 +25,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -316,9 +318,9 @@ public class SQLScriptTest extends TestHelper {
         RETURN $edge;
         """.formatted(className, className);
 
-    HashMap<String, Object> map = new HashMap<>();
-    map.put("name", "bozo");
-    map.put("_name2", "bozi");
+    HashMap<String, Object> map = new HashMap<>(Map.of(
+        "name", "bozo",
+        "_name2", "bozi"));
 
     ResultSet rs = database.command("sqlscript", script, map);
     rs.close();

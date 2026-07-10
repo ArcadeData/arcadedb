@@ -26,6 +26,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -416,7 +417,7 @@ class FullTextBM25Test extends TestHelper {
         previous = score;
       }
       assertThat(top).hasSize(2);
-      assertThat(top.get(0)).isEqualTo("rare"); // the discriminative, short document is the top result
+      assertThat(top.getFirst()).isEqualTo("rare"); // the discriminative, short document is the top result
     });
   }
 

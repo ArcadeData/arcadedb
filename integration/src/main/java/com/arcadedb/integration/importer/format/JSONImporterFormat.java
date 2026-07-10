@@ -28,12 +28,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.integration.importer.AnalyzedEntity;
-import com.arcadedb.integration.importer.AnalyzedSchema;
-import com.arcadedb.integration.importer.ImporterContext;
-import com.arcadedb.integration.importer.ImporterSettings;
-import com.arcadedb.integration.importer.Parser;
-import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.integration.importer.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -41,6 +36,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+
 import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
@@ -49,10 +45,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.logging.Level;
 
-import static com.google.gson.stream.JsonToken.BEGIN_ARRAY;
-import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
-import static com.google.gson.stream.JsonToken.END_ARRAY;
-import static com.google.gson.stream.JsonToken.END_OBJECT;
+import static com.google.gson.stream.JsonToken.*;
 
 public class JSONImporterFormat implements FormatImporter {
   static class CascadingProperties {

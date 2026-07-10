@@ -23,7 +23,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -50,7 +49,7 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
       return value;
     else if (value == null)
       // NULL VALUE, RETURN AN EMPTY MAP
-      return Collections.emptyMap();
+      return Map.of();
     else if (value instanceof Document document)
       // CONVERT DOCUMENT TO MAP
       return document.toMap(false);

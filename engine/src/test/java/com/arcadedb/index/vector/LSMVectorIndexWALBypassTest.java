@@ -22,7 +22,10 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
+
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,8 +69,8 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
     final Index[] indexes = database.getSchema().getIndexes();
     LSMVectorIndex index = null;
     for (Index idx : indexes) {
-      if (idx instanceof LSMVectorIndex) {
-        index = (LSMVectorIndex) idx;
+      if (idx instanceof LSMVectorIndex vectorIndex) {
+        index = vectorIndex;
         break;
       }
     }
@@ -102,8 +105,8 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
     final Index[] indexes = database.getSchema().getIndexes();
     LSMVectorIndex index = null;
     for (Index idx : indexes) {
-      if (idx instanceof LSMVectorIndex) {
-        index = (LSMVectorIndex) idx;
+      if (idx instanceof LSMVectorIndex vectorIndex) {
+        index = vectorIndex;
         break;
       }
     }
@@ -153,8 +156,8 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
     final Index[] indexes = database.getSchema().getIndexes();
     LSMVectorIndex index = null;
     for (Index idx : indexes) {
-      if (idx instanceof LSMVectorIndex) {
-        index = (LSMVectorIndex) idx;
+      if (idx instanceof LSMVectorIndex vectorIndex) {
+        index = vectorIndex;
         break;
       }
     }
@@ -176,8 +179,8 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
     final Index[] indexesAfterCrash = database.getSchema().getIndexes();
     LSMVectorIndex indexAfterCrash = null;
     for (Index idx : indexesAfterCrash) {
-      if (idx instanceof LSMVectorIndex) {
-        indexAfterCrash = (LSMVectorIndex) idx;
+      if (idx instanceof LSMVectorIndex vectorIndex1) {
+        indexAfterCrash = vectorIndex1;
         break;
       }
     }
@@ -231,7 +234,7 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
   private float[] createRandomVector(final int dimensions) {
     final float[] vector = new float[dimensions];
     for (int i = 0; i < dimensions; i++) {
-      vector[i] = (float) Math.random();
+      vector[i] = (float) ThreadLocalRandom.current().nextDouble();
     }
     return vector;
   }

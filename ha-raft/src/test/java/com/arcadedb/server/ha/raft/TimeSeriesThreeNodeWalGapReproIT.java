@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.server.BaseGraphServerTest;
+
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 

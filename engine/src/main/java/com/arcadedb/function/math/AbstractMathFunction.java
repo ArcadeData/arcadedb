@@ -51,8 +51,8 @@ public abstract class AbstractMathFunction implements StatelessFunction {
   protected Double asDouble(final Object arg) {
     if (arg == null)
       return null;
-    if (arg instanceof Number) {
-      return ((Number) arg).doubleValue();
+    if (arg instanceof Number number) {
+      return number.doubleValue();
     }
     return Double.parseDouble(arg.toString());
   }

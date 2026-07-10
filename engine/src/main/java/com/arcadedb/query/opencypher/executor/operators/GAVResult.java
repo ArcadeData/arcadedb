@@ -81,7 +81,7 @@ public final class GAVResult implements Result {
   @Override
   public Record getElementProperty(final String name) {
     final Object v = getProperty(name);
-    return v instanceof Record ? (Record) v : null;
+    return v instanceof Record r ? r : null;
   }
 
   @Override

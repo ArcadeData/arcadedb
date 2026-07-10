@@ -35,8 +35,8 @@ public class TestJavaTrigger implements JavaTrigger {
   @Override
   public boolean execute(final Database database, final Record record, final Record oldRecord) {
     // Set a flag to indicate the trigger executed
-    if (record instanceof Document) {
-      ((Document) record).modify().set("triggeredByJava", true);
+    if (record instanceof Document document) {
+      document.modify().set("triggeredByJava", true);
     }
     return true;
   }
