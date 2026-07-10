@@ -1958,6 +1958,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     QueryResult.Builder batch = QueryResult.newBuilder();
     int inBatch = 0;
+    // A completed full batch is held back one step: it is emitted (non-terminal) only once the next row
+    // proves more data follows; otherwise it is the terminal batch and is marked is_last_batch=true at the
+    // end. This keeps is_last_batch correct when the total row count is an exact multiple of batchSize
+    // (previously the final full batch went out with is_last_batch=false and no terminal followed).
+    QueryResult pending = null;
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -1974,49 +1979,42 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         Result r = rs.next();
 
+        // Another row follows, so any held-back full batch is definitely not the last: flush it now.
+        if (pending != null) {
+          safeOnNext(scso, cancelled, pending);
+          pending = null;
+        }
+
         if (r.isElement()) {
-
-          Record rec = r.getElement().get();
-
-          batch.addRecords(convertToGrpcRecord(rec, db));
-
-          inBatch++;
-          running++;
-
-          if (inBatch >= batchSize) {
-            safeOnNext(scso, cancelled,
-                batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(false).build());
-            batch = QueryResult.newBuilder();
-            inBatch = 0;
-          }
+          batch.addRecords(convertToGrpcRecord(r.getElement().get(), db));
         } else {
-
           GrpcRecord.Builder rb = GrpcRecord.newBuilder();
-
-          for (String p : r.getPropertyNames()) {
+          for (String p : r.getPropertyNames())
             rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
-          }
-
           batch.addRecords(rb.build());
+        }
 
-          inBatch++;
-          running++;
+        inBatch++;
+        running++;
 
-          if (inBatch >= batchSize) {
-
-            safeOnNext(scso, cancelled,
-                batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(false).build());
-
-            batch = QueryResult.newBuilder();
-            inBatch = 0;
-          }
+        if (inBatch >= batchSize) {
+          pending = batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(false).build();
+          batch = QueryResult.newBuilder();
+          inBatch = 0;
         }
       }
     }
 
-    if (!cancelled.get() && inBatch > 0) {
+    if (cancelled.get())
+      return;
+
+    if (inBatch > 0) {
+      // Trailing partial batch is the terminal batch.
       safeOnNext(scso, cancelled,
           batch.setTotalRecordsInBatch(inBatch).setRunningTotalEmitted(running).setIsLastBatch(true).build());
+    } else if (pending != null) {
+      // Exact-multiple boundary: the last full batch is the terminal batch.
+      safeOnNext(scso, cancelled, pending.toBuilder().setIsLastBatch(true).build());
     }
   }
 
@@ -2098,9 +2096,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                            ServerCallStreamObserver<QueryResult> scso,
                            AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
 
+    // PERF-3: convert the request parameters once - only the per-page _skip/_limit change between pages, so
+    // rebuilding convertParameters() and a wrapping map on every page is wasted work.
+    final Map<String, Object> baseParams = GrpcTypeConverter.convertParameters(request.getParametersMap());
+
+    // PAGED wraps the query with reserved :_skip / :_limit bind parameters. If the caller already binds those
+    // names, the wrapper would silently overwrite them and corrupt paging: reject with a clear error instead.
+    if (baseParams.containsKey("_skip") || baseParams.containsKey("_limit"))
+      throw Status.INVALID_ARGUMENT
+          .withDescription(
+              "PAGED retrieval mode reserves the parameter names '_skip' and '_limit'; rename the conflicting query parameter or use CURSOR retrieval mode")
+          .asRuntimeException();
+
     final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
     int offset = 0;
     long running = 0L;
+    // A full page is held back one step so the terminal page carries is_last_batch=true even when the total
+    // row count is an exact multiple of batchSize (previously the last full page went out with
+    // is_last_batch=false and the empty probe page returned without a terminal). Mirrors streamCursor.
+    QueryResult pending = null;
 
     while (true) {
       if (cancelled.get())
@@ -2111,7 +2125,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (cancelled.get())
         return;
 
-      Map<String, Object> params = new HashMap<>(GrpcTypeConverter.convertParameters(request.getParametersMap()));
+      final Map<String, Object> params = new HashMap<>(baseParams);
       params.put("_skip", offset);
       params.put("_limit", batchSize);
 
@@ -2143,17 +2157,31 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
-      if (count == 0)
+      if (count == 0) {
+        // No more rows. A held-back full page (exact-multiple boundary) is the terminal page.
+        if (pending != null)
+          safeOnNext(scso, cancelled, pending.toBuilder().setIsLastBatch(true).build());
         return; // no more rows
+      }
+
+      // This page has rows, so any held-back full page is definitely not the last: flush it now.
+      if (pending != null) {
+        safeOnNext(scso, cancelled, pending);
+        pending = null;
+      }
 
       running += count;
-      boolean last = count < batchSize;
+      final boolean last = count < batchSize;
+      final QueryResult page = b.setTotalRecordsInBatch(count).setRunningTotalEmitted(running).setIsLastBatch(last).build();
 
-      safeOnNext(scso, cancelled,
-          b.setTotalRecordsInBatch(count).setRunningTotalEmitted(running).setIsLastBatch(last).build());
-
-      if (last)
+      if (last) {
+        // Partial page - definitely the last one.
+        safeOnNext(scso, cancelled, page);
         return;
+      }
+
+      // Full page - might be terminal if the next page turns out to be empty; hold it back.
+      pending = page;
       offset += batchSize;
     }
   }
@@ -2931,7 +2959,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
                   perChunk.failed = c.getRowsCount();
 
-                  perChunk.errors.add(InsertError.newBuilder().setRowIndex(Math.max(0, ctx.received - 1)).setCode(
+                  // A whole-chunk exception is transaction-level, not attributable to a single row, so report
+                  // row_index=-1 ("not applicable") per the InsertError contract, matching the non-bidi
+                  // insertStream path. Per-row failures are already reported chunk-relative inside insertRows.
+                  perChunk.errors.add(InsertError.newBuilder().setRowIndex(-1).setCode(
                           "DB_ERROR")
                       .setMessage(String.valueOf(e.getMessage())).build());
                   ctx.totals.add(perChunk);
@@ -3185,7 +3216,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
               c.failed++;
 
-              c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
+              c.errors.add(InsertError.newBuilder().setRowIndex(c.received - 1).setCode("MISSING_ENDPOINTS")
                   .setMessage("Edge requires 'out' and 'in'").build());
             } else {
               final var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
@@ -3213,7 +3244,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } catch (DuplicatedKeyException dup) {
         switch (ctx.opts.getConflictMode()) {
           case CONFLICT_IGNORE -> c.ignored++;
-          case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          case CONFLICT_ABORT, UNRECOGNIZED -> c.err(c.received - 1, "CONFLICT", dup.getMessage(), "");
           // A concurrent stream inserted this key after our check; the unique index proves it exists
           // now, so retry as an update instead of losing the row. Not exercised by
           // Issue4656InsertStreamConflictUpdateIT: the race needs two concurrent streams hitting the
@@ -3225,19 +3256,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               else
                 // The match vanished between the conflict and the retry (transient MVCC window): report
                 // it as a retriable CONFLICT rather than guessing.
-                c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+                c.err(c.received - 1, "CONFLICT", dup.getMessage(), "");
             } catch (DuplicatedKeyException retryDup) {
               // A third writer can race the retry too: still a retriable conflict.
-              c.err(ctx.received - 1, "CONFLICT", retryDup.getMessage(), "");
+              c.err(c.received - 1, "CONFLICT", retryDup.getMessage(), "");
             } catch (Exception retryEx) {
               // Anything else (IO error, etc.) is a real failure - do not mask it as a CONFLICT.
-              c.err(ctx.received - 1, "DB_ERROR", retryEx.getMessage(), "");
+              c.err(c.received - 1, "DB_ERROR", retryEx.getMessage(), "");
             }
           }
-          case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          case CONFLICT_ERROR -> c.err(c.received - 1, "CONFLICT", dup.getMessage(), "");
         }
       } catch (Exception e) {
-        c.err(ctx.received - 1, "DB_ERROR", e.getMessage(), "");
+        c.err(c.received - 1, "DB_ERROR", e.getMessage(), "");
       }
 
       inBatch++;
