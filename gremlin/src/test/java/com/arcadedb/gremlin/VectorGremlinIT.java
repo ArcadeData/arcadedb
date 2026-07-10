@@ -49,7 +49,7 @@ class VectorGremlinIT {
     final Database db = databaseFactory.create();
     try {
       // Resolve via the classpath rather than a CWD-relative path so this test also works when
-      // executed against the shaded jar from the arcadedb-gremlin-it module (see #5208), whose
+      // executed against the shaded jar from the arcadedb-gremlin-it module, whose
       // working directory differs from the module that owns this source file.
       final URL inputFile = VectorGremlinIT.class.getClassLoader().getResource("importer-glove.txt");
       db.command("sql", "import database file://" + inputFile.getFile() + " "//

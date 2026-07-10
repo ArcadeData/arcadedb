@@ -182,7 +182,7 @@
                          and TinkerPop's parser (antlr 4.9.1); those cannot coexist on the
                          unshaded test classpath. They run in the arcadedb-gremlin-it module
                          against the shaded jar instead. Test sources still compile here so the
-                         test-jar is produced. See #5208. -->
+                         test-jar is produced. -->
                     <skipTests>true</skipTests>
                 </configuration>
             </plugin>
@@ -193,7 +193,7 @@
                     <!-- Same rationale as the surefire skip above: the *IT classes inherited from
                          the parent failsafe config would otherwise run on the unshaded classpath
                          (engine antlr 4.13.2 vs gremlin antlr 4.9.1) under -Pintegration, which CI
-                         uses. They run in arcadedb-gremlin-it against the shaded jar instead. See #5208. -->
+                         uses. They run in arcadedb-gremlin-it against the shaded jar instead. -->
                     <skipTests>true</skipTests>
                 </configuration>
             </plugin>
@@ -203,13 +203,23 @@
                 <configuration>
                     <!-- Relocate ANTLR 4.9.1 (TinkerPop's precompiled parser needs the v3 ATN
                          format) into a private package so it never collides with the engine's
-                         org.antlr 4.13.2 on a shared classpath. See issue #5208 / #4647. -->
+                         org.antlr 4.13.2 on a shared classpath. -->
                     <relocations>
                         <relocation>
                             <pattern>org.antlr</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.org.antlr</shadedPattern>
                         </relocation>
                     </relocations>
+                    <artifactSet>
+                        <excludes>
+                            <!-- Do NOT bundle the engine: its SQL/Cypher parsers are v4-ATN (antlr 4.13.2) and the
+                                 org.antlr relocation above would rewrite them onto the bundled 4.9.1 runtime, making
+                                 them undeserializable. The engine ships as its own plain jar (distribution lib/ and
+                                 the arcadedb-gremlin-it module both provide it), so the relocation must touch only
+                                 TinkerPop's own 4.9.1 parser. -->
+                            <exclude>com.arcadedb:arcadedb-engine</exclude>
+                        </excludes>
+                    </artifactSet>
                 </configuration>
             </plugin>
         </plugins>
