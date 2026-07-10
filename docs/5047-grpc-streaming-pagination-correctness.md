@@ -46,4 +46,3 @@ Several correctness/efficiency defects in the gRPC streaming and pagination path
 
 ## Impact
 Client-side streaming/pagination correctness in the gRPC wire protocol. No change to non-streaming paths.
-</content>

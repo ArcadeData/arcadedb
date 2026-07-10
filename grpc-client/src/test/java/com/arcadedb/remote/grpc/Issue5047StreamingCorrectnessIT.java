@@ -63,7 +63,7 @@ class Issue5047StreamingCorrectnessIT extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue("GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
   }
 
   @BeforeAll
@@ -209,7 +209,7 @@ class Issue5047StreamingCorrectnessIT extends BaseGraphServerTest {
         while (rs.hasNext())
           rs.next();
       }
-    }).isInstanceOf(Exception.class);
+    }).hasMessageContaining("_skip").hasMessageContaining("_limit");
   }
 
   @Test

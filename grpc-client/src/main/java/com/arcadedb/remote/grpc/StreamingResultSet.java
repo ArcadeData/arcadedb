@@ -145,8 +145,9 @@ class StreamingResultSet implements ResultSet {
 
   @Override
   public void close() {
-    // Detect a close racing against the owning thread's iteration: BlockingClientCall is not thread-safe,
-    // so a cleanup/timeout thread closing while the owner is in hasNext/next would corrupt its state.
+    // Diagnostic breadcrumb (logs a WARNING only) if close races the owning thread's iteration, consistent
+    // with hasNext/next. The actual thread-safety fix is below: cancelling the call is documented as safe
+    // from any thread, unlike the previous drain loop that shared the non-thread-safe BlockingClientCall.
     db.checkCrossThreadUse("streamQuery.close");
 
     if (streamExhausted)
