@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -55,8 +56,8 @@ class Issue5050ProtoUtilsNoStdoutTest {
         final MutableDocument[] holder = new MutableDocument[1];
         db.transaction(() -> {
           final DocumentType type = db.getSchema().createDocumentType("Person");
-          type.createProperty("name", com.arcadedb.schema.Type.STRING);
-          type.createProperty("age", com.arcadedb.schema.Type.INTEGER);
+          type.createProperty("name", Type.STRING);
+          type.createProperty("age", Type.INTEGER);
 
           final MutableDocument doc = db.newDocument("Person");
           doc.set("name", "secret-value");

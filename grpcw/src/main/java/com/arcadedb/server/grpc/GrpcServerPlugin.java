@@ -70,7 +70,7 @@ public class GrpcServerPlugin implements ServerPlugin {
   private volatile Server              xdsServer;
   private volatile HealthStatusManager healthManager;
   private volatile ArcadeDbGrpcService grpcService;  // Keep reference for cleanup
-  private          Thread              shutdownHook;
+  private volatile Thread              shutdownHook;
 
   // Guards stopService() so the JVM shutdown hook and the plugin-lifecycle stop cannot run the cleanup twice. The
   // plugin is intentionally single-use: stop is terminal and is never reset, matching the create-once/destroy-once
@@ -239,7 +239,9 @@ public class GrpcServerPlugin implements ServerPlugin {
           maxConcurrentTx, maxConcurrentTxPerPrincipal);
     }
 
-    // Add the main service
+    // Add the main service. In "both" mode the same BindableService instance is added to both the standard and xDS
+    // builders; gRPC calls bindService() per server at build time, so sharing one service (and thus one tx registry
+    // and reaper) across both transports is safe and is exactly the intended semantics.
     serverBuilder.addService(grpcService);
 
     // Create the Admin service
