@@ -24,12 +24,23 @@ logging outcome.
 - Guard every eager `summarizeJava`/`summarizeGrpc` server call site behind
   `LogManager.instance().isDebugEnabled()`, mirroring the client. When debug is off, no
   summary strings or varargs arrays are built.
+- Also guard the per-value FINE logs inside `toGrpcValue(Object, ProjectionConfig)` - the
+  core converter every property value flows through, recursively for collections/maps -
+  including its entry log and every projection-encoding branch. A single `debug` boolean is
+  hoisted once per call and reused, and the `debug` flag is likewise hoisted above the
+  per-property loops in `convertToGrpcRecord` / `convertResultToGrpcRecord`.
 - Reimplement `bytesOf` as an allocation-free UTF-8 length counter that reproduces
   `String.getBytes(UTF_8)` semantics exactly, including 1-byte replacement for unpaired
   surrogates.
 
-Both changes are behavior-preserving: identical wire output and identical log output when
-debug is enabled.
+Both changes are behavior-preserving: identical wire output, and identical debug log
+content when debug output is driven by the `debug` flag (`LogManager.isDebugEnabled()`),
+which is how the rest of the engine gates FINE logging. Caveat: these particular FINE lines
+were previously also emittable purely via JUL level configuration
+(`DefaultLogger.log`/`isLoggable`) independent of the `debug` flag; after this change they
+follow the `debug` flag, consistent with the already-guarded client path and the rest of
+the engine. The WARNING-level fallback log in the JSON encoder is intentionally left
+unguarded.
 
 ## Scope note (deferred)
 The audit issue bundles several larger architectural items - PERF-4 (stream `query()`
