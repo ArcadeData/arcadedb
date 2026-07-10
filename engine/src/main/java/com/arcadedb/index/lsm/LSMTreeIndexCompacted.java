@@ -377,9 +377,10 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       int pageInSeries = resultInRootPage.keyIndex;
 
       if (resultInRootPage.found) {
-        if (ascendingOrder) {
+        if (ascendingOrder && !unique) {
           // Start at the first matching leaf, plus its possible shared predecessor for files written before the overflow
-          // safeguard. A non-matching predecessor advances to the next page in the page-level lookup below.
+          // safeguard. A non-matching predecessor advances to the next page in the page-level lookup below. Unique indexes
+          // are exempt: a unique key holds a single value that never overflows a page, so the shared-leaf layout cannot occur.
           final int firstMatchingRootEntry = resultInRootPage.valueBeginPositions != null
               ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
               : resultInRootPage.keyIndex;
@@ -492,7 +493,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       if (!resultInRootPage.outside) {
         // IT'S IN PAGE RANGE
         int pageInSeries = resultInRootPage.keyIndex;
-        final int firstMatchingRootEntry = resultInRootPage.found && resultInRootPage.valueBeginPositions != null
+        // Unique indexes are exempt: a unique key holds a single value that never overflows a page, so the shared-leaf
+        // layout cannot occur and the extra preceding-leaf read below is pure overhead.
+        final int firstMatchingRootEntry = !unique && resultInRootPage.found && resultInRootPage.valueBeginPositions != null
             ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
             : -1;
 
