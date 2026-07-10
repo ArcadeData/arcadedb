@@ -177,6 +177,17 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
+                <configuration>
+                    <!-- Relocate ANTLR 4.9.1 (TinkerPop's precompiled parser needs the v3 ATN
+                         format) into a private package so it never collides with the engine's
+                         org.antlr 4.13.2 on a shared classpath. See issue #5208 / #4647. -->
+                    <relocations>
+                        <relocation>
+                            <pattern>org.antlr</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.antlr</shadedPattern>
+                        </relocation>
+                    </relocations>
+                </configuration>
             </plugin>
         </plugins>
     </build>
