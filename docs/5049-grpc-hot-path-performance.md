@@ -5,12 +5,16 @@ Server-side gRPC read/write hot paths do unguarded work at the default (non-debu
 level:
 
 - **PERF-1**: `ArcadeDbGrpcService.dbgEnc`/`dbgDec` and several `Level.FINE` call sites
-  (`applyGrpcRecord`, `convertToGrpcRecord`, `convertPropToGrpcValue`) build debug
-  summaries (`summarizeJava`/`summarizeGrpc`) as *eager* arguments to `LogManager.log`.
-  Java evaluates the arguments before `log()` can drop the message, so two temp strings
-  plus a varargs array are allocated **per property, per row**, on both the read and write
-  paths - even when FINE logging is off. The client's `ProtoUtils.dbgEnc`/`dbgDec`
-  already guard with `isDebugEnabled()`; the server did not.
+  (`applyGrpcRecord`, `convertToGrpcRecord`, `convertResultToGrpcRecord`,
+  `convertPropToGrpcValue`, and the core `toGrpcValue` converter) build debug summaries
+  (`summarizeJava`/`summarizeGrpc`, plus `value.getClass()` / `String.valueOf(...)`) as
+  *eager* arguments to `LogManager.log`. Java evaluates the arguments before `log()` can
+  drop the message, so the summary strings are built **per property, per row** (recursively
+  for collections/maps), on both the read and write paths - even when FINE logging is off.
+  The client's `ProtoUtils.dbgEnc`/`dbgDec` already guard with `isDebugEnabled()`; the
+  server did not. (Note: `LogManager` provides fixed-arity `log` overloads up to 7 args, so
+  these 3-6 arg call sites do not allocate a varargs `Object[]`; the eliminated cost is the
+  summary-string building, not an array.)
 - **PERF-L (bytesOf)**: `GrpcTypeConverter.bytesOf` allocated a throwaway `byte[]`
   (`s.getBytes(UTF_8)`) purely to measure a string's UTF-8 length, on the projection
   budgeting path (once per projected field, plus `@rid`/`@type`).
