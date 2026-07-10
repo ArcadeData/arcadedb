@@ -59,6 +59,9 @@ import java.util.logging.Level;
 public class StripedEdgeList extends EdgeLinkedList {
   private static final String STRIPE_BUCKET_INFIX = "_sn_stripe_";
 
+  /** Guards against stampeding pool creations: one in-flight creation per database+type. */
+  private static final Set<String> POOLS_IN_CREATION = ConcurrentHashMap.newKeySet();
+
   private final DatabaseInternal database;
   private final StripeDirectory  directory;
 
@@ -72,9 +75,6 @@ public class StripedEdgeList extends EdgeLinkedList {
   public static String stripeBucketName(final String typeName, final int slot) {
     return typeName + STRIPE_BUCKET_INFIX + slot;
   }
-
-  /** Guards against stampeding pool creations: one in-flight creation per database+type. */
-  private static final Set<String> POOLS_IN_CREATION = ConcurrentHashMap.newKeySet();
 
   /**
    * Makes sure the per-type stripe bucket pool exists, returning true only when EVERY bucket is ready.
