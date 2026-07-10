@@ -176,6 +176,18 @@
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Gremlin's tests exercise BOTH the engine SQL/Cypher parser (antlr 4.13.2)
+                         and TinkerPop's parser (antlr 4.9.1); those cannot coexist on the
+                         unshaded test classpath. They run in the arcadedb-gremlin-it module
+                         against the shaded jar instead. Test sources still compile here so the
+                         test-jar is produced. See #5208. -->
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <configuration>
                     <!-- Relocate ANTLR 4.9.1 (TinkerPop's precompiled parser needs the v3 ATN

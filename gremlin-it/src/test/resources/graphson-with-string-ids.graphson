@@ -1,0 +1,4 @@
+{"id":"http://www.w3.org/2000/01/rdf-schema#Datatype","label":"Class","outE":{"subClassOf":[{"id":"edge-1","inV":"http://www.w3.org/2000/01/rdf-schema#Resource","properties":{"name":{"@type":"g:String","@value":"test-edge"}}}]},"properties":{"name":[{"id":"prop-1","value":"Datatype"}]}}
+{"id":"http://www.w3.org/2000/01/rdf-schema#Resource","label":"Class","properties":{"name":[{"id":"prop-2","value":"Resource"}]}}
+{"id":"http://example.org/person/John","label":"Person","outE":{"knows":[{"id":"edge-2","inV":"http://example.org/person/Jane"}]},"properties":{"name":[{"id":"prop-3","value":"John"}],"age":[{"id":"prop-4","value":{"@type":"g:Int32","@value":30}}]}}
+{"id":"http://example.org/person/Jane","label":"Person","properties":{"name":[{"id":"prop-5","value":"Jane"}],"age":[{"id":"prop-6","value":{"@type":"g:Int32","@value":28}}]}}
