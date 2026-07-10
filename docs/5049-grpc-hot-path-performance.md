@@ -68,6 +68,46 @@ follow-ups. This PR takes the highest-leverage, zero-behavior-change items (PERF
   added for the debug-on path.
 
 ## Impact
-Removes per-property/per-row string + varargs allocation on the server gRPC read and write
+Removes per-property/per-row summary-string allocation on the server gRPC read and write
 paths at the default log level, and one byte[] allocation per projected field. No change to
-results or to debug-level log content.
+results, and no change to debug log content when debug output is driven by the `debug` flag.
+
+## PR
+https://github.com/ArcadeData/arcadedb/pull/5195
+
+## Review cycles
+- **Cycle 1** - `8b07055` (initial): Gemini COMMENTED, no feedback. Claude flagged that the
+  core per-value converter `toGrpcValue(Object, ProjectionConfig)` still logged eagerly at
+  its entry and in every projection branch (same read hot path) - the summarize sites were
+  guarded but the hottest method's own logs were not. Applied: guard the entry log and all
+  projection-branch FINE logs behind a single hoisted `debug` boolean; hoist `debug` above
+  the per-property loops in `convertToGrpcRecord`/`convertResultToGrpcRecord`; document the
+  JUL-vs-debug-flag gating caveat.
+- **Cycle 2** - `c948901`: Claude LGTM. Non-blocking doc nuance: `LogManager` has fixed-arity
+  `log` overloads up to 7 args, so the 3-6 arg call sites never built a varargs `Object[]` -
+  the eliminated cost is the summary-string building, not an array. Applied: corrected the
+  doc wording.
+- **Cycle 3** - `0f7e019`: Claude LGTM. Non-blocking: `conversionResultIsIndependentOfDebugFlag`
+  exercises `GrpcTypeConverter` (which has no logging), not the guarded `ArcadeDbGrpcService`
+  paths. Applied: reframed the test javadoc + doc to describe it accurately as a
+  converter-level sanity check, and documented that the guarded private paths are covered
+  end-to-end (debug-off) by the existing service tests; the guards are behavior-neutral by
+  construction, so no disproportionate new server IT was added.
+- **Cycle 4** - `504a76f`: Claude LGTM, "pending a reviewer's nod on the intentional
+  JUL-vs-`debug`-flag logging change." Remaining suggestions (a server-side debug-on test;
+  the pre-existing non-volatile `LogManager.debug` field) are explicitly non-blocking
+  follow-ups. No code changes applied.
+
+## Deferred / follow-ups (non-blocking, for the maintainer)
+- Larger audit items PERF-4 (stream `query()`), PERF-5 (default MAP projection encoding),
+  PERF-6 (thread-per-transaction), PERF-7/8 (ingest rebuild / double materialization),
+  PERF-9 (forced gzip) - each changes wire behavior and/or result-set semantics; deferred.
+- Optional: a server-side test that runs a query with `setDebugEnabled(true)` to directly
+  execute the guarded-on branches in `ArcadeDbGrpcService`.
+- Reviewer sign-off requested on the intentional behavior change: these gRPC `Level.FINE`
+  lines now follow the ArcadeDB `debug` flag rather than raw JUL level configuration.
+
+## Final state
+`max-cycles-reached` (4 of 4). Substantively converged: Claude LGTM on the final revision
+with only non-blocking follow-ups; Gemini reviewed the initial revision with no feedback and
+did not re-review later revisions. Merge remains the developer's decision.
