@@ -46,3 +46,20 @@ Several correctness/efficiency defects in the gRPC streaming and pagination path
 
 ## Impact
 Client-side streaming/pagination correctness in the gRPC wire protocol. No change to non-streaming paths.
+
+## PR & review history
+- PR: https://github.com/ArcadeData/arcadedb/pull/5199
+- Cycle 1 (`8fd2a8008`): initial fixes. Gemini review COMMENTED (no actionable comments); Claude review
+  non-blocking with 5 polish suggestions.
+- Cycle 2 (`ef5adedae`): applied review items - removed stray doc marker, softened the CON-3 comment,
+  aligned the two ITs on the `GrpcServer:` plugin name, tightened the reserved-name assertion. Claude
+  re-review: "No blocking issues found" (4 non-blocking observations).
+- Cycle 3 (`bc0e14ba2`): applied 2 more non-blocking items - `streamExhausted` made `volatile`, doc wording
+  clarified (PAGED still runs the server-side empty probe). Claude re-review: "Nothing here blocks merge."
+- Final state: clean-approval (both bots non-blocking; merge left to the developer).
+
+## Recommended follow-ups (from review, out of scope here)
+- Add a `chunk_seq` field to `InsertError` in `arcadedb-server.proto` so aggregated (multi-chunk) non-bidi
+  insert errors remain attributable to a chunk now that `row_index` is chunk-relative.
+- Optional: a bidi test asserting `row_index=-1` on a whole-chunk failure, and `@Tag("slow")` on the CON-3
+  IT if its 1000 sequential single-row commands prove slow in CI.
