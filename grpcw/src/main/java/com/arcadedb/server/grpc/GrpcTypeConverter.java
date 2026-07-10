@@ -24,7 +24,6 @@ import com.google.protobuf.Timestamp;
 
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -238,9 +237,35 @@ class GrpcTypeConverter {
   }
 
   /**
-   * Calculate the UTF-8 byte length of a string.
+   * Calculate the UTF-8 byte length of a string without allocating an intermediate {@code byte[]}.
+   * Reproduces {@code String.getBytes(StandardCharsets.UTF_8).length} exactly, including the
+   * single replacement byte the JDK encoder emits for an unpaired surrogate.
    */
   static int bytesOf(final String s) {
-    return s == null ? 0 : s.getBytes(StandardCharsets.UTF_8).length;
+    if (s == null)
+      return 0;
+    final int len = s.length();
+    int bytes = 0;
+    for (int i = 0; i < len; i++) {
+      final char c = s.charAt(i);
+      if (c < 0x80)
+        bytes += 1;
+      else if (c < 0x800)
+        bytes += 2;
+      else if (Character.isHighSurrogate(c)) {
+        if (i + 1 < len && Character.isLowSurrogate(s.charAt(i + 1))) {
+          // Valid surrogate pair: one supplementary code point encodes to 4 bytes.
+          bytes += 4;
+          i++;
+        } else
+          // Unpaired high surrogate: encoder emits a single replacement byte.
+          bytes += 1;
+      } else if (Character.isLowSurrogate(c))
+        // Unpaired low surrogate: encoder emits a single replacement byte.
+        bytes += 1;
+      else
+        bytes += 3;
+    }
+    return bytes;
   }
 }

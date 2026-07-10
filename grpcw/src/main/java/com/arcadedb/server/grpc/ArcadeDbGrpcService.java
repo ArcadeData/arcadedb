@@ -3304,8 +3304,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal),
-          summarizeJava(javaVal));
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal),
+            summarizeJava(javaVal));
       doc.set(k, javaVal);
     });
   }
@@ -3316,8 +3317,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance()
-          .log(this, Level.FINE, "APPLY-VERTEX %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance()
+            .log(this, Level.FINE, "APPLY-VERTEX %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
       vertex.set(k, javaVal);
     });
   }
@@ -3328,8 +3330,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal),
-          summarizeJava(javaVal));
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal),
+            summarizeJava(javaVal));
       edge.set(k, javaVal);
     });
   }
@@ -3399,8 +3402,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private GrpcValue toGrpcValue(Object o, ProjectionConfig pc) {
 
-    LogManager.instance().log(this, Level.FINE, "toGrpcValue(): Converting\n   value = %s\n   class = %s", o,
-        o == null ? "null" : o.getClass().getName());
+    // This method runs per value on the read hot path (recursively for collections/maps), so all
+    // FINE logging is guarded to avoid building the delegated varargs array at the default log level.
+    final boolean debug = LogManager.instance().isDebugEnabled();
+
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "toGrpcValue(): Converting\n   value = %s\n   class = %s", o,
+          o == null ? "null" : o.getClass().getName());
 
     if (o instanceof JsonElement je) {
       return gsonToGrpc(je);
@@ -3498,13 +3506,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (!inProjection) {
         // Not a projection row: send as LINK if possible, else fall back
         if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
-          LogManager.instance()
-              .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION -> LINK rid=%s", doc.getIdentity());
+          if (debug)
+            LogManager.instance()
+                .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION -> LINK rid=%s", doc.getIdentity());
           return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
               .setLogicalType("rid").build();
         }
         // No identity → treat as EMBEDDED-like MAP
-        LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION (no rid) -> MAP");
+        if (debug)
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] DOC-NON-PROJECTION (no rid) -> MAP");
         GrpcMap.Builder mb = GrpcMap.newBuilder();
         if (doc.getType() != null)
           mb.putEntries("@type", GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build());
@@ -3520,21 +3530,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // 3.1 LINK mode
       if (enc == ProjectionEncoding.PROJECTION_AS_LINK) {
         if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
-          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid=%s",
-              doc.getIdentity());
+          if (debug)
+            LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> LINK rid=%s",
+                doc.getIdentity());
           return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
               .setLogicalType("rid").build();
         }
         // No rid: fall back to MAP
-        LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION LINK fallback -> MAP (no rid)");
+        if (debug)
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION LINK fallback -> MAP (no rid)");
         enc = ProjectionEncoding.PROJECTION_AS_MAP;
       }
 
       // 3.2 MAP mode
       if (enc == ProjectionEncoding.PROJECTION_AS_MAP) {
-        LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> MAP rid=%s type=%s",
-            doc.getIdentity() != null ? doc.getIdentity() : "null", doc.getType() != null ? doc.getTypeName() :
-                "null");
+        if (debug)
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> MAP rid=%s type=%s",
+              doc.getIdentity() != null ? doc.getIdentity() : "null", doc.getType() != null ? doc.getTypeName() :
+                  "null");
         GrpcMap.Builder mb = GrpcMap.newBuilder();
 
         // meta
@@ -3562,12 +3575,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           GrpcValue child = toGrpcValue(doc.get(k), pc); // recurse with config
           int add = GrpcTypeConverter.bytesOf(k) + child.getSerializedSize();
           if (pc.wouldExceed(add)) {
-            LogManager.instance()
-                .log(this, Level.FINE, """
-                        GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' \
-                        (limit=%s, used~%s)""",
-                    k,
-                    pc.softLimitBytes, pc.used.get());
+            if (debug)
+              LogManager.instance()
+                  .log(this, Level.FINE, """
+                          GRPC-ENC [toGrpcValue] PROJECTION MAP soft-limit hit; skipping '%s' \
+                          (limit=%s, used~%s)""",
+                      k,
+                      pc.softLimitBytes, pc.used.get());
             pc.truncated = true;
             break;
           }
@@ -3579,9 +3593,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // 3.3 JSON mode
       if (enc == ProjectionEncoding.PROJECTION_AS_JSON) {
-        LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid=%s type=%s",
-            doc.getIdentity() != null ? doc.getIdentity() : "null", doc.getType() != null ? doc.getTypeName() :
-                "null");
+        if (debug)
+          LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION -> JSON rid=%s type=%s",
+              doc.getIdentity() != null ? doc.getIdentity() : "null", doc.getType() != null ? doc.getTypeName() :
+                  "null");
 
         try {
 
@@ -3603,11 +3618,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Soft limit handling
           if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
             pc.truncated = true;
-            LogManager.instance().log(this, Level.FINE, """
-                    GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; \
-                    size=%s limit=%s""",
-                jsonBytes.length,
-                pc.softLimitBytes);
+            if (debug)
+              LogManager.instance().log(this, Level.FINE, """
+                      GRPC-ENC [toGrpcValue] PROJECTION JSON soft-limit hit; \
+                      size=%s limit=%s""",
+                  jsonBytes.length,
+                  pc.softLimitBytes);
             // Prefer a RID fallback if we have one
             if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
               return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
@@ -3648,9 +3664,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       // Shouldn't get here, but fall back
-      LogManager.instance()
-          .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION unknown encoding %s; falling back to LINK/STRING",
-              enc.name());
+      if (debug)
+        LogManager.instance()
+            .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] PROJECTION unknown encoding %s; falling back to LINK/STRING",
+                enc.name());
       if (doc.getIdentity() != null && doc.getIdentity().isValid()) {
         return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(doc.getIdentity().toString()).build())
             .setLogicalType("rid").build();
@@ -3706,10 +3723,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     // Fallback
-    LogManager.instance()
-        .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class=%s value=%s",
-            o.getClass().getName(),
-            String.valueOf(o));
+    if (debug)
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class=%s value=%s",
+              o.getClass().getName(),
+              String.valueOf(o));
 
     return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
   }
@@ -4184,19 +4202,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Iterate over ALL properties from the Result, including aliases.
     // Null-valued projections must be included (unset GrpcValue) so clients can always
     // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
+    final boolean debug = LogManager.instance().isDebugEnabled();
     for (String propertyName : result.getPropertyNames()) {
       final Object value = result.getProperty(propertyName);
 
-      LogManager.instance()
-          .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-              propertyName, value, value == null ? "null" : value.getClass().getName());
+      if (debug)
+        LogManager.instance()
+            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
+                propertyName, value, value == null ? "null" : value.getClass().getName());
 
       final GrpcValue gv = projectionConfig != null ?
           toGrpcValue(value, projectionConfig) :
           toGrpcValue(value);
 
-      LogManager.instance()
-          .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
+      if (debug)
+        LogManager.instance()
+            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
 
       builder.putProperties(propertyName, gv);
     }
@@ -4245,22 +4266,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.setRid(doc.getIdentity().toString());
 
       // set all properties
+      final boolean debug = LogManager.instance().isDebugEnabled();
       for (String propertyName : doc.getPropertyNames()) {
 
         Object value = doc.get(propertyName);
 
         if (value != null) {
 
-          LogManager.instance()
-              .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
-                  , value,
-                  value.getClass());
+          if (debug)
+            LogManager.instance()
+                .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
+                    , value,
+                    value.getClass());
 
           GrpcValue gv = toGrpcValue(value);
 
-          LogManager.instance()
-              .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
-                  summarizeGrpc(gv));
+          if (debug)
+            LogManager.instance()
+                .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
+                    summarizeGrpc(gv));
 
           builder.putProperties(propertyName, gv);
         }
@@ -4290,10 +4314,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Object propValue = result.getProperty(propName);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-            propValue,
-            propValue == null ? "null" : propValue.getClass());
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
+              propValue,
+              propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue, pc);
   }
@@ -4302,10 +4327,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Object propValue = result.getProperty(propName);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-            propValue,
-            propValue == null ? "null" : propValue.getClass());
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
+              propValue,
+              propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue);
   }
@@ -4735,18 +4761,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
-    LogManager.instance()
-        .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
-            summarizeJava(in),
-            summarizeGrpc(out));
+    // Guard the eager summary building so nothing is allocated at the default (non-debug) log level.
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
+              summarizeJava(in),
+              summarizeGrpc(out));
     return out;
   }
 
   private Object dbgDec(String where, GrpcValue in, Object out, String ctx) {
-    LogManager.instance()
-        .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
-            summarizeGrpc(in),
-            summarizeJava(out));
+    // Guard the eager summary building so nothing is allocated at the default (non-debug) log level.
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
+              summarizeGrpc(in),
+              summarizeJava(out));
     return out;
   }
 
