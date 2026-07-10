@@ -206,8 +206,6 @@ public class ProtoUtils {
       for (String propName : doc.getPropertyNames()) {
         Object value = doc.get(propName);
 
-        System.out.print("toProtoRecord: " + propName + ": " + value);
-
         builder.putProperties(propName, toGrpcValue(value));
       }
     }

@@ -44,6 +44,7 @@ import io.micrometer.core.instrument.Metrics;
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -64,12 +65,15 @@ import java.util.logging.Level;
  */
 public class GrpcServerPlugin implements ServerPlugin {
 
-  private ArcadeDBServer      arcadeServer;
-  private Server              grpcServer;
-  private Server              xdsServer;
-  private HealthStatusManager healthManager;
-  private ArcadeDbGrpcService grpcService;  // Keep reference for cleanup
-  private Thread              shutdownHook;
+  private          ArcadeDBServer      arcadeServer;
+  private volatile Server              grpcServer;
+  private volatile Server              xdsServer;
+  private volatile HealthStatusManager healthManager;
+  private volatile ArcadeDbGrpcService grpcService;  // Keep reference for cleanup
+  private          Thread              shutdownHook;
+
+  // Guards stopService() so the JVM shutdown hook and the plugin-lifecycle stop cannot run the cleanup twice.
+  private final AtomicBoolean stopped = new AtomicBoolean(false);
 
   // Configuration keys as simple strings
   private static final String CONFIG_PREFIX              = "arcadedb.grpc.";
@@ -204,28 +208,32 @@ public class GrpcServerPlugin implements ServerPlugin {
     LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled)", port);
   }
 
-  private void configureServer(ServerBuilder<?> serverBuilder, ContextConfiguration config) {
+  void configureServer(ServerBuilder<?> serverBuilder, ContextConfiguration config) {
 
     // Get database directory path
     String databasePath = arcadeServer.getRootPath() + File.separator + "databases";
 
-    // Idle-transaction reaper thresholds (issue #4802): reclaim abandoned transactions left open by clients that
-    // disconnected without committing or rolling back.
-    final long txMaxIdleMs = getConfigLong(config, CONFIG_TX_MAX_IDLE_MS, ArcadeDbGrpcService.DEFAULT_TX_MAX_IDLE_MS);
-    final long txMaxAgeMs = getConfigLong(config, CONFIG_TX_MAX_AGE_MS, ArcadeDbGrpcService.DEFAULT_TX_MAX_AGE_MS);
-    final long txReaperPeriodMs = getConfigLong(config, CONFIG_TX_REAPER_PERIOD_MS,
-        ArcadeDbGrpcService.DEFAULT_TX_REAPER_PERIOD_MS);
+    // Build the main service only once and reuse it across every server builder. In "both" mode this method is
+    // invoked twice (standard + xDS); constructing a fresh service per call would start a second idle-transaction
+    // reaper thread and a second transaction registry that stopService() would never close, leaking both (issue #5050).
+    if (this.grpcService == null) {
+      // Idle-transaction reaper thresholds (issue #4802): reclaim abandoned transactions left open by clients that
+      // disconnected without committing or rolling back.
+      final long txMaxIdleMs = getConfigLong(config, CONFIG_TX_MAX_IDLE_MS, ArcadeDbGrpcService.DEFAULT_TX_MAX_IDLE_MS);
+      final long txMaxAgeMs = getConfigLong(config, CONFIG_TX_MAX_AGE_MS, ArcadeDbGrpcService.DEFAULT_TX_MAX_AGE_MS);
+      final long txReaperPeriodMs = getConfigLong(config, CONFIG_TX_REAPER_PERIOD_MS,
+          ArcadeDbGrpcService.DEFAULT_TX_REAPER_PERIOD_MS);
 
-    // Concurrent-transaction caps (issue #5048): bound the per-transaction executor allocation so an authenticated
-    // client cannot loop beginTransaction to exhaust threads/memory. A non-positive value disables the corresponding bound.
-    final int maxConcurrentTx = getConfigInt(config, CONFIG_MAX_CONCURRENT_TX,
-        ArcadeDbGrpcService.DEFAULT_MAX_CONCURRENT_TX);
-    final int maxConcurrentTxPerPrincipal = getConfigInt(config, CONFIG_MAX_CONCURRENT_TX_PER_PRINCIPAL,
-        ArcadeDbGrpcService.DEFAULT_MAX_CONCURRENT_TX_PER_PRINCIPAL);
+      // Concurrent-transaction caps (issue #5048): bound the per-transaction executor allocation so an authenticated
+      // client cannot loop beginTransaction to exhaust threads/memory. A non-positive value disables the corresponding bound.
+      final int maxConcurrentTx = getConfigInt(config, CONFIG_MAX_CONCURRENT_TX,
+          ArcadeDbGrpcService.DEFAULT_MAX_CONCURRENT_TX);
+      final int maxConcurrentTxPerPrincipal = getConfigInt(config, CONFIG_MAX_CONCURRENT_TX_PER_PRINCIPAL,
+          ArcadeDbGrpcService.DEFAULT_MAX_CONCURRENT_TX_PER_PRINCIPAL);
 
-    // Create the main service and store reference for cleanup
-    this.grpcService = new ArcadeDbGrpcService(databasePath, arcadeServer, txMaxIdleMs, txMaxAgeMs, txReaperPeriodMs,
-        maxConcurrentTx, maxConcurrentTxPerPrincipal);
+      this.grpcService = new ArcadeDbGrpcService(databasePath, arcadeServer, txMaxIdleMs, txMaxAgeMs, txReaperPeriodMs,
+          maxConcurrentTx, maxConcurrentTxPerPrincipal);
+    }
 
     // Add the main service
     serverBuilder.addService(grpcService);
@@ -236,16 +244,18 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Add the Admin service
     serverBuilder.addService(adminService);
 
-    // Add health service if enabled
+    // Add health service if enabled. Reuse a single manager across both server builders (issue #5050).
     if (getConfigBoolean(config, CONFIG_HEALTH_ENABLED, true)) {
-      healthManager = new HealthStatusManager();
-      serverBuilder.addService(healthManager.getHealthService());
+      if (healthManager == null) {
+        healthManager = new HealthStatusManager();
 
-      // Set initial health status
-      healthManager.setStatus(
-          ArcadeDbGrpcService.class.getName(),
-          HealthCheckResponse.ServingStatus.SERVING
-      );
+        // Set initial health status
+        healthManager.setStatus(
+            ArcadeDbGrpcService.class.getName(),
+            HealthCheckResponse.ServingStatus.SERVING
+        );
+      }
+      serverBuilder.addService(healthManager.getHealthService());
     }
 
     // Add reflection service if enabled
@@ -362,6 +372,11 @@ public class GrpcServerPlugin implements ServerPlugin {
 
   @Override
   public void stopService() {
+    // Idempotency / concurrency guard: the JVM shutdown hook and the plugin-lifecycle stop may both call this. Only
+    // the first invocation performs the cleanup; later ones return immediately (issue #5050).
+    if (!stopped.compareAndSet(false, true))
+      return;
+
     try {
       // Update health status to NOT_SERVING
       if (healthManager != null) {
