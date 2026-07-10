@@ -42,6 +42,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
+import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -115,6 +116,7 @@ public class BinarySerializer {
       case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record);
       case Edge.RECORD_TYPE -> serializeEdge(database, (MutableEdge) record);
       case EdgeSegment.RECORD_TYPE -> serializeEdgeContainer((EdgeSegment) record);
+      case StripeDirectory.RECORD_TYPE -> ((StripeDirectory) record).getContent();
       case ExternalValueRecord.RECORD_TYPE -> ((ExternalValueRecord) record).getContent();
       default -> throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
     };

@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -121,6 +122,10 @@ public class GraphEngine {
       if (database.getSchema().existsBucket(b.getName() + IN_EDGES_SUFFIX))
         database.getSchema().dropBucket(b.getName() + IN_EDGES_SUFFIX);
     }
+
+    // DROP THE SUPER-NODE STRIPE POOL, IF THE TYPE EVER PROMOTED A VERTEX (#5156)
+    for (int i = 0; database.getSchema().existsBucket(StripedEdgeList.stripeBucketName(type.getName(), i)); i++)
+      database.getSchema().dropBucket(StripedEdgeList.stripeBucketName(type.getName(), i));
   }
 
   public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
@@ -198,11 +203,7 @@ public class GraphEngine {
   public void connectOutgoingEdge(VertexInternal fromVertex, final Identifiable toVertex, final Edge edge) {
     fromVertex = fromVertex.modify();
 
-    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) fromVertex);
-
-    final EdgeLinkedList outLinkedList = new EdgeLinkedList(fromVertex, Vertex.DIRECTION.OUT, outChunk);
-
-    outLinkedList.add(edge.getIdentity(), toVertex.getIdentity());
+    getOrCreateEdgeList((MutableVertex) fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
   }
 
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
@@ -237,10 +238,7 @@ public class GraphEngine {
 
     sourceVertex = sourceVertex.modify();
 
-    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) sourceVertex);
-
-    final EdgeLinkedList outLinkedList = new EdgeLinkedList(sourceVertex, Vertex.DIRECTION.OUT, outChunk);
-    outLinkedList.addAll(outEdgePairs);
+    getOrCreateEdgeList((MutableVertex) sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
 
     if (bidirectional) {
       for (int i = 0; i < outEdgePairs.size(); ++i) {
@@ -255,10 +253,43 @@ public class GraphEngine {
   public void connectIncomingEdge(final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
     final MutableVertex toVertexRecord = toVertex.asVertex().modify();
 
-    final EdgeSegment inChunk = createInEdgeChunk(toVertexRecord);
+    getOrCreateEdgeList(toVertexRecord, Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+  }
 
-    final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
-    inLinkedList.add(edgeRID, fromVertexRID);
+  /**
+   * Loads (or lazily creates) the edge list of a vertex for a WRITE operation, dispatching on the head record's
+   * type: a classic {@link EdgeSegment} chain yields an {@link EdgeLinkedList}, a {@link StripeDirectory}
+   * (super-node promoted vertex, #5156) yields a {@link StripedEdgeList}. The head page is anchored in the
+   * transaction at read time (#5147/#5153).
+   */
+  public EdgeLinkedList getOrCreateEdgeList(final MutableVertex vertex, final Vertex.DIRECTION direction) {
+    RID headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+
+    if (headRID != null)
+      try {
+        anchorHeadChunkPage(headRID);
+        final Record head = database.lookupByRID(headRID, true);
+        if (head instanceof StripeDirectory directory)
+          return new StripedEdgeList(vertex, direction, directory);
+        return new EdgeLinkedList(vertex, direction, (EdgeSegment) head);
+      } catch (final RecordNotFoundException e) {
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Record %s (%s edges head chunk) not found on vertex %s. Creating a new one", headRID,
+                direction, vertex.getIdentity());
+        headRID = null;
+      }
+
+    // FIRST EDGE IN THIS DIRECTION: CREATE THE INITIAL CHUNK
+    final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
+    database.createRecord(chunk, getEdgesBucketName(vertex.getIdentity().getBucketId(), direction));
+
+    if (direction == Vertex.DIRECTION.OUT)
+      vertex.setOutEdgesHeadChunk(chunk.getIdentity());
+    else
+      vertex.setInEdgesHeadChunk(chunk.getIdentity());
+    database.updateRecord(vertex);
+
+    return new EdgeLinkedList(vertex, direction, chunk);
   }
 
   public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {
@@ -450,7 +481,7 @@ public class GraphEngine {
     try {
       outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
       if (outEdges != null) {
-        final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
+        final Iterator<Edge> outIterator = outEdges.edgeIterator();
 
         while (outIterator.hasNext()) {
           RID inV = null;
@@ -478,7 +509,7 @@ public class GraphEngine {
     try {
       inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
       if (inEdges != null) {
-        final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
+        final Iterator<Edge> inIterator = inEdges.edgeIterator();
 
         while (inIterator.hasNext()) {
           RID outV = null;
@@ -906,37 +937,27 @@ public class GraphEngine {
   }
 
   public EdgeLinkedList getEdgeHeadChunk(final VertexInternal vertex, final Vertex.DIRECTION direction) {
-    if (direction == Vertex.DIRECTION.OUT) {
-      RID rid = null;
-      try {
-        rid = vertex.getOutEdgesHeadChunk();
-        if (rid != null) {
-          return new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, (EdgeSegment) vertex.getDatabase().lookupByRID(rid,
-              true));
-        }
-      } catch (final RecordNotFoundException e) {
-        // rid == null: the vertex itself was deleted concurrently (stale reference from a
-        //   prior traversal step). Expected under concurrent writes — log at FINE.
-        // rid != null: the edge chunk segment is orphaned — possible corruption, keep WARNING.
-        final Level level = rid == null ? Level.FINE : Level.WARNING;
-        LogManager.instance()
-            .log(this, level, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid,
-                vertex.getIdentity());
+    if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
+      return null;
+
+    RID rid = null;
+    try {
+      rid = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+      if (rid != null) {
+        final Record head = vertex.getDatabase().lookupByRID(rid, true);
+        if (head instanceof StripeDirectory directory)
+          // SUPER-NODE PROMOTED VERTEX (#5156): THE EDGE LIST IS STRIPED OVER MULTIPLE CHAINS
+          return new StripedEdgeList(vertex, direction, directory);
+        return new EdgeLinkedList(vertex, direction, (EdgeSegment) head);
       }
-    } else if (direction == Vertex.DIRECTION.IN) {
-      RID rid = null;
-      try {
-        rid = vertex.getInEdgesHeadChunk();
-        if (rid != null) {
-          return new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, (EdgeSegment) vertex.getDatabase().lookupByRID(rid,
-              true));
-        }
-      } catch (final RecordNotFoundException e) {
-        final Level level = rid == null ? Level.FINE : Level.WARNING;
-        LogManager.instance()
-            .log(this, level, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid,
-                vertex.getIdentity());
-      }
+    } catch (final RecordNotFoundException e) {
+      // rid == null: the vertex itself was deleted concurrently (stale reference from a
+      //   prior traversal step). Expected under concurrent writes — log at FINE.
+      // rid != null: the edge chunk segment is orphaned — possible corruption, keep WARNING.
+      final Level level = rid == null ? Level.FINE : Level.WARNING;
+      LogManager.instance()
+          .log(this, level, "Cannot load %s edge list chunk (%s) for vertex %s", e, direction, rid,
+              vertex.getIdentity());
     }
 
     return null;

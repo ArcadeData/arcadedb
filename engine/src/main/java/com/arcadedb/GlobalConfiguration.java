@@ -399,6 +399,14 @@ public enum GlobalConfiguration {
       "At commit, when the only conflict on an edge-list page is concurrent in-chunk edge appends (which commute), re-apply the appends on top of the newer page version instead of failing the whole transaction with a ConcurrentModificationException. Removes the retry storm on super-node (hot vertex) edge insertion",
       Boolean.class, true),
 
+  GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
+      "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. 0 disables promotion (databases stay fully readable by older versions)",
+      Integer.class, 128),
+
+  GRAPH_SUPERNODE_STRIPES("arcadedb.graph.supernodeStripes", SCOPE.DATABASE,
+      "Number of stripes (separate edge-list files) a super-node's edge list is spread over at promotion. Write parallelism saturates at the number of concurrent writers, so values beyond the CPU cores rarely help. Recorded per vertex at promotion time",
+      Integer.class, 8),
+
   BACKUP_ENABLED("arcadedb.backup.enabled", SCOPE.DATABASE,
       "Allow a database to be backup. Disabling backup gives a huge boost in performance because no lock will be used for every operations",
       Boolean.class, true),

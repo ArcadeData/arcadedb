@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -684,18 +685,8 @@ public class CSRBuilder {
   }
 
   private EdgeLinkedList loadOutEdgeList(final Vertex vertex) {
-    final VertexInternal vertexInternal = (VertexInternal) vertex;
-    final RID outEdgesHead = vertexInternal.getOutEdgesHeadChunk();
-    if (outEdgesHead == null)
-      return null;
-    try {
-      return new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT,
-          (EdgeSegment) database.lookupByRID(outEdgesHead, true));
-    } catch (final RecordNotFoundException e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Cannot load OUT edge list chunk (%s) for vertex %s", e, outEdgesHead, vertex.getIdentity());
-      return null;
-    }
+    // Dispatches on the head record type, so promoted (striped) super-node vertices work too (#5156).
+    return ((DatabaseInternal) database).getGraphEngine().getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
   }
 
   private Map<String, Column.Type> detectEdgePropertyTypesFromSchema(final String[] edgeTypes) {

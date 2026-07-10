@@ -87,6 +87,11 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
     final boolean appendMerge = Boolean.parseBoolean(System.getProperty("edgeAppendMerge", "true"));
     final boolean savedMerge = GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean();
     GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.setValue(appendMerge);
+    // Super-node striping toggle (#5156): -DsupernodeThreshold=0 disables promotion for the baseline run.
+    final int supernodeThreshold = Integer.parseInt(System.getProperty("supernodeThreshold",
+        String.valueOf(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger())));
+    final int savedSupernodeThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(supernodeThreshold);
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {
@@ -183,6 +188,7 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
           ======== Super-node concurrent-append HA benchmark (3 nodes) ========
           workload             : %s
           append-merge enabled : %b
+          supernode threshold  : %d
           threads              : %d
           edges committed       : %d (target %d)
           per-server IN-degree  : %s
@@ -196,7 +202,8 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
           max commit latency   : %.2f ms
           =====================================================================""".formatted(
           superNode ? "super-node (shared hub)" : "control (distinct targets)",
-          GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean(), THREADS, committed.get(), TOTAL_EDGES,
+          GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean(),
+          GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger(), THREADS, committed.get(), TOTAL_EDGES,
           java.util.Arrays.toString(perServerDegree), attempts.get(), retries, 100.0 * retries / TOTAL_EDGES, merges,
           conflicts, elapsed, TOTAL_EDGES / (elapsed / 1000.0), totalLatencyNs.get() / 1e6 / TOTAL_EDGES,
           maxLatencyNs.get() / 1e6);
@@ -220,6 +227,7 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
       GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.setValue(savedMerge);
+      GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedSupernodeThreshold);
     }
   }
 }

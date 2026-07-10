@@ -17,8 +17,34 @@ is kept below as **reference** (section B).
 | #5147 insertion lost-update (deferred-update MVCC gap) | ✅ fixed 26.7.2 (#5148) |
 | #5153 removal-direction lost-update twin | ✅ fixed 26.7.2 (#5148) |
 | Deterministic 3-node HA correctness gate | ✅ `SuperNodeAppendHAConsistencyIT` |
-| **Adaptive striped/sharded edge list (throughput)** | ⏳ **TODO - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** |
+| **Adaptive striped/sharded edge list (throughput)** | 🚧 **IMPLEMENTED on this branch - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** (`GRAPH_SUPERNODE_THRESHOLD` default 128, `GRAPH_SUPERNODE_STRIPES` default 8) |
 | **Remove-path anchoring cost optimisation** | ⏳ **TODO - [#5155](https://github.com/ArcadeData/arcadedb/issues/5155)** |
+
+Implementation notes that refined the A.1 design (2026-07-10):
+
+- **Stripe pool DDL is deferred on server/HA.** Creating the pool buckets inside the
+  promoting user transaction made followers diverge (bucket-count mismatch in the
+  3-node IT - the #4083 SCHEMA_ENTRY/TX_ENTRY ordering hazard, exactly as A.1
+  warned). Embedded creates the pool inline (schema ops are local); a wrapped
+  (server/HA) database hands creation to a one-shot helper thread outside any
+  transaction and the vertex promotes at a later chunk-full once the pool exists.
+- **Stripe hosts are a dedicated per-type bucket pool** (`<Type>_sn_stripe_<i>`,
+  direction-blind), NOT the per-vertex-bucket edge files sketched below:
+  `TYPE_DEFAULT_BUCKETS` defaults to 1, so reusing vertex-bucket files would give
+  zero parallelism on default-configured types.
+- **Iteration order is a REAL guarantee that striping breaks** (issue #689 asserts
+  reverse-insertion order on `getVertices()` and is regression-tested with a
+  10k-edge vertex). A promoted super-node cannot preserve global insertion order
+  across stripes; it returns newest-generation-first as an approximation. The #689
+  test now pins the classic layout explicitly; the trade-off must be called out in
+  the release notes.
+- **`GraphBatch` (bulk import) fails loud on a promoted vertex** instead of
+  corrupting the directory via its direct head-pointer manipulation: bulk edge
+  import into an already-promoted vertex throws with a clear message (disable
+  promotion or use the standard API). Follow-up candidate.
+- Promotion detection = chunk-full + geometric estimate as designed; at the 8 KB
+  cap a one-time chain walk (cycle-guarded) honours thresholds above the cap
+  estimate.
 
 ---
 

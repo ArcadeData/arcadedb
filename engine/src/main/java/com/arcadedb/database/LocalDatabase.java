@@ -54,6 +54,7 @@ import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
@@ -1021,8 +1022,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // A brand-new edge chunk cannot be edge-append rebased: the committed version of its page does not contain
       // this chunk yet, so replaying appends against it would target the wrong bytes. Exclude the whole page
-      // (it may be shared with a pre-existing chunk) from the commutative append merge. See TransactionContext.
-      if (record instanceof MutableEdgeSegment)
+      // (it may be shared with a pre-existing chunk) from the commutative append merge. Same for a new stripe
+      // directory (super-node promotion, #5156). See TransactionContext.
+      if (record instanceof MutableEdgeSegment || record instanceof StripeDirectory)
         transaction.poisonEdgeAppendPage(record.getIdentity());
 
       // TRACK USER DOCUMENTS (NOT INTERNAL RECORDS LIKE EDGE SEGMENTS) SO A ROLLBACK CAN RESET THEIR IDENTITY AND ALLOW

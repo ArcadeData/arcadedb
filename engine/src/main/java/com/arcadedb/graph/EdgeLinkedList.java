@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
@@ -26,6 +27,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -36,6 +38,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Linked list uses to manage edges in vertex. The edges are stored in reverse order from insertion. The last item is the first in the list.
@@ -43,8 +46,8 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EdgeLinkedList {
-  private final Vertex vertex;
-  private final Vertex.DIRECTION direction;
+  protected final Vertex vertex;
+  protected final Vertex.DIRECTION direction;
   private EdgeSegment lastSegment;
 
   public EdgeLinkedList(final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment lastSegment) {
@@ -192,7 +195,12 @@ public class EdgeLinkedList {
       if (tx != null)
         tx.trackEdgeAppend(lastSegment.getIdentity(), edgeRID, vertexRID);
     } else {
-      // CHUNK FULL, ALLOCATE A NEW ONE
+      // CHUNK FULL: the one place that already rewrites the vertex record, so promotion to the super-node
+      // striped layout (#5156) costs no extra write here.
+      if (tryPromoteToSuperNode(database, edgeRID, vertexRID))
+        return;
+
+      // ALLOCATE A NEW, BIGGER CHUNK
       final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
 
       newChunk.add(edgeRID, vertexRID);
@@ -329,7 +337,7 @@ public class EdgeLinkedList {
    * same chunk in between. The commit-time MVCC check would then compare matching versions, miss the conflict,
    * and let the stale chunk buffer silently overwrite the concurrent change (a lost update / dropped edge).
    */
-  private EdgeSegment loadChunkForWrite(final RID chunkRID) {
+  protected EdgeSegment loadChunkForWrite(final RID chunkRID) {
     final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
     try {
       ((LocalBucket) database.getSchema().getBucketById(chunkRID.getBucketId())).fetchPageInTransaction(chunkRID);
@@ -337,6 +345,71 @@ public class EdgeLinkedList {
       throw new DatabaseOperationException("Error on loading edge chunk page " + chunkRID, e);
     }
     return (EdgeSegment) database.lookupByRID(chunkRID, true);
+  }
+
+  /**
+   * Super-node promotion (#5156): when this vertex's approximate degree crosses
+   * {@link GlobalConfiguration#GRAPH_SUPERNODE_THRESHOLD}, its edge list is converted to the striped layout - a
+   * {@link StripeDirectory} listing N per-stripe chains hosted in a per-type pool of dedicated buckets, so
+   * concurrent appends land on different files (different commit locks) instead of serialising on this one
+   * head chunk. The existing chain is untouched (it becomes generation 0), the vertex head pointer flips to the
+   * directory, and the pending edge is appended through the striped path. Called ONLY from the chunk-full
+   * branch, which already rewrites the vertex record, so the check costs nothing on the append hot path.
+   *
+   * @return true if the vertex was promoted and the pending edge appended, false to continue on the classic path.
+   */
+  private boolean tryPromoteToSuperNode(final DatabaseInternal database, final RID edgeRID, final RID vertexRID) {
+    final int threshold = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD);
+    if (threshold < 1)
+      return false;
+
+    // Approximate degree derived from the geometric chunk-size schedule (64, 128, ... doubling): the cumulative
+    // bytes so far ~= 2 x the current chunk size, and an entry (2 compressed RIDs) averages ~8 bytes. No degree
+    // counter and no chain walk on the common path.
+    final int currentChunkSize = lastSegment.getRecordSize();
+    long estimatedEdges = (2L * currentChunkSize) / 8;
+    if (estimatedEdges < threshold) {
+      if (currentChunkSize < LocalDatabase.MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE)
+        return false;
+      // At the chunk-size cap the geometric estimate is only a lower bound: walk the chain once (this runs at
+      // most once per ~1000 appends) to honour thresholds larger than the cap estimate.
+      long totalBytes = 0;
+      EdgeSegment segment = lastSegment;
+      while (segment != null) {
+        totalBytes += segment.getRecordSize();
+        final EdgeSegment prev = segment.getPrevious();
+        if (prev != null && prev.getIdentity().equals(segment.getIdentity()))
+          // CURRENT POINT TO ITSELF, AVOID LOOPS
+          break;
+        segment = prev;
+      }
+      estimatedEdges = totalBytes / 8;
+      if (estimatedEdges < threshold)
+        return false;
+    }
+
+    final int stripes = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES);
+    if (stripes < 2)
+      return false;
+
+    if (!StripedEdgeList.ensureStripePool(database, vertex.getTypeName(), stripes))
+      // POOL NOT READY (ON SERVER/HA IT IS CREATED OUTSIDE THIS TRANSACTION): PROMOTE AT A LATER CHUNK-FULL
+      return false;
+
+    // THE DIRECTORY LIVES IN THE SAME BUCKET AS THE (NOW GENERATION-0) CLASSIC CHAIN
+    final StripeDirectory directory = new StripeDirectory(database, lastSegment.getIdentity(), stripes);
+    database.createRecord(directory, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
+
+    final MutableVertex modifiableV = vertex.modify();
+    if (direction == Vertex.DIRECTION.OUT)
+      modifiableV.setOutEdgesHeadChunk(directory.getIdentity());
+    else
+      modifiableV.setInEdgesHeadChunk(directory.getIdentity());
+    modifiableV.save();
+
+    // APPEND THE PENDING EDGE THROUGH THE STRIPED LAYOUT (ALLOCATES ITS STRIPE'S FIRST CHUNK LAZILY)
+    new StripedEdgeList(modifiableV, direction, directory).add(edgeRID, vertexRID);
+    return true;
   }
 
   private int computeBestSize() {
