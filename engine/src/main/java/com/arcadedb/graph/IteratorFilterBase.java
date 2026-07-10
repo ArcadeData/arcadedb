@@ -43,7 +43,10 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
       if (!database.getSchema().existsType(e))
         continue;
 
-      final EdgeType type = (EdgeType) database.getSchema().getType(e);
+      // A vertex or document type sharing the name of the requested edge type cannot match any edge:
+      // skip it like a non-existent type instead of failing with a ClassCastException (issue #5194)
+      if (!(database.getSchema().getType(e) instanceof EdgeType type))
+        continue;
 
       validBuckets.addAll(type.getBucketIds(true));
     }

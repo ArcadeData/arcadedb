@@ -143,7 +143,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   @Deprecated
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
-    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+    if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
     return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, properties);
@@ -157,7 +157,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   @Override
   @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
-    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+    if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
     return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex);

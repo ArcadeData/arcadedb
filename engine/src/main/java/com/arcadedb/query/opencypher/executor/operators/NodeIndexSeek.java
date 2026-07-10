@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 
@@ -99,7 +100,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         // Initialize cursor on first call
         if (cursor == null) {
           final DocumentType type = context.getDatabase().getSchema().getType(label);
-          if (type == null) {
+          // A non-vertex type with the same name (edge/document type) matches no node pattern (issue #5194)
+          if (!(type instanceof VertexType)) {
             finished = true;
             return;
           }
