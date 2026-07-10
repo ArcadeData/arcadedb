@@ -76,7 +76,6 @@ import org.jspecify.annotations.NonNull;
 import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -3332,8 +3331,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       case DECIMAL_VALUE: {
         var d = v.getDecimalValue();
-        return dbgDec("fromGrpcValue", v, new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale()),
-            null);
+        return dbgDec("fromGrpcValue", v, GrpcTypeConverter.toBigDecimal(d), null);
       }
 
       case LIST_VALUE: {
@@ -3435,18 +3433,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     if (o instanceof BigDecimal v) {
-      var unscaled = v.unscaledValue();
-      if (unscaled.bitLength() <= 63) {
-        return GrpcValue.newBuilder()
-            .setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()))
-            .setLogicalType("decimal").build();
-      } else {
-        // if you need >64-bit unscaled, switch GrpcDecimal.unscaled to bytes in the
-        // proto
-        return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType(
-                "decimal").build(),
-            null);
-      }
+      return dbgEnc("toGrpcValue", o,
+          GrpcValue.newBuilder().setDecimalValue(GrpcTypeConverter.toGrpcDecimal(v)).setLogicalType("decimal").build(),
+          null);
     }
 
     if (o instanceof Document edoc && edoc.getIdentity() == null) {
@@ -4322,14 +4311,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       case BYTE:
         return switch (v.getKindCase()) {
-          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (byte) (long) fromGrpcValue(v);
+          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> ((Number) fromGrpcValue(v)).byteValue();
           case STRING_VALUE -> Byte.parseByte(v.getStringValue());
           default -> null;
         };
 
       case SHORT:
         return switch (v.getKindCase()) {
-          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> (short) (long) fromGrpcValue(v);
+          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> ((Number) fromGrpcValue(v)).shortValue();
           case STRING_VALUE -> Short.parseShort(v.getStringValue());
           default -> null;
         };
@@ -4382,10 +4371,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       case DECIMAL:
         return switch (v.getKindCase()) {
-          case DECIMAL_VALUE -> {
-            var d = v.getDecimalValue();
-            yield new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale());
-          }
+          case DECIMAL_VALUE -> GrpcTypeConverter.toBigDecimal(v.getDecimalValue());
           case STRING_VALUE -> new BigDecimal(v.getStringValue());
           case DOUBLE_VALUE -> BigDecimal.valueOf(v.getDoubleValue());
           case INT32_VALUE -> BigDecimal.valueOf(v.getInt32Value());
@@ -4750,19 +4736,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             return b.setInt64Value(l).build();
           } catch (ArithmeticException ignore) {
           }
-          BigInteger unscaled = bd.unscaledValue();
-          if (unscaled.bitLength() <= 63) {
-            return b.setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(bd.scale()).build())
-                .build();
-          }
-          return b.setStringValue(bd.toPlainString()).build();
+          return b.setDecimalValue(GrpcTypeConverter.toGrpcDecimal(bd)).build();
         } else {
-          BigInteger unscaled = bd.unscaledValue();
-          if (unscaled.bitLength() <= 63) {
-            return b.setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(bd.scale()).build())
-                .build();
-          }
-          return b.setStringValue(bd.toPlainString()).build();
+          return b.setDecimalValue(GrpcTypeConverter.toGrpcDecimal(bd)).build();
         }
       }
       if (p.isString())

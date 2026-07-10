@@ -317,16 +317,8 @@ public class ProtoUtils {
     }
 
     if (value instanceof BigDecimal v) {
-      BigInteger unscaled = v.unscaledValue();
-      if (unscaled.bitLength() <= 63) {
-        return dbgEnc("toGrpcValue", value,
-            GrpcValue.newBuilder().setDecimalValue(
-                    GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()).build())
-                .setLogicalType("decimal").build());
-      } else {
-        return dbgEnc("toGrpcValue", value,
-            GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build());
-      }
+      return dbgEnc("toGrpcValue", value,
+          GrpcValue.newBuilder().setDecimalValue(toGrpcDecimal(v)).setLogicalType("decimal").build());
     }
 
     if (value instanceof Document edoc && (edoc.getIdentity() == null)) {
@@ -424,7 +416,7 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
-      return dbgDec("fromGrpcValue", v, new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale()));
+      return dbgDec("fromGrpcValue", v, toBigDecimal(d));
     }
     case KIND_NOT_SET:
       return dbgDec("fromGrpcValue", v, null);
@@ -435,5 +427,33 @@ public class ProtoUtils {
 
   static long tsToMillis(Timestamp ts) {
     return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
+  }
+
+  /**
+   * Encode a {@link BigDecimal} into a {@link GrpcDecimal} without loss. The unscaled value is stored
+   * in the {@code unscaled} sint64 field when it fits in 63 bits; otherwise it is stored losslessly in
+   * the {@code unscaled_bytes} field (big-endian two's-complement), preserving exact precision and
+   * scale for values whose unscaled magnitude exceeds a signed 64-bit integer (issue #5046, COR-10).
+   */
+  static GrpcDecimal toGrpcDecimal(final BigDecimal v) {
+    final BigInteger unscaled = v.unscaledValue();
+    final GrpcDecimal.Builder b = GrpcDecimal.newBuilder().setScale(v.scale());
+    if (unscaled.bitLength() <= 63)
+      b.setUnscaled(unscaled.longValue());
+    else
+      b.setUnscaledBytes(ByteString.copyFrom(unscaled.toByteArray()));
+    return b.build();
+  }
+
+  /**
+   * Reconstruct a {@link BigDecimal} from a {@link GrpcDecimal}, reading the unscaled value from the
+   * {@code unscaled_bytes} field when present (values that exceed 63 bits) and otherwise from the
+   * {@code unscaled} sint64 field (issue #5046, COR-10).
+   */
+  static BigDecimal toBigDecimal(final GrpcDecimal d) {
+    final BigInteger unscaled = d.getUnscaledBytes().isEmpty()
+        ? BigInteger.valueOf(d.getUnscaled())
+        : new BigInteger(d.getUnscaledBytes().toByteArray());
+    return new BigDecimal(unscaled, d.getScale());
   }
 }
