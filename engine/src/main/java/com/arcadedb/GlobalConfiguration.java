@@ -401,7 +401,7 @@ public enum GlobalConfiguration {
 
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
       "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. 0 disables promotion (databases stay fully readable by older versions)",
-      Integer.class, 128),
+      Integer.class, 4096),
 
   GRAPH_SUPERNODE_STRIPES("arcadedb.graph.supernodeStripes", SCOPE.DATABASE,
       "Number of stripes (separate edge-list files) a super-node's edge list is spread over at promotion. Write parallelism saturates at the number of concurrent writers, so values beyond the CPU cores rarely help. Recorded per vertex at promotion time",

@@ -258,6 +258,86 @@ class SuperNodeStripingTest extends TestHelper {
     database.transaction(() -> assertThat(database.countType("Hub", false)).isEqualTo(0));
   }
 
+  /**
+   * Mass lifecycle: 100K edges into one promoted hub, then delete EVERY edge and audit the residue - the
+   * drained stripe chains and directory must stay structurally sound (and reusable), and deleting the hub
+   * must leave ZERO records behind in the stripe pool buckets and in the hub's edge-list bucket.
+   */
+  @Test
+  @Tag("slow")
+  void massAddThenDeleteAllLeavesNoResidue() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(128);
+    createSchema();
+    final RID hubRID = createHub();
+
+    final int total = 100_000;
+    final int batch = 1_000;
+    for (int b = 0; b < total / batch; b++)
+      database.transaction(() -> {
+        for (int i = 0; i < batch; i++) {
+          final MutableVertex src = database.newVertex("Src");
+          src.save();
+          src.newEdge("LINK", hubRID);
+        }
+      });
+
+    assertThat(loadInHead(hubRID)).isInstanceOf(StripeDirectory.class);
+    database.transaction(() -> assertThat(hubRID.asVertex(true).countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(total));
+
+    // DELETE EVERY EDGE (batched): collect the RIDs first, then drop them
+    final List<RID> edgeRIDs = new ArrayList<>(total);
+    database.transaction(() -> {
+      for (final Edge e : hubRID.asVertex(true).getEdges(Vertex.DIRECTION.IN, "LINK"))
+        edgeRIDs.add(e.getIdentity());
+    });
+    assertThat(edgeRIDs).hasSize(total);
+    for (int b = 0; b < edgeRIDs.size(); b += batch) {
+      final int from = b, to = Math.min(b + batch, edgeRIDs.size());
+      database.transaction(() -> {
+        for (int i = from; i < to; i++)
+          edgeRIDs.get(i).asEdge(true).delete();
+      });
+    }
+
+    // THE DRAINED HUB: no edges left in either direction, still promoted, still fully usable
+    database.transaction(() -> {
+      final Vertex hub = hubRID.asVertex(true);
+      assertThat(hub.countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(0);
+      assertThat(hub.getEdges(Vertex.DIRECTION.IN, "LINK").iterator().hasNext()).isFalse();
+      assertThat(hub.getVertices(Vertex.DIRECTION.IN, "LINK").iterator().hasNext()).isFalse();
+    });
+    assertThat(loadInHead(hubRID)).isInstanceOf(StripeDirectory.class);
+    assertThat(database.countType("LINK", false)).isEqualTo(0);
+
+    // THE DRAINED STRIPES MUST ACCEPT NEW EDGES (structure reusable after a full drain)
+    final List<RID> after = insertEdges(hubRID, 10);
+    database.transaction(() -> {
+      final Vertex hub = hubRID.asVertex(true);
+      assertThat(hub.countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(10);
+      assertThat(hub.isConnectedTo(after.getFirst(), Vertex.DIRECTION.IN)).isTrue();
+    });
+
+    // DELETE THE HUB: the directory and EVERY chunk must go - audit the buckets for leaked records
+    database.transaction(() -> {
+      for (final Edge e : hubRID.asVertex(true).getEdges(Vertex.DIRECTION.IN, "LINK"))
+        e.delete();
+      hubRID.asVertex(true).delete();
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.getValueAsInteger(); i++) {
+        final String bucketName = StripedEdgeList.stripeBucketName("Hub", i);
+        long residue = 0;
+        for (final Iterator<Record> it = database.iterateBucket(bucketName); it.hasNext(); it.next())
+          residue++;
+        assertThat(residue).as("records leaked in stripe bucket " + bucketName).isEqualTo(0);
+      }
+      long inChunks = 0;
+      for (final Iterator<Record> it = database.iterateBucket("Hub_0_in_edges"); it.hasNext(); it.next())
+        inChunks++;
+      assertThat(inChunks).as("records leaked in the hub's edge-list bucket").isEqualTo(0);
+    });
+  }
+
   @Test
   void dropTypeRemovesStripePool() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
