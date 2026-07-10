@@ -72,7 +72,9 @@ public class GrpcServerPlugin implements ServerPlugin {
   private volatile ArcadeDbGrpcService grpcService;  // Keep reference for cleanup
   private          Thread              shutdownHook;
 
-  // Guards stopService() so the JVM shutdown hook and the plugin-lifecycle stop cannot run the cleanup twice.
+  // Guards stopService() so the JVM shutdown hook and the plugin-lifecycle stop cannot run the cleanup twice. The
+  // plugin is intentionally single-use: stop is terminal and is never reset, matching the create-once/destroy-once
+  // ServerPlugin lifecycle. Restart-in-place is not supported (it would require nulling grpcService/healthManager too).
   private final AtomicBoolean stopped = new AtomicBoolean(false);
 
   // Configuration keys as simple strings
@@ -208,7 +210,9 @@ public class GrpcServerPlugin implements ServerPlugin {
     LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled)", port);
   }
 
-  void configureServer(ServerBuilder<?> serverBuilder, ContextConfiguration config) {
+  // synchronized so the check-then-act initialization of the shared grpcService/healthManager fields stays thread-safe
+  // even though this method is package-private (invoked from tests); in production startService drives it sequentially.
+  synchronized void configureServer(ServerBuilder<?> serverBuilder, ContextConfiguration config) {
 
     // Get database directory path
     String databasePath = arcadeServer.getRootPath() + File.separator + "databases";

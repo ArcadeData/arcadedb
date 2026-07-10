@@ -50,6 +50,9 @@ class Issue5050ProtoUtilsNoStdoutTest {
     try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       final Database db = factory.create();
       try {
+        // Build a persisted record inside a transaction, then convert + assert outside it so the assertion never
+        // interacts with the transaction wrapper.
+        final MutableDocument[] holder = new MutableDocument[1];
         db.transaction(() -> {
           final DocumentType type = db.getSchema().createDocumentType("Person");
           type.createProperty("name", com.arcadedb.schema.Type.STRING);
@@ -59,20 +62,21 @@ class Issue5050ProtoUtilsNoStdoutTest {
           doc.set("name", "secret-value");
           doc.set("age", 42);
           doc.save();
-
-          final PrintStream originalOut = System.out;
-          final ByteArrayOutputStream captured = new ByteArrayOutputStream();
-          try {
-            System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
-            ProtoUtils.toProtoRecord(doc);
-          } finally {
-            System.setOut(originalOut);
-          }
-
-          assertThat(captured.toString(StandardCharsets.UTF_8))
-              .as("toProtoRecord must not print anything to stdout")
-              .isEmpty();
+          holder[0] = doc;
         });
+
+        final PrintStream originalOut = System.out;
+        final ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        try {
+          System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+          ProtoUtils.toProtoRecord(holder[0]);
+        } finally {
+          System.setOut(originalOut);
+        }
+
+        assertThat(captured.toString(StandardCharsets.UTF_8))
+            .as("toProtoRecord must not print anything to stdout")
+            .isEmpty();
       } finally {
         db.drop();
       }
