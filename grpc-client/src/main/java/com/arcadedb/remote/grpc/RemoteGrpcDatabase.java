@@ -267,6 +267,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           if (!response.getSuccess()) {
             throw new TransactionException("Failed to commit transaction: " + response.getMessage());
           }
+          // success=true only means the RPC completed; committed=false means the server did NOT durably
+          // commit (e.g. the transaction was already rolled back by the idle reaper). Surfacing this as a
+          // failure prevents silent data loss where the client believes its writes are durable.
+          if (!response.getCommitted()) {
+            throw new TransactionException("Transaction was not committed on the server: " + response.getMessage());
+          }
         } catch (StatusRuntimeException | StatusException e) {
           handleGrpcException(e);
         } finally {
@@ -296,6 +302,19 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     }
   }
 
+  /**
+   * Rolls back the active transaction on the server.
+   *
+   * <p><b>Behavior change (issue #5042):</b> if the server reports {@code rolledBack=false} - meaning it no
+   * longer has the transaction to roll back, typically because the idle reaper already reclaimed it - this
+   * method throws a {@link TransactionException} instead of silently reporting a clean rollback. The local
+   * transaction state ({@code transactionId}/{@code sessionId}) is still cleared before the throw, so the
+   * client is left in a consistent, tx-free state.
+   *
+   * <p>This is a backward-incompatible change for callers that use {@code rollback()} in a {@code catch}/
+   * cleanup block: such callers should wrap the call in {@code try/catch} if a throw from an already-reaped
+   * transaction must not mask an earlier exception.
+   */
   @Override
   public void rollback() {
 
@@ -328,6 +347,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
           if (!response.getSuccess()) {
             throw new TransactionException("Failed to rollback transaction: " + response.getMessage());
+          }
+          // rolledBack=false means the server had no such transaction to roll back (e.g. it was already
+          // reaped). Surface it instead of silently reporting a clean rollback.
+          if (!response.getRolledBack()) {
+            throw new TransactionException("Transaction was not rolled back on the server: " + response.getMessage());
           }
         } catch (StatusRuntimeException | StatusException e) {
           throw new TransactionException("Error on transaction rollback", e);
@@ -786,6 +810,17 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * provides consistency with non-streaming query methods and supports non-Record
    * results like projections and aggregations.
    */
+  /**
+   * Binds a stream request to the client's currently active transaction, if any, so the server routes the
+   * stream to that transaction's dedicated thread and it sees the transaction's own uncommitted writes.
+   * Without this a streamed read inside a transaction would run as a throwaway read and miss in-flight
+   * changes (issue #5042).
+   */
+  private void bindActiveTransaction(final StreamQueryRequest.Builder b) {
+    if (transactionId != null)
+      b.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
+  }
+
   public ResultSet queryStream(final String language, final String query, final RemoteGrpcConfig config,
                                final Map<String, Object> params,
                                final int batchSize, final StreamQueryRequest.RetrievalMode mode) {
@@ -801,6 +836,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (params != null && !params.isEmpty()) {
       b.putAllParameters(convertParamsToGrpcValue(params));
     }
+
+    bindActiveTransaction(b);
 
     final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
         () -> blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
@@ -842,6 +879,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       b.putAllParameters(convertParamsToGrpcValue(params));
     }
 
+    bindActiveTransaction(b);
+
     final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
         () -> blockingStub.withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
 
@@ -862,6 +901,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (params != null && !params.isEmpty()) {
       b.putAllParameters(convertParamsToGrpcValue(params));
     }
+
+    bindActiveTransaction(b);
 
     final BlockingClientCall<?, QueryResult> responseIterator = callServerStreaming("StreamQuery",
         () -> blockingStub.withWaitForReady().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).streamQuery(b.build()));
