@@ -97,8 +97,9 @@ message GrpcLink {
 
 // Exact decimal without loss
 message GrpcDecimal {
-  sint64 unscaled = 1; // unscaled value
-  int32  scale    = 2; // number of decimal places
+  sint64 unscaled       = 1; // unscaled value when it fits in a signed 64-bit integer
+  int32  scale          = 2; // number of decimal places
+  bytes  unscaled_bytes = 3; // big-endian two's-complement unscaled value when it exceeds 63 bits (takes precedence over `unscaled` when non-empty)
 }
 
 message ProjectionSettings {

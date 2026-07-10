@@ -108,7 +108,7 @@ class GrpcTypeConverter {
       return new RID(v.getLinkValue().getRid());
     case DECIMAL_VALUE: {
       final var d = v.getDecimalValue();
-      return new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale());
+      return toBigDecimal(d);
     }
     case LIST_VALUE: {
       final var out = new ArrayList<>();
@@ -186,14 +186,7 @@ class GrpcTypeConverter {
       return b.setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
 
     if (o instanceof BigDecimal v) {
-      final var unscaled = v.unscaledValue();
-      if (unscaled.bitLength() <= 63) {
-        return b.setDecimalValue(
-            GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()))
-            .setLogicalType("decimal").build();
-      } else {
-        return b.setStringValue(v.toPlainString()).setLogicalType("decimal").build();
-      }
+      return b.setDecimalValue(toGrpcDecimal(v)).setLogicalType("decimal").build();
     }
 
     // Collections
@@ -267,5 +260,33 @@ class GrpcTypeConverter {
         bytes += 3;
     }
     return bytes;
+  }
+
+  /**
+   * Encode a {@link BigDecimal} into a {@link GrpcDecimal} without loss. The unscaled value is stored
+   * in the {@code unscaled} sint64 field when it fits in 63 bits; otherwise it is stored losslessly in
+   * the {@code unscaled_bytes} field (big-endian two's-complement). This preserves exact precision and
+   * scale for values whose unscaled magnitude exceeds a signed 64-bit integer (issue #5046, COR-10).
+   */
+  static GrpcDecimal toGrpcDecimal(final BigDecimal v) {
+    final BigInteger unscaled = v.unscaledValue();
+    final GrpcDecimal.Builder b = GrpcDecimal.newBuilder().setScale(v.scale());
+    if (unscaled.bitLength() <= 63)
+      b.setUnscaled(unscaled.longValue());
+    else
+      b.setUnscaledBytes(ByteString.copyFrom(unscaled.toByteArray()));
+    return b.build();
+  }
+
+  /**
+   * Reconstruct a {@link BigDecimal} from a {@link GrpcDecimal}, reading the unscaled value from the
+   * {@code unscaled_bytes} field when present (values that exceed 63 bits) and otherwise from the
+   * {@code unscaled} sint64 field (issue #5046, COR-10).
+   */
+  static BigDecimal toBigDecimal(final GrpcDecimal d) {
+    final BigInteger unscaled = d.getUnscaledBytes().isEmpty()
+        ? BigInteger.valueOf(d.getUnscaled())
+        : new BigInteger(d.getUnscaledBytes().toByteArray());
+    return new BigDecimal(unscaled, d.getScale());
   }
 }

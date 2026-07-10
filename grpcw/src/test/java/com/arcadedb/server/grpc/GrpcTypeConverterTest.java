@@ -294,6 +294,47 @@ class GrpcTypeConverterTest {
     assertThat(result.hasDecimalValue()).isTrue();
     assertThat(result.getDecimalValue().getUnscaled()).isEqualTo(12345);
     assertThat(result.getDecimalValue().getScale()).isEqualTo(2);
+    assertThat(result.getDecimalValue().getUnscaledBytes().isEmpty()).as("small unscaled uses sint64 field, not bytes").isTrue();
+  }
+
+  @Test
+  void toGrpcValueBigDecimalLargeUnscaledUsesBytesNotString() {
+    // Issue #5046 (COR-10): an unscaled value exceeding 63 bits must NOT degrade to a string_value;
+    // it must be carried losslessly in GrpcDecimal.unscaled_bytes.
+    final BigDecimal decimal = new BigDecimal("12345678901234567890.5"); // unscaled 123456789012345678905 (> 63 bits)
+    assertThat(decimal.unscaledValue().bitLength()).as("precondition: unscaled magnitude exceeds 63 bits").isGreaterThan(63);
+
+    final GrpcValue result = GrpcTypeConverter.toGrpcValue(decimal);
+
+    assertThat(result.hasDecimalValue()).as("large decimal must encode as decimal_value, not string_value").isTrue();
+    assertThat(result.getDecimalValue().getUnscaledBytes().isEmpty()).as("large unscaled must populate unscaled_bytes").isFalse();
+    assertThat(result.getDecimalValue().getScale()).isEqualTo(1);
+    assertThat(result.getLogicalType()).isEqualTo("decimal");
+  }
+
+  @Test
+  void bigDecimalLargeUnscaledRoundTripPreservesValueAndScale() {
+    // Issue #5046 (COR-10): full round-trip must return an exact BigDecimal, not a String.
+    final BigDecimal original = new BigDecimal("12345678901234567890.5");
+
+    final Object decoded = GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(original));
+
+    assertThat(decoded).as("must round-trip as BigDecimal, not degrade to String").isInstanceOf(BigDecimal.class);
+    assertThat((BigDecimal) decoded).isEqualByComparingTo(original);
+    assertThat(((BigDecimal) decoded).scale()).isEqualTo(original.scale());
+    assertThat(((BigDecimal) decoded).unscaledValue()).isEqualTo(original.unscaledValue());
+  }
+
+  @Test
+  void bigDecimalNegativeLargeUnscaledRoundTrip() {
+    // Negative unscaled values must also survive the two's-complement byte encoding.
+    final BigDecimal original = new BigDecimal("-98765432109876543210.99");
+
+    final Object decoded = GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(original));
+
+    assertThat(decoded).isInstanceOf(BigDecimal.class);
+    assertThat((BigDecimal) decoded).isEqualByComparingTo(original);
+    assertThat(((BigDecimal) decoded).unscaledValue()).isEqualTo(original.unscaledValue());
   }
 
   @Test
