@@ -405,7 +405,7 @@ public enum GlobalConfiguration {
 
   GRAPH_SUPERNODE_STRIPES("arcadedb.graph.supernodeStripes", SCOPE.DATABASE,
       "Number of stripes (separate edge-list files) a super-node's edge list is spread over at promotion. Write parallelism saturates at the number of concurrent writers, so values beyond the CPU cores rarely help. Recorded per vertex at promotion time",
-      Integer.class, 8),
+      Integer.class, 16),
 
   BACKUP_ENABLED("arcadedb.backup.enabled", SCOPE.DATABASE,
       "Allow a database to be backup. Disabling backup gives a huge boost in performance because no lock will be used for every operations",

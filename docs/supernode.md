@@ -17,7 +17,7 @@ is kept below as **reference** (section B).
 | #5147 insertion lost-update (deferred-update MVCC gap) | ✅ fixed 26.7.2 (#5148) |
 | #5153 removal-direction lost-update twin | ✅ fixed 26.7.2 (#5148) |
 | Deterministic 3-node HA correctness gate | ✅ `SuperNodeAppendHAConsistencyIT` |
-| **Adaptive striped/sharded edge list (throughput)** | 🚧 **IMPLEMENTED on this branch - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** (`GRAPH_SUPERNODE_THRESHOLD` default 128, `GRAPH_SUPERNODE_STRIPES` default 8) |
+| **Adaptive striped/sharded edge list (throughput)** | 🚧 **IMPLEMENTED on this branch - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** (`GRAPH_SUPERNODE_THRESHOLD` default 128, `GRAPH_SUPERNODE_STRIPES` default 16) |
 | **Remove-path anchoring cost optimisation** | ⏳ **TODO - [#5155](https://github.com/ArcadeData/arcadedb/issues/5155)** |
 
 Implementation notes that refined the A.1 design (2026-07-10):
