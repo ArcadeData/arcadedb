@@ -57,9 +57,15 @@ follow-ups. This PR takes the highest-leverage, zero-behavior-change items (PERF
 
 ## Tests
 - `Issue5049HotPathPerfTest` (grpcw): `bytesOf` matches `String.getBytes(UTF_8).length`
-  across ASCII, multi-byte, 4-byte (surrogate-pair) and unpaired-surrogate inputs; and a
-  regression check that gRPC value conversion round-trips identically with debug on and
-  off.
+  across ASCII, multi-byte, 4-byte (surrogate-pair) and unpaired-surrogate inputs, plus an
+  exhaustive sweep over the full BMP + supplementary code-point range; and a converter-level
+  sanity check that `GrpcTypeConverter` conversion output is independent of the debug flag.
+- The guarded per-value logging added here lives in the private
+  `ArcadeDbGrpcService.toGrpcValue`/`convert*` methods, exercised end-to-end at the default
+  (debug-off) level by the existing `ArcadeDbGrpcServiceExtendedTest` /
+  `ArcadeDbGrpcServiceCoverageIT`. The guards are behavior-neutral by construction (each only
+  wraps a `Level.FINE` log call, never a value-producing statement), so no new server IT is
+  added for the debug-on path.
 
 ## Impact
 Removes per-property/per-row string + varargs allocation on the server gRPC read and write

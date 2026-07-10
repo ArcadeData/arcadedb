@@ -32,8 +32,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * length without allocating a throwaway {@code byte[]}, matching
  * {@code String.getBytes(UTF_8).length} for every input class including unpaired surrogates.
  *
- * <p>PERF-1: toggling the debug flag must never change conversion results (the debug-summary
- * work is guarded, but the produced values are identical regardless of log level).
+ * <p>PERF-1: a converter-level sanity check that toggling the {@code debug} flag never changes
+ * conversion output. This exercises {@link GrpcTypeConverter} (which itself contains no logging);
+ * the guarded per-value logging added by this fix lives in the private
+ * {@code ArcadeDbGrpcService.toGrpcValue}/{@code convert*} paths, which are exercised end-to-end
+ * (at the default debug-off level) by {@code ArcadeDbGrpcServiceExtendedTest} and
+ * {@code ArcadeDbGrpcServiceCoverageIT}. The guards are behavior-neutral by construction: each
+ * only wraps a {@code Level.FINE} log call, never a value-producing statement.
  */
 class Issue5049HotPathPerfTest {
 
