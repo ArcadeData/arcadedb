@@ -45,7 +45,9 @@ class StreamingResultSet implements ResultSet {
   private final RemoteGrpcDatabase                 db;
   private final AtomicLong                         totalProcessed  = new AtomicLong(0);
   protected     Iterator<Result>                   currentBatch    = Collections.emptyIterator();
-  private       boolean                            streamExhausted = false;
+  // volatile: close() may run on a different thread than the iterating owner (checkCrossThreadUse only
+  // warns, it does not prevent it), so publish this flag with a happens-before edge to the reader in hasNext.
+  private volatile boolean                         streamExhausted = false;
   private       Result                             nextResult      = null;
 
   StreamingResultSet(BlockingClientCall<?, QueryResult> stream, RemoteGrpcDatabase db) {
@@ -145,17 +147,22 @@ class StreamingResultSet implements ResultSet {
 
   @Override
   public void close() {
+    // Diagnostic breadcrumb (logs a WARNING only) if close races the owning thread's iteration, consistent
+    // with hasNext/next. The actual thread-safety fix is below: cancelling the call is documented as safe
+    // from any thread, unlike the previous drain loop that shared the non-thread-safe BlockingClientCall.
+    db.checkCrossThreadUse("streamQuery.close");
+
+    if (streamExhausted)
+      return;
 
     try {
-      // Drain any remaining results
-      while (stream.hasNext()) {
-        stream.read();
-      }
+      // Cancel the underlying call instead of draining. Draining a partially-read result would transfer and
+      // decode every remaining row, keeping the server cursor/worker busy for the whole result set.
+      stream.cancel("ResultSet closed by client", null);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Exception while draining stream during close: %s", e.getMessage());
+      LogManager.instance().log(this, Level.FINE, "Exception while cancelling stream during close: %s", e.getMessage());
+    } finally {
+      streamExhausted = true;
     }
-
-    // BlockingClientCall doesn't implement AutoCloseable
-    // No need to cast or check instanceof
   }
 }
