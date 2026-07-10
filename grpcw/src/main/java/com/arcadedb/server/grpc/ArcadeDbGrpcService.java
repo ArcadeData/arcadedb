@@ -3273,8 +3273,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal),
-          summarizeJava(javaVal));
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal),
+            summarizeJava(javaVal));
       doc.set(k, javaVal);
     });
   }
@@ -3285,8 +3286,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance()
-          .log(this, Level.FINE, "APPLY-VERTEX %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance()
+            .log(this, Level.FINE, "APPLY-VERTEX %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
       vertex.set(k, javaVal);
     });
   }
@@ -3297,8 +3299,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal),
-          summarizeJava(javaVal));
+      if (LogManager.instance().isDebugEnabled())
+        LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal),
+            summarizeJava(javaVal));
       edge.set(k, javaVal);
     });
   }
@@ -4156,16 +4159,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     for (String propertyName : result.getPropertyNames()) {
       final Object value = result.getProperty(propertyName);
 
-      LogManager.instance()
-          .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-              propertyName, value, value == null ? "null" : value.getClass().getName());
+      final boolean debug = LogManager.instance().isDebugEnabled();
+
+      if (debug)
+        LogManager.instance()
+            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
+                propertyName, value, value == null ? "null" : value.getClass().getName());
 
       final GrpcValue gv = projectionConfig != null ?
           toGrpcValue(value, projectionConfig) :
           toGrpcValue(value);
 
-      LogManager.instance()
-          .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
+      if (debug)
+        LogManager.instance()
+            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
 
       builder.putProperties(propertyName, gv);
     }
@@ -4220,16 +4227,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         if (value != null) {
 
-          LogManager.instance()
-              .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
-                  , value,
-                  value.getClass());
+          final boolean debug = LogManager.instance().isDebugEnabled();
+
+          if (debug)
+            LogManager.instance()
+                .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
+                    , value,
+                    value.getClass());
 
           GrpcValue gv = toGrpcValue(value);
 
-          LogManager.instance()
-              .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
-                  summarizeGrpc(gv));
+          if (debug)
+            LogManager.instance()
+                .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
+                    summarizeGrpc(gv));
 
           builder.putProperties(propertyName, gv);
         }
@@ -4259,10 +4270,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Object propValue = result.getProperty(propName);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-            propValue,
-            propValue == null ? "null" : propValue.getClass());
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
+              propValue,
+              propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue, pc);
   }
@@ -4271,10 +4283,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Object propValue = result.getProperty(propName);
 
-    LogManager.instance()
-        .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-            propValue,
-            propValue == null ? "null" : propValue.getClass());
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
+              propValue,
+              propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue);
   }
@@ -4704,18 +4717,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
-    LogManager.instance()
-        .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
-            summarizeJava(in),
-            summarizeGrpc(out));
+    // Guard the eager summary building so nothing is allocated at the default (non-debug) log level.
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
+              summarizeJava(in),
+              summarizeGrpc(out));
     return out;
   }
 
   private Object dbgDec(String where, GrpcValue in, Object out, String ctx) {
-    LogManager.instance()
-        .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
-            summarizeGrpc(in),
-            summarizeJava(out));
+    // Guard the eager summary building so nothing is allocated at the default (non-debug) log level.
+    if (LogManager.instance().isDebugEnabled())
+      LogManager.instance()
+          .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
+              summarizeGrpc(in),
+              summarizeJava(out));
     return out;
   }
 
