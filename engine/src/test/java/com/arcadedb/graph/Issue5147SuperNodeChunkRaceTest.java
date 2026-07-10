@@ -26,7 +26,9 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -69,31 +71,35 @@ class Issue5147SuperNodeChunkRaceTest extends TestHelper {
       final RID hubRID = hubHolder[0].getIdentity();
 
       final AtomicLong committed = new AtomicLong();
+      final AtomicLong failed = new AtomicLong();
+      final AtomicReference<Throwable> firstFailure = new AtomicReference<>();
       final CountDownLatch start = new CountDownLatch(1);
       final CountDownLatch done = new CountDownLatch(THREADS);
       for (int t = 0; t < THREADS; t++) {
         new Thread(() -> {
           try {
             start.await();
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
+            for (int i = 0; i < EDGES_PER_THREAD; i++) {
+              database.transaction(() -> {
+                final MutableVertex src = database.newVertex("Src");
+                src.save();
+                src.newEdge("LINK", hubRID);
+              }, false, 10_000);
+              committed.incrementAndGet();
+            }
+          } catch (final Throwable e) {
+            // A failure must FAIL the test, not silently kill this thread and hang done.await() forever.
+            failed.incrementAndGet();
+            firstFailure.compareAndSet(null, e);
+          } finally {
             done.countDown();
-            return;
           }
-          for (int i = 0; i < EDGES_PER_THREAD; i++) {
-            database.transaction(() -> {
-              final MutableVertex src = database.newVertex("Src");
-              src.save();
-              src.newEdge("LINK", hubRID);
-            }, false, 10_000);
-            committed.incrementAndGet();
-          }
-          done.countDown();
         }).start();
       }
       start.countDown();
-      done.await();
+      assertThat(done.await(5, TimeUnit.MINUTES)).as("writer threads did not finish in time").isTrue();
 
+      assertThat(failed.get()).as("writer failures, first: " + firstFailure.get()).isZero();
       assertThat(committed.get()).isEqualTo(TOTAL);
 
       // Every committed edge must have its back-reference in the hub IN list (no lost update).

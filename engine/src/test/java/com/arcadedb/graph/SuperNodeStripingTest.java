@@ -146,6 +146,35 @@ class SuperNodeStripingTest extends TestHelper {
   }
 
   @Test
+  void promotionInsideSingleBigTransactionKeepsEveryEdge() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(128);
+    createSchema();
+    final RID hubRID = createHub();
+
+    final int total = 1_000;
+    // ONE BIG TRANSACTION: the hub's OUT list crosses the promotion threshold mid-transaction while the SAME
+    // vertex instance keeps appending - the InsertGraphIndexTest pattern that surfaced lost edges (2026-07-10).
+    database.transaction(() -> {
+      final MutableVertex hub = hubRID.asVertex(true).modify();
+      for (int i = 0; i < total; i++) {
+        final MutableVertex peer = database.newVertex("Src");
+        peer.save();
+        hub.newEdge("LINK", peer);
+      }
+    });
+
+    database.transaction(() -> {
+      final Vertex hub = hubRID.asVertex(true);
+      assertThat(hub.countEdges(Vertex.DIRECTION.OUT, "LINK")).isEqualTo(total);
+
+      final Set<RID> found = new HashSet<>();
+      for (final Vertex v : hub.getVertices(Vertex.DIRECTION.OUT, "LINK"))
+        assertThat(found.add(v.getIdentity())).isTrue();
+      assertThat(found).hasSize(total);
+    });
+  }
+
+  @Test
   void belowThresholdStaysClassic() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(10_000);
     createSchema();

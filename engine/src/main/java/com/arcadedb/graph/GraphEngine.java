@@ -26,6 +26,8 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -200,10 +202,12 @@ public class GraphEngine {
     return edge;
   }
 
-  public void connectOutgoingEdge(VertexInternal fromVertex, final Identifiable toVertex, final Edge edge) {
-    fromVertex = fromVertex.modify();
-
-    getOrCreateEdgeList((MutableVertex) fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
+  public void connectOutgoingEdge(final VertexInternal fromVertex, final Identifiable toVertex, final Edge edge) {
+    // No eager modify(): materialising the MutableVertex anchors the vertex page in the transaction, putting
+    // the vertex FILE into the commit lock set of EVERY append and serialising all writers on a hot vertex
+    // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
+    // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
+    getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
   }
 
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
@@ -236,9 +240,8 @@ public class GraphEngine {
       edges.add(edge);
     }
 
-    sourceVertex = sourceVertex.modify();
-
-    getOrCreateEdgeList((MutableVertex) sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
+    // No eager modify() - see connectOutgoingEdge.
+    getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
 
     if (bidirectional) {
       for (int i = 0; i < outEdgePairs.size(); ++i) {
@@ -251,9 +254,10 @@ public class GraphEngine {
   }
 
   public void connectIncomingEdge(final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
-    final MutableVertex toVertexRecord = toVertex.asVertex().modify();
-
-    getOrCreateEdgeList(toVertexRecord, Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+    // No eager modify() - see connectOutgoingEdge. On a super-node target the eager MutableVertex would
+    // serialise every concurrent append on the target vertex file's commit lock, which measured as THE
+    // bottleneck (all writers queueing one replication round each) regardless of the edge-list layout.
+    getOrCreateEdgeList((VertexInternal) toVertex.asVertex(), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
   }
 
   /**
@@ -262,34 +266,74 @@ public class GraphEngine {
    * (super-node promoted vertex, #5156) yields a {@link StripedEdgeList}. The head page is anchored in the
    * transaction at read time (#5147/#5153).
    */
-  public EdgeLinkedList getOrCreateEdgeList(final MutableVertex vertex, final Vertex.DIRECTION direction) {
+  public EdgeLinkedList getOrCreateEdgeList(VertexInternal vertex, final Vertex.DIRECTION direction) {
+    // Resolve the transaction's own WRITTEN copy of the vertex first (a cache lookup, NO page anchoring):
+    // head-pointer updates are DEFERRED, so the freshest head may live only in the transaction's
+    // updated-records. Reading a stale head from an older immutable copy would re-create or re-flip the chain
+    // and orphan chunks appended earlier in this same transaction (lost edges). Read-only cached copies are
+    // deliberately NOT consulted (see TransactionContext.getWrittenRecord).
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      final Record inTx = tx.getWrittenRecord(vertex.getIdentity());
+      if (inTx instanceof VertexInternal inTxVertex && inTx != vertex)
+        vertex = inTxVertex;
+    }
+
     RID headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
 
     if (headRID != null)
       try {
-        anchorHeadChunkPage(headRID);
+        // The transaction's own WRITTEN copy of the head (multi-append transaction) is authoritative: its
+        // pending appends live only in that object until commit, and its page is already anchored.
+        final TransactionContext headTx = database.getTransactionIfExists();
+        if (headTx != null && headTx.getWrittenRecord(headRID) instanceof EdgeSegment written)
+          return new EdgeLinkedList(vertex, direction, written);
+
         final Record head = database.lookupByRID(headRID, true);
         if (head instanceof StripeDirectory directory)
+          // DO NOT anchor the directory page here: an anchored-but-unmodified page still contributes its FILE
+          // to the commit lock set, serialising every striped append through the directory's file across the
+          // replication round. StripedEdgeList anchors it only on slot writes (~1/1000 appends).
           return new StripedEdgeList(vertex, direction, directory);
-        return new EdgeLinkedList(vertex, direction, (EdgeSegment) head);
+        // CLASSIC list: anchor the head chunk page at read time (#5147) - it is about to be appended to -
+        // and RE-READ the chunk THROUGH the anchored page, bypassing the record cache: the dispatch read
+        // above happened BEFORE the anchor, so a concurrent commit publishing in between would leave a
+        // one-version-older buffer paired with the fresh page version, and writing that stale buffer back
+        // at commit would silently erase the concurrent append (no MVCC conflict - the version matches).
+        anchorHeadChunkPage(headRID);
+        final LocalBucket headBucket = (LocalBucket) database.getSchema().getBucketById(headRID.getBucketId());
+        return new EdgeLinkedList(vertex, direction,
+            new MutableEdgeSegment(database, headRID, headBucket.getRecord(headRID).copyOfContent()));
       } catch (final RecordNotFoundException e) {
-        LogManager.instance()
-            .log(this, Level.SEVERE, "Record %s (%s edges head chunk) not found on vertex %s. Creating a new one", headRID,
-                direction, vertex.getIdentity());
-        headRID = null;
+        // TRANSIENT by construction: a concurrent commit publishes its pages one file at a time and this
+        // reader takes no commit lock, so the vertex page can expose the new head RID a moment before the
+        // head chunk's page is visible. Surface a retryable conflict so the transaction retry re-reads a
+        // consistent view. The previous behaviour - resetting the head to a fresh chunk - ORPHANED the whole
+        // existing list here (silent edge loss) whenever this window was hit.
+        throw new ConcurrentModificationException(
+            "Edge list " + direction + " head chunk " + headRID + " of vertex " + vertex.getIdentity()
+                + " not visible yet (concurrent commit in flight)");
       }
 
-    // FIRST EDGE IN THIS DIRECTION: CREATE THE INITIAL CHUNK
+    // FIRST EDGE IN THIS DIRECTION: the vertex record itself is rewritten (head pointer), so materialise the
+    // mutable copy only now - anchoring the vertex page is correct here because the vertex is in the write set.
+    // modify() reloads the record when it is not already part of the transaction: re-check the head, a
+    // concurrent transaction may have created it in the meantime.
+    final MutableVertex mutable = vertex.modify();
+    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.getOutEdgesHeadChunk() : mutable.getInEdgesHeadChunk();
+    if (reloadedHead != null)
+      return getOrCreateEdgeList(mutable, direction);
+
     final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
-    database.createRecord(chunk, getEdgesBucketName(vertex.getIdentity().getBucketId(), direction));
+    database.createRecord(chunk, getEdgesBucketName(mutable.getIdentity().getBucketId(), direction));
 
     if (direction == Vertex.DIRECTION.OUT)
-      vertex.setOutEdgesHeadChunk(chunk.getIdentity());
+      mutable.setOutEdgesHeadChunk(chunk.getIdentity());
     else
-      vertex.setInEdgesHeadChunk(chunk.getIdentity());
-    database.updateRecord(vertex);
+      mutable.setInEdgesHeadChunk(chunk.getIdentity());
+    database.updateRecord(mutable);
 
-    return new EdgeLinkedList(vertex, direction, chunk);
+    return new EdgeLinkedList(mutable, direction, chunk);
   }
 
   public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {

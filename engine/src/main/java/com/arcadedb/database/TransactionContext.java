@@ -224,6 +224,20 @@ public class TransactionContext implements Transaction {
     this.requester = requester;
   }
 
+  /**
+   * Returns the transaction's own WRITTEN copy of a record - a deferred update ({@code updatedRecords}) or the
+   * mutable working copy ({@code modifiedRecordsCache}) - or null when this transaction has not written it.
+   * Unlike {@link #getRecordFromCache(RID)} it NEVER returns a read-only cached record: callers that need to
+   * re-read their own deferred writes (updates are applied to pages only at commit) use this so a stale
+   * read-only copy can never masquerade as the current state and silently roll back a concurrent change.
+   */
+  public Record getWrittenRecord(final RID rid) {
+    Record rec = updatedRecords != null ? updatedRecords.get(rid) : null;
+    if (rec == null)
+      rec = modifiedRecordsCache.get(rid);
+    return rec;
+  }
+
   public Record getRecordFromCache(final RID rid) {
     Record rec = modifiedRecordsCache.get(rid);
     if (rec == null)

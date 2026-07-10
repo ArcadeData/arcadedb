@@ -24,7 +24,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 
@@ -92,6 +94,11 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
         String.valueOf(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger())));
     final int savedSupernodeThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(supernodeThreshold);
+    // Stripe count knob (#5156): -DsupernodeStripes=N sizes the pool created at promotion.
+    final int supernodeStripes = Integer.parseInt(System.getProperty("supernodeStripes",
+        String.valueOf(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.getValueAsInteger())));
+    final int savedSupernodeStripes = GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.getValueAsInteger();
+    GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(supernodeStripes);
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {
@@ -117,6 +124,27 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
       });
       final RID hubRID = hubHolder[0];
       waitForReplicationIsCompleted(leaderIndex);
+
+      // WARM-UP (single-threaded, untimed): cross the promotion threshold and wait for the hub to actually be
+      // promoted (the stripe-pool DDL is deferred to a background thread under HA, so promotion lands on a later
+      // chunk-full). The timed phase below then measures the STEADY-STATE striped layout, not the one-off
+      // promotion + DDL transition. Warm-up edges are added to the expected final degree.
+      long warmupEdges = 0;
+      if (superNode && supernodeThreshold > 0) {
+        final long warmupBegin = System.currentTimeMillis();
+        while (warmupEdges < 5_000) {
+          leaderDB.transaction(() -> {
+            final MutableVertex src = leaderDB.newVertex("Src");
+            src.set("thread", -1);
+            src.save();
+            src.newEdge("LINK", hubRID);
+          }, false, MAX_RETRIES);
+          if (++warmupEdges % 25 == 0 && isPromoted(leaderDB, hubRID))
+            break;
+        }
+        LogManager.instance().log(this, Level.WARNING, "SUPER-NODE BENCH: warm-up done, %d edges in %d ms, hub promoted=%s",
+            warmupEdges, System.currentTimeMillis() - warmupBegin, isPromoted(leaderDB, hubRID));
+      }
 
       final PageManager pageManager = ((DatabaseInternal) leaderDB).getPageManager();
       final long conflictsBefore = pageManager.getStats().concurrentModificationExceptions;
@@ -155,9 +183,11 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
               }
             }, false, MAX_RETRIES);
             final long dt = System.nanoTime() - t0;
-            committed.incrementAndGet();
+            final long soFar = committed.incrementAndGet();
             totalLatencyNs.addAndGet(dt);
             maxLatencyNs.accumulateAndGet(dt, Math::max);
+            if (soFar % 500 == 0)
+              LogManager.instance().log(this, Level.WARNING, "SUPER-NODE BENCH: %d/%d committed", soFar, TOTAL_EDGES);
           }
           done.countDown();
         }, "ha-append-worker-" + threadId).start();
@@ -189,6 +219,7 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
           workload             : %s
           append-merge enabled : %b
           supernode threshold  : %d
+          supernode stripes    : %d
           threads              : %d
           edges committed       : %d (target %d)
           per-server IN-degree  : %s
@@ -203,7 +234,8 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
           =====================================================================""".formatted(
           superNode ? "super-node (shared hub)" : "control (distinct targets)",
           GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.getValueAsBoolean(),
-          GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger(), THREADS, committed.get(), TOTAL_EDGES,
+          GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger(),
+          GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.getValueAsInteger(), THREADS, committed.get(), TOTAL_EDGES,
           java.util.Arrays.toString(perServerDegree), attempts.get(), retries, 100.0 * retries / TOTAL_EDGES, merges,
           conflicts, elapsed, TOTAL_EDGES / (elapsed / 1000.0), totalLatencyNs.get() / 1e6 / TOTAL_EDGES,
           maxLatencyNs.get() / 1e6);
@@ -222,12 +254,23 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
         for (int s = 1; s < getServerCount(); s++)
           assertThat(perServerDegree[s]).as("server %d degree vs leader", s).isEqualTo(perServerDegree[0]);
         // ... and every committed edge survived (#5147 fixed: no lost update on the hub head chunk).
-        assertThat(perServerDegree[0]).isEqualTo(TOTAL_EDGES);
+        assertThat(perServerDegree[0]).isEqualTo(TOTAL_EDGES + warmupEdges);
       }
     } finally {
       GlobalConfiguration.TX_RETRY_DELAY.setValue(savedRetryDelay);
       GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE.setValue(savedMerge);
       GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedSupernodeThreshold);
+      GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(savedSupernodeStripes);
     }
+  }
+
+  /** True when the hub's IN edge-list head is a {@link StripeDirectory} (the vertex has been promoted). */
+  private static boolean isPromoted(final Database db, final RID hubRID) {
+    final boolean[] promoted = new boolean[1];
+    db.transaction(() -> {
+      final RID head = ((VertexInternal) hubRID.asVertex(true)).getInEdgesHeadChunk();
+      promoted[0] = head != null && db.lookupByRID(head, true) instanceof StripeDirectory;
+    });
+    return promoted[0];
   }
 }

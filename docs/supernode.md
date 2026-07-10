@@ -62,6 +62,103 @@ Implementation notes that refined the A.1 design (2026-07-10):
   transactions to the caller instead of retrying. The catch now rethrows every
   `NeedRetryException` as-is. This affects any heavily concurrent workload on
   main, independent of striping.
+- **Cross-file commit publication is not atomic for uncoordinated readers**: a
+  concurrent commit's directory page can become visible a moment before the
+  stripe chunk page of the same commit (pages are published one at a time and a
+  plain reader takes no commit lock), so a freshly-read stripe head RID can
+  transiently resolve to "record not found". `StripedEdgeList` maps that
+  `RecordNotFoundException` to a retryable `ConcurrentModificationException`
+  (`loadStripeHead`), letting the transaction retry loop re-read a consistent
+  view. Found by `Issue5147SuperNodeChunkRaceTest` under the default threshold.
+
+### Two lost-update gaps found by the widened test net (2026-07-10)
+
+Running the whole `com.arcadedb.graph` package (270 tests, incl. merge-disabled
+concurrency runs) after the hot-vertex fix surfaced two silent lost-update gaps.
+Both are of the same family as #5147: a WRITE based on a record buffer whose
+page registration does not match the version the buffer was read at.
+
+1. **Deferred-update erase inside one transaction.** Record updates are DEFERRED
+   (`updatedRecords`, applied to pages only at commit), so re-reading a record
+   raw from its page mid-transaction resurrects the pre-update state, and a
+   subsequent `updateRecord` REPLACES the earlier deferred copy - silently
+   erasing this transaction's own previous writes. Hit twice: the striped
+   directory's slot updates (each stripe chunk-full erased all earlier slot
+   updates in the same transaction - `InsertGraphIndexTest` lost 690/1000
+   edges), and the classic head chunk in multi-append transactions. Rule now
+   enforced: writers re-read their own deferred writes via
+   `TransactionContext.getWrittenRecord()` - updated-records/mutable working
+   copy ONLY, never the read-only record cache (a read-only cached copy may be
+   one committed version older and would roll a concurrent change back).
+2. **Pre-anchor read paired with a post-anchor version.** The factory's striped
+   dispatch reads the head record BEFORE anchoring its page (deliberate - a
+   directory anchor would re-serialise striped appends). If a concurrent commit
+   publishes between that read and `anchorHeadChunkPage`, the transaction holds
+   a ONE-VERSION-OLDER buffer at the FRESH page version: the commit-time MVCC
+   check passes (versions match) and the stale buffer overwrites the concurrent
+   append. Deterministically reproduced with merge disabled (classic hub lost
+   ~140/32000 per run; the page-version write history shows the winner of
+   version N+1 carrying version N-1's entry count). Fix: classic head loads and
+   `loadChunkForWrite` re-read the chunk THROUGH the just-anchored page
+   (bucket-level read, bypassing the record cache), after first preferring the
+   transaction's own written copy per rule 1.
+
+Also hardened: a transiently unresolvable head RID (a concurrent commit's pages
+publish one file at a time; readers take no commit lock) now surfaces as a
+retryable `ConcurrentModificationException` everywhere - the factory previously
+"recovered" by RESETTING the head to a fresh chunk, orphaning the entire
+existing list (observed: 145 edges gone in one hit). Merge-disabled concurrency
+runs: 5/5 classic + 10/10 striped green after these fixes.
+
+### The hot-vertex file lock: the REAL super-node serialiser under HA (found 2026-07-10)
+
+With striping in place the 3-node benchmark refused to move: classic, 8 stripes
+and 32 stripes all pinned at ~52 edges/s and ~153 ms average latency, while the
+no-hub control did 104/s. A sampled trace of the commit lock sets showed why:
+**the hub vertex's own bucket file was in the lock set of EVERY append
+transaction**, held for a full replication round (p50 ≈ 19 ms) - 8 threads
+serialising on one 19 ms lock is exactly 52/s, regardless of the edge-list
+layout.
+
+Root cause (pre-existing on main, NOT a striping bug):
+`GraphEngine.connectIncomingEdge` (and the OUT twins) eagerly called
+`vertex.modify()` before touching the edge list. For a vertex not already in
+the transaction, `ImmutableVertex.modify()` reloads the record via
+`getPageToModify(...)`, which anchors the vertex page - and an
+anchored-but-unmodified page still contributes its FILE to the commit lock set.
+The vertex record is only actually rewritten on a head flip (rare), first-chunk
+creation (once) or promotion (once); every other append paid the lock for
+nothing. This also explains why the 26.7.2 append-merge plateaued at ~52-57/s:
+the merge removed the retry storm, but every hub append still queued one full
+replication round on the hub vertex file.
+
+Fix on this branch: the connect paths pass the immutable vertex down and
+`modify()` happens only in the three paths that really rewrite the vertex
+record, each guarded by a stale-head re-check (`modify()` reloads the record,
+so a concurrently moved head is detected and surfaced as a retryable conflict
+instead of silently orphaning the concurrent chunk - the MVCC protection the
+eager anchor used to provide, without the per-append lock).
+
+Measured effect (same build, same day, 3-node Raft, 8 writer threads x 500
+edges into one hub, promotion transition excluded via single-threaded warm-up):
+
+| run | throughput | avg / max commit latency | MVCC conflicts | full retries |
+|---|---|---|---|---|
+| classic hub, BEFORE fix | 52/s | 154 ms / 0.4 s | 4115 | 3.4% |
+| striped 8, BEFORE fix | 51/s | 153 ms / 0.6 s | 2428 | 2.2% |
+| striped 32, BEFORE fix | 52/s | 152 ms / 0.7 s | 857 | 2.9% |
+| classic hub, AFTER fix | 58/s | 136 ms / 1.1 s | 4107 | 3.4% |
+| **striped 8, AFTER fix** | **79/s** | **101 ms / 0.6 s** | 2395 | 5.1% |
+| **striped 32, AFTER fix** | **120/s** | **66 ms / 0.26 s** | 923 | 3.7% |
+| control (no shared hub) | 104/s | 76 ms / 0.3 s | 1892 | 47.3% |
+
+With the hot-vertex lock gone and 32 stripes, the super-node workload
+**out-throughputs the control**: stripes + append-merge absorb hub conflicts
+with 3.7% full retries, while the control burns 47% full retries on its own
+bucket collisions. 8 threads on 8 stripes still collide ~60% of the time
+(birthday math), so the stripe count is the scaling lever; a follow-up could
+size the default relative to expected writer concurrency (the generational
+directory already supports growing the stripe count later).
 
 ---
 

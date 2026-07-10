@@ -24,6 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
@@ -160,7 +161,7 @@ public class StripedEdgeList extends EdgeLinkedList {
     EdgeSegment head = null;
     final RID headRID = directory.getHead(generation, slot);
     if (headRID != null) {
-      head = loadChunkForWrite(headRID);
+      head = loadStripeHead(headRID);
       if (append(head, edgeRID, vertexRID))
         return;
     }
@@ -183,7 +184,7 @@ public class StripedEdgeList extends EdgeLinkedList {
 
     if (!freshHeadRID.equals(headRID)) {
       // A CONCURRENT TRANSACTION ALREADY REPLACED THE HEAD: APPEND INTO THE CURRENT ONE
-      head = loadChunkForWrite(freshHeadRID);
+      head = loadStripeHead(freshHeadRID);
       if (append(head, edgeRID, vertexRID))
         return;
     }
@@ -196,6 +197,22 @@ public class StripedEdgeList extends EdgeLinkedList {
     newChunk.setPrevious(head);
     database.createRecord(newChunk, database.getSchema().getBucketById(head.getIdentity().getBucketId()).getName());
     updateSlot(fresh, generation, slot, newChunk.getIdentity());
+  }
+
+  /**
+   * Loads a stripe head chunk for write, mapping a transient miss to a retryable conflict: the directory page
+   * and the stripe chunk page of a concurrent commit are published one page at a time (readers take no commit
+   * lock), so a freshly-read head RID can momentarily point to a record whose page is not visible yet. That is
+   * transient by construction - surfacing it as {@link ConcurrentModificationException} lets the transaction
+   * retry loop re-read a consistent view instead of failing with a spurious "record not found".
+   */
+  private EdgeSegment loadStripeHead(final RID headRID) {
+    try {
+      return loadChunkForWrite(headRID);
+    } catch (final RecordNotFoundException e) {
+      throw new ConcurrentModificationException(
+          "Stripe head chunk " + headRID + " not visible yet (concurrent commit in flight on vertex " + vertex.getIdentity() + ")");
+    }
   }
 
   /** In-place append + merge tracking; false if the chunk is full. */
@@ -377,6 +394,15 @@ public class StripedEdgeList extends EdgeLinkedList {
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on loading stripe directory page " + dirRID, e);
     }
+    // Prefer the transaction's own WRITTEN copy of the directory: slot updates are DEFERRED (updated-records),
+    // so a raw page read here would resurrect the pre-update state and each subsequent updateRecord would
+    // silently ERASE the slot updates made earlier in this same transaction (orphaning their chunks - lost
+    // edges). Only the WRITTEN copy qualifies: a read-only cached copy (factory load) may be STALE relative to
+    // the page just anchored above, and trusting it would re-flip a slot over a concurrently committed head
+    // with no MVCC conflict (the page was anchored at the current version) - orphaning that chunk instead.
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && tx.getWrittenRecord(dirRID) instanceof StripeDirectory inTx)
+      return inTx;
     return new StripeDirectory(database, dirRID, bucket.getRecord(dirRID).copyOfContent());
   }
 
