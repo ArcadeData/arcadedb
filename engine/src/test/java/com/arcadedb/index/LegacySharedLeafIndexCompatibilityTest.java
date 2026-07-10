@@ -64,6 +64,15 @@ class LegacySharedLeafIndexCompatibilityTest {
     }
   }
 
+  private long count(final IndexCursor cursor) {
+    long count = 0;
+    while (cursor.hasNext()) {
+      cursor.next();
+      count++;
+    }
+    return count;
+  }
+
   private void assertCounts(final Database database) {
     final ResultSet scan = database.query("sql", "SELECT count(*) AS c FROM Tok WHERE word.trim() = 'dup'");
     assertThat(((Number) scan.next().getProperty("c")).longValue()).as("full scan count").isEqualTo(EXPECTED_DUPLICATES);
@@ -71,10 +80,17 @@ class LegacySharedLeafIndexCompatibilityTest {
     final ResultSet indexed = database.query("sql", "SELECT count(*) AS c FROM Tok WHERE word = 'dup' AND lang = 'xx'");
     assertThat(((Number) indexed.next().getProperty("c")).longValue()).as("legacy compacted-index lookup count")
         .isEqualTo(EXPECTED_DUPLICATES);
+
+    final TypeIndex index = database.getSchema().getType("Tok").getIndexByProperties("word", "lang");
+    final Object[] fullKey = { "dup", "xx" };
+    assertThat(count(index.range(true, fullKey, true, fullKey, true))).as("ascending full-key range count")
+        .isEqualTo(EXPECTED_DUPLICATES);
+    assertThat(count(index.range(false, fullKey, true, fullKey, true))).as("descending full-key range count")
+        .isEqualTo(EXPECTED_DUPLICATES);
   }
 
   @Test
-  void exactLookupReadsFirstChunkFromSharedPrecedingLeaf() throws IOException {
+  void lookupsReadFirstChunkFromSharedPrecedingLeaf() throws IOException {
     extractFixture();
 
     try (DatabaseFactory factory = new DatabaseFactory(tempDir.toString())) {

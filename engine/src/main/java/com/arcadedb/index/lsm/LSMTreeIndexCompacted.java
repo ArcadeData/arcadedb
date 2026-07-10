@@ -377,7 +377,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       int pageInSeries = resultInRootPage.keyIndex;
 
       if (resultInRootPage.found) {
-        if (pageInSeries >= rootPageCount)
+        if (ascendingOrder) {
+          // Start at the first matching leaf, plus its possible shared predecessor for files written before the overflow
+          // safeguard. A non-matching predecessor advances to the next page in the page-level lookup below.
+          final int firstMatchingRootEntry = resultInRootPage.valueBeginPositions != null
+              ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
+              : resultInRootPage.keyIndex;
+          pageInSeries = Math.max(0, firstMatchingRootEntry - 1);
+        } else if (pageInSeries >= rootPageCount)
           // LAST ITEM + FOUND = IT'S THE LAST ELEMENT OF THE LAST PAGE
           --pageInSeries;
       } else
