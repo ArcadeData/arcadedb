@@ -21,12 +21,15 @@ package com.arcadedb.function.misc;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import java.util.Objects;
+import com.arcadedb.serializer.BinaryComparator;
 
 /**
  * nullIf() function - returns null if two values are equal, otherwise returns the first value.
  * Cypher signature: nullIf(value1, value2)
+ * <p>
+ * Equality follows Cypher value semantics: numeric operands are compared by value across types
+ * (e.g. a node property stored as Integer equals the Long-typed literal {@code 1}), so this uses
+ * {@link BinaryComparator#equals(Object, Object)} rather than {@link java.util.Objects#equals}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -40,7 +43,7 @@ public class NullIfFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 2)
       throw new CommandExecutionException("nullIf() requires exactly 2 arguments");
-    if (Objects.equals(args[0], args[1]))
+    if (BinaryComparator.equals(args[0], args[1]))
       return null;
     return args[0];
   }
