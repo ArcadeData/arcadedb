@@ -139,13 +139,30 @@ class ProtoUtilsTest {
 
   @Test
   void toGrpcValueBigDecimalLarge() {
-    // Test with a BigDecimal that exceeds long range
+    // Issue #5046 (COR-10): a BigDecimal whose unscaled value exceeds 63 bits must be carried
+    // losslessly in GrpcDecimal.unscaled_bytes, NOT degraded to a string_value.
     final BigDecimal largeDec = new BigDecimal("9999999999999999999999.123456");
+    assertThat(largeDec.unscaledValue().bitLength()).as("precondition: unscaled magnitude exceeds 63 bits").isGreaterThan(63);
+
     final GrpcValue value = ProtoUtils.toGrpcValue(largeDec);
 
-    // Should fall back to string representation
-    assertThat(value.hasStringValue()).isTrue();
-    assertThat(value.getStringValue()).contains("9999999999999999999999.123456");
+    assertThat(value.hasDecimalValue()).as("large decimal must encode as decimal_value, not string_value").isTrue();
+    assertThat(value.getDecimalValue().getUnscaledBytes().isEmpty()).as("large unscaled must populate unscaled_bytes").isFalse();
+    assertThat(value.getDecimalValue().getScale()).isEqualTo(6);
+  }
+
+  @Test
+  void roundTripBigDecimalLargeUnscaled() {
+    // Issue #5046 (COR-10): full client round-trip must return an exact BigDecimal for a >63-bit
+    // unscaled value, preserving both value and scale.
+    final BigDecimal original = new BigDecimal("9999999999999999999999.123456");
+
+    final Object result = ProtoUtils.fromGrpcValue(ProtoUtils.toGrpcValue(original));
+
+    assertThat(result).as("must round-trip as BigDecimal, not degrade to String").isInstanceOf(BigDecimal.class);
+    assertThat((BigDecimal) result).isEqualByComparingTo(original);
+    assertThat(((BigDecimal) result).scale()).isEqualTo(original.scale());
+    assertThat(((BigDecimal) result).unscaledValue()).isEqualTo(original.unscaledValue());
   }
 
   @Test
@@ -481,8 +498,12 @@ class ProtoUtilsTest {
     final GrpcValue grpcValue = ProtoUtils.toGrpcValue(date);
     final Object result = ProtoUtils.fromGrpcValue(grpcValue);
 
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat((Long) result).isEqualTo(1234567890000L);
+    // Issue #5045: a Date carries logical_type "datetime", so it now round-trips to a temporal
+    // (LocalDateTime at the same UTC instant) instead of a bare Long epoch-millis. The previous
+    // Long assertion documented the COR-5 type-loss defect this issue fixes.
+    assertThat(result).isInstanceOf(LocalDateTime.class);
+    assertThat((LocalDateTime) result)
+        .isEqualTo(LocalDateTime.ofEpochSecond(1234567890L, 0, ZoneOffset.UTC));
   }
 
   private void assertRoundTrip(final Object original) {

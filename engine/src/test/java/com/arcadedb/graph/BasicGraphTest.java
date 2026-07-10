@@ -25,6 +25,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -663,6 +664,7 @@ public class BasicGraphTest extends BaseGraphTest {
   }
 
   // https://github.com/ArcadeData/arcadedb/issues/577
+  // https://github.com/ArcadeData/arcadedb/issues/5194: must be a clean SchemaException, not a ClassCastException
   @Test
   void edgeTypeNotFromVertex() {
     final var vType = database.getSchema().createVertexType("a-vertex");
@@ -673,7 +675,9 @@ public class BasicGraphTest extends BaseGraphTest {
     final var v2 = database.newVertex("a-vertex").save();
 
     assertThatThrownBy(() -> v1.newEdge("a-vertex", v2))
-        .isInstanceOf(ClassCastException.class);
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("a-vertex")
+        .hasMessageContaining("is not an edge type");
   }
 
   // https://github.com/ArcadeData/arcadedb/issues/3152

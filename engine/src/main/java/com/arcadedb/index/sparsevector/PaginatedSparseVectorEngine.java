@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
@@ -656,21 +657,23 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
           componentRef[0] = createComponent(newId);
           try {
-            database.transaction(() -> {
-              try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params)) {
-                b.setSegmentId(newId);
-                final long[] parentIds = new long[inputs.length];
-                for (int i = 0; i < inputs.length; i++)
-                  parentIds[i] = inputs[i].segmentId();
-                b.setParentSegments(parentIds);
-                try {
-                  wroteAnything[0] = mergeIntoBuilder(b, inputs, dropAllTombstones);
-                } catch (final IOException e) {
-                  throw new IndexException("Failed to merge sparse segments during compaction", e);
-                }
-                b.finish();
+            // No enclosing database.transaction(): the builder streams merged pages straight to
+            // disk in RAM-bounded chunks (issue #5189) so a compacted segment past the WALFile
+            // 2 GB per-transaction ceiling - the FP32-at-10M case - compacts fine. HA replicates
+            // the finished file via serializeFilePagesAsWal reading its on-disk pages.
+            try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params, segmentBuildChunkBytes())) {
+              b.setSegmentId(newId);
+              final long[] parentIds = new long[inputs.length];
+              for (int i = 0; i < inputs.length; i++)
+                parentIds[i] = inputs[i].segmentId();
+              b.setParentSegments(parentIds);
+              try {
+                wroteAnything[0] = mergeIntoBuilder(b, inputs, dropAllTombstones);
+              } catch (final IOException e) {
+                throw new IndexException("Failed to merge sparse segments during compaction", e);
               }
-            });
+              b.finish();
+            }
           } catch (final RuntimeException buildFailure) {
             // Same orphan-protection as flush(): drop the partial component so the next
             // refreshSegmentsFromFileManager scan doesn't try to open an empty file.
@@ -982,29 +985,43 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * Returns the registered component so the caller can open a {@link PaginatedSegmentReader}
    * over it under the same recording session.
    */
+  /**
+   * RAM budget (in bytes) for segment pages buffered before a batched disk flush during a
+   * build/compaction. Reuses {@code INDEX_COMPACTION_RAM_MB} - the same knob the LSM compactor
+   * uses - so both compactors share one operator-facing tuning point, and caps it at 30% of max
+   * heap (also matching the LSM compactor) so an over-large configured value cannot itself OOM.
+   */
+  private long segmentBuildChunkBytes() {
+    final long configured = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_COMPACTION_RAM_MB) * 1024L * 1024L;
+    final long maxUsable = Runtime.getRuntime().maxMemory() * 30 / 100;
+    return Math.max(params.pageSize(), Math.min(configured, maxUsable));
+  }
+
   private SparseSegmentComponent buildSegmentComponent(final long segmentId, final Memtable old) {
     final SparseSegmentComponent component = createComponent(segmentId);
     try {
-      database.transaction(() -> {
-        try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, params)) {
-          b.setSegmentId(segmentId);
-          for (final int dim : old.sortedDims()) {
-            final Iterator<MemtablePosting> it = old.iterateDim(dim);
-            if (!it.hasNext())
-              continue;
-            b.startDim(dim);
-            while (it.hasNext()) {
-              final MemtablePosting p = it.next();
-              if (p.tombstone())
-                b.appendTombstone(p.rid());
-              else
-                b.appendPosting(p.rid(), p.weight());
-            }
-            b.endDim();
+      // No enclosing database.transaction(): the builder streams pages straight to disk in
+      // RAM-bounded chunks (issue #5189), so a segment larger than the WALFile 2 GB per-transaction
+      // ceiling - or larger than heap - builds fine. HA still replicates it via
+      // serializeFilePagesAsWal reading the finished on-disk file.
+      try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, params, segmentBuildChunkBytes())) {
+        b.setSegmentId(segmentId);
+        for (final int dim : old.sortedDims()) {
+          final Iterator<MemtablePosting> it = old.iterateDim(dim);
+          if (!it.hasNext())
+            continue;
+          b.startDim(dim);
+          while (it.hasNext()) {
+            final MemtablePosting p = it.next();
+            if (p.tombstone())
+              b.appendTombstone(p.rid());
+            else
+              b.appendPosting(p.rid(), p.weight());
           }
-          b.finish();
+          b.endDim();
         }
-      });
+        b.finish();
+      }
     } catch (final RuntimeException buildFailure) {
       // The build aborted (e.g. dim_index page overflow when a single segment has more unique
       // dims than fit in one page). createComponent already registered the segment file with the
@@ -1231,25 +1248,58 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   private void loadExistingSegments() {
     final List<PaginatedSegmentReader> readers = new ArrayList<>();
+    // Highest id seen across BOTH readable segments and unreadable orphan files, used to prime
+    // nextSegmentId so a fresh build never reuses an id whose file still exists on disk.
+    long highestSegmentFileId = 0L;
 
     // Walk every registered file by id; sparse segment components whose name strictly matches
     // {@code <indexName>_seg<digits>} belong to this engine.
     for (final var componentFile : database.getFileManager().getFiles()) {
       if (!isOurSegmentFile(componentFile))
         continue;
+      final long parsedId = parseSegmentId(componentFile.getComponentName());
+      if (parsedId > highestSegmentFileId)
+        highestSegmentFileId = parsedId;
       final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
       if (component instanceof SparseSegmentComponent ssc) {
         try {
           readers.add(new PaginatedSegmentReader(ssc));
         } catch (final IOException e) {
-          throw new IndexException("Failed to open sparse segment component '" + ssc.getName() + "'", e);
+          // A partial/unreadable segment file is a never-published orphan from a hard crash
+          // mid-build: the build streams pages to disk outside any transaction (issue #5189), so a
+          // JVM kill can leave a file whose page-0 header was never back-patched. It was never part
+          // of a queried segment set, so skipping it loses no committed data - and its id is kept
+          // out of the reusable range (above) so a fresh build cannot collide with its file name.
+          LogManager.instance().log(this, Level.WARNING,
+              "Skipping unreadable sparse segment '%s' (likely a crash-interrupted build); it will be ignored: %s",
+              null, ssc.getName(), e.getMessage());
         }
       }
     }
     readers.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
-    if (!readers.isEmpty()) {
+    if (!readers.isEmpty())
       segments.set(readers.toArray(new PaginatedSegmentReader[0]));
-      nextSegmentId.set(readers.getLast().segmentId() + 1L);
+    final long highestReadable = readers.isEmpty() ? 0L : readers.getLast().segmentId();
+    final long floor = Math.max(highestReadable, highestSegmentFileId);
+    if (floor > 0L)
+      nextSegmentId.set(floor + 1L);
+  }
+
+  /**
+   * Parse the numeric segment id out of a {@code <indexName>_seg<digits>} component name.
+   * {@link #isOurSegmentFile} has already validated the pattern, so the suffix is all digits;
+   * returns {@code -1} defensively if it somehow isn't (never expected from a real segment file).
+   */
+  private long parseSegmentId(final String componentName) {
+    if (componentName == null)
+      return -1L;
+    final int suffixStart = indexName.length() + "_seg".length();
+    if (suffixStart >= componentName.length())
+      return -1L;
+    try {
+      return Long.parseLong(componentName.substring(suffixStart));
+    } catch (final NumberFormatException e) {
+      return -1L;
     }
   }
 

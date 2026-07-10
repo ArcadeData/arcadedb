@@ -24,7 +24,6 @@ import com.google.protobuf.Timestamp;
 
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -109,7 +108,7 @@ class GrpcTypeConverter {
       return new RID(v.getLinkValue().getRid());
     case DECIMAL_VALUE: {
       final var d = v.getDecimalValue();
-      return new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale());
+      return toBigDecimal(d);
     }
     case LIST_VALUE: {
       final var out = new ArrayList<>();
@@ -164,6 +163,9 @@ class GrpcTypeConverter {
     // Without these branches the read path falls through to String.valueOf(o), emitting
     // string_value at LocalDateTime#toString precision rather than timestamp_value at the
     // column's declared precision.
+    // Issue #5045: this UTC-anchored temporal encoding (epochDay * 86400 for "date";
+    // toInstant(UTC) for "datetime") is the inverse of the client decoder
+    // ProtoUtils.fromGrpcValue in the grpc-client module; keep the two in sync when changing it.
     if (o instanceof LocalDate ld) {
       final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
       return b.setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
@@ -187,14 +189,7 @@ class GrpcTypeConverter {
       return b.setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
 
     if (o instanceof BigDecimal v) {
-      final var unscaled = v.unscaledValue();
-      if (unscaled.bitLength() <= 63) {
-        return b.setDecimalValue(
-            GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()))
-            .setLogicalType("decimal").build();
-      } else {
-        return b.setStringValue(v.toPlainString()).setLogicalType("decimal").build();
-      }
+      return b.setDecimalValue(toGrpcDecimal(v)).setLogicalType("decimal").build();
     }
 
     // Collections
@@ -238,9 +233,63 @@ class GrpcTypeConverter {
   }
 
   /**
-   * Calculate the UTF-8 byte length of a string.
+   * Calculate the UTF-8 byte length of a string without allocating an intermediate {@code byte[]}.
+   * Reproduces {@code String.getBytes(StandardCharsets.UTF_8).length} exactly, including the
+   * single replacement byte the JDK encoder emits for an unpaired surrogate.
    */
   static int bytesOf(final String s) {
-    return s == null ? 0 : s.getBytes(StandardCharsets.UTF_8).length;
+    if (s == null)
+      return 0;
+    final int len = s.length();
+    int bytes = 0;
+    for (int i = 0; i < len; i++) {
+      final char c = s.charAt(i);
+      if (c < 0x80)
+        bytes += 1;
+      else if (c < 0x800)
+        bytes += 2;
+      else if (Character.isHighSurrogate(c)) {
+        if (i + 1 < len && Character.isLowSurrogate(s.charAt(i + 1))) {
+          // Valid surrogate pair: one supplementary code point encodes to 4 bytes.
+          bytes += 4;
+          i++;
+        } else
+          // Unpaired high surrogate: encoder emits a single replacement byte.
+          bytes += 1;
+      } else if (Character.isLowSurrogate(c))
+        // Unpaired low surrogate: encoder emits a single replacement byte.
+        bytes += 1;
+      else
+        bytes += 3;
+    }
+    return bytes;
+  }
+
+  /**
+   * Encode a {@link BigDecimal} into a {@link GrpcDecimal} without loss. The unscaled value is stored
+   * in the {@code unscaled} sint64 field when it fits in 63 bits; otherwise it is stored losslessly in
+   * the {@code unscaled_bytes} field (big-endian two's-complement). This preserves exact precision and
+   * scale for values whose unscaled magnitude exceeds a signed 64-bit integer (issue #5046, COR-10).
+   */
+  static GrpcDecimal toGrpcDecimal(final BigDecimal v) {
+    final BigInteger unscaled = v.unscaledValue();
+    final GrpcDecimal.Builder b = GrpcDecimal.newBuilder().setScale(v.scale());
+    if (unscaled.bitLength() <= 63)
+      b.setUnscaled(unscaled.longValue());
+    else
+      b.setUnscaledBytes(ByteString.copyFrom(unscaled.toByteArray()));
+    return b.build();
+  }
+
+  /**
+   * Reconstruct a {@link BigDecimal} from a {@link GrpcDecimal}, reading the unscaled value from the
+   * {@code unscaled_bytes} field when present (values that exceed 63 bits) and otherwise from the
+   * {@code unscaled} sint64 field (issue #5046, COR-10).
+   */
+  static BigDecimal toBigDecimal(final GrpcDecimal d) {
+    final BigInteger unscaled = d.getUnscaledBytes().isEmpty()
+        ? BigInteger.valueOf(d.getUnscaled())
+        : new BigInteger(d.getUnscaledBytes().toByteArray());
+    return new BigDecimal(unscaled, d.getScale());
   }
 }

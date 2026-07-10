@@ -141,7 +141,14 @@ public class ArcadeGremlin extends ArcadeQuery {
 
       return result;
 
-    } catch (Exception e) {
+    } catch (final ScriptException e) {
+      // A ScriptException raised while evaluating the query is a parse/build failure (e.g. a Groovy closure
+      // like `filter { ... }` or any other syntax the secure gremlin-lang engine rejects). The traversal is
+      // built eagerly by eval() while iteration stays lazy, so at this point the query text itself is invalid,
+      // not the execution. Classify it as a client-side parsing error so the HTTP layer returns 400 with the
+      // real parser message instead of a misleading 500 "Error on transaction commit". See issue #5201.
+      throw new CommandParsingException("Error on parsing gremlin query: " + e.getMessage(), e);
+    } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }
   }

@@ -440,6 +440,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
+      } else if (e instanceof CommandParsingException || realException instanceof CommandParsingException) {
+        // A parsing/semantic validation error (malformed query, unknown variable, invalid MERGE
+        // rebind, unsupported Gremlin syntax such as Groovy closures, ...) is a client error - the query
+        // text is invalid, not an internal server fault. Surface as HTTP 400 with the real validation
+        // message so API consumers can fix the query, instead of a misleading 500. The check covers a
+        // CommandParsingException wrapped as the cause of a CommandExecutionException as well as a
+        // directly-thrown CommandParsingException, even when it carries its own cause (e.g. a Gremlin
+        // ScriptException, in which case realException is that cause). See issues #5191 and #5201.
+        final Throwable reported = e instanceof CommandParsingException ? e : realException;
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        reported.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -496,6 +509,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
+      } else if (realException instanceof CommandParsingException) {
+        // Symmetric with the un-wrapped CommandParsingException arm above. A Cypher/SQL validation
+        // error thrown during execution is wrapped by the auto-commit transaction wrapper in
+        // DatabaseAbstractHandler (TransactionException -> CommandParsingException cause). Without this
+        // branch the response degraded to 500 "Error on transaction commit", hiding the real
+        // client-side validation message. Surface as HTTP 400 instead. See issue #5191.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),

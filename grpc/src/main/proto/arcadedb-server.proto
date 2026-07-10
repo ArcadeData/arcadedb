@@ -97,8 +97,9 @@ message GrpcLink {
 
 // Exact decimal without loss
 message GrpcDecimal {
-  sint64 unscaled = 1; // unscaled value
-  int32  scale    = 2; // number of decimal places
+  sint64 unscaled       = 1; // unscaled value when it fits in a signed 64-bit integer
+  int32  scale          = 2; // number of decimal places
+  bytes  unscaled_bytes = 3; // big-endian two's-complement unscaled value when it exceeds 63 bits (takes precedence over `unscaled` when non-empty)
 }
 
 message ProjectionSettings {
@@ -410,10 +411,10 @@ message InsertOptions {
   repeated string update_columns_on_conflict = 4;
 
   enum TransactionMode {
-    PER_REQUEST = 0; // one tx for entire RPC
-    PER_BATCH   = 1; // commit per streamed chunk
-    PER_STREAM  = 2; // commit per streamed chunk
-    PER_ROW     = 3; // one tx for entire RPC
+    PER_REQUEST = 0; // one tx for the entire RPC (commit once at stream end)
+    PER_BATCH   = 1; // commit every server_batch_size rows
+    PER_STREAM  = 2; // one tx for the entire stream (commit once at stream end)
+    PER_ROW     = 3; // commit after every row
     NONE        = 4; // caller manages externally
   }
 

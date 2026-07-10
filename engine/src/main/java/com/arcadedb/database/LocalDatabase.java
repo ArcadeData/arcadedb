@@ -1505,7 +1505,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist,
       final String edgeType,
       final boolean bidirectional, final Object... properties) {
-    if (!bidirectional && ((EdgeType) schema.getType(edgeType)).isBidirectional())
+    if (!bidirectional && schema.getType(edgeType) instanceof EdgeType type && type.isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
     return newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,

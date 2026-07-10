@@ -507,6 +507,15 @@ class OpenCypherStringFunctionsComprehensiveTest {
   }
 
   @Test
+  void substringNullLengthReturnsNull() {
+    // Issue #5193: an explicitly supplied null length must propagate null (as Neo4j does),
+    // not be treated as an omitted argument (which would return 'ello').
+    final ResultSet result = database.command("opencypher", "RETURN substring('hello', 1, null) AS result");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    Assertions.assertThat(result.next().<Object>getProperty("result")).isNull();
+  }
+
+  @Test
   void substringNegativeStartRaisesError() {
     assertThatThrownBy(() -> database.command("opencypher", "RETURN substring('hello', -1, 2) AS result").next())
         .hasMessageContaining("negative");

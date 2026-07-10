@@ -144,7 +144,7 @@ public class GraphEngine {
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
 
-    final EdgeType edgeType = (EdgeType) database.getSchema().getType(edgeTypeName);
+    final EdgeType edgeType = getEdgeType(database, edgeTypeName);
 
     final RID edgeRID = new RID(edgeType.getFirstBucketId(), -1l);
 
@@ -184,7 +184,7 @@ public class GraphEngine {
     } else
       bucketName = null;
 
-    final EdgeType type = (EdgeType) database.getSchema().getType(edgeTypeName);
+    final EdgeType type = getEdgeType(database, edgeTypeName);
 
     final MutableEdge edge = new MutableEdge(database, type, fromVertexRID, toVertex.getIdentity());
     if (edgeProperties != null && edgeProperties.length > 0)
@@ -200,6 +200,19 @@ public class GraphEngine {
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
 
     return edge;
+  }
+
+  /**
+   * Resolves an edge type by name validating its kind. Vertex and edge types share the same schema namespace: using a
+   * vertex or document type name where an edge type is required must surface as a clean schema error, not as an
+   * internal {@link ClassCastException} (issue #5194).
+   */
+  private static EdgeType getEdgeType(final DatabaseInternal database, final String edgeTypeName) {
+    final DocumentType type = database.getSchema().getType(edgeTypeName);
+    if (!(type instanceof EdgeType edgeType))
+      throw new SchemaException("Type '" + edgeTypeName + "' is not an edge type (found " +
+          (type instanceof VertexType ? "a vertex" : "a document") + " type with the same name)");
+    return edgeType;
   }
 
   public void connectOutgoingEdge(final VertexInternal fromVertex, final Identifiable toVertex, final Edge edge) {
@@ -226,7 +239,7 @@ public class GraphEngine {
 
       final Identifiable destinationVertex = connection.destinationVertex;
 
-      final EdgeType edgeType = (EdgeType) database.getSchema().getType(connection.edgeTypeName);
+      final EdgeType edgeType = getEdgeType(database, connection.edgeTypeName);
 
       edge = new MutableEdge(database, edgeType, sourceVertexRID, destinationVertex.getIdentity());
 

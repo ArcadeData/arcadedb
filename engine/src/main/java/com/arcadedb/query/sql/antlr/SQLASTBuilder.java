@@ -5769,6 +5769,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit COMPACT INDEX statement (issue #5144).
+   * Grammar: COMPACT INDEX (identifier | STAR)
+   */
+  @Override
+  public CompactIndexStatement visitCompactIndexStmt(final SQLParser.CompactIndexStmtContext ctx) {
+    final SQLParser.CompactIndexStatementContext body = ctx.compactIndexStatement();
+    final CompactIndexStatement stmt = new CompactIndexStatement(-1);
+    if (body.STAR() != null)
+      stmt.all = true;
+    else
+      stmt.name = (Identifier) visit(body.identifier());
+    return stmt;
+  }
+
+  /**
    * Visit REBUILD TYPE statement.
    * Grammar: REBUILD TYPE typeName [POLYMORPHIC] [WITH key = expression (, key = expression)*]
    */

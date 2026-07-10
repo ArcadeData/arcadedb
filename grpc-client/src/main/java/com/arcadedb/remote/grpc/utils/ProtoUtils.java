@@ -137,7 +137,7 @@ public class ProtoUtils {
     case LINK_VALUE:
       return "LINK(" + v.getLinkValue().getRid() + ")";
     case DECIMAL_VALUE:
-      return "DECIMAL(unscaled=" + v.getDecimalValue().getUnscaled() + ", scale=" + v.getDecimalValue().getScale() + ")";
+      return "DECIMAL(" + toBigDecimal(v.getDecimalValue()) + ")";
     case KIND_NOT_SET:
     default:
       return "GrpcValue(KIND_NOT_SET)";
@@ -205,8 +205,6 @@ public class ProtoUtils {
       Document doc = (Document) rec;
       for (String propName : doc.getPropertyNames()) {
         Object value = doc.get(propName);
-
-        System.out.print("toProtoRecord: " + propName + ": " + value);
 
         builder.putProperties(propName, toGrpcValue(value));
       }
@@ -317,16 +315,8 @@ public class ProtoUtils {
     }
 
     if (value instanceof BigDecimal v) {
-      BigInteger unscaled = v.unscaledValue();
-      if (unscaled.bitLength() <= 63) {
-        return dbgEnc("toGrpcValue", value,
-            GrpcValue.newBuilder().setDecimalValue(
-                    GrpcDecimal.newBuilder().setUnscaled(unscaled.longValue()).setScale(v.scale()).build())
-                .setLogicalType("decimal").build());
-      } else {
-        return dbgEnc("toGrpcValue", value,
-            GrpcValue.newBuilder().setStringValue(v.toPlainString()).setLogicalType("decimal").build());
-      }
+      return dbgEnc("toGrpcValue", value,
+          GrpcValue.newBuilder().setDecimalValue(toGrpcDecimal(v)).setLogicalType("decimal").build());
     }
 
     if (value instanceof Document edoc && (edoc.getIdentity() == null)) {
@@ -400,8 +390,25 @@ public class ProtoUtils {
       }
       return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray());
 
-    case TIMESTAMP_VALUE:
-      return dbgDec("fromGrpcValue", v, tsToMillis(v.getTimestampValue())); // or Instant
+    case TIMESTAMP_VALUE: {
+      // Issue #5045: reconstruct the temporal type from the logical_type tag the server sets,
+      // symmetrically with the encode side (UTC-anchored), instead of collapsing every Timestamp
+      // to a bare Long epoch-millis - which lost sub-millisecond precision (DATETIME_MICROS/NANOS)
+      // and the temporal type identity, and forced consumers to re-apply a timezone (off-by-one risk).
+      // The UTC-anchored temporal encoding (epochDay * 86400 for "date"; toInstant(UTC) for
+      // "datetime") is shared with the server encoder GrpcTypeConverter.toGrpcValue in the grpcw
+      // module and this class's own toGrpcValue above; keep all three in sync when changing it.
+      final Timestamp ts = v.getTimestampValue();
+      final String logical = v.getLogicalType();
+      if ("date".equalsIgnoreCase(logical))
+        // Encode: epochDay * 86400 seconds. Inverse recovers the exact LocalDate at UTC.
+        return dbgDec("fromGrpcValue", v, LocalDate.ofEpochDay(Math.floorDiv(ts.getSeconds(), 86_400L)));
+      if ("datetime".equalsIgnoreCase(logical))
+        // Encode: LocalDateTime/Instant.toInstant(UTC). Inverse preserves micros/nanos at UTC.
+        return dbgDec("fromGrpcValue", v, LocalDateTime.ofEpochSecond(ts.getSeconds(), ts.getNanos(), ZoneOffset.UTC));
+      // No logical_type: keep the legacy epoch-millis Long behavior (backward compatible).
+      return dbgDec("fromGrpcValue", v, tsToMillis(ts));
+    }
     case LIST_VALUE: {
       var out = new ArrayList<>();
       for (GrpcValue e : v.getListValue().getValuesList())
@@ -424,7 +431,7 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
-      return dbgDec("fromGrpcValue", v, new BigDecimal(BigInteger.valueOf(d.getUnscaled()), d.getScale()));
+      return dbgDec("fromGrpcValue", v, toBigDecimal(d));
     }
     case KIND_NOT_SET:
       return dbgDec("fromGrpcValue", v, null);
@@ -435,5 +442,33 @@ public class ProtoUtils {
 
   static long tsToMillis(Timestamp ts) {
     return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
+  }
+
+  /**
+   * Encode a {@link BigDecimal} into a {@link GrpcDecimal} without loss. The unscaled value is stored
+   * in the {@code unscaled} sint64 field when it fits in 63 bits; otherwise it is stored losslessly in
+   * the {@code unscaled_bytes} field (big-endian two's-complement), preserving exact precision and
+   * scale for values whose unscaled magnitude exceeds a signed 64-bit integer (issue #5046, COR-10).
+   */
+  static GrpcDecimal toGrpcDecimal(final BigDecimal v) {
+    final BigInteger unscaled = v.unscaledValue();
+    final GrpcDecimal.Builder b = GrpcDecimal.newBuilder().setScale(v.scale());
+    if (unscaled.bitLength() <= 63)
+      b.setUnscaled(unscaled.longValue());
+    else
+      b.setUnscaledBytes(ByteString.copyFrom(unscaled.toByteArray()));
+    return b.build();
+  }
+
+  /**
+   * Reconstruct a {@link BigDecimal} from a {@link GrpcDecimal}, reading the unscaled value from the
+   * {@code unscaled_bytes} field when present (values that exceed 63 bits) and otherwise from the
+   * {@code unscaled} sint64 field (issue #5046, COR-10).
+   */
+  static BigDecimal toBigDecimal(final GrpcDecimal d) {
+    final BigInteger unscaled = d.getUnscaledBytes().isEmpty()
+        ? BigInteger.valueOf(d.getUnscaled())
+        : new BigInteger(d.getUnscaledBytes().toByteArray());
+    return new BigDecimal(unscaled, d.getScale());
   }
 }

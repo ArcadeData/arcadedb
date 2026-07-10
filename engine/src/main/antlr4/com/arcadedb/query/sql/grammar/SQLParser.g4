@@ -138,6 +138,7 @@ statement
 
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
+    | compactIndexStatement                          # compactIndexStmt
 
     // Type Re-serialisation (e.g. relocate property values after toggling EXTERNAL flag)
     | REBUILD TYPE rebuildTypeBody                   # rebuildTypeStmt
@@ -918,6 +919,16 @@ rebuildIndexStatement
     ;
 
 /**
+ * COMPACT INDEX statement (issue #5144)
+ * Forces a foreground merge of the index segments (the SQL/HTTP surface for {@code Index.compact()}),
+ * so client-server users can settle an index after a bulk load without a full REBUILD.
+ * Syntax: COMPACT INDEX indexName | *
+ */
+compactIndexStatement
+    : COMPACT INDEX (identifier | STAR)
+    ;
+
+/**
  * REBUILD TYPE statement
  * Re-serialises every record of a type so that schema changes (e.g. toggling a property's EXTERNAL flag) are applied
  * to existing records on disk. POLYMORPHIC additionally walks subtypes.
@@ -1656,6 +1667,7 @@ identifier
     | AUTO
     | PROPERTIES
     | COMPACTION
+    | COMPACT
     | THRESHOLD
     | OVERWRITE
     ;
