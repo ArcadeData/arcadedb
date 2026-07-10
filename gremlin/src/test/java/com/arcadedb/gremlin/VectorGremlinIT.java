@@ -28,6 +28,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -47,7 +48,11 @@ class VectorGremlinIT {
 
     final Database db = databaseFactory.create();
     try {
-      db.command("sql", "import database file://src/test/resources/importer-glove.txt "//
+      // Resolve via the classpath rather than a CWD-relative path so this test also works when
+      // executed against the shaded jar from the arcadedb-gremlin-it module (see #5208), whose
+      // working directory differs from the module that owns this source file.
+      final URL inputFile = VectorGremlinIT.class.getClassLoader().getResource("importer-glove.txt");
+      db.command("sql", "import database file://" + inputFile.getFile() + " "//
           + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );

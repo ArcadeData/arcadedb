@@ -149,6 +149,17 @@
     </dependencies>
 
     <build>
+        <testResources>
+            <testResource>
+                <directory>${project.basedir}/src/test/resources</directory>
+            </testResource>
+            <!-- Single source of truth for the gremlin test fixtures instead of byte-copies:
+                 pull the gremlin module's own test resources onto this module's test
+                 classpath directly. See #5208. -->
+            <testResource>
+                <directory>${project.basedir}/../gremlin/src/test/resources</directory>
+            </testResource>
+        </testResources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

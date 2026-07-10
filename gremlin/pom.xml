@@ -188,6 +188,17 @@
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <!-- Same rationale as the surefire skip above: the *IT classes inherited from
+                         the parent failsafe config would otherwise run on the unshaded classpath
+                         (engine antlr 4.13.2 vs gremlin antlr 4.9.1) under -Pintegration, which CI
+                         uses. They run in arcadedb-gremlin-it against the shaded jar instead. See #5208. -->
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <configuration>
                     <!-- Relocate ANTLR 4.9.1 (TinkerPop's precompiled parser needs the v3 ATN
