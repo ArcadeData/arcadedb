@@ -145,17 +145,21 @@ class StreamingResultSet implements ResultSet {
 
   @Override
   public void close() {
+    // Detect a close racing against the owning thread's iteration: BlockingClientCall is not thread-safe,
+    // so a cleanup/timeout thread closing while the owner is in hasNext/next would corrupt its state.
+    db.checkCrossThreadUse("streamQuery.close");
+
+    if (streamExhausted)
+      return;
 
     try {
-      // Drain any remaining results
-      while (stream.hasNext()) {
-        stream.read();
-      }
+      // Cancel the underlying call instead of draining. Draining a partially-read result would transfer and
+      // decode every remaining row, keeping the server cursor/worker busy for the whole result set.
+      stream.cancel("ResultSet closed by client", null);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Exception while draining stream during close: %s", e.getMessage());
+      LogManager.instance().log(this, Level.FINE, "Exception while cancelling stream during close: %s", e.getMessage());
+    } finally {
+      streamExhausted = true;
     }
-
-    // BlockingClientCall doesn't implement AutoCloseable
-    // No need to cast or check instanceof
   }
 }

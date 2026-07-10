@@ -870,6 +870,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     stats.queries.incrementAndGet();
 
     final StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
+        .setLanguage(langOrDefault(language))
         .setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
     if (params != null && !params.isEmpty()) {
@@ -893,6 +894,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     stats.queries.incrementAndGet();
 
     final StreamQueryRequest.Builder b = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
+        .setLanguage(langOrDefault(language))
         .setCredentials(buildCredentials()).setBatchSize(batchSize > 0 ? batchSize : 100).setRetrievalMode(mode);
 
     if (params != null && !params.isEmpty()) {
