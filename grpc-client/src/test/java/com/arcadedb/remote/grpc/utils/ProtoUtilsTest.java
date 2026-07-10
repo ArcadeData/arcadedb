@@ -481,8 +481,12 @@ class ProtoUtilsTest {
     final GrpcValue grpcValue = ProtoUtils.toGrpcValue(date);
     final Object result = ProtoUtils.fromGrpcValue(grpcValue);
 
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat((Long) result).isEqualTo(1234567890000L);
+    // Issue #5045: a Date carries logical_type "datetime", so it now round-trips to a temporal
+    // (LocalDateTime at the same UTC instant) instead of a bare Long epoch-millis. The previous
+    // Long assertion documented the COR-5 type-loss defect this issue fixes.
+    assertThat(result).isInstanceOf(LocalDateTime.class);
+    assertThat((LocalDateTime) result)
+        .isEqualTo(LocalDateTime.ofEpochSecond(1234567890L, 0, ZoneOffset.UTC));
   }
 
   private void assertRoundTrip(final Object original) {

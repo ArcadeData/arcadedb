@@ -400,8 +400,22 @@ public class ProtoUtils {
       }
       return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray());
 
-    case TIMESTAMP_VALUE:
-      return dbgDec("fromGrpcValue", v, tsToMillis(v.getTimestampValue())); // or Instant
+    case TIMESTAMP_VALUE: {
+      // Issue #5045: reconstruct the temporal type from the logical_type tag the server sets,
+      // symmetrically with the encode side (UTC-anchored), instead of collapsing every Timestamp
+      // to a bare Long epoch-millis - which lost sub-millisecond precision (DATETIME_MICROS/NANOS)
+      // and the temporal type identity, and forced consumers to re-apply a timezone (off-by-one risk).
+      final Timestamp ts = v.getTimestampValue();
+      final String logical = v.getLogicalType();
+      if ("date".equalsIgnoreCase(logical))
+        // Encode: epochDay * 86400 seconds. Inverse recovers the exact LocalDate at UTC.
+        return dbgDec("fromGrpcValue", v, LocalDate.ofEpochDay(Math.floorDiv(ts.getSeconds(), 86_400L)));
+      if ("datetime".equalsIgnoreCase(logical))
+        // Encode: LocalDateTime/Instant.toInstant(UTC). Inverse preserves micros/nanos at UTC.
+        return dbgDec("fromGrpcValue", v, LocalDateTime.ofEpochSecond(ts.getSeconds(), ts.getNanos(), ZoneOffset.UTC));
+      // No logical_type: keep the legacy epoch-millis Long behavior (backward compatible).
+      return dbgDec("fromGrpcValue", v, tsToMillis(ts));
+    }
     case LIST_VALUE: {
       var out = new ArrayList<>();
       for (GrpcValue e : v.getListValue().getValuesList())

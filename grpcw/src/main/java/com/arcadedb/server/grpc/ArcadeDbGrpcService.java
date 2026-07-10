@@ -4625,7 +4625,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return switch (v.getKindCase()) {
           case TIMESTAMP_VALUE -> GrpcTypeConverter.tsToInstant(v.getTimestampValue());
           case INT64_VALUE -> new Date(v.getInt64Value()); // epoch ms expected
-          case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue()));
+          case STRING_VALUE -> {
+            // Issue #5045 (COR-12): mirror the DATE/DATETIME branch. A numeric string is epoch
+            // milliseconds (backward compatible); anything else is parsed as ISO-8601 (or a
+            // schema-configured format) instead of throwing NumberFormatException. Return an Instant
+            // (not java.util.Date) so sub-millisecond precision survives - Type.convert() truncates
+            // to the column's declared precision.
+            final String s = v.getStringValue();
+            try {
+              yield Instant.ofEpochMilli(Long.parseLong(s));
+            } catch (final NumberFormatException ignored) {
+              final Long nanos = DateUtils.dateTimeToTimestamp(db, s, ChronoUnit.NANOS);
+              yield nanos != null ? Instant.ofEpochSecond(0L, nanos) : null;
+            }
+          }
           default -> null;
         };
       }
