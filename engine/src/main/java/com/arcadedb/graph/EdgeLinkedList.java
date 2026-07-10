@@ -396,8 +396,18 @@ public class EdgeLinkedList {
       // POOL NOT READY (ON SERVER/HA IT IS CREATED OUTSIDE THIS TRANSACTION): PROMOTE AT A LATER CHUNK-FULL
       return false;
 
-    // THE DIRECTORY LIVES IN THE SAME BUCKET AS THE (NOW GENERATION-0) CLASSIC CHAIN
+    // THE DIRECTORY LIVES IN THE SAME BUCKET AS THE (NOW GENERATION-0) CLASSIC CHAIN. Every stripe gets its
+    // first (tiny) chunk EAGERLY here: lazy per-stripe initialisation would rewrite the directory once per
+    // stripe, each rewrite serialising concurrent appenders on the directory file's commit lock for a full
+    // replication round - a thundering herd right after promotion. Pre-warming collapses that to this single
+    // transaction; after it, appends touch the directory again only at a stripe chunk-full (~1000 appends).
     final StripeDirectory directory = new StripeDirectory(database, lastSegment.getIdentity(), stripes);
+    final String typeName = vertex.getTypeName();
+    for (int i = 0; i < stripes; i++) {
+      final MutableEdgeSegment stripeChunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
+      database.createRecord(stripeChunk, StripedEdgeList.stripeBucketName(typeName, i));
+      directory.setHead(1, i, stripeChunk.getIdentity());
+    }
     database.createRecord(directory, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
     final MutableVertex modifiableV = vertex.modify();

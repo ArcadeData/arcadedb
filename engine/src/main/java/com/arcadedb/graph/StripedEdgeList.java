@@ -149,41 +149,65 @@ public class StripedEdgeList extends EdgeLinkedList {
 
   @Override
   public void add(final RID edgeRID, final RID vertexRID) {
-    // Work on a FRESH, page-anchored view of the directory: the slot may be rewritten below, and the
-    // anchored-at-read page closes the deferred-update MVCC gap (#5147) while bypassing the tx record cache
-    // avoids writing a stale copy over a concurrent slot change.
-    final StripeDirectory dir = loadDirectoryForWrite();
+    // FAST PATH: use the read-only directory view. A possibly stale stripe head is SAFE - an in-place append
+    // into an older chunk lands mid-chain, which is valid for the unordered edge list - and crucially the
+    // directory page is neither anchored nor modified, so a plain append never takes the directory file's
+    // commit lock (which is held across the whole replication round under HA and would re-serialise the very
+    // writers striping parallelises).
+    final int generation = directory.getNewestGeneration();
+    final int slot = StripeDirectory.stripeOf(vertexRID, directory.getStripes(generation));
 
-    final int generation = dir.getNewestGeneration();
-    final int slot = StripeDirectory.stripeOf(vertexRID, dir.getStripes(generation));
+    EdgeSegment head = null;
+    final RID headRID = directory.getHead(generation, slot);
+    if (headRID != null) {
+      head = loadChunkForWrite(headRID);
+      if (append(head, edgeRID, vertexRID))
+        return;
+    }
 
-    final RID headRID = dir.getHead(generation, slot);
-    if (headRID == null) {
+    // SLOT-WRITE PATH (stripe's first chunk, or head full): work on a FRESH, page-anchored view of the
+    // directory - the anchored-at-read page closes the deferred-update MVCC gap (#5147) and bypassing the tx
+    // record cache avoids writing a stale copy over a concurrent slot change. This is the rare path
+    // (~once per ~1000 appends per stripe).
+    final StripeDirectory fresh = loadDirectoryForWrite();
+    final RID freshHeadRID = fresh.getHead(generation, slot);
+
+    if (freshHeadRID == null) {
       // FIRST EDGE OF THIS STRIPE: ALLOCATE ITS CHAIN LAZILY IN THE POOL BUCKET
       final MutableEdgeSegment firstChunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
       firstChunk.add(edgeRID, vertexRID);
       database.createRecord(firstChunk, stripeBucketName(vertex.getTypeName(), slot));
-      updateSlot(dir, generation, slot, firstChunk.getIdentity());
+      updateSlot(fresh, generation, slot, firstChunk.getIdentity());
       return;
     }
 
-    final EdgeSegment head = loadChunkForWrite(headRID);
-    if (head.add(edgeRID, vertexRID)) {
-      database.updateRecord(head);
-      // Commutative in-chunk append: track it so a commit-time page conflict rebases instead of retrying.
-      final TransactionContext tx = database.getTransactionIfExists();
-      if (tx != null)
-        tx.trackEdgeAppend(head.getIdentity(), edgeRID, vertexRID);
-    } else {
-      // STRIPE HEAD FULL: the new chunk becomes this stripe's head, recorded in the DIRECTORY (the vertex
-      // record is not touched - only promotion rewrites it).
-      final MutableEdgeSegment newChunk = new MutableEdgeSegment(database,
-          LocalDatabase.getNewEdgeListSize(head.getRecordSize()));
-      newChunk.add(edgeRID, vertexRID);
-      newChunk.setPrevious(head);
-      database.createRecord(newChunk, database.getSchema().getBucketById(headRID.getBucketId()).getName());
-      updateSlot(dir, generation, slot, newChunk.getIdentity());
+    if (!freshHeadRID.equals(headRID)) {
+      // A CONCURRENT TRANSACTION ALREADY REPLACED THE HEAD: APPEND INTO THE CURRENT ONE
+      head = loadChunkForWrite(freshHeadRID);
+      if (append(head, edgeRID, vertexRID))
+        return;
     }
+
+    // STRIPE HEAD FULL: the new chunk becomes this stripe's head, recorded in the DIRECTORY (the vertex
+    // record is not touched - only promotion rewrites it).
+    final MutableEdgeSegment newChunk = new MutableEdgeSegment(database,
+        LocalDatabase.getNewEdgeListSize(head.getRecordSize()));
+    newChunk.add(edgeRID, vertexRID);
+    newChunk.setPrevious(head);
+    database.createRecord(newChunk, database.getSchema().getBucketById(head.getIdentity().getBucketId()).getName());
+    updateSlot(fresh, generation, slot, newChunk.getIdentity());
+  }
+
+  /** In-place append + merge tracking; false if the chunk is full. */
+  private boolean append(final EdgeSegment chunk, final RID edgeRID, final RID vertexRID) {
+    if (!chunk.add(edgeRID, vertexRID))
+      return false;
+    database.updateRecord(chunk);
+    // Commutative in-chunk append: track it so a commit-time page conflict rebases instead of retrying.
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null)
+      tx.trackEdgeAppend(chunk.getIdentity(), edgeRID, vertexRID);
+    return true;
   }
 
   @Override

@@ -31,6 +31,7 @@ import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
@@ -1108,7 +1109,12 @@ public class TransactionContext implements Transaction {
 
       return new TransactionPhase1(result, pages);
 
-    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final DuplicatedKeyException | NeedRetryException e) {
+      // NeedRetryException covers ConcurrentModificationException AND every other retryable conflict, notably
+      // LockTimeoutException from the commit file-lock acquisition: wrapping those in the generic
+      // TransactionException below silently made a retryable contention error NON-retryable, so under heavy
+      // commit-lock pressure (e.g. concurrent super-node writes, #5156) transactions failed to the caller
+      // instead of retrying.
       rollback();
       throw e;
     } catch (final TransactionException e) {

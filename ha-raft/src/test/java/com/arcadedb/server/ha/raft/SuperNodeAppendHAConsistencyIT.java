@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -82,6 +83,8 @@ class SuperNodeAppendHAConsistencyIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(leaderIndex);
 
       final AtomicLong committed = new AtomicLong();
+      final AtomicLong failures = new AtomicLong();
+      final AtomicReference<Exception> firstFailure = new AtomicReference<>();
       final CountDownLatch start = new CountDownLatch(1);
       final CountDownLatch done = new CountDownLatch(THREADS);
       for (int t = 0; t < THREADS; t++) {
@@ -95,20 +98,30 @@ class SuperNodeAppendHAConsistencyIT extends BaseRaftHATest {
             return;
           }
           for (int i = 0; i < EDGES_PER_THREAD; i++) {
-            leaderDB.transaction(() -> {
-              final MutableVertex src = leaderDB.newVertex("Src");
-              src.set("thread", threadId);
-              src.save();
-              src.newEdge("LINK", hubRID);
-            }, false, 10_000);
-            committed.incrementAndGet();
+            try {
+              leaderDB.transaction(() -> {
+                final MutableVertex src = leaderDB.newVertex("Src");
+                src.set("thread", threadId);
+                src.save();
+                src.newEdge("LINK", hubRID);
+              }, false, 100);
+              committed.incrementAndGet();
+            } catch (final Exception e) {
+              // An uncaught failure must not silently kill the thread (the latch would hang the test forever):
+              // count it and let the assertions below fail loudly.
+              failures.incrementAndGet();
+              if (firstFailure.compareAndSet(null, e))
+                e.printStackTrace();
+            }
           }
           done.countDown();
         }).start();
       }
       start.countDown();
-      done.await();
+      // Time-boxed: a sick cluster must fail the test, not hang it.
+      assertThat(done.await(4, TimeUnit.MINUTES)).as("writers finished in time").isTrue();
 
+      assertThat(failures.get()).as("failed transactions (first: %s)", firstFailure.get()).isEqualTo(0);
       assertThat(committed.get()).isEqualTo(TOTAL_EDGES);
       waitForReplicationIsCompleted(leaderIndex);
 

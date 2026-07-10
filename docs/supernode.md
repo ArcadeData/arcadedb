@@ -45,6 +45,23 @@ Implementation notes that refined the A.1 design (2026-07-10):
 - Promotion detection = chunk-full + geometric estimate as designed; at the 8 KB
   cap a one-time chain walk (cycle-guarded) honours thresholds above the cap
   estimate.
+- **Stripes are PRE-WARMED at promotion** (all N first chunks created inside the
+  promotion transaction), not lazily initialised: the 3-node IT showed lazy
+  per-stripe init rewrote the directory once per stripe, each rewrite serialising
+  concurrent appenders on the directory file's commit lock for a full replication
+  round - a thundering herd that produced 5s LockTimeoutExceptions. Similarly, the
+  append FAST PATH reads the directory WITHOUT anchoring its page (a stale stripe
+  head is safe: the append lands mid-chain, valid for the unordered list) - the
+  anchored fresh read happens only on slot writes (~1/1000 appends) - because an
+  anchored-but-unmodified page still contributes its FILE to the commit lock set,
+  which was re-serialising every striped append through the directory's file.
+- **Engine bug found by the HA IT (pre-existing, fixed on this branch):**
+  `TransactionContext.commit1stPhase` wrapped `LockTimeoutException` - which
+  extends `NeedRetryException` and is designed to be retryable - into a
+  NON-retryable generic `TransactionException`, so commit-lock contention failed
+  transactions to the caller instead of retrying. The catch now rethrows every
+  `NeedRetryException` as-is. This affects any heavily concurrent workload on
+  main, independent of striping.
 
 ---
 
