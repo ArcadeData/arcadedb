@@ -34,11 +34,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import io.grpc.StatusRuntimeException;
+
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #5045 (COR-12): the {@code DATETIME_SECOND/MICROS/NANOS} STRING branch
@@ -185,6 +188,39 @@ public class Issue5045GrpcDatetimeStringPrecisionIT extends BaseGraphServerTest 
 
     // DATETIME_MICROS truncates to microsecond precision: 123_456_789 -> 123_456_000.
     assertThat(readBackNanos("MicrosStr5045")).isEqualTo(123_456_000);
+  }
+
+  @Test
+  void malformedStringSurfacesAnErrorInsteadOfSilentlyStoringNull() {
+    // Documents the decision for point 2 of the #5196 review: a string that is neither numeric nor a
+    // parseable datetime is surfaced as a loud gRPC error (DateUtils.parseIsoDateTime throws
+    // DateTimeParseException, which propagates), not silently coerced to null and stored.
+    executeCommand("CREATE DOCUMENT TYPE NanosBad5045 IF NOT EXISTS");
+    executeCommand("CREATE PROPERTY NanosBad5045.t IF NOT EXISTS DATETIME_NANOS");
+
+    final GrpcRecord record = GrpcRecord.newBuilder()
+        .setType("NanosBad5045")
+        .putProperties("t", GrpcValue.newBuilder().setStringValue("not-a-datetime").build())
+        .build();
+
+    assertThatThrownBy(() -> authenticatedStub.createRecord(
+        CreateRecordRequest.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(credentials())
+            .setType("NanosBad5045")
+            .setRecord(record)
+            .build()))
+        .isInstanceOf(StatusRuntimeException.class);
+
+    // Nothing was persisted.
+    final ExecuteQueryResponse response = authenticatedStub.executeQuery(
+        ExecuteQueryRequest.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(credentials())
+            .setQuery("SELECT count(*) AS c FROM NanosBad5045")
+            .build());
+    final GrpcValue count = response.getResultsList().get(0).getRecordsList().get(0).getPropertiesMap().get("c");
+    assertThat(((Number) GrpcTypeConverter.fromGrpcValue(count)).longValue()).isZero();
   }
 
   @Test
