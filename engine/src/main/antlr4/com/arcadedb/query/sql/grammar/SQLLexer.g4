@@ -260,6 +260,7 @@ ANALYTICAL: A N A L Y T I C A L;
 AUTO: A U T O;
 PROPERTIES: P R O P E R T I E S;
 COMPACTION: C O M P A C T I O N;
+COMPACT: C O M P A C T;
 THRESHOLD: T H R E S H O L D;
 
 // ============================================================================
