@@ -66,9 +66,13 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
   private static final int  SLOT_SIZE   = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
   private static final long NULL_SLOT   = -1L;
 
-  private final int bufferSize;
+  private int bufferSize;
 
-  /** Loads an existing directory from its persistent buffer (invoked by the {@code RecordFactory}). */
+  /**
+   * Loads an existing directory from its persistent buffer (invoked by the {@code RecordFactory}). A null
+   * buffer creates a LAZY placeholder (the generic no-content factory path): the content is loaded on first
+   * access by {@link #checkForLoading()}.
+   */
   public StripeDirectory(final Database database, final RID rid, final Binary buffer) {
     super(database, rid, buffer);
     if (buffer != null) {
@@ -123,7 +127,19 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
     return (int) ((h & Long.MAX_VALUE) % stripes);
   }
 
+  /** Loads the record content when this instance was created as a lazy placeholder (no-content factory path). */
+  private void checkForLoading() {
+    if (buffer == null) {
+      reload();
+      if (buffer != null) {
+        buffer.setAutoResizable(false);
+        bufferSize = buffer.size();
+      }
+    }
+  }
+
   public int getGenerationCount() {
+    checkForLoading();
     return buffer.getByte(2);
   }
 
@@ -132,11 +148,13 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
   }
 
   public int getStripes(final int generation) {
+    checkForLoading();
     return buffer.getInt(generationOffset(generation));
   }
 
   /** Returns the head chunk RID of the given stripe, or {@code null} if the stripe has no chain yet. */
   public RID getHead(final int generation, final int slot) {
+    checkForLoading();
     final int offset = slotOffset(generation, slot);
     final long position = buffer.getLong(offset + Binary.INT_SERIALIZED_SIZE);
     if (position == NULL_SLOT)
@@ -146,6 +164,7 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
 
   /** Updates a stripe's head chunk in place (fixed-width slot: the record size never changes). */
   public void setHead(final int generation, final int slot, final RID head) {
+    checkForLoading();
     final int offset = slotOffset(generation, slot);
     buffer.putInt(offset, head.getBucketId());
     buffer.putLong(offset + Binary.INT_SERIALIZED_SIZE, head.getPosition());
@@ -178,6 +197,7 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
   }
 
   public Binary getContent() {
+    checkForLoading();
     buffer.position(bufferSize);
     buffer.flip();
     return buffer;

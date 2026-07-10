@@ -401,10 +401,12 @@ public class EdgeLinkedList {
       if (currentChunkSize < LocalDatabase.MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE)
         return false;
       // At the chunk-size cap the geometric estimate is only a lower bound: walk the chain once (this runs at
-      // most once per ~1000 appends) to honour thresholds larger than the cap estimate.
+      // most once per ~1000 appends) to honour thresholds larger than the cap estimate. The walk is BOUNDED:
+      // a corrupted cyclic chain longer than a self-loop must not hang the thread, and past the bound the
+      // accumulated bytes already exceed any practical threshold anyway (4096 cap-size chunks ~= 4M edges).
       long totalBytes = 0;
       EdgeSegment segment = lastSegment;
-      while (segment != null) {
+      for (int walked = 0; segment != null && walked < 4096; ++walked) {
         totalBytes += segment.getRecordSize();
         final EdgeSegment prev = segment.getPrevious();
         if (prev != null && prev.getIdentity().equals(segment.getIdentity()))

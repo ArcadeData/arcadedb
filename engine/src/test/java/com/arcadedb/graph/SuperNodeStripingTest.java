@@ -338,6 +338,27 @@ class SuperNodeStripingTest extends TestHelper {
     });
   }
 
+  /** The no-content factory path creates a LAZY directory placeholder: every accessor must self-load (Gemini review). */
+  @Test
+  void lazyLoadedDirectoryIsReadable() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+    createSchema();
+    final RID hubRID = createHub();
+    insertEdges(hubRID, 300);
+
+    database.transaction(() -> {
+      final RID dirRID = ((VertexInternal) hubRID.asVertex(true)).getInEdgesHeadChunk();
+      final Record lazy = database.lookupByRID(dirRID, false);
+      assertThat(lazy).isInstanceOf(StripeDirectory.class);
+      final StripeDirectory directory = (StripeDirectory) lazy;
+      assertThat(directory.getGenerationCount()).isEqualTo(2);
+      assertThat(directory.getStripes(1)).isEqualTo(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.getValueAsInteger());
+      assertThat(directory.getChainCount()).isGreaterThan(1);
+      assertThat(directory.getContent().size()).isGreaterThan(0);
+      assertThat(directory.toJSON(false).getJSONArray("stripes").length()).isEqualTo(2);
+    });
+  }
+
   @Test
   void dropTypeRemovesStripePool() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
