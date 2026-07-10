@@ -196,6 +196,8 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
     return RECORD_TYPE;
   }
 
+  /** NOTE: mutates the buffer's position/limit (idempotent, but not re-entrant-safe across threads - directory
+   * instances are never shared across threads on the write path). */
   public Binary getContent() {
     checkForLoading();
     buffer.position(bufferSize);

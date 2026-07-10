@@ -298,8 +298,7 @@ public class GraphEngine {
       try {
         // The transaction's own WRITTEN copy of the head (multi-append transaction) is authoritative: its
         // pending appends live only in that object until commit, and its page is already anchored.
-        final TransactionContext headTx = database.getTransactionIfExists();
-        if (headTx != null && headTx.getWrittenRecord(headRID) instanceof EdgeSegment written)
+        if (tx != null && tx.getWrittenRecord(headRID) instanceof EdgeSegment written)
           return new EdgeLinkedList(vertex, direction, written);
 
         final Record head = database.lookupByRID(headRID, true);

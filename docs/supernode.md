@@ -20,6 +20,18 @@ is kept below as **reference** (section B).
 | **Adaptive striped/sharded edge list (throughput)** | 🚧 **IMPLEMENTED on this branch - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** (`GRAPH_SUPERNODE_THRESHOLD` default 4096, `GRAPH_SUPERNODE_STRIPES` default 16) |
 | **Remove-path anchoring cost optimisation** | ⏳ **TODO - [#5155](https://github.com/ArcadeData/arcadedb/issues/5155)** |
 
+**BREAKING-CHANGE CALLOUT (release notes, from the PR review):** promotion is ON
+by default (`supernodeThreshold=4096`) and writes a NEW on-disk record type
+(`StripeDirectory`, type 7) the first time any vertex crosses the threshold.
+From that moment the database is no longer readable by releases older than
+26.8.1 (older `RecordFactory` throws on the unknown type) and promotion is
+one-way. In addition, edge iteration order on promoted vertices is approximate
+(newest-generation-first), relaxing the #689 reverse-insertion guarantee for
+super-nodes only. Setting `supernodeThreshold=0` disables promotion entirely
+and keeps the database fully compatible with older releases. Whether the first
+release ships default-on (4096) or default-off (opt-in for one cycle) is a
+product decision - the review recommends considering opt-in first.
+
 Implementation notes that refined the A.1 design (2026-07-10):
 
 - **Stripe pool DDL is deferred on server/HA.** Creating the pool buckets inside the

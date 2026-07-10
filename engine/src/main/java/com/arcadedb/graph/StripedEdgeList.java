@@ -59,8 +59,11 @@ import java.util.logging.Level;
 public class StripedEdgeList extends EdgeLinkedList {
   private static final String STRIPE_BUCKET_INFIX = "_sn_stripe_";
 
-  /** Guards against stampeding pool creations: one in-flight creation per database+type. */
-  private static final Set<String> POOLS_IN_CREATION = ConcurrentHashMap.newKeySet();
+  /** Guards against stampeding pool creations: one in-flight creation per database+type (value = start ms). */
+  private static final ConcurrentHashMap<String, Long> POOLS_IN_CREATION = new ConcurrentHashMap<>();
+  /** One-shot diagnostic latch: warn ONCE per type if a pool creation looks stuck (see ensureStripePool). */
+  private static final Set<String>                     POOLS_STUCK_WARNED = ConcurrentHashMap.newKeySet();
+  private static final long                            POOL_CREATION_STUCK_MS = 60_000;
 
   private final DatabaseInternal database;
   private final StripeDirectory  directory;
@@ -71,7 +74,13 @@ public class StripedEdgeList extends EdgeLinkedList {
     this.directory = directory;
   }
 
-  /** Name of the {@code slot}-th stripe bucket of the per-type pool (shared by both directions). */
+  /**
+   * Name of the {@code slot}-th stripe bucket of the per-type pool. DELIBERATELY direction-agnostic: OUT and
+   * IN chains of promoted vertices share the same pool to cap the file count per type (chunks are only ever
+   * reached by pointer, never by scanning a file, so mixing directions in one bucket is harmless). The cost is
+   * that concurrent OUT and IN appends hashing to the same slot contend on one file lock - acceptable, because
+   * real hubs are typically hot in a single direction and the pool size is the tuning lever.
+   */
   public static String stripeBucketName(final String typeName, final int slot) {
     return typeName + STRIPE_BUCKET_INFIX + slot;
   }
@@ -117,7 +126,8 @@ public class StripedEdgeList extends EdgeLinkedList {
     // schema operation means the database has bigger problems than a deferred promotion, and promotion is a
     // pure optimisation (the classic layout keeps working).
     final String key = database.getDatabasePath() + '|' + typeName;
-    if (POOLS_IN_CREATION.add(key)) {
+    final Long inFlightSince = POOLS_IN_CREATION.putIfAbsent(key, System.currentTimeMillis());
+    if (inFlightSince == null) {
       // NOTE (concurrency): not engine data-path parallelism but a once-per-type lifecycle action, hence a
       // short-lived dedicated thread instead of a shared pool (see the QueryEngineManager rule in CLAUDE.md).
       final Thread creator = new Thread(() -> {
@@ -133,7 +143,14 @@ public class StripedEdgeList extends EdgeLinkedList {
       }, "arcadedb-supernode-pool-" + typeName);
       creator.setDaemon(true);
       creator.start();
-    }
+    } else if (System.currentTimeMillis() - inFlightSince > POOL_CREATION_STUCK_MS && POOLS_STUCK_WARNED.add(key))
+      // A pool creation in flight for over a minute means the schema operation is stuck (or the helper thread
+      // died without its finally): promotions for this type are silently skipped until restart. Warn ONCE so
+      // an operator can tell a stuck promotion from a merely deferred one.
+      LogManager.instance()
+          .log(StripedEdgeList.class, Level.WARNING,
+              "Super-node stripe pool creation for type '%s' has been in flight for over %d ms: promotions for this type are deferred until it completes (or the server restarts)",
+              typeName, POOL_CREATION_STUCK_MS);
     return false;
   }
 
