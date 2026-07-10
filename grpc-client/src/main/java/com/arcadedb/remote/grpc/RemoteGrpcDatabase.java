@@ -1989,13 +1989,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     throw GrpcClientErrorMapper.toException(e);
   }
 
-  // Add the missing RemoteGrpcTransactionExplicitLock class reference
-  private static class RemoteGrpcTransactionExplicitLock extends RemoteTransactionExplicitLock {
-    public RemoteGrpcTransactionExplicitLock(RemoteGrpcDatabase database) {
-      super(database);
-    }
-  }
-
   // --- Debug helpers (client) ---
   private static String summarize(final Object o) {
     try {
