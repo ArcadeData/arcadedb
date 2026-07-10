@@ -485,6 +485,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       if (!resultInRootPage.outside) {
         // IT'S IN PAGE RANGE
         int pageInSeries = resultInRootPage.keyIndex;
+        final int firstMatchingRootEntry = resultInRootPage.found && resultInRootPage.valueBeginPositions != null
+            ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
+            : -1;
 
         if (resultInRootPage.found) {
           if (pageInSeries >= rootPageCount)
@@ -518,6 +521,21 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
           if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
               removedKeys, deletedRIDs))
+            return;
+        }
+
+        // Compacted files written before the shared-leaf writer safeguard can store the first chunk of an overflowing key on
+        // the leaf that ends with the preceding key. Later chunks have root entries for the searched key, but that first chunk
+        // is reachable only through the immediately preceding leaf. The result set removes any overlap.
+        if (firstMatchingRootEntry > 0) {
+          final int precedingPageNum = rootPage.getPageId().getPageNumber() + firstMatchingRootEntry;
+          final BasePage precedingPage = database.getTransaction()
+              .getPage(new PageId(database, file.getFileId(), precedingPageNum), pageSize);
+          final Binary precedingPageBuffer = new Binary(precedingPage.slice());
+          final int precedingCount = getCount(precedingPage);
+
+          if (!lookupInPageAndAddInResultset(precedingPage, precedingPageBuffer, precedingCount, originalKeys, convertedKeys,
+              limit, set, removedKeys, deletedRIDs))
             return;
         }
       }
