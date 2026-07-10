@@ -89,7 +89,6 @@ if [ -z "$JAVA_OPTS_SCRIPT" ]; then
         -Dpolyglot.engine.WarnInterpreterOnly=false \
         -Djava.awt.headless=true -Dfile.encoding=UTF8 \
         -Dsun.net.inetaddr.ttl=30 -Dsun.net.inetaddr.negative.ttl=0 \
-        -Djava.util.logging.config.file=config/arcadedb-log.properties \
         --enable-native-access=ALL-UNNAMED"
 fi
 
@@ -108,9 +107,13 @@ echo $$ >$ARCADEDB_PID
 # ARCADEDB_LOG_DIR maps to the arcadedb.server.logsDirectory configuration referenced by
 # config/arcadedb-log.properties. When unset, no argument is added and logs default to ./log.
 # Passed as a quoted, conditional argument so a path containing spaces stays a single argument.
+# The logging configuration path is anchored to ARCADEDB_HOME (not the current directory) so the
+# server picks up config/arcadedb-log.properties regardless of the directory the script is launched
+# from. It is passed as its own quoted argument so a home path containing spaces stays intact.
 exec "$JAVA" $JAVA_OPTS \
   $ARCADEDB_OPTS_MEMORY \
   $JAVA_OPTS_SCRIPT \
+  "-Djava.util.logging.config.file=$ARCADEDB_HOME/config/arcadedb-log.properties" \
   ${ARCADEDB_LOG_DIR:+"-Darcadedb.server.logsDirectory=$ARCADEDB_LOG_DIR"} \
   $ARCADEDB_JMX \
   $ARCADEDB_SETTINGS \
