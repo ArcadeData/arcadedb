@@ -20,6 +20,7 @@ package com.arcadedb.function.convert;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -50,11 +51,15 @@ public class ToStringFunction implements StatelessFunction {
     // Temporal types
     if (args[0] instanceof CypherTemporalValue)
       return args[0].toString();
-    // Unsupported types: List, Map, Node, Relationship, Path
+    // Unsupported types: List, Map, Node, Relationship, Path. This is a client-side type error (the
+    // query passes the wrong value type to a scalar function), classified by the openCypher TCK as a
+    // runtime TypeError/InvalidArgumentValue. Throw a CommandSemanticException so the transport layer
+    // reports it as a 400 client error with the descriptive message, not a 500 transaction-commit
+    // failure. See issue #5203.
     if (args[0] instanceof List || args[0] instanceof Map
         || args[0] instanceof Vertex || args[0] instanceof Edge
         || args[0] instanceof Document || args[0] instanceof TraversalPath)
-      throw new CommandExecutionException("TypeError: InvalidArgumentValue - toString() cannot convert " + args[0].getClass().getSimpleName());
+      throw new CommandSemanticException("TypeError: InvalidArgumentValue - toString() cannot convert " + args[0].getClass().getSimpleName());
     return args[0].toString();
   }
 }
