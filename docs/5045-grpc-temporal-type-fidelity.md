@@ -23,4 +23,7 @@ Temporal values do not round-trip faithfully over gRPC:
 - `Issue5045GrpcDatetimeStringPrecisionIT` (grpcw IT): sending an ISO-8601 string to a DATETIME_NANOS column no longer throws and preserves nanosecond precision.
 
 ## Impact
-Silent precision loss and type-identity loss on temporal reads over gRPC are fixed. Backward compatible: timestamps without a `logical_type` still decode to `Long`. Out of scope (noted for follow-up): explicit proto representations for `LocalTime`/TIME, zoned datetime offset retention, and `Duration`.
+Silent precision loss and type-identity loss on temporal reads over gRPC are fixed. Out of scope (noted for follow-up): explicit proto representations for `LocalTime`/TIME, zoned datetime offset retention, and `Duration`.
+
+## Compatibility note (surface in release notes)
+Because the server always sets a `logical_type` on temporal values, this is a wire-decode behavior change for real server responses, not only the untagged-timestamp edge case: `grpc-client` reads of DATE/DATETIME columns that previously returned a bare `Long` epoch-millis now return `LocalDate` / `LocalDateTime`. Any downstream consumer that read a temporal column and expected a `Long` (or did epoch-millis arithmetic on it) must be updated. Timestamps with no `logical_type` still decode to `Long` (unchanged). On the encode side `java.util.Date`, `Instant`, and `ZonedDateTime` all carry `logical_type "datetime"`, so all three now round-trip to a `LocalDateTime` at UTC; instant/zone identity is not preserved (tracked as the out-of-scope proto-gap follow-up above).

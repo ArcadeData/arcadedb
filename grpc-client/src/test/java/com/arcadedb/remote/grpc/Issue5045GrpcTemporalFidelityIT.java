@@ -109,6 +109,26 @@ public class Issue5045GrpcTemporalFidelityIT extends BaseGraphServerTest {
   }
 
   @Test
+  void preEpochDateRoundTripsAsLocalDate() {
+    // Guards the floorDiv() path on the decode side: a pre-epoch date has a negative epoch-day,
+    // so plain integer division would round toward zero and land on the wrong day.
+    final LocalDate target = LocalDate.of(1969, 12, 31);
+
+    grpc.begin();
+    final MutableVertex v = grpc.newVertex(VERTEX_TYPE);
+    v.set("d", target);
+    v.save();
+    grpc.commit();
+
+    try (final ResultSet rs = grpc.query("sql", "SELECT d FROM `" + VERTEX_TYPE + "`")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Object raw = rs.next().getProperty("d");
+      assertThat(raw).as("pre-epoch DATE must decode to a LocalDate").isInstanceOf(LocalDate.class);
+      assertThat((LocalDate) raw).isEqualTo(target);
+    }
+  }
+
+  @Test
   void datetimeRoundTripsAsLocalDateTime() {
     final LocalDateTime target = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 123_000_000);
 
