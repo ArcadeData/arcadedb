@@ -40,6 +40,28 @@
 - Small decimals still encode via `unscaled` sint64 (backward compatible on the wire).
 - No behavior change for values that already fit in 63 bits; large decimals now lossless.
 
+## Pull request
+- https://github.com/ArcadeData/arcadedb/pull/5198 (Closes #5046)
+
+## Review cycles
+- **cycle 0 (6def6f0):** gemini flagged one redundant `if/else` in the JSON encode path; claude LGTM
+  with non-blocking notes (version-skew, debug `toString`, helper duplication).
+- **cycle 1 (ba8168a):** collapsed the redundant branch (gemini), routed DECIMAL debug `toString`
+  through `toBigDecimal` (claude), documented the version-skew. claude re-reviewed: clean LGTM.
+- **cycle 2 (db9f932):** dropped the committed `review-deferred-*.md` notes file per repo convention
+  (claude nit). claude re-reviewed: clean LGTM. Gemini did not re-review cycles 1-2 (known inconsistent
+  re-review behavior); its only actionable item was resolved in cycle 1.
+
+## Deferred / not done (non-blocking, agreed)
+- Consolidating the duplicated `toGrpcDecimal`/`toBigDecimal` helpers into the shared `grpc` proto
+  module: left as-is to preserve the module-role boundary (grpc holds generated proto only); both
+  copies are symmetric and covered by tests on each side.
+- Old-server/new-client asymmetry for >63-bit decimals and hardcoded IT ports: pre-existing, out of
+  scope, covered by the upgrade guidance below.
+
+## Final state
+- clean-approval (claude LGTM on the final head; no actionable items outstanding).
+
 ## Upgrade / version-skew note
 - The `unscaled_bytes` field (tag 3) is only ever populated for `BigDecimal` values whose unscaled
   magnitude exceeds 63 bits. Peers built before this change ignore the unknown field and would decode
