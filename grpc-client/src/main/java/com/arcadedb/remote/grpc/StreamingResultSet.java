@@ -45,7 +45,9 @@ class StreamingResultSet implements ResultSet {
   private final RemoteGrpcDatabase                 db;
   private final AtomicLong                         totalProcessed  = new AtomicLong(0);
   protected     Iterator<Result>                   currentBatch    = Collections.emptyIterator();
-  private       boolean                            streamExhausted = false;
+  // volatile: close() may run on a different thread than the iterating owner (checkCrossThreadUse only
+  // warns, it does not prevent it), so publish this flag with a happens-before edge to the reader in hasNext.
+  private volatile boolean                         streamExhausted = false;
   private       Result                             nextResult      = null;
 
   StreamingResultSet(BlockingClientCall<?, QueryResult> stream, RemoteGrpcDatabase db) {

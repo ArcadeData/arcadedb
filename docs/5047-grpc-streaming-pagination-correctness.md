@@ -19,7 +19,7 @@ Several correctness/efficiency defects in the gRPC streaming and pagination path
 - **STR-4 (fixed)** - `is_last_batch` was never true on exact-multiple totals. `streamCursor` and
   `streamPaged` now defer the final full batch/page by one step so the terminal batch always carries
   `is_last_batch=true` (fixes `BatchedStreamingResultSet.isLastBatch()` metadata too and removes the extra
-  round trip).
+  client-visible empty-batch round trip; PAGED still runs the server-side empty SKIP/LIMIT probe query).
 - **PERF-3 (fixed)** - `streamPaged` rebuilt `convertParameters` + a wrapping map every page. The base
   parameter map is now converted once and copied per page.
 - **STR-3 (partially fixed)** - `streamPaged` now rejects a query whose parameters collide with the reserved
