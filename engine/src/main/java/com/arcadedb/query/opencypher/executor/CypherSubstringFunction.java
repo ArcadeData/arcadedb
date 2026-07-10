@@ -44,7 +44,11 @@ public class CypherSubstringFunction implements StatelessFunction {
       throw new CommandExecutionException("Cannot handle negative start index nor negative length");
     if (start >= str.length())
       return "";
-    if (args.length == 3 && args[2] != null) {
+    if (args.length == 3) {
+      // Issue #5193: an explicitly supplied null length propagates null (as Neo4j does),
+      // it must not be treated as an omitted argument.
+      if (args[2] == null)
+        return null;
       final int length = ((Number) args[2]).intValue();
       if (length < 0)
         throw new CommandExecutionException("Cannot handle negative start index nor negative length");
