@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -99,8 +100,12 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
         // Initialize iterator on first call
         if (iterator == null) {
           // Check if type exists before iterating
-          // This handles multi-label queries where the composite type may not exist
-          if (!context.getDatabase().getSchema().existsType(label)) {
+          // This handles multi-label queries where the composite type may not exist.
+          // A non-vertex type with the same name (edge/document type) matches no node: labels and
+          // relationship types are separate namespaces in Cypher, so the scan yields 0 rows instead
+          // of failing with a ClassCastException while casting edges to vertices (issue #5194)
+          if (!context.getDatabase().getSchema().existsType(label)
+              || !(context.getDatabase().getSchema().getType(label) instanceof VertexType)) {
             finished = true;
             return;
           }

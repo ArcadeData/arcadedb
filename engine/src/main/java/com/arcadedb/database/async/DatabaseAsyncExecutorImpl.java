@@ -33,6 +33,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -650,7 +651,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void newEdge(final Vertex sourceVertex, final String edgeType, final RID destinationVertexRID,
                       final boolean bidirectional,
                       final boolean light, final NewEdgeCallback callback, final Object... properties) {
-    if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
+    if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
       throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
 
     newEdge(sourceVertex, edgeType, destinationVertexRID, light, callback, properties);
@@ -669,7 +670,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     final int sourceSlot = getSlot(sourceVertex.getIdentity().getBucketId());
     final int destinationSlot = getSlot(destinationVertexRID.getBucketId());
 
-    final boolean bidirectional = ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional();
+    // Validate the type kind before scheduling any task: a vertex or document type used as edge type
+    // must fail with a clean schema error, not an internal ClassCastException (issue #5194)
+    if (!(database.getSchema().getType(edgeType) instanceof EdgeType resolvedEdgeType))
+      throw new SchemaException("Type '" + edgeType + "' is not an edge type");
+    final boolean bidirectional = resolvedEdgeType.isBidirectional();
 
     if (sourceSlot == destinationSlot)
       // BOTH VERTICES HAVE THE SAME SLOT, CREATE THE EDGE USING IT

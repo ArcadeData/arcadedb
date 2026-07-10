@@ -135,7 +135,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
           final String target = targetBucket != null ? "bucket:" + targetBucket.getStringValue() : targetClass.getStringValue();
 
-          if (unidirectional && ((EdgeType) context.getDatabase().getSchema().getType(target)).isBidirectional())
+          if (unidirectional && context.getDatabase().getSchema().getType(target) instanceof EdgeType t && t.isBidirectional())
             throw new CommandExecutionException("Cannot create unidirectional edge on a bidirectional edge type");
 
           final MutableEdge edge;
@@ -144,7 +144,10 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           } else {
             // Create unsaved edge - it will be saved later by SaveElementStep
             // This allows UpdateContentStep and ApplyDefaultsStep to run before save
-            final EdgeType edgeType = (EdgeType) context.getDatabase().getSchema().getType(targetClass.getStringValue());
+            // Validate the type kind: a vertex or document type used as edge type must fail with a
+            // clean schema error, not an internal ClassCastException (issue #5194)
+            if (!(context.getDatabase().getSchema().getType(targetClass.getStringValue()) instanceof EdgeType edgeType))
+              throw new CommandExecutionException("Type '" + targetClass.getStringValue() + "' is not an edge type");
             edge = new MutableEdge(context.getDatabase(), edgeType, currentFrom.getIdentity(), currentTo.getIdentity());
 
             // Set properties if provided
