@@ -440,17 +440,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      } else if (realException instanceof CommandParsingException) {
+      } else if (e instanceof CommandParsingException || realException instanceof CommandParsingException) {
         // A parsing/semantic validation error (malformed query, unknown variable, invalid MERGE
-        // rebind, ...) is a client error - the query text is invalid, not an internal server fault.
-        // Surface as HTTP 400 with the real validation message so API consumers can fix the query,
-        // instead of a misleading 500. When e has no cause, realException == e, so this covers both a
-        // directly-thrown CommandParsingException and one wrapped in a CommandExecutionException. See
-        // issue #5191.
+        // rebind, unsupported Gremlin syntax such as Groovy closures, ...) is a client error - the query
+        // text is invalid, not an internal server fault. Surface as HTTP 400 with the real validation
+        // message so API consumers can fix the query, instead of a misleading 500. The check covers a
+        // CommandParsingException wrapped as the cause of a CommandExecutionException as well as a
+        // directly-thrown CommandParsingException, even when it carries its own cause (e.g. a Gremlin
+        // ScriptException, in which case realException is that cause). See issues #5191 and #5201.
+        final Throwable reported = e instanceof CommandParsingException ? e : realException;
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
+                        reported.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
