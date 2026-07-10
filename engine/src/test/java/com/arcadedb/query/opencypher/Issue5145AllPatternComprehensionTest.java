@@ -174,6 +174,59 @@ class Issue5145AllPatternComprehensionTest {
     }
   }
 
+  /**
+   * Follow-up to issue #5145: a <em>parenthesized</em> inner predicate inside {@code all()} used in a
+   * {@code WITH ... WHERE} filter must behave identically to the unparenthesized form. The recursive
+   * parenthesized-expression finder in the WHERE-clause boolean parser used to dive into the inner
+   * {@code (a = false)} and discard the enclosing {@code all()}, evaluating the bare predicate against
+   * an unbound iteration variable and filtering out every row (flagging nothing instead of 1 and 4).
+   */
+  @Test
+  void parenthesizedInnerPredicateInWhereMatchesUnparenthesized() {
+    database.command("opencypher",
+        "CREATE (u1:User {id:1, active:true}), (u2:User {id:2, active:true}), (u3:User {id:3, active:false}), "
+        + "(u4:User {id:4, active:true}), "
+        + "(u1)-[:FRIEND]->(u3), (u2)-[:FRIEND]->(u3), (u2)-[:FRIEND]->(u4), (u4)-[:FRIEND]->(u3)");
+    // u1 friends: [false] -> all inactive; u2 friends: [false, true] -> not all; u4 friends: [false] -> all inactive.
+
+    database.command("opencypher",
+        "MATCH (u:User {active: true}) WITH u, [(u)-[:FRIEND]->(f:User) | f.active] AS actives "
+        + "WHERE size(actives) > 0 AND all(a IN actives WHERE (a = false)) SET u.flagged = true");
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (u:User) WHERE u.flagged = true RETURN u.id AS id ORDER BY id");
+    final List<Object> ids = new ArrayList<>();
+    while (rs.hasNext())
+      ids.add(rs.next().getProperty("id"));
+    assertThat(ids).containsExactly(1, 4);
+  }
+
+  /**
+   * Equivalence check for the parenthesized predicate directly in a read {@code WHERE}: the
+   * parenthesized and unparenthesized forms must select the same users.
+   */
+  @Test
+  void parenthesizedAndUnparenthesizedWhereAgree() {
+    database.command("opencypher",
+        "CREATE (u1:User {id:1, active:true}), (u2:User {id:2, active:true}), (u3:User {id:3, active:false}), "
+        + "(u4:User {id:4, active:true}), "
+        + "(u1)-[:FRIEND]->(u3), (u2)-[:FRIEND]->(u3), (u2)-[:FRIEND]->(u4), (u4)-[:FRIEND]->(u3)");
+
+    assertThat(selectFlagged("all(a IN actives WHERE a = false)")).containsExactly(1, 4);
+    assertThat(selectFlagged("all(a IN actives WHERE (a = false))")).containsExactly(1, 4);
+    assertThat(selectFlagged("all(a IN actives WHERE ((a = false)))")).containsExactly(1, 4);
+  }
+
+  private List<Object> selectFlagged(final String predicate) {
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (u:User {active: true}) WITH u, [(u)-[:FRIEND]->(f:User) | f.active] AS actives "
+        + "WHERE size(actives) > 0 AND " + predicate + " RETURN u.id AS id ORDER BY id");
+    final List<Object> ids = new ArrayList<>();
+    while (rs.hasNext())
+      ids.add(rs.next().getProperty("id"));
+    return ids;
+  }
+
   /** A relationship-type filter in a comprehension must not leak edges of other types into the list. */
   @Test
   void relationshipTypeFilterDoesNotLeak() {
