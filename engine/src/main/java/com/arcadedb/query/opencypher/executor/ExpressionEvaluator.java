@@ -212,18 +212,8 @@ public class ExpressionEvaluator {
     final boolean useInteger = isInteger(leftNum) && isInteger(rightNum)
         && expression.getOperator() != ArithmeticExpression.Operator.POWER;
 
-    if (useInteger) {
-      final long l = leftNum.longValue();
-      final long r = rightNum.longValue();
-      return switch (expression.getOperator()) {
-        case ADD -> l + r;
-        case SUBTRACT -> l - r;
-        case MULTIPLY -> l * r;
-        case DIVIDE -> r != 0 ? l / r : null;
-        case MODULO -> r != 0 ? l % r : null;
-        default -> null;
-      };
-    }
+    if (useInteger)
+      return ArithmeticExpression.integerArithmetic(expression.getOperator(), leftNum.longValue(), rightNum.longValue());
 
     final double l = leftNum.doubleValue();
     final double r = rightNum.doubleValue();

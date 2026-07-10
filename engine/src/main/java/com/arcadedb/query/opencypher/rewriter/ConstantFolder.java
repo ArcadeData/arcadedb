@@ -142,19 +142,8 @@ public class ConstantFolder extends ExpressionRewriter {
     // Determine if we can use integers
     final boolean useInteger = isInteger(leftNum) && isInteger(rightNum) && op != ArithmeticExpression.Operator.POWER;
 
-    if (useInteger) {
-      final long l = leftNum.longValue();
-      final long r = rightNum.longValue();
-
-      return switch (op) {
-        case ADD -> l + r;
-        case SUBTRACT -> l - r;
-        case MULTIPLY -> l * r;
-        case DIVIDE -> r != 0 ? l / r : null;
-        case MODULO -> r != 0 ? l % r : null;
-        default -> null; // POWER handled below
-      };
-    }
+    if (useInteger)
+      return ArithmeticExpression.integerArithmetic(op, leftNum.longValue(), rightNum.longValue());
 
     // Use double for division, power, and mixed types
     final double l = leftNum.doubleValue();

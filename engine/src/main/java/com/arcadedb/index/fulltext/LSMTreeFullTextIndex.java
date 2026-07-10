@@ -55,6 +55,7 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -1331,33 +1332,47 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         // Emit a null token so a null value still reaches the underlying index and its configured NULL_STRATEGY (SKIP/ERROR) is
         // enforced. Callers that compute document length exclude these null tokens (see putWithStats).
         tokens.add(null);
-      else {
-        final TokenStream tokenizer = analyzer.tokenStream("contents", t.toString());
-        try {
-          tokenizer.reset();
-          final CharTermAttribute termAttribute = tokenizer.getAttribute(CharTermAttribute.class);
-
-          try {
-            while (tokenizer.incrementToken()) {
-              final String token = termAttribute.toString();
-              tokens.add(token);
-            }
-
-          } catch (final IOException e) {
-            throw new IndexException("Error on analyzing text", e);
-          }
-        } catch (final IOException e) {
-          throw new IndexException("Error on tokenizer", e);
-        } finally {
-          try {
-            tokenizer.close();
-          } catch (final IOException e) {
-            // IGNORE IT
-          }
-        }
-      }
+      else if (t instanceof Collection<?> collection) {
+        // A LIST BY ITEM property value: tokenize each element under the same field (union of the list's terms), issue #5181.
+        // Null elements are skipped (an absent list item is not a null field, so it must not trigger NULL_STRATEGY here).
+        for (final Object element : collection)
+          if (element != null)
+            tokenize(analyzer, element, tokens);
+      } else if (t instanceof Object[] array) {
+        for (final Object element : array)
+          if (element != null)
+            tokenize(analyzer, element, tokens);
+      } else
+        tokenize(analyzer, t, tokens);
     }
     return tokens;
+  }
+
+  /**
+   * Tokenizes a single non-null value with the analyzer and appends the resulting tokens to {@code tokens}.
+   */
+  private static void tokenize(final Analyzer analyzer, final Object value, final List<String> tokens) {
+    final TokenStream tokenizer = analyzer.tokenStream("contents", value.toString());
+    try {
+      tokenizer.reset();
+      final CharTermAttribute termAttribute = tokenizer.getAttribute(CharTermAttribute.class);
+
+      try {
+        while (tokenizer.incrementToken())
+          tokens.add(termAttribute.toString());
+
+      } catch (final IOException e) {
+        throw new IndexException("Error on analyzing text", e);
+      }
+    } catch (final IOException e) {
+      throw new IndexException("Error on tokenizer", e);
+    } finally {
+      try {
+        tokenizer.close();
+      } catch (final IOException e) {
+        // IGNORE IT
+      }
+    }
   }
 
   /**
