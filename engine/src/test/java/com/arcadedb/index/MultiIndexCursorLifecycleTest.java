@@ -48,6 +48,7 @@ class MultiIndexCursorLifecycleTest extends TestHelper {
     assertThat(cursor.hasNext()).isTrue();
     assertThat(cursor.next()).isEqualTo(expected);
     assertThat(cursor.hasNext()).isFalse();
+    assertThat(cursor.getRecord()).isEqualTo(expected);
     assertThat(oneEntry.closeCalls).isOne();
     assertThat(cursor.estimateSize()).isZero();
 
@@ -83,13 +84,15 @@ class MultiIndexCursorLifecycleTest extends TestHelper {
     });
 
     final IndexCursor cursor = index.iterator(true);
-    int count = 0;
+    Identifiable last = null;
+    int          count = 0;
     while (cursor.hasNext()) {
-      cursor.next();
+      last = cursor.next();
       count++;
     }
 
     assertThat(count).isEqualTo(300);
+    assertThat(cursor.getRecord()).isEqualTo(last);
     assertThatCode(cursor::close).doesNotThrowAnyException();
     assertThat(cursor.estimateSize()).isZero();
   }

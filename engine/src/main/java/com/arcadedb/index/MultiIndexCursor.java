@@ -35,6 +35,7 @@ public class MultiIndexCursor implements IndexCursor {
   private       int                browsed         = 0;
   private       Object[]           nextKeys;
   private       int                nextCursorIndex = -1;
+  private       Identifiable       currentRecord;
   private       List<Identifiable> cursorsNextValues;
 
   public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder) {
@@ -81,7 +82,7 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public Identifiable getRecord() {
-    return cursors.get(nextCursorIndex).getRecord();
+    return currentRecord;
   }
 
   @Override
@@ -147,6 +148,7 @@ public class MultiIndexCursor implements IndexCursor {
     ++browsed;
 
     final Identifiable nextValue = cursorsNextValues.set(nextCursorIndex, null);
+    currentRecord = nextValue;
     if (cursors.get(nextCursorIndex).hasNext()) {
       final Identifiable next = cursors.get(nextCursorIndex).next();
       if (next != null)
