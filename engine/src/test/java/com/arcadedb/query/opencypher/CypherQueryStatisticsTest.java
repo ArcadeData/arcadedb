@@ -308,6 +308,37 @@ class CypherQueryStatisticsTest extends TestHelper {
   }
 
   @Test
+  void undirectedDeleteCountsRelationshipOnce() {
+    // Issue #5218: an undirected pattern binds the same relationship twice when both endpoints
+    // satisfy the match (u=a and u=b), producing two rows that each carry the same edge. The graph
+    // state must remain correct (1 relationship removed) and relationshipsDeleted must be 1, not 2,
+    // matching Neo4j.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (a:X {remove:true})-[:R]->(b:X {remove:true})");
+      final QueryStatistics s = statsOf(database,
+          "MATCH (u:X {remove:true}) MATCH (u)-[r]-() DELETE r");
+      assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
+
+      // Graph state: no relationship left
+      final ResultSet check = database.query("opencypher", "MATCH ()-[r:R]->() RETURN count(r) AS c");
+      assertThat(check.next().<Number>getProperty("c").intValue()).isEqualTo(0);
+    });
+  }
+
+  @Test
+  void undirectedDetachDeleteCountsSharedRelationshipOnce() {
+    // Companion to #5218: an undirected DETACH DELETE where both endpoints match binds the shared
+    // relationship in two rows. Both nodes are deleted (2) but the single relationship connecting
+    // them must be counted once (1), not once per endpoint, matching Neo4j.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (a:Y {remove:true})-[:R]->(b:Y {remove:true})");
+      final QueryStatistics s = statsOf(database, "MATCH (u:Y {remove:true}) DETACH DELETE u");
+      assertThat(s.getNodesDeleted()).isEqualTo(2);
+      assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
+    });
+  }
+
+  @Test
   void mergeOnMatchSetUnchangedValueStillCountsPropertySet() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:MM {k:'x', p:1})");
