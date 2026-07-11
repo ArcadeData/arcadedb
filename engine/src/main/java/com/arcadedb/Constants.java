@@ -26,9 +26,13 @@ import java.util.Properties;
 import java.util.logging.Level;
 
 public class Constants {
-  public static final String PRODUCT   = "ArcadeDB";
-  public static final String URL       = "https://arcadedb.com";
-  public static final String COPYRIGHT = "Copyrights (c) 2021 Arcade Data Ltd";
+  public static final String PRODUCT     = "ArcadeDB";
+  public static final String URL         = "https://arcadedb.com";
+  public static final String COPYRIGHT   = "Copyrights (c) 2021 Arcade Data Ltd";
+  public static final String SPONSOR_URL = "https://github.com/sponsors/ArcadeData";
+  public static final String SPONSOR_MSG =
+      "❤ ArcadeDB is free and open source, sustained by its community. If it helps you, please consider sponsoring: "
+          + SPONSOR_URL;
 
   private static final Properties properties = new Properties();
 

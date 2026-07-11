@@ -336,6 +336,8 @@ public class ArcadeDBServer {
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);
 
+    LogManager.instance().log(this, Level.INFO, Constants.SPONSOR_MSG);
+
     if ("production".equals(mode))
       logProductionChecklist();
 

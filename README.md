@@ -5,6 +5,8 @@
 <p align="center">
   <a href="https://github.com/ArcadeData/arcadedb/releases"><img src="https://img.shields.io/github/v/release/arcadedata/arcadedb?color=%23ff00a0&include_prereleases&label=version&sort=semver"></a>
   &nbsp;
+  <a href="https://github.com/sponsors/ArcadeData"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-e25555.svg"></a>
+  &nbsp;
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg"></a>
   &nbsp;
   <a href="https://docs.oracle.org/en/java/21/"><img src="https://img.shields.io/badge/Java-%3D21-green.svg"></a>
