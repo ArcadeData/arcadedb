@@ -26,6 +26,7 @@ import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -40,6 +41,7 @@ public class RecordFactory {
       case Vertex.RECORD_TYPE -> new ImmutableVertex(database, type, rid, null);
       case Edge.RECORD_TYPE -> new ImmutableEdge(database, type, rid, null);
       case EdgeSegment.RECORD_TYPE -> new MutableEdgeSegment(database, rid, null);
+      case StripeDirectory.RECORD_TYPE -> new StripeDirectory(database, rid, null);
       case EmbeddedDocument.RECORD_TYPE -> new ImmutableEmbeddedDocument(database, type, null, null);
       default -> throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
     };
@@ -53,6 +55,7 @@ public class RecordFactory {
       case Vertex.RECORD_TYPE -> new ImmutableVertex(database, type, rid, content);
       case Edge.RECORD_TYPE -> new ImmutableEdge(database, type, rid, content);
       case EdgeSegment.RECORD_TYPE -> new MutableEdgeSegment(database, rid, content);
+      case StripeDirectory.RECORD_TYPE -> new StripeDirectory(database, rid, content);
       case EmbeddedDocument.RECORD_TYPE -> new ImmutableEmbeddedDocument(database, type, content, modifier);
       default -> throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
     };

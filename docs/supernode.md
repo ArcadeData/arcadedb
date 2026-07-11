@@ -17,8 +17,185 @@ is kept below as **reference** (section B).
 | #5147 insertion lost-update (deferred-update MVCC gap) | ✅ fixed 26.7.2 (#5148) |
 | #5153 removal-direction lost-update twin | ✅ fixed 26.7.2 (#5148) |
 | Deterministic 3-node HA correctness gate | ✅ `SuperNodeAppendHAConsistencyIT` |
-| **Adaptive striped/sharded edge list (throughput)** | ⏳ **TODO - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** |
+| **Adaptive striped/sharded edge list (throughput)** | 🚧 **IMPLEMENTED on this branch - [#5156](https://github.com/ArcadeData/arcadedb/issues/5156)** (`GRAPH_SUPERNODE_THRESHOLD` default 4096, `GRAPH_SUPERNODE_STRIPES` default 16) |
 | **Remove-path anchoring cost optimisation** | ⏳ **TODO - [#5155](https://github.com/ArcadeData/arcadedb/issues/5155)** |
+
+**BREAKING-CHANGE CALLOUT (release notes, from the PR review):** promotion is ON
+by default (`supernodeThreshold=4096`) and writes a NEW on-disk record type
+(`StripeDirectory`, type 7) the first time any vertex crosses the threshold.
+From that moment the database is no longer readable by releases older than
+26.8.1 (older `RecordFactory` throws on the unknown type) and promotion is
+one-way. In addition, edge iteration order on promoted vertices is approximate
+(newest-generation-first), relaxing the #689 reverse-insertion guarantee for
+super-nodes only. Setting `supernodeThreshold=0` disables promotion entirely
+and keeps the database fully compatible with older releases. DECISION
+(2026-07-11, @lvca): 26.8.1 ships DEFAULT-ON (threshold 4096) - the
+incompatibility is documented here, in the setting's description, and must be
+called out prominently in the release notes (one-way format change triggered
+by a vertex organically crossing the threshold; set 0 before upgrading if a
+rollback path to <= 26.7.x must be preserved).
+
+Note on lookup cost: neighbour-keyed operations visit ONE stripe per
+generation, but generation 0 IS the whole pre-promotion chain (one unhashed
+stripe bounded by the threshold), so the cost is O(threshold + degree/N), not
+O(degree/N) - the localisation benefit applies to post-promotion edges.
+
+Two more promoted-vertex semantics for the upgrade notes: (a) READS on a
+promoted vertex are best-effort under write concurrency - `count()`/iteration
+can transiently under-report while a concurrent cross-file commit publishes
+its pages (the write path surfaces the same window as a retryable conflict);
+the single-file classic layout could not exhibit this. (b) `GraphBatch` bulk
+import into an already-promoted vertex fails loud with `IllegalStateException`:
+a batch job that worked can start failing once a target vertex organically
+crosses the threshold - disable promotion or use the standard API for such
+hubs.
+
+Implementation notes that refined the A.1 design (2026-07-10):
+
+- **Stripe pool DDL is deferred on server/HA.** Creating the pool buckets inside the
+  promoting user transaction made followers diverge (bucket-count mismatch in the
+  3-node IT - the #4083 SCHEMA_ENTRY/TX_ENTRY ordering hazard, exactly as A.1
+  warned). Embedded creates the pool inline (schema ops are local); a wrapped
+  (server/HA) database hands creation to a one-shot helper thread outside any
+  transaction and the vertex promotes at a later chunk-full once the pool exists.
+- **Stripe hosts are a dedicated per-type bucket pool** (`<Type>_sn_stripe_<i>`,
+  direction-blind), NOT the per-vertex-bucket edge files sketched below:
+  `TYPE_DEFAULT_BUCKETS` defaults to 1, so reusing vertex-bucket files would give
+  zero parallelism on default-configured types.
+- **Iteration order is a REAL guarantee that striping breaks** (issue #689 asserts
+  reverse-insertion order on `getVertices()` and is regression-tested with a
+  10k-edge vertex). A promoted super-node cannot preserve global insertion order
+  across stripes; it returns newest-generation-first as an approximation. The #689
+  test now pins the classic layout explicitly; the trade-off must be called out in
+  the release notes.
+- **`GraphBatch` (bulk import) fails loud on a promoted vertex** instead of
+  corrupting the directory via its direct head-pointer manipulation: bulk edge
+  import into an already-promoted vertex throws with a clear message (disable
+  promotion or use the standard API). Follow-up candidate.
+- Promotion detection = chunk-full + geometric estimate as designed; at the 8 KB
+  cap a one-time chain walk (cycle-guarded) honours thresholds above the cap
+  estimate.
+- **Stripes are PRE-WARMED at promotion** (all N first chunks created inside the
+  promotion transaction), not lazily initialised: the 3-node IT showed lazy
+  per-stripe init rewrote the directory once per stripe, each rewrite serialising
+  concurrent appenders on the directory file's commit lock for a full replication
+  round - a thundering herd that produced 5s LockTimeoutExceptions. Similarly, the
+  append FAST PATH reads the directory WITHOUT anchoring its page (a stale stripe
+  head is safe: the append lands mid-chain, valid for the unordered list) - the
+  anchored fresh read happens only on slot writes (~1/1000 appends) - because an
+  anchored-but-unmodified page still contributes its FILE to the commit lock set,
+  which was re-serialising every striped append through the directory's file.
+- **Engine bug found by the HA IT (pre-existing, fixed on this branch):**
+  `TransactionContext.commit1stPhase` wrapped `LockTimeoutException` - which
+  extends `NeedRetryException` and is designed to be retryable - into a
+  NON-retryable generic `TransactionException`, so commit-lock contention failed
+  transactions to the caller instead of retrying. The catch now rethrows every
+  `NeedRetryException` as-is. This affects any heavily concurrent workload on
+  main, independent of striping. RELEASE-NOTE MATERIAL (semantic change to
+  commit error handling): callers that caught `TransactionException` around a
+  commit now see the retryable subclass instead; the HTTP handler already
+  catches `NeedRetryException` first and maps it to 503 (retry), so server
+  clients get a proper retry signal where they previously got a generic
+  transaction error. Also for the release notes: edge iteration order on
+  PROMOTED vertices is approximate (newest-generation-first), relaxing the #689
+  reverse-insertion guarantee for super-nodes only.
+- **Cross-file commit publication is not atomic for uncoordinated readers**: a
+  concurrent commit's directory page can become visible a moment before the
+  stripe chunk page of the same commit (pages are published one at a time and a
+  plain reader takes no commit lock), so a freshly-read stripe head RID can
+  transiently resolve to "record not found". `StripedEdgeList` maps that
+  `RecordNotFoundException` to a retryable `ConcurrentModificationException`
+  (`loadStripeHead`), letting the transaction retry loop re-read a consistent
+  view. Found by `Issue5147SuperNodeChunkRaceTest` under the default threshold.
+
+### Two lost-update gaps found by the widened test net (2026-07-10)
+
+Running the whole `com.arcadedb.graph` package (270 tests, incl. merge-disabled
+concurrency runs) after the hot-vertex fix surfaced two silent lost-update gaps.
+Both are of the same family as #5147: a WRITE based on a record buffer whose
+page registration does not match the version the buffer was read at.
+
+1. **Deferred-update erase inside one transaction.** Record updates are DEFERRED
+   (`updatedRecords`, applied to pages only at commit), so re-reading a record
+   raw from its page mid-transaction resurrects the pre-update state, and a
+   subsequent `updateRecord` REPLACES the earlier deferred copy - silently
+   erasing this transaction's own previous writes. Hit twice: the striped
+   directory's slot updates (each stripe chunk-full erased all earlier slot
+   updates in the same transaction - `InsertGraphIndexTest` lost 690/1000
+   edges), and the classic head chunk in multi-append transactions. Rule now
+   enforced: writers re-read their own deferred writes via
+   `TransactionContext.getWrittenRecord()` - updated-records/mutable working
+   copy ONLY, never the read-only record cache (a read-only cached copy may be
+   one committed version older and would roll a concurrent change back).
+2. **Pre-anchor read paired with a post-anchor version.** The factory's striped
+   dispatch reads the head record BEFORE anchoring its page (deliberate - a
+   directory anchor would re-serialise striped appends). If a concurrent commit
+   publishes between that read and `anchorHeadChunkPage`, the transaction holds
+   a ONE-VERSION-OLDER buffer at the FRESH page version: the commit-time MVCC
+   check passes (versions match) and the stale buffer overwrites the concurrent
+   append. Deterministically reproduced with merge disabled (classic hub lost
+   ~140/32000 per run; the page-version write history shows the winner of
+   version N+1 carrying version N-1's entry count). Fix: classic head loads and
+   `loadChunkForWrite` re-read the chunk THROUGH the just-anchored page
+   (bucket-level read, bypassing the record cache), after first preferring the
+   transaction's own written copy per rule 1.
+
+Also hardened: a transiently unresolvable head RID (a concurrent commit's pages
+publish one file at a time; readers take no commit lock) now surfaces as a
+retryable `ConcurrentModificationException` everywhere - the factory previously
+"recovered" by RESETTING the head to a fresh chunk, orphaning the entire
+existing list (observed: 145 edges gone in one hit). Merge-disabled concurrency
+runs: 5/5 classic + 10/10 striped green after these fixes.
+
+### The hot-vertex file lock: the REAL super-node serialiser under HA (found 2026-07-10)
+
+With striping in place the 3-node benchmark refused to move: classic, 8 stripes
+and 32 stripes all pinned at ~52 edges/s and ~153 ms average latency, while the
+no-hub control did 104/s. A sampled trace of the commit lock sets showed why:
+**the hub vertex's own bucket file was in the lock set of EVERY append
+transaction**, held for a full replication round (p50 ≈ 19 ms) - 8 threads
+serialising on one 19 ms lock is exactly 52/s, regardless of the edge-list
+layout.
+
+Root cause (pre-existing on main, NOT a striping bug):
+`GraphEngine.connectIncomingEdge` (and the OUT twins) eagerly called
+`vertex.modify()` before touching the edge list. For a vertex not already in
+the transaction, `ImmutableVertex.modify()` reloads the record via
+`getPageToModify(...)`, which anchors the vertex page - and an
+anchored-but-unmodified page still contributes its FILE to the commit lock set.
+The vertex record is only actually rewritten on a head flip (rare), first-chunk
+creation (once) or promotion (once); every other append paid the lock for
+nothing. This also explains why the 26.7.2 append-merge plateaued at ~52-57/s:
+the merge removed the retry storm, but every hub append still queued one full
+replication round on the hub vertex file.
+
+Fix on this branch: the connect paths pass the immutable vertex down and
+`modify()` happens only in the three paths that really rewrite the vertex
+record, each guarded by a stale-head re-check (`modify()` reloads the record,
+so a concurrently moved head is detected and surfaced as a retryable conflict
+instead of silently orphaning the concurrent chunk - the MVCC protection the
+eager anchor used to provide, without the per-append lock).
+
+Measured effect (same build, same day, 3-node Raft, 8 writer threads x 500
+edges into one hub, promotion transition excluded via single-threaded warm-up):
+
+| run | throughput | avg / max commit latency | MVCC conflicts | full retries |
+|---|---|---|---|---|
+| classic hub, BEFORE fix | 52/s | 154 ms / 0.4 s | 4115 | 3.4% |
+| striped 8, BEFORE fix | 51/s | 153 ms / 0.6 s | 2428 | 2.2% |
+| striped 32, BEFORE fix | 52/s | 152 ms / 0.7 s | 857 | 2.9% |
+| classic hub, AFTER fix | 58/s | 136 ms / 1.1 s | 4107 | 3.4% |
+| **striped 8, AFTER fix** | **79/s** | **101 ms / 0.6 s** | 2395 | 5.1% |
+| **striped 32, AFTER fix** | **120/s** | **66 ms / 0.26 s** | 923 | 3.7% |
+| control (no shared hub) | 104/s | 76 ms / 0.3 s | 1892 | 47.3% |
+
+With the hot-vertex lock gone and 32 stripes, the super-node workload
+**out-throughputs the control**: stripes + append-merge absorb hub conflicts
+with 3.7% full retries, while the control burns 47% full retries on its own
+bucket collisions. 8 threads on 8 stripes still collide ~60% of the time
+(birthday math), so the stripe count is the scaling lever; a follow-up could
+size the default relative to expected writer concurrency (the generational
+directory already supports growing the stripe count later).
 
 ---
 
@@ -26,18 +203,188 @@ is kept below as **reference** (section B).
 
 ## A.1 Adaptive striped / sharded edge list - throughput ([#5156](https://github.com/ArcadeData/arcadedb/issues/5156))
 
-**Why.** Even with zero retries, a single hot chunk is a one-at-a-time version
-chain: every append to a vertex lands on the *same* head-chunk page, so hub
-commits serialise. Measured in the 3-node HA benchmark, appends into one hub cap
-at **~52 edges/s** while a distinct-target control on the same cluster hits
-**~94 edges/s** - the single hot chunk costs ~45% of throughput independent of the
-retry storm (which the merge already handles). Striping is the lever that closes
-that gap.
+**Why.** Even with zero retries, hub commits serialise. Two independent mechanisms
+cause it, and the second one is the dominant one under HA:
 
-**Idea.** Let a *single hot vertex* keep a head chunk in **several** edge buckets
-(stripes) and hash appends across them, so concurrent appends hit different
-pages/files and run in parallel. ArcadeDB already keys edge buckets per vertex
-bucket (`getEdgesBucketName`), so the files exist.
+1. **Page-version chain**: every append lands on the *same* head-chunk page, so
+   each commit must build on the previous committed version.
+2. **Per-FILE commit locks held across the whole replication round.** On the
+   leader, `commit1stPhase` acquires the commit locks of every touched *file* and
+   they are released only at `reset()` after phase 2 - i.e. **across the full Raft
+   quorum round-trip** (see `RaftReplicatedDatabase.commit`: phase 1 → replicate →
+   phase 2 → reset; the #4936/#4937 semantics require the locks to stay held). All
+   of a hub's IN edges live in ONE file (`getEdgesBucketName` = one `_in_edges` /
+   `_out_edges` file per vertex bucket), so concurrent hub appends queue on that
+   file's lock, **one quorum round at a time**.
+
+Measured in the 3-node HA benchmark: appends into one hub cap at **~52 edges/s**
+while a distinct-target control on the same cluster hits **~94 edges/s**.
+
+**Consequence for the design (this supersedes the earlier "per-page" note): stripes
+MUST live in different FILES, not merely different pages.** Page-level striping
+inside one file would leave the file-lock serialisation intact and gain ~nothing
+under HA - the deployment where the problem was reported.
+
+**Idea.** Let a *single hot vertex* keep a head chunk in **several** edge FILES
+(stripes) and hash appends across them, so concurrent appends take different file
+locks and replicate in parallel. Reuse the **existing per-vertex-bucket edge
+files**: stripe `i` of a hub in vertex bucket `b` lives in the edge file of vertex
+bucket `(b + i) % typeBuckets`. No new file types, bounded file count, and edge
+chunks are only ever reached by pointer (never scanned by file association), so
+hosting another bucket's chunks is harmless.
+
+### Dual-layout mechanics: how classic and striped coexist
+
+**Today's placement invariant (why the hub serialises).** Edge-chunk files exist
+per VERTEX BUCKET (`getEdgesBucketName`: `<vertexBucket>_out_edges` /
+`_in_edges`), but a single vertex lives in exactly one bucket and its list never
+leaves that bucket's file: the first chunk is created in the vertex's own bucket's
+edge file (`GraphEngine.createIn/OutEdgeChunk`) and every later chunk is created
+in the *same bucket as the previous chunk* (`EdgeLinkedList.add`, chunk-full
+branch). So **for one vertex, the whole linked list per direction = exactly ONE
+file, forever** - multiple buckets only spread *different vertices* across files,
+never one vertex's list. (The edge *records* - the `Edge` type with properties -
+are separate and do spread across the edge type's buckets; only the adjacency
+chunk list is single-file per vertex+direction.)
+
+**The discriminator is one byte that already exists.** The vertex record format
+does NOT change - it keeps its two head-pointer RIDs. What changes is what kind of
+record the pointer lands on; every record starts with a record-type byte and
+`RecordFactory` already dispatches on it:
+
+- head → record type **3** (`EdgeSegment`) = **classic layout** (today's path,
+  untouched);
+- head → record type **7** (`StripeDirectory`, new; 0-6 are taken) = **striped**.
+
+No vertex-format bump, no flags, no migration: an old database contains only
+type-3 heads and reads classic forever until a vertex naturally promotes.
+
+**Classic layout** (every vertex below the threshold):
+
+```
+ VERTEX record  (vertex bucket b)                      format UNCHANGED
+ ┌──────────────────────────────────────────────────┐
+ │ type=1 │ OUT head RID │ IN head RID │ properties… │
+ └──────────────────┬───────────────────────────────┘
+                    │ IN head RID
+                    ▼
+        file "Account_b_in_edges"        ONE file for ALL this bucket's IN lists
+ ┌───────────────────────────────┐  prev  ┌──────────────┐  prev  ┌─────────────┐
+ │ CHUNK  type=3  (8KB)          ├───────▶│ CHUNK (4KB)  ├───────▶│ CHUNK (64B) │─▶ ∅
+ │ [used][prev][e,v][e,v][e,v]…  │        └──────────────┘        └─────────────┘
+ └───────────────────────────────┘          older entries            oldest
+        ▲
+        │ EVERY concurrent append writes THIS page, and takes THIS file's
+        └ commit lock for a FULL Raft round → the 52 edges/s serialisation point
+```
+
+**Striped layout** (only after promotion):
+
+```
+ VERTEX record  (unchanged - same two pointers)
+ ┌──────────────────────────────────────────────────┐
+ │ type=1 │ OUT head RID │ IN head RID │ properties… │
+ └──────────────────┬───────────────────────────────┘
+                    │ IN head RID now lands on a DIRECTORY instead of a chunk
+                    ▼
+ STRIPE DIRECTORY  type=7   (small record, lives in "Account_b_in_edges")
+ ┌───────────────────────────────────────────────────────┐
+ │ type=7 │ N=4 │ slot0 RID │ slot1 RID │ slot2 │ slot3  │  ◀── the stripe-head
+ └───┬──────────────┬─────────────┬───────────┬──────────┘      pointers live HERE
+     │ slot0        │ slot1       │ slot2     │ slot3
+     ▼              ▼             ▼           ▼
+ Account_b      Account_b+1   Account_b+2   Account_b+3     ◀── 4 DIFFERENT files
+ _in_edges      _in_edges     _in_edges     _in_edges           = 4 commit locks
+     │              │             │             │               = parallel Raft rounds
+ ┌───────┐      ┌───────┐     ┌───────┐     ┌───────┐
+ │ CHUNK │─prev▶│ CHUNK │     │ CHUNK │     │ CHUNK │
+ └───┬───┘      └───────┘     └───┬───┘     └───────┘
+ ┌───▼───┐       (new chain)  ┌───▼───┐      (new chain)
+ │ CHUNK │                    │ CHUNK │
+ └───┬───┘                    └───────┘
+ ┌───▼───┐  ◀── stripe 0 = the OLD chain, exactly as it was. Promotion moves
+ │ CHUNK │      NOTHING: it only writes the directory and flips the head pointer.
+ └───────┘
+```
+
+Where the pointers live: the stripe-head pointers are a **packed array of N RIDs
+in the directory record's body** - a RID already encodes the file (its `bucketId`
+IS the bucket/file id), so a "pointer to another file" is just an ordinary RID.
+The directory itself lives in the vertex's own bucket's edge file, and it is
+**almost immutable**: rewritten only when a stripe's head chunk fills (slot update,
+~1 per ~1000 appends per stripe) or on a stripe's lazy first use (slots start as
+null RIDs). It never becomes a hot page.
+
+**Dispatch** (single fork point, everything downstream polymorphic):
+
+```
+        any edge-list operation on vertex V, direction D
+                          │
+             load record at V.headRID(D)      (this lookup happens today anyway)
+                          │
+              first byte = record type?
+              ┌───────────┴────────────┐
+           type 3                    type 7
+       (EdgeSegment)            (StripeDirectory)
+              │                        │
+        EdgeLinkedList           StripedEdgeList
+        (today's class,         (wraps N EdgeLinkedLists,
+         zero changes)           one per non-null slot)
+              │                        │
+   ┌──────────┴─────────┐   ┌──────────┴──────────────────────────┐
+   │ add(e,v): head     │   │ add(e,v):    stripe[hash(v)%N].add  │ ◀ different files
+   │ iterate/count:     │   │ contains(v): stripe[hash(v)%N] only │ ◀ O(degree/N)
+   │   walk one chain   │   │ iterate:     concat N iterators     │
+   │ remove: walk chain │   │ count:       sum of N chain counts  │
+   └────────────────────┘   │ remove(e):   stripe from endpoints  │
+                            │ deleteAll:   all N chains + dir     │
+                            └─────────────────────────────────────┘
+```
+
+Mechanically: extract a small `EdgeList` interface with the operations
+`GraphEngine` already uses; `EdgeLinkedList` implements it unchanged;
+`StripedEdgeList` delegates to per-stripe `EdgeLinkedList`s. The fork lives in
+`GraphEngine.getEdgeHeadChunk()` (plus the two `connect*Edge` sites), which
+becomes the type-byte factory.
+
+**Promotion** (atomic, inside the transaction that trips it):
+
+```
+ EdgeLinkedList.add(e, v)
+     │
+     ├── head chunk has room ─▶ in-place append (hot path, unchanged, merge-tracked)
+     │
+     └── CHUNK FULL  ◀── the one place that ALREADY rewrites the vertex record
+            │
+            ├── cumulative < SUPERNODE_THRESHOLD
+            │      └─▶ classic: bigger chunk, vertex.head = new chunk    (today)
+            │
+            └── cumulative ≥ threshold     (derived from the chunk-size doubling
+                     │                      schedule - no counter, no walk)
+                     ▼  PROMOTE, same tx:
+                     1. directory: slot0 = old chain head, slots 1..N-1 = null
+                     2. vertex.head = directory RID
+                     3. append (e,v) via striped path (hash(v) → stripe j →
+                        allocates stripe j's first 64B chunk, slot j filled)
+```
+
+Racers at promotion conflict on the vertex/head page exactly like a chunk-full
+does today, retry, and then see the directory - a one-time event per vertex.
+
+**Compatibility:**
+
+| Database | Behaviour |
+|---|---|
+| Old DB, old binaries | classic only, nothing changes |
+| Old DB on new binaries | classic; a vertex promotes only when it crosses the threshold on a write |
+| `SUPERNODE_THRESHOLD=0` (disabled) | directories never created → file stays readable by older versions |
+| DB with a promoted vertex | NOT readable by older versions (unknown type byte 7) - the one compat cost, paid only after a promotion happens |
+
+**Components to touch:** `RecordFactory` (type 7), new `StripeDirectory` +
+`StripedEdgeList`, `EdgeLinkedList` (promotion check in the existing chunk-full
+branch), `GraphEngine.getEdgeHeadChunk` + the two `connect*` sites (factory),
+`DatabaseChecker` (follow directories), append-merge unchanged (a stripe head is
+just a chunk).
 
 **Design guidance:**
 
@@ -48,13 +395,27 @@ bucket (`getEdgesBucketName`), so the files exist.
   Instead, **promote a vertex to a striped representation only when it crosses a
   degree threshold** (ConcurrentHashMap-treeify style) via a small "stripe
   directory" record; small vertices and old databases keep the current single-list
-  format unchanged (format-versioned).
-- **New config `SUPERNODE_THRESHOLD`** (e.g. default 128, tunable) as the promotion
-  barrier. Gates the striped *structure* only - the edge-append merge stays
-  unconditionally on (its overhead is ~0.7% and contention is not a function of
-  degree, so a low-degree-but-hot vertex still needs the merge).
-- **Per-bucket / per-page granularity** because MVCC conflicts are page-level:
-  stripe across distinct files/pages so appends never false-share.
+  format unchanged.
+- **New config `SUPERNODE_THRESHOLD`** (e.g. default 128 edges, tunable; 0 =
+  disabled) as the promotion barrier. Gates the striped *structure* only - the
+  edge-append merge stays unconditionally on (its overhead is ~0.7% and contention
+  is not a function of degree, so a low-degree-but-hot vertex still needs the
+  merge).
+- **Zero-cost promotion trigger: the chunk-full transition.** The chunk-full
+  branch of `EdgeLinkedList.add` is the ONE place that already rewrites the vertex
+  record (head-pointer update) and allocates a record - promotion there costs no
+  extra write and no extra contention. The vertex's approximate degree is
+  **derivable from the geometric chunk-size schedule** (64→128→…→8192 doubling:
+  cumulativeBytes ≈ 2×currentChunkSize − 64 until the cap, then +8192 per chunk),
+  so `SUPERNODE_THRESHOLD` maps to a chunk-size boundary with **no degree counter
+  and no walk**. Past the 8 KB cap, every ~700-1000-edge chunk-full is a further
+  promotion opportunity. Concurrent racers to promote: one wins, the others
+  conflict-and-retry, then see the directory (one-time cost).
+- **Directory record, new record type byte; stripe 0 = the existing chain.** The
+  vertex's head pointer simply flips to point at a small directory record (packed
+  array of N stripe-head RIDs; immutable after creation so it never becomes a hot
+  page itself). The vertex record format is **unchanged**, promotion is O(1) with
+  **no data migration**, and old databases read as before.
 - **Deterministic hash by the NEIGHBOUR vertex RID** (the second element of each
   `(edgeRID, vertexRID)` entry), NOT the edge RID. `isConnectedTo`,
   `containsVertex`, `getFirstEdgeConnectedToVertex`, and `removeVertex` all key on
@@ -63,24 +424,54 @@ bucket (`getEdgesBucketName`), so the files exist.
   `deleteEdge` still resolves the stripe from the edge's endpoints. Hashing by edge
   RID would give zero read benefit on those hot paths. (Only a bare
   `containsEdge(edgeRID)` can't localise - uncommon.)
-- **Reads merge N stripe chains** (and can parallelise); degree = sum of per-stripe
-  counts. **Edge iteration order changes** (per-stripe order, merged) - confirm
-  nothing guarantees edge order and document it.
-- **Composes with the merge**: merge kills the retry storm; striping unlocks
-  throughput. Both stay on.
+- **Reads merge N stripe chains**; degree = sum of per-stripe counts. Parallel
+  stripe reads must use the `QueryEngineManager` pool (never the JDK common pool -
+  see the concurrency rules in CLAUDE.md). **Edge iteration order changes**
+  (per-stripe order, merged) - confirm nothing guarantees edge order and document
+  it.
+- **Composes with the merge**: merge kills the retry storm (and mops up residual
+  intra-stripe conflicts); striping unlocks throughput. Both stay on.
+- **Synergy with #5155**: stripes cut the remove-walk length to degree/N, which
+  also shrinks the remove-path anchoring cost by the same factor.
+
+**Alternatives considered and rejected** (re-examined 2026-07-09):
+
+- **Cross-transaction write combining on the leader** (merge k in-flight hub
+  appends into one page update / one Raft round). Attacks the observed bottleneck
+  most directly, but requires either releasing the file locks before replication
+  (speculative version chaining + cascading aborts) or merging several
+  transactions' WAL identities into one entry - both deep, risky changes to the
+  hard-won tx/WAL contract (#4936/#4937/#5064). Kept as the A.3 idea, only worth
+  revisiting after striping.
+- **LSM-style deferred hub append** (commit the edge record synchronously, apply
+  the hub back-reference asynchronously from a batching worker). Moves the
+  contention to the buffer's file/page unless the buffer is itself striped
+  (converges to striping) and adds read-reconciliation + durability complexity.
+- **Record-level MVCC for edge buckets.** Now clearly insufficient: the dominant
+  serialiser under HA is the per-FILE commit lock, which is *coarser* than the
+  page - finer conflict detection changes nothing there.
+- **LongAdder-style contention-probed stripe selection** (append to whichever
+  stripe is free). Perfect write spreading, but destroys the read localisation of
+  hash-by-neighbour (edges to V could be in any stripe). Hash-by-neighbour already
+  spreads statistically well for hubs (many distinct neighbours); keep probing only
+  as a fallback if real-world skew is ever observed.
 
 **Open questions / risks:**
 
-- **Promotion detection without new contention.** Do NOT add a per-append degree
-  counter on the vertex record - it would make every append rewrite the vertex
-  record and reintroduce the very contention we are removing. Use an approximate
-  signal computed where the vertex is already touched (e.g. at a chunk-full
-  transition), not per edge.
-- **Stripe count N**: fixed (8/16) to start; adaptive N (scale with degree) later.
-- **Format/versioning + migration**: the "striped" marker + stripe-directory
-  record; old vertices and DBs read as single-list; promotion is lazy on write.
+- **Stripe count N**: fixed (8/16) to start, but effective parallelism is
+  `min(N, typeBuckets, concurrent writers)` - a 1-bucket vertex type gains nothing
+  under HA because there is only one edge file to stripe into. Document that hub
+  types should keep the default bucket count (≈ CPU cores); optionally warn on
+  promotion when `typeBuckets == 1`.
+- **HA gain is bounded by the control (~1.8× here)**: striping lifts the hub to the
+  cluster's independent-transaction throughput, not beyond it (that residual
+  ceiling is Raft/fsync bound - the A.3 territory). The embedded gain is likely
+  larger - **measure an embedded distinct-target control first** to size it.
+- **Format/versioning**: the directory record type; old vertices and DBs read as
+  single-list; promotion is lazy on write. Demotion (edge deletions shrinking the
+  vertex below threshold) is NOT needed - once striped, stay striped.
 
-**Acceptance:** concurrent appends to one super-node scale beyond the single-chunk
+**Acceptance:** concurrent appends to one super-node scale beyond the single-file
 ceiling (target: close the 52→94 eps HA gap; re-run the benchmarks in §B.5); no
 regression for sub-threshold vertices; correctness under concurrency (extend the
 poison/anchor stress + HA consistency tests to the striped layout); existing
@@ -262,3 +653,14 @@ MVCC/ACID/graph/tx suites.
   `deleteAll` poison, null-tolerant integrity asserts, merge-off regression test,
   `GraphBatch`/slot-reuse invariants documented). **PR #5148 merged into 26.7.2.**
   Filed follow-ups #5155 (remove-path cost) and #5156 (striping).
+- **2026-07-09** - Design re-check of the striping proposal (A.1). Key discovery:
+  the per-FILE commit locks are held across the entire Raft replication round
+  (phase 1 → quorum → phase 2 → reset), so the dominant hub serialiser under HA is
+  the **file lock**, not the page-version chain - stripes must live in **different
+  files** (page-level striping would gain ~nothing under HA). Sharpened the design:
+  reuse the existing per-vertex-bucket edge files as stripe hosts, zero-cost
+  promotion trigger at the chunk-full transition (degree derived from the geometric
+  chunk-size schedule - no counter), immutable directory record + stripe 0 = the
+  existing chain (no vertex-format change, no migration). Re-examined and rejected
+  four alternatives (cross-tx write combining, LSM-style deferred append,
+  record-level MVCC, contention-probed stripes) - documented in A.1.
