@@ -143,6 +143,9 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
     }
   }
 
+  /** Bounded by the single-byte header field: at most 127 generations (a growth event is rare - promotion adds
+   * one, a future re-stripe would add one - so the bound is practically unreachable; a generation-append must
+   * still guard it). */
   public int getGenerationCount() {
     checkForLoading();
     return buffer.getByte(2);
