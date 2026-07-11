@@ -55,6 +55,7 @@ class AntlrCoexistenceIT {
       // Engine ANTLR Cypher parser (org.antlr 4.13.2, v4 ATN).
       final ResultSet cypher = database.query("cypher", "MATCH (p:Person) RETURN p.name AS name");
       assertThat(cypher.hasNext()).isTrue();
+      assertThat(cypher.next().<String>getProperty("name")).isEqualTo("Jay");
 
       // TinkerPop Gremlin parser (relocated com.arcadedb.gremlin.shaded.org.antlr 4.9.1, v3 ATN).
       final ResultSet gremlin = graph.gremlin("g.V().hasLabel('Person').count()").execute();

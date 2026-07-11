@@ -43,9 +43,16 @@
     </description>
 
     <properties>
+        <!-- This module ships nothing; do not deploy or install its near-empty jar. -->
         <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.install.skip>true</maven.install.skip>
     </properties>
 
+    <!-- NOTE: because the shaded/tests arcadedb-gremlin artifacts below use a wildcard (*:*)
+         exclusion, this module must re-declare by hand every dependency the migrated gremlin
+         tests need (engine, network, server + test-jar, gremlin-test, junit-vintage). If a new
+         test dependency is added to the gremlin module, mirror it here or the migrated tests
+         will fail to resolve it. -->
     <dependencies>
         <!-- Engine on real org.antlr 4.13.2 (v4 ATN) for SQL/Cypher parsing. -->
         <dependency>
