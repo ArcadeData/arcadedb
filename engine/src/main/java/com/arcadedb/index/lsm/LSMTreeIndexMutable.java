@@ -196,9 +196,12 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) throws IOException {
     if (ascendingOrder)
-      return range(fromKeys, inclusive, null, true);
+      return range(true, fromKeys, inclusive, null, true);
 
-    return range(null, true, fromKeys, inclusive);
+    // Descending scan from fromKeys down to the smallest key. fromKeys is the (high) start bound; the low end is open.
+    // Use the explicit-direction range: the auto-detecting range() defaults to ascending when a bound is null, which
+    // would silently iterate a descending request in ascending order (#5214).
+    return range(false, fromKeys, inclusive, null, true);
   }
 
   /**
