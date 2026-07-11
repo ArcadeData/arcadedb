@@ -327,8 +327,16 @@ public class CypherSemanticValidator {
   // ==============================
 
   private void validateVariableScope(final CypherStatement statement) {
-    final Set<String> scope = new HashSet<>();
+    validateVariableScope(statement, new HashSet<>());
+  }
 
+  /**
+   * Validates variable references in {@code statement} against {@code scope}, the set of variables
+   * visible when the statement begins. Top-level statements start with an empty scope; a CALL
+   * subquery body starts with only the variables it imports (explicit {@code CALL (v) { ... }} scope
+   * list, {@code CALL (*)}, or an importing {@code WITH}).
+   */
+  private void validateVariableScope(final CypherStatement statement, final Set<String> scope) {
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     if (clausesInOrder == null || clausesInOrder.isEmpty())
       return; // Can't validate scope without clause ordering
@@ -537,6 +545,8 @@ public class CypherSemanticValidator {
           // CALL { ... RETURN x AS y } — exported return variables enter outer scope
           final SubqueryClause subqueryClause = entry.getTypedClause();
           if (subqueryClause != null && subqueryClause.getInnerStatement() != null) {
+            // Validate the subquery body: outer variables are visible only if imported (issue #5213).
+            validateSubqueryScope(subqueryClause, scope);
             final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
             if (innerReturn != null)
               for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
@@ -551,6 +561,64 @@ public class CypherSemanticValidator {
           break;
       }
     }
+  }
+
+  /**
+   * Validates the body of a CALL subquery against the outer scope, honouring Cypher import rules.
+   * <ul>
+   *   <li>Explicit scope {@code CALL (v1, v2) { ... }} imports only the listed variables (each must
+   *   already be defined in the outer scope). {@code CALL (*) { ... }} imports all outer variables.</li>
+   *   <li>Implicit scope {@code CALL { ... }} imports outer variables only through an <i>importing
+   *   WITH</i> as the first clause of the body; without one, no outer variable is visible.</li>
+   * </ul>
+   * Referencing an outer variable that is not imported raises an undefined-variable error, matching
+   * Neo4j (issue #5213).
+   */
+  private void validateSubqueryScope(final SubqueryClause clause, final Set<String> outerScope) {
+    final List<String> scopeVariables = clause.getScopeVariables();
+
+    // Explicit scope list applies uniformly to every UNION branch of the body.
+    Set<String> explicitSeed = null;
+    if (scopeVariables != null) {
+      if (scopeVariables.size() == 1 && "*".equals(scopeVariables.get(0)))
+        explicitSeed = new HashSet<>(outerScope);
+      else {
+        explicitSeed = new HashSet<>();
+        for (final String v : scopeVariables) {
+          if (isValidVariableName(v) && !outerScope.contains(v))
+            throw new CommandSemanticException("UndefinedVariable: Variable '" + v + "' not defined");
+          explicitSeed.add(v);
+        }
+      }
+    }
+
+    final CypherStatement inner = clause.getInnerStatement();
+    if (inner instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        validateSubqueryBranchScope(branch, outerScope, explicitSeed);
+    } else
+      validateSubqueryBranchScope(inner, outerScope, explicitSeed);
+  }
+
+  private void validateSubqueryBranchScope(final CypherStatement branch, final Set<String> outerScope,
+      final Set<String> explicitSeed) {
+    final Set<String> seed;
+    if (explicitSeed != null)
+      seed = new HashSet<>(explicitSeed);
+    else if (startsWithImportingWith(branch))
+      // The importing WITH may reference outer variables; it then resets the scope to its projections,
+      // so exposing the whole outer scope here does not leak variables past the WITH.
+      seed = new HashSet<>(outerScope);
+    else
+      seed = new HashSet<>();
+    validateVariableScope(branch, seed);
+  }
+
+  private static boolean startsWithImportingWith(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty())
+      return false;
+    return clauses.get(0).getType() == ClauseEntry.ClauseType.WITH;
   }
 
   private void checkExpressionScope(final Expression expr, final Set<String> scope) {
