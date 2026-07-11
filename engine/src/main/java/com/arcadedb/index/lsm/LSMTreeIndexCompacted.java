@@ -332,7 +332,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       LSMTreeIndexUnderlyingCompactedSeriesCursor iterator = null;
 
-      int startingPageNumber = rootPageNumber + 1 + (ascendingOrder ? 0 : rootPageCount);
+      // Each series stores its root first, followed by rootPageCount data pages. DESC must start on the last data page,
+      // not one page beyond it (which may be the next series' root page).
+      final int startingPageNumber = rootPageNumber + (ascendingOrder ? 1 : rootPageCount);
       final int lastPageNumber = rootPageNumber + (ascendingOrder ? rootPageCount : 1);
 
       if (fromKeys != null) {

@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -50,8 +51,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * original ADD lived in different pages, because the {@code deletedRIDs} set was page-local instead of threaded
  * across pages and the compacted sub-index (like {@code removedKeys}).</li>
  * </ul>
- * The remaining tests are guards over multi-page/multi-series layouts (descending scans, cross-page deletes,
- * deleted boundary keys), covering the #4943 audit finding which does not reproduce on the current code.
+ * The remaining tests guard multi-page and multi-series layouts, including multiple compactions, partial series produced
+ * within one RAM-bounded compaction, cross-page deletes, and deleted boundary keys.
  */
 class LSMTreeCompactionCorrectnessTest extends TestHelper {
 
@@ -67,6 +68,10 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
   }
 
   private void createType(final boolean unique) {
+    createType(unique, 1024);
+  }
+
+  private void createType(final boolean unique, final int pageSize) {
     // The database was created before beforeTest() ran, so its context configuration snapshot still holds the
     // default: override it on the instance before the index reads it at creation time.
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
@@ -75,7 +80,7 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
     type.createProperty("email", String.class);
     // Small pages so a handful of entries already seals immutable pages the compactor will merge.
     database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "email" })
-        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(unique).withPageSize(1024).create();
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(unique).withPageSize(pageSize).create();
   }
 
   private void filler(final int from, final int count) {
@@ -147,7 +152,7 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
     assertThat(lookup("temp-away")).as("intermediate value must be gone").isEmpty();
   }
 
-  // ---- #4943: descending iteration over a 2+ series compacted index must not emit phantom RIDs ----
+  // ---- descending iteration over compacted series must remain globally ordered and must not emit phantom RIDs ----
 
   @Test
   void descendingScanAfterTwoCompactionsHasNoPhantoms() {
@@ -182,6 +187,51 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
     final List<String> sortedDesc = new ArrayList<>(seen);
     sortedDesc.sort((a, b) -> b.compareTo(a));
     assertThat(seen).isEqualTo(sortedDesc);
+  }
+
+  @Test
+  void descendingScanAcrossPartialCompactionSeriesIsGloballyOrdered() throws Exception {
+    final int totalKeys = 20_000;
+    final int pageSize = 256 * 1024;
+
+    // Force a single compaction round to split the mutable pages into several independently sorted series.
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_RAM_MB, 1L);
+    createType(false, pageSize);
+
+    database.transaction(() -> {
+      for (int i = 0; i < totalKeys; i++)
+        database.newDocument(TYPE_NAME).set("email", "K" + "x".repeat(64) + String.format("%08d", i)).save();
+    });
+
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final LSMTreeIndex bucketIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
+    assertThat(bucketIndex.getMutableIndex().getTotalPages()).as("mutable index must exceed the 1 MiB compaction budget")
+        .isGreaterThan(4);
+
+    compactAll();
+
+    assertThat(bucketIndex.getMutableIndex().getSubIndex().newIterators(true, null, null))
+        .as("compaction must produce more than one series for this regression")
+        .hasSizeGreaterThan(1);
+
+    final IndexCursor cursor = typeIndex.iterator(false);
+    String previous = null;
+    int count = 0;
+    try {
+      while (cursor.hasNext()) {
+        cursor.next();
+        final String current = (String) cursor.getKeys()[0];
+        if (previous != null)
+          assertThat(current).as("descending keys must remain globally ordered across compacted series")
+              .isLessThan(previous);
+        previous = current;
+        count++;
+      }
+    } finally {
+      cursor.close();
+    }
+
+    assertThat(count).isEqualTo(totalKeys);
   }
 
   // ---- #4945: get() on a non-unique index must not resurrect a deleted RID across pages ----
