@@ -75,7 +75,7 @@ public class StripedEdgeList extends EdgeLinkedList {
   private static final AtomicLong                      LAST_SKIPPED_CHAIN_WARN = new AtomicLong();
 
   private final DatabaseInternal database;
-  private final StripeDirectory  directory;
+  private       StripeDirectory  directory;
 
   public StripedEdgeList(final Vertex vertex, final Vertex.DIRECTION direction, final StripeDirectory directory) {
     super(vertex, direction, null);
@@ -293,7 +293,7 @@ public class StripedEdgeList extends EdgeLinkedList {
   @Override
   public Iterator<Pair<RID, RID>> entryIterator(final String... edgeTypes) {
     final MultiIterator<Pair<RID, RID>> iterator = new MultiIterator<>();
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(false))
       iterator.addIterator(chain.entryIterator(edgeTypes));
     return iterator;
   }
@@ -301,7 +301,7 @@ public class StripedEdgeList extends EdgeLinkedList {
   @Override
   public Iterator<Edge> edgeIterator(final String... edgeTypes) {
     final MultiIterator<Edge> iterator = new MultiIterator<>();
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(false))
       iterator.addIterator(chain.edgeIterator(edgeTypes));
     return iterator;
   }
@@ -309,7 +309,7 @@ public class StripedEdgeList extends EdgeLinkedList {
   @Override
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
     final MultiIterator<Vertex> iterator = new MultiIterator<>();
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(false))
       iterator.addIterator(chain.vertexIterator(edgeTypes));
     return iterator;
   }
@@ -317,14 +317,14 @@ public class StripedEdgeList extends EdgeLinkedList {
   @Override
   public Iterator<RID> ridIterator(final String... edgeTypes) {
     final MultiIterator<RID> iterator = new MultiIterator<>();
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(false))
       iterator.addIterator(chain.ridIterator(edgeTypes));
     return iterator;
   }
 
   @Override
   public boolean containsEdge(final RID rid) {
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(false))
       if (chain.containsEdge(rid))
         return true;
     return false;
@@ -351,7 +351,7 @@ public class StripedEdgeList extends EdgeLinkedList {
   @Override
   public long count(final String... edgeTypes) {
     long total = 0;
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(false))
       total += chain.count(edgeTypes);
     return total;
   }
@@ -359,7 +359,7 @@ public class StripedEdgeList extends EdgeLinkedList {
   @Override
   public JSONArray toJSON() {
     final JSONArray array = new JSONArray();
-    for (final EdgeLinkedList chain : allChains()) {
+    for (final EdgeLinkedList chain : allChains(false)) {
       final JSONArray chainArray = chain.toJSON();
       for (int i = 0; i < chainArray.length(); ++i)
         array.put(chainArray.getString(i));
@@ -377,7 +377,7 @@ public class StripedEdgeList extends EdgeLinkedList {
   @Override
   public void removeEdgeRID(final RID edge) {
     // No neighbour information: check every chain (uncommon path).
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(true))
       chain.removeEdgeRID(edge);
   }
 
@@ -389,7 +389,7 @@ public class StripedEdgeList extends EdgeLinkedList {
 
   @Override
   public void deleteAll() {
-    for (final EdgeLinkedList chain : allChains())
+    for (final EdgeLinkedList chain : allChains(true))
       chain.deleteAll();
 
     // The directory delete does not commute with concurrent appends on its page: exclude it from the merge.
@@ -406,11 +406,11 @@ public class StripedEdgeList extends EdgeLinkedList {
    * newest-era-first approximation (newest generation's stripes, then older generations, each chain itself
    * newest-first).
    */
-  private List<EdgeLinkedList> allChains() {
+  private List<EdgeLinkedList> allChains(final boolean strict) {
     final List<EdgeLinkedList> chains = new ArrayList<>(directory.getChainCount());
     for (int g = directory.getGenerationCount() - 1; g >= 0; g--)
       for (int s = 0; s < directory.getStripes(g); s++)
-        addChain(chains, directory.getHead(g, s));
+        addChain(chains, directory.getHead(g, s), strict);
     return chains;
   }
 
@@ -421,16 +421,26 @@ public class StripedEdgeList extends EdgeLinkedList {
   private List<EdgeLinkedList> chainsForNeighbour(final RID neighbour) {
     final List<EdgeLinkedList> chains = new ArrayList<>(directory.getGenerationCount());
     for (int g = 0; g < directory.getGenerationCount(); g++)
-      addChain(chains, directory.getHead(g, StripeDirectory.stripeOf(neighbour, directory.getStripes(g))));
+      // ALWAYS STRICT: these chains feed removals (a silently skipped chain would leave a stale back-reference
+      // in a "successfully" committed transaction) and the neighbour-keyed lookups (isConnectedTo,
+      // containsVertex, getFirstEdgeConnectedToVertex) that MERGE-style dedup decisions rely on - a transient
+      // false-negative there could let a duplicate through. The transient miss becomes a retryable conflict.
+      addChain(chains, directory.getHead(g, StripeDirectory.stripeOf(neighbour, directory.getStripes(g))), true);
     return chains;
   }
 
-  private void addChain(final List<EdgeLinkedList> chains, final RID headRID) {
+  private void addChain(final List<EdgeLinkedList> chains, final RID headRID, final boolean strict) {
     if (headRID == null)
       return;
     try {
       chains.add(new EdgeLinkedList(vertex, direction, (EdgeSegment) database.lookupByRID(headRID, true)));
     } catch (final RecordNotFoundException e) {
+      if (strict)
+        // MUTATING (or dedup-feeding) caller: skipping the chain would silently commit an incomplete operation
+        // (e.g. a removal leaving a stale back-reference). The miss is transient by construction (cross-file
+        // commit publication) - surface it as a retryable conflict, symmetric with loadStripeHead.
+        throw new ConcurrentModificationException(
+            "Stripe chain " + headRID + " of vertex " + vertex.getIdentity() + " not visible yet (concurrent commit in flight)");
       final long now = System.currentTimeMillis();
       final long last = LAST_SKIPPED_CHAIN_WARN.get();
       if (now - last > 60_000 && LAST_SKIPPED_CHAIN_WARN.compareAndSet(last, now))
@@ -468,6 +478,10 @@ public class StripedEdgeList extends EdgeLinkedList {
   private void updateSlot(final StripeDirectory dir, final int generation, final int slot, final RID head) {
     dir.setHead(generation, slot, head);
     database.updateRecord(dir);
+    // Keep the instance view current: within a multi-append transaction (addAll, promotion) the next append to
+    // this stripe reads the instance directory on the FAST path - without the refresh it would see the stale
+    // pre-flip head and detour through the slot-write path on every subsequent append.
+    this.directory = dir;
     // The slot rewrite does not commute with concurrent appends on the directory's page: poison it so the
     // commit-time merge can never rebase over it.
     final TransactionContext tx = database.getTransactionIfExists();

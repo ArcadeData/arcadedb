@@ -127,11 +127,13 @@ public class GraphEngine {
     }
 
     // DROP THE SUPER-NODE STRIPE POOL, IF THE TYPE EVER PROMOTED A VERTEX (#5156)
-    // Best-effort sweep over a fixed range rather than stop-at-first-gap: a failed dropBucket must not leave
-    // later pool buckets orphaned (bucket drops are individually durable, not transactional as a group). The
-    // sweep covers at least the configured stripe count, so a pool created under a larger setting cannot leak.
+    // EXACT best-effort sweep: pool buckets are created contiguously (createStripePool loops 0..stripes-1),
+    // so walking until the first gap AT OR PAST the configured count covers a pool of ANY size, past or
+    // present - no fixed cap to leak beyond. Gaps below the configured count (a partially-created pool) are
+    // stepped over; a failed dropBucket is logged and does not abort the sweep (drops are individually
+    // durable, not transactional as a group), and the loop still advances past it.
     final int configuredStripes = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES);
-    for (int i = 0; i < Math.max(1024, configuredStripes); i++) {
+    for (int i = 0; ; i++) {
       final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
       if (!database.getSchema().existsBucket(stripeBucketName)) {
         if (i >= configuredStripes)

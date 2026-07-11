@@ -499,6 +499,51 @@ class SuperNodeStripingTest extends TestHelper {
     database.transaction(() -> assertThat(hubRID.asVertex(true).countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(15));
   }
 
+  /**
+   * A transiently unresolvable stripe chain must split by caller intent: MUTATING and neighbour-keyed
+   * (dedup-feeding) operations surface it as a RETRYABLE conflict - silently skipping the chain would commit a
+   * removal that leaves a stale back-reference, or feed a MERGE-style existence check a false negative - while
+   * bulk READS stay best-effort (skip the chain, no failure).
+   */
+  @Test
+  void transientlyMissingStripeChainIsRetryableForWritesBestEffortForReads() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+    createSchema();
+    final RID hubRID = createHub();
+    final List<RID> sources = insertEdges(hubRID, 300);
+    final StripeDirectory directory = (StripeDirectory) loadInHead(hubRID);
+
+    // PICK A POST-PROMOTION SOURCE AND DROP ITS GEN-1 STRIPE HEAD (simulates the publication window)
+    final RID victim = sources.getLast();
+    final int slot = StripeDirectory.stripeOf(victim, directory.getStripes(1));
+    database.transaction(() -> database.lookupByRID(directory.getHead(1, slot), true).delete());
+
+    // NEIGHBOUR-KEYED LOOKUPS AND REMOVALS: RETRYABLE CONFLICT, NEVER A SILENT SKIP
+    assertThatThrownBy(() -> database.transaction(() -> hubRID.asVertex(true).isConnectedTo(victim, Vertex.DIRECTION.IN)))
+        .isInstanceOf(NeedRetryException.class);
+    assertThatThrownBy(() -> database.transaction(
+        () -> victim.asVertex(true).getEdges(Vertex.DIRECTION.OUT, "LINK").iterator().next().delete()))
+        .isInstanceOf(NeedRetryException.class);
+
+    // BULK READS: BEST-EFFORT, NO FAILURE (the unresolvable chain is skipped)
+    database.transaction(() -> {
+      final long count = hubRID.asVertex(true).countEdges(Vertex.DIRECTION.IN, "LINK");
+      assertThat(count).isGreaterThan(0).isLessThanOrEqualTo(300);
+      int iterated = 0;
+      for (final Iterator<Vertex> it = hubRID.asVertex(true).getVertices(Vertex.DIRECTION.IN, "LINK").iterator(); it.hasNext(); it.next())
+        iterated++;
+      assertThat(iterated).isGreaterThan(0);
+    });
+
+    // REPAIR SO THE TEARDOWN INTEGRITY GATE PASSES
+    try (final ResultSet result = database.command("sql", "check database fix")) {
+      assertThat(result.hasNext()).isTrue();
+    }
+    try (final ResultSet result = database.command("sql", "check database fix")) {
+      assertThat(result.hasNext()).isTrue();
+    }
+  }
+
   @Test
   void dropTypeRemovesStripePool() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);

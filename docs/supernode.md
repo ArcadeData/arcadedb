@@ -35,6 +35,11 @@ called out prominently in the release notes (one-way format change triggered
 by a vertex organically crossing the threshold; set 0 before upgrading if a
 rollback path to <= 26.7.x must be preserved).
 
+Note on lookup cost: neighbour-keyed operations visit ONE stripe per
+generation, but generation 0 IS the whole pre-promotion chain (one unhashed
+stripe bounded by the threshold), so the cost is O(threshold + degree/N), not
+O(degree/N) - the localisation benefit applies to post-promotion edges.
+
 Two more promoted-vertex semantics for the upgrade notes: (a) READS on a
 promoted vertex are best-effort under write concurrency - `count()`/iteration
 can transiently under-report while a concurrent cross-file commit publishes
