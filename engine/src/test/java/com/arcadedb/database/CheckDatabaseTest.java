@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.LocalBucket;
@@ -479,6 +480,10 @@ class CheckDatabaseTest extends TestHelper {
 
   @Override
   protected void beginTest() {
+    // This suite asserts the checker's record-level accounting on the CLASSIC edge-list layout (chunk and
+    // deleted-record counts): pin promotion off so the 10K-edge root vertex does not switch to the striped
+    // super-node layout (#5156), whose different physical structure is covered by SuperNodeStripingTest.
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(0);
     database.command("sql", "create vertex type Person");
     database.command("sql", "create property Person.id string");
     database.command("sql", "create index on Person (id) unique");

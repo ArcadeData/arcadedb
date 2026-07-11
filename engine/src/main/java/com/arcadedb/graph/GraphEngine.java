@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -126,8 +127,22 @@ public class GraphEngine {
     }
 
     // DROP THE SUPER-NODE STRIPE POOL, IF THE TYPE EVER PROMOTED A VERTEX (#5156)
-    for (int i = 0; database.getSchema().existsBucket(StripedEdgeList.stripeBucketName(type.getName(), i)); i++)
-      database.getSchema().dropBucket(StripedEdgeList.stripeBucketName(type.getName(), i));
+    // Best-effort sweep over a fixed range rather than stop-at-first-gap: a failed dropBucket must not leave
+    // later pool buckets orphaned (bucket drops are individually durable, not transactional as a group).
+    for (int i = 0; i < 1024; i++) {
+      final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
+      if (!database.getSchema().existsBucket(stripeBucketName)) {
+        if (i >= database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES))
+          break;
+        continue;
+      }
+      try {
+        database.getSchema().dropBucket(stripeBucketName);
+      } catch (final Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error dropping super-node stripe bucket '%s' of type '%s'", e, stripeBucketName, type.getName());
+      }
+    }
   }
 
   public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName,

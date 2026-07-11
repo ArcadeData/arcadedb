@@ -394,7 +394,10 @@ public class EdgeLinkedList {
 
     // Approximate degree derived from the geometric chunk-size schedule (64, 128, ... doubling): the cumulative
     // bytes so far ~= 2 x the current chunk size, and an entry (2 compressed RIDs) averages ~8 bytes. No degree
-    // counter and no chain walk on the common path.
+    // counter and no chain walk on the common path - NOTE: only while the estimate can reach the threshold;
+    // once chunks hit the size cap the estimate saturates (~2K edges), so for larger thresholds (incl. the
+    // 4096 default) every cap-chunk-full falls into the bounded walk below until the vertex promotes - a
+    // handful of walks over a short chain, then never again.
     final int currentChunkSize = lastSegment.getRecordSize();
     long estimatedEdges = (2L * currentChunkSize) / 8;
     if (estimatedEdges < threshold) {

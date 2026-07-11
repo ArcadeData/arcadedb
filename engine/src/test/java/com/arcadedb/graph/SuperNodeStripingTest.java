@@ -22,6 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.AfterEach;
@@ -38,6 +40,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Super-node striped edge list (#5156): when a vertex crosses GRAPH_SUPERNODE_THRESHOLD its edge list is
@@ -424,6 +427,42 @@ class SuperNodeStripingTest extends TestHelper {
     // AND STILL ACCEPTS REMOVALS
     database.transaction(() -> after.getFirst().asVertex(true).getEdges(Vertex.DIRECTION.OUT, "LINK").iterator().next().delete());
     database.transaction(() -> assertThat(hubRID.asVertex(true).countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(399));
+  }
+
+  /**
+   * A GENUINELY missing head chunk (real corruption, not the transient cross-file publication window) must
+   * surface as a RETRYABLE conflict on writes - never silently reset the head and orphan the rest of the list,
+   * which was the previous recovery - and must stay repairable via CHECK DATABASE FIX (the checker nulls the
+   * broken head and reconnects the edges from the edge records).
+   */
+  @Test
+  void missingHeadChunkFailsRetryablyAndCheckDatabaseRepairs() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(10_000); // classic layout: this is the shared path
+    createSchema();
+    final RID hubRID = createHub();
+    insertEdges(hubRID, 10);
+
+    // SIMULATE CORRUPTION: the IN head chunk record vanishes
+    database.transaction(
+        () -> database.lookupByRID(((VertexInternal) hubRID.asVertex(true)).getInEdgesHeadChunk(), true).delete());
+
+    // A WRITE must fail with a retryable exception, not silently rebuild the head
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableVertex src = database.newVertex("Src");
+      src.save();
+      src.newEdge("LINK", hubRID);
+    })).isInstanceOf(NeedRetryException.class);
+
+    // CHECK DATABASE FIX repairs: the broken head is nulled and every edge reconnected from its record
+    try (final ResultSet result = database.command("sql", "check database fix")) {
+      assertThat(result.hasNext()).isTrue();
+    }
+
+    database.transaction(() -> assertThat(hubRID.asVertex(true).countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(10));
+
+    // AND THE REPAIRED LIST ACCEPTS NEW EDGES
+    insertEdges(hubRID, 5);
+    database.transaction(() -> assertThat(hubRID.asVertex(true).countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(15));
   }
 
   @Test

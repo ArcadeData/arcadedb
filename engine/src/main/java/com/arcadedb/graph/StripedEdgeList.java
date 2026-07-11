@@ -64,6 +64,8 @@ public class StripedEdgeList extends EdgeLinkedList {
   /** One-shot diagnostic latch: warn ONCE per type if a pool creation looks stuck (see ensureStripePool). */
   private static final Set<String>                     POOLS_STUCK_WARNED = ConcurrentHashMap.newKeySet();
   private static final long                            POOL_CREATION_STUCK_MS = 60_000;
+  /** After this long in flight the creation is presumed dead (hung thread) and a later chunk-full re-attempts. */
+  private static final long                            POOL_CREATION_RETRY_MS = 5 * 60_000;
 
   private final DatabaseInternal database;
   private final StripeDirectory  directory;
@@ -139,18 +141,43 @@ public class StripedEdgeList extends EdgeLinkedList {
                   typeName);
         } finally {
           POOLS_IN_CREATION.remove(key);
+          POOLS_STUCK_WARNED.remove(key);
         }
       }, "arcadedb-supernode-pool-" + typeName);
       creator.setDaemon(true);
       creator.start();
-    } else if (System.currentTimeMillis() - inFlightSince > POOL_CREATION_STUCK_MS && POOLS_STUCK_WARNED.add(key))
-      // A pool creation in flight for over a minute means the schema operation is stuck (or the helper thread
-      // died without its finally): promotions for this type are silently skipped until restart. Warn ONCE so
-      // an operator can tell a stuck promotion from a merely deferred one.
-      LogManager.instance()
-          .log(StripedEdgeList.class, Level.WARNING,
-              "Super-node stripe pool creation for type '%s' has been in flight for over %d ms: promotions for this type are deferred until it completes (or the server restarts)",
-              typeName, POOL_CREATION_STUCK_MS);
+    } else {
+      final long inFlightMs = System.currentTimeMillis() - inFlightSince;
+      if (inFlightMs > POOL_CREATION_RETRY_MS && POOLS_IN_CREATION.replace(key, inFlightSince, System.currentTimeMillis())) {
+        // The previous creation is presumed dead (hung thread that never reached its finally): re-attempt.
+        // createStripePool tolerates buckets the old attempt may still create concurrently (exists-check +
+        // lost-race tolerance), so a duplicate run is safe.
+        LogManager.instance()
+            .log(StripedEdgeList.class, Level.WARNING,
+                "Super-node stripe pool creation for type '%s' was in flight for %d ms: presuming it dead and re-attempting", typeName,
+                inFlightMs);
+        final Thread retry = new Thread(() -> {
+          try {
+            createStripePool(database, typeName, stripes);
+          } catch (final Exception e) {
+            LogManager.instance()
+                .log(StripedEdgeList.class, Level.WARNING, "Error re-attempting super-node stripe bucket creation for type '%s'", e,
+                    typeName);
+          } finally {
+            POOLS_IN_CREATION.remove(key);
+            POOLS_STUCK_WARNED.remove(key);
+          }
+        }, "arcadedb-supernode-pool-" + typeName);
+        retry.setDaemon(true);
+        retry.start();
+      } else if (inFlightMs > POOL_CREATION_STUCK_MS && POOLS_STUCK_WARNED.add(key))
+        // In flight for over a minute: warn ONCE so an operator can tell a stuck promotion from a merely
+        // deferred one (a re-attempt fires automatically past POOL_CREATION_RETRY_MS).
+        LogManager.instance()
+            .log(StripedEdgeList.class, Level.WARNING,
+                "Super-node stripe pool creation for type '%s' has been in flight for over %d ms: promotions for this type are deferred until it completes",
+                typeName, POOL_CREATION_STUCK_MS);
+    }
     return false;
   }
 
@@ -391,14 +418,25 @@ public class StripedEdgeList extends EdgeLinkedList {
     return chains;
   }
 
+  /** Millis of the last skipped-chain WARNING: a hot super-node under the transient cross-file publication
+   * window could otherwise flood the log (one line per read). Reads are deliberately BEST-EFFORT: unlike the
+   * write path (which surfaces the same condition as a retryable conflict, see loadStripeHead), a read skips
+   * the momentarily unresolvable chain, so counts/iterations during a concurrent commit can transiently
+   * under-report instead of failing. */
+  private static final java.util.concurrent.atomic.AtomicLong LAST_SKIPPED_CHAIN_WARN = new java.util.concurrent.atomic.AtomicLong();
+
   private void addChain(final List<EdgeLinkedList> chains, final RID headRID) {
     if (headRID == null)
       return;
     try {
       chains.add(new EdgeLinkedList(vertex, direction, (EdgeSegment) database.lookupByRID(headRID, true)));
     } catch (final RecordNotFoundException e) {
-      LogManager.instance()
-          .log(this, Level.WARNING, "Cannot load stripe chain %s for vertex %s", e, headRID, vertex.getIdentity());
+      final long now = System.currentTimeMillis();
+      final long last = LAST_SKIPPED_CHAIN_WARN.get();
+      if (now - last > 60_000 && LAST_SKIPPED_CHAIN_WARN.compareAndSet(last, now))
+        LogManager.instance()
+            .log(this, Level.WARNING, "Cannot load stripe chain %s for vertex %s: skipped from this read (throttled warning)", e,
+                headRID, vertex.getIdentity());
     }
   }
 
