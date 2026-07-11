@@ -59,6 +59,15 @@ import java.util.Set;
 public class DeleteStep extends AbstractExecutionStep {
   private final DeleteClause deleteClause;
 
+  /**
+   * Elements already deleted (and counted) by this DELETE, shared across all input rows of the
+   * statement. A single DeleteStep is built per statement execution, so this de-dups an element
+   * bound by more than one row - e.g. an undirected relationship matched from both endpoints
+   * ({@code MATCH (u)-[r]-() DELETE r}) - so it is removed once and counted once, matching Neo4j.
+   * Records equal by RID (see BaseRecord.equals), so different instances of the same edge collapse.
+   */
+  private final Set<Object> deleted = new HashSet<>();
+
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     super(context);
     this.deleteClause = deleteClause;
@@ -214,8 +223,8 @@ public class DeleteStep extends AbstractExecutionStep {
         return;
       }
 
-      // Delete all edges first, then all other objects (vertices, documents)
-      final Set<Object> deleted = new HashSet<>();
+      // Delete all edges first, then all other objects (vertices, documents). The `deleted` set is
+      // a step-instance field shared across rows so an element bound by multiple rows is deleted once.
       for (final Object edge : allEdges)
         deleteObject(edge, deleted);
       for (final Object other : allOther)
