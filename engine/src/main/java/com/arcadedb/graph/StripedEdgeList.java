@@ -108,16 +108,31 @@ public class StripedEdgeList extends EdgeLinkedList {
     final Schema schema = database.getSchema();
 
     boolean ready = true;
-    for (int i = 0; i < stripes; i++)
-      if (!schema.existsBucket(stripeBucketName(typeName, i))) {
+    for (int i = 0; i < stripes; i++) {
+      final String bucketName = stripeBucketName(typeName, i);
+      if (!schema.existsBucket(bucketName)) {
         ready = false;
         break;
       }
+      if (schema.getTypeByBucketId(schema.getBucketByName(bucketName).getFileId()) != null) {
+        // NAME COLLISION: a USER bucket owned by a type happens to match the pool naming scheme. Adopting it
+        // would write edge segments into another type's data (cross-type corruption): never promote this type.
+        LogManager.instance()
+            .log(StripedEdgeList.class, Level.WARNING,
+                "Super-node promotion disabled for type '%s': bucket '%s' matches the stripe pool naming scheme but belongs to type '%s'",
+                typeName, bucketName, schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getFileId()));
+        return false;
+      }
+    }
     if (ready)
       return true;
 
     if (database.getEmbedded() == database) {
-      // EMBEDDED: SCHEMA OPS ARE LOCAL AND NON-TRANSACTIONAL, SAFE TO CREATE INLINE
+      // EMBEDDED: SCHEMA OPS ARE LOCAL AND NON-TRANSACTIONAL, SAFE TO CREATE INLINE. Why this is safe mid-user-
+      // transaction: bucket creation applies immediately to the local schema (its durability is independent of
+      // the open data transaction), there is no replication ordering to violate (the HA hazard the deferred
+      // branch below avoids, #4083), and if the user transaction later rolls back the only residue is empty
+      // pool buckets - which the next promotion attempt reuses.
       try {
         createStripePool(database, typeName, stripes);
         return true;
@@ -192,7 +207,7 @@ public class StripedEdgeList extends EdgeLinkedList {
     final Schema schema = database.getSchema();
     for (int i = 0; i < stripes; i++) {
       final String bucketName = stripeBucketName(typeName, i);
-      if (!schema.existsBucket(bucketName))
+      if (!schema.existsBucket(bucketName)) {
         try {
           schema.createBucket(bucketName);
         } catch (final Exception e) {
@@ -200,6 +215,12 @@ public class StripedEdgeList extends EdgeLinkedList {
             // NOT A LOST RACE WITH A CONCURRENT CREATION: GIVE UP
             throw e;
         }
+      } else if (schema.getTypeByBucketId(schema.getBucketByName(bucketName).getFileId()) != null)
+        // NAME COLLISION with a type-owned user bucket (see ensureStripePool): adopting it would corrupt that
+        // type's data. Fail the creation - the readiness check keeps promotion off for this type.
+        throw new IllegalStateException(
+            "Bucket '" + bucketName + "' matches the super-node stripe pool naming scheme of type '" + typeName
+                + "' but belongs to type '" + schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getFileId()) + "'");
     }
   }
 

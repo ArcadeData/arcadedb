@@ -136,6 +136,9 @@ public class GraphEngine {
     for (int i = 0; ; i++) {
       final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
       if (!database.getSchema().existsBucket(stripeBucketName)) {
+        if (i == 0)
+          // POOLS ARE CREATED FROM SLOT 0: no slot 0 = this type never promoted, skip the whole sweep
+          break;
         if (i >= configuredStripes)
           break;
         continue;

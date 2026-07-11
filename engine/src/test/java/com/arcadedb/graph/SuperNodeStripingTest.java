@@ -544,6 +544,34 @@ class SuperNodeStripingTest extends TestHelper {
     }
   }
 
+  /**
+   * A USER bucket owned by a type that happens to match the stripe pool naming scheme must NEVER be adopted as
+   * a stripe (writing edge segments into another type's data = cross-type corruption): promotion is skipped and
+   * the vertex stays classic and fully functional.
+   */
+  @Test
+  void poolNameCollisionWithUserBucketSkipsPromotion() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+    createSchema();
+    // A user bucket named like slot 0 of Hub's pool, OWNED by another type
+    database.transaction(() -> {
+      final com.arcadedb.engine.Bucket collision = database.getSchema().createBucket(StripedEdgeList.stripeBucketName("Hub", 0));
+      database.getSchema().getType("Src").addBucket(collision);
+    });
+    final RID hubRID = createHub();
+
+    final int total = 300;
+    final List<RID> sources = insertEdges(hubRID, total);
+
+    // PROMOTION MUST HAVE BEEN SKIPPED: CLASSIC LAYOUT, EVERYTHING WORKS
+    assertThat(loadInHead(hubRID)).isInstanceOf(MutableEdgeSegment.class);
+    database.transaction(() -> {
+      final Vertex hub = hubRID.asVertex(true);
+      assertThat(hub.countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(total);
+      assertThat(hub.isConnectedTo(sources.getFirst(), Vertex.DIRECTION.IN)).isTrue();
+    });
+  }
+
   @Test
   void dropTypeRemovesStripePool() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);

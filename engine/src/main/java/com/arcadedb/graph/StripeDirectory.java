@@ -127,8 +127,13 @@ public class StripeDirectory extends BaseRecord implements RecordInternal {
     return (int) ((h & Long.MAX_VALUE) % stripes);
   }
 
-  /** Loads the record content when this instance was created as a lazy placeholder (no-content factory path). */
-  private void checkForLoading() {
+  /**
+   * Loads the record content when this instance was created as a lazy placeholder (no-content factory path).
+   * SYNCHRONIZED: a lazy placeholder from the generic factory can be shared across reader threads, and the
+   * lazy load writes non-volatile fields - the monitor makes the load-then-publish safe. Uncontended cost on
+   * the loaded fast path is a thin lock, negligible next to the page access that follows.
+   */
+  private synchronized void checkForLoading() {
     if (buffer == null) {
       reload();
       if (buffer != null) {
