@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -25,6 +26,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -121,6 +125,31 @@ public class GraphEngine {
       if (database.getSchema().existsBucket(b.getName() + IN_EDGES_SUFFIX))
         database.getSchema().dropBucket(b.getName() + IN_EDGES_SUFFIX);
     }
+
+    // DROP THE SUPER-NODE STRIPE POOL, IF THE TYPE EVER PROMOTED A VERTEX (#5156)
+    // EXACT best-effort sweep: pool buckets are created contiguously (createStripePool loops 0..stripes-1),
+    // so walking until the first gap AT OR PAST the configured count covers a pool of ANY size, past or
+    // present - no fixed cap to leak beyond. Gaps below the configured count (a partially-created pool) are
+    // stepped over; a failed dropBucket is logged and does not abort the sweep (drops are individually
+    // durable, not transactional as a group), and the loop still advances past it.
+    final int configuredStripes = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES);
+    for (int i = 0; ; i++) {
+      final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
+      if (!database.getSchema().existsBucket(stripeBucketName)) {
+        if (i == 0)
+          // POOLS ARE CREATED FROM SLOT 0: no slot 0 = this type never promoted, skip the whole sweep
+          break;
+        if (i >= configuredStripes)
+          break;
+        continue;
+      }
+      try {
+        database.getSchema().dropBucket(stripeBucketName);
+      } catch (final Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error dropping super-node stripe bucket '%s' of type '%s'", e, stripeBucketName, type.getName());
+      }
+    }
   }
 
   public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
@@ -208,14 +237,12 @@ public class GraphEngine {
     return edgeType;
   }
 
-  public void connectOutgoingEdge(VertexInternal fromVertex, final Identifiable toVertex, final Edge edge) {
-    fromVertex = fromVertex.modify();
-
-    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) fromVertex);
-
-    final EdgeLinkedList outLinkedList = new EdgeLinkedList(fromVertex, Vertex.DIRECTION.OUT, outChunk);
-
-    outLinkedList.add(edge.getIdentity(), toVertex.getIdentity());
+  public void connectOutgoingEdge(final VertexInternal fromVertex, final Identifiable toVertex, final Edge edge) {
+    // No eager modify(): materialising the MutableVertex anchors the vertex page in the transaction, putting
+    // the vertex FILE into the commit lock set of EVERY append and serialising all writers on a hot vertex
+    // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
+    // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
+    getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
   }
 
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
@@ -248,12 +275,8 @@ public class GraphEngine {
       edges.add(edge);
     }
 
-    sourceVertex = sourceVertex.modify();
-
-    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) sourceVertex);
-
-    final EdgeLinkedList outLinkedList = new EdgeLinkedList(sourceVertex, Vertex.DIRECTION.OUT, outChunk);
-    outLinkedList.addAll(outEdgePairs);
+    // No eager modify() - see connectOutgoingEdge.
+    getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
 
     if (bidirectional) {
       for (int i = 0; i < outEdgePairs.size(); ++i) {
@@ -266,12 +289,85 @@ public class GraphEngine {
   }
 
   public void connectIncomingEdge(final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
-    final MutableVertex toVertexRecord = toVertex.asVertex().modify();
+    // No eager modify() - see connectOutgoingEdge. On a super-node target the eager MutableVertex would
+    // serialise every concurrent append on the target vertex file's commit lock, which measured as THE
+    // bottleneck (all writers queueing one replication round each) regardless of the edge-list layout.
+    getOrCreateEdgeList((VertexInternal) toVertex.asVertex(), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+  }
 
-    final EdgeSegment inChunk = createInEdgeChunk(toVertexRecord);
+  /**
+   * Loads (or lazily creates) the edge list of a vertex for a WRITE operation, dispatching on the head record's
+   * type: a classic {@link EdgeSegment} chain yields an {@link EdgeLinkedList}, a {@link StripeDirectory}
+   * (super-node promoted vertex, #5156) yields a {@link StripedEdgeList}. The head page is anchored in the
+   * transaction at read time (#5147/#5153).
+   */
+  public EdgeLinkedList getOrCreateEdgeList(VertexInternal vertex, final Vertex.DIRECTION direction) {
+    // Resolve the transaction's own WRITTEN copy of the vertex first (a cache lookup, NO page anchoring):
+    // head-pointer updates are DEFERRED, so the freshest head may live only in the transaction's
+    // updated-records. Reading a stale head from an older immutable copy would re-create or re-flip the chain
+    // and orphan chunks appended earlier in this same transaction (lost edges). Read-only cached copies are
+    // deliberately NOT consulted (see TransactionContext.getWrittenRecord).
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      final Record inTx = tx.getWrittenRecord(vertex.getIdentity());
+      if (inTx instanceof VertexInternal inTxVertex && inTx != vertex)
+        vertex = inTxVertex;
+    }
 
-    final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
-    inLinkedList.add(edgeRID, fromVertexRID);
+    RID headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+
+    if (headRID != null)
+      try {
+        // The transaction's own WRITTEN copy of the head (multi-append transaction) is authoritative: its
+        // pending appends live only in that object until commit, and its page is already anchored.
+        if (tx != null && tx.getWrittenRecord(headRID) instanceof EdgeSegment written)
+          return new EdgeLinkedList(vertex, direction, written);
+
+        final Record head = database.lookupByRID(headRID, true);
+        if (head instanceof StripeDirectory directory)
+          // DO NOT anchor the directory page here: an anchored-but-unmodified page still contributes its FILE
+          // to the commit lock set, serialising every striped append through the directory's file across the
+          // replication round. StripedEdgeList anchors it only on slot writes (~1/1000 appends).
+          return new StripedEdgeList(vertex, direction, directory);
+        // CLASSIC list: anchor the head chunk page at read time (#5147) - it is about to be appended to -
+        // and RE-READ the chunk THROUGH the anchored page, bypassing the record cache: the dispatch read
+        // above happened BEFORE the anchor, so a concurrent commit publishing in between would leave a
+        // one-version-older buffer paired with the fresh page version, and writing that stale buffer back
+        // at commit would silently erase the concurrent append (no MVCC conflict - the version matches).
+        anchorHeadChunkPage(headRID);
+        final LocalBucket headBucket = (LocalBucket) database.getSchema().getBucketById(headRID.getBucketId());
+        return new EdgeLinkedList(vertex, direction,
+            new MutableEdgeSegment(database, headRID, headBucket.getRecord(headRID).copyOfContent()));
+      } catch (final RecordNotFoundException e) {
+        // TRANSIENT by construction: a concurrent commit publishes its pages one file at a time and this
+        // reader takes no commit lock, so the vertex page can expose the new head RID a moment before the
+        // head chunk's page is visible. Surface a retryable conflict so the transaction retry re-reads a
+        // consistent view. The previous behaviour - resetting the head to a fresh chunk - ORPHANED the whole
+        // existing list here (silent edge loss) whenever this window was hit.
+        throw new ConcurrentModificationException(
+            "Edge list " + direction + " head chunk " + headRID + " of vertex " + vertex.getIdentity()
+                + " not visible yet (concurrent commit in flight)");
+      }
+
+    // FIRST EDGE IN THIS DIRECTION: the vertex record itself is rewritten (head pointer), so materialise the
+    // mutable copy only now - anchoring the vertex page is correct here because the vertex is in the write set.
+    // modify() reloads the record when it is not already part of the transaction: re-check the head, a
+    // concurrent transaction may have created it in the meantime.
+    final MutableVertex mutable = vertex.modify();
+    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.getOutEdgesHeadChunk() : mutable.getInEdgesHeadChunk();
+    if (reloadedHead != null)
+      return getOrCreateEdgeList(mutable, direction);
+
+    final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
+    database.createRecord(chunk, getEdgesBucketName(mutable.getIdentity().getBucketId(), direction));
+
+    if (direction == Vertex.DIRECTION.OUT)
+      mutable.setOutEdgesHeadChunk(chunk.getIdentity());
+    else
+      mutable.setInEdgesHeadChunk(chunk.getIdentity());
+    database.updateRecord(mutable);
+
+    return new EdgeLinkedList(mutable, direction, chunk);
   }
 
   public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {
@@ -463,7 +559,7 @@ public class GraphEngine {
     try {
       outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
       if (outEdges != null) {
-        final EdgeIterator outIterator = (EdgeIterator) outEdges.edgeIterator();
+        final Iterator<Edge> outIterator = outEdges.edgeIterator();
 
         while (outIterator.hasNext()) {
           RID inV = null;
@@ -491,7 +587,7 @@ public class GraphEngine {
     try {
       inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
       if (inEdges != null) {
-        final EdgeIterator inIterator = (EdgeIterator) inEdges.edgeIterator();
+        final Iterator<Edge> inIterator = inEdges.edgeIterator();
 
         while (inIterator.hasNext()) {
           RID outV = null;
@@ -919,37 +1015,27 @@ public class GraphEngine {
   }
 
   public EdgeLinkedList getEdgeHeadChunk(final VertexInternal vertex, final Vertex.DIRECTION direction) {
-    if (direction == Vertex.DIRECTION.OUT) {
-      RID rid = null;
-      try {
-        rid = vertex.getOutEdgesHeadChunk();
-        if (rid != null) {
-          return new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, (EdgeSegment) vertex.getDatabase().lookupByRID(rid,
-              true));
-        }
-      } catch (final RecordNotFoundException e) {
-        // rid == null: the vertex itself was deleted concurrently (stale reference from a
-        //   prior traversal step). Expected under concurrent writes — log at FINE.
-        // rid != null: the edge chunk segment is orphaned — possible corruption, keep WARNING.
-        final Level level = rid == null ? Level.FINE : Level.WARNING;
-        LogManager.instance()
-            .log(this, level, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid,
-                vertex.getIdentity());
+    if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
+      return null;
+
+    RID rid = null;
+    try {
+      rid = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+      if (rid != null) {
+        final Record head = vertex.getDatabase().lookupByRID(rid, true);
+        if (head instanceof StripeDirectory directory)
+          // SUPER-NODE PROMOTED VERTEX (#5156): THE EDGE LIST IS STRIPED OVER MULTIPLE CHAINS
+          return new StripedEdgeList(vertex, direction, directory);
+        return new EdgeLinkedList(vertex, direction, (EdgeSegment) head);
       }
-    } else if (direction == Vertex.DIRECTION.IN) {
-      RID rid = null;
-      try {
-        rid = vertex.getInEdgesHeadChunk();
-        if (rid != null) {
-          return new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, (EdgeSegment) vertex.getDatabase().lookupByRID(rid,
-              true));
-        }
-      } catch (final RecordNotFoundException e) {
-        final Level level = rid == null ? Level.FINE : Level.WARNING;
-        LogManager.instance()
-            .log(this, level, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid,
-                vertex.getIdentity());
-      }
+    } catch (final RecordNotFoundException e) {
+      // rid == null: the vertex itself was deleted concurrently (stale reference from a
+      //   prior traversal step). Expected under concurrent writes — log at FINE.
+      // rid != null: the edge chunk segment is orphaned — possible corruption, keep WARNING.
+      final Level level = rid == null ? Level.FINE : Level.WARNING;
+      LogManager.instance()
+          .log(this, level, "Cannot load %s edge list chunk (%s) for vertex %s", e, direction, rid,
+              vertex.getIdentity());
     }
 
     return null;

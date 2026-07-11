@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
@@ -1507,9 +1508,14 @@ public class GraphBatch implements AutoCloseable {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getOutEdgesHeadChunk();
       if (headChunk != null) {
+        final Record head = database.lookupByRID(headChunk, true);
+        if (head instanceof StripeDirectory)
+          // The bulk path manipulates the vertex head pointer directly and would corrupt a striped layout.
+          throw new IllegalStateException("Bulk edge import into the super-node promoted vertex " + vertex.getIdentity()
+              + " is not supported: use the standard API or disable promotion (arcadedb.graph.supernodeThreshold=0)");
         outChunkRIDCache.put(vertexKey, headChunk);
         lastSegmentIsNew = false;
-        return (EdgeSegment) database.lookupByRID(headChunk, true);
+        return (EdgeSegment) head;
       }
     }
 
@@ -1536,9 +1542,13 @@ public class GraphBatch implements AutoCloseable {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getInEdgesHeadChunk();
       if (headChunk != null) {
+        final Record head = database.lookupByRID(headChunk, true);
+        if (head instanceof StripeDirectory)
+          throw new IllegalStateException("Bulk edge import into the super-node promoted vertex " + vertex.getIdentity()
+              + " is not supported: use the standard API or disable promotion (arcadedb.graph.supernodeThreshold=0)");
         inChunkRIDCache.put(vertexKey, headChunk);
         lastSegmentIsNew = false;
-        return (EdgeSegment) database.lookupByRID(headChunk, true);
+        return (EdgeSegment) head;
       }
     }
 

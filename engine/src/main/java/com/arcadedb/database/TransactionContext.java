@@ -31,6 +31,7 @@ import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
@@ -221,6 +222,20 @@ public class TransactionContext implements Transaction {
 
   public void setRequester(final Object requester) {
     this.requester = requester;
+  }
+
+  /**
+   * Returns the transaction's own WRITTEN copy of a record - a deferred update ({@code updatedRecords}) or the
+   * mutable working copy ({@code modifiedRecordsCache}) - or null when this transaction has not written it.
+   * Unlike {@link #getRecordFromCache(RID)} it NEVER returns a read-only cached record: callers that need to
+   * re-read their own deferred writes (updates are applied to pages only at commit) use this so a stale
+   * read-only copy can never masquerade as the current state and silently roll back a concurrent change.
+   */
+  public Record getWrittenRecord(final RID rid) {
+    Record rec = updatedRecords != null ? updatedRecords.get(rid) : null;
+    if (rec == null)
+      rec = modifiedRecordsCache.get(rid);
+    return rec;
   }
 
   public Record getRecordFromCache(final RID rid) {
@@ -1108,7 +1123,12 @@ public class TransactionContext implements Transaction {
 
       return new TransactionPhase1(result, pages);
 
-    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final DuplicatedKeyException | NeedRetryException e) {
+      // NeedRetryException covers ConcurrentModificationException AND every other retryable conflict, notably
+      // LockTimeoutException from the commit file-lock acquisition: wrapping those in the generic
+      // TransactionException below silently made a retryable contention error NON-retryable, so under heavy
+      // commit-lock pressure (e.g. concurrent super-node writes, #5156) transactions failed to the caller
+      // instead of retrying.
       rollback();
       throw e;
     } catch (final TransactionException e) {

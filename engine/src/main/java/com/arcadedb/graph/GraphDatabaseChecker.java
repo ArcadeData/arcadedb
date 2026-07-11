@@ -176,9 +176,8 @@ public class GraphDatabaseChecker {
     if (!outEdgesToReconnect.isEmpty()) {
       for (Edge e : outEdgesToReconnect) {
         final MutableVertex vertex = e.getOutVertex().modify();
-        final EdgeSegment outChunk = graphEngine.createOutEdgeChunk(vertex);
-        final EdgeLinkedList outLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, outChunk);
-        outLinkedList.add(e.getIdentity(), e.getIn());
+        // getOrCreateEdgeList dispatches on the head record type, so promoted (striped) vertices work too
+        graphEngine.getOrCreateEdgeList(vertex, Vertex.DIRECTION.OUT).add(e.getIdentity(), e.getIn());
       }
       addWarning(warnings, totalWarnings, maxWarnings, "reconnected " + outEdgesToReconnect.size() + " outgoing edges");
       stats.put("outEdgesToReconnect", outEdgesToReconnect);
@@ -187,9 +186,7 @@ public class GraphDatabaseChecker {
     if (!inEdgesToReconnect.isEmpty()) {
       for (Edge e : inEdgesToReconnect) {
         final MutableVertex vertex = e.getInVertex().modify();
-        final EdgeSegment inChunk = graphEngine.createInEdgeChunk(vertex);
-        final EdgeLinkedList inLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, inChunk);
-        inLinkedList.add(e.getIdentity(), e.getOut());
+        graphEngine.getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
       }
       addWarning(warnings, totalWarnings, maxWarnings, "reconnected " + inEdgesToReconnect.size() + " incoming edges");
       stats.put("inEdgesToReconnect", inEdgesToReconnect);

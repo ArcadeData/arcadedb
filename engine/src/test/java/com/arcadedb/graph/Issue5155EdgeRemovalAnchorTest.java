@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -51,6 +52,15 @@ class Issue5155EdgeRemovalAnchorTest extends TestHelper {
 
   private static final int EDGES      = 30_000; // enough IN edges on the hub to span several pages of 8KB chunks
   private static final int BATCH_SIZE = 1_000;
+
+  @Override
+  protected void beginTest() {
+    // This white-box suite counts anchored pages while walking the CLASSIC single-chain layout (its stats
+    // helper casts the head to EdgeSegment): pin super-node promotion off (#5156) so the 30K-edge hub does not
+    // switch to the striped layout, whose per-chain removal inherits the same anchoring contract and is
+    // covered by SuperNodeStripingTest. TestHelper's teardown resets the configuration.
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(0);
+  }
 
   /**
    * White-box: removing a deep edge must anchor no more pages than removing a head edge, and strictly fewer
