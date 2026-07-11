@@ -519,6 +519,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
+      } else if (realException instanceof CommandExecutionException) {
+        // Symmetric with the un-wrapped CommandExecutionException arm above. A runtime execution error
+        // (valid query, but the command failed while running - e.g. a Gremlin `.next()` on an empty
+        // traversal raising NoSuchElementException) is wrapped by the auto-commit transaction wrapper in
+        // DatabaseAbstractHandler (TransactionException -> CommandExecutionException cause). The failure
+        // happened during execute(), not at commit, so the honest label is "Cannot execute command", not
+        // the misleading "Error on transaction commit". Keep the HTTP 500 (runtime server-side error,
+        // matching Apache TinkerPop's SERVER_ERROR_SCRIPT_EVALUATION mapping). See issue #5219.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
