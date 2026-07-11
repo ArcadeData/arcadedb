@@ -115,6 +115,7 @@ import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -3551,6 +3552,15 @@ public class CypherExecutionPlan {
       return null;
 
     final String typeName = nodePattern.getLabels().get(0);
+
+    // MATCH (n:Label) matches only vertices. If the label collides with an existing edge or
+    // document type (labels and relationship types are separate namespaces in Cypher), the O(1)
+    // countType() shortcut would wrongly count those edges/documents. Fall back to the regular
+    // path (MatchNodeStep), which yields 0 rows for a non-vertex label. A non-existent type is
+    // left to TypeCountStep, which already returns 0 for it (issue #5226, consistent with #5194).
+    if (context.getDatabase().getSchema().existsType(typeName)
+        && !(context.getDatabase().getSchema().getType(typeName) instanceof VertexType))
+      return null;
 
     // Must have RETURN clause
     if (statement.getReturnClause() == null)
