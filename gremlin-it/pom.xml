@@ -37,6 +37,9 @@
         Runs Gremlin tests against the RELOCATED (shaded) arcadedb-gremlin jar so that
         the engine's antlr 4.13.2 and Gremlin's relocated antlr 4.9.1 coexist in one JVM.
         This module produces no shipped artifact; it exists only to host coexistence tests.
+        It consumes the arcadedb-gremlin package-phase outputs (the shaded uber-jar and the
+        tests test-jar), so it must be built after arcadedb-gremlin in the reactor; running
+        it standalone (mvn test -pl gremlin-it) requires arcadedb-gremlin to be installed first.
     </description>
 
     <properties>

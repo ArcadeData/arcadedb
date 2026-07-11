@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class VectorGremlinIT {
   @Test
-  void importDocuments() {
+  void importDocuments() throws Exception {
     final String databasePath = "target/databases/test-glove";
 
     FileUtils.deleteRecursively(new File(databasePath));
@@ -52,7 +52,9 @@ class VectorGremlinIT {
       // executed against the shaded jar from the arcadedb-gremlin-it module, whose
       // working directory differs from the module that owns this source file.
       final URL inputFile = VectorGremlinIT.class.getClassLoader().getResource("importer-glove.txt");
-      db.command("sql", "import database file://" + inputFile.getFile() + " "//
+      assertThat(inputFile).as("importer-glove.txt must be on the test classpath").isNotNull();
+      final String inputPath = new File(inputFile.toURI()).getAbsolutePath();
+      db.command("sql", "import database file://" + inputPath + " "//
           + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
