@@ -23,7 +23,11 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinaryComparator;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -103,11 +107,23 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             // LOOKING FOR INDEX LOOKUP
             final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
 
+            // ONLY USE AN INDEX WHEN THE LABEL MATCHES THE TRAVERSAL ELEMENT KIND (g.V() -> vertex type, g.E() -> edge type).
+            // OTHERWISE A WRONG-KIND INDEX SCAN WOULD RETURN ELEMENTS OF THE OPPOSITE CATEGORY (ISSUE #5223). THE EMPTY
+            // indexCursors LIST THEN FALLS THROUGH TO ArcadeFilterByTypeStep/ArcadeCountGlobalStep, WHICH RETURN NOTHING.
+            final boolean kindMatches;
+            if (graph.database.getSchema().existsType(typeNameToMatch)) {
+              final DocumentType type = graph.database.getSchema().getType(typeNameToMatch);
+              kindMatches = Vertex.class.isAssignableFrom(prevStepGraph.getReturnClass()) ?
+                  type instanceof VertexType :
+                  type instanceof EdgeType;
+            } else
+              kindMatches = false;
+
             final List<IndexCursor> indexCursors = new ArrayList<>();
 
             for (final HasContainer c : hasContainers) {
               final String key = c.getKey();
-              if (!key.startsWith("~")) {
+              if (kindMatches && !key.startsWith("~")) {
                 if (graph.database.getSchema().existsType(typeNameToMatch)) {
                   final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
                   if (index != null) {
