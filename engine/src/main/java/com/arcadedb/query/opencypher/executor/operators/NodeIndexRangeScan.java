@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
 import java.time.temporal.Temporal;
@@ -158,8 +159,18 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             }
           }
 
-          // Determine which range method to use based on bounds
-          if (resolvedLowerBound != null && resolvedUpperBound != null) {
+          // A bound whose type does not match the index key type cannot be pushed into the index: the
+          // engine would try to coerce/compare it against the (differently typed) stored keys and throw a
+          // NumberFormatException or ClassCastException (e.g. `WHERE n.val < "zzz"` on a numeric index -
+          // issue #5225). In Cypher a comparison across type categories evaluates to null, so no row
+          // qualifies through ordering. Fall back to a plain ascending scan and let the enclosing
+          // FilterOperator apply the precise, null-aware predicate on the real record values.
+          final Type indexKeyType = keyTypeOf(typeIndex);
+          if (!boundMatchesIndexKey(indexKeyType, resolvedLowerBound) || !boundMatchesIndexKey(indexKeyType, resolvedUpperBound)) {
+            resolvedLowerBound = null;
+            resolvedUpperBound = null;
+            cursor = rangeIndex.iterator(true);
+          } else if (resolvedLowerBound != null && resolvedUpperBound != null) {
             // Both bounds specified: use range()
             final Object[] beginKeys = new Object[]{resolvedLowerBound};
             final Object[] endKeys = new Object[]{resolvedUpperBound};
@@ -318,12 +329,64 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       }
     }
 
-    // For non-numeric types, use standard comparison
-    if (value1 instanceof Comparable) {
+    // For non-numeric types, use standard comparison, but only when both operands are the same
+    // Comparable type. Comparing across incompatible types (e.g. a numeric index entry against a String
+    // bound, as in `WHERE n.val < "zzz"` on a mixed-type property - issue #5225) would throw a
+    // ClassCastException. Since this is only a coarse "when to stop the ascending scan" probe, returning a
+    // negative value keeps the scan going (never terminates early) and defers the precise, null-aware
+    // decision to the FilterOperator. Over-scanning is always safe; stopping early could drop matches.
+    if (value1 instanceof Comparable && value1.getClass().isInstance(value2)) {
       return ((Comparable<Object>) value1).compareTo(value2);
     }
 
-    throw new IllegalArgumentException("Cannot compare non-comparable types: " +
-        value1.getClass() + " and " + value2.getClass());
+    return -1;
+  }
+
+  /**
+   * Returns the (single-property) key {@link Type} of a range index, or {@code null} when it cannot be
+   * determined. Used to detect when a query bound has a type incompatible with the index (issue #5225).
+   */
+  private static Type keyTypeOf(final TypeIndex index) {
+    final Type[] keyTypes = index.getKeyTypes();
+    return keyTypes != null && keyTypes.length == 1 ? keyTypes[0] : null;
+  }
+
+  /**
+   * Tells whether a resolved range bound can be pushed into an index with the given key type. A bound is
+   * compatible when it belongs to the same Cypher ordering category (numeric, string, boolean, temporal)
+   * as the index key. Cross-category comparisons are undefined (null) in Cypher and, pushed into the
+   * index, would throw during key coercion/comparison (issue #5225). A {@code null} bound or unknown
+   * category is treated as compatible so existing typed-index paths are never over-restricted.
+   */
+  private static boolean boundMatchesIndexKey(final Type indexKeyType, final Object bound) {
+    if (bound == null || indexKeyType == null)
+      return true;
+    final int keyCategory = categoryOf(indexKeyType);
+    final int boundCategory = categoryOfBound(bound);
+    if (keyCategory == 0 || boundCategory == 0)
+      return true;
+    return keyCategory == boundCategory;
+  }
+
+  private static int categoryOf(final Type type) {
+    return switch (type) {
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> 1;
+      case STRING -> 2;
+      case BOOLEAN -> 3;
+      case DATE, DATETIME -> 4;
+      default -> 0;
+    };
+  }
+
+  private static int categoryOfBound(final Object bound) {
+    if (bound instanceof Number)
+      return 1;
+    if (bound instanceof CharSequence)
+      return 2;
+    if (bound instanceof Boolean)
+      return 3;
+    if (bound instanceof Temporal || bound instanceof Date)
+      return 4;
+    return 0;
   }
 }
