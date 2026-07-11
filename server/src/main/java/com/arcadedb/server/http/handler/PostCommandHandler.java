@@ -96,6 +96,34 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return false;
   }
 
+  /**
+   * Returns the value of a request field that must be a JSON string, or {@code null} when absent. A present
+   * value of the wrong JSON type (number, array, object) is rejected with an {@link IllegalArgumentException},
+   * which the HTTP layer maps to a clean 400 Bad Request instead of leaking a raw {@link ClassCastException}
+   * as HTTP 500 (issue #5222).
+   */
+  private static String requireStringField(final Map<String, Object> map, final String field) {
+    return requireStringField(map, field, null);
+  }
+
+  private static String requireStringField(final Map<String, Object> map, final String field, final String defaultValue) {
+    final Object value = map.get(field);
+    if (value == null)
+      return defaultValue;
+    if (value instanceof String s)
+      return s;
+    throw new IllegalArgumentException("Field '" + field + "' must be a string");
+  }
+
+  private static int requireIntField(final Map<String, Object> map, final String field, final int defaultValue) {
+    final Object value = map.get(field);
+    if (value == null)
+      return defaultValue;
+    if (value instanceof Number n)
+      return n.intValue();
+    throw new IllegalArgumentException("Field '" + field + "' must be an integer");
+  }
+
   @Override
   protected boolean mustExecuteOnWorkerThread() {
     return true;
@@ -126,14 +154,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (requestMap.get("command") == null)
       throw new IllegalArgumentException("command missing");
 
-    final String language = (String) requestMap.get("language");
+    final String language = requireStringField(requestMap, "language");
     // Do NOT HTML-decode the command: the command is already transported losslessly as a JSON string,
     // and a command can legitimately carry HTML entities (e.g. &quot;, &amp;) inside its data. Decoding
     // them here corrupts the payload (e.g. breaks the embedded JSON of an INSERT ... CONTENT { ... }).
-    String command = (String) requestMap.get("command");
-    final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
-    final String serializer = (String) requestMap.getOrDefault("serializer", "record");
-    final String profileExecution = (String) requestMap.getOrDefault("profileExecution", null);
+    String command = requireStringField(requestMap, "command");
+    final int limit = requireIntField(requestMap, "limit", DEFAULT_LIMIT);
+    final String serializer = requireStringField(requestMap, "serializer", "record");
+    final String profileExecution = requireStringField(requestMap, "profileExecution", null);
 
     if (command == null || command.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
