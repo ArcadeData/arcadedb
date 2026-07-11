@@ -134,7 +134,7 @@
         <dependency>
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-test</artifactId>
-            <version>3.8.1</version>
+            <version>${gremlin.version}</version>
             <scope>test</scope>
             <exclusions>
                 <exclusion>
