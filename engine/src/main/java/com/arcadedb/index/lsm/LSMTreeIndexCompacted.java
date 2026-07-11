@@ -344,19 +344,23 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         // keys are partial (fewer components than the composite index defines). Purpose=1 rejects
         // partial keys with "key is composed of N items, while the index defined M items".
         // Purpose=2 allows partial key comparison which correctly matches by prefix.
-        // For full keys, keep purpose=1 to preserve exact boundary behavior for descending ranges.
+        // For full keys, keep purpose=1 to preserve exact boundary behavior for descending ranges and the shared-leaf
+        // (multi-page duplicate) positioning, both of which depend on purpose=1's value-run result.
         final int fromPurpose = fromKeys.length < binaryKeyTypes.length ? 2 : 1;
-        LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys,
+        final LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys,
             fromPurpose);
-        iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
-            resultInRootPage);
-        if (iterator == null) {
-          // LOOK FOR TO KEY IF ANY
-          final int toPurpose = toKeys != null && toKeys.length < binaryKeyTypes.length ? 2 : 1;
-          resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, toKeys, toPurpose);
-          iterator = searchInCurrentPage(ascendingOrder, toKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
+        if (!resultInRootPage.outside)
+          iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
               resultInRootPage);
-        }
+        else if (ascendingOrder == (resultInRootPage.keyIndex == 0))
+          // fromKeys is OUTSIDE this series' key range and the series sits on the scanned side of fromKeys, so the whole
+          // series belongs to the result: emit a full-series cursor. keyIndex==0 means fromKeys is below the series
+          // (LOWER); a non-zero keyIndex means it is above (HIGHER). Ascending keeps series above the (lower) fromKeys
+          // bound; descending keeps series below the (upper) fromKeys bound. The opposite (far) bound is enforced by
+          // LSMTreeIndexCursor's toKeys termination. Without this, a series lying wholly inside [fromKeys, toKeys] -
+          // containing neither endpoint - produced no cursor and every interior series was silently dropped (#5214).
+          iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
+              ascendingOrder, -1);
       } else
         iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
             ascendingOrder, -1);
