@@ -73,34 +73,53 @@ public class CaseExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    return evaluateWith(expr -> expr.evaluate(result, context));
+  }
+
+  /**
+   * Functional interface used to evaluate a single sub-expression of the CASE.
+   * Lets callers plug in an override-aware evaluator (e.g. one that resolves pre-computed
+   * aggregation results) while sharing the branch-selection and equality semantics below.
+   */
+  @FunctionalInterface
+  public interface SubExpressionEvaluator {
+    Object evaluate(Expression expression);
+  }
+
+  /**
+   * Evaluate the CASE, delegating every sub-expression evaluation to the supplied evaluator.
+   * The branch-selection logic and Cypher '=' equality semantics live here so both the plain
+   * {@link #evaluate(Result, CommandContext)} path and the aggregation-override path share them.
+   */
+  public Object evaluateWith(final SubExpressionEvaluator subEvaluator) {
     // Extended form: CASE expr WHEN value THEN result
     if (caseExpression != null) {
-      final Object caseValue = caseExpression.evaluate(result, context);
+      final Object caseValue = subEvaluator.evaluate(caseExpression);
 
       for (final CaseAlternative alternative : alternatives) {
-        final Object whenValue = alternative.getWhenExpression().evaluate(result, context);
+        final Object whenValue = subEvaluator.evaluate(alternative.getWhenExpression());
 
         // Check equality using Cypher '=' semantics (numeric folding, temporal, list, RID interop)
         if (Boolean.TRUE.equals(whenEquality.evaluateWithValues(caseValue, whenValue))) {
-          return alternative.getThenExpression().evaluate(result, context);
+          return subEvaluator.evaluate(alternative.getThenExpression());
         }
       }
     }
     // Simple form: CASE WHEN condition THEN result
     else {
       for (final CaseAlternative alternative : alternatives) {
-        final Object whenResult = alternative.getWhenExpression().evaluate(result, context);
+        final Object whenResult = subEvaluator.evaluate(alternative.getWhenExpression());
 
         // Check if condition is true
         if (isTrue(whenResult)) {
-          return alternative.getThenExpression().evaluate(result, context);
+          return subEvaluator.evaluate(alternative.getThenExpression());
         }
       }
     }
 
     // No match found - use ELSE or return null
     if (elseExpression != null) {
-      return elseExpression.evaluate(result, context);
+      return subEvaluator.evaluate(elseExpression);
     }
 
     return null;
