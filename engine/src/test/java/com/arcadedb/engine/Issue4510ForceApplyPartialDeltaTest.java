@@ -62,6 +62,10 @@ class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
       for (int i = 0; i < 10; i++)
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
+    // Drain the async flush of the setup transaction: its in-flight I/O uses the same per-page interlock
+    // (concurrentPageAccess) this test then manipulates, and the winner's finally-remove would otherwise
+    // race the fake entry planted below / leave the stale setup page in the flush-queue index.
+    db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
     final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
@@ -122,6 +126,10 @@ class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
       for (int i = 0; i < 10; i++)
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
+    // Drain the async flush of the setup transaction: its in-flight I/O uses the same per-page interlock
+    // (concurrentPageAccess) this test then manipulates, and the winner's finally-remove would otherwise
+    // race the fake entry planted below / leave the stale setup page in the flush-queue index.
+    db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
     final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);

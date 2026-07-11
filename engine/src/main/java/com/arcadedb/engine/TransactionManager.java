@@ -32,6 +32,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
 import java.io.*;
+import java.nio.ByteBuffer;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
@@ -41,6 +42,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Stream;
+import java.util.zip.CRC32C;
 
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
@@ -299,6 +301,11 @@ public class TransactionManager {
         long lastTxId = -1;
         boolean walGapDetected = false;
 
+        // #5054: pre-scan the WAL files to know, per page, the HIGHEST version any retained entry carries.
+        // The torn-page verifier only enters repair mode when that maximum reaches the on-disk version, so a
+        // stale checksum can never cause a replay that would end BELOW the version already on disk.
+        final RecoveryPageVerifier verifier = new RecoveryPageVerifier(collectMaxWalVersions());
+
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[activeWALFilePool.length];
         for (int i = 0; i < activeWALFilePool.length; ++i) {
           final WALFile file = activeWALFilePool[i];
@@ -332,7 +339,7 @@ public class TransactionManager {
             break;
 
           try {
-            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false, verifier);
             // Only advance lastTxId after a successful apply, otherwise a failed transaction
             // would wrongly increment the next-tx counter past data that was never written.
             lastTxId = lowerTxId;
@@ -447,6 +454,20 @@ public class TransactionManager {
 
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
+    return applyChanges(tx, bucketRecordDelta, ignoreErrors, null);
+  }
+
+  /**
+   * @param verifier torn-page detector active ONLY during crash recovery ({@link #checkIntegrity()}), {@code null}
+   *                 on every other path (HA/Raft replay). For a page the verifier flags as torn (issue #5054) the
+   *                 strictly-older skip and the version-gap abort are bypassed, so the page's FULL retained WAL
+   *                 delta chain is replayed in transaction order. Correctness rests on the fsync-before-WAL-drop
+   *                 barrier: any entry already dropped from the WAL is durably contained in the on-disk page, so
+   *                 replaying every retained entry in order over the disk bytes reconstructs exactly the newest
+   *                 committed state.
+   */
+  public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final boolean ignoreErrors, final RecoveryPageVerifier verifier) {
     boolean changed = false;
     boolean involveDictionary = false;
 
@@ -491,7 +512,14 @@ public class TransactionManager {
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion,
                 page.getVersion());
 
-        if (txPage.currentPageVersion < page.getVersion()) {
+        // #5054: during recovery, pages whose checksum reveals a torn write bypass BOTH the strictly-older
+        // skip and the version-gap abort below, so their full retained delta chain is replayed in order.
+        final boolean repairTornPage = verifier != null && verifier.isSuspect(file, txPage.pageNumber);
+        if (repairTornPage)
+          LogManager.instance().log(this, Level.INFO, "Replaying delta v.%d for torn page %s (db v.%d, txId=%d)", null,
+              txPage.currentPageVersion, pageId, page.getVersion(), tx.txId);
+
+        if (!repairTornPage && txPage.currentPageVersion < page.getVersion()) {
           // Always skip OLDER pages instead of aborting the entire transaction. During Raft state machine
           // replay or crash recovery, a partial apply may have written some pages but not others. Skipping
           // only the superseded pages (instead of throwing ConcurrentModificationException and aborting the
@@ -507,23 +535,21 @@ public class TransactionManager {
           // WAL delta carries absolute bytes for exactly this version) and repairs the torn state; skipping
           // a STRICTLY older entry remains required, because its delta would overwrite newer content.
           //
-          // KNOWN LIMITATION (multi-version accumulation): async flush coalesces several committed versions
-          // into a single physical page write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the
-          // v4 flush hitting the platter. If THAT flush tears, only v4's delta region is repaired here; the
-          // regions changed by v2/v3 (skipped as strictly-older) can stay torn. The version header alone
-          // cannot tell a torn page from an intact one, so detecting which pages need the older deltas
-          // re-applied needs a per-page checksum (the longer-term fix noted in #4926, tracked in #5054); an
-          // unconditional
-          // in-order replay of every entry <= disk version would repair it but changes the recovery
-          // semantics that also govern the version-gap/forceApply paths, out of scope here. This fix still
-          // strictly improves on `<=` (which repaired nothing) and fully covers the single-flush case.
+          // MULTI-VERSION accumulation (#5054): async flush coalesces several committed versions into a
+          // single physical page write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the v4
+          // flush hitting the platter. If THAT flush tears, re-applying v4's delta alone leaves the regions
+          // changed by v2/v3 torn. The version header alone cannot tell a torn page from an intact one, so
+          // the per-page CRC32C sidecar (see PaginatedComponentFile.CHECKSUM_FILE_EXT) provides the missing
+          // evidence: during recovery the RecoveryPageVerifier flags such pages and the repairTornPage flag
+          // above bypasses this skip, replaying the full retained delta chain in order. Outside recovery
+          // (verifier == null) and for pages the checksum proves intact, the strictly-older skip stands.
           LogManager.instance().log(this, Level.FINE,
               "Skipping superseded page %s (log v.%d < db v.%d)", null,
               pageId, txPage.currentPageVersion, page.getVersion());
           continue;
         }
 
-        if (txPage.currentPageVersion > page.getVersion() + 1) {
+        if (!repairTornPage && txPage.currentPageVersion > page.getVersion() + 1) {
           if (!tx.forceApply) {
             LogManager.instance().log(this, Level.WARNING,
                 "Cannot apply changes to the database because modified page %s version in WAL (%d) does not match with existent version (%d) fileId=%d",
@@ -950,6 +976,122 @@ public class TransactionManager {
     }
 
     return inactiveWALFilePool.isEmpty();
+  }
+
+  /**
+   * Scans every WAL file collecting, per page, the highest version any retained entry carries. Feeds the
+   * {@link RecoveryPageVerifier} guard: a torn-page repair replay must end AT or ABOVE the version the disk
+   * already claims, or it would downgrade an intact page (possible only with a stale checksum, e.g. a sidecar
+   * restored from a backup, since the fsync-before-WAL-drop barrier keeps a genuinely torn page's newest
+   * entry retained). Recovery-only cost: one extra sequential pass over the WAL files.
+   */
+  private Map<Long, Integer> collectMaxWalVersions() {
+    final Map<Long, Integer> maxVersions = new HashMap<>();
+    for (final WALFile file : activeWALFilePool) {
+      if (file == null)
+        continue;
+      WALFile.WALTransaction tx = file.getFirstTransaction();
+      while (tx != null) {
+        for (final WALFile.WALPage page : tx.pages) {
+          final long key = pageKey(page.fileId, page.pageNumber);
+          final Integer prev = maxVersions.get(key);
+          if (prev == null || page.currentPageVersion > prev)
+            maxVersions.put(key, page.currentPageVersion);
+        }
+        tx = file.getTransaction(tx.endPositionInLog);
+      }
+    }
+    return maxVersions;
+  }
+
+  private static long pageKey(final int fileId, final int pageNumber) {
+    return ((long) fileId << 32) | (pageNumber & 0xffffffffL);
+  }
+
+  /**
+   * Recovery-only torn-page detector (issue #5054). For every page referenced by the WAL it compares the raw
+   * on-disk bytes against the CRC32C slot maintained in the {@code .pcrc} sidecar file (see
+   * {@link PaginatedComponentFile#CHECKSUM_FILE_EXT}, written BEFORE the page bytes on every flush):
+   * <ul>
+   *   <li>no slot available (pre-checksum database, disabled flag, never-flushed page): unverifiable, the
+   *   standard recovery rules apply - the migration story for existing databases;</li>
+   *   <li>slot version > disk version: the interrupted flush kept the OLD version header, so every newer WAL
+   *   delta applies under the standard rules, which provably reconstruct the page;</li>
+   *   <li>slot version == disk version and the CRC matches: the page is verified intact;</li>
+   *   <li>otherwise (equal-version CRC mismatch, or a slot older than the disk version - the sidecar update
+   *   did not persist while the possibly-torn page write did): the page is flagged TORN, provided the WAL
+   *   still retains an entry at the disk version or newer (the {@code maxWalVersions} guard above).</li>
+   * </ul>
+   * Verdicts are memoized for the whole recovery run: the repair replay itself rewrites the page (and its
+   * checksum slot) through the normal write path, and later entries of the chain must keep seeing the page
+   * as under repair.
+   */
+  static class RecoveryPageVerifier {
+    private final Map<Long, Integer> maxWalVersions;
+    private final Map<Long, Boolean> verdicts = new HashMap<>();
+
+    RecoveryPageVerifier(final Map<Long, Integer> maxWalVersions) {
+      this.maxWalVersions = maxWalVersions;
+    }
+
+    boolean isSuspect(final PaginatedComponentFile file, final int pageNumber) {
+      final long key = pageKey(file.getFileId(), pageNumber);
+      final Boolean cached = verdicts.get(key);
+      if (cached != null)
+        return cached;
+
+      boolean suspect = false;
+      try {
+        suspect = verify(file, pageNumber, key);
+      } catch (final IOException e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on verifying the checksum of page %d of file '%s'", e, pageNumber,
+                file.getFileName());
+      }
+      verdicts.put(key, suspect);
+      return suspect;
+    }
+
+    private boolean verify(final PaginatedComponentFile file, final int pageNumber, final long key) throws IOException {
+      final long slot = file.readPageChecksum(pageNumber);
+      if (slot == -1L)
+        return false;
+
+      final int pageSize = file.getPageSize();
+      if ((pageNumber + 1L) * pageSize > file.getSize())
+        // THE PAGE IS (PARTIALLY) BEYOND THE PHYSICAL FILE: NOTHING TO VERIFY
+        return false;
+
+      final ByteBuffer raw = ByteBuffer.allocate(pageSize);
+      file.readPage(pageNumber, raw);
+      final int diskVersion = raw.getInt(0);
+
+      final int slotVersion = (int) (slot >>> 32);
+      if (slotVersion > diskVersion)
+        return false;
+
+      if (slotVersion == diskVersion) {
+        final CRC32C crc = new CRC32C();
+        raw.rewind();
+        crc.update(raw);
+        if ((int) crc.getValue() == (int) slot)
+          // VERIFIED INTACT
+          return false;
+      }
+
+      final Integer maxWalVersion = maxWalVersions.get(key);
+      if (maxWalVersion == null || maxWalVersion < diskVersion) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Page %d of file '%s' fails its checksum (disk v.%d, checksum v.%d) but the WAL retains no entry at that version or newer: the checksum is considered stale and the page is recovered with the standard rules",
+            null, pageNumber, file.getFileName(), diskVersion, slotVersion);
+        return false;
+      }
+
+      LogManager.instance().log(this, Level.WARNING,
+          "Torn write detected on page %d of file '%s' (disk v.%d, checksum v.%d): replaying the full WAL delta chain for the page",
+          null, pageNumber, file.getFileName(), diskVersion, slotVersion);
+      return true;
+    }
   }
 
   @Override

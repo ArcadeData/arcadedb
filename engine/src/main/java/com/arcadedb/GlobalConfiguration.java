@@ -373,6 +373,16 @@ public enum GlobalConfiguration {
 
   PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
 
+  PAGE_CHECKSUM("arcadedb.pageChecksum", SCOPE.JVM,
+      """
+      Maintains a per-page CRC32C checksum in a '.pcrc' sidecar file next to each data file, updated on every \
+      page flush. Crash recovery uses it to detect torn page writes that the page version header alone cannot \
+      reveal (issue #5054: async flush coalesces several committed versions into one physical write, and a torn \
+      write can persist the newest version header over stale data sectors) and repairs the damaged page by \
+      replaying its full retained WAL delta chain. Databases without sidecar files (created by older versions, \
+      or with the flag disabled) recover exactly as before: verification is skipped.""",
+      Boolean.class, true),
+
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
       """
       Maximum amount of RAM (in MB) of dirty pages the page-flush thread may defer in memory while flushing \

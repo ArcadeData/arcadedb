@@ -390,12 +390,26 @@ that could starve the very snapshot resync meant to heal the node.
   skip declared such a page "already applied" and left it silently corrupt despite an intact WAL,
   [#4926](https://github.com/ArcadeData/arcadedb/issues/4926); known limitation: async flush can coalesce
   several committed versions into one physical write, and only the newest version's region is repaired -
-  fully closing the multi-version case needs per-page checksums to detect which pages are torn, tracked in
+  fully closing the multi-version case needs per-page checksums to detect which pages are torn - now done,
+  see the per-page checksums entry below,
   [#5054](https://github.com/ArcadeData/arcadedb/issues/5054)). A clean close whose data fsync failed now
   preserves the WAL and the lock file for recovery instead of deleting them (after a failed fsync the OS
   may have dropped the dirty pages, so the WAL held the only durable copy;
   [#4934](https://github.com/ArcadeData/arcadedb/issues/4934) - the runtime WAL rotation also skips its
   drop pass when the pre-drop fsync fails).
+- **Per-page checksums close the multi-version torn-write gap (2026-07 audit follow-up).** Every page flush
+  now also maintains an 8-byte slot (page version + CRC32C of the raw page bytes, hardware-accelerated) in a
+  `.pcrc` sidecar file next to each data file, written before the page itself and covered by the same fsync
+  barrier. Crash recovery uses it to detect what the page version header alone cannot reveal: async flush
+  coalesces several committed versions into one physical write, so a torn write can persist the newest
+  version header while regions changed by the coalesced OLDER versions still hold stale bytes - the #4926
+  equal-version re-apply repaired only the newest version's delta region. A page that fails verification now
+  gets its FULL retained WAL delta chain replayed in transaction order (safe by the fsync-before-WAL-drop
+  barrier: dropped entries are always durably contained in the on-disk page), guarded so a stale checksum
+  can never trigger a replay ending below the version already on disk. No data-file format change: the
+  sidecar is ignored by directory scans (old and new versions alike), databases without one recover exactly
+  as before, and the slots fill in as pages flush. Disable with `arcadedb.pageChecksum=false`
+  ([#5054](https://github.com/ArcadeData/arcadedb/issues/5054)).
 
 - **LSM index hardening (2026-07 audit).** A failed compaction is now atomic: the in-RAM page count is
   rolled back (after draining in-flight flushes) so the orphaned leaf pages a mid-merge failure leaves on
