@@ -399,6 +399,40 @@ class SuperNodeStripingTest extends TestHelper {
     });
   }
 
+  /** Same distribution guard with a NON-power-of-two stripe count (the documented tuning allows any value):
+   * the murmur-style finaliser in {@link StripeDirectory#stripeOf} must not alias on the modulo. */
+  @Test
+  void appendsSpreadAcrossNonPowerOfTwoStripes() {
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+    GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(12);
+    createSchema();
+    final RID hubRID = createHub();
+
+    final int total = 2_000;
+    insertEdges(hubRID, total);
+    final StripeDirectory directory = (StripeDirectory) loadInHead(hubRID);
+
+    database.transaction(() -> {
+      final int stripes = directory.getStripes(1);
+      assertThat(stripes).isEqualTo(12);
+      long striped = 0;
+      long min = Long.MAX_VALUE;
+      for (int slot = 0; slot < stripes; slot++) {
+        long entries = 0;
+        RID chunkRID = directory.getHead(1, slot);
+        while (chunkRID != null) {
+          final EdgeSegment chunk = (EdgeSegment) database.lookupByRID(chunkRID, true);
+          entries += chunk.count(null);
+          chunkRID = chunk.getPreviousRID();
+        }
+        striped += entries;
+        min = Math.min(min, entries);
+      }
+      assertThat(striped).isGreaterThan(total / 2);
+      assertThat(min).isGreaterThanOrEqualTo(striped / stripes / 4);
+    });
+  }
+
   /**
    * Promotion is ONE-WAY: an already-promoted vertex must keep working (reads AND writes) when promotion is
    * later disabled ({@code threshold=0}) - the setting only stops FUTURE promotions.

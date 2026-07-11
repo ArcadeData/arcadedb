@@ -32,6 +32,16 @@ and keeps the database fully compatible with older releases. Whether the first
 release ships default-on (4096) or default-off (opt-in for one cycle) is a
 product decision - the review recommends considering opt-in first.
 
+Two more promoted-vertex semantics for the upgrade notes: (a) READS on a
+promoted vertex are best-effort under write concurrency - `count()`/iteration
+can transiently under-report while a concurrent cross-file commit publishes
+its pages (the write path surfaces the same window as a retryable conflict);
+the single-file classic layout could not exhibit this. (b) `GraphBatch` bulk
+import into an already-promoted vertex fails loud with `IllegalStateException`:
+a batch job that worked can start failing once a target vertex organically
+crosses the threshold - disable promotion or use the standard API for such
+hubs.
+
 Implementation notes that refined the A.1 design (2026-07-10):
 
 - **Stripe pool DDL is deferred on server/HA.** Creating the pool buckets inside the

@@ -39,6 +39,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -66,6 +67,12 @@ public class StripedEdgeList extends EdgeLinkedList {
   private static final long                            POOL_CREATION_STUCK_MS = 60_000;
   /** After this long in flight the creation is presumed dead (hung thread) and a later chunk-full re-attempts. */
   private static final long                            POOL_CREATION_RETRY_MS = 5 * 60_000;
+  /** Millis of the last skipped-chain WARNING (see addChain): a hot super-node under the transient cross-file
+   * publication window could otherwise flood the log with one line per read. Reads are deliberately
+   * BEST-EFFORT - unlike the write path (which surfaces the same condition as a retryable conflict, see
+   * loadStripeHead), a read skips the momentarily unresolvable chain, so counts/iterations during a concurrent
+   * commit can transiently under-report instead of failing. */
+  private static final AtomicLong                      LAST_SKIPPED_CHAIN_WARN = new AtomicLong();
 
   private final DatabaseInternal database;
   private final StripeDirectory  directory;
@@ -417,13 +424,6 @@ public class StripedEdgeList extends EdgeLinkedList {
       addChain(chains, directory.getHead(g, StripeDirectory.stripeOf(neighbour, directory.getStripes(g))));
     return chains;
   }
-
-  /** Millis of the last skipped-chain WARNING: a hot super-node under the transient cross-file publication
-   * window could otherwise flood the log (one line per read). Reads are deliberately BEST-EFFORT: unlike the
-   * write path (which surfaces the same condition as a retryable conflict, see loadStripeHead), a read skips
-   * the momentarily unresolvable chain, so counts/iterations during a concurrent commit can transiently
-   * under-report instead of failing. */
-  private static final java.util.concurrent.atomic.AtomicLong LAST_SKIPPED_CHAIN_WARN = new java.util.concurrent.atomic.AtomicLong();
 
   private void addChain(final List<EdgeLinkedList> chains, final RID headRID) {
     if (headRID == null)
