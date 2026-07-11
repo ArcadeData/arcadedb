@@ -142,15 +142,45 @@ public class ArcadeGremlin extends ArcadeQuery {
       return result;
 
     } catch (final ScriptException e) {
-      // A ScriptException raised while evaluating the query is a parse/build failure (e.g. a Groovy closure
-      // like `filter { ... }` or any other syntax the secure gremlin-lang engine rejects). The traversal is
-      // built eagerly by eval() while iteration stays lazy, so at this point the query text itself is invalid,
-      // not the execution. Classify it as a client-side parsing error so the HTTP layer returns 400 with the
-      // real parser message instead of a misleading 500 "Error on transaction commit". See issue #5201.
-      throw new CommandParsingException("Error on parsing gremlin query: " + e.getMessage(), e);
+      // eval() both builds the traversal and, for eager terminal steps such as .next()/.value(), iterates it.
+      // A ScriptException can therefore be either a genuine parse/build failure (e.g. a Groovy closure like
+      // `filter { ... }` or any syntax the secure gremlin-lang engine rejects, root cause GremlinParserException)
+      // or a runtime execution error surfaced during eager iteration (e.g. `.next()` on an empty traversal raises
+      // NoSuchElementException). Only the former is a client-side parsing error: it maps to HTTP 400 with the real
+      // parser message. A runtime error must stay a CommandExecutionException so it is not misreported as invalid
+      // syntax. See issues #5201 (parse) and #5219 (runtime NoSuchElementException misclassified as parse).
+      if (isParsingFailure(e))
+        throw new CommandParsingException("Error on parsing gremlin query: " + e.getMessage(), e);
+      final Throwable root = getRootCause(e);
+      final String reason = root.getMessage() != null ? root.getMessage() : root.getClass().getName();
+      throw new CommandExecutionException("Error on executing gremlin query: " + reason, e);
     } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }
+  }
+
+  /**
+   * Distinguishes a genuine Gremlin parse/compilation failure from a runtime error surfaced by an eager terminal
+   * step during eval(). Parse failures from the secure gremlin-lang (java) engine surface as
+   * {@code GremlinParserException}; the legacy Groovy engine reports them as a compilation error. Anything else
+   * (e.g. {@link java.util.NoSuchElementException} from {@code .next()} on an empty traversal) is a runtime error.
+   */
+  private static boolean isParsingFailure(final Throwable e) {
+    for (Throwable c = e; c != null && c != c.getCause(); c = c.getCause()) {
+      final String className = c.getClass().getName();
+      if (className.equals("org.apache.tinkerpop.gremlin.language.grammar.GremlinParserException")
+          || className.equals("org.codehaus.groovy.control.MultipleCompilationErrorsException")
+          || className.equals("org.codehaus.groovy.control.CompilationFailedException"))
+        return true;
+    }
+    return false;
+  }
+
+  private static Throwable getRootCause(final Throwable e) {
+    Throwable root = e;
+    while (root.getCause() != null && root.getCause() != root)
+      root = root.getCause();
+    return root;
   }
 
   public static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {

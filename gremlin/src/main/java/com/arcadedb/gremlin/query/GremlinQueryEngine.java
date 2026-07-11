@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.gremlin.ArcadeGraph;
@@ -68,8 +69,15 @@ public class GremlinQueryEngine implements QueryEngine {
       final ArcadeGremlin arcadeGremlin = arcadeGraph.gremlin(query);
       arcadeGremlin.setParameters(parameters);
       return arcadeGremlin.execute();
+    } catch (final CommandParsingException | CommandExecutionException e) {
+      // Preserve the classification already assigned by ArcadeGremlin.execute(): a genuine parse failure
+      // stays a CommandParsingException (HTTP 400), a runtime execution error (e.g. NoSuchElementException
+      // from an eager .next() on an empty traversal) stays a CommandExecutionException (HTTP 500). Blindly
+      // rewrapping everything as CommandParsingException misreported valid queries as syntax errors.
+      // See issues #5201 (parse) and #5219 (runtime error misclassified as parse).
+      throw e;
     } catch (final Exception e) {
-      throw new CommandParsingException("Error on executing Gremlin query", e);
+      throw new CommandExecutionException("Error on executing Gremlin query", e);
     }
   }
 
