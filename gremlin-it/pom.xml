@@ -178,6 +178,11 @@
                     <dependenciesToScan>
                         <dependency>com.arcadedb:arcadedb-gremlin</dependency>
                     </dependenciesToScan>
+                    <!-- The migrated unit tests exist ONLY in the scanned test-jar; since the gremlin
+                         module skips its own tests, fail loudly if the scan resolves nothing (test-jar
+                         not attached, classifier/coordinate mismatch) instead of silently passing with
+                         zero tests. -->
+                    <failIfNoTests>true</failIfNoTests>
                 </configuration>
             </plugin>
             <plugin>

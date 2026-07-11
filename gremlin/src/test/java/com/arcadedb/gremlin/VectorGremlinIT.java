@@ -28,7 +28,9 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.net.URL;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -48,13 +50,18 @@ class VectorGremlinIT {
 
     final Database db = databaseFactory.create();
     try {
-      // Resolve via the classpath rather than a CWD-relative path so this test also works when
-      // executed against the shaded jar from the arcadedb-gremlin-it module, whose
-      // working directory differs from the module that owns this source file.
-      final URL inputFile = VectorGremlinIT.class.getClassLoader().getResource("importer-glove.txt");
-      assertThat(inputFile).as("importer-glove.txt must be on the test classpath").isNotNull();
-      final String inputPath = new File(inputFile.toURI()).getAbsolutePath();
-      db.command("sql", "import database file://" + inputPath + " "//
+      // Copy the fixture out of the classpath to a temp file, rather than resolving a CWD-relative
+      // path: this test also runs against the shaded jar from the arcadedb-gremlin-it module (whose
+      // working directory differs), and the resource is present both in target/test-classes and in
+      // the arcadedb-gremlin tests jar, so getResource() may hand back either a file: or a jar: URL.
+      // Streaming to a temp file works regardless of which the classpath returns.
+      final File importFile = File.createTempFile("importer-glove", ".txt");
+      importFile.deleteOnExit();
+      try (final InputStream in = VectorGremlinIT.class.getClassLoader().getResourceAsStream("importer-glove.txt")) {
+        assertThat(in).as("importer-glove.txt must be on the test classpath").isNotNull();
+        Files.copy(in, importFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+      }
+      db.command("sql", "import database file://" + importFile.getAbsolutePath() + " "//
           + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );

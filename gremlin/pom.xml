@@ -182,7 +182,8 @@
                          and TinkerPop's parser (antlr 4.9.1); those cannot coexist on the
                          unshaded test classpath. They run in the arcadedb-gremlin-it module
                          against the shaded jar instead. Test sources still compile here so the
-                         test-jar is produced. -->
+                         test-jar is produced. To run a single gremlin test, target gremlin-it, e.g.
+                         mvn -pl gremlin-it test -Dtest=GremlinTest (or -Dit.test=... for *IT). -->
                     <skipTests>true</skipTests>
                 </configuration>
             </plugin>
