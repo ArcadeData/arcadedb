@@ -84,8 +84,9 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     final BasicDatabase database = graph.getDatabase();
 
     if (Vertex.class.isAssignableFrom(this.returnClass)) {
+      // hasLabel() FILTERS INSIDE THE CURRENT KIND: A VERTEX TRAVERSAL FILTERED BY AN EDGE TYPE MATCHES NOTHING (ISSUE #5223).
       if (!(type instanceof VertexType))
-        throw new IllegalArgumentException("Type '" + this.typeName + "' is not a vertex type");
+        return;
 
       iteratorSupplier = () -> {
         final Iterator<Record> rawIterator = bucketName == null ?
@@ -105,9 +106,9 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
       };
 
     } else if (Edge.class.isAssignableFrom(this.returnClass)) {
+      // hasLabel() FILTERS INSIDE THE CURRENT KIND: AN EDGE TRAVERSAL FILTERED BY A VERTEX TYPE MATCHES NOTHING (ISSUE #5223).
       if (!(type instanceof EdgeType))
-        throw new IllegalArgumentException("Type '" + this.typeName + "' is not an edge type");
-
+        return;
 
       iteratorSupplier = () -> {
         final Iterator<Record> rawIterator = bucketName == null ?

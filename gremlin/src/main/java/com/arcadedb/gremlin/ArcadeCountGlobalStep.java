@@ -61,8 +61,16 @@ public final class ArcadeCountGlobalStep<S extends Element> extends AbstractStep
 
       try {
         if (typeName != null) {
-          if (graph.database.getSchema().existsType(typeName))
-            total += graph.database.countType(typeName, false);
+          // ONLY COUNT THE TYPE IF IT MATCHES THE ELEMENT KIND OF THE TRAVERSAL (g.V() -> vertices, g.E() -> edges).
+          // hasLabel() FILTERS INSIDE THE CURRENT KIND, SO A VERTEX TRAVERSAL MUST NOT COUNT AN EDGE TYPE AND VICE VERSA (ISSUE #5223).
+          if (graph.database.getSchema().existsType(typeName)) {
+            final DocumentType type = graph.database.getSchema().getType(typeName);
+            final boolean matchesKind = Vertex.class.isAssignableFrom(this.elementClass) ?
+                type instanceof VertexType :
+                type instanceof EdgeType;
+            if (matchesKind)
+              total += graph.database.countType(typeName, false);
+          }
         } else if (Vertex.class.isAssignableFrom(this.elementClass)) {
           for (DocumentType type : graph.database.getSchema().getTypes()) {
             if (type instanceof VertexType)
