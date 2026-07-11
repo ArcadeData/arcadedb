@@ -28,9 +28,12 @@ From that moment the database is no longer readable by releases older than
 one-way. In addition, edge iteration order on promoted vertices is approximate
 (newest-generation-first), relaxing the #689 reverse-insertion guarantee for
 super-nodes only. Setting `supernodeThreshold=0` disables promotion entirely
-and keeps the database fully compatible with older releases. Whether the first
-release ships default-on (4096) or default-off (opt-in for one cycle) is a
-product decision - the review recommends considering opt-in first.
+and keeps the database fully compatible with older releases. DECISION
+(2026-07-11, @lvca): 26.8.1 ships DEFAULT-ON (threshold 4096) - the
+incompatibility is documented here, in the setting's description, and must be
+called out prominently in the release notes (one-way format change triggered
+by a vertex organically crossing the threshold; set 0 before upgrading if a
+rollback path to <= 26.7.x must be preserved).
 
 Two more promoted-vertex semantics for the upgrade notes: (a) READS on a
 promoted vertex are best-effort under write concurrency - `count()`/iteration
