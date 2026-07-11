@@ -102,7 +102,7 @@ public class CypherSemanticValidator {
       if (firstColumns == null) {
         firstColumns = columns;
       } else if (!firstColumns.equals(columns)) {
-        throw new CommandParsingException("DifferentColumnsInUnion: All sub queries in a UNION must have the same column names");
+        throw new CommandParsingException("DifferentColumnsInUnion: All sub queries in a UNION must have the same return column names");
       }
       // Validate each subquery
       validate(query);
