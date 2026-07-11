@@ -164,6 +164,14 @@ public class SetStep extends AbstractExecutionStep {
       // clause runs. openCypher / Neo4j SET is a simultaneous assignment: every read must observe
       // the pre-clause value, never a value written by an earlier item in the same clause
       // (issue #5190). E.g. "SET a.x = a.y, a.y = a.x" must swap rather than copy.
+      //
+      // #5227: the pre-clause snapshot must be the LATEST COMMITTED state (what a locked read would
+      // observe), NOT the possibly-stale record snapshot the MATCH loaded. reloadLatestDoc() below
+      // reloads each variable target to its current committed version before its right-hand side is
+      // evaluated, so a concurrent transaction that committed between the MATCH read and this write is
+      // observed here instead of being silently overwritten (a lost update on e.g. "SET a.c = a.c + 1").
+      // The page pinned by the reload makes any commit that lands AFTER this point fail the MVCC
+      // version check at commit, surfacing a retryable conflict the auto-retry loop re-runs cleanly.
       final Object[] values = new Object[items.size()];
       final String[] keys = new String[items.size()];
       final boolean[] keyIsNull = new boolean[items.size()];
@@ -174,7 +182,7 @@ public class SetStep extends AbstractExecutionStep {
             // Resolve the latest doc first so self-referential reads across row fanout (e.g. via
             // UNWIND) observe prior-row writes, then snapshot key + value.
             if (item.getVariable() != null)
-              resolveLatestDoc(item.getVariable(), result, writtenDocs);
+              reloadLatestDoc(item.getVariable(), result, writtenDocs);
             if (item.getKeyExpression() != null) {
               final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
               if (keyValue == null)
@@ -186,7 +194,7 @@ public class SetStep extends AbstractExecutionStep {
             break;
           case REPLACE_MAP:
           case MERGE_MAP:
-            resolveLatestDoc(item.getVariable(), result, writtenDocs);
+            reloadLatestDoc(item.getVariable(), result, writtenDocs);
             values[i] = evaluator.evaluate(item.getValueExpression(), result, context);
             break;
           case LABELS:
@@ -396,6 +404,28 @@ public class SetStep extends AbstractExecutionStep {
       }
     }
     return rawDoc;
+  }
+
+  /**
+   * #5227: resolves the target variable and replaces it in the result row with its mutable, latest-committed
+   * version so a SET right-hand side is evaluated against the current state of the record, not the snapshot the
+   * MATCH loaded. {@link com.arcadedb.database.ImmutableDocument#modify()} force-reloads a record that was read
+   * outside the write path to its latest committed version and pins its page in the transaction; evaluating the
+   * right-hand side against that (instead of a stale MATCH buffer) prevents concurrent read-modify-write updates
+   * from being silently lost, while the pinned page makes any later concurrent commit fail the commit-time MVCC
+   * version check as a retryable conflict. A record already written earlier in this transaction (in
+   * {@code writtenDocs}) is a {@link MutableDocument} whose {@code modify()} returns itself, so cross-row
+   * read-your-writes semantics are preserved.
+   */
+  private void reloadLatestDoc(final String variable, final Result result, final Map<RID, MutableDocument> writtenDocs) {
+    if (variable == null)
+      return;
+    final Document doc = resolveLatestDoc(variable, result, writtenDocs);
+    if (doc == null)
+      return;
+    final MutableDocument mutable = doc.modify();
+    if (mutable != doc)
+      ((ResultInternal) result).setProperty(variable, mutable);
   }
 
   /**
