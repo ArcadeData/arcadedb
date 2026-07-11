@@ -332,7 +332,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       LSMTreeIndexUnderlyingCompactedSeriesCursor iterator = null;
 
-      int startingPageNumber = rootPageNumber + 1 + (ascendingOrder ? 0 : rootPageCount);
+      // Each series stores its root first, followed by rootPageCount data pages. DESC must start on the last data page,
+      // not one page beyond it (which may be the next series' root page).
+      final int startingPageNumber = rootPageNumber + (ascendingOrder ? 1 : rootPageCount);
       final int lastPageNumber = rootPageNumber + (ascendingOrder ? rootPageCount : 1);
 
       if (fromKeys != null) {
@@ -342,19 +344,23 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         // keys are partial (fewer components than the composite index defines). Purpose=1 rejects
         // partial keys with "key is composed of N items, while the index defined M items".
         // Purpose=2 allows partial key comparison which correctly matches by prefix.
-        // For full keys, keep purpose=1 to preserve exact boundary behavior for descending ranges.
+        // For full keys, keep purpose=1 to preserve exact boundary behavior for descending ranges and the shared-leaf
+        // (multi-page duplicate) positioning, both of which depend on purpose=1's value-run result.
         final int fromPurpose = fromKeys.length < binaryKeyTypes.length ? 2 : 1;
-        LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys,
+        final LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys,
             fromPurpose);
-        iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
-            resultInRootPage);
-        if (iterator == null) {
-          // LOOK FOR TO KEY IF ANY
-          final int toPurpose = toKeys != null && toKeys.length < binaryKeyTypes.length ? 2 : 1;
-          resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, toKeys, toPurpose);
-          iterator = searchInCurrentPage(ascendingOrder, toKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
+        if (!resultInRootPage.outside)
+          iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
               resultInRootPage);
-        }
+        else if (ascendingOrder == (resultInRootPage.keyIndex == 0))
+          // fromKeys is OUTSIDE this series' key range and the series sits on the scanned side of fromKeys, so the whole
+          // series belongs to the result: emit a full-series cursor. keyIndex==0 means fromKeys is below the series
+          // (LOWER); a non-zero keyIndex means it is above (HIGHER). Ascending keeps series above the (lower) fromKeys
+          // bound; descending keeps series below the (upper) fromKeys bound. The opposite (far) bound is enforced by
+          // LSMTreeIndexCursor's toKeys termination. Without this, a series lying wholly inside [fromKeys, toKeys] -
+          // containing neither endpoint - produced no cursor and every interior series was silently dropped (#5214).
+          iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
+              ascendingOrder, -1);
       } else
         iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes,
             ascendingOrder, -1);
@@ -377,7 +383,15 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       int pageInSeries = resultInRootPage.keyIndex;
 
       if (resultInRootPage.found) {
-        if (pageInSeries >= rootPageCount)
+        if (ascendingOrder && !unique) {
+          // Start at the first matching leaf, plus its possible shared predecessor for files written before the overflow
+          // safeguard. A non-matching predecessor advances to the next page in the page-level lookup below. Unique indexes
+          // are exempt: a unique key holds a single value that never overflows a page, so the shared-leaf layout cannot occur.
+          final int firstMatchingRootEntry = resultInRootPage.valueBeginPositions != null
+              ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
+              : resultInRootPage.keyIndex;
+          pageInSeries = Math.max(0, firstMatchingRootEntry - 1);
+        } else if (pageInSeries >= rootPageCount)
           // LAST ITEM + FOUND = IT'S THE LAST ELEMENT OF THE LAST PAGE
           --pageInSeries;
       } else
@@ -485,6 +499,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       if (!resultInRootPage.outside) {
         // IT'S IN PAGE RANGE
         int pageInSeries = resultInRootPage.keyIndex;
+        // Unique indexes are exempt: a unique key holds a single value that never overflows a page, so the shared-leaf
+        // layout cannot occur and the extra preceding-leaf read below is pure overhead.
+        final int firstMatchingRootEntry = !unique && resultInRootPage.found && resultInRootPage.valueBeginPositions != null
+            ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
+            : -1;
 
         if (resultInRootPage.found) {
           if (pageInSeries >= rootPageCount)
@@ -518,6 +537,21 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
           if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
               removedKeys, deletedRIDs))
+            return;
+        }
+
+        // Compacted files written before the shared-leaf writer safeguard can store the first chunk of an overflowing key on
+        // the leaf that ends with the preceding key. Later chunks have root entries for the searched key, but that first chunk
+        // is reachable only through the immediately preceding leaf. The result set removes any overlap.
+        if (firstMatchingRootEntry > 0) {
+          final int precedingPageNum = rootPage.getPageId().getPageNumber() + firstMatchingRootEntry;
+          final BasePage precedingPage = database.getTransaction()
+              .getPage(new PageId(database, file.getFileId(), precedingPageNum), pageSize);
+          final Binary precedingPageBuffer = new Binary(precedingPage.slice());
+          final int precedingCount = getCount(precedingPage);
+
+          if (!lookupInPageAndAddInResultset(precedingPage, precedingPageBuffer, precedingCount, originalKeys, convertedKeys,
+              limit, set, removedKeys, deletedRIDs))
             return;
         }
       }

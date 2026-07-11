@@ -291,61 +291,78 @@ public class EdgeLinkedList {
   }
 
   public void removeEdge(final Edge edge) {
-    EdgeSegment prevBrowsed = null;
-    EdgeSegment current = loadChunkForWrite(lastSegment.getIdentity());
+    final RID rid = edge.getIdentity();
+    final boolean byEdgeRID = rid.getPosition() > -1;
+    // DELETE BY VERTEX RID: resolve the target vertex once, outside the walk.
+    final RID targetVertexRID = byEdgeRID ? null : (direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+
+    RID prevBrowsedRID = null;
+    EdgeSegment current = lastSegment;
     while (current != null) {
-      final RID rid = edge.getIdentity();
+      // #5155: walk the chain with unanchored reads. A chunk that does not hold the target is read-only, so
+      // anchoring it (loadChunkForWrite -> fetchPageInTransaction -> page.modify()) would copy its whole page
+      // buffer into the tx for nothing (churn/GC on wide super-nodes; the copy is dropped again at commit
+      // because an unwritten page is pruned before the version check). Anchor a chunk ONLY once a read-only
+      // probe proves it holds the target, right before the mutating removeEdge/removeVertex.
+      final boolean present = byEdgeRID ?
+          current.containsEdge(rid) :
+          current.getFirstEdgeConnectedToVertex(targetVertexRID, null) != null;
 
-      int deleted = 0;
-      if (rid.getPosition() > -1)
-        // DELETE BY EDGE RID
-        deleted = current.removeEdge(rid);
-      else
-        // DELETE BY VERTEX RID
-        deleted = current.removeVertex(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
-
-      if (deleted > 0) {
-        updateSegment(current, prevBrowsed);
-        break;
+      if (present) {
+        final EdgeSegment modifiable = loadChunkForWrite(current.getIdentity());
+        final int deleted = byEdgeRID ? modifiable.removeEdge(rid) : modifiable.removeVertex(targetVertexRID);
+        if (deleted > 0) {
+          updateSegment(modifiable, prevBrowsedRID);
+          break;
+        }
       }
 
-      prevBrowsed = current;
+      prevBrowsedRID = current.getIdentity();
       final RID prevRID = current.getPreviousRID();
-      current = prevRID == null ? null : loadChunkForWrite(prevRID);
+      current = prevRID == null ? null : readChunk(prevRID);
     }
   }
 
   public void removeEdgeRID(final RID edge) {
-    EdgeSegment prevBrowsed = null;
-    EdgeSegment current = loadChunkForWrite(lastSegment.getIdentity());
+    RID prevBrowsedRID = null;
+    EdgeSegment current = lastSegment;
     while (current != null) {
-      final int deleted = current.removeEdge(edge);
-      if (deleted > 0) {
-        updateSegment(current, prevBrowsed);
-        break;
+      // #5155: probe read-only, anchor only the chunk that actually holds the edge (see removeEdge).
+      if (current.containsEdge(edge)) {
+        final EdgeSegment modifiable = loadChunkForWrite(current.getIdentity());
+        if (modifiable.removeEdge(edge) > 0) {
+          updateSegment(modifiable, prevBrowsedRID);
+          break;
+        }
       }
-      prevBrowsed = current;
+      prevBrowsedRID = current.getIdentity();
       final RID prevRID = current.getPreviousRID();
-      current = prevRID == null ? null : loadChunkForWrite(prevRID);
+      current = prevRID == null ? null : readChunk(prevRID);
     }
   }
 
   public void removeVertex(final RID vertexRID) {
-    EdgeSegment prevBrowsed = null;
-    EdgeSegment current = loadChunkForWrite(lastSegment.getIdentity());
+    RID prevBrowsedRID = null;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       final RID nextRID = current.getPreviousRID();
-      boolean deleted = false;
-      while (current.removeVertex(vertexRID) > 0)
-        deleted = true;
-      if (deleted) {
-        final boolean segmentWillBeDeleted = prevBrowsed != null && current.isEmpty() && nextRID != null;
-        updateSegment(current, prevBrowsed);
-        if (!segmentWillBeDeleted)
-          prevBrowsed = current;
+      // #5155: a chunk with no edge to the vertex is read-only during this removal - probe unanchored and skip
+      // anchoring it. Only when the chunk holds at least one matching edge do we anchor and drain it.
+      if (current.getFirstEdgeConnectedToVertex(vertexRID, null) != null) {
+        final EdgeSegment modifiable = loadChunkForWrite(current.getIdentity());
+        boolean deleted = false;
+        while (modifiable.removeVertex(vertexRID) > 0)
+          deleted = true;
+        if (deleted) {
+          final boolean segmentWillBeDeleted = prevBrowsedRID != null && modifiable.isEmpty() && nextRID != null;
+          updateSegment(modifiable, prevBrowsedRID);
+          if (!segmentWillBeDeleted)
+            prevBrowsedRID = current.getIdentity();
+        } else
+          prevBrowsedRID = current.getIdentity();
       } else
-        prevBrowsed = current;
-      current = nextRID == null ? null : loadChunkForWrite(nextRID);
+        prevBrowsedRID = current.getIdentity();
+      current = nextRID == null ? null : readChunk(nextRID);
     }
   }
 
@@ -465,16 +482,28 @@ public class EdgeLinkedList {
     return true;
   }
 
+  /**
+   * #5155: reads an edge-list chunk for a read-only walk hop, WITHOUT anchoring its page in the transaction.
+   * Used while scanning the chain for the chunk to modify; the modified chunk (and, on an empty-chunk relink,
+   * the previous-browsed chunk) is re-loaded through {@link #loadChunkForWrite} before being mutated.
+   */
+  private EdgeSegment readChunk(final RID chunkRID) {
+    return (EdgeSegment) ((DatabaseInternal) vertex.getDatabase()).lookupByRID(chunkRID, true);
+  }
+
   private int computeBestSize() {
     return LocalDatabase.getNewEdgeListSize(lastSegment.getRecordSize());
   }
 
-  private void updateSegment(final EdgeSegment current, final EdgeSegment prevBrowsed) {
+  private void updateSegment(final EdgeSegment current, final RID prevBrowsedRID) {
     final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
     // Edge removal/relink does not commute with a concurrent append: exclude the touched pages from the merge.
     final TransactionContext tx = database.getTransactionIfExists();
-    if (prevBrowsed != null && current.isEmpty() && current.getPrevious() != null) {
-      // SEGMENT EMPTY: DELETE ONLY IF IT IS NOT THE FIRST SEGMENT. DELETE CURRENT SEGMENT AND REATTACH THE LINKED LIST
+    if (prevBrowsedRID != null && current.isEmpty() && current.getPrevious() != null) {
+      // SEGMENT EMPTY: DELETE ONLY IF IT IS NOT THE FIRST SEGMENT. DELETE CURRENT SEGMENT AND REATTACH THE LINKED LIST.
+      // #5155: the previous-browsed chunk was only read unanchored during the walk; anchor it now, before its
+      // relink write, so the modification lands on a tx-retained page and is MVCC-version-checked at commit.
+      final EdgeSegment prevBrowsed = loadChunkForWrite(prevBrowsedRID);
       prevBrowsed.setPrevious(current.getPrevious());
       database.updateRecord(prevBrowsed);
       if (tx != null) {

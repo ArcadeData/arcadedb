@@ -487,10 +487,20 @@ public enum GlobalConfiguration {
       Boolean.class, true),
 
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
-      Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). \
-      If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit.\
-      This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory)""",
-      Long.class, 500_000),
+      Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
+      and DISTINCT in heap). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
+      This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
+      When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
+      large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
+      with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling.""",
+      Long.class, 500_000L, null, value -> {
+        // Auto-scale the default with the JVM max heap: roughly one element every 2KB, never below the historical 500000 floor.
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        if (maxHeap == Long.MAX_VALUE)
+          // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.
+          return 500_000L;
+        return Math.max(500_000L, maxHeap / 2048);
+      }),
 
   QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
       """
