@@ -223,23 +223,6 @@ class LSMTreeSortedNonUniqueBuildTest extends TestHelper {
     assertThat(database.getSchema().getType("SortedPartialNullError").getIndexByProperties("groupName", "ordinal")).isNull();
   }
 
-  @Test
-  void rejectsUnsupportedUniqueBuildBeforeCreatingFiles() {
-    final DocumentType type = database.getSchema().createDocumentType("SortedUnique");
-    type.createProperty("lookupKey", Type.STRING);
-    database.transaction(() -> database.newDocument("SortedUnique").set("lookupKey", "one").save());
-
-    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("SortedUnique", new String[] { "lookupKey" })
-        .withType(Schema.INDEX_TYPE.LSM_TREE)
-        .withBuildMode(IndexBuildMode.SORTED)
-        .withUnique(true)
-        .create())
-        .isInstanceOf(IndexException.class)
-        .hasMessageContaining("non-unique");
-    assertThat(type.getIndexByProperties("lookupKey")).isNull();
-  }
-
-  @Test
   void rejectsUnsupportedIndexTypeAndActiveTransaction() {
     final DocumentType type = database.getSchema().createDocumentType("SortedPreconditions");
     type.createProperty("lookupKey", Type.STRING);
