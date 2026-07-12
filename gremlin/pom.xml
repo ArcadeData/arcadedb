@@ -34,14 +34,14 @@
     <name>ArcadeDB Gremlin</name>
 
     <properties>
-        <gremlin.version>3.8.1</gremlin.version>
+        <!-- gremlin.version is defined in the parent pom so arcadedb-gremlin-it can share it -->
         <translation.version>1.0.4</translation.version>
         <snakeyaml.version>2.6</snakeyaml.version>
         <netty.version>4.2.16.Final</netty.version>
         <commons-configuration2.version>2.15.1</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
         <commons-lang3.version>3.20.0</commons-lang3.version>
-        <groovy.version>4.0.28</groovy.version>
+        <groovy.version>4.0.32</groovy.version>
         <antlr4.version>4.9.1</antlr4.version>
     </properties>
 
@@ -176,7 +176,52 @@
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Gremlin's tests exercise BOTH the engine SQL/Cypher parser (antlr 4.13.2)
+                         and TinkerPop's parser (antlr 4.9.1); those cannot coexist on the
+                         unshaded test classpath. They run in the arcadedb-gremlin-it module
+                         against the shaded jar instead. Test sources still compile here so the
+                         test-jar is produced. To run a single gremlin test, target gremlin-it, e.g.
+                         mvn -pl gremlin-it test -Dtest=GremlinTest (or -Dit.test=... for *IT). -->
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <!-- Same rationale as the surefire skip above: the *IT classes inherited from
+                         the parent failsafe config would otherwise run on the unshaded classpath
+                         (engine antlr 4.13.2 vs gremlin antlr 4.9.1) under -Pintegration, which CI
+                         uses. They run in arcadedb-gremlin-it against the shaded jar instead. -->
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
+                <configuration>
+                    <!-- Relocate ANTLR 4.9.1 (TinkerPop's precompiled parser needs the v3 ATN
+                         format) into a private package so it never collides with the engine's
+                         org.antlr 4.13.2 on a shared classpath. -->
+                    <relocations>
+                        <relocation>
+                            <pattern>org.antlr</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.antlr</shadedPattern>
+                        </relocation>
+                    </relocations>
+                    <artifactSet>
+                        <excludes>
+                            <!-- Do NOT bundle the engine: its SQL/Cypher parsers are v4-ATN (antlr 4.13.2) and the
+                                 org.antlr relocation above would rewrite them onto the bundled 4.9.1 runtime, making
+                                 them undeserializable. The engine ships as its own plain jar (distribution lib/ and
+                                 the arcadedb-gremlin-it module both provide it), so the relocation must touch only
+                                 TinkerPop's own 4.9.1 parser. -->
+                            <exclude>com.arcadedb:arcadedb-engine</exclude>
+                        </excludes>
+                    </artifactSet>
+                </configuration>
             </plugin>
         </plugins>
     </build>

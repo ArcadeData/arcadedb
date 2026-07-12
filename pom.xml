@@ -94,6 +94,7 @@
         <mockito-core.version>5.23.0</mockito-core.version>
         <neo4j-driver.version>6.2.0</neo4j-driver.version>
         <byte-buddy.version>1.17.7</byte-buddy.version>
+        <gremlin.version>3.8.1</gremlin.version>
 
 
         <protobuf-maven-plugin.version>5.1.7</protobuf-maven-plugin.version>
@@ -137,6 +138,7 @@
         <module>integration</module>
         <module>console</module>
         <module>gremlin</module>
+        <module>gremlin-it</module>
         <module>graphql</module>
         <module>mongodbw</module>
         <module>redisw</module>
