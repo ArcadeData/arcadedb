@@ -279,7 +279,6 @@ public class CypherExecutionPlanner {
     // Fall back to ordered execution when write/mutating clauses are interleaved with WITH/UNWIND,
     // or when MATCH appears after WITH (MATCH-WITH-MATCH pattern).
     if (statement.getClausesInOrder() != null) {
-      int createCount = 0;
       int mergeCount = 0;
       int deleteCount = 0;
       boolean seenWith = false;
@@ -303,9 +302,6 @@ public class CypherExecutionPlanner {
         case UNWIND:
           seenUnwind = true;
           break;
-        case CREATE:
-          createCount++;
-          break;
         case MERGE:
           mergeCount++;
           break;
@@ -316,8 +312,14 @@ public class CypherExecutionPlanner {
           break;
         }
       }
-      // Multiple CREATE/MERGE/DELETE clauses not handled by optimizer path
-      if (createCount > 1 || mergeCount > 1 || (deleteCount > 0 && mergeCount > 0))
+      // Multiple CREATE clauses ARE handled by the optimizer path: buildExecutionStepsWithOptimizer
+      // iterates clausesInOrder and chains a CreateStep per CREATE clause. Variables created by an
+      // earlier CREATE are threaded forward because each CreateStep copies its input row's properties
+      // (including freshly created vertices/edges) into the new row, and createPath reuses any node
+      // variable already bound in the row instead of re-creating it. So a chain like
+      // CREATE (q:Person {...}) CREATE (p)-[:R]->(q) correctly links the matched p to the new q. See #5136.
+      // MERGE, however, is still limited to one clause, and DELETE+MERGE mixing is unsupported.
+      if (mergeCount > 1 || (deleteCount > 0 && mergeCount > 0))
         return false;
     }
 
