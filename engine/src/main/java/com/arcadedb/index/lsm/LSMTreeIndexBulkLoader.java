@@ -90,11 +90,10 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
 
     database.getIndexer().forEachIndexKey(index, record, rawKeys -> {
       final Object[] normalizedKeys = index.normalizeKeysForBulkBuild(rawKeys);
+      index.getMutableIndex().checkForNulls(normalizedKeys);
       final boolean containsNull = LSMTreeIndexAbstract.isKeyNull(normalizedKeys);
       if (containsNull && index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
         return;
-      if (containsNull && index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR)
-        index.getMutableIndex().checkForNulls(normalizedKeys);
 
       registerIndex(index);
       entries.add(new Entry(index, new TransactionIndexContext.ComparableKey(normalizedKeys), rid));

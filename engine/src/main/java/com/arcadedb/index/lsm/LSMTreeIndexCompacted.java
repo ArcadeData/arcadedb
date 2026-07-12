@@ -440,9 +440,10 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       if (resultInRootPage.found) {
         if (ascendingOrder && !unique) {
-          // Start at the first matching leaf, plus its possible shared predecessor for files written before the overflow
-          // safeguard. A non-matching predecessor advances to the next page in the page-level lookup below. Unique indexes
-          // are exempt: a unique key holds a single value that never overflows a page, so the shared-leaf layout cannot occur.
+          // Start at the first matching leaf plus its possible shared predecessor. Legacy files can contain a key that began
+          // on its predecessor and then overflowed; the bounded writer can also place a complete leading RID chunk there
+          // before later chunks move to matching leaves. A non-matching predecessor advances to the next page below. Unique
+          // indexes are exempt: a unique key holds one value and cannot span leaves.
           final int firstMatchingRootEntry = resultInRootPage.valueBeginPositions != null
               ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
               : resultInRootPage.keyIndex;
@@ -479,9 +480,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       } else {
         startingPageNumber = firstPageNumber;
         posInPage = result.keyIndex;
-        if (ascendingOrder)
+        if (ascendingOrder) {
+          // Binary search may land in the middle of a repeated-key run. This matters when a bounded write starts a
+          // high-cardinality key on its predecessor leaf: starting at the middle drops the earlier RID chunks on that leaf.
+          // Position immediately before the first matching entry so the series cursor emits the complete run.
+          if (result.found && !unique)
+            posInPage = findFirstEntryOfSameKey(firstPageBuffer, convertedFromKeys, getHeaderSize(firstPageNumber), posInPage);
           --posInPage;
-        else
+        } else
           ++posInPage;
       }
 

@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.Schema;
@@ -164,6 +165,62 @@ class LSMTreeSortedNonUniqueBuildTest extends TestHelper {
     index = database.getSchema().getType("SortedComposite").getIndexByProperties("groupName", "ordinal");
     assertThat(count(index.iterator(false))).isEqualTo(980);
     assertThat(count(index.get(new Object[] { "group-01", 1 }))).isEqualTo(50);
+  }
+
+  @Test
+  void indexesPartialNullCompositeKeysWithSkipStrategy() throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("SortedPartialNullSkip");
+    type.createProperty("groupName", Type.STRING);
+    type.createProperty("ordinal", Type.INTEGER);
+
+    database.transaction(() -> {
+      database.newDocument("SortedPartialNullSkip").set("groupName", null).set("ordinal", 5).save();
+      database.newDocument("SortedPartialNullSkip").set("groupName", "group").set("ordinal", null).save();
+      database.newDocument("SortedPartialNullSkip").set("groupName", null).set("ordinal", null).save();
+      database.newDocument("SortedPartialNullSkip").set("groupName", "group").set("ordinal", 7).save();
+    });
+
+    TypeIndex index = database.getSchema().buildTypeIndex("SortedPartialNullSkip",
+            new String[] { "groupName", "ordinal" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withBuildMode(IndexBuildMode.SORTED)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+        .withUnique(false)
+        .create();
+
+    assertThat(count(index.iterator(true))).isEqualTo(3);
+    assertThat(count(index.get(new Object[] { null, 5 }))).isEqualTo(1);
+    assertThat(count(index.get(new Object[] { "group", null }))).isEqualTo(1);
+    assertThat(count(index.get(new Object[] { null, null }))).isZero();
+
+    reopenDatabase();
+    index = database.getSchema().getType("SortedPartialNullSkip").getIndexByProperties("groupName", "ordinal");
+    assertThat(count(index.get(new Object[] { null, 5 }))).isEqualTo(1);
+    assertThat(count(index.get(new Object[] { "group", null }))).isEqualTo(1);
+  }
+
+  @Test
+  void rejectsPartialNullCompositeKeysWithErrorStrategy() throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("SortedPartialNullError");
+    type.createProperty("groupName", Type.STRING);
+    type.createProperty("ordinal", Type.INTEGER);
+    database.transaction(() -> database.newDocument("SortedPartialNullError")
+        .set("groupName", null).set("ordinal", 5).save());
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("SortedPartialNullError",
+            new String[] { "groupName", "ordinal" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withBuildMode(IndexBuildMode.SORTED)
+        .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.ERROR)
+        .withUnique(false)
+        .create())
+        .isInstanceOf(IndexException.class)
+        .hasRootCauseInstanceOf(IllegalArgumentException.class)
+        .hasRootCauseMessage("Indexed key SortedPartialNullError[groupName, ordinal] cannot be NULL ([null, 5])");
+
+    assertThat(type.getIndexByProperties("groupName", "ordinal")).isNull();
+    reopenDatabase();
+    assertThat(database.getSchema().getType("SortedPartialNullError").getIndexByProperties("groupName", "ordinal")).isNull();
   }
 
   @Test
