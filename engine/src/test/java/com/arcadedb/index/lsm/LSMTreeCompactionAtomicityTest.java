@@ -16,31 +16,32 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.index;
+package com.arcadedb.index.lsm;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.TestHelper;
-import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #4946: a failed compaction must be atomic. Leaf pages are flushed eagerly during the merge with no WAL;
- * if compact() throws after some were written (root-page overflow, I/O error, interrupt), the orphans used
+ * if compact() throws after some were written (I/O error, interrupt), the orphans used
  * to stay counted in the in-RAM page count - invisible at first (page 0's series counter was never bumped)
  * but PUBLISHED by the NEXT successful round, whose setCompactedTotalPages() writes getTotalPages(): stale
  * duplicates re-exposing tombstoned entries and a malformed partial series walked by positional logic. And
  * when the FIRST compaction failed (no sub-index yet), the freshly registered compacted file was never
  * linked nor dropped, so every failed round leaked another file.
  * <p>
- * The deterministic failure used here is the real "Root index page overflow" path: with 1KB pages, a round
- * that produces more compacted leaf pages than one root page can reference throws AFTER those leaf pages
- * were flushed - exactly the mid-merge failure the issue describes.
+ * The deterministic failure hook throws after a complete compacted series has been written but before the
+ * mutable/compacted file swap publishes it. This exercises the same rollback boundary without depending on
+ * root-page overflow, which the bounded compacted writer now prevents.
  */
 class LSMTreeCompactionAtomicityTest extends TestHelper {
 
@@ -58,8 +59,7 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
 
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
     type.createProperty("email", String.class);
-    // Small pages: a handful of entries seals immutable pages, and a round with many leaf pages overflows
-    // the single root page deterministically.
+    // Small pages make each injected failure leave several unpublished compacted pages to roll back.
     database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "email" })
         .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).withPageSize(1024).create();
     return (LSMTreeIndex) database.getSchema().getType(TYPE_NAME).getAllIndexes(false).iterator().next().getIndexesOnBuckets()[0];
@@ -87,24 +87,31 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
     });
   }
 
-  private void compactExpectingRootOverflow(final LSMTreeIndex index) throws Exception {
-    assertThat(index.scheduleCompaction()).as("compaction scheduled").isTrue();
-    assertThatThrownBy(index::compact)
-        .as("the oversized round must fail with the real mid-merge root-overflow error")
-        .isInstanceOf(UnsupportedOperationException.class)
-        .hasMessageContaining("Root index page overflow");
+  private void compactWithInjectedFailure(final LSMTreeIndex index) throws Exception {
+    LSMTreeIndexCompactor.setCompactionTestHook(compactedIndex -> {
+      throw new IOException("injected failure after compacted series write");
+    });
+    try {
+      assertThat(index.scheduleCompaction()).as("compaction scheduled").isTrue();
+      assertThatThrownBy(index::compact)
+          .as("the compaction must fail after writing an unpublished compacted series")
+          .isInstanceOf(IOException.class)
+          .hasMessageContaining("injected failure after compacted series write");
+    } finally {
+      LSMTreeIndexCompactor.setCompactionTestHook(null);
+    }
   }
 
   @Test
   void failedFirstCompactionDropsTempFileAndDoesNotLeakPerRound() throws Exception {
     final LSMTreeIndex index = createType();
-    // Enough long keys that the FIRST round produces more leaf pages than one root page can reference.
+    // Enough long keys that the FIRST round writes several compacted pages before the injected failure.
     insert(0, 3_000, 60);
 
     assertThat(index.getMutableIndex().getSubIndex()).as("no sub-index before the first compaction").isNull();
     final long filesBefore = registeredFiles();
 
-    compactExpectingRootOverflow(index);
+    compactWithInjectedFailure(index);
 
     assertThat(index.getMutableIndex().getSubIndex())
         .as("the failed first compaction must not link the compacted index").isNull();
@@ -114,7 +121,7 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
     assertThat(tempFilesOnDisk()).as("no temp compacted file may remain on disk (#4946)").isNullOrEmpty();
 
     // The issue's leak: every further failed round used to register (and orphan) ANOTHER file.
-    compactExpectingRootOverflow(index);
+    compactWithInjectedFailure(index);
     assertThat(registeredFiles())
         .as("repeated failed compactions must not leak one file per round (#4946)")
         .isEqualTo(filesBefore);
@@ -137,9 +144,9 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
 
     final int pagesBeforeFailedRound = index.getMutableIndex().getSubIndex().getTotalPages();
 
-    // Round 2: oversized - fails mid-merge AFTER flushing orphan leaf pages into the sub-index file.
+    // Round 2 fails after writing another complete but still unpublished compacted series.
     insert(120, 3_120, 60);
-    compactExpectingRootOverflow(index);
+    compactWithInjectedFailure(index);
 
     assertThat(index.getMutableIndex().getSubIndex().getTotalPages())
         .as("the failed round must roll the in-RAM page count back, or the next successful round's "

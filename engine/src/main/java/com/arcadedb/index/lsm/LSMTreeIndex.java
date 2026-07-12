@@ -624,6 +624,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   protected LSMTreeIndexMutable splitIndex(final int startingFromPage, final LSMTreeIndexCompacted compactedIndex) {
+    return splitIndex(startingFromPage, compactedIndex, true);
+  }
+
+  protected LSMTreeIndexMutable splitIndex(final int startingFromPage, final LSMTreeIndexCompacted compactedIndex,
+      final boolean saveSchema) {
     checkIsValid();
     final DatabaseInternal database = getDatabase();
     if (database.isTransactionActive())
@@ -704,10 +709,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         newMutableIndex.removeTempSuffix();
 
         mutable = newMutableIndex;
+        updateCaseInsensitiveKeys();
 
-        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId());
-
-        database.getSchema().getEmbedded().saveConfiguration();
+        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), saveSchema);
         return newMutableIndex;
       });
 
@@ -789,6 +793,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       throw new NeedRetryException("Error on building index '" + name + "' because not available");
 
     return total.get();
+  }
+
+  Object[] normalizeKeysForBulkBuild(final Object[] keys) {
+    return convertKeys(keys);
   }
 
   protected RWLockContext getLock() {

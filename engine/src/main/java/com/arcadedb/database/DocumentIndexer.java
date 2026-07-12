@@ -36,6 +36,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 public class DocumentIndexer {
@@ -98,6 +99,13 @@ public class DocumentIndexer {
   }
 
   public void addToIndex(final Index entry, final RID rid, final Document record) {
+    forEachIndexKey(entry, record, keyValues -> entry.put(keyValues, new RID[] { rid }));
+  }
+
+  /**
+   * Expands a document into the same logical keys used by normal index maintenance without mutating the index.
+   */
+  public void forEachIndexKey(final Index entry, final Document record, final Consumer<Object[]> keyConsumer) {
     final List<String> keyNames = entry.getPropertyNames();
 
     // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP) on each property.
@@ -110,22 +118,22 @@ public class DocumentIndexer {
         // Full-text combined index over several BY ITEM properties (issue #5181): a full-text index is an inverted per-field
         // index, not a compound key, so each BY ITEM property is indexed as the UNION of its own list items (the lists may be
         // different and of different lengths). No element-wise zip and no shared-root requirement.
-        addFullTextByItemToIndex(entry, rid, record, propertyNamesArray, expansions);
+        forEachFullTextByItemKey(record, propertyNamesArray, expansions, keyConsumer);
       else
         // Multiple BY ITEM properties sharing the same root list - one compound entry per list element (issue #5181)
-        addMultiListItemsToIndex(entry, rid, record, propertyNamesArray, expansions);
+        forEachMultiListItemKey(record, propertyNamesArray, expansions, keyConsumer);
     } else if (expansion == KeyExpansion.NONE) {
       // Standard indexing - single entry per document
       final Object[] keyValues = new Object[keyNames.size()];
       for (int i = 0; i < keyValues.length; ++i)
         keyValues[i] = getPropertyValue(record, propertyNamesArray[i]);
-      entry.put(keyValues, new RID[] { rid });
+      keyConsumer.accept(keyValues);
     } else if (expansion == KeyExpansion.LIST_ITEM) {
       // List indexing - one entry per list element
-      addListItemsToIndex(entry, rid, record, propertyNamesArray, expansionIndex);
+      forEachListItemKey(record, propertyNamesArray, expansionIndex, keyConsumer);
     } else {
       // Map indexing - one entry per key or per value
-      addMapEntriesToIndex(entry, rid, record, propertyNamesArray, expansionIndex, expansion);
+      forEachMapEntryKey(record, propertyNamesArray, expansionIndex, expansion, keyConsumer);
     }
   }
 
@@ -177,13 +185,13 @@ public class DocumentIndexer {
     return count;
   }
 
-  private void addMapEntriesToIndex(final Index entry, final RID rid, final Document record,
-      final String[] propertyNames, final int mapPropertyIndex, final KeyExpansion expansion) {
+  private void forEachMapEntryKey(final Document record, final String[] propertyNames, final int mapPropertyIndex,
+      final KeyExpansion expansion, final Consumer<Object[]> keyConsumer) {
     for (final Object element : mapElements(record, propertyNames[mapPropertyIndex], expansion)) {
       final Object[] keyValues = new Object[propertyNames.length];
       for (int i = 0; i < keyValues.length; ++i)
         keyValues[i] = i == mapPropertyIndex ? element : getPropertyValue(record, propertyNames[i]);
-      entry.put(keyValues, new RID[] { rid });
+      keyConsumer.accept(keyValues);
     }
   }
 
@@ -208,8 +216,8 @@ public class DocumentIndexer {
     return elements;
   }
 
-  private void addListItemsToIndex(final Index entry, final RID rid, final Document record,
-      final String[] propertyNames, final int listPropertyIndex) {
+  private void forEachListItemKey(final Document record, final String[] propertyNames, final int listPropertyIndex,
+      final Consumer<Object[]> keyConsumer) {
     final String propertyName = propertyNames[listPropertyIndex];
 
     // Check if this is a nested property path (e.g., "tags.id")
@@ -277,9 +285,8 @@ public class DocumentIndexer {
       }
 
       // Only index if we have a valid key value
-      if (keyValues[listPropertyIndex] != null) {
-        entry.put(keyValues, new RID[] { rid });
-      }
+      if (keyValues[listPropertyIndex] != null)
+        keyConsumer.accept(keyValues);
     }
   }
 
@@ -289,10 +296,10 @@ public class DocumentIndexer {
    * compound key is produced per element, zipping the nested value of every list property from the SAME element (element-wise, not
    * cross-product). Non-list properties are resolved as scalars from the record.
    */
-  private void addMultiListItemsToIndex(final Index entry, final RID rid, final Document record,
-      final String[] propertyNames, final KeyExpansion[] expansions) {
+  private void forEachMultiListItemKey(final Document record, final String[] propertyNames,
+      final KeyExpansion[] expansions, final Consumer<Object[]> keyConsumer) {
     for (final Object[] keyValues : buildMultiListItemTuples(record, propertyNames, expansions))
-      entry.put(keyValues, new RID[] { rid });
+      keyConsumer.accept(keyValues);
   }
 
   private static boolean isFullText(final Index entry) {
@@ -306,11 +313,11 @@ public class DocumentIndexer {
    * position carries the union of that property's own list items and every plain position carries its scalar value. Unlike the
    * compound path, the {@code BY ITEM} properties may reference different lists of different lengths.
    */
-  private void addFullTextByItemToIndex(final Index entry, final RID rid, final Document record,
-      final String[] propertyNames, final KeyExpansion[] expansions) {
+  private void forEachFullTextByItemKey(final Document record, final String[] propertyNames,
+      final KeyExpansion[] expansions, final Consumer<Object[]> keyConsumer) {
     final Object[] keyValues = buildFullTextByItemKey(record, propertyNames, expansions);
     if (!isAllEmpty(keyValues))
-      entry.put(keyValues, new RID[] { rid });
+      keyConsumer.accept(keyValues);
   }
 
   /**
@@ -588,7 +595,7 @@ public class DocumentIndexer {
 
       if (countListExpansions(expansions) > 1) {
         if (isFullText(index))
-          // Full-text combined BY ITEM index (issue #5181): diff the per-field item unions (see addFullTextByItemToIndex).
+          // Full-text combined BY ITEM index (issue #5181): diff the per-field item unions.
           anyIndexModified |= updateFullTextByItemInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansions);
         else
           // Multi-BY ITEM index: diff the compound tuples produced from the shared list (issue #5181)
