@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.engine.MutablePage;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 
 import java.io.IOException;
@@ -34,13 +35,17 @@ import java.util.logging.Level;
 
 /** Writes an ordered key/RID stream into the compacted LSM series format used by normal compaction. */
 final class LSMTreeIndexCompactedStreamWriter {
-  private static final RID[] ROOT_SENTINEL = new RID[] { new RID(0, 0) };
+  static final int DEFAULT_MAX_DATA_PAGES_PER_SERIES = 1_024;
+
+  private static final RID[] ROOT_SENTINEL               = new RID[] { new RID(0, 0) };
+  private static final int   MAX_RIDS_PER_BOUNDED_APPEND = 256;
 
   private final LSMTreeIndex          mainIndex;
   private final LSMTreeIndexMutable   mutableIndex;
   private final LSMTreeIndexCompacted compactedIndex;
   private final DatabaseInternal      database;
   private final Binary                keyValueContent = new Binary();
+  private final Binary                sizingContent   = new Binary();
 
   private MutablePage     rootPage;
   private TrackableBinary rootPageBuffer;
@@ -48,6 +53,7 @@ final class LSMTreeIndexCompactedStreamWriter {
   private TrackableBinary lastPageBuffer;
   private AtomicInteger   pageNumberInSeries;
   private Object[]        lastPageMaxKey;
+  private Object[]        lastPageMaxConvertedKey;
   private List<MutablePage> newPagesInSeries;
 
   LSMTreeIndexCompactedStreamWriter(final LSMTreeIndex mainIndex, final LSMTreeIndexCompacted compactedIndex) {
@@ -67,16 +73,22 @@ final class LSMTreeIndexCompactedStreamWriter {
     lastPageBuffer = null;
     pageNumberInSeries = new AtomicInteger(1);
     lastPageMaxKey = null;
+    lastPageMaxConvertedKey = null;
     newPagesInSeries = new ArrayList<>();
     return rootPage;
   }
 
   void append(final Object[] keys, final RID[] rids) throws IOException, InterruptedException {
+    appendConverted(keys, compactedIndex.convertKeysForCompaction(keys), rids);
+  }
+
+  private void appendConverted(final Object[] keys, final Object[] convertedKeys, final RID[] rids)
+      throws IOException, InterruptedException {
     if (rootPage == null)
       throw new IllegalStateException("No compacted series is active for index '" + mainIndex.getName() + "'");
 
-    final List<MutablePage> newPages = compactedIndex.appendDuringCompaction(keyValueContent, lastPage, lastPageBuffer,
-        pageNumberInSeries, keys, rids);
+    final List<MutablePage> newPages = compactedIndex.appendDuringCompactionConverted(keyValueContent, lastPage,
+        lastPageBuffer, pageNumberInSeries, keys, convertedKeys, rids);
 
     if (!newPages.isEmpty()) {
       lastPage = newPages.getLast();
@@ -84,8 +96,8 @@ final class LSMTreeIndexCompactedStreamWriter {
 
       for (final MutablePage newPage : newPages) {
         final int newPageNumber = newPage.getPageId().getPageNumber();
-        final List<MutablePage> newRootPages = compactedIndex.appendDuringCompaction(keyValueContent, rootPage,
-            rootPageBuffer, pageNumberInSeries, keys, new RID[] { new RID(0, newPageNumber) });
+        final List<MutablePage> newRootPages = compactedIndex.appendDuringCompactionConverted(keyValueContent, rootPage,
+            rootPageBuffer, pageNumberInSeries, keys, convertedKeys, new RID[] { new RID(0, newPageNumber) });
 
         LogManager.instance().log(mainIndex, Level.FINE,
             "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
@@ -98,6 +110,54 @@ final class LSMTreeIndexCompactedStreamWriter {
     }
 
     lastPageMaxKey = keys;
+    lastPageMaxConvertedKey = convertedKeys;
+  }
+
+  void appendBounded(final Object[] keys, final RID[] rids, final int maxDataPagesPerSeries)
+      throws IOException, InterruptedException {
+    if (maxDataPagesPerSeries < 1)
+      throw new IllegalArgumentException("maxDataPagesPerSeries must be at least 1");
+
+    final Object[] convertedKeys = compactedIndex.convertKeysForCompaction(keys);
+    int from = 0;
+    while (from < rids.length) {
+      if (rootPage == null)
+        startSeries();
+
+      final int requestedTo = Math.min(rids.length, from + MAX_RIDS_PER_BOUNDED_APPEND);
+      RID[] chunk = from == 0 && requestedTo == rids.length ? rids : Arrays.copyOfRange(rids, from, requestedTo);
+      final int fitting = compactedIndex.valuesFittingInEmptyLeaf(sizingContent, rootPage, keys, convertedKeys, chunk);
+      if (fitting < chunk.length)
+        chunk = Arrays.copyOf(chunk, fitting);
+      final int requiredLeafSpace = compactedIndex.requiredSpaceForSerializedEntry(sizingContent);
+
+      final boolean startsNewLeaf = lastPage == null
+          || requiredLeafSpace > compactedIndex.availableSpaceForEntries(lastPage);
+      int requiredRootSpace = compactedIndex.requiredSpaceForEntry(sizingContent, rootPage, keys, convertedKeys,
+          ROOT_SENTINEL);
+      if (startsNewLeaf)
+        requiredRootSpace += compactedIndex.requiredSpaceForEntry(sizingContent, rootPage, keys, convertedKeys,
+            new RID[] { new RID(0, compactedIndex.getTotalPages()) });
+
+      if ((startsNewLeaf && newPagesInSeries.size() >= maxDataPagesPerSeries)
+          || requiredRootSpace > compactedIndex.availableSpaceForEntries(rootPage)) {
+        finishSeries();
+        startSeries();
+        requiredRootSpace = compactedIndex.requiredSpaceForEntry(sizingContent, rootPage, keys, convertedKeys,
+            ROOT_SENTINEL)
+            + compactedIndex.requiredSpaceForEntry(sizingContent, rootPage, keys, convertedKeys,
+            new RID[] { new RID(0, compactedIndex.getTotalPages()) });
+        if (requiredRootSpace > compactedIndex.availableSpaceForEntries(rootPage))
+          throw new IndexException(
+              "Root entry for key " + Arrays.toString(keys) + " does not fit in an empty compacted series");
+      }
+
+      final int pagesBefore = newPagesInSeries.size();
+      appendConverted(keys, convertedKeys, chunk);
+      if (newPagesInSeries.size() - pagesBefore > 1)
+        throw new IndexException("A bounded compacted append unexpectedly created multiple data pages");
+      from += chunk.length;
+    }
   }
 
   void finishSeries() throws IOException, InterruptedException {
@@ -105,8 +165,8 @@ final class LSMTreeIndexCompactedStreamWriter {
       throw new IllegalStateException("No compacted series is active for index '" + mainIndex.getName() + "'");
 
     if (lastPageMaxKey != null) {
-      final List<MutablePage> overflow = compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer,
-          pageNumberInSeries, lastPageMaxKey, ROOT_SENTINEL);
+      final List<MutablePage> overflow = compactedIndex.appendDuringCompactionConverted(keyValueContent, rootPage,
+          rootPageBuffer, pageNumberInSeries, lastPageMaxKey, lastPageMaxConvertedKey, ROOT_SENTINEL);
       if (!overflow.isEmpty())
         throw new UnsupportedOperationException("Root index page overflow");
 
@@ -125,7 +185,13 @@ final class LSMTreeIndexCompactedStreamWriter {
     lastPageBuffer = null;
     pageNumberInSeries = null;
     lastPageMaxKey = null;
+    lastPageMaxConvertedKey = null;
     newPagesInSeries = null;
+  }
+
+  void finishIfActive() throws IOException, InterruptedException {
+    if (rootPage != null)
+      finishSeries();
   }
 
   int getRootEntryCount() {

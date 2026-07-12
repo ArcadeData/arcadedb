@@ -29,6 +29,7 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursorEntry;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.RidHashSet;
@@ -95,6 +96,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
 
+    return appendDuringCompactionConverted(keyValueContent, currentPage, currentPageBuffer, compactedPageNumberOfSeries,
+        keys, convertKeysForCompaction(keys), rids);
+  }
+
+  List<MutablePage> appendDuringCompactionConverted(final Binary keyValueContent, MutablePage currentPage,
+      final TrackableBinary currentPageBuffer, final AtomicInteger compactedPageNumberOfSeries, final Object[] keys,
+      final Object[] convertedKeys, final RID[] rids)
+      throws IOException, InterruptedException {
     final List<MutablePage> newPages = new ArrayList<>();
 
     TrackableBinary pageBuffer = currentPageBuffer;
@@ -115,8 +124,6 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     int count = getCount(currentPage);
 
     int pageNum = currentPage.getPageId().getPageNumber();
-
-    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
 
     int keyValueFreePosition = getValuesFreePosition(currentPage);
     int freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE);
@@ -167,7 +174,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       keyValueFreePosition -= keyValueContent.size();
 
       // WRITE KEY/VALUE PAIR CONTENT
-      pageBuffer.putByteArray(keyValueFreePosition, keyValueContent.toByteArray());
+      pageBuffer.putByteArray(keyValueFreePosition, keyValueContent.getContent(), keyValueContent.getContentBeginOffset(),
+          keyValueContent.size());
 
       final int startPos = getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE);
       pageBuffer.putInt(startPos, keyValueFreePosition);
@@ -206,6 +214,54 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     } while (true);
 
     return newPages;
+  }
+
+  int availableSpaceForEntries(final MutablePage page) {
+    final int count = getCount(page);
+    return getValuesFreePosition(page)
+        - (getHeaderSize(page.getPageId().getPageNumber()) + count * INT_SERIALIZED_SIZE);
+  }
+
+  int requiredSpaceForEntry(final MutablePage page, final Object[] keys, final RID[] rids) {
+    return requiredSpaceForEntry(new Binary(), page, keys, convertKeysForCompaction(keys), rids);
+  }
+
+  int requiredSpaceForEntry(final Binary scratch, final MutablePage page, final Object[] keys,
+      final Object[] convertedKeys, final RID[] rids) {
+    final int pageNumber = page.getPageId().getPageNumber();
+    final int pageUsableSpace = page.getMaxContentSize() - getHeaderSize(pageNumber);
+    final int written = writeEntryMultipleValues(scratch, convertedKeys, rids, pageUsableSpace, pageUsableSpace,
+        page.getPageId());
+    if (written != rids.length)
+      throw new IndexException("Key/value group for " + Arrays.toString(keys) + " does not fit in one compacted page");
+    return INT_SERIALIZED_SIZE + scratch.size();
+  }
+
+  boolean canAppendWholeEntry(final MutablePage page, final Object[] keys, final RID[] rids) {
+    return requiredSpaceForEntry(page, keys, rids) <= availableSpaceForEntries(page);
+  }
+
+  int valuesFittingInEmptyLeaf(final MutablePage referencePage, final Object[] keys, final RID[] rids) {
+    return valuesFittingInEmptyLeaf(new Binary(), referencePage, keys, convertKeysForCompaction(keys), rids);
+  }
+
+  int valuesFittingInEmptyLeaf(final Binary scratch, final MutablePage referencePage, final Object[] keys,
+      final Object[] convertedKeys, final RID[] rids) {
+    final int pageUsableSpace = referencePage.getMaxContentSize() - getHeaderSize(1);
+    final int written = writeEntryMultipleValues(scratch, convertedKeys, rids,
+        pageUsableSpace - INT_SERIALIZED_SIZE, pageUsableSpace, referencePage.getPageId());
+    if (written < 1)
+      throw new IndexException(
+          "Key/value group for " + Arrays.toString(keys) + " does not fit in an empty compacted leaf page");
+    return written;
+  }
+
+  int requiredSpaceForSerializedEntry(final Binary serializedEntry) {
+    return INT_SERIALIZED_SIZE + serializedEntry.size();
+  }
+
+  Object[] convertKeysForCompaction(final Object[] keys) {
+    return convertKeys(keys, binaryKeyTypes);
   }
 
   protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,

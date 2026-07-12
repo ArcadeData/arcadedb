@@ -33,7 +33,16 @@ import java.util.*;
 import java.util.logging.Level;
 
 public class LSMTreeIndexCompactor {
+  private static final ThreadLocal<CompactionTestHook> COMPACTION_TEST_HOOK = new ThreadLocal<>();
+
   private boolean debug = false;
+
+  static void setCompactionTestHook(final CompactionTestHook hook) {
+    if (hook == null)
+      COMPACTION_TEST_HOOK.remove();
+    else
+      COMPACTION_TEST_HOOK.set(hook);
+  }
 
   public LSMTreeIndexCompactor setDebug(final boolean debug) {
     this.debug = debug;
@@ -272,7 +281,8 @@ public class LSMTreeIndexCompactor {
           final RID[] ridsArray = new RID[rids.size()];
           rids.toArray(ridsArray);
 
-          streamWriter.append(minorKey, ridsArray);
+          streamWriter.appendBounded(minorKey, ridsArray,
+              LSMTreeIndexCompactedStreamWriter.DEFAULT_MAX_DATA_PAGES_PER_SERIES);
 
           ++totalKeys;
           totalValues += rids.size();
@@ -286,6 +296,10 @@ public class LSMTreeIndexCompactor {
       }
 
       streamWriter.finishSeries();
+
+      final CompactionTestHook testHook = COMPACTION_TEST_HOOK.get();
+      if (testHook != null)
+        testHook.afterSeriesWritten(compactedIndex);
 
       compactedPages += pagesToCompact;
 
@@ -317,5 +331,10 @@ public class LSMTreeIndexCompactor {
     }
 
     return true;
+  }
+
+  @FunctionalInterface
+  interface CompactionTestHook {
+    void afterSeriesWritten(LSMTreeIndexCompacted compactedIndex) throws IOException;
   }
 }

@@ -112,6 +112,29 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
     return rids;
   }
 
+  @Test
+  void caseInsensitiveFlagsSurviveCompactionFileSwap() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
+    type.createProperty("email", String.class);
+    database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "email" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withCollations(List.of("CI"))
+        .withUnique(false)
+        .withPageSize(1_024)
+        .create();
+
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++)
+        database.newDocument(TYPE_NAME).set("email", i % 2 == 0 ? "MixedCase" : "mixedcase").save();
+    });
+    assertThat(lookup("MIXEDCASE")).hasSize(1_000);
+
+    compactAll();
+
+    assertThat(lookup("MIXEDCASE")).hasSize(1_000);
+  }
+
   // ---- #4942: compaction must not lose a re-inserted key/RID (ADD, REMOVE, ADD of the same key+RID) ----
 
   @Test

@@ -190,6 +190,8 @@ public class LocalSchema implements Schema {
     indexMap.clear();
     dictionary = null;
 
+    SortedIndexBuildRecoveryMarker.recoverInterruptedBuilds(database, mode);
+
     final Collection<ComponentFile> filesToOpen = database.getFileManager().getFiles();
 
     // REGISTER THE DICTIONARY FIRST
@@ -334,6 +336,15 @@ public class LocalSchema implements Schema {
 
       files.set(fileId, null);
     }
+
+    final Integer replacementFileId = migratedFileIds.get(fileId);
+    for (final Map.Entry<Integer, Integer> migration : migratedFileIds.entrySet())
+      if (migration.getValue() == fileId) {
+        if (replacementFileId != null)
+          migratedFileIds.replace(migration.getKey(), fileId, replacementFileId);
+        else
+          migratedFileIds.remove(migration.getKey(), fileId);
+      }
 
     database.getTransaction().removeFile(fileId);
   }
@@ -2075,9 +2086,14 @@ public class LocalSchema implements Schema {
   }
 
   public void setMigratedFileId(final int oldFileId, final int newFileId) {
+    setMigratedFileId(oldFileId, newFileId, true);
+  }
+
+  public void setMigratedFileId(final int oldFileId, final int newFileId, final boolean saveConfiguration) {
     LogManager.instance().log(this, Level.FINE, "Migrating file id %d to %d", null, oldFileId, newFileId);
     migratedFileIds.put(oldFileId, newFileId);
-    saveConfiguration();
+    if (saveConfiguration)
+      saveConfiguration();
   }
 
   public Integer getMigratedFileId(final int oldFileId) {
@@ -2125,6 +2141,11 @@ public class LocalSchema implements Schema {
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {
+    return recordFileChanges(callback, false);
+  }
+
+  protected <RET> RET recordFileChanges(final Callable<Object> callback,
+      final boolean deferIntermediateSchemaSaves) {
     if (readingFromFile || !loadInRamCompleted) {
       try {
         return (RET) callback.call();
@@ -2136,10 +2157,17 @@ public class LocalSchema implements Schema {
     final long prevGeneration = dirtyGeneration.get();
     dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
 
+    final boolean suspendIntermediateSaves = deferIntermediateSchemaSaves && !multipleUpdate;
+    if (suspendIntermediateSaves)
+      multipleUpdate = true;
+
     boolean executed = false;
     try {
       final RET result = database.getWrappedDatabaseInstance().recordFileChanges(callback);
       executed = true;
+
+      if (suspendIntermediateSaves)
+        multipleUpdate = false;
       saveConfiguration();
 
       // INVALIDATE EXECUTION PLAN IN CASE TYPE OR INDEX CONCUR IN THE GENERATED PLANS
@@ -2153,6 +2181,8 @@ public class LocalSchema implements Schema {
       return result;
 
     } finally {
+      if (suspendIntermediateSaves)
+        multipleUpdate = false;
       if (!executed && prevGeneration <= savedGeneration)
         // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty
         savedGeneration = dirtyGeneration.get();
@@ -2172,6 +2202,24 @@ public class LocalSchema implements Schema {
       final TypeIndex propIndex,
       final int batchSize,
       final IndexMetadata metadata) {
+    return createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback,
+        propertyNames, propIndex, batchSize, metadata, true);
+  }
+
+  protected Index createBucketIndex(final LocalDocumentType type,
+      final Type[] keyTypes,
+      final Bucket bucket,
+      final String typeName,
+      final INDEX_TYPE indexType,
+      final boolean unique,
+      final int pageSize,
+      final NULL_STRATEGY nullStrategy,
+      final Index.BuildIndexCallback callback,
+      final String[] propertyNames,
+      final TypeIndex propIndex,
+      final int batchSize,
+      final IndexMetadata metadata,
+      final boolean build) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)
@@ -2209,13 +2257,18 @@ public class LocalSchema implements Schema {
 
       indexMap.put(indexName, index);
 
+      if (!build && !index.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.AVAILABLE },
+          IndexInternal.INDEX_STATUS.UNAVAILABLE))
+        throw new IndexException("Cannot prepare empty index '" + indexName + "' for sorted population");
+
       type.addIndexInternal(index, bucket.getFileId(), propertyNames, propIndex);
 
       // Re-set metadata after addIndexInternal populated propertyNames, to propagate
       // caseInsensitiveKeys to the underlying mutable/compacted indexes.
       index.setMetadata(index.getMetadata());
 
-      index.build(batchSize, callback);
+      if (build)
+        index.build(batchSize, callback);
 
       return index;
 
