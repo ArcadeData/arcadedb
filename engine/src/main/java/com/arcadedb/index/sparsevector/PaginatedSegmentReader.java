@@ -269,30 +269,46 @@ public final class PaginatedSegmentReader implements AutoCloseable {
   private PaginatedDimMetadata loadDimMetadata(final int dimId, final int pageNum, final int offsetInPage) throws IOException {
     final BasePage trailerPage = component.readPage(pageNum);
     final int pageContentSize = component.pageContentSize();
-    // Defensive page-boundary check. {@link SparseSegmentBuilder#endDim} guarantees a trailer
-    // never straddles a page (it allocates a fresh page when {@code currentWritePageFree <
-    // trailerSize}), so a well-formed segment will always have the full trailer reachable from
-    // {@code offsetInPage}. A corrupt or hand-crafted segment whose dim_index pointed at a
-    // straddling offset would otherwise cause silent reads of zero-padded tail bytes followed by
-    // garbage from the next page; surface that as an {@link IOException} here. Use the minimum
-    // trailer size (24 bytes: 5 ints + 1 float for the fixed-shape header) as the guard since
-    // the variable parts (block locators + skip entries) need {@code blockCount} which we have
-    // not read yet.
+    // The fixed-shape trailer header is 20 bytes (5 ints + 1 float: dim_id, block_count,
+    // posting_count, df, global_max_weight). Since issue #5254 a very dense dim (>~986k postings at
+    // the 64 KiB / blockSize-128 default) writes a trailer larger than one page that spans
+    // consecutive pages, so the header - and the whole trailer - may straddle a page boundary; the
+    // spanning-aware readers below reassemble it. Only the trailer start offset itself must be a
+    // valid in-page position.
     final int minTrailerHeaderSize = 4 + 4 + 4 + 4 + 4;
-    if (offsetInPage < 0 || offsetInPage + minTrailerHeaderSize > pageContentSize)
+    if (offsetInPage < 0 || offsetInPage >= pageContentSize)
       throw new IOException(
-          "dim trailer for dim " + dimId + " on page " + pageNum + " offset " + offsetInPage
-              + " would straddle the page boundary (page content size " + pageContentSize + "); segment is corrupt");
-    int p = offsetInPage;
+          "dim trailer for dim " + dimId + " on page " + pageNum + " has an out-of-range start offset " + offsetInPage
+              + " (page content size " + pageContentSize + "); segment is corrupt");
 
-    final int storedDimId = trailerPage.readInt(p);            p += 4;
+    final int storedDimId;
+    final int blockCount;
+    final int postingCount;
+    final int df;
+    final float globalMaxWeight;
+    if (offsetInPage + minTrailerHeaderSize <= pageContentSize) {
+      // Header lies entirely on the first page - read it in place (the common, no-allocation path).
+      int p = offsetInPage;
+      storedDimId = trailerPage.readInt(p);            p += 4;
+      blockCount = trailerPage.readInt(p);             p += 4;
+      postingCount = trailerPage.readInt(p);           p += 4;
+      df = trailerPage.readInt(p);                     p += 4;
+      globalMaxWeight = trailerPage.readFloat(p);
+    } else {
+      // Header itself straddles the page boundary (a spanning trailer starting near a page end):
+      // reassemble it across consecutive pages before parsing.
+      final byte[] hdr = new byte[minTrailerHeaderSize];
+      readSpanningBytes(pageNum, offsetInPage, hdr, minTrailerHeaderSize);
+      final ByteBuffer hb = ByteBuffer.wrap(hdr).order(ByteOrder.BIG_ENDIAN);
+      storedDimId = hb.getInt();
+      blockCount = hb.getInt();
+      postingCount = hb.getInt();
+      df = hb.getInt();
+      globalMaxWeight = hb.getFloat();
+    }
+
     if (storedDimId != dimId)
       throw new IOException("dim trailer dim_id mismatch: expected " + dimId + " got " + storedDimId);
-    final int blockCount = trailerPage.readInt(p);             p += 4;
-    final int postingCount = trailerPage.readInt(p);           p += 4;
-    final int df = trailerPage.readInt(p);                     p += 4;
-    final float globalMaxWeight = trailerPage.readFloat(p);    p += 4;
-
     if (blockCount <= 0 || blockCount > 1_000_000_000)
       throw new IOException("Implausible block_count for dim " + dimId + ": " + blockCount);
     if (postingCount < 0 || postingCount > 1_000_000_000)
@@ -300,29 +316,47 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     if (df < 0 || df > postingCount)
       throw new IOException(
           "Implausible df for dim " + dimId + ": df=" + df + " posting_count=" + postingCount + " (df must be in [0, posting_count])");
-    // Now that {@code blockCount} is known, validate the full trailer fits on this page.
+
     final int skipStride = params.skipStride();
     final int skipEntries = (blockCount + skipStride - 1) / skipStride;
     final int fullTrailerSize = minTrailerHeaderSize + blockCount * (4 + 2) + skipEntries * (12 + 4 + 4);
-    if (offsetInPage + fullTrailerSize > pageContentSize)
-      throw new IOException(
-          "dim trailer for dim " + dimId + " (full size " + fullTrailerSize + " B) would straddle the page boundary at offset "
-              + offsetInPage + " on page " + pageNum + " (page content size " + pageContentSize + "); segment is corrupt");
 
     final int[]   blockPageNums = new int[blockCount];
     final short[] blockOffsets  = new short[blockCount];
-    for (int b = 0; b < blockCount; b++) {
-      blockPageNums[b] = trailerPage.readInt(p);               p += 4;
-      blockOffsets[b]  = trailerPage.readShort(p);             p += 2;
-    }
-
     final SkipEntry[] skipList = new SkipEntry[skipEntries];
-    for (int s = 0; s < skipEntries; s++) {
-      final int bucketId = trailerPage.readInt(p);             p += 4;
-      final long ridPos  = trailerPage.readLong(p);            p += 8;
-      final float maxToEnd = trailerPage.readFloat(p);         p += 4;
-      final int blockIndex = trailerPage.readInt(p);           p += 4;
-      skipList[s] = new SkipEntry(new RID(bucketId, ridPos), maxToEnd, blockIndex);
+
+    if (offsetInPage + fullTrailerSize <= pageContentSize) {
+      // Whole trailer on one page - parse in place (unchanged fast path, no allocation).
+      int p = offsetInPage + minTrailerHeaderSize;
+      for (int b = 0; b < blockCount; b++) {
+        blockPageNums[b] = trailerPage.readInt(p);             p += 4;
+        blockOffsets[b]  = trailerPage.readShort(p);           p += 2;
+      }
+      for (int s = 0; s < skipEntries; s++) {
+        final int bucketId = trailerPage.readInt(p);           p += 4;
+        final long ridPos  = trailerPage.readLong(p);          p += 8;
+        final float maxToEnd = trailerPage.readFloat(p);       p += 4;
+        final int blockIndex = trailerPage.readInt(p);         p += 4;
+        skipList[s] = new SkipEntry(new RID(bucketId, ridPos), maxToEnd, blockIndex);
+      }
+    } else {
+      // Trailer spans consecutive pages (issue #5254): reassemble it, then parse from a contiguous
+      // buffer so per-record page-boundary splits are transparent.
+      final byte[] full = new byte[fullTrailerSize];
+      readSpanningBytes(pageNum, offsetInPage, full, fullTrailerSize);
+      final ByteBuffer fb = ByteBuffer.wrap(full).order(ByteOrder.BIG_ENDIAN);
+      fb.position(minTrailerHeaderSize);
+      for (int b = 0; b < blockCount; b++) {
+        blockPageNums[b] = fb.getInt();
+        blockOffsets[b]  = fb.getShort();
+      }
+      for (int s = 0; s < skipEntries; s++) {
+        final int bucketId = fb.getInt();
+        final long ridPos  = fb.getLong();
+        final float maxToEnd = fb.getFloat();
+        final int blockIndex = fb.getInt();
+        skipList[s] = new SkipEntry(new RID(bucketId, ridPos), maxToEnd, blockIndex);
+      }
     }
 
     final BlockHeader[] blockHeaders = new BlockHeader[blockCount];
@@ -331,6 +365,32 @@ public final class PaginatedSegmentReader implements AutoCloseable {
 
     return new PaginatedDimMetadata(dimId, postingCount, df, globalMaxWeight, blockPageNums, blockOffsets, blockHeaders,
         skipList);
+  }
+
+  /**
+   * Copy {@code length} logically-contiguous bytes starting at {@code (startPage, startOffset)} into
+   * {@code dest}, walking consecutive pages when the range crosses page boundaries. Used to read a
+   * dim trailer that spans more than one page (issue #5254); a trailer that fits one page never
+   * reaches here.
+   */
+  private void readSpanningBytes(final int startPage, final int startOffset, final byte[] dest, final int length)
+      throws IOException {
+    final int pageContentSize = component.pageContentSize();
+    int read = 0;
+    int pageNum = startPage;
+    int offset = startOffset;
+    while (read < length) {
+      final BasePage page = component.readPage(pageNum);
+      final int avail = pageContentSize - offset;
+      if (avail <= 0)
+        throw new IOException("dim trailer read ran off the end of page " + pageNum + " (offset " + offset
+            + ", page content size " + pageContentSize + "); segment is corrupt");
+      final int chunk = Math.min(length - read, avail);
+      page.readByteArray(offset, dest, read, chunk);
+      read += chunk;
+      offset = 0;
+      pageNum++;
+    }
   }
 
   BlockHeader readBlockHeader(final int pageNum, final int offsetInPage) throws IOException {
