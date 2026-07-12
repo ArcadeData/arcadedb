@@ -56,7 +56,9 @@ import java.util.zip.CRC32;
  * Page 0: segment header (see {@link PaginatedSegmentFormat#HEADER_SIZE}).
  * Pages 1..N: block payloads (each block fits in one page; multiple blocks pack into one page).
  * Pages N+1..M: per-dim trailers (dim header + block_locators + skip_list), packed contiguously
- *               across pages (one trailer fits in one page; trailers do not span pages).
+ *               across pages. A trailer that fits one page never straddles a page boundary; a dim
+ *               dense enough that its trailer exceeds one page (issue #5254) spans consecutive
+ *               pages and the reader reassembles it.
  * Page M+1: dim_index page (count + sorted (dim_id, trailer_page_num, trailer_offset) entries).
  * Page M+2: manifest page (segment_id, parent_segments, tombstone_floor, crc).
  * </pre>
@@ -138,13 +140,15 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   // - {@link #flushBlock} to assemble a block header + RID/weight payload, then copy the
   //   populated prefix into the active page;
   // - {@link #writeDimIndex} to pack a full page of dim_index entries in one writeByteArray call;
-  // - {@link #writeDimTrailer} to assemble a per-dim trailer (block locators + skip list) for
-  //   one writeByteArray call, instead of {@code ByteBuffer.allocate} per dim.
+  // - {@link #writeDimTrailer} to assemble a per-dim trailer (block locators + skip list) that
+  //   fits one page, instead of {@code ByteBuffer.allocate} per dim. A trailer wider than one page
+  //   (a very dense dim, issue #5254) does not fit this scratch and is assembled into a transient
+  //   trailer-sized buffer that is then streamed across consecutive pages.
   // Sized to {@code max(estimateBlockPayloadSize, pageContentSize)}: the per-block worst case
   // is normally smaller than a full page, but the dim_index packer fills up to a full page in
-  // one go and the trailer can grow up to a full page for very wide dims, so the scratch must
-  // cover both. On a default 64 KiB page that is one ~64 KiB allocation per builder instead of
-  // a fresh ByteBuffer per block + per dim_index page + per dim trailer.
+  // one go and a page-fitting trailer can grow up to a full page for wide dims, so the scratch
+  // must cover both. On a default 64 KiB page that is one ~64 KiB allocation per builder instead
+  // of a fresh ByteBuffer per block + per dim_index page + per dim trailer.
   private final byte[]     payloadScratch;
   private final ByteBuffer payloadBuf;
 
@@ -267,11 +271,21 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       return;
     }
     final int trailerSize = computeDimTrailerSize();
-    if (currentWritePageFree < trailerSize)
+    if (trailerSize <= pageContentSize) {
+      // A trailer that fits one page is always placed entirely on one page, unchanged from the
+      // original on-disk contract: narrow dims (the overwhelming majority) stay byte-identical and
+      // older single-page readers keep working.
+      if (currentWritePageFree < trailerSize)
+        allocateNewPage();
+    } else if (currentWritePageFree == 0) {
+      // A dim dense enough to overflow one page (>~986k postings at the 64 KiB / blockSize-128
+      // default - issue #5254) writes a trailer that spans consecutive pages; just make sure there
+      // is a live page with room to start on.
       allocateNewPage();
+    }
     final int trailerPage = currentPageNum;
     final int trailerOffset = pageContentSize - currentWritePageFree;
-    writeDimTrailer(trailerOffset);
+    writeDimTrailer(trailerSize);
     dimIndex.add(new int[] { currentDimId, trailerPage, trailerOffset });
     totalPostings += currentDimPostingCount;
     currentDimId = -1;
@@ -523,7 +537,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
         + skipEntries * SegmentFormat.SKIP_ENTRY_SIZE;
   }
 
-  private void writeDimTrailer(final int offsetInPage) {
+  private void writeDimTrailer(final int trailerSize) {
     final int blockCount = currentDimBlockHeaders.size();
     final int skipEntries = (blockCount + params.skipStride() - 1) / params.skipStride();
 
@@ -538,34 +552,68 @@ public final class SparseSegmentBuilder implements AutoCloseable {
         maxWeightToEnd[b / params.skipStride()] = runningMax;
     }
 
-    final int trailerSize = computeDimTrailerSize();
-    payloadBuf.clear();
-    payloadBuf.putInt(currentDimId);
-    payloadBuf.putInt(blockCount);
-    payloadBuf.putInt((int) currentDimPostingCount);
+    // Assemble the trailer bytes. A trailer that fits the page-sized scratch reuses it (no
+    // allocation, the common path). A trailer wider than one page - a very dense dim (>~986k
+    // postings at the 64 KiB / blockSize-128 default, issue #5254) - is assembled into a transient
+    // trailer-sized buffer instead and then streamed across consecutive pages by
+    // {@link #writeTrailerBytes}; the reader reassembles it the same way.
+    final byte[]     buf;
+    final ByteBuffer bb;
+    if (trailerSize <= payloadScratch.length) {
+      buf = payloadScratch;
+      bb = payloadBuf;
+      bb.clear();
+    } else {
+      buf = new byte[trailerSize];
+      bb = ByteBuffer.wrap(buf).order(ByteOrder.BIG_ENDIAN);
+    }
+
+    bb.putInt(currentDimId);
+    bb.putInt(blockCount);
+    bb.putInt((int) currentDimPostingCount);
     // df is the segment-local document frequency: number of LIVE postings only. Tombstones do
     // not contribute - keeping them in df would inflate IDF in proportion to the
     // uncompacted-tombstone load, which is exactly the case where IDF should be most accurate.
     // posting_count above stays as the total entry count (live + tombstones) so on-disk
     // bookkeeping (dim trailer scans, debugging) sees what is actually written.
-    payloadBuf.putInt((int) currentDimLivePostingCount);
-    payloadBuf.putFloat(currentDimMaxWeight == Float.NEGATIVE_INFINITY ? 0.0f : currentDimMaxWeight);
+    bb.putInt((int) currentDimLivePostingCount);
+    bb.putFloat(currentDimMaxWeight == Float.NEGATIVE_INFINITY ? 0.0f : currentDimMaxWeight);
 
     for (int b = 0; b < blockCount; b++) {
-      payloadBuf.putInt(currentDimBlockPageNums[b]);
-      payloadBuf.putShort(currentDimBlockOffsets[b]);
+      bb.putInt(currentDimBlockPageNums[b]);
+      bb.putShort(currentDimBlockOffsets[b]);
     }
 
     for (int s = 0; s < skipEntries; s++) {
       final int firstBlock = s * params.skipStride();
       final BlockHeader bh = currentDimBlockHeaders.get(firstBlock);
-      putRid(payloadBuf, bh.firstRid());
-      payloadBuf.putFloat(maxWeightToEnd[s]);
-      payloadBuf.putInt(firstBlock);
+      putRid(bb, bh.firstRid());
+      bb.putFloat(maxWeightToEnd[s]);
+      bb.putInt(firstBlock);
     }
 
-    currentPage.writeByteArray(offsetInPage, payloadScratch, 0, trailerSize);
-    currentWritePageFree -= trailerSize;
+    writeTrailerBytes(buf, trailerSize);
+  }
+
+  /**
+   * Write the fully-assembled {@code length}-byte dim trailer into the page stream starting at the
+   * current write cursor, spanning consecutive pages when it does not fit the space remaining on the
+   * active page. {@link #endDim} guarantees a trailer that fits one page is placed entirely on one
+   * page (so narrow trailers never span and single-page readers keep working); only a trailer larger
+   * than a whole page spans, which {@code PaginatedSegmentReader} reassembles across the same
+   * consecutive pages.
+   */
+  private void writeTrailerBytes(final byte[] src, final int length) {
+    int written = 0;
+    while (written < length) {
+      if (currentWritePageFree == 0)
+        allocateNewPage();
+      final int offset = pageContentSize - currentWritePageFree;
+      final int chunk = Math.min(length - written, currentWritePageFree);
+      currentPage.writeByteArray(offset, src, written, chunk);
+      currentWritePageFree -= chunk;
+      written += chunk;
+    }
   }
 
   /**
