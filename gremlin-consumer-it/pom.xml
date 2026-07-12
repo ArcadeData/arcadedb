@@ -81,7 +81,7 @@
                                 <bannedDependencies>
                                     <searchTransitive>true</searchTransitive>
                                     <excludes>
-                                        <exclude>org.antlr:antlr4-runtime:4.9.1</exclude>
+                                        <exclude>org.antlr:antlr4-runtime:[4.9.1]</exclude>
                                     </excludes>
                                     <message>
                                         arcadedb-gremlin must not export antlr4-runtime 4.9.1 transitively (issue #5217).
