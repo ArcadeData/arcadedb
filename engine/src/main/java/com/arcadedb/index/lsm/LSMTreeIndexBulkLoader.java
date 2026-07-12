@@ -144,9 +144,10 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     } catch (final InterruptedException error) {
       Thread.currentThread().interrupt();
       throw new IndexException("Sorted build for '" + indexName + "' was interrupted", error);
+    } catch (final IndexException error) {
+      throw error;
     } catch (final Exception error) {
-      throw error instanceof IndexException indexError ? indexError
-          : new IndexException("Cannot build sorted index '" + indexName + "'", error);
+      throw new IndexException("Cannot build sorted index '" + indexName + "'", error);
     } finally {
       if (!success)
         for (final BucketWriter writer : writers.values())
@@ -228,6 +229,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
 
       @Override
       public void close() {
+        // The in-memory cursor owns no closeable resources.
       }
     };
   }
