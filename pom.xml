@@ -81,7 +81,7 @@
         <logback-classic.version>1.5.38</logback-classic.version>
         <micrometer.version>1.17.0</micrometer.version>
         <micrometer-tracing.version>1.7.0</micrometer-tracing.version>
-        <opentelemetry.version>1.63.0</opentelemetry.version>
+        <opentelemetry.version>1.64.0</opentelemetry.version>
         <postgres.version>42.7.13</postgres.version>
 
         <assertj-core.version>3.27.7</assertj-core.version>
