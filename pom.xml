@@ -78,7 +78,7 @@
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.5</testcontainers.version>
-        <logback-classic.version>1.5.37</logback-classic.version>
+        <logback-classic.version>1.5.38</logback-classic.version>
         <micrometer.version>1.17.0</micrometer.version>
         <micrometer-tracing.version>1.7.0</micrometer-tracing.version>
         <opentelemetry.version>1.63.0</opentelemetry.version>
