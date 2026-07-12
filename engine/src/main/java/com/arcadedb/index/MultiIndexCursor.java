@@ -35,6 +35,7 @@ public class MultiIndexCursor implements IndexCursor {
   private       int                browsed         = 0;
   private       Object[]           nextKeys;
   private       int                nextCursorIndex = -1;
+  private       Identifiable       currentRecord;
   private       List<Identifiable> cursorsNextValues;
 
   public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder) {
@@ -81,7 +82,7 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public Identifiable getRecord() {
-    return cursors.get(nextCursorIndex).getRecord();
+    return currentRecord;
   }
 
   @Override
@@ -91,8 +92,12 @@ public class MultiIndexCursor implements IndexCursor {
 
     for (int i = 0; i < cursors.size(); ++i) {
       final IndexCursor cursor = cursors.get(i);
-      if (cursor != null && (cursorsNextValues.get(i) != null || cursor.hasNext()))
+      if (cursor == null)
+        continue;
+      if (cursorsNextValues.get(i) != null || cursor.hasNext())
         return true;
+      cursor.close();
+      cursors.set(i, null);
     }
 
     return false;
@@ -112,6 +117,7 @@ public class MultiIndexCursor implements IndexCursor {
 
       final Identifiable cursorsNextValue = cursorsNextValues.get(i);
       if (cursorsNextValue == null && !cursor.hasNext()) {
+        cursor.close();
         cursors.set(i, null);
         continue;
       }
@@ -142,6 +148,7 @@ public class MultiIndexCursor implements IndexCursor {
     ++browsed;
 
     final Identifiable nextValue = cursorsNextValues.set(nextCursorIndex, null);
+    currentRecord = nextValue;
     if (cursors.get(nextCursorIndex).hasNext()) {
       final Identifiable next = cursors.get(nextCursorIndex).next();
       if (next != null)
@@ -153,14 +160,21 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public void close() {
-    for (final IndexCursor cursor : cursors)
-      cursor.close();
+    for (int i = 0; i < cursors.size(); ++i) {
+      final IndexCursor cursor = cursors.get(i);
+      if (cursor != null) {
+        cursor.close();
+        cursors.set(i, null);
+      }
+    }
   }
 
   @Override
   public long estimateSize() {
     long tot = 0L;
     for (final IndexCursor cursor : cursors) {
+      if (cursor == null)
+        continue;
       if (cursor.estimateSize() == -1)
         return -1;
       tot += cursor.estimateSize();
@@ -199,7 +213,10 @@ public class MultiIndexCursor implements IndexCursor {
     cursorsNextValues = new ArrayList<>(cursors.size());
     for (Iterator<IndexCursor> c = cursors.iterator(); c.hasNext(); ) {
       final IndexCursor cursor = c.next();
-      if (cursor == null || !cursor.hasNext()) {
+      if (cursor == null)
+        c.remove();
+      else if (!cursor.hasNext()) {
+        cursor.close();
         c.remove();
       } else
         cursorsNextValues.add(cursor.next());
