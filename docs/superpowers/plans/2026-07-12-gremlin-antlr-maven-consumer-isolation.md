@@ -180,11 +180,14 @@ git commit -m "test(#5217): add gremlin-consumer-it enforcer guard against antlr
 Apply the one-line fix and confirm the guard flips to green and the shaded jar is unchanged.
 
 **Files:**
-- Modify: `gremlin/pom.xml:70-74` (the `antlr4-runtime` dependency block)
+- Modify: `gremlin/pom.xml` - the `antlr4-runtime` dependency block AND the `gremlin-core` dependency's `<exclusions>`
+- Modify: `gremlin-consumer-it/pom.xml` - correct the enforcer matcher to the exact range `[4.9.1]` (Task 1 committed a bare `4.9.1`, which enforcer treats as "≥4.9.1" and would also ban the legitimate 4.13.2, making the guard un-greenable)
 
 **Interfaces:**
 - Consumes: the guard from Task 1 (`gremlin-consumer-it`).
-- Produces: `arcadedb-gremlin`'s pom now declares `antlr4-runtime` as `<optional>true</optional>` - not exported transitively, still bundled+relocated in the `shaded` classifier jar.
+- Produces: `arcadedb-gremlin`'s pom declares `antlr4-runtime` `<optional>true</optional>` AND excludes `antlr4-runtime` from `gremlin-core` - so no antlr 4.9.1 is exported transitively, while the `shaded` classifier jar still bundles the relocated antlr.
+
+**Why the gremlin-core exclusion is required (not just `optional`):** `gremlin-core` pulls `antlr4-runtime:4.9.1` transitively via `gremlin-language`, a separate non-optional edge that `optional` on gremlin's own duplicate declaration does not remove. Without the exclusion, the guard stays red. Verified with `dependency:tree`.
 
 - [ ] **Step 1: Mark the antlr dependency optional**
 
@@ -199,7 +202,7 @@ In `gremlin/pom.xml`, change the existing block (lines 70-74):
         </dependency>
 ```
 
-to:
+to (mark it `optional`):
 
 ```xml
         <!-- Explicit ANTLR runtime to ensure consistent version across legacy and native Cypher.
@@ -216,6 +219,36 @@ to:
             <optional>true</optional>
         </dependency>
 ```
+
+AND add an antlr exclusion to the existing `gremlin-core` dependency (which already excludes
+`commons-beanutils`), because `gremlin-core` pulls antlr 4.9.1 transitively via `gremlin-language`
+on a separate, non-optional edge:
+
+```xml
+        <dependency>
+            <groupId>org.apache.tinkerpop</groupId>
+            <artifactId>gremlin-core</artifactId>
+            <version>${gremlin.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-beanutils</groupId>
+                    <artifactId>commons-beanutils</artifactId>
+                </exclusion>
+                <!-- gremlin-core pulls antlr4-runtime 4.9.1 transitively via gremlin-language,
+                     independently of the explicit (optional) declaration above. That edge is not
+                     optional and still leaks 4.9.1 to Maven-coordinate consumers (issue #5217)
+                     unless excluded here. -->
+                <exclusion>
+                    <groupId>org.antlr</groupId>
+                    <artifactId>antlr4-runtime</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+```
+
+Also correct `gremlin-consumer-it/pom.xml`: change the enforcer exclude from
+`org.antlr:antlr4-runtime:4.9.1` to `org.antlr:antlr4-runtime:[4.9.1]` (exact range) so it does
+not also ban the legitimate 4.13.2.
 
 - [ ] **Step 2: Rebuild gremlin and re-run the guard - verify it PASSES**
 

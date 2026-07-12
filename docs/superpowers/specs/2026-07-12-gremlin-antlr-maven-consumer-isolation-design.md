@@ -43,10 +43,19 @@ Could not deserialize ATN with version 3 (expected 4).
    - `provided`: maven-shade **excludes** provided-scope dependencies from the uber-jar, so the
      relocated antlr would vanish and the shaded gremlin jar would break - a regression of #5216. ❌
    So `optional` is the correct lever.
-3. With gremlin's own antlr marked `optional`, the only antlr edge left in a
-   `engine + gremlin` consumer graph is the engine's `4.13.2`, reached via
-   `arcadedb-gremlin` → `arcadedb-integration` (compile) → `arcadedb-engine` → `antlr 4.13.2`.
-   That is the correct outcome for a `gremlin:shaded` consumer (whose parser needs no bare antlr).
+3. Marking gremlin's **own explicit** `antlr4-runtime` declaration `optional` is necessary but
+   **not sufficient**. `gremlin-core` (TinkerPop) pulls `antlr4-runtime:4.9.1` transitively via
+   `gremlin-language` - a **separate, non-optional** edge that `optional` on gremlin's own
+   duplicate declaration does not touch. That edge must additionally be removed with an
+   `<exclusion>` on the `gremlin-core` dependency. With **both** in place, the only antlr edge
+   left in an `engine + gremlin` consumer graph is the engine's `4.13.2`, reached via
+   `arcadedb-gremlin` → `arcadedb-integration` (compile) → `arcadedb-engine` → `antlr 4.13.2`
+   (verified with `dependency:tree`). The explicit optional declaration still supplies antlr for
+   gremlin's own compilation and for bundling+relocation into the shaded jar.
+4. The enforcer guard must ban antlr `4.9.1` with an **exact-version range** `[4.9.1]`, not a
+   bare `4.9.1`. maven-enforcer's `bannedDependencies` treats a bare version as "this version or
+   higher", which would also match the legitimate `4.13.2` and make the guard impossible to turn
+   green. `[4.9.1]` matches exactly 4.9.1.
 
 ## Goal
 
@@ -68,19 +77,42 @@ Could not deserialize ATN with version 3 (expected 4).
 
 Three coordinated changes.
 
-### 1. `gremlin/pom.xml` - mark antlr `optional`
+### 1. `gremlin/pom.xml` - mark antlr `optional` AND exclude it from `gremlin-core`
+
+Two coordinated edits (see Key fact 3 - `optional` alone leaves the `gremlin-core` transitive
+edge):
 
 ```xml
+<!-- explicit declaration: optional so it is not exported, but still on gremlin's classpath
+     and bundled+relocated in the shaded jar -->
 <dependency>
     <groupId>org.antlr</groupId>
     <artifactId>antlr4-runtime</artifactId>
     <version>${antlr4.version}</version>
     <optional>true</optional>
 </dependency>
+
+<!-- remove the SEPARATE transitive antlr edge that gremlin-core pulls via gremlin-language -->
+<dependency>
+    <groupId>org.apache.tinkerpop</groupId>
+    <artifactId>gremlin-core</artifactId>
+    <version>${gremlin.version}</version>
+    <exclusions>
+        <exclusion>
+            <groupId>commons-beanutils</groupId>
+            <artifactId>commons-beanutils</artifactId>
+        </exclusion>
+        <exclusion>
+            <groupId>org.antlr</groupId>
+            <artifactId>antlr4-runtime</artifactId>
+        </exclusion>
+    </exclusions>
+</dependency>
 ```
 
 `gremlin/pom.xml`'s `<antlr4.version>` stays **4.9.1** (gremlin still compiles/tests and shades
-against 4.9.1). Only the transitive export changes.
+against 4.9.1). Only the transitive export changes; the shaded uber-jar is unaffected (0 bare
+`org/antlr`, relocated antlr still bundled - verified).
 
 ### 2. New `gremlin-consumer-it` reactor module - regression guard
 
@@ -96,7 +128,8 @@ time, that a real downstream consumer's dependency graph is free of antlr 4.9.1.
   - `arcadedb-gremlin` (plain coordinate, no classifier)
 - `maven-enforcer-plugin`, `enforce` bound to the `validate` phase, `bannedDependencies` rule:
   - `<searchTransitive>true</searchTransitive>`
-  - ban `org.antlr:antlr4-runtime:4.9.1`
+  - ban `org.antlr:antlr4-runtime:[4.9.1]` (exact-version range - see Key fact 4; a bare `4.9.1`
+    would also match the legitimate 4.13.2)
   - `<fail>true</fail>`
 
 Behavior: before change 1 the transitive graph contains `antlr4-runtime:4.9.1` → enforcer fails
