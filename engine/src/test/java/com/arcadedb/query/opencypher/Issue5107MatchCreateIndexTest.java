@@ -37,11 +37,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a write statement ({@code MATCH ... CREATE ...}) must use the unique index on {@code Person.id}
  * for the leading MATCH instead of full-scanning the vertex type.
  * <p>
- * The two-CREATE write query is routed to the legacy execution path (the cost-based optimizer bails
- * out for multiple CREATE clauses), so the leading {@code MatchNodeStep} is responsible for choosing
- * the index. Before the fix it full-scanned because its WHERE-based index shortcut only fired when an
- * input row was present; the leading/seed MATCH has none. These tests assert the index is used via
- * the PROFILE plan text ({@code [index: Person[id]]}) and that results are still correct.
+ * Before the fix the leading MATCH full-scanned because its WHERE-based index shortcut only fired when
+ * an input row was present; the leading/seed MATCH has none. These tests assert the index is used via
+ * the PROFILE plan text and that results are still correct.
+ * <p>
+ * Note: since issue #5136 relaxed the {@code createCount > 1} guard, the two-CREATE write now runs
+ * through the cost-based optimizer (which emits {@code NodeIndexSeek}) rather than the legacy path
+ * (which prints {@code [index: Person[id]]}). Both are index-backed, so these tests accept either
+ * marker.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -92,13 +95,14 @@ public class Issue5107MatchCreateIndexTest {
         + "CREATE (q:Person {id: 900001, name: 'w', age: 33, city: 'c'}) "
         + "CREATE (p)-[:KNOWS {since: 2026}]->(q)";
 
-    // PROFILE surfaces the executed legacy plan; MatchNodeStep prints [index: Person[id]] when it
-    // resolved the MATCH through the index instead of a full scan.
+    // PROFILE surfaces the executed plan. Since #5136 the two-CREATE write runs through the optimizer
+    // (NodeIndexSeek); the legacy path prints [index: Person[id]]. Either proves the index was used
+    // instead of a full scan.
     final String plan = profilePlan(write);
 
     assertThat(plan)
         .as("leading MATCH with constant WHERE equality must use the unique index, not a full scan\n%s", plan)
-        .contains("[index: Person[id]]");
+        .containsAnyOf("NodeIndexSeek", "[index: Person[id]]");
 
     // Verify the write actually happened and connected the correct source vertex.
     database.transaction(() -> {
@@ -131,7 +135,7 @@ public class Issue5107MatchCreateIndexTest {
 
     assertThat(plan)
         .as("leading MATCH with parameter WHERE equality must use the unique index\n%s", plan)
-        .contains("[index: Person[id]]");
+        .containsAnyOf("NodeIndexSeek", "[index: Person[id]]");
 
     database.transaction(() -> {
       final ResultSet check = database.query("opencypher",
