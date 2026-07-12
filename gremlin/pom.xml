@@ -42,7 +42,7 @@
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
         <commons-lang3.version>3.20.0</commons-lang3.version>
         <groovy.version>4.0.28</groovy.version>
-        <antlr4.version>4.9.1</antlr4.version>
+        <antlr4.version>4.13.2</antlr4.version>
     </properties>
 
     <dependencies>
