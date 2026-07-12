@@ -65,6 +65,13 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
   private final int                               mergeFanIn;
   private final List<RunFile>                     runs = new ArrayList<>();
   private final Binary                            writePayload = new Binary();
+  private       int                               initialRunCount;
+  private       long                              initialRunEntries;
+  private       long                              initialRunBytes;
+  private       long                              initialRunNanos;
+  private       long                              materializedMergeEntries;
+  private       long                              materializedMergeBytes;
+  private       long                              materializedMergeNanos;
   private       long                              spilledBytes;
   private       int                               mergeGeneration;
 
@@ -123,6 +130,7 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
     if (entries.isEmpty())
       return;
 
+    final long started = System.nanoTime();
     entries.sort(LSMTreeIndexBulkLoader::compareEntries);
     final Path run = directory.resolve("run-%06d.bin".formatted(runs.size()));
     boolean complete = false;
@@ -135,8 +143,13 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
         Files.deleteIfExists(run);
     }
 
+    final long runBytes = Files.size(run);
     runs.add(new RunFile(run, entries.size()));
-    spilledBytes += Files.size(run);
+    initialRunCount++;
+    initialRunEntries += entries.size();
+    initialRunBytes += runBytes;
+    initialRunNanos += System.nanoTime() - started;
+    spilledBytes += runBytes;
   }
 
   EntryCursor openCursor() throws IOException {
@@ -152,34 +165,91 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
     return spilledBytes;
   }
 
+  int getMergeFanIn() {
+    return mergeFanIn;
+  }
+
+  int getInitialRunCount() {
+    return initialRunCount;
+  }
+
+  long getInitialRunEntries() {
+    return initialRunEntries;
+  }
+
+  long getInitialRunBytes() {
+    return initialRunBytes;
+  }
+
+  long getInitialRunNanos() {
+    return initialRunNanos;
+  }
+
+  int getMaterializedMergeGenerationCount() {
+    return mergeGeneration;
+  }
+
+  long getMaterializedMergeEntries() {
+    return materializedMergeEntries;
+  }
+
+  long getMaterializedMergeBytes() {
+    return materializedMergeBytes;
+  }
+
+  long getMaterializedMergeNanos() {
+    return materializedMergeNanos;
+  }
+
   private void consolidateRuns() throws IOException {
     while (runs.size() > mergeFanIn) {
-      final List<RunFile> mergedRuns = new ArrayList<>((runs.size() + mergeFanIn - 1) / mergeFanIn);
       final List<RunFile> sourceRuns = new ArrayList<>(runs);
+      final RunFile[] mergedRuns = new RunFile[(sourceRuns.size() + mergeFanIn - 1) / mergeFanIn];
+      final List<MergePlan> mergePlans = new ArrayList<>(mergedRuns.length);
 
-      for (int from = 0; from < sourceRuns.size(); from += mergeFanIn) {
+      int groupIndex = 0;
+      for (int from = 0; from < sourceRuns.size(); from += mergeFanIn, groupIndex++) {
         final int to = Math.min(sourceRuns.size(), from + mergeFanIn);
         final List<RunFile> group = sourceRuns.subList(from, to);
         if (group.size() == 1) {
-          mergedRuns.add(group.getFirst());
+          mergedRuns[groupIndex] = group.getFirst();
           continue;
         }
 
         final Path mergedPath = directory.resolve(
-            "merge-%03d-%06d.bin".formatted(mergeGeneration, mergedRuns.size()));
+            "merge-%03d-%06d.bin".formatted(mergeGeneration, groupIndex));
         final long entryCount = group.stream().mapToLong(RunFile::entries).sum();
-        final RunFile merged = mergeRuns(group, mergedPath, entryCount);
-        mergedRuns.add(merged);
-        spilledBytes += Files.size(mergedPath);
-
-        for (final RunFile source : group)
-          Files.delete(source.path());
+        mergePlans.add(new MergePlan(groupIndex, List.copyOf(group), mergedPath, entryCount));
       }
 
+      final long mergeStarted = System.nanoTime();
+      final List<MergeResult> results = executeMergePlans(mergePlans);
+      materializedMergeNanos += System.nanoTime() - mergeStarted;
+
+      for (final MergeResult result : results) {
+        mergedRuns[result.groupIndex()] = result.run();
+        materializedMergeEntries += result.run().entries();
+        materializedMergeBytes += result.bytes();
+        spilledBytes += result.bytes();
+      }
+
+      for (final MergeResult result : results)
+        for (final RunFile source : result.sources())
+          Files.delete(source.path());
+
       runs.clear();
-      runs.addAll(mergedRuns);
+      runs.addAll(Arrays.asList(mergedRuns));
       mergeGeneration++;
     }
+  }
+
+  private List<MergeResult> executeMergePlans(final List<MergePlan> plans) throws IOException {
+    final List<MergeResult> results = new ArrayList<>(plans.size());
+    for (final MergePlan plan : plans) {
+      final RunFile merged = mergeRuns(plan.sources(), plan.outputPath(), plan.entryCount());
+      results.add(new MergeResult(plan.groupIndex(), merged, Files.size(plan.outputPath()), plan.sources()));
+    }
+    return results;
   }
 
   private RunFile mergeRuns(final List<RunFile> sources, final Path outputPath, final long entryCount) throws IOException {
@@ -422,6 +492,12 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
   }
 
   private record RunFile(Path path, long entries) {
+  }
+
+  private record MergePlan(int groupIndex, List<RunFile> sources, Path outputPath, long entryCount) {
+  }
+
+  private record MergeResult(int groupIndex, RunFile run, long bytes, List<RunFile> sources) {
   }
 
   @FunctionalInterface

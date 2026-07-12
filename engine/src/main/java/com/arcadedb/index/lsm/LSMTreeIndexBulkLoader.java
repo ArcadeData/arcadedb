@@ -57,6 +57,9 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private       byte[]                     binaryKeyTypes;
   private       Boolean                    unique;
   private       long                       totalEntries;
+  private       long                       inMemorySortNanos;
+  private       long                       finalStreamAndWriteNanos;
+  private       long                       attachmentNanos;
 
   public LSMTreeIndexBulkLoader(final DatabaseInternal database, final String indexName,
       final long configuredMemoryBudgetBytes, final Path spillDirectory, final int mergeFanIn) {
@@ -114,7 +117,9 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     try {
       prepareSortedEntries();
       invokeBuildTestHook(BuildPhase.AFTER_SORT, null, 0);
-      final long started = System.currentTimeMillis();
+      final long started = System.nanoTime();
+      final long mergeNanosBeforeStream = getMaterializedMergeNanos();
+      final long streamStarted = System.nanoTime();
       final long written = forEachSortedGroup((first, rids) -> {
         BucketWriter writer = writers.get(first.index());
         if (writer == null) {
@@ -123,20 +128,25 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
         }
         writer.append(first.key().values, rids);
       });
+      final long streamNanos = System.nanoTime() - streamStarted;
+      finalStreamAndWriteNanos += Math.max(0L,
+          streamNanos - (getMaterializedMergeNanos() - mergeNanosBeforeStream));
       invokeBuildTestHook(BuildPhase.AFTER_ENTRY_WRITES, null, 0);
 
+      final long attachmentStarted = System.nanoTime();
       int attachedBuckets = 0;
       for (final BucketWriter writer : writers.values()) {
         writer.finishAndAttach();
         invokeBuildTestHook(BuildPhase.AFTER_BUCKET_ATTACHMENT, writer.mainIndex, ++attachedBuckets);
       }
       invokeBuildTestHook(BuildPhase.AFTER_ALL_ATTACHMENTS, null, attachedBuckets);
+      attachmentNanos += System.nanoTime() - attachmentStarted;
 
       success = true;
       final int runCount = externalSorter != null ? externalSorter.getRunCount() : 0;
       final long spillBytes = externalSorter != null ? externalSorter.getSpilledBytes() : 0L;
       final BuildOutcome outcome = new BuildOutcome(written, writers.size(), runCount, spillBytes,
-          System.currentTimeMillis() - started, memoryBudgetBytes);
+          (System.nanoTime() - started) / 1_000_000L, memoryBudgetBytes);
       LogManager.instance().log(this, Level.INFO,
           "Completed sorted index build '%s': entries=%,d bucketIndexes=%d finalRuns=%d spillBytes=%s writeMillis=%,d",
           indexName, outcome.entries(), outcome.bucketIndexes(), outcome.finalRuns(),
@@ -215,8 +225,29 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private void prepareSortedEntries() {
     if (externalSorter != null)
       spillCurrentRun();
-    else
+    else {
+      final long started = System.nanoTime();
       entries.sort(LSMTreeIndexBulkLoader::compareEntries);
+      inMemorySortNanos += System.nanoTime() - started;
+    }
+  }
+
+  private long getMaterializedMergeNanos() {
+    return externalSorter != null ? externalSorter.getMaterializedMergeNanos() : 0L;
+  }
+
+  public StageMetrics getStageMetrics() {
+    return new StageMetrics(mergeFanIn, externalSorter != null ? externalSorter.getMergeFanIn() : mergeFanIn,
+        externalSorter != null ? externalSorter.getInitialRunCount() : 0,
+        externalSorter != null ? externalSorter.getRunCount() : 0,
+        externalSorter != null ? externalSorter.getInitialRunEntries() : 0L,
+        externalSorter != null ? externalSorter.getInitialRunBytes() : 0L,
+        externalSorter != null ? externalSorter.getInitialRunNanos() : 0L,
+        inMemorySortNanos,
+        externalSorter != null ? externalSorter.getMaterializedMergeGenerationCount() : 0,
+        externalSorter != null ? externalSorter.getMaterializedMergeEntries() : 0L,
+        externalSorter != null ? externalSorter.getMaterializedMergeBytes() : 0L,
+        getMaterializedMergeNanos(), finalStreamAndWriteNanos, attachmentNanos);
   }
 
   private LSMTreeIndexExternalSorter.EntryCursor openSortedEntries() throws IOException {
@@ -348,6 +379,13 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
 
   public record BuildOutcome(long entries, int bucketIndexes, int finalRuns, long spillBytes, long writeMillis,
                              long memoryBudgetBytes) {
+  }
+
+  public record StageMetrics(int requestedMergeFanIn, int admittedMergeFanIn, int initialRuns, int finalRuns,
+                             long initialRunEntries, long initialRunBytes, long initialRunNanos,
+                             long inMemorySortNanos, int materializedMergeGenerations,
+                             long materializedMergeEntries, long materializedMergeBytes,
+                             long materializedMergeNanos, long finalStreamAndWriteNanos, long attachmentNanos) {
   }
 
   @FunctionalInterface
