@@ -19,12 +19,9 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.engine.ImmutablePage;
-import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
@@ -33,7 +30,6 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class LSMTreeIndexCompactor {
@@ -122,7 +118,7 @@ public class LSMTreeIndexCompactor {
     long totalMergedKeys = 0;
     long totalMergedValues = 0;
 
-    final Binary keyValueContent = new Binary();
+    final LSMTreeIndexCompactedStreamWriter streamWriter = new LSMTreeIndexCompactedStreamWriter(mainIndex, compactedIndex);
 
     int pagesToCompact;
     int compactedPages = 0;
@@ -160,17 +156,12 @@ public class LSMTreeIndexCompactor {
       } else
         pagesToCompact = lastImmutablePage - pageIndex + 1;
 
-      // CREATE ROOT PAGE
-      final MutablePage rootPage = compactedIndex.createNewPage(0);
-      final TrackableBinary rootPageBuffer = rootPage.getTrackable();
-      Object[] lastPageMaxKey = null;
+      final var rootPage = streamWriter.startSeries();
 
       LogManager.instance()
           .log(mainIndex, Level.FINE, "- This turn compacting %d pages using root page %s v.%d (threadId=%d)", null,
               pagesToCompact, rootPage.getPageId(),
               rootPage.getVersion(), Thread.currentThread().threadId());
-
-      final AtomicInteger compactedPageNumberInSeries = new AtomicInteger(1);
 
       final LSMTreeIndexUnderlyingPageCursor[] iterators = new LSMTreeIndexUnderlyingPageCursor[pagesToCompact];
       for (int i = 0; i < pagesToCompact; ++i)
@@ -192,12 +183,7 @@ public class LSMTreeIndexCompactor {
       final BinarySerializer serializer = database.getSerializer();
       final BinaryComparator comparator = serializer.getComparator();
 
-      MutablePage lastPage = null;
-      TrackableBinary currentPageBuffer = null;
-
       final Set<RID> rids = new LinkedHashSet<>();
-
-      final List<MutablePage> allNewPages = new ArrayList<>();
 
       for (boolean moreItems = true; moreItems; ++iterations) {
         moreItems = false;
@@ -286,41 +272,7 @@ public class LSMTreeIndexCompactor {
           final RID[] ridsArray = new RID[rids.size()];
           rids.toArray(ridsArray);
 
-          final List<MutablePage> newPages = compactedIndex.appendDuringCompaction(keyValueContent, lastPage, currentPageBuffer,
-              compactedPageNumberInSeries, minorKey,
-              ridsArray);
-
-          if (!newPages.isEmpty()) {
-            lastPage = newPages.getLast();
-            currentPageBuffer = lastPage.getTrackable();
-
-            for (MutablePage newPage : newPages) {
-              // NEW PAGE: STORE THE MIN KEY IN THE ROOT PAGE
-              final int newPageNum = newPage.getPageId().getPageNumber();
-
-              final List<MutablePage> newRootPages = compactedIndex.appendDuringCompaction(keyValueContent, rootPage,
-                  rootPageBuffer,
-                  compactedPageNumberInSeries,
-                  minorKey, new RID[] { new RID(0, newPageNum) });
-
-              LogManager.instance()
-                  .log(mainIndex, Level.FINE,
-                      "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d threadId=%d)", null, mutableIndex,
-                      Arrays.toString(minorKey), newPageNum, mutableIndex.getCount(rootPage) - 1,
-                      Thread.currentThread().threadId());
-
-              if (!newRootPages.isEmpty()) {
-                // TODO: MANAGE A LINKED LIST OF ROOT PAGES INSTEAD
-                throw new UnsupportedOperationException("Root index page overflow");
-              }
-
-              allNewPages.addAll(newPages);
-            }
-          }
-
-          // UPDATE LAST PAGE'S KEY
-          if (minorKey != null)
-            lastPageMaxKey = minorKey;
+          streamWriter.append(minorKey, ridsArray);
 
           ++totalKeys;
           totalValues += rids.size();
@@ -329,25 +281,11 @@ public class LSMTreeIndexCompactor {
             LogManager.instance()
                 .log(mainIndex, Level.FINE, "- Keys %d values %d - iterations %d (entriesInRootPage=%d, threadId=%d)", null,
                     totalKeys, totalValues,
-                    iterations, compactedIndex.getCount(rootPage), Thread.currentThread().threadId());
+                    iterations, streamWriter.getRootEntryCount(), Thread.currentThread().threadId());
         }
       }
 
-      if (rootPage != null && lastPageMaxKey != null) {
-        // WRITE THE MAX KEY
-        compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer, compactedPageNumberInSeries,
-            lastPageMaxKey,
-            new RID[] { new RID(0, 0) });
-        LogManager.instance()
-            .log(mainIndex, Level.FINE, "- Creating last entry in index '%s' root page %s (entriesInRootPage=%d, threadId=%d)",
-                null, mutableIndex,
-                Arrays.toString(lastPageMaxKey), compactedIndex.getCount(rootPage), Thread.currentThread().threadId());
-      }
-
-      final List<MutablePage> modifiedPages = new ArrayList<>(allNewPages);
-      modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
-
-      database.getPageManager().writePages(modifiedPages, false);
+      streamWriter.finishSeries();
 
       compactedPages += pagesToCompact;
 
