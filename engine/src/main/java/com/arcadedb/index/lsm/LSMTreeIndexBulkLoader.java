@@ -263,6 +263,13 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   }
 
   private long resolveMemoryBudget(final long configuredMemoryBudgetBytes) {
+    final Runtime runtime = Runtime.getRuntime();
+    return resolveMemoryBudget(configuredMemoryBudgetBytes, runtime.maxMemory(), runtime.totalMemory(),
+        runtime.freeMemory());
+  }
+
+  static long resolveMemoryBudget(final long configuredMemoryBudgetBytes, final long maxMemoryBytes,
+      final long totalMemoryBytes, final long freeMemoryBytes) {
     if (configuredMemoryBudgetBytes < 0L)
       throw new IllegalArgumentException("memory budget cannot be negative");
     if (configuredMemoryBudgetBytes > 0L) {
@@ -271,9 +278,9 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       return configuredMemoryBudgetBytes;
     }
 
-    final Runtime runtime = Runtime.getRuntime();
-    final long usedHeap = runtime.totalMemory() - runtime.freeMemory();
-    final long availableHeap = Math.max(0L, runtime.maxMemory() - usedHeap);
+    final long usedHeap = Math.max(0L, totalMemoryBytes - freeMemoryBytes);
+    final long effectiveMaxMemory = maxMemoryBytes == Long.MAX_VALUE ? totalMemoryBytes : maxMemoryBytes;
+    final long availableHeap = Math.max(0L, effectiveMaxMemory - usedHeap);
     return Math.max(MIN_MEMORY_BUDGET_BYTES, availableHeap / 4L);
   }
 

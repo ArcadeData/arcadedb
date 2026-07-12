@@ -24,8 +24,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
-import com.sun.management.UnixOperatingSystemMXBean;
 
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
@@ -101,11 +102,19 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
   }
 
   private static long getAvailableFileDescriptors() {
-    if (ManagementFactory.getOperatingSystemMXBean() instanceof UnixOperatingSystemMXBean unix) {
-      final long maximum = unix.getMaxFileDescriptorCount();
-      final long open = unix.getOpenFileDescriptorCount();
-      if (maximum > 0L && open >= 0L)
-        return Math.max(0L, maximum - open - FILE_DESCRIPTOR_RESERVE);
+    try {
+      final MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+      final ObjectName operatingSystem = ObjectName.getInstance(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME);
+      final Object maximumValue = server.getAttribute(operatingSystem, "MaxFileDescriptorCount");
+      final Object openValue = server.getAttribute(operatingSystem, "OpenFileDescriptorCount");
+      if (maximumValue instanceof Number maximumNumber && openValue instanceof Number openNumber) {
+        final long maximum = maximumNumber.longValue();
+        final long open = openNumber.longValue();
+        if (maximum > 0L && open >= 0L)
+          return Math.max(0L, maximum - open - FILE_DESCRIPTOR_RESERVE);
+      }
+    } catch (final Exception | LinkageError ignored) {
+      // Descriptor metrics are optional on non-Unix or non-HotSpot runtimes.
     }
     return Long.MAX_VALUE;
   }
