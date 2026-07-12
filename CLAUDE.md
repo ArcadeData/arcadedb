@@ -54,8 +54,8 @@ General design principles:
 ### Maven (Java)
 - **Build entire project**: `mvn clean install`
 - **Build without tests**: `mvn clean install -DskipTests`
-- **Run unit tests**: `mvn test`
-- **Run integration tests**: `mvn test -DskipITs=false`
+- **Run unit tests**: `mvn verify` (use `verify`/`install`, not bare `mvn test`, for a full reactor run: the `arcadedb-gremlin-it` module consumes `arcadedb-gremlin`'s package-phase artifacts (the `shaded` uber-jar and `tests` test-jar), which a `test`-phase build never produces)
+- **Run integration tests**: `mvn verify -DskipITs=false`
 - **Build specific module**: `cd <module> && mvn clean install`
 
 ### Studio Frontend (Node.js)

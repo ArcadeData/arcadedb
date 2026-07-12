@@ -99,7 +99,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | ch.qos.logback | logback-core | 1.5.27 | EPL 1.0 / LGPL 2.1 | https://logback.qos.ch/ |
 | com.conversantmedia | disruptor | 1.2.21 | Apache 2.0 | https://github.com/conversant/disruptor |
 | at.yawk.lz4 | lz4-java | 1.10.3 | Apache 2.0 | https://github.com/yawkat/lz4-java |
-| org.antlr | antlr4-runtime | 4.9.1 | BSD 3-Clause | https://www.antlr.org/ |
+| org.antlr | antlr4-runtime | 4.13.2 | BSD 3-Clause | https://www.antlr.org/ |
 | com.google.code.gson | gson | 2.13.2 | Apache 2.0 | https://github.com/google/gson |
 | org.yaml | snakeyaml | 2.4 | Apache 2.0 | https://bitbucket.org/snakeyaml/snakeyaml |
 
@@ -185,8 +185,9 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | org.apache.tinkerpop | gremlin-util | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
 | org.apache.tinkerpop | gremlin-groovy | 3.8.x | Apache 2.0 | https://tinkerpop.apache.org/ |
 | org.apache.groovy | groovy | ~4.0.x | Apache 2.0 | https://groovy-lang.org/ |
+| org.antlr | antlr4-runtime (shaded, relocated to `com.arcadedb.gremlin.shaded.org.antlr`) | 4.9.1 | BSD 3-Clause | https://www.antlr.org/ |
 
-**Note:** Gremlin support is an optional module. These dependencies are only included when the Gremlin module is enabled.
+**Note:** Gremlin support is an optional module. These dependencies are only included when the Gremlin module is enabled. The Gremlin module's shaded jar bundles its own relocated copy of `antlr4-runtime` 4.9.1 (required by the TinkerPop/OpenCypher-Gremlin translation layer), independent of the engine's `antlr4-runtime` 4.13.2 listed under Core Dependencies.
 
 ### gRPC (Optional Module)
 
@@ -297,7 +298,7 @@ These dependencies are used only during the build process:
 | org.apache.maven.plugins | maven-compiler-plugin | 3.x | Apache 2.0 | https://maven.apache.org/plugins/maven-compiler-plugin/ |
 | org.apache.maven.plugins | maven-surefire-plugin | 3.x | Apache 2.0 | https://maven.apache.org/surefire/maven-surefire-plugin/ |
 | org.jacoco | jacoco-maven-plugin | 0.8.x | EPL 2.0 | https://www.jacoco.org/jacoco/ |
-| org.antlr | antlr4-maven-plugin | 4.9.1 | BSD 3-Clause | https://www.antlr.org/ |
+| org.antlr | antlr4-maven-plugin | 4.13.2 | BSD 3-Clause | https://www.antlr.org/ |
 | io.grpc | protoc-gen-grpc-java | 1.79.0 | Apache 2.0 | https://grpc.io/ |
 | com.github.os72 | protoc-jar-maven-plugin | 3.x | Apache 2.0 | https://github.com/os72/protoc-jar-maven-plugin |
 

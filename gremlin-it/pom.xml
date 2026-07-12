@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+    SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+    SPDX-License-Identifier: Apache-2.0
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.arcadedb</groupId>
+        <artifactId>arcadedb-parent</artifactId>
+        <version>26.8.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>arcadedb-gremlin-it</artifactId>
+    <packaging>jar</packaging>
+    <name>ArcadeDB Gremlin Integration Tests</name>
+
+    <description>
+        Runs Gremlin tests against the RELOCATED (shaded) arcadedb-gremlin jar so that
+        the engine's antlr 4.13.2 and Gremlin's relocated antlr 4.9.1 coexist in one JVM.
+        This module produces no shipped artifact; it exists only to host coexistence tests.
+        It consumes the arcadedb-gremlin package-phase outputs (the shaded uber-jar and the
+        tests test-jar), so it must be built after arcadedb-gremlin in the reactor; running
+        it standalone (mvn test -pl gremlin-it) requires arcadedb-gremlin to be installed first.
+    </description>
+
+    <properties>
+        <!-- This module ships nothing; do not deploy or install its near-empty jar. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.install.skip>true</maven.install.skip>
+    </properties>
+
+    <!-- NOTE: because the shaded/tests arcadedb-gremlin artifacts below use a wildcard (*:*)
+         exclusion, this module must re-declare by hand every dependency the migrated gremlin
+         tests need (engine, network, server + test-jar, gremlin-test, junit-vintage). If a new
+         test dependency is added to the gremlin module, mirror it here or the migrated tests
+         will fail to resolve it. -->
+    <dependencies>
+        <!-- Engine on real org.antlr 4.13.2 (v4 ATN) for SQL/Cypher parsing. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-engine</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Provides com.arcadedb.remote.RemoteDatabase, which ArcadeGremlin.execute() references
+             via an instanceof check on the embedded path. It reaches gremlin only through the
+             provided-scoped arcadedb-server, so it is neither bundled in the shaded jar nor
+             pulled transitively here; add it explicitly. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-network</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Self-contained shaded Gremlin uber-jar: bundles tinkerpop + groovy + netty +
+             gremlin classes + the RELOCATED antlr 4.9.1. The wildcard exclusion prevents its
+             non-reduced pom from re-pulling the original org.antlr / tinkerpop and
+             reintroducing the version clash. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-gremlin</artifactId>
+            <version>${project.parent.version}</version>
+            <classifier>shaded</classifier>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj-core.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Compiled gremlin test classes + resources, executed via dependenciesToScan. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-gremlin</artifactId>
+            <version>${project.parent.version}</version>
+            <classifier>tests</classifier>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- Server module used by the com.arcadedb.server.gremlin.* tests, which start an
+             embedded ArcadeDBServer. It is provided-scope in gremlin/pom.xml (assembled by the
+             package module at runtime), so it must be added explicitly here as a real test-scope
+             dependency; plus its test-jar for the shared test scaffolding. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+            <type>test-jar</type>
+        </dependency>
+
+        <!-- TinkerPop conformance-suite runner; use the shaded jar's bundled tinkerpop + antlr. -->
+        <dependency>
+            <groupId>org.apache.tinkerpop</groupId>
+            <artifactId>gremlin-test</artifactId>
+            <version>${gremlin.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.antlr</groupId>
+                    <artifactId>antlr4-runtime</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <testResources>
+            <testResource>
+                <directory>${project.basedir}/src/test/resources</directory>
+            </testResource>
+            <!-- Single source of truth for the gremlin test fixtures instead of byte-copies:
+                 pull the gremlin module's own test resources onto this module's test
+                 classpath directly. -->
+            <testResource>
+                <directory>${project.basedir}/../gremlin/src/test/resources</directory>
+            </testResource>
+        </testResources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <dependenciesToScan>
+                        <dependency>com.arcadedb:arcadedb-gremlin</dependency>
+                    </dependenciesToScan>
+                    <!-- The migrated unit tests exist ONLY in the scanned test-jar; since the gremlin
+                         module skips its own tests, fail loudly if the scan resolves nothing (test-jar
+                         not attached, classifier/coordinate mismatch) instead of silently passing with
+                         zero tests. -->
+                    <failIfNoTests>true</failIfNoTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <dependenciesToScan>
+                        <dependency>com.arcadedb:arcadedb-gremlin</dependency>
+                    </dependenciesToScan>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
