@@ -96,6 +96,7 @@ public class MultiIndexCursor implements IndexCursor {
         continue;
       if (cursorsNextValues.get(i) != null || cursor.hasNext())
         return true;
+      // EXHAUSTED CHILD: CLOSE IT EAGERLY TO RELEASE ITS PAGE CURSORS AND CLEAR THE SLOT
       cursor.close();
       cursors.set(i, null);
     }
