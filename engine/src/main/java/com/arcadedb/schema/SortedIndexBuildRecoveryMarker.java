@@ -175,10 +175,22 @@ final class SortedIndexBuildRecoveryMarker {
 
   private static boolean isPublished(final Path databasePath, final String typeName, final List<String> propertyNames) {
     final Path schemaPath = databasePath.resolve(LocalSchema.SCHEMA_FILE_NAME);
+    final Boolean current = isPublishedInSchema(schemaPath, typeName, propertyNames);
+    if (current != null)
+      return current;
+
+    final Path previousSchemaPath = databasePath.resolve(LocalSchema.SCHEMA_PREV_FILE_NAME);
+    return Boolean.TRUE.equals(isPublishedInSchema(previousSchemaPath, typeName, propertyNames));
+  }
+
+  private static Boolean isPublishedInSchema(final Path schemaPath, final String typeName,
+      final List<String> propertyNames) {
     if (!Files.isRegularFile(schemaPath))
-      return false;
+      return null;
 
     try {
+      if (Files.size(schemaPath) == 0L)
+        return null;
       final JSONObject root = new JSONObject(Files.readString(schemaPath, StandardCharsets.UTF_8));
       final JSONObject types = root.getJSONObject("types", null);
       final JSONObject type = types != null ? types.getJSONObject(typeName, null) : null;
@@ -191,10 +203,11 @@ final class SortedIndexBuildRecoveryMarker {
         if (propertyNames.equals(properties.toListOfStrings()))
           return true;
       }
+      return false;
     } catch (final Exception ignore) {
-      // A missing or corrupt current schema falls back to the previous schema during normal load.
+      // Match LocalSchema loading: an absent, empty, or corrupt primary schema falls back to schema.prev.json.
+      return null;
     }
-    return false;
   }
 
   private static void validateSpillWorkspace(final Path spillWorkspace, final Path markerPath) throws IOException {

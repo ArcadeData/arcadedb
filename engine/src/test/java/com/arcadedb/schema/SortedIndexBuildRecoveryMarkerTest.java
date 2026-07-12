@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -41,6 +42,9 @@ class SortedIndexBuildRecoveryMarkerTest extends TestHelper {
         database.newDocument("PublishedBuild").set("lookupKey", i).save();
     });
 
+    SortedIndexBuildRecoveryMarker.create((DatabaseInternal) database, "PublishedBuild", List.of("lookupKey"), null);
+    assertThat(recoveryMarkers()).hasSize(1);
+
     TypeIndex index = database.getSchema().buildTypeIndex("PublishedBuild", new String[] { "lookupKey" })
         .withType(Schema.INDEX_TYPE.LSM_TREE)
         .withBuildMode(IndexBuildMode.SORTED)
@@ -49,11 +53,42 @@ class SortedIndexBuildRecoveryMarkerTest extends TestHelper {
         .create();
     assertThat(count(index.iterator(true))).isEqualTo(500);
 
-    SortedIndexBuildRecoveryMarker.create((DatabaseInternal) database, "PublishedBuild", List.of("lookupKey"), null);
-    assertThat(recoveryMarkers()).hasSize(1);
-
     reopenDatabase();
     index = database.getSchema().getType("PublishedBuild").getIndexByProperties("lookupKey");
+    assertThat(index).isNotNull();
+    assertThat(count(index.iterator(false))).isEqualTo(500);
+    assertThat(recoveryMarkers()).isEmpty();
+  }
+
+  @Test
+  void usesPreviousSchemaToPreservePublishedIndexWhenPrimarySchemaIsCorrupt() throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("PreviousSchemaBuild");
+    type.createProperty("lookupKey", Type.INTEGER);
+    database.transaction(() -> {
+      for (int i = 0; i < 500; i++)
+        database.newDocument("PreviousSchemaBuild").set("lookupKey", i).save();
+    });
+
+    SortedIndexBuildRecoveryMarker.create((DatabaseInternal) database, "PreviousSchemaBuild", List.of("lookupKey"), null);
+    TypeIndex index = database.getSchema().buildTypeIndex("PreviousSchemaBuild", new String[] { "lookupKey" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withBuildMode(IndexBuildMode.SORTED)
+        .withBuildMemoryBudget(4L << 20)
+        .withUnique(false)
+        .create();
+    assertThat(count(index.iterator(true))).isEqualTo(500);
+
+    database.getSchema().getEmbedded().saveConfiguration();
+    final Path databasePath = Path.of(database.getDatabasePath());
+    assertThat(databasePath.resolve(LocalSchema.SCHEMA_PREV_FILE_NAME)).isRegularFile();
+
+    database.close();
+    database = null;
+    Files.writeString(databasePath.resolve(LocalSchema.SCHEMA_FILE_NAME), "{broken",
+        StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+    database = factory.open();
+
+    index = database.getSchema().getType("PreviousSchemaBuild").getIndexByProperties("lookupKey");
     assertThat(index).isNotNull();
     assertThat(count(index.iterator(false))).isEqualTo(500);
     assertThat(recoveryMarkers()).isEmpty();
