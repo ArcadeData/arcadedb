@@ -63,6 +63,15 @@ class LSMSparseVectorIndexConcurrencyTest extends TestHelper {
   private static final int    READER_THREADS  = CONCURRENCY;
   private static final int    DOCS_PER_WRITER = 50;
   private static final int    QUERIES_PER_READER = 30;
+  // All writers insert the same document type, so their records land in the same handful of buckets
+  // and concurrent inserts routinely collide on a page - a normal, retryable MVCC outcome
+  // ({@code ConcurrentModificationException} extends {@code NeedRetryException}), not an index bug.
+  // The default TX_RETRIES (3) is tuned for typical workloads and gets exhausted by this deliberate
+  // N-thread hammer on a tiny bucket set, so give each insert a generous retry budget; the built-in
+  // randomized TX_RETRY_DELAY backoff spreads the writers out and resolves the contention quickly.
+  // The test's real assertion is that the index stays correct under concurrency, not that three
+  // retries always suffice.
+  private static final int    WRITE_TX_ATTEMPTS = 50;
 
   @Test
   void parallelInsertsAndQueriesAreCorrect() throws Exception {
@@ -106,7 +115,7 @@ class LSMSparseVectorIndexConcurrencyTest extends TestHelper {
               doc.set("tokens", indices);
               doc.set("weights", values);
               doc.save();
-            });
+            }, true, WRITE_TX_ATTEMPTS);
           }
         } catch (final Throwable e) {
           writerErrors.incrementAndGet();
