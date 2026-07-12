@@ -778,9 +778,11 @@ public class PostgresNetworkExecutor extends Thread {
           // temporal) are advertised with their native OID so Postgres clients (psycopg, JDBC, ...)
           // deserialize them as native values instead of strings. Without this, typed scalars
           // round-trip through clients as strings and parameter comparisons fail silently.
+          // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
+          // the nested object instead of re-escaping it as an opaque VARCHAR string.
           final Object value = row.getProperty(p);
           final PostgresType pgType = PostgresType.getTypeForValue(value);
-          if (pgType.isArrayType() || pgType.isNativeScalarType())
+          if (pgType.isArrayType() || pgType.isNativeScalarType() || pgType == PostgresType.JSON)
             columns.put(p, pgType);
           else
             columns.put(p, PostgresType.VARCHAR);
