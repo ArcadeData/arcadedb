@@ -594,6 +594,49 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Issue #5253: EMBEDDED (and MAP) properties must be advertised over the Postgres wire protocol
+   * with the JSON type (OID 114) rather than collapsed to VARCHAR. When advertised as VARCHAR the
+   * client treats the value as a plain string and re-escapes the embedded JSON.
+   */
+  @Test
+  void embeddedPropertyReportedAsJson() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Product IF NOT EXISTS;
+            CREATE PROPERTY Product.sku IF NOT EXISTS STRING;
+            CREATE PROPERTY Product.name IF NOT EXISTS STRING;
+
+            CREATE VERTEX TYPE Supplier IF NOT EXISTS;
+            CREATE PROPERTY Supplier.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Supplier.certifications IF NOT EXISTS LIST;
+            CREATE PROPERTY Supplier.embedded IF NOT EXISTS EMBEDDED OF Product;
+
+            INSERT INTO Supplier (name, certifications, embedded) VALUES ('Berlin Sensors GmbH', 'ISO-9001,RoHS', { "@type": "Product", "sku": "1234", "name": "CPU"});
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Supplier")) {
+          assertThat(rs.next()).isTrue();
+
+          final int embeddedCol = rs.findColumn("embedded");
+          // Before the fix this reported "varchar"; the embedded document must be advertised as json.
+          assertThat(rs.getMetaData().getColumnTypeName(embeddedCol)).isEqualTo("json");
+
+          // The value itself must be valid, un-escaped JSON.
+          final JSONObject embedded = new JSONObject(rs.getString("embedded"));
+          assertThat(embedded.getString("sku")).isEqualTo("1234");
+          assertThat(embedded.getString("name")).isEqualTo("CPU");
+
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
   private static final int    DEFAULT_SIZE = 64;
   private static final Random RANDOM       = ThreadLocalRandom.current();
 
