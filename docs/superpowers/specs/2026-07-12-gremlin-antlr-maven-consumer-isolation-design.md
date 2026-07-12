@@ -120,7 +120,7 @@ A minimal module that ships nothing, placed **after** `gremlin` (and after `grem
 parent `<modules>` so the gremlin artifact is installed first. It exists only to assert, at build
 time, that a real downstream consumer's dependency graph is free of antlr 4.9.1.
 
-- `packaging`: `jar`; `maven.install.skip` = `true`, `maven.deploy.skip` = `true` (mirrors
+- `packaging`: `pom` (ships nothing, no sources); `maven.install.skip` = `true`, `maven.deploy.skip` = `true` (mirrors
   `gremlin-it` - produces no shipped artifact).
 - Dependencies (the **plain** `arcadedb-gremlin` coordinate, which is the stricter test of the
   `optional` flag - it is the artifact that would most readily re-pull bare antlr):
@@ -174,7 +174,9 @@ maintainer and are not editable from this change.
 
 ## Files touched
 
-- `gremlin/pom.xml` - add `<optional>true</optional>` to the `antlr4-runtime` dependency.
+- `gremlin/pom.xml` - add `<optional>true</optional>` to the explicit `antlr4-runtime` dependency
+  AND add an `org.antlr:antlr4-runtime` `<exclusion>` to the `gremlin-core` dependency (see Key
+  fact 3 - `optional` alone leaves gremlin-core's separate transitive antlr edge).
 - `pom.xml` (parent) - add `<module>gremlin-consumer-it</module>` after `gremlin-it`.
 - `gremlin-consumer-it/pom.xml` - new module (enforcer `bannedDependencies` only).
 - `README.md` - "Embedding Gremlin alongside the engine" snippet.
