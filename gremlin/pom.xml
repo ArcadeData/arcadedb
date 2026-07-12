@@ -117,10 +117,10 @@
                 </exclusion>
                 <!-- gremlin-core pulls antlr4-runtime 4.9.1 transitively via gremlin-language,
                      independently of and in addition to the explicit (optional) antlr4-runtime
-                     dependency declared below. That transitive edge is not optional and is not
+                     dependency declared above. That transitive edge is not optional and is not
                      affected by marking our own duplicate declaration optional, so it still leaks
                      4.9.1 to Maven-coordinate consumers (issue #5217) unless excluded here. The
-                     explicit optional dependency below continues to supply antlr4-runtime for
+                     explicit optional dependency above continues to supply antlr4-runtime for
                      gremlin's own compilation and for bundling+relocation in the shaded jar. -->
                 <exclusion>
                     <groupId>org.antlr</groupId>

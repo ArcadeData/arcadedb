@@ -168,9 +168,13 @@ Add a short subsection to `README.md` immediately after the existing Maven-usage
 > ```
 
 **Release-notes reminder (manual, maintainer action):** the 26.8.1 GitHub release notes (the
-version shipping #5216 + this follow-up) should call out that embedders depending on both modules
-must consume the `arcadedb-gremlin:shaded` classifier. GitHub Releases are published by the
-maintainer and are not editable from this change.
+version shipping #5216 + this follow-up) should call out that embedders must consume the
+`arcadedb-gremlin:shaded` classifier - both when depending on both modules AND when depending on
+`arcadedb-gremlin` alone. Behavioral note: the plain `arcadedb-gremlin` coordinate now resolves
+ANTLR to the engine's 4.13.2 (previously nearest-wins 4.9.1), so the plain jar alone no longer
+runs TinkerPop's Gremlin string-query parser (precompiled 4.9.1 v3 ATN); the shaded jar's
+relocated runtime does. GitHub Releases are published by the maintainer and are not editable from
+this change.
 
 ## Files touched
 
