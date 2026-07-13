@@ -81,6 +81,36 @@ utilities, not JUnit tests). They are repointed under `target/` instead:
   `databases/` directory. This is the backstop for the case no grep can see - a server test whose
   path is *derived* from `SERVER_ROOT_PATH` rather than written as a literal.
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5264
+
+## Review cycles
+
+| # | Head | What changed | Outcome |
+|---|---|---|---|
+| 1 | `863febdd` | Initial: 48 engine classes onto `TestHelper`, 9 non-engine repointed under `target/`, static guard | Claude: guard too narrow, six classes still leak via `String DB_PATH`. Gemini: a `@Nested` class creates its DB with no pre-clean |
+| 2 | `e3beea4e` | Guard matches the *literal*, not the call site; added the runtime backstop; fixed the 6 exposed classes, 5 server tests leaking via a derived path, `ConsoleTest` dead cleanup, 4 nested classes onto `TestHelper.createDatabase` | Claude: 3 polish items, none blocking |
+| 3 | `130e8173` | Runtime guard excludes `*/target/*`; documented the static grep's false-alarm bias. Declined the `reopenDatabase()` DRY suggestion (see below) | Claude: runtime backstop missing from the jobs that need it most |
+| 4 | `4a9a5108` | Runtime guard added to `slow-unit-tests`, `integration-tests`, `ha-integration-tests`; documented the second semantic change | Claude: no blockers |
+
+### Declined
+
+**Reuse `TestHelper.reopenDatabase()` in `RecordRecyclingTest.createAndDeleteGraph()`.** Not
+equivalent. `reopenDatabase()` closes and reopens with no window in between, but the test must
+delete the statistics file *between* the close and the open - that gap is the point of the test,
+which exercises recovery when the stats file is missing. Reusing the helper would reopen before the
+delete and stop exercising that path. Explained on the PR; no pushback.
+
+### Known follow-up (not in scope)
+
+`OpenCypherCollectUnwindTest` and `OpenCypherPatternPredicateTest` have `@Nested` classes that
+cannot fold into the outer `TestHelper` database (the outer seed data would change their
+expectations). They keep their own lifecycle, so the outer database is now created, seeded,
+integrity-checked and dropped once per nested test. Correct but wasteful. The clean fix is to pull
+the nested classes out into top-level `TestHelper` subclasses, which is a bigger refactor than this
+issue warrants.
+
 ## Review follow-up (cycle 1)
 
 The first version of the guard only matched the inline-constructor form, so it reported `OK` while
