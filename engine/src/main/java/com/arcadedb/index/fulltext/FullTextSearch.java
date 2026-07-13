@@ -45,24 +45,14 @@ public class FullTextSearch {
   }
 
   /**
-   * Resolves a full-text index by name.
+   * Resolves a full-text index by name and validates it is a full-text type index. The TypeIndex found while validating
+   * is returned directly, so a caller that already needs to search or inspect it (e.g. {@link #search(TypeIndex, String)})
+   * does not resolve the same name a second time.
    *
    * @throws com.arcadedb.exception.SchemaException if no index carries that name
    * @throws CommandExecutionException              if the index exists but is not a full-text type index
    */
   public static TypeIndex resolveFullTextIndex(final Database database, final String indexName) {
-    final IndexInternal[] bucketIndexes = resolveFullTextBuckets(database, indexName);
-    return bucketIndexes[0].getTypeIndex();
-  }
-
-  /**
-   * Resolves the named index, validates it is a full-text type index, and returns the single snapshot of its bucket
-   * sub-indexes so callers validate and iterate over the exact same array.
-   *
-   * @throws com.arcadedb.exception.SchemaException if no index carries that name
-   * @throws CommandExecutionException              if the index exists but is not a full-text type index
-   */
-  private static IndexInternal[] resolveFullTextBuckets(final Database database, final String indexName) {
     final Index index = database.getSchema().getIndexByName(indexName);
 
     if (!(index instanceof final TypeIndex typeIndex))
@@ -72,19 +62,43 @@ public class FullTextSearch {
     if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
       throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
 
-    return bucketIndexes;
+    return typeIndex;
   }
 
   /**
-   * Searches every bucket index behind the named full-text index and returns the matching RIDs with their scores.
+   * Resolves the named full-text index and searches it for every match, unbounded. Kept for callers that only have an
+   * index name on hand, such as the SEARCH_INDEX SQL function, whose per-row boolean semantics need the full match set.
+   *
+   * @throws com.arcadedb.exception.SchemaException if no index carries that name
+   * @throws CommandExecutionException              if the index exists but is not a full-text type index
    */
   public static Map<RID, Float> search(final Database database, final String indexName, final String queryText) {
+    return search(resolveFullTextIndex(database, indexName), queryText, -1);
+  }
+
+  /**
+   * Searches every bucket index behind an already-resolved full-text index and returns all matching RIDs with their
+   * scores, unbounded.
+   */
+  public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText) {
+    return search(typeIndex, queryText, -1);
+  }
+
+  /**
+   * Searches every bucket index behind an already-resolved full-text index and returns the matching RIDs with their
+   * scores. When {@code limit > -1}, the limit is pushed down to each bucket's {@link FullTextQueryExecutor#search},
+   * which selects its own top-K with a bounded min-heap rather than fully sorting the bucket's whole match set. A
+   * global top-K is contained in the union of the per-bucket top-K, so narrowing each bucket to {@code limit} before
+   * the caller merges and re-ranks across buckets is sound; the caller still needs to sort and truncate the merged
+   * union because it can hold up to {@code buckets * limit} entries.
+   */
+  public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit) {
     final Map<RID, Float> allResults = new HashMap<>();
 
-    for (final IndexInternal bucketIndex : resolveFullTextBuckets(database, indexName)) {
+    for (final Index bucketIndex : typeIndex.getIndexesOnBuckets()) {
       if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
         final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
-        final IndexCursor cursor = executor.search(queryText, -1);
+        final IndexCursor cursor = executor.search(queryText, limit);
 
         while (cursor.hasNext()) {
           final Identifiable match = cursor.next();

@@ -69,12 +69,16 @@ public class FullTextSearchTool {
                 .put("properties", new JSONObject()
                     .put("type", "array")
                     .put("items", new JSONObject().put("type", "string"))
-                    .put("description", "Indexed properties, used with 'typeName' to identify the index, e.g. ['content']"))
+                    .put("description",
+                        "Indexed properties, used with 'typeName' to identify the index, e.g. ['content']. Must be given "
+                            + "in the same order the index declares them, e.g. ['title','content'] for an index declared as "
+                            + "Article[title,content]"))
                 .put("queryText", new JSONObject()
                     .put("type", "string")
                     .put("description", "The full-text query"))
                 .put("limit", new JSONObject()
                     .put("type", "integer")
+                    .put("default", DEFAULT_LIMIT)
                     .put("description", "Maximum number of results to return (default: 10)")))
             .put("required", new JSONArray().put("database").put("queryText")));
   }
@@ -87,13 +91,17 @@ public class FullTextSearchTool {
     final String databaseName = args.getString("database");
     final String queryText = args.getString("queryText");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
+    if (limit < 1)
+      throw new IllegalArgumentException("'limit' must be at least 1, got " + limit);
 
     final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
     final TypeIndex typeIndex = resolveIndex(database, args);
     final String indexName = typeIndex.getName();
 
-    final Map<RID, Float> hits = FullTextSearch.search(database, indexName, queryText);
+    // The limit is pushed down per bucket: the engine bounds each bucket's own top-K with a min-heap instead of fully
+    // sorting it, so this merges at most (bucket count * limit) entries instead of every match in the index.
+    final Map<RID, Float> hits = FullTextSearch.search(typeIndex, queryText, limit);
 
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
     // Score descending, tie-broken by RID so tied hits have a stable, deterministic order instead of depending on
@@ -139,8 +147,8 @@ public class FullTextSearchTool {
 
   /**
    * Resolves the target index from 'indexName', or from 'typeName' with optional 'properties'. 'indexName' wins
-   * when both addressing forms are supplied. Resolution happens exactly once here; callers must not re-resolve the
-   * returned TypeIndex by name.
+   * when both addressing forms are supplied. Resolution happens exactly once here; the returned TypeIndex is passed
+   * directly to {@link FullTextSearch#search(TypeIndex, String, int)} rather than re-resolved by name.
    */
   private static TypeIndex resolveIndex(final Database database, final JSONObject args) {
     final String indexName = args.getString("indexName", null);
@@ -187,10 +195,10 @@ public class FullTextSearchTool {
 
   /**
    * Validates that the named index exists and is a full-text index, and returns the resolved TypeIndex so the caller
-   * does not need to resolve the name a second time. On the success path this costs a single index lookup, not a
-   * schema-wide scan: it relies on the exceptions FullTextSearch.resolveFullTextIndex already throws for an unknown
-   * or non-full-text name, and only enumerates every full-text index in the database (the cost describeAvailable
-   * pays) when building the error message.
+   * can search it directly instead of resolving the name a second time. On the success path this costs a single
+   * index lookup, not a schema-wide scan: it relies on the exceptions FullTextSearch.resolveFullTextIndex already
+   * throws for an unknown or non-full-text name, and only enumerates every full-text index in the database (the cost
+   * describeAvailable pays) when building the error message.
    */
   private static TypeIndex validateFullTextIndex(final Database database, final String indexName) {
     try {

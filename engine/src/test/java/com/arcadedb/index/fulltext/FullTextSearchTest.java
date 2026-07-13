@@ -46,6 +46,21 @@ class FullTextSearchTest extends TestHelper {
     });
   }
 
+  private void createArticlesWithSharedTerm() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY Article.title STRING");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
+      database.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'python scripting language'");
+      // Same length as Doc1/Doc2 (three tokens) so BM25 length normalization is identical across all three; Doc3
+      // outranks the others purely on term frequency for 'language' (3 occurrences against 1).
+      database.command("sql", "INSERT INTO Article SET title = 'Doc3', content = 'language language language'");
+    });
+  }
+
   @Test
   void searchReturnsScoredRids() {
     createArticles();
@@ -56,6 +71,52 @@ class FullTextSearchTest extends TestHelper {
       assertThat(hits).hasSize(1);
       assertThat(hits.values().iterator().next()).isGreaterThan(0f);
     });
+  }
+
+  @Test
+  void databaseOverloadSearchesUnbounded() {
+    createArticlesWithSharedTerm();
+
+    database.transaction(() -> {
+      final Map<RID, Float> hits = FullTextSearch.search(database, "Article[content]", "language");
+
+      // All three articles contain "language"; the (Database, String, String) overload must still return every
+      // match, exactly as before the limit-bounded overload was introduced.
+      assertThat(hits).hasSize(3);
+    });
+  }
+
+  @Test
+  void boundedSearchLimitsResultsWithoutLosingTopHit() {
+    createArticlesWithSharedTerm();
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(database, "Article[content]");
+
+      final Map<RID, Float> unbounded = FullTextSearch.search(typeIndex, "language", -1);
+      assertThat(unbounded).hasSize(3);
+
+      final Map<RID, Float> bounded = FullTextSearch.search(typeIndex, "language", 1);
+      // The single bucket's bounded min-heap keeps only the requested number of entries.
+      assertThat(bounded).hasSize(1);
+
+      final RID bestUnbounded = bestScoring(unbounded);
+      final RID bestBounded = bestScoring(bounded);
+      // Pushing the limit down to the bucket cursor must not lose the best-scoring match.
+      assertThat(bestBounded).isEqualTo(bestUnbounded);
+    });
+  }
+
+  private static RID bestScoring(final Map<RID, Float> hits) {
+    RID best = null;
+    float bestScore = Float.NEGATIVE_INFINITY;
+    for (final Map.Entry<RID, Float> entry : hits.entrySet()) {
+      if (entry.getValue() > bestScore) {
+        bestScore = entry.getValue();
+        best = entry.getKey();
+      }
+    }
+    return best;
   }
 
   @Test

@@ -928,6 +928,29 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void fullTextSearchRejectsNonPositiveLimit() throws Exception {
+    final JSONObject zeroResponse = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java")
+        .put("limit", 0));
+
+    assertThat(zeroResponse.getBoolean("isError", false)).isTrue();
+    final String zeroErrorText = zeroResponse.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(zeroErrorText).containsIgnoringCase("limit");
+
+    final JSONObject negativeResponse = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java")
+        .put("limit", -1));
+
+    assertThat(negativeResponse.getBoolean("isError", false)).isTrue();
+    final String negativeErrorText = negativeResponse.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(negativeErrorText).containsIgnoringCase("limit");
+  }
+
+  @Test
   void fullTextSearchDeniedWhenReadsDisabled() throws Exception {
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
