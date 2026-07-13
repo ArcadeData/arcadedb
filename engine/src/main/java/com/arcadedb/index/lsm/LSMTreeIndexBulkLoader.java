@@ -35,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -494,11 +495,16 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
         thread.setDaemon(true);
         return thread;
       });
-      for (int i = 0; i < workerCount; i++) {
-        final ArrayBlockingQueue<WriteBatch> queue = new ArrayBlockingQueue<>(WRITER_QUEUE_CAPACITY);
-        queues.add(queue);
-        pendingBatches.add(new WriteBatch(false));
-        futures.add(executor.submit(() -> runWorker(queue)));
+      try {
+        for (int i = 0; i < workerCount; i++) {
+          final ArrayBlockingQueue<WriteBatch> queue = new ArrayBlockingQueue<>(WRITER_QUEUE_CAPACITY);
+          queues.add(queue);
+          pendingBatches.add(new WriteBatch(false));
+          futures.add(executor.submit(() -> runWorker(queue)));
+        }
+      } catch (final RuntimeException | Error error) {
+        executor.shutdownNow();
+        throw error;
       }
     }
 
@@ -526,8 +532,19 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       }
 
       executor.shutdown();
-      for (final Future<?> future : futures)
-        future.get();
+      for (final Future<?> future : futures) {
+        try {
+          future.get();
+        } catch (final ExecutionException error) {
+          failure.compareAndSet(null, error.getCause());
+          checkFailure();
+          throw error;
+        } catch (final InterruptedException error) {
+          Thread.currentThread().interrupt();
+          checkFailure();
+          throw error;
+        }
+      }
       checkFailure();
       if (!executor.awaitTermination(30L, TimeUnit.SECONDS))
         throw new IndexException("Timed out waiting for sorted index bucket writers");
@@ -546,7 +563,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
           final int active = activeWriters.incrementAndGet();
           maxActiveWriters.accumulateAndGet(active, Math::max);
           try {
-            for (int i = 0; i < batch.size(); i++) {
+            for (int i = 0; i < batch.size; i++) {
               if (failure.get() != null)
                 return;
               final BucketWriter writer = batch.writer(i);
@@ -558,10 +575,11 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
             activeWriters.decrementAndGet();
           }
         }
+      } catch (final InterruptedException error) {
+        failure.compareAndSet(null, error);
+        Thread.currentThread().interrupt();
       } catch (final Throwable error) {
         failure.compareAndSet(null, error);
-        if (error instanceof InterruptedException)
-          Thread.currentThread().interrupt();
       }
     }
 
@@ -633,10 +651,6 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
 
     private RID[] rids(final int index) {
       return rids[index];
-    }
-
-    private int size() {
-      return size;
     }
 
     private boolean isEmpty() {
