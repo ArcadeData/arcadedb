@@ -112,6 +112,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # A test that derives its path from SERVER_ROOT_PATH cannot be caught by the static grep in
+      # the setup job - only the directory it leaves behind proves it wrote outside target/.
+      - name: Check no test leaked a databases/ directory
+        run: ./.github/scripts/check-test-database-paths.sh --runtime
+
       - name: Unit Tests Reporter
         uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         if: success() || failure()

@@ -539,7 +539,7 @@ class OpenCypherCollectUnwindTest extends TestHelper {
 
     @BeforeEach
     void setUp() {
-      tagDatabase = new DatabaseFactory("./target/databases/testopencypher-issue3758").create();
+      tagDatabase = TestHelper.createDatabase("./target/databases/testopencypher-issue3758");
 
       tagDatabase.getSchema().createVertexType("Question");
       tagDatabase.getSchema().createVertexType("Tag");
@@ -716,7 +716,7 @@ class OpenCypherCollectUnwindTest extends TestHelper {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/issue-3129").create();
+      database = TestHelper.createDatabase("./target/databases/issue-3129");
       database.getSchema().createVertexType("CHUNK");
     }
 
@@ -836,7 +836,7 @@ class OpenCypherCollectUnwindTest extends TestHelper {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/issue-3138").create();
+      database = TestHelper.createDatabase("./target/databases/issue-3138");
       database.getSchema().createVertexType("Source");
       database.getSchema().createVertexType("Target");
       database.getSchema().createEdgeType("in");
@@ -1256,7 +1256,7 @@ class OpenCypherCollectUnwindTest extends TestHelper {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/test-issue-3154").create();
+      database = TestHelper.createDatabase("./target/databases/test-issue-3154");
       database.getSchema().createVertexType("CHUNK");
       database.getSchema().createVertexType("CHUNK_EMBEDDING");
       database.getSchema().createVertexType("USER_RIGHTS");

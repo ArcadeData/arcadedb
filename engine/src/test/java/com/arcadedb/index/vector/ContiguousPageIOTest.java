@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Verifies that data written at specific positions can be read back correctly.
  */
 class ContiguousPageIOTest {
-  private static final String DB_PATH = "databases/test-contiguous-io";
+  private static final String DB_PATH = "target/databases/test-contiguous-io";
 
   @AfterEach
   void cleanup() {

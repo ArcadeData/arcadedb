@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * LSM vector chunked-write regression tests: mid-page boundary, mixed-type chunks, and corrupted content-size clamping.
  */
 class LSMVectorIndexChunkedWriteTest {
-  private static final String DB_PATH = "databases/test-lsm-vector-chunked-write";
+  private static final String DB_PATH = "target/databases/test-lsm-vector-chunked-write";
 
   @AfterEach
   void cleanup() {

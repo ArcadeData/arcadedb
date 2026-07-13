@@ -207,6 +207,7 @@ class BatchInsertUpdateTest {
 
   @BeforeEach
   void beginTests() {
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     FileUtils.deleteRecursively(new File(rootPath + "/databases"));
