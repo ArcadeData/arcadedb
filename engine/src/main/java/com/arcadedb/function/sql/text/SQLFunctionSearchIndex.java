@@ -26,11 +26,11 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextQueryExecutor;
+import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
@@ -42,7 +42,6 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -257,40 +256,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
    * Performs the full-text search across all bucket indexes and returns a map of RID to score.
    */
   private Map<RID, Float> performSearch(final String indexName, final String queryString, final Database database) {
-    final Map<RID, Float> allResults = new HashMap<>();
-
-    final Index index = database.getSchema().getIndexByName(indexName);
-
-    if (index == null)
-      throw new CommandExecutionException("Index '" + indexName + "' not found");
-
-    if (!(index instanceof final TypeIndex typeIndex))
-      throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
-
-    // Get the underlying full-text index
-    final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
-    if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
-      throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
-
-    // Execute search across all bucket indexes
-    for (final Index bucketIndex : bucketIndexes) {
-      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
-        final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
-        final IndexCursor cursor = executor.search(queryString, -1);
-
-        while (cursor.hasNext()) {
-          final Identifiable match = cursor.next();
-          final float score = cursor.getFloatScore();
-          // Float::sum across buckets: a given RID lives in exactly one bucket, so a RID is produced by at most one bucket index
-          // and the merge is effectively an insert (no real summing). For CLASSIC the additive semantics would also be correct;
-          // for BM25 the per-bucket scoping relies on this one-bucket-per-RID invariant - if it ever broke, scores would be
-          // double-counted here rather than failing loudly.
-          allResults.merge(match.getIdentity(), score, Float::sum);
-        }
-      }
-    }
-
-    return allResults;
+    return FullTextSearch.search(database, indexName, queryString);
   }
 
   /**
