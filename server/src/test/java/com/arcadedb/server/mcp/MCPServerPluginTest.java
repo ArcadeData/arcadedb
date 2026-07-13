@@ -945,6 +945,23 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void fullTextSearchIndexNameWinsOverTypeName() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("typeName", "Searchable")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    // 'typeName' addresses an unrelated index (Searchable[text]); 'indexName' must win and be used as-is.
+    assertThat(payload.getString("indexName")).isEqualTo("Article[content]");
+  }
+
+  @Test
   void fullTextSearchByTypeNameAndProperties() throws Exception {
     final JSONObject response = callTool("full_text_search", new JSONObject()
         .put("database", getDatabaseName())
@@ -1030,7 +1047,10 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.getBoolean("isError", false)).isTrue();
     final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("Article[title]");
     assertThat(errorText).contains("is not a full-text index");
+    assertThat(errorText).containsIgnoringCase("available full-text indexes");
+    assertThat(errorText).contains("Article[content]");
   }
 
   @Test

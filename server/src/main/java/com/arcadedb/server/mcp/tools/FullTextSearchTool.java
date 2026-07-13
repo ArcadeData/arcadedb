@@ -90,8 +90,8 @@ public class FullTextSearchTool {
 
     final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
-    final String indexName = resolveIndexName(database, args);
-    final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(database, indexName);
+    final TypeIndex typeIndex = resolveIndex(database, args);
+    final String indexName = typeIndex.getName();
 
     final Map<RID, Float> hits = FullTextSearch.search(database, indexName, queryText);
 
@@ -139,9 +139,10 @@ public class FullTextSearchTool {
 
   /**
    * Resolves the target index from 'indexName', or from 'typeName' with optional 'properties'. 'indexName' wins
-   * when both addressing forms are supplied.
+   * when both addressing forms are supplied. Resolution happens exactly once here; callers must not re-resolve the
+   * returned TypeIndex by name.
    */
-  private static String resolveIndexName(final Database database, final JSONObject args) {
+  private static TypeIndex resolveIndex(final Database database, final JSONObject args) {
     final String indexName = args.getString("indexName", null);
 
     if (indexName != null && !indexName.isBlank())
@@ -167,46 +168,54 @@ public class FullTextSearchTool {
     // supertype is named for the supertype, so a subtype name resolves nothing here even though the index applies
     // to its records too; the error from describeAvailable() points the caller at the supertype's index name.
     final String prefix = typeName + "[";
+    final List<String> allIndexes = FullTextSearch.listFullTextIndexes(database);
     final List<String> candidates = new ArrayList<>();
-    for (final String name : FullTextSearch.listFullTextIndexes(database))
+    for (final String name : allIndexes)
       if (name.startsWith(prefix))
         candidates.add(name);
 
     if (candidates.isEmpty())
       throw new IllegalArgumentException(
-          "No full-text index found on type '" + typeName + "'. " + describeAvailable(database));
+          "No full-text index found on type '" + typeName + "'. " + describeAvailable(database, allIndexes));
 
     if (candidates.size() > 1)
       throw new IllegalArgumentException("Type '" + typeName + "' has several full-text indexes: " + candidates
           + ". Pass 'indexName', or narrow with 'properties'.");
 
-    return candidates.get(0);
+    return validateFullTextIndex(database, candidates.get(0));
   }
 
   /**
-   * Validates that the named index exists and is a full-text index. On the success path this costs a single index
-   * lookup, not a schema-wide scan: it relies on the exceptions FullTextSearch.resolveFullTextIndex already throws
-   * for an unknown or non-full-text name, and only enumerates every full-text index in the database (the cost
-   * describeAvailable pays) when building the error message.
+   * Validates that the named index exists and is a full-text index, and returns the resolved TypeIndex so the caller
+   * does not need to resolve the name a second time. On the success path this costs a single index lookup, not a
+   * schema-wide scan: it relies on the exceptions FullTextSearch.resolveFullTextIndex already throws for an unknown
+   * or non-full-text name, and only enumerates every full-text index in the database (the cost describeAvailable
+   * pays) when building the error message.
    */
-  private static String validateFullTextIndex(final Database database, final String indexName) {
+  private static TypeIndex validateFullTextIndex(final Database database, final String indexName) {
     try {
-      FullTextSearch.resolveFullTextIndex(database, indexName);
+      return FullTextSearch.resolveFullTextIndex(database, indexName);
     } catch (final SchemaException e) {
-      throw new IllegalArgumentException("Full-text index '" + indexName + "' does not exist. " + describeAvailable(database));
+      throw new IllegalArgumentException(
+          "Full-text index '" + indexName + "' does not exist. " + describeAvailable(database), e);
     } catch (final CommandExecutionException e) {
-      throw new IllegalArgumentException("Index '" + indexName + "' is not a full-text index. " + describeAvailable(database));
+      throw new IllegalArgumentException(
+          "Index '" + indexName + "' is not a full-text index. " + describeAvailable(database), e);
     }
-
-    return indexName;
   }
 
   /**
    * Builds the recovery hint appended to every addressing error, so the caller can self-correct without a further round-trip.
    */
   private static String describeAvailable(final Database database) {
-    final List<String> indexes = FullTextSearch.listFullTextIndexes(database);
+    return describeAvailable(database, FullTextSearch.listFullTextIndexes(database));
+  }
 
+  /**
+   * Same recovery hint as {@link #describeAvailable(Database)}, but reuses an already-materialized index list
+   * instead of walking the schema again when the caller has one on hand.
+   */
+  private static String describeAvailable(final Database database, final List<String> indexes) {
     if (indexes.isEmpty())
       return "Database '" + database.getName() + "' has no full-text indexes. Create one with: "
           + "CREATE INDEX ON <Type> (<property>) FULL_TEXT";
