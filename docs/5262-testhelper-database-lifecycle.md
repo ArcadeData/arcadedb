@@ -94,6 +94,32 @@ https://github.com/ArcadeData/arcadedb/pull/5264
 | 3 | `130e8173` | Runtime guard excludes `*/target/*`; documented the static grep's false-alarm bias. Declined the `reopenDatabase()` DRY suggestion (see below) | Claude: runtime backstop missing from the jobs that need it most |
 | 4 | `4a9a5108` | Runtime guard added to `slow-unit-tests`, `integration-tests`, `ha-integration-tests`; documented the second semantic change | Claude: no blockers |
 
+### The runtime guard caught a real leak on its first CI run
+
+`integration-tests` failed at the guard step with `leaked ./server/databases`.
+
+`TestLinkedPropertiesSchemaReloadIT` starts an `ArcadeDBServer` without setting `SERVER_ROOT_PATH`,
+so `SERVER_DATABASE_DIRECTORY` resolves to `./databases` and **the server** writes its database into
+the repo tree. The test never calls `new DatabaseFactory(...)` at all, so no grep over test sources
+could ever have found it. This is exactly the blind spot the runtime layer exists to cover, and it
+only surfaced because the check is wired into `integration-tests` - had it stayed only in
+`unit-tests`, this would have shipped as a silent hole in the very thing the PR claims to fix.
+
+Fixed with the same one-line `SERVER_ROOT_PATH` set.
+
+**Verified against `main` as a control, on the same machine:**
+
+| run | IT failures | failing classes | leaked `server/databases`? |
+|---|---|---|---|
+| `main` (control) | 5 | RemoteDatabaseIT, BackupHttpErrorHandlingIT, HttpRedMetricsIT, StudioProductionModeIT | **yes - `testLocalDateTimeOrderBy`** |
+| branch, run 1 | 6 | the same 4 + QueryRedMetricsIT | no |
+| branch, run 2 | 5 | **the same 4 - identical to `main`** | no |
+
+So: the branch reproduces `main`'s exact failure set (those 4 are pre-existing on this machine),
+`QueryRedMetricsIT` is an order-dependent flake - it asserts against the JVM-global Micrometer
+`Metrics.globalRegistry`, has zero references to `SERVER_ROOT_PATH` or `databases`, and passes in
+isolation - and only `main` leaks a database directory. The fix holds.
+
 ### Declined
 
 **Reuse `TestHelper.reopenDatabase()` in `RecordRecyclingTest.createAndDeleteGraph()`.** Not
