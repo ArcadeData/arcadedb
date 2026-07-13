@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,19 +33,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * between those orphans, and still report {@code relationshipsCreated: 1}. Neo4j and Memgraph both
  * reject such queries.
  */
-class Issue5257CallSubqueryRelationshipScopeTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-issue5257").create();
+class Issue5257CallSubqueryRelationshipScopeTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.command("opencypher", "CREATE (:A {id: 1}), (:B {id: 2})");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null && database.isOpen())
-      database.drop();
   }
 
   /** The reporter's case 1: CREATE of a relationship between two unimported outer variables. */
