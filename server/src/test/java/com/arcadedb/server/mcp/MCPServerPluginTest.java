@@ -79,6 +79,12 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       // A second full-text index on Article, so 'typeName: Article' alone is ambiguous between the two.
       db.command("sql", "CREATE INDEX ON Article (title, content) FULL_TEXT");
 
+      // The schema strips spaces when deriving an index name, so a property named 'my prop' yields Spaced[myprop].
+      db.command("sql", "CREATE DOCUMENT TYPE Spaced BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY Spaced.`my prop` STRING");
+      db.command("sql", "CREATE INDEX ON Spaced (`my prop`) FULL_TEXT");
+      db.command("sql", "INSERT INTO Spaced SET `my prop` = 'java tooling'");
+
       // A full-text index declared on a supertype is named for the supertype and still returns subtype records.
       db.command("sql", "CREATE DOCUMENT TYPE Searchable");
       db.command("sql", "CREATE PROPERTY Searchable.text STRING");
@@ -948,6 +954,41 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(negativeResponse.getBoolean("isError", false)).isTrue();
     final String negativeErrorText = negativeResponse.getJSONArray("content").getJSONObject(0).getString("text");
     assertThat(negativeErrorText).containsIgnoringCase("limit");
+  }
+
+  @Test
+  void fullTextSearchDerivesIndexNameWithSpacesStripped() throws Exception {
+    // The schema registered this index as Spaced[myprop]; deriving 'Spaced[my prop]' verbatim would never match it.
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("typeName", "Spaced")
+        .put("properties", new JSONArray().put("my prop"))
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getString("indexName")).isEqualTo("Spaced[myprop]");
+    assertThat(payload.getInt("count")).isEqualTo(1);
+  }
+
+  @Test
+  void fullTextSearchRejectsBlankQueryText() throws Exception {
+    // The Lucene parser turns a blank query into IndexException("Invalid search query: "), which names no cause. The
+    // tool must reject it with a message that says which argument is wrong.
+    for (final String blank : new String[] { "", "   " }) {
+      final JSONObject response = callTool("full_text_search", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("indexName", "Article[content]")
+          .put("queryText", blank));
+
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+      assertThat(errorText).contains("queryText");
+      assertThat(errorText).doesNotContain("Invalid search query");
+    }
   }
 
   @Test

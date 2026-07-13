@@ -90,6 +90,12 @@ public class FullTextSearchTool {
 
     final String databaseName = args.getString("database");
     final String queryText = args.getString("queryText");
+    // A blank query reaches the Lucene parser as an empty clause set and surfaces as IndexException("Invalid search
+    // query: "), which names no cause. Reject it here so the caller learns what is actually wrong.
+    if (queryText.isBlank())
+      throw new IllegalArgumentException("'queryText' must not be blank. Provide at least one term, for example 'java' "
+          + "or '+java -python'.");
+
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
     if (limit < 1)
       throw new IllegalArgumentException("'limit' must be at least 1, got " + limit);
@@ -173,7 +179,11 @@ public class FullTextSearchTool {
           derived.append(',');
         derived.append(properties.getString(i));
       }
-      return validateFullTextIndex(database, derived.append(']').toString());
+      derived.append(']');
+      // The schema derives an index name as typeName + Arrays.toString(propertyNames) with every space stripped from the
+      // result, so strip spaces here too. Otherwise a property name containing a space would derive a name that can never
+      // match the one the schema registered.
+      return validateFullTextIndex(database, derived.toString().replace(" ", ""));
     }
 
     // 'typeName' alone is usable only when the type carries exactly one full-text index. An index declared on a
