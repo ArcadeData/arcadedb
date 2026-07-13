@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.mcp;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -50,6 +51,24 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("enabled", true)
         .put("allowReads", true)
         .put("allowedUsers", new JSONArray().put("root")));
+    seedFullTextIndex();
+  }
+
+  private void seedFullTextIndex() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("Article"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE DOCUMENT TYPE Article");
+      db.command("sql", "CREATE PROPERTY Article.title STRING");
+      db.command("sql", "CREATE PROPERTY Article.content STRING");
+      db.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+      db.command("sql", "CREATE INDEX ON Article (title) UNIQUE");
+
+      db.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
+      db.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'python scripting language'");
+    });
   }
 
   @Test
@@ -77,7 +96,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(10);
+    assertThat(tools.length()).isEqualTo(11);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -828,6 +847,60 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(errorText).contains("nonexistent_db");
     assertThat(errorText).containsIgnoringCase("available databases");
     assertThat(errorText).contains("graph");
+  }
+
+  @Test
+  void fullTextSearchByIndexName() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getString("indexName")).isEqualTo("Article[content]");
+    assertThat(payload.getString("similarity")).isEqualTo("BM25");
+    assertThat(payload.getInt("count")).isEqualTo(1);
+
+    final JSONObject hit = payload.getJSONArray("results").getJSONObject(0);
+    assertThat(hit.getString("rid")).startsWith("#");
+    assertThat(hit.getFloat("score")).isGreaterThan(0f);
+    assertThat(hit.getJSONObject("properties").getString("title")).isEqualTo("Doc1");
+  }
+
+  @Test
+  void fullTextSearchRanksAndLimits() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "language")
+        .put("limit", 1));
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    // Both articles contain "language"; limit must cut the result set to the single best-scoring hit.
+    assertThat(payload.getInt("count")).isEqualTo(1);
+  }
+
+  @Test
+  void fullTextSearchDeniedWhenReadsDisabled() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("not allowed");
   }
 
   // ---- Helper methods ----
