@@ -18,14 +18,12 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedWriter;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -38,36 +36,32 @@ import static org.assertj.core.api.Assertions.assertThat;
  * These functions are only useful when run on a query that uses LOAD CSV.
  * In all other contexts they always return null.
  */
-class OpenCypherLoadCsvFunctionsComprehensiveTest {
+class OpenCypherLoadCsvFunctionsComprehensiveTest extends TestHelper {
 
-  private Database database;
   private Path testCsvFile;
 
-  @BeforeEach
-  void setUp() throws Exception {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-cypher-load-csv-functions");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-
+  @Override
+  protected void beginTest() {
     // Create test CSV file with headers
-    testCsvFile = Files.createTempFile("test-load-csv", ".csv");
-    try (BufferedWriter writer = Files.newBufferedWriter(testCsvFile)) {
-      writer.write("name,age,city");
-      writer.newLine();
-      writer.write("Alice,30,Paris");
-      writer.newLine();
-      writer.write("Bob,25,London");
-      writer.newLine();
-      writer.write("Charlie,35,Berlin");
-      writer.newLine();
+    try {
+      testCsvFile = Files.createTempFile("test-load-csv", ".csv");
+      try (BufferedWriter writer = Files.newBufferedWriter(testCsvFile)) {
+        writer.write("name,age,city");
+        writer.newLine();
+        writer.write("Alice,30,Paris");
+        writer.newLine();
+        writer.write("Bob,25,London");
+        writer.newLine();
+        writer.write("Charlie,35,Berlin");
+        writer.newLine();
+      }
+    } catch (final IOException e) {
+      throw new RuntimeException("Error on creating the test CSV file", e);
     }
   }
 
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
+  @Override
+  protected void endTest() {
     if (testCsvFile != null) {
       try {
         Files.deleteIfExists(testCsvFile);

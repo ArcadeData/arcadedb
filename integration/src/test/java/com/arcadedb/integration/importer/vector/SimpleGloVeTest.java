@@ -56,7 +56,7 @@ public class SimpleGloVeTest {
 
   public SimpleGloVeTest() {
 
-    final DatabaseFactory factory = new DatabaseFactory("databases/glovedb");
+    final DatabaseFactory factory = new DatabaseFactory("target/databases/glovedb");
     final Database database;
 
     try {

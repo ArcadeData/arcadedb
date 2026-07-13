@@ -18,13 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,19 +35,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5213NestedCallScopeTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-issue5213").create();
+class Issue5213NestedCallScopeTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.command("opencypher", "CREATE (a:C1 {id: 1}), (b:C2 {v: 21}), (a)-[:R]->(b)");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null && database.isOpen())
-      database.drop();
   }
 
   /**

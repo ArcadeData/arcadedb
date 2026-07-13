@@ -18,13 +18,10 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -41,13 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class OpenCypherExpressionTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-expression").create();
-
+class OpenCypherExpressionTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     // Create schema
     database.getSchema().createVertexType("Person");
 
@@ -71,12 +64,6 @@ class OpenCypherExpressionTest {
           .set("salary", 60000)
           .save();
     });
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null)
-      database.drop();
   }
 
   // ============================================================================

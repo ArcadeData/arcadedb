@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,19 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5226CallMatchEdgeLabelTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-issue5226").create();
+class Issue5226CallMatchEdgeLabelTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.command("opencypher", "CREATE (a:A {v: 1}), (b:B {v: 2}), (a)-[:EdgeLabel]->(b)");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null && database.isOpen())
-      database.drop();
   }
 
   private long count(final String cypher) {

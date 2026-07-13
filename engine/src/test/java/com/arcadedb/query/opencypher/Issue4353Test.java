@@ -18,14 +18,11 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -39,15 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue4353Test {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-issue-4353");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
+class Issue4353Test extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("Worker");
     database.getSchema().createEdgeType("REPORTS_TO");
 
@@ -61,12 +52,6 @@ class Issue4353Test {
         (a)-[:REPORTS_TO]->(b), \
         (b)-[:REPORTS_TO]->(c), \
         (c)-[:REPORTS_TO]->(d)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
   }
 
   @Test

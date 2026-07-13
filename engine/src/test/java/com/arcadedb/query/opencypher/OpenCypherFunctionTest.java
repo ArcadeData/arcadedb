@@ -18,13 +18,12 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -40,13 +39,9 @@ import static org.assertj.core.api.Assertions.within;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class OpenCypherFunctionTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-function").create();
-
+class OpenCypherFunctionTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     // Create schema
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Company");
@@ -81,13 +76,6 @@ class OpenCypherFunctionTest {
       bob.newEdge("WORKS_AT", arcadedb, "since", 2022).save();
       charlie.newEdge("KNOWS", alice, "since", 2019).save();
     });
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null) {
-      database.drop();
-    }
   }
 
   @Test

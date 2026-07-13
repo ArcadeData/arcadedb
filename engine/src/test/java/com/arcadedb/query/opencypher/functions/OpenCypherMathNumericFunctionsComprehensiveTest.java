@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,22 +30,7 @@ import static org.assertj.core.api.Assertions.within;
  * Comprehensive tests for OpenCypher Mathematical Numeric functions based on Neo4j Cypher documentation.
  * Tests cover: abs(), ceil(), floor(), isNaN(), rand(), round(), sign()
  */
-class OpenCypherMathNumericFunctionsComprehensiveTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-cypher-math-numeric");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
-  }
+class OpenCypherMathNumericFunctionsComprehensiveTest extends TestHelper {
 
   // ==================== abs() Tests ====================
 

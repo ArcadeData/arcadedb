@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -39,12 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class OpenCypherPatternComprehensionRelPropertyTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-pc-rel-property").create();
+class OpenCypherPatternComprehensionRelPropertyTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("VZ");
     database.getSchema().createEdgeType("VE");
 
@@ -61,12 +55,6 @@ class OpenCypherPatternComprehensionRelPropertyTest {
         (b)-[:VE {w: 2}]->(c), \
         (a)-[:VE {w: 3}]->(d), \
         (d)-[:VE {w: 4}]->(c)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
   }
 
   @Test

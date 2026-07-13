@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,22 +30,7 @@ import static org.assertj.core.api.Assertions.within;
  * Comprehensive tests for OpenCypher Mathematical Logarithmic functions based on Neo4j Cypher documentation.
  * Tests cover: e(), exp(), log(), log10(), sqrt()
  */
-class OpenCypherMathLogarithmicFunctionsComprehensiveTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-cypher-math-log");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
-  }
+class OpenCypherMathLogarithmicFunctionsComprehensiveTest extends TestHelper {
 
   // ==================== e() Tests ====================
 

@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -35,20 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for Cypher list predicate functions: all(), any(), none(), single().
  * Regression test for https://github.com/ArcadeData/arcadedb/issues/3334
  */
-class OpenCypherListPredicateTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-list-predicates").create();
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null)
-      database.drop();
-  }
-
+class OpenCypherListPredicateTest extends TestHelper {
   @Test
   void allPredicates() {
     // Exact query from the issue

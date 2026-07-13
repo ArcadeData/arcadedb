@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -37,20 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5180TrailingCommaListLiteralTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-5180-trailing-comma-list").create();
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
-  }
-
+class Issue5180TrailingCommaListLiteralTest extends TestHelper {
   @Test
   void trailingCommaInListLiteralIsAccepted() {
     try (final ResultSet rs = database.query("opencypher", "RETURN [1, 2,] AS x")) {

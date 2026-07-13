@@ -18,13 +18,10 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -44,13 +41,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5136MatchMultipleCreateOptimizerTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-issue5136").create();
-
+public class Issue5136MatchMultipleCreateOptimizerTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.transaction(() -> {
       final var personType = database.getSchema().createVertexType("Person");
       personType.createProperty("id", Integer.class);
@@ -71,14 +64,6 @@ public class Issue5136MatchMultipleCreateOptimizerTest {
         database.command("opencypher",
             "CREATE (p:Person {name: 'Person" + i + "', id: " + i + ", age: " + (20 + (i % 50)) + ", city: 'c" + i + "'})");
     });
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null) {
-      database.drop();
-      database = null;
-    }
   }
 
   /**

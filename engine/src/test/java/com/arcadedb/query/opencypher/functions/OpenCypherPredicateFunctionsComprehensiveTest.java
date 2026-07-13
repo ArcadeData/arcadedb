@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,16 +29,9 @@ import org.assertj.core.api.Assertions;
  * Comprehensive tests for OpenCypher Predicate functions based on Neo4j Cypher documentation.
  * Tests cover: all(), allReduce(), any(), exists(), isEmpty(), none(), single()
  */
-class OpenCypherPredicateFunctionsComprehensiveTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-cypher-predicate-functions");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-
+class OpenCypherPredicateFunctionsComprehensiveTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     // Create test graph matching Neo4j documentation
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Movie");
@@ -66,12 +56,6 @@ class OpenCypherPredicateFunctionsComprehensiveTest {
         (liam)-[:KNOWS {since: 2009}]->(guy), \
         (keanu)-[:ACTED_IN]->(theMatrix), \
         (carrie)-[:ACTED_IN]->(theMatrix)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
   }
 
   // ==================== all() Tests ====================

@@ -40,7 +40,12 @@ class RemoteSafeCloseDatabaseIT {
   void createDatabaseThenStartAndStopServer() {
     final String DATABASE_NAME = "test";
     final int PARALLEL_LEVEL = 6;
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/" + DATABASE_NAME)) {
+
+    // The server resolves its database directory from SERVER_ROOT_PATH, so the database has to be
+    // created under the same root the server will later read it from.
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+
+    try (DatabaseFactory databaseFactory = new DatabaseFactory("./target/databases/" + DATABASE_NAME)) {
       if (databaseFactory.exists()) {
         databaseFactory.open().drop();
       }
