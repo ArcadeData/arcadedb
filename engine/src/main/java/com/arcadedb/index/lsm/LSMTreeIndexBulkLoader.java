@@ -60,7 +60,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private final Path                       spillDirectory;
   private final Path                       spillWorkspace;
   private final int                        mergeFanIn;
-  private final int                        requestedWriterParallelism;
+  private final int                        requestedBuildParallelism;
   private final int                        maxEntriesPerRun;
   private final List<Entry>                entries;
   private final BuildTestHook               buildTestHook;
@@ -89,11 +89,11 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
 
   public LSMTreeIndexBulkLoader(final DatabaseInternal database, final String indexName,
       final long configuredMemoryBudgetBytes, final Path spillDirectory, final int mergeFanIn,
-      final Path spillWorkspace, final int writerParallelism) {
+      final Path spillWorkspace, final int buildParallelism) {
     if (mergeFanIn < 2)
       throw new IllegalArgumentException("mergeFanIn must be at least 2");
-    if (writerParallelism < 1)
-      throw new IllegalArgumentException("writerParallelism must be at least 1");
+    if (buildParallelism < 1)
+      throw new IllegalArgumentException("buildParallelism must be at least 1");
 
     this.database = database;
     this.indexName = indexName;
@@ -101,17 +101,17 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     this.spillDirectory = spillDirectory;
     this.spillWorkspace = spillWorkspace;
     this.mergeFanIn = mergeFanIn;
-    this.requestedWriterParallelism = writerParallelism;
+    this.requestedBuildParallelism = buildParallelism;
     this.maxEntriesPerRun = (int) Math.max(1L,
         Math.min(Integer.MAX_VALUE, memoryBudgetBytes / ESTIMATED_BYTES_PER_ENTRY));
     this.entries = new ArrayList<>(Math.min(maxEntriesPerRun, 65_536));
     this.buildTestHook = BUILD_TEST_HOOK.get();
 
     LogManager.instance().log(this, Level.INFO,
-        "Sorted index build '%s': memoryBudget=%s maxEntriesPerRun=%,d spillParent=%s mergeFanIn=%d writerParallelism=%d",
+        "Sorted index build '%s': memoryBudget=%s maxEntriesPerRun=%,d spillParent=%s mergeFanIn=%d buildParallelism=%d",
         indexName, FileUtils.getSizeAsString(memoryBudgetBytes), maxEntriesPerRun,
         spillDirectory != null ? spillDirectory : Path.of(database.getDatabasePath()), mergeFanIn,
-        requestedWriterParallelism);
+        requestedBuildParallelism);
   }
 
   public void add(final LSMTreeIndex index, final Document record) {
@@ -146,7 +146,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       final long started = System.nanoTime();
       final long mergeNanosBeforeStream = getMaterializedMergeNanos();
       final long streamStarted = System.nanoTime();
-      admittedWriterParallelism = selectWriterParallelism(requestedWriterParallelism, indexesByBucket.size(),
+      admittedWriterParallelism = selectWriterParallelism(requestedBuildParallelism, indexesByBucket.size(),
           memoryBudgetBytes, Runtime.getRuntime().availableProcessors(),
           LSMTreeIndexExternalSorter.getAvailableFileDescriptors());
 
@@ -288,7 +288,10 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
 
   public StageMetrics getStageMetrics() {
     return new StageMetrics(mergeFanIn, externalSorter != null ? externalSorter.getMergeFanIn() : mergeFanIn,
-        requestedWriterParallelism, admittedWriterParallelism, maxConcurrentWriters,
+        requestedBuildParallelism,
+        externalSorter != null ? externalSorter.getAdmittedMergeParallelism() : 1,
+        externalSorter != null ? externalSorter.getMaxConcurrentMerges() : 0,
+        admittedWriterParallelism, maxConcurrentWriters,
         externalSorter != null ? externalSorter.getInitialRunCount() : 0,
         externalSorter != null ? externalSorter.getRunCount() : 0,
         externalSorter != null ? externalSorter.getInitialRunEntries() : 0L,
@@ -366,7 +369,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     try {
       if (externalSorter == null)
         externalSorter = new LSMTreeIndexExternalSorter(database, binaryKeyTypes, indexesByBucket, spillDirectory,
-            mergeFanIn, memoryBudgetBytes, spillWorkspace);
+            mergeFanIn, memoryBudgetBytes, spillWorkspace, requestedBuildParallelism);
       externalSorter.addRun(entries);
       entries.clear();
     } catch (final IOException error) {
@@ -448,7 +451,8 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   }
 
   public record StageMetrics(int requestedMergeFanIn, int admittedMergeFanIn,
-                             int requestedWriterParallelism, int admittedWriterParallelism,
+                             int requestedBuildParallelism, int admittedMergeParallelism,
+                             int maxConcurrentMerges, int admittedWriterParallelism,
                              int maxConcurrentWriters, int initialRuns, int finalRuns,
                              long initialRunEntries, long initialRunBytes, long initialRunNanos,
                              long inMemorySortNanos, int materializedMergeGenerations,

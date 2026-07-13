@@ -23,7 +23,8 @@ import com.arcadedb.serializer.json.JSONObject;
 /** Versioned, coarse-grained diagnostics for one successful sorted LSM index build. */
 record SortedIndexBuildMetrics(String logicalIndexName, boolean unique, long scannedRecords, long logicalEntries,
     long writtenEntries, int bucketIndexes, long memoryBudgetBytes, int requestedMergeFanIn, int admittedMergeFanIn,
-    int requestedWriterParallelism, int admittedWriterParallelism, int maxConcurrentWriters,
+    int requestedBuildParallelism, int admittedMergeParallelism, int maxConcurrentMerges,
+    int admittedWriterParallelism, int maxConcurrentWriters,
     int initialRuns, int finalRuns, int materializedMergeGenerations,
     long initialRunEntries, long initialRunBytes, long materializedMergeEntries, long materializedMergeBytes,
     long totalSpillBytes, long bucketIndexCreationNanos, long sourceScanNanos, long initialRunGenerationNanos,
@@ -37,7 +38,8 @@ record SortedIndexBuildMetrics(String logicalIndexName, boolean unique, long sca
       final long totalNanos) {
     return new SortedIndexBuildMetrics(logicalIndexName, unique, scannedRecords, logicalEntries, writtenEntries,
         bucketIndexes, memoryBudgetBytes, requestedMergeFanIn, admittedMergeFanIn,
-        requestedWriterParallelism, admittedWriterParallelism, maxConcurrentWriters, initialRuns, finalRuns,
+        requestedBuildParallelism, admittedMergeParallelism, maxConcurrentMerges,
+        admittedWriterParallelism, maxConcurrentWriters, initialRuns, finalRuns,
         materializedMergeGenerations, initialRunEntries, initialRunBytes, materializedMergeEntries,
         materializedMergeBytes, totalSpillBytes, bucketIndexCreationNanos, sourceScanNanos,
         initialRunGenerationNanos, inMemorySortNanos, materializedMergeNanos, finalStreamAndWriteNanos,
@@ -55,7 +57,9 @@ record SortedIndexBuildMetrics(String logicalIndexName, boolean unique, long sca
         .put("memory_budget_bytes", memoryBudgetBytes)
         .put("requested_merge_fan_in", requestedMergeFanIn)
         .put("admitted_merge_fan_in", admittedMergeFanIn)
-        .put("requested_writer_parallelism", requestedWriterParallelism)
+        .put("requested_build_parallelism", requestedBuildParallelism)
+        .put("admitted_merge_parallelism", admittedMergeParallelism)
+        .put("max_concurrent_merges", maxConcurrentMerges)
         .put("admitted_writer_parallelism", admittedWriterParallelism)
         .put("max_concurrent_writers", maxConcurrentWriters);
 

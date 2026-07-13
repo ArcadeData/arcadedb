@@ -111,8 +111,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
-   * Sets the requested bucket-writer parallelism for a sorted build. Admission is bounded by bucket count,
-   * processor headroom, memory budget, and available file descriptors. The default is one.
+   * Sets requested parallelism for independent sorted-build merge groups and bucket writers. Each stage is admitted
+   * independently against its work count, processor headroom, memory budget, and available file descriptors. The final
+   * global stream remains serial. The default is one.
    */
   public TypeIndexBuilder withBuildParallelism(final int parallelism) {
     if (parallelism < 1)
@@ -465,7 +466,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         "Published sorted index '%s': records=%,d bucketIndexes=%d", logicalIndexName, scannedRecords.get(), indexes.length);
     return new SortedIndexBuildMetrics(logicalIndexName, unique, scannedRecords.get(), logicalEntries,
         outcome.entries(), indexes.length, outcome.memoryBudgetBytes(), stageMetrics.requestedMergeFanIn(),
-        stageMetrics.admittedMergeFanIn(), stageMetrics.requestedWriterParallelism(),
+        stageMetrics.admittedMergeFanIn(), stageMetrics.requestedBuildParallelism(),
+        stageMetrics.admittedMergeParallelism(), stageMetrics.maxConcurrentMerges(),
         stageMetrics.admittedWriterParallelism(), stageMetrics.maxConcurrentWriters(),
         stageMetrics.initialRuns(), stageMetrics.finalRuns(),
         stageMetrics.materializedMergeGenerations(), stageMetrics.initialRunEntries(), stageMetrics.initialRunBytes(),

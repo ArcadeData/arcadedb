@@ -66,7 +66,9 @@ class SortedIndexBuildMetricsTest extends TestHelper {
     assertThat(metrics.memoryBudgetBytes()).isEqualTo(1L << 20);
     assertThat(metrics.requestedMergeFanIn()).isEqualTo(2);
     assertThat(metrics.admittedMergeFanIn()).isEqualTo(2);
-    assertThat(metrics.requestedWriterParallelism()).isEqualTo(1);
+    assertThat(metrics.requestedBuildParallelism()).isEqualTo(1);
+    assertThat(metrics.admittedMergeParallelism()).isEqualTo(1);
+    assertThat(metrics.maxConcurrentMerges()).isEqualTo(1);
     assertThat(metrics.admittedWriterParallelism()).isEqualTo(1);
     assertThat(metrics.maxConcurrentWriters()).isEqualTo(1);
     assertThat(metrics.initialRuns()).isGreaterThan(2);
@@ -91,7 +93,9 @@ class SortedIndexBuildMetricsTest extends TestHelper {
 
     final JSONObject json = metrics.toJSON();
     assertThat(json.getInt("format_version")).isEqualTo(SortedIndexBuildMetrics.FORMAT_VERSION);
-    assertThat(json.getJSONObject("resources").getInt("requested_writer_parallelism")).isEqualTo(1);
+    assertThat(json.getJSONObject("resources").getInt("requested_build_parallelism")).isEqualTo(1);
+    assertThat(json.getJSONObject("resources").getInt("admitted_merge_parallelism")).isEqualTo(1);
+    assertThat(json.getJSONObject("resources").getInt("max_concurrent_merges")).isEqualTo(1);
     assertThat(json.getJSONObject("resources").getInt("admitted_writer_parallelism")).isEqualTo(1);
     assertThat(json.getJSONObject("resources").getInt("max_concurrent_writers")).isEqualTo(1);
     assertThat(json.getJSONObject("external_sort").getBoolean("enabled")).isTrue();
@@ -134,6 +138,7 @@ class SortedIndexBuildMetricsTest extends TestHelper {
     assertThat(metrics.initialRunGenerationNanos()).isZero();
     assertThat(metrics.inMemorySortNanos()).isGreaterThan(0);
     assertThat(metrics.materializedMergeNanos()).isZero();
+    assertThat(metrics.maxConcurrentMerges()).isZero();
     assertThat(metrics.finalStreamAndWriteNanos()).isGreaterThan(0);
     assertThat(metrics.toJSON().getJSONObject("external_sort").getBoolean("enabled")).isFalse();
   }
@@ -164,10 +169,47 @@ class SortedIndexBuildMetricsTest extends TestHelper {
 
     final SortedIndexBuildMetrics metrics = captured.get();
     assertThat(metrics).isNotNull();
-    assertThat(metrics.requestedWriterParallelism()).isEqualTo(4);
+    assertThat(metrics.requestedBuildParallelism()).isEqualTo(4);
     assertThat(metrics.admittedWriterParallelism()).isBetween(1, 4);
     assertThat(metrics.maxConcurrentWriters()).isBetween(1, metrics.admittedWriterParallelism());
-    assertThat(metrics.toJSON().getJSONObject("resources").getInt("requested_writer_parallelism")).isEqualTo(4);
+    assertThat(metrics.toJSON().getJSONObject("resources").getInt("requested_build_parallelism")).isEqualTo(4);
+  }
+
+  @Test
+  void capturesBoundedMergeParallelism() {
+    final AtomicReference<SortedIndexBuildMetrics> captured = new AtomicReference<>();
+    TypeIndexBuilder.setSortedBuildMetricsTestHook(captured::set);
+    try {
+      final DocumentType type = database.getSchema().createDocumentType("MetricsParallelMerge");
+      type.createProperty("lookupKey", Type.STRING);
+      database.transaction(() -> {
+        for (int i = 0; i < 25_000; i++)
+          database.newDocument("MetricsParallelMerge").set("lookupKey", "key-%08d".formatted(i)).save();
+      });
+
+      database.getSchema().buildTypeIndex("MetricsParallelMerge", new String[] { "lookupKey" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withBuildMode(IndexBuildMode.SORTED)
+          .withBuildMemoryBudget(24L << 20)
+          .withBuildMergeFanIn(2)
+          .withBuildParallelism(4)
+          .withUnique(true)
+          .create();
+    } finally {
+      TypeIndexBuilder.setSortedBuildMetricsTestHook(null);
+    }
+
+    final SortedIndexBuildMetrics metrics = captured.get();
+    assertThat(metrics).isNotNull();
+    assertThat(metrics.requestedBuildParallelism()).isEqualTo(4);
+    assertThat(metrics.admittedMergeParallelism()).isBetween(1, 2);
+    assertThat(metrics.maxConcurrentMerges()).isBetween(1, metrics.admittedMergeParallelism());
+    assertThat(metrics.materializedMergeGenerations()).isGreaterThan(0);
+    assertThat(metrics.admittedWriterParallelism()).isEqualTo(1);
+    final JSONObject resources = metrics.toJSON().getJSONObject("resources");
+    assertThat(resources.getInt("requested_build_parallelism")).isEqualTo(4);
+    assertThat(resources.getInt("admitted_merge_parallelism")).isEqualTo(metrics.admittedMergeParallelism());
+    assertThat(resources.getInt("max_concurrent_merges")).isEqualTo(metrics.maxConcurrentMerges());
   }
 
   private static long count(final IndexCursor cursor) {

@@ -70,6 +70,7 @@ class TestSortedIndexParallelismBenchmark {
     try {
       final Path sourcePath = BENCHMARK_ROOT.resolve("source");
       createSourceDatabase(sourcePath, entries, buckets);
+      assertSourceCount(sourcePath, entries);
       final Path serialBeforePath = BENCHMARK_ROOT.resolve("serial-before");
       final Path parallelPath = BENCHMARK_ROOT.resolve("parallel");
       final Path serialAfterPath = BENCHMARK_ROOT.resolve("serial-after");
@@ -85,23 +86,33 @@ class TestSortedIndexParallelismBenchmark {
 
       final double serialMeanNanos = (serialBefore.buildNanos() + serialAfter.buildNanos()) / 2D;
       final double speedup = (serialMeanNanos - parallel.buildNanos()) / serialMeanNanos * 100D;
+      final double serialMeanMergeNanos = (serialBefore.metrics().materializedMergeNanos()
+          + serialAfter.metrics().materializedMergeNanos()) / 2D;
+      final double mergeSpeedup = serialMeanMergeNanos > 0D
+          ? (serialMeanMergeNanos - parallel.metrics().materializedMergeNanos()) / serialMeanMergeNanos * 100D : 0D;
       final double serialMeanWriteNanos = (serialBefore.metrics().finalStreamAndWriteNanos()
           + serialAfter.metrics().finalStreamAndWriteNanos()) / 2D;
       final double writeSpeedup = (serialMeanWriteNanos - parallel.metrics().finalStreamAndWriteNanos())
           / serialMeanWriteNanos * 100D;
       System.out.printf(Locale.ROOT,
-          "%nSorted LSM bucket-writer parallelism benchmark%n" +
+          "%nSorted LSM build parallelism benchmark%n" +
               "entries: %,d%n" +
               "buckets: %,d%n" +
               "memory budget: %,d MiB%n" +
               "merge fan-in: %,d%n" +
               "requested parallelism: %,d%n" +
-              "admitted parallelism: %,d%n" +
+              "admitted merge parallelism: %,d%n" +
+              "observed concurrent merges: %,d%n" +
+              "admitted writer parallelism: %,d%n" +
+              "observed concurrent writers: %,d%n" +
               "serial before: %.3f s%n" +
               "parallel: %.3f s%n" +
               "serial after: %.3f s%n" +
               "serial mean: %.3f s%n" +
               "parallel speedup: %.1f%%%n" +
+              "serial materialized-merge mean: %.3f s%n" +
+              "parallel materialized merge: %.3f s%n" +
+              "materialized-merge speedup: %.1f%%%n" +
               "serial final-write mean: %.3f s%n" +
               "parallel final-write: %.3f s%n" +
               "final-write speedup: %.1f%%%n" +
@@ -110,9 +121,13 @@ class TestSortedIndexParallelismBenchmark {
               "serial before metrics: %s%n" +
               "parallel metrics: %s%n" +
               "serial after metrics: %s%n%n",
-          entries, buckets, memoryMiB, mergeFanIn, parallelism, parallel.metrics().admittedWriterParallelism(),
+          entries, buckets, memoryMiB, mergeFanIn, parallelism, parallel.metrics().admittedMergeParallelism(),
+          parallel.metrics().maxConcurrentMerges(), parallel.metrics().admittedWriterParallelism(),
+          parallel.metrics().maxConcurrentWriters(),
           serialBefore.buildNanos() / 1_000_000_000D, parallel.buildNanos() / 1_000_000_000D,
           serialAfter.buildNanos() / 1_000_000_000D, serialMeanNanos / 1_000_000_000D, speedup,
+          serialMeanMergeNanos / 1_000_000_000D,
+          parallel.metrics().materializedMergeNanos() / 1_000_000_000D, mergeSpeedup,
           serialMeanWriteNanos / 1_000_000_000D,
           parallel.metrics().finalStreamAndWriteNanos() / 1_000_000_000D, writeSpeedup,
           parallel.ascendingDigest(), parallel.descendingDigest(), serialBefore.metrics().toJSON(),
@@ -145,6 +160,14 @@ class TestSortedIndexParallelismBenchmark {
           }
         });
       }
+    }
+  }
+
+  private static void assertSourceCount(final Path path, final int expectedEntries) {
+    try (DatabaseFactory factory = new DatabaseFactory(path.toString()); Database database = factory.open()) {
+      assertThat(database.countType(TYPE_NAME, true))
+          .as("source records after benchmark fixture creation")
+          .isEqualTo(expectedEntries);
     }
   }
 
