@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionIndexContext;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
@@ -35,7 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 
-/** Builds empty non-unique LSM indexes from a bounded, globally sorted logical entry stream. */
+/** Builds empty LSM indexes from a bounded, globally sorted logical entry stream. */
 public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private static final ThreadLocal<BuildTestHook> BUILD_TEST_HOOK = new ThreadLocal<>();
 
@@ -54,6 +55,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private final Map<Integer, LSMTreeIndex> indexesByBucket = new LinkedHashMap<>();
   private       LSMTreeIndexExternalSorter externalSorter;
   private       byte[]                     binaryKeyTypes;
+  private       Boolean                    unique;
   private       long                       totalEntries;
 
   public LSMTreeIndexBulkLoader(final DatabaseInternal database, final String indexName,
@@ -163,11 +165,19 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     try (LSMTreeIndexExternalSorter.EntryCursor cursor = openSortedEntries()) {
       final RID[] ridBuffer = new RID[MAX_BUFFERED_RIDS_PER_GROUP];
       Entry groupFirst = null;
+      Entry previousEntry = null;
       RID previousRid = null;
       int bufferedRids = 0;
 
       while (cursor.hasNext()) {
         final Entry current = cursor.next();
+        if (Boolean.TRUE.equals(unique) && previousEntry != null
+            && current.key().compareTo(previousEntry.key()) == 0
+            && !LSMTreeIndexAbstract.isKeyNull(current.key().values)
+            && !current.rid().equals(previousEntry.rid()))
+          throw new DuplicatedKeyException(indexName, Arrays.toString(current.key().values), previousEntry.rid());
+        previousEntry = current;
+
         if (groupFirst == null || current.index() != groupFirst.index()
             || current.key().compareTo(groupFirst.key()) != 0) {
           if (groupFirst != null)
@@ -234,6 +244,12 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   }
 
   private void registerIndex(final LSMTreeIndex index) {
+    if (unique == null)
+      unique = index.isUnique();
+    else if (unique != index.isUnique())
+      throw new IndexException("Bucket index '" + index.getName() + "' has incompatible uniqueness for sorted build '"
+          + indexName + "'");
+
     final byte[] indexKeyTypes = index.getBinaryKeyTypes();
     if (binaryKeyTypes == null)
       binaryKeyTypes = Arrays.copyOf(indexKeyTypes, indexKeyTypes.length);

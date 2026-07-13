@@ -99,6 +99,29 @@ class LSMTreeSortedBuildCrashTest {
     assertThat(buildArtifacts(databasePath)).isEmpty();
   }
 
+  @Test
+  void uniqueBuildCrashAfterAttachmentLeavesNothingPublishedAndAllowsRetry() throws Exception {
+    final Path databasePath = tempDirectory.resolve("unique-crash-after-attachment");
+    assertThat(runChild("prepare", databasePath).exitCode()).isZero();
+    assertThat(runChild("crash-unique", databasePath).exitCode()).isEqualTo(CRASH_EXIT_CODE);
+
+    try (DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); Database database = factory.open()) {
+      assertThat(database.getSchema().getType("CrashBuild").getIndexByProperties("lookupKey")).isNull();
+      assertThat(database.getSchema().getIndexes()).isEmpty();
+
+      final TypeIndex index = database.getSchema().buildTypeIndex("CrashBuild", new String[] { "lookupKey" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withBuildMode(IndexBuildMode.SORTED)
+          .withBuildMemoryBudget(16L << 20)
+          .withUnique(true)
+          .create();
+      assertThat(index.isUnique()).isTrue();
+      assertThat(count(index.iterator(true))).isEqualTo(2_000);
+    }
+
+    assertThat(buildArtifacts(databasePath)).isEmpty();
+  }
+
   public static void main(final String[] args) {
     if (args.length != 2)
       throw new IllegalArgumentException("Expected mode and database path");
@@ -107,7 +130,7 @@ class LSMTreeSortedBuildCrashTest {
       prepare(args[1]);
       return;
     }
-    if ("crash".equals(args[0]) || "crash-after-sort".equals(args[0])) {
+    if ("crash".equals(args[0]) || "crash-after-sort".equals(args[0]) || "crash-unique".equals(args[0])) {
       crash(args[0], args[1]);
       return;
     }
@@ -127,7 +150,7 @@ class LSMTreeSortedBuildCrashTest {
 
   private static void crash(final String mode, final String databasePath) {
     LSMTreeIndexBulkLoader.setBuildTestHook((phase, index, completedBuckets) -> {
-      if (("crash".equals(mode)
+      if ((("crash".equals(mode) || "crash-unique".equals(mode))
           && phase == LSMTreeIndexBulkLoader.BuildPhase.AFTER_BUCKET_ATTACHMENT && completedBuckets == 1)
           || ("crash-after-sort".equals(mode) && phase == LSMTreeIndexBulkLoader.BuildPhase.AFTER_SORT))
         Runtime.getRuntime().halt(CRASH_EXIT_CODE);
@@ -138,7 +161,7 @@ class LSMTreeSortedBuildCrashTest {
           .withType(Schema.INDEX_TYPE.LSM_TREE)
           .withBuildMode(IndexBuildMode.SORTED)
           .withBuildMemoryBudget("crash-after-sort".equals(mode) ? 1L << 20 : 16L << 20)
-          .withUnique(false)
+          .withUnique("crash-unique".equals(mode))
           .create();
     }
     throw new AssertionError("Sorted build completed without triggering crash hook");
