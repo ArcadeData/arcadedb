@@ -22,7 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.serializer.JsonSerializer;
@@ -136,19 +138,65 @@ public class FullTextSearchTool {
   }
 
   /**
-   * Resolves the target index from the 'indexName' argument, validating that it exists and is a full-text index.
+   * Resolves the target index from 'indexName', or from 'typeName' with optional 'properties'. 'indexName' wins
+   * when both addressing forms are supplied.
    */
   private static String resolveIndexName(final Database database, final JSONObject args) {
     final String indexName = args.getString("indexName", null);
 
-    if (indexName == null || indexName.isBlank())
-      throw new IllegalArgumentException("Provide 'indexName'. " + describeAvailable(database));
+    if (indexName != null && !indexName.isBlank())
+      return validateFullTextIndex(database, indexName);
 
-    if (!database.getSchema().existsIndex(indexName))
+    final String typeName = args.getString("typeName", null);
+    if (typeName == null || typeName.isBlank())
+      throw new IllegalArgumentException(
+          "Provide either 'indexName', or 'typeName' with optional 'properties'. " + describeAvailable(database));
+
+    final JSONArray properties = args.getJSONArray("properties", null);
+    if (properties != null && properties.length() > 0) {
+      final StringBuilder derived = new StringBuilder(typeName).append('[');
+      for (int i = 0; i < properties.length(); i++) {
+        if (i > 0)
+          derived.append(',');
+        derived.append(properties.getString(i));
+      }
+      return validateFullTextIndex(database, derived.append(']').toString());
+    }
+
+    // 'typeName' alone is usable only when the type carries exactly one full-text index. An index declared on a
+    // supertype is named for the supertype, so a subtype name resolves nothing here even though the index applies
+    // to its records too; the error from describeAvailable() points the caller at the supertype's index name.
+    final String prefix = typeName + "[";
+    final List<String> candidates = new ArrayList<>();
+    for (final String name : FullTextSearch.listFullTextIndexes(database))
+      if (name.startsWith(prefix))
+        candidates.add(name);
+
+    if (candidates.isEmpty())
+      throw new IllegalArgumentException(
+          "No full-text index found on type '" + typeName + "'. " + describeAvailable(database));
+
+    if (candidates.size() > 1)
+      throw new IllegalArgumentException("Type '" + typeName + "' has several full-text indexes: " + candidates
+          + ". Pass 'indexName', or narrow with 'properties'.");
+
+    return candidates.get(0);
+  }
+
+  /**
+   * Validates that the named index exists and is a full-text index. On the success path this costs a single index
+   * lookup, not a schema-wide scan: it relies on the exceptions FullTextSearch.resolveFullTextIndex already throws
+   * for an unknown or non-full-text name, and only enumerates every full-text index in the database (the cost
+   * describeAvailable pays) when building the error message.
+   */
+  private static String validateFullTextIndex(final Database database, final String indexName) {
+    try {
+      FullTextSearch.resolveFullTextIndex(database, indexName);
+    } catch (final SchemaException e) {
       throw new IllegalArgumentException("Full-text index '" + indexName + "' does not exist. " + describeAvailable(database));
-
-    if (!FullTextSearch.listFullTextIndexes(database).contains(indexName))
+    } catch (final CommandExecutionException e) {
       throw new IllegalArgumentException("Index '" + indexName + "' is not a full-text index. " + describeAvailable(database));
+    }
 
     return indexName;
   }
