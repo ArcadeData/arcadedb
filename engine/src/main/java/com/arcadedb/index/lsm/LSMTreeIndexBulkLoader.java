@@ -536,9 +536,11 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
         try {
           future.get();
         } catch (final ExecutionException error) {
-          failure.compareAndSet(null, error.getCause());
+          final Throwable cause = error.getCause();
+          if (cause == null)
+            throw new IndexException("Sorted index bucket writer failed without a cause", error);
+          failure.compareAndSet(null, cause);
           checkFailure();
-          throw error;
         } catch (final InterruptedException error) {
           Thread.currentThread().interrupt();
           checkFailure();
