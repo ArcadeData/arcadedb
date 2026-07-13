@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.serializer.JsonSerializer;
@@ -44,7 +45,7 @@ public class FullTextSearchTool {
         .put("name", "full_text_search")
         .put("description",
             """
-            Search a BM25 full-text index and return the matching records ranked by relevance score. \
+            Search a full-text index and return the matching records ranked by relevance score. \
             Address the index either by 'indexName' (e.g. 'Article[content]') or by 'typeName' plus optional 'properties'. \
             If both are given, 'indexName' wins. Query syntax: '+a +b' requires both terms, 'a -b' excludes b, 'a b' matches \
             either, '"exact phrase"' requires all terms in the same record (term order is NOT enforced), 'pre*' matches a \
@@ -93,7 +94,9 @@ public class FullTextSearchTool {
     final Map<RID, Float> hits = FullTextSearch.search(database, indexName, queryText);
 
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
-    ranked.sort(Map.Entry.<RID, Float>comparingByValue().reversed());
+    // Score descending, tie-broken by RID so tied hits have a stable, deterministic order instead of depending on
+    // HashMap iteration order (which varies with RID hashing and bucket layout).
+    ranked.sort(Map.Entry.<RID, Float>comparingByValue().reversed().thenComparing(Map.Entry::getKey));
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
@@ -105,9 +108,17 @@ public class FullTextSearchTool {
       if (results.length() >= limit)
         break;
 
-      // lookupByRID returns Record, whose interface has no asDocument(); pattern-match instead. This also skips any
-      // non-document record rather than failing the whole search.
-      final Record record = database.lookupByRID(hit.getKey(), true);
+      // The index scan and this lookup are separate read windows (no explicit transaction is open), so a hit can
+      // reference a record deleted concurrently after the scan; lookupByRID then throws RecordNotFoundException for
+      // a dangling or concurrently-deleted RID. Skip that hit rather than failing the whole search, exactly as index
+      // scans do. lookupByRID also returns Record, whose interface has no asDocument(); pattern-match instead, which
+      // also skips any non-document record.
+      final Record record;
+      try {
+        record = database.lookupByRID(hit.getKey(), true);
+      } catch (final RecordNotFoundException e) {
+        continue;
+      }
       if (!(record instanceof final Document document))
         continue;
 
@@ -125,7 +136,7 @@ public class FullTextSearchTool {
   }
 
   /**
-   * Resolves the target index from the 'indexName' argument. Task 3 extends this with 'typeName' addressing.
+   * Resolves the target index from the 'indexName' argument, validating that it exists and is a full-text index.
    */
   private static String resolveIndexName(final Database database, final JSONObject args) {
     final String indexName = args.getString("indexName", null);

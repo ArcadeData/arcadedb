@@ -60,7 +60,10 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       return;
 
     db.transaction(() -> {
-      db.command("sql", "CREATE DOCUMENT TYPE Article");
+      // A single bucket keeps BM25 statistics (document frequency, average document length) computed over one
+      // consistent corpus; the index scores per bucket, so a multi-bucket type could otherwise let term frequency
+      // lose to a per-bucket IDF difference and make the ranking assertions flaky.
+      db.command("sql", "CREATE DOCUMENT TYPE Article BUCKETS 1");
       db.command("sql", "CREATE PROPERTY Article.title STRING");
       db.command("sql", "CREATE PROPERTY Article.content STRING");
       db.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
@@ -68,6 +71,9 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
       db.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
       db.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'python scripting language'");
+      // Repeats 'language' three times in a short document, so BM25 scores it well above Doc1/Doc2 (which each
+      // mention it once in a longer document) and gives the ranking test an unambiguous top hit.
+      db.command("sql", "INSERT INTO Article SET title = 'Doc3', content = 'language language language'");
     });
   }
 
@@ -109,6 +115,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasProfilerStatus = false;
     boolean hasGetServerSettings = false;
     boolean hasSetServerSetting = false;
+    boolean hasFullTextSearch = false;
 
     for (int i = 0; i < tools.length(); i++) {
       final String name = tools.getJSONObject(i).getString("name");
@@ -123,6 +130,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "profiler_status" -> hasProfilerStatus = true;
       case "get_server_settings" -> hasGetServerSettings = true;
       case "set_server_setting" -> hasSetServerSetting = true;
+      case "full_text_search" -> hasFullTextSearch = true;
       }
     }
     assertThat(hasListDatabases).isTrue();
@@ -135,6 +143,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasProfilerStatus).isTrue();
     assertThat(hasGetServerSettings).isTrue();
     assertThat(hasSetServerSetting).isTrue();
+    assertThat(hasFullTextSearch).isTrue();
   }
 
   @Test
@@ -873,17 +882,38 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
   @Test
   void fullTextSearchRanksAndLimits() throws Exception {
-    final JSONObject response = callTool("full_text_search", new JSONObject()
+    final JSONObject unlimitedResponse = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "language"));
+
+    final JSONObject unlimitedPayload = new JSONObject(
+        unlimitedResponse.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    // Doc1, Doc2 and Doc3 all contain "language".
+    assertThat(unlimitedPayload.getInt("count")).isEqualTo(3);
+
+    final JSONArray results = unlimitedPayload.getJSONArray("results");
+    final JSONObject first = results.getJSONObject(0);
+    final JSONObject second = results.getJSONObject(1);
+    assertThat(first.getFloat("score")).isGreaterThanOrEqualTo(second.getFloat("score"));
+    // Doc3 repeats "language" three times in a short document, so it must rank above Doc1/Doc2, which each
+    // mention it once in a longer document.
+    assertThat(first.getJSONObject("properties").getString("title")).isEqualTo("Doc3");
+
+    final JSONObject limitedResponse = callTool("full_text_search", new JSONObject()
         .put("database", getDatabaseName())
         .put("indexName", "Article[content]")
         .put("queryText", "language")
         .put("limit", 1));
 
-    final JSONObject payload = new JSONObject(
-        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    final JSONObject limitedPayload = new JSONObject(
+        limitedResponse.getJSONArray("content").getJSONObject(0).getString("text"));
 
-    // Both articles contain "language"; limit must cut the result set to the single best-scoring hit.
-    assertThat(payload.getInt("count")).isEqualTo(1);
+    // The limit must cut the result set down to the single best-scoring hit, not an arbitrary one.
+    assertThat(limitedPayload.getInt("count")).isEqualTo(1);
+    final JSONObject limitedHit = limitedPayload.getJSONArray("results").getJSONObject(0);
+    assertThat(limitedHit.getJSONObject("properties").getString("title")).isEqualTo("Doc3");
   }
 
   @Test
