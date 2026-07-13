@@ -229,6 +229,32 @@ Docker images are available on ghcr.io too:
 docker pull ghcr.io/arcadedata/arcadedb:26.3.1-java17
 ```
 
+### Embedding Gremlin alongside the engine
+
+Always use the `shaded` classifier for gremlin when embedding it, whether alongside
+`arcadedb-engine` or on its own. Its ANTLR runtime is relocated into a private package, so it
+never collides with the engine's ANTLR 4.13.2 on a shared classpath.
+
+The plain `arcadedb-gremlin` jar resolves ANTLR to the engine's 4.13.2 (pulled transitively via
+`arcadedb-engine`), which the engine's SQL/Cypher parsers require. TinkerPop's Gremlin
+string-query parser ships a precompiled ANTLR 4.9.1 parser that only deserializes against the
+relocated runtime inside the `shaded` jar, so the plain jar alone will not run Gremlin string
+queries - use the `shaded` classifier.
+
+```xml
+<dependency>
+    <groupId>com.arcadedb</groupId>
+    <artifactId>arcadedb-engine</artifactId>
+    <version>26.8.1</version>
+</dependency>
+<dependency>
+    <groupId>com.arcadedb</groupId>
+    <artifactId>arcadedb-gremlin</artifactId>
+    <version>26.8.1</version>
+    <classifier>shaded</classifier>
+</dependency>
+```
+
 ### Building and Testing
 
 Build the entire project (skipping tests):
