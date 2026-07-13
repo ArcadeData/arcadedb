@@ -70,6 +70,38 @@ class LSMTreeSortedBuildFailureTest extends TestHelper {
   }
 
   @Test
+  void removesGenerationOutputsAfterMaterializedMergeFailure() throws Exception {
+    final Path spillParent = Path.of(getDatabasePath()).resolve("merge-failure");
+    createRecords("MergeFailure", 1, 1_000);
+
+    final AtomicInteger written = new AtomicInteger();
+    LSMTreeIndexExternalSorter.setSpillWriteTestHook(() -> {
+      if (written.incrementAndGet() == 1_050)
+        throw new IOException("injected materialized merge failure");
+    });
+    try {
+      assertThatThrownBy(() -> database.getSchema().buildTypeIndex("MergeFailure", new String[] { "lookupKey" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE)
+          .withBuildMode(IndexBuildMode.SORTED)
+          .withBuildMemoryBudget(1L << 20)
+          .withBuildSpillDirectory(spillParent)
+          .withBuildMergeFanIn(2)
+          .withUnique(false)
+          .create())
+          .isInstanceOf(IndexException.class)
+          .hasStackTraceContaining("injected materialized merge failure");
+    } finally {
+      LSMTreeIndexExternalSorter.setSpillWriteTestHook(null);
+    }
+
+    assertThat(written).hasValueGreaterThan(1_000);
+    assertThat(database.getSchema().getType("MergeFailure").getIndexByProperties("lookupKey")).isNull();
+    assertNoSortedBuildArtifacts(spillParent);
+    reopenDatabase();
+    assertThat(database.getSchema().getType("MergeFailure").getIndexByProperties("lookupKey")).isNull();
+  }
+
+  @Test
   void defersSchemaSaveAndCleansFilesAfterFirstBucketAttachment() throws Exception {
     createRecords("AttachmentFailure", 2, 2_000);
     final AtomicBoolean schemaStillUnpublished = new AtomicBoolean();
