@@ -12,6 +12,9 @@
 #
 #   static  - grep test sources for repo-relative "databases/" string literals. Catches the path
 #             whether it is inlined in the constructor or held in a String constant/local.
+#             It matches the literal anywhere in the file, so a "databases/..." string inside a
+#             comment or a log message trips it too. That is deliberate: a false alarm you can
+#             silence by rewording beats a leak that wedges someone's test class next month.
 #
 #   runtime - after a test run, assert no module has grown a top-level databases/ directory.
 #             This is the backstop: a server test derives its path from SERVER_ROOT_PATH rather
@@ -57,7 +60,8 @@ run_static() {
 
 run_runtime() {
   local leaked
-  leaked=$(find . -maxdepth 2 -type d -name databases -not -path './.git/*' || true)
+  # <module>/databases is a leak; anything under a target/ dir is the goal state, not a leak.
+  leaked=$(find . -maxdepth 2 -type d -name databases -not -path './.git/*' -not -path '*/target/*' || true)
 
   if [ -n "${leaked}" ]; then
     echo "ERROR: the test run left a repo-relative 'databases/' directory behind."
