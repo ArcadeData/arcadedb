@@ -111,7 +111,20 @@ structurally incapable of catching:
 
 ## Tests
 
-No test logic, assertion, query or expected value was changed - this is a pure lifecycle refactor.
-The migration is itself validated by the existing suites: the tests must keep passing while now
-running against a `target/`-rooted database, with `TestHelper`'s stricter teardown
+The migration is validated by the existing suites: the tests must keep passing while now running
+against a `target/`-rooted database, with `TestHelper`'s stricter teardown
 (`checkActiveDatabases()` + `CHECK DATABASE`) newly applied to all 48 engine classes.
+
+No assertion, query or expected value was changed. Two edits are *not* pure moves, and are called
+out here so "lifecycle-only" is not read too literally:
+
+1. `RecordRecyclingTest`: `databaseFactory.getActiveDatabaseInstances()` ->
+   `DatabaseFactory.getActiveDatabaseInstances()`. The same static method, now called through the
+   class because the local variable was removed.
+2. `OrderByTest` and `TestInsertAndSelectWithThreadBucketSelectionStrategy`: `beginTest()` now calls
+   `database.getSchema().setDateTimeFormat(...)` in addition to setting the global
+   `DATE_TIME_FORMAT`. This is a genuine addition, and it is required: `TestHelper` builds the
+   database in its **constructor**, before any subclass code runs, and `LocalSchema` captures
+   `DATE_TIME_FORMAT` at construction and persists it into `schema.json`. Setting only the global
+   from `beginTest()` would arrive too late for the already-built schema, so the format has to be
+   written onto the schema itself to survive the `reopenDatabase()` these tests perform.
