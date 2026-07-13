@@ -108,7 +108,7 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
     return (int) Math.min(configured, Math.min(memoryLimit, Math.min(descriptorLimit, Integer.MAX_VALUE)));
   }
 
-  private static long getAvailableFileDescriptors() {
+  static long getAvailableFileDescriptors() {
     try {
       final MBeanServer server = ManagementFactory.getPlatformMBeanServer();
       final ObjectName operatingSystem = ObjectName.getInstance(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME);

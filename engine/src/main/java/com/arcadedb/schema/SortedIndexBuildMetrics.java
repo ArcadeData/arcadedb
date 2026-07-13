@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 /** Versioned, coarse-grained diagnostics for one successful sorted LSM index build. */
 record SortedIndexBuildMetrics(String logicalIndexName, boolean unique, long scannedRecords, long logicalEntries,
     long writtenEntries, int bucketIndexes, long memoryBudgetBytes, int requestedMergeFanIn, int admittedMergeFanIn,
+    int requestedWriterParallelism, int admittedWriterParallelism, int maxConcurrentWriters,
     int initialRuns, int finalRuns, int materializedMergeGenerations,
     long initialRunEntries, long initialRunBytes, long materializedMergeEntries, long materializedMergeBytes,
     long totalSpillBytes, long bucketIndexCreationNanos, long sourceScanNanos, long initialRunGenerationNanos,
@@ -35,7 +36,8 @@ record SortedIndexBuildMetrics(String logicalIndexName, boolean unique, long sca
   SortedIndexBuildMetrics completed(final long schemaRecordAndPublicationNanos, final long cleanupNanos,
       final long totalNanos) {
     return new SortedIndexBuildMetrics(logicalIndexName, unique, scannedRecords, logicalEntries, writtenEntries,
-        bucketIndexes, memoryBudgetBytes, requestedMergeFanIn, admittedMergeFanIn, initialRuns, finalRuns,
+        bucketIndexes, memoryBudgetBytes, requestedMergeFanIn, admittedMergeFanIn,
+        requestedWriterParallelism, admittedWriterParallelism, maxConcurrentWriters, initialRuns, finalRuns,
         materializedMergeGenerations, initialRunEntries, initialRunBytes, materializedMergeEntries,
         materializedMergeBytes, totalSpillBytes, bucketIndexCreationNanos, sourceScanNanos,
         initialRunGenerationNanos, inMemorySortNanos, materializedMergeNanos, finalStreamAndWriteNanos,
@@ -52,7 +54,10 @@ record SortedIndexBuildMetrics(String logicalIndexName, boolean unique, long sca
     final JSONObject resources = new JSONObject()
         .put("memory_budget_bytes", memoryBudgetBytes)
         .put("requested_merge_fan_in", requestedMergeFanIn)
-        .put("admitted_merge_fan_in", admittedMergeFanIn);
+        .put("admitted_merge_fan_in", admittedMergeFanIn)
+        .put("requested_writer_parallelism", requestedWriterParallelism)
+        .put("admitted_writer_parallelism", admittedWriterParallelism)
+        .put("max_concurrent_writers", maxConcurrentWriters);
 
     final JSONObject externalSort = new JSONObject()
         .put("enabled", initialRuns > 0)

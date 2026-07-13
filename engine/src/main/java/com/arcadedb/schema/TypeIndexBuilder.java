@@ -64,6 +64,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private long           buildMemoryBudgetBytes;
   private Path           buildSpillDirectory;
   private int            buildMergeFanIn        = DEFAULT_SORTED_BUILD_MERGE_FAN_IN;
+  private int            buildParallelism       = 1;
 
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
@@ -106,6 +107,17 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (mergeFanIn < 2)
       throw new IllegalArgumentException("build merge fan-in must be at least 2");
     this.buildMergeFanIn = mergeFanIn;
+    return this;
+  }
+
+  /**
+   * Sets the requested bucket-writer parallelism for a sorted build. Admission is bounded by bucket count,
+   * processor headroom, memory budget, and available file descriptors. The default is one.
+   */
+  public TypeIndexBuilder withBuildParallelism(final int parallelism) {
+    if (parallelism < 1)
+      throw new IllegalArgumentException("build parallelism must be at least 1");
+    this.buildParallelism = parallelism;
     return this;
   }
 
@@ -422,7 +434,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final long logicalEntries;
     final long sourceScanNanos;
     try (LSMTreeIndexBulkLoader bulkLoader = new LSMTreeIndexBulkLoader(database, logicalIndexName,
-        buildMemoryBudgetBytes, buildSpillDirectory, buildMergeFanIn, recoveryMarker.getSpillWorkspace())) {
+        buildMemoryBudgetBytes, buildSpillDirectory, buildMergeFanIn, recoveryMarker.getSpillWorkspace(),
+        buildParallelism)) {
       final long sourceScanStarted = System.nanoTime();
       database.transaction(() -> database.scanType(metadata.typeName, true, record -> {
           final LSMTreeIndex bucketIndex = indexesByBucket.get(record.getIdentity().getBucketId());
@@ -452,7 +465,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         "Published sorted index '%s': records=%,d bucketIndexes=%d", logicalIndexName, scannedRecords.get(), indexes.length);
     return new SortedIndexBuildMetrics(logicalIndexName, unique, scannedRecords.get(), logicalEntries,
         outcome.entries(), indexes.length, outcome.memoryBudgetBytes(), stageMetrics.requestedMergeFanIn(),
-        stageMetrics.admittedMergeFanIn(), stageMetrics.initialRuns(), stageMetrics.finalRuns(),
+        stageMetrics.admittedMergeFanIn(), stageMetrics.requestedWriterParallelism(),
+        stageMetrics.admittedWriterParallelism(), stageMetrics.maxConcurrentWriters(),
+        stageMetrics.initialRuns(), stageMetrics.finalRuns(),
         stageMetrics.materializedMergeGenerations(), stageMetrics.initialRunEntries(), stageMetrics.initialRunBytes(),
         stageMetrics.materializedMergeEntries(), stageMetrics.materializedMergeBytes(), outcome.spillBytes(),
         bucketIndexCreationNanos, sourceScanNanos, stageMetrics.initialRunNanos(), stageMetrics.inMemorySortNanos(),

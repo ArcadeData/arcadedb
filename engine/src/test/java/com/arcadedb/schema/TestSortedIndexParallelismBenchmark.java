@@ -43,49 +43,89 @@ class TestSortedIndexParallelismBenchmark {
   private static final String BUCKET_COUNT_PROPERTY = "arcadedb.sortedParallelBenchmark.buckets";
   private static final String MEMORY_MIB_PROPERTY = "arcadedb.sortedParallelBenchmark.memoryMiB";
   private static final String MERGE_FAN_IN_PROPERTY = "arcadedb.sortedParallelBenchmark.mergeFanIn";
+  private static final String PARALLELISM_PROPERTY = "arcadedb.sortedParallelBenchmark.parallelism";
 
   private static final int DEFAULT_ENTRY_COUNT = 1_000_000;
   private static final int DEFAULT_BUCKET_COUNT = 8;
   private static final int DEFAULT_MEMORY_MIB = 64;
   private static final int DEFAULT_MERGE_FAN_IN = 8;
+  private static final int DEFAULT_PARALLELISM = 4;
   private static final int INSERT_BATCH_SIZE = 10_000;
   private static final String TYPE_NAME = "ParallelBenchmarkRecord";
   private static final String PROPERTY_NAME = "lookupKey";
   private static final Path BENCHMARK_ROOT = Path.of("target", "databases", "SortedIndexParallelismBenchmark");
 
   @Test
-  void measureSerialSortedBuildStages() throws Exception {
+  void measureSortedBuildStages() throws Exception {
     final int entries = Integer.getInteger(ENTRY_COUNT_PROPERTY, DEFAULT_ENTRY_COUNT);
     final int buckets = Integer.getInteger(BUCKET_COUNT_PROPERTY, DEFAULT_BUCKET_COUNT);
     final int memoryMiB = Integer.getInteger(MEMORY_MIB_PROPERTY, DEFAULT_MEMORY_MIB);
     final int mergeFanIn = Integer.getInteger(MERGE_FAN_IN_PROPERTY, DEFAULT_MERGE_FAN_IN);
-    if (entries < 1 || buckets < 1 || memoryMiB < 1 || mergeFanIn < 2)
-      throw new IllegalArgumentException("Benchmark entries, buckets, and memory must be positive; fan-in must be at least 2");
+    final int parallelism = Integer.getInteger(PARALLELISM_PROPERTY, DEFAULT_PARALLELISM);
+    if (entries < 1 || buckets < 1 || memoryMiB < 1 || mergeFanIn < 2 || parallelism < 1)
+      throw new IllegalArgumentException(
+          "Benchmark entries, buckets, memory, and parallelism must be positive; fan-in must be at least 2");
 
     FileUtils.deleteRecursively(BENCHMARK_ROOT.toFile());
     try {
       final Path sourcePath = BENCHMARK_ROOT.resolve("source");
       createSourceDatabase(sourcePath, entries, buckets);
-      final Path buildPath = BENCHMARK_ROOT.resolve("serial");
-      FileUtils.copyDirectory(sourcePath.toFile(), buildPath.toFile());
+      final Path serialBeforePath = BENCHMARK_ROOT.resolve("serial-before");
+      final Path parallelPath = BENCHMARK_ROOT.resolve("parallel");
+      final Path serialAfterPath = BENCHMARK_ROOT.resolve("serial-after");
+      FileUtils.copyDirectory(sourcePath.toFile(), serialBeforePath.toFile());
+      FileUtils.copyDirectory(sourcePath.toFile(), parallelPath.toFile());
+      FileUtils.copyDirectory(sourcePath.toFile(), serialAfterPath.toFile());
 
-      final BuildResult result = buildAndValidate(buildPath, entries, memoryMiB, mergeFanIn);
+      final BuildResult serialBefore = buildAndValidate(serialBeforePath, entries, memoryMiB, mergeFanIn, 1);
+      final BuildResult parallel = buildAndValidate(parallelPath, entries, memoryMiB, mergeFanIn, parallelism);
+      final BuildResult serialAfter = buildAndValidate(serialAfterPath, entries, memoryMiB, mergeFanIn, 1);
+      assertEquivalentOutput(serialBefore, parallel);
+      assertEquivalentOutput(serialAfter, parallel);
+
+      final double serialMeanNanos = (serialBefore.buildNanos() + serialAfter.buildNanos()) / 2D;
+      final double speedup = (serialMeanNanos - parallel.buildNanos()) / serialMeanNanos * 100D;
+      final double serialMeanWriteNanos = (serialBefore.metrics().finalStreamAndWriteNanos()
+          + serialAfter.metrics().finalStreamAndWriteNanos()) / 2D;
+      final double writeSpeedup = (serialMeanWriteNanos - parallel.metrics().finalStreamAndWriteNanos())
+          / serialMeanWriteNanos * 100D;
       System.out.printf(Locale.ROOT,
-          "%nSorted LSM parallelism serial baseline%n" +
+          "%nSorted LSM bucket-writer parallelism benchmark%n" +
               "entries: %,d%n" +
               "buckets: %,d%n" +
               "memory budget: %,d MiB%n" +
               "merge fan-in: %,d%n" +
-              "index phase: %.3f s%n" +
+              "requested parallelism: %,d%n" +
+              "admitted parallelism: %,d%n" +
+              "serial before: %.3f s%n" +
+              "parallel: %.3f s%n" +
+              "serial after: %.3f s%n" +
+              "serial mean: %.3f s%n" +
+              "parallel speedup: %.1f%%%n" +
+              "serial final-write mean: %.3f s%n" +
+              "parallel final-write: %.3f s%n" +
+              "final-write speedup: %.1f%%%n" +
               "ascending digest: %s%n" +
               "descending digest: %s%n" +
-              "metrics: %s%n%n",
-          entries, buckets, memoryMiB, mergeFanIn, result.buildNanos() / 1_000_000_000D,
-          result.ascendingDigest(), result.descendingDigest(), result.metrics().toJSON());
+              "serial before metrics: %s%n" +
+              "parallel metrics: %s%n" +
+              "serial after metrics: %s%n%n",
+          entries, buckets, memoryMiB, mergeFanIn, parallelism, parallel.metrics().admittedWriterParallelism(),
+          serialBefore.buildNanos() / 1_000_000_000D, parallel.buildNanos() / 1_000_000_000D,
+          serialAfter.buildNanos() / 1_000_000_000D, serialMeanNanos / 1_000_000_000D, speedup,
+          serialMeanWriteNanos / 1_000_000_000D,
+          parallel.metrics().finalStreamAndWriteNanos() / 1_000_000_000D, writeSpeedup,
+          parallel.ascendingDigest(), parallel.descendingDigest(), serialBefore.metrics().toJSON(),
+          parallel.metrics().toJSON(), serialAfter.metrics().toJSON());
     } finally {
       TypeIndexBuilder.setSortedBuildMetricsTestHook(null);
       FileUtils.deleteRecursively(BENCHMARK_ROOT.toFile());
     }
+  }
+
+  private static void assertEquivalentOutput(final BuildResult expected, final BuildResult actual) {
+    assertThat(actual.ascendingDigest()).isEqualTo(expected.ascendingDigest());
+    assertThat(actual.descendingDigest()).isEqualTo(expected.descendingDigest());
   }
 
   private void createSourceDatabase(final Path path, final int entries, final int buckets) {
@@ -109,7 +149,7 @@ class TestSortedIndexParallelismBenchmark {
   }
 
   private BuildResult buildAndValidate(final Path path, final int expectedEntries, final int memoryMiB,
-      final int mergeFanIn) throws Exception {
+      final int mergeFanIn, final int parallelism) throws Exception {
     final AtomicReference<SortedIndexBuildMetrics> captured = new AtomicReference<>();
     final long buildNanos;
     final String ascendingDigest;
@@ -124,6 +164,7 @@ class TestSortedIndexParallelismBenchmark {
             .withBuildMode(IndexBuildMode.SORTED)
             .withBuildMemoryBudget((long) memoryMiB << 20)
             .withBuildMergeFanIn(mergeFanIn)
+            .withBuildParallelism(parallelism)
             .withUnique(true)
             .create();
         buildNanos = System.nanoTime() - started;
