@@ -71,8 +71,9 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
       db.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
       db.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'python scripting language'");
-      // Repeats 'language' three times in a short document, so BM25 scores it well above Doc1/Doc2 (which each
-      // mention it once in a longer document) and gives the ranking test an unambiguous top hit.
+      // All three documents tokenize to exactly three terms, so BM25 length normalization is identical across them.
+      // Doc3 therefore outranks Doc1 and Doc2 purely on term frequency for 'language' (3 occurrences against 1),
+      // which gives the ranking test an unambiguous top hit. Keep the three lengths equal when editing this seed.
       db.command("sql", "INSERT INTO Article SET title = 'Doc3', content = 'language language language'");
     });
   }
@@ -897,8 +898,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     final JSONObject first = results.getJSONObject(0);
     final JSONObject second = results.getJSONObject(1);
     assertThat(first.getFloat("score")).isGreaterThanOrEqualTo(second.getFloat("score"));
-    // Doc3 repeats "language" three times in a short document, so it must rank above Doc1/Doc2, which each
-    // mention it once in a longer document.
+    // Doc3 repeats "language" three times where Doc1 and Doc2 mention it once, and all three are the same length,
+    // so term frequency alone must put Doc3 on top. This assertion fails if the score-descending sort is dropped.
     assertThat(first.getJSONObject("properties").getString("title")).isEqualTo("Doc3");
 
     final JSONObject limitedResponse = callTool("full_text_search", new JSONObject()
