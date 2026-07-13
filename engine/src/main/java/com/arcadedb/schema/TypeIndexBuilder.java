@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -48,6 +49,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
+  private static final ThreadLocal<Consumer<SortedIndexBuildMetrics>> SORTED_BUILD_METRICS_TEST_HOOK = new ThreadLocal<>();
+
   private static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
   private static final long MIN_SORTED_BUILD_MEMORY_BUDGET    = 1L << 20;
 
@@ -61,6 +64,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private long           buildMemoryBudgetBytes;
   private Path           buildSpillDirectory;
   private int            buildMergeFanIn        = DEFAULT_SORTED_BUILD_MERGE_FAN_IN;
+  private int            buildParallelism       = 1;
 
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
@@ -103,6 +107,18 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (mergeFanIn < 2)
       throw new IllegalArgumentException("build merge fan-in must be at least 2");
     this.buildMergeFanIn = mergeFanIn;
+    return this;
+  }
+
+  /**
+   * Sets requested parallelism for independent sorted-build merge groups and bucket writers. Each stage is admitted
+   * independently against its work count, processor headroom, memory budget, and available file descriptors. The final
+   * global stream remains serial. The default is one.
+   */
+  public TypeIndexBuilder withBuildParallelism(final int parallelism) {
+    if (parallelism < 1)
+      throw new IllegalArgumentException("build parallelism must be at least 1");
+    this.buildParallelism = parallelism;
     return this;
   }
 
@@ -315,16 +331,19 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final Index[] indexes = new Index[buckets.size()];
     final boolean sortedBuild = buildMode == IndexBuildMode.SORTED;
     final SortedIndexBuildRecoveryMarker[] recoveryMarker = new SortedIndexBuildRecoveryMarker[1];
+    final SortedIndexBuildMetrics[] sortedBuildMetrics = new SortedIndexBuildMetrics[1];
+    final long sortedBuildStarted = sortedBuild ? System.nanoTime() : 0L;
 
     if (sortedBuild)
       validateSortedBuildPreconditions();
 
     try {
+      final long recordFileChangesStarted = System.nanoTime();
       schema.recordFileChanges(() -> {
         if (sortedBuild) {
           recoveryMarker[0] = SortedIndexBuildRecoveryMarker.create(database, metadata.typeName, metadata.propertyNames,
               buildSpillDirectory);
-          createWithSortedBuild(schema, type, keyTypes, buckets, indexes, recoveryMarker[0]);
+          sortedBuildMetrics[0] = createWithSortedBuild(schema, type, keyTypes, buckets, indexes, recoveryMarker[0]);
         } else
           for (int idx = 0; idx < buckets.size(); ++idx) {
             final int finalIdx = idx;
@@ -339,9 +358,21 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
         return null;
       }, sortedBuild);
+      final long recordFileChangesNanos = System.nanoTime() - recordFileChangesStarted;
 
-      if (recoveryMarker[0] != null)
+      long cleanupNanos = 0L;
+      if (recoveryMarker[0] != null) {
+        final long cleanupStarted = System.nanoTime();
         recoveryMarker[0].clear();
+        cleanupNanos = System.nanoTime() - cleanupStarted;
+      }
+
+      if (sortedBuildMetrics[0] != null) {
+        final SortedIndexBuildMetrics completed = sortedBuildMetrics[0].completed(
+            Math.max(0L, recordFileChangesNanos - sortedBuildMetrics[0].pipelineNanos()), cleanupNanos,
+            System.nanoTime() - sortedBuildStarted);
+        emitSortedBuildMetrics(completed);
+      }
       return type.getIndexByProperties(metadata.propertyNames);
     } catch (final NeedRetryException e) {
       if (cleanupIndexes(schema, indexes, e)
@@ -378,13 +409,17 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw new IndexException("Sorted build requires no active transaction");
   }
 
-  private void createWithSortedBuild(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
+  private SortedIndexBuildMetrics createWithSortedBuild(final LocalSchema schema, final LocalDocumentType type,
+      final Type[] keyTypes,
       final List<Bucket> buckets, final Index[] indexes, final SortedIndexBuildRecoveryMarker recoveryMarker) {
+    final long pipelineStarted = System.nanoTime();
+    final long bucketIndexCreationStarted = System.nanoTime();
     for (int idx = 0; idx < buckets.size(); ++idx) {
       final int finalIdx = idx;
       database.transaction(() -> indexes[finalIdx] = createBucketIndex(schema, type, keyTypes,
           (LocalBucket) buckets.get(finalIdx), false), false, maxAttempts, null, null);
     }
+    final long bucketIndexCreationNanos = System.nanoTime() - bucketIndexCreationStarted;
 
     final Map<Integer, LSMTreeIndex> indexesByBucket = new HashMap<>(indexes.length);
     for (final Index index : indexes) {
@@ -395,8 +430,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
     final String logicalIndexName = metadata.typeName + metadata.propertyNames;
     final AtomicLong scannedRecords = new AtomicLong();
+    final LSMTreeIndexBulkLoader.BuildOutcome outcome;
+    final LSMTreeIndexBulkLoader.StageMetrics stageMetrics;
+    final long logicalEntries;
+    final long sourceScanNanos;
     try (LSMTreeIndexBulkLoader bulkLoader = new LSMTreeIndexBulkLoader(database, logicalIndexName,
-        buildMemoryBudgetBytes, buildSpillDirectory, buildMergeFanIn, recoveryMarker.getSpillWorkspace())) {
+        buildMemoryBudgetBytes, buildSpillDirectory, buildMergeFanIn, recoveryMarker.getSpillWorkspace(),
+        buildParallelism)) {
+      final long sourceScanStarted = System.nanoTime();
       database.transaction(() -> database.scanType(metadata.typeName, true, record -> {
           final LSMTreeIndex bucketIndex = indexesByBucket.get(record.getIdentity().getBucketId());
           if (bucketIndex == null)
@@ -413,13 +454,41 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
             throw runtimeException;
           throw new IndexException("Error collecting sorted index entry at record " + rid, exception);
         }), false, maxAttempts, null, null);
+      sourceScanNanos = System.nanoTime() - sourceScanStarted;
 
-      bulkLoader.writeCompacted();
+      outcome = bulkLoader.writeCompacted();
+      logicalEntries = bulkLoader.size();
+      stageMetrics = bulkLoader.getStageMetrics();
       publishIndexes(indexes);
     }
 
     LogManager.instance().log(this, Level.INFO,
         "Published sorted index '%s': records=%,d bucketIndexes=%d", logicalIndexName, scannedRecords.get(), indexes.length);
+    return new SortedIndexBuildMetrics(logicalIndexName, unique, scannedRecords.get(), logicalEntries,
+        outcome.entries(), indexes.length, outcome.memoryBudgetBytes(), stageMetrics.requestedMergeFanIn(),
+        stageMetrics.admittedMergeFanIn(), stageMetrics.requestedBuildParallelism(),
+        stageMetrics.admittedMergeParallelism(), stageMetrics.maxConcurrentMerges(),
+        stageMetrics.admittedWriterParallelism(), stageMetrics.maxConcurrentWriters(),
+        stageMetrics.initialRuns(), stageMetrics.finalRuns(),
+        stageMetrics.materializedMergeGenerations(), stageMetrics.initialRunEntries(), stageMetrics.initialRunBytes(),
+        stageMetrics.materializedMergeEntries(), stageMetrics.materializedMergeBytes(), outcome.spillBytes(),
+        bucketIndexCreationNanos, sourceScanNanos, stageMetrics.initialRunNanos(), stageMetrics.inMemorySortNanos(),
+        stageMetrics.materializedMergeNanos(), stageMetrics.finalStreamAndWriteNanos(), stageMetrics.attachmentNanos(),
+        System.nanoTime() - pipelineStarted, 0L, 0L, 0L);
+  }
+
+  private void emitSortedBuildMetrics(final SortedIndexBuildMetrics metrics) {
+    LogManager.instance().log(this, Level.INFO, "%s%s", SortedIndexBuildMetrics.LOG_MARKER, metrics.toJSON());
+    final Consumer<SortedIndexBuildMetrics> hook = SORTED_BUILD_METRICS_TEST_HOOK.get();
+    if (hook != null)
+      hook.accept(metrics);
+  }
+
+  static void setSortedBuildMetricsTestHook(final Consumer<SortedIndexBuildMetrics> hook) {
+    if (hook == null)
+      SORTED_BUILD_METRICS_TEST_HOOK.remove();
+    else
+      SORTED_BUILD_METRICS_TEST_HOOK.set(hook);
   }
 
   private void publishIndexes(final Index[] indexes) {
