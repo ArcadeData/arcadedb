@@ -30,13 +30,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression tests for issue #5257: {@code CREATE} and {@code MERGE} relationship patterns inside a
- * {@code CALL} subquery must obey the same variable-scope rules as {@code SET} and {@code DELETE}.
- * Referencing an outer variable that was never imported used to silently mint fresh anonymous
- * vertices, persist the edge between those orphans, and still report {@code relationshipsCreated: 1}.
- * Neo4j and Memgraph both reject such queries.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * Regression tests for issue #5257: {@code CREATE} and {@code MERGE} patterns inside a {@code CALL}
+ * subquery must obey the same variable-scope rules as {@code SET} and {@code DELETE}. Binding an outer
+ * variable that was never imported used to silently mint fresh anonymous vertices, persist the edge
+ * between those orphans, and still report {@code relationshipsCreated: 1}. Neo4j and Memgraph both
+ * reject such queries.
  */
 class Issue5257CallSubqueryRelationshipScopeTest {
   private Database database;
@@ -124,6 +122,26 @@ class Issue5257CallSubqueryRelationshipScopeTest {
         .isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("UndefinedVariable")
         .hasMessageContaining("r");
+  }
+
+  /**
+   * The guard is not limited to relationship patterns: a single-node CREATE re-binding an unimported
+   * outer variable is the same shadowing violation and must be rejected too.
+   */
+  @Test
+  void createSingleNodeWithUnimportedOuterVariableThrows() {
+    assertThatThrownBy(() -> database.command("opencypher",
+        """
+        MATCH (a:A {id: 1}) \
+        CALL { \
+          CREATE (a:Shadow) \
+          RETURN 1 AS ok \
+        } \
+        RETURN ok"""))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("a");
+
+    assertThat(countVertices()).isEqualTo(2);
   }
 
   /** Nested subqueries inherit the shadowed names of every enclosing scope. */
@@ -218,12 +236,13 @@ class Issue5257CallSubqueryRelationshipScopeTest {
   }
 
   private long countRelationships(final String relType) {
+    // An absent type is the strongest form of "nothing was created"; querying it would throw.
+    if (!database.getSchema().existsType(relType))
+      return 0;
+
     try (final ResultSet rs = database.query("opencypher",
         "MATCH ()-[r:" + relType + "]->() RETURN count(r) AS cnt")) {
       return rs.hasNext() ? ((Number) rs.next().getProperty("cnt")).longValue() : 0;
-    } catch (final Exception e) {
-      // The relationship type may not exist at all: that is the strongest form of "nothing created".
-      return 0;
     }
   }
 

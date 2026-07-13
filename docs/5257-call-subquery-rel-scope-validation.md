@@ -60,3 +60,30 @@ Queries that previously "succeeded" while writing orphan vertices now fail fast 
 
 A `WITH` *inside* a subquery body that drops an imported variable, followed by a `CREATE` re-using that
 name, is still not flagged (Neo4j errors). Tracked separately - the reported bug is the un-imported case.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5260
+
+## Review cycles
+
+### Cycle 1 - 4b87c0cd
+
+- `gemini-code-assist`: COMMENTED, "I have no additional feedback to provide."
+- `claude[bot]`: non-blocking notes, no blocking objections.
+
+Applied:
+- Added `createSingleNodeWithUnimportedOuterVariableThrows` - pins the intended breadth of the guard
+  (it covers single-node `CREATE`, not only relationship patterns).
+- `countRelationships` in the test now gates on `schema.existsType(...)` instead of swallowing every
+  exception, so an unexpected failure can no longer masquerade as a passing assertion.
+- Clarified in the `importedNamesFromLeadingWith` javadoc that it tracks the names still bound after
+  the `WITH`, not the source variables they were computed from.
+- Dropped the copied `@author` tag from the new test rather than mis-attributing it.
+- Retitled the PR to say "CREATE/MERGE patterns" instead of "relationship patterns".
+
+Not applied:
+- "Add a CHANGELOG / release-notes entry for the compatibility change." No CHANGELOG file exists in the
+  repo, so there is no place to put it. The behaviour change (previously-lenient subqueries now fail
+  fast) is described in the PR body and here instead; flagging it for the release notes is the
+  maintainer's call.

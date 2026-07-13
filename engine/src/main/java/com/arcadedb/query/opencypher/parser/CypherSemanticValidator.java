@@ -635,9 +635,12 @@ public class CypherSemanticValidator {
   }
 
   /**
-   * Returns the outer names that survive the leading importing {@code WITH} of a subquery body, i.e.
-   * the variables actually imported. {@code WITH *} imports the whole outer scope; a re-aliased item
-   * ({@code WITH a AS x}) does not import {@code a}, since {@code a} is no longer visible afterwards.
+   * Returns the outer names that survive the leading importing {@code WITH} of a subquery body, i.e. the
+   * variables actually imported. {@code WITH *} imports the whole outer scope.
+   * <p>
+   * This tracks the <i>names still bound after the WITH</i>, not the source variables they were computed
+   * from, because that is what the shadowing check needs: a re-aliased item ({@code WITH a AS x}) leaves
+   * {@code a} unbound, so {@code a} stays shadowed and a later {@code CREATE (a)} in the body is rejected.
    */
   private static Set<String> importedNamesFromLeadingWith(final CypherStatement branch, final Set<String> outerScope) {
     final WithClause withClause = branch.getClausesInOrder().get(0).getTypedClause();
