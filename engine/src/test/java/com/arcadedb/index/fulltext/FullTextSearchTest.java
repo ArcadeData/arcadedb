@@ -130,4 +130,20 @@ class FullTextSearchTest extends TestHelper {
           .hasMessageContaining("is not a full-text index");
     });
   }
+
+  @Test
+  void bucketSubIndexThrowsCommandExecutionException() {
+    createArticles();
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(database, "Article[content]");
+      // Bucket-level sub-indexes are registered in the schema's index map under their own name
+      // (distinct from the TypeIndex wrapper's name), so resolving one directly must be rejected.
+      final String bucketIndexName = typeIndex.getIndexesOnBuckets()[0].getName();
+
+      assertThatThrownBy(() -> FullTextSearch.resolveFullTextIndex(database, bucketIndexName))
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("is not a type index");
+    });
+  }
 }

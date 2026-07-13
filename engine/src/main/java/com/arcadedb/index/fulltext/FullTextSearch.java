@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.Schema;
@@ -35,8 +36,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Shared entry point for BM25 full-text search over a type's full-text index. Used by the SEARCH_INDEX SQL function and by
- * callers that need scored results without going through SQL.
+ * Shared entry point for full-text search (BM25 or CLASSIC similarity) over a type's full-text index. Used by the
+ * SEARCH_INDEX SQL function and by callers that need scored results without going through SQL.
  */
 public class FullTextSearch {
 
@@ -50,27 +51,37 @@ public class FullTextSearch {
    * @throws CommandExecutionException              if the index exists but is not a full-text type index
    */
   public static TypeIndex resolveFullTextIndex(final Database database, final String indexName) {
+    final IndexInternal[] bucketIndexes = resolveFullTextBuckets(database, indexName);
+    return bucketIndexes[0].getTypeIndex();
+  }
+
+  /**
+   * Resolves the named index, validates it is a full-text type index, and returns the single snapshot of its bucket
+   * sub-indexes so callers validate and iterate over the exact same array.
+   *
+   * @throws com.arcadedb.exception.SchemaException if no index carries that name
+   * @throws CommandExecutionException              if the index exists but is not a full-text type index
+   */
+  private static IndexInternal[] resolveFullTextBuckets(final Database database, final String indexName) {
     final Index index = database.getSchema().getIndexByName(indexName);
 
     if (!(index instanceof final TypeIndex typeIndex))
       throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
 
-    final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
+    final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
       throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
 
-    return typeIndex;
+    return bucketIndexes;
   }
 
   /**
    * Searches every bucket index behind the named full-text index and returns the matching RIDs with their scores.
    */
   public static Map<RID, Float> search(final Database database, final String indexName, final String queryText) {
-    final TypeIndex typeIndex = resolveFullTextIndex(database, indexName);
-
     final Map<RID, Float> allResults = new HashMap<>();
 
-    for (final Index bucketIndex : typeIndex.getIndexesOnBuckets()) {
+    for (final IndexInternal bucketIndex : resolveFullTextBuckets(database, indexName)) {
       if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
         final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
         final IndexCursor cursor = executor.search(queryText, -1);
