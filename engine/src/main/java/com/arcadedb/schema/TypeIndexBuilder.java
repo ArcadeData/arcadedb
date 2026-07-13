@@ -372,8 +372,6 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private void validateSortedBuildPreconditions() {
     if (indexType != Schema.INDEX_TYPE.LSM_TREE)
       throw new IndexException("Sorted build currently supports only LSM_TREE indexes");
-    if (unique)
-      throw new IndexException("Sorted build currently supports only non-unique indexes");
     if (database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated())
       throw new IndexException("Sorted build is not supported on replicated databases");
     if (database.isTransactionActive())
