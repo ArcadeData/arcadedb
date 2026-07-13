@@ -56,10 +56,17 @@ This also closes the same hole for nested subqueries, since `shadowed` is inheri
 Queries that previously "succeeded" while writing orphan vertices now fail fast with
 `UndefinedVariable`. That is the intended, spec-aligned behaviour and matches Neo4j/Memgraph.
 
-## Known related gap (not addressed)
+## Known related gaps (not addressed)
 
-A `WITH` *inside* a subquery body that drops an imported variable, followed by a `CREATE` re-using that
-name, is still not flagged (Neo4j errors). Tracked separately - the reported bug is the un-imported case.
+Both are pre-existing holes in the same validator, not regressions from this change:
+
+1. A `WITH` *inside* a subquery body that drops an imported variable, followed by a `CREATE` re-using
+   that name, is still not flagged (Neo4j errors). `shadowed` is computed once at branch entry and does
+   not track mid-body scope narrowing.
+2. `FOREACH` bodies are not scope-validated at all (`case FOREACH` is a bare `break`), so
+   `FOREACH (x IN [1] | CREATE (a)-[:R]->(b))` inside a subquery still bypasses the check.
+
+The reported bug is the un-imported case, which is what this change fixes.
 
 ## PR
 
@@ -87,3 +94,17 @@ Not applied:
   repo, so there is no place to put it. The behaviour change (previously-lenient subqueries now fail
   fast) is described in the PR body and here instead; flagging it for the release notes is the
   maintainer's call.
+
+### Cycle 2 - 0a3884a3
+
+- `claude[bot]`: **LGTM**. Traced the `shadowed` propagation through the bare-`CALL`, partial-`WITH`,
+  nested-`CALL` and `CALL (*)` paths and confirmed it holds; called the positive controls the valuable
+  part of the test suite. Remaining points were non-blocking, and three were explicitly
+  "no change requested" (`UndefinedVariable` token reuse is consistent with the #5213 SET/DELETE checks;
+  the old-style casts match the neighbouring `checkExpressionScope`; the fixed test-DB path matches
+  module convention). The one substantive note - `FOREACH` bodies bypass the check - is a pre-existing
+  validator gap and is now recorded under "Known related gaps" above.
+- `gemini-code-assist`: did not re-review this SHA (it re-reviews inconsistently); it had no feedback on
+  cycle 1.
+
+Final state: clean approval.
