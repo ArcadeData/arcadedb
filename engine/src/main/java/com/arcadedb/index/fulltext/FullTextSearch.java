@@ -46,8 +46,10 @@ public class FullTextSearch {
 
   /**
    * Resolves a full-text index by name and validates it is a full-text type index. The TypeIndex found while validating
-   * is returned directly, so a caller that already needs to search or inspect it (e.g. {@link #search(TypeIndex, String)})
-   * does not resolve the same name a second time.
+   * is returned directly, so a caller that already needs to search or inspect it (e.g. {@link #search(TypeIndex, String, int)})
+   * does not repeat the schema lookup by name. What is saved is that one lookup, not the bucket array itself: this
+   * method's own validation and {@code search}'s iteration each call {@link TypeIndex#getIndexesOnBuckets()}
+   * independently, so the array is still materialized once per call.
    *
    * @throws com.arcadedb.exception.SchemaException if no index carries that name
    * @throws CommandExecutionException              if the index exists but is not a full-text type index
@@ -77,28 +79,27 @@ public class FullTextSearch {
   }
 
   /**
-   * Searches every bucket index behind an already-resolved full-text index and returns all matching RIDs with their
-   * scores, unbounded.
-   */
-  public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText) {
-    return search(typeIndex, queryText, -1);
-  }
-
-  /**
    * Searches every bucket index behind an already-resolved full-text index and returns the matching RIDs with their
-   * scores. When {@code limit > -1}, the limit is pushed down to each bucket's {@link FullTextQueryExecutor#search},
-   * which selects its own top-K with a bounded min-heap rather than fully sorting the bucket's whole match set. A
-   * global top-K is contained in the union of the per-bucket top-K, so narrowing each bucket to {@code limit} before
-   * the caller merges and re-ranks across buckets is sound; the caller still needs to sort and truncate the merged
-   * union because it can hold up to {@code buckets * limit} entries.
+   * scores. Any {@code limit} less than 1 (including {@code 0} and any negative value other than {@code -1}) is
+   * normalized to {@code -1}, meaning unbounded; the SQL {@code SEARCH_INDEX} function depends on {@code -1}
+   * continuing to mean unbounded.
+   * <p>
+   * When the normalized limit is not {@code -1}, it is pushed down to each bucket's {@link FullTextQueryExecutor#search},
+   * which keeps only its own top-{@code limit} matches by score: a bounded min-heap on the BM25 path, or a full sort
+   * followed by a truncation on the CLASSIC path (the min-heap only engages when {@code limit} is smaller than the
+   * bucket's match count; below that threshold every match is kept on both paths). A global top-K is contained in the
+   * union of the per-bucket top-K, so narrowing each bucket to {@code limit} before the caller merges and re-ranks
+   * across buckets is sound; the caller still needs to sort and truncate the merged union because it can hold up to
+   * {@code buckets * limit} entries.
    */
   public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit) {
+    final int effectiveLimit = limit < 1 ? -1 : limit;
     final Map<RID, Float> allResults = new HashMap<>();
 
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets()) {
       if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
         final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
-        final IndexCursor cursor = executor.search(queryText, limit);
+        final IndexCursor cursor = executor.search(queryText, effectiveLimit);
 
         while (cursor.hasNext()) {
           final Identifiable match = cursor.next();

@@ -26,8 +26,11 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -105,6 +108,94 @@ class FullTextSearchTest extends TestHelper {
       // Pushing the limit down to the bucket cursor must not lose the best-scoring match.
       assertThat(bestBounded).isEqualTo(bestUnbounded);
     });
+  }
+
+  @Test
+  void zeroOrNegativeLimitOtherThanMinusOneIsTreatedAsUnbounded() {
+    createArticlesWithSharedTerm();
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(database, "Article[content]");
+
+      // limit == 0 must not reach the BM25 bounded min-heap (whose PriorityQueue constructor rejects a 0 initial
+      // capacity) nor silently mean "no limit enforced by accident"; both 0 and an arbitrary negative value other
+      // than -1 are normalized to unbounded, exactly like passing -1 directly.
+      assertThat(FullTextSearch.search(typeIndex, "language", 0)).hasSize(3);
+      assertThat(FullTextSearch.search(typeIndex, "language", -5)).hasSize(3);
+    });
+  }
+
+  @Test
+  void boundedSearchMatchesUnboundedTopKAcrossBuckets() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Multi BUCKETS 4");
+      database.command("sql", "CREATE PROPERTY Multi.content STRING");
+      database.command("sql", "CREATE INDEX ON Multi (content) FULL_TEXT");
+
+      // Round-robin bucket selection sends insert i to bucket index (i % 4) of this type's own bucket list, so every
+      // 4th insert lands back in bucket 0. Placing the 4 "strong" documents (decreasing but still very high term
+      // frequency for 'target') at insert positions 0, 4, 8 and 12 concentrates all of them in bucket 0, while the
+      // remaining 12 "weak" documents (term frequency 1) round-robin through every bucket, including bucket 0. This
+      // makes bucket 0's own top-k a strict subset of its matches, and the other buckets' matches uniformly weak -
+      // the one case where a per-bucket top-k push-down could silently drop a globally-top hit if it were unsound.
+      // The bucket-id assertion below confirms the actual, resulting distribution rather than assuming it.
+      final int[] strongRepeats = { 20, 18, 16, 14 };
+      int strongIndex = 0;
+      for (int i = 0; i < 16; i++) {
+        if (i % 4 == 0)
+          database.command("sql", "INSERT INTO Multi SET content = '" + "target ".repeat(strongRepeats[strongIndex++]).trim() + "'");
+        else
+          database.command("sql", "INSERT INTO Multi SET content = 'target filler" + i + "'");
+      }
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(database, "Multi[content]");
+
+      final Map<RID, Float> unbounded = FullTextSearch.search(typeIndex, "target", -1);
+      assertThat(unbounded).hasSize(16);
+
+      final List<Map.Entry<RID, Float>> rankedAll = new ArrayList<>(unbounded.entrySet());
+      rankedAll.sort(Map.Entry.<RID, Float>comparingByValue().reversed().thenComparing(Map.Entry::getKey));
+
+      // Confirm this fixture genuinely spreads matches across more than one bucket, and does so unevenly: the four
+      // highest-scoring ("strong") documents all share one bucket id, while the lowest-scoring ("weak") document
+      // sits in a different bucket. Without this, a per-bucket top-k push-down could never lose anything, and the
+      // test below would pass vacuously.
+      final int strongCount = 4;
+      final Set<Integer> strongBucketIds = new HashSet<>();
+      for (int i = 0; i < strongCount; i++)
+        strongBucketIds.add(rankedAll.get(i).getKey().getBucketId());
+      assertThat(strongBucketIds).hasSize(1);
+      final int weakestBucketId = rankedAll.get(rankedAll.size() - 1).getKey().getBucketId();
+      assertThat(weakestBucketId).isNotEqualTo(strongBucketIds.iterator().next());
+
+      final int limit = 3;
+      final Map<RID, Float> bounded = FullTextSearch.search(typeIndex, "target", limit);
+
+      // The bounded, per-bucket-pushed-down search must return exactly the same top-k RID sequence (order included)
+      // as sorting and truncating the unbounded search, converting the cross-bucket soundness argument into a
+      // regression guard.
+      assertThat(topKRids(bounded, limit)).isEqualTo(topKRids(unbounded, limit));
+    });
+  }
+
+  /**
+   * Merges hits by score descending, then RID ascending for deterministic tie-breaking - the same ranking
+   * {@code FullTextSearchTool} applies to its own merged results - and returns the RID sequence of the first
+   * {@code limit} entries.
+   */
+  private static List<RID> topKRids(final Map<RID, Float> hits, final int limit) {
+    final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
+    ranked.sort(Map.Entry.<RID, Float>comparingByValue().reversed().thenComparing(Map.Entry::getKey));
+
+    final List<RID> rids = new ArrayList<>();
+    for (final Map.Entry<RID, Float> entry : ranked) {
+      if (rids.size() >= limit)
+        break;
+      rids.add(entry.getKey());
+    }
+    return rids;
   }
 
   private static RID bestScoring(final Map<RID, Float> hits) {

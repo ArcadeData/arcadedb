@@ -99,8 +99,9 @@ public class FullTextSearchTool {
     final TypeIndex typeIndex = resolveIndex(database, args);
     final String indexName = typeIndex.getName();
 
-    // The limit is pushed down per bucket: the engine bounds each bucket's own top-K with a min-heap instead of fully
-    // sorting it, so this merges at most (bucket count * limit) entries instead of every match in the index.
+    // The limit is pushed down per bucket: each bucket keeps only its own top-'limit' matches by score (a bounded
+    // min-heap on the BM25 path, a sort-and-truncate on CLASSIC), so this merges at most (bucket count * limit)
+    // entries instead of every match in the index.
     final Map<RID, Float> hits = FullTextSearch.search(typeIndex, queryText, limit);
 
     final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
@@ -122,7 +123,10 @@ public class FullTextSearchTool {
       // reference a record deleted concurrently after the scan; lookupByRID then throws RecordNotFoundException for
       // a dangling or concurrently-deleted RID. Skip that hit rather than failing the whole search, exactly as index
       // scans do. lookupByRID also returns Record, whose interface has no asDocument(); pattern-match instead, which
-      // also skips any non-document record.
+      // also skips any non-document record. Because the limit is pushed down per bucket, a skipped hit here cannot
+      // be back-filled from beyond that bucket's top-K the way an unbounded search could: a bounded search can
+      // legitimately return fewer than 'limit' results (e.g. limit - 1 for a single-bucket type) when the missing
+      // hit was concurrently deleted. That is accepted best-effort behavior, not a bug.
       final Record record;
       try {
         record = database.lookupByRID(hit.getKey(), true);
