@@ -58,9 +58,16 @@ class TestInsertAndSelectWithThreadBucketSelectionStrategy extends TestHelper {
 
   @Test
   void insertAndSelectWithThreadBucketSelectionStrategy() {
-    String name1, name2, type, version1, version2;
+    String name1;
+    String name2;
+    String type;
+    String version1;
+    String version2;
 
-    final LocalDateTime queryStart, queryStop, validityStart, validityStop;
+    final LocalDateTime queryStart;
+    final LocalDateTime queryStop;
+    final LocalDateTime validityStart;
+    final LocalDateTime validityStop;
     name1 = "CS_OPER_MPL_ORBREF_20180707T231257_20190711T045744_0001.EEF";
     name2 = "CS_OPER_MPL_ORBREF_20180707T231257_20190711T045744_0002.EEF";
     type = "MPL_ORBREF";
