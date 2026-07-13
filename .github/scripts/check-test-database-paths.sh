@@ -43,7 +43,7 @@ run_static() {
   local violations
   violations=$(grep -rEl --include='*.java' "${LITERAL}" -- */src/test/java || true)
 
-  if [ -n "${violations}" ]; then
+  if [[ -n "${violations}" ]]; then
     echo "ERROR: test sources reference a repo-relative 'databases/' path."
     echo "These databases live outside target/, so 'mvn clean' cannot remove them and a leftover"
     echo "directory from a crashed run permanently wedges the test class."
@@ -63,7 +63,7 @@ run_runtime() {
   # <module>/databases is a leak; anything under a target/ dir is the goal state, not a leak.
   leaked=$(find . -maxdepth 2 -type d -name databases -not -path './.git/*' -not -path '*/target/*' || true)
 
-  if [ -n "${leaked}" ]; then
+  if [[ -n "${leaked}" ]]; then
     echo "ERROR: the test run left a repo-relative 'databases/' directory behind."
     echo "The database was written outside target/, so 'mvn clean' cannot remove it."
     echo
@@ -72,7 +72,9 @@ run_runtime() {
     echo "tests do:  GlobalConfiguration.SERVER_ROOT_PATH.setValue(\"./target\");"
     echo
     echo "Leaked directories:"
-    echo "${leaked}" | sed 's/^/  - /'
+    while IFS= read -r dir; do
+      echo "  - ${dir}"
+    done <<< "${leaked}"
     status=1
   else
     echo "OK (runtime): the test run left no repo-relative 'databases/' directory behind."
