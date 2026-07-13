@@ -139,6 +139,7 @@
         <module>console</module>
         <module>gremlin</module>
         <module>gremlin-it</module>
+        <module>gremlin-consumer-it</module>
         <module>graphql</module>
         <module>mongodbw</module>
         <module>redisw</module>

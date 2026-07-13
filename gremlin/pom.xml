@@ -66,11 +66,18 @@
             <scope>compile</scope>
         </dependency>
 
-        <!-- Explicit ANTLR runtime to ensure consistent version across legacy and native Cypher -->
+        <!-- Explicit ANTLR runtime to ensure consistent version across legacy and native Cypher.
+             optional=true: keeps antlr 4.9.1 on gremlin's own classpath and bundled+relocated in
+             the shaded uber-jar (maven-shade includes optional deps), but does NOT export it to
+             Maven-coordinate consumers. A both-modules consumer therefore resolves antlr to the
+             engine's 4.13.2 only, and consumes the arcadedb-gremlin:shaded classifier at runtime
+             (issue #5217). Must NOT be <scope>provided</scope>: shade drops provided deps, which
+             would strip the relocated antlr from the shaded jar and regress #5216. -->
         <dependency>
             <groupId>org.antlr</groupId>
             <artifactId>antlr4-runtime</artifactId>
             <version>${antlr4.version}</version>
+            <optional>true</optional>
         </dependency>
 
         <dependency>
@@ -107,6 +114,17 @@
                 <exclusion>
                     <groupId>commons-beanutils</groupId>
                     <artifactId>commons-beanutils</artifactId>
+                </exclusion>
+                <!-- gremlin-core pulls antlr4-runtime 4.9.1 transitively via gremlin-language,
+                     independently of and in addition to the explicit (optional) antlr4-runtime
+                     dependency declared above. That transitive edge is not optional and is not
+                     affected by marking our own duplicate declaration optional, so it still leaks
+                     4.9.1 to Maven-coordinate consumers (issue #5217) unless excluded here. The
+                     explicit optional dependency above continues to supply antlr4-runtime for
+                     gremlin's own compilation and for bundling+relocation in the shaded jar. -->
+                <exclusion>
+                    <groupId>org.antlr</groupId>
+                    <artifactId>antlr4-runtime</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
