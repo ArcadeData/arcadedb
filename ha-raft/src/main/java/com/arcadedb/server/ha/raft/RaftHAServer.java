@@ -148,6 +148,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Object                    recoveryLock          = new Object();
   private volatile boolean                   shutdownRequested     = false;
   private volatile boolean                   legacyRaftStorageWarningLogged = false;
+  private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
   private          HealthMonitor             healthMonitor;
   // Follower-side Raft log catch-up narrative. Driven by the health-monitor tick; only active on a
@@ -594,8 +595,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // configuration while it was down (e.g. by the pre-#5275 shutdown auto-leave), and its own storage
     // still claiming membership meant it waited forever for a leader that would never dial a non-member.
     // When the node is still a member the probe is a cheap no-op ("already a member").
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
-      new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties).tryAutoJoin();
+    // Runs on a background thread WITH retry (issue #5268): the one-shot probe reliably lost the race
+    // against the peers' allowlist DNS refresh on pod recreation and then parked forever. Retries stop
+    // as soon as a leader is visible - at that point this node is either a functioning member or a
+    // cold-start election completed - or on shutdown.
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
+      final KubernetesAutoJoin autoJoin = new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties);
+      final Thread joinThread = new Thread(
+          () -> autoJoin.tryAutoJoinWithRetry(() -> !shutdownRequested && getLeaderId() == null),
+          "arcadedb-k8s-auto-join");
+      joinThread.setDaemon(true);
+      joinThread.start();
+      this.autoJoinThread = joinThread;
+    }
 
     final long healthInterval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
     final long staleFollowerLagThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_STALE_FOLLOWER_LAG_THRESHOLD);
@@ -975,6 +987,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public void stop() {
     shutdownRequested = true;
+    final Thread joinThread = autoJoinThread;
+    if (joinThread != null) {
+      // Wake the auto-join retry loop out of its backoff sleep so shutdown is not delayed (issue #5268).
+      joinThread.interrupt();
+      autoJoinThread = null;
+    }
     if (healthMonitor != null) {
       healthMonitor.stop();
       healthMonitor = null;
