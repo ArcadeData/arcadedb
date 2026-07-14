@@ -76,6 +76,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final RaftPeerId localPeerId = raftHAServer.getLocalPeerId();
     response.put("localPeerId", localPeerId.toString());
 
+    // Local Raft lifecycle state (division-aware, issue #5271): a node whose group member is CLOSED
+    // or EXCEPTION cannot vote or accept a leader's contact - surfacing it here is the only way an
+    // operator can see that the cluster is running without failover margin.
+    response.put("raftState", raftHAServer.getRaftLifeCycleState().name());
+
     final boolean isLeader = raftHAServer.isLeader();
     response.put("isLeader", isLeader);
 
