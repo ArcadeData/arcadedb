@@ -30,6 +30,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
@@ -43,6 +44,9 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private              long        readTimeout       = -1;
   private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
   private final        boolean     denyAll;
+  // #5269: fileIds already reported as "not yet in security configuration", to log that line at most once per file
+  // instead of on every access (which used to flood the logs at thousands of lines/sec under write load).
+  private final        Set<Integer> warnedNotRegisteredFiles = ConcurrentHashMap.newKeySet();
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
     this(databaseName, userName, groups, false);
@@ -103,10 +107,12 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (fileId >= currentMap.length) {
       // The file was just created but the security map has not been refreshed yet.
       // Allow access (same as null-permissions default) — the map will be updated
-      // on the next schema operation.
-      LogManager.instance().log(this, Level.INFO,
-          "Requesting access to fileId %d which is not yet in security configuration (registeredFiles=%d), allowing by default",
-          fileId, currentMap.length);
+      // on the next schema operation. #5269: log at most once per fileId and at FINE, otherwise under write
+      // load this branch emitted the same INFO line on every access, rotating the container logs in seconds.
+      if (warnedNotRegisteredFiles.add(fileId))
+        LogManager.instance().log(this, Level.FINE,
+            "Requesting access to fileId %d which is not yet in security configuration (registeredFiles=%d), allowing by default",
+            fileId, currentMap.length);
       return true;
     }
 
@@ -250,6 +256,10 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
     // SWAP WITH THE NEW MAP (VOLATILE PROPERTY)
     fileAccessMap = newFileAccessMap;
+
+    // #5269: the refreshed map may now cover files previously reported as missing; reset the throttle so a genuinely
+    // new file created later can still be reported once.
+    warnedNotRegisteredFiles.clear();
   }
 
   private static boolean[] updateAccessArray(final boolean[] array, final JSONArray access) {
