@@ -24,6 +24,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
+import com.arcadedb.server.mcp.tools.FullTextSearchTool;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
 import com.arcadedb.server.mcp.tools.ListDatabasesTool;
@@ -58,6 +59,7 @@ public class MCPStdioServer {
     TOOLS_LIST.put(GetSchemaTool.getDefinition());
     TOOLS_LIST.put(QueryTool.getDefinition());
     TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
+    TOOLS_LIST.put(FullTextSearchTool.getDefinition());
     TOOLS_LIST.put(ServerStatusTool.getDefinition());
     TOOLS_LIST.put(ProfilerStartTool.getDefinition());
     TOOLS_LIST.put(ProfilerStopTool.getDefinition());
@@ -189,6 +191,7 @@ public class MCPStdioServer {
         case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
         case "query" -> QueryTool.execute(server, user, args, config);
         case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
+        case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
         case "server_status" -> ServerStatusTool.execute(server, user, args, config);
         case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
         case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
