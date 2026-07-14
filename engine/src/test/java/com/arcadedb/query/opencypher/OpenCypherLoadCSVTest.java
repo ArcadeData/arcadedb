@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,9 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
@@ -59,6 +63,10 @@ class OpenCypherLoadCSVTest {
     // Reset configuration changes
     database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS, true);
     database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY, "");
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS,
+        GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS.getDefValue());
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES,
+        GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES.getDefValue());
 
     if (database != null) {
       database.drop();
@@ -523,5 +531,153 @@ class OpenCypherLoadCSVTest {
 
     assertThat(results).hasSize(1);
     assertThat(results.get(0).<Long>getProperty("cnt")).isEqualTo(50L);
+  }
+
+  // ===== Security: remote http(s) SSRF protection (GHSA-mmww-w3w3-6r86) =====
+
+  /**
+   * Starts a local HTTP server on the given loopback host that serves {@code body} for any GET request.
+   */
+  private static HttpServer startServer(final String host, final String contentType, final String body) throws IOException {
+    final HttpServer server = HttpServer.create(new InetSocketAddress(host, 0), 0);
+    server.createContext("/", exchange -> {
+      final byte[] data = body.getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().add("Content-Type", contentType);
+      exchange.sendResponseHeaders(200, data.length);
+      try (final OutputStream os = exchange.getResponseBody()) {
+        os.write(data);
+      }
+    });
+    server.start();
+    return server;
+  }
+
+  /**
+   * Starts a local HTTP server on the given loopback host that answers every GET with a 302 redirect to {@code location}.
+   */
+  private static HttpServer startRedirectServer(final String host, final String location) throws IOException {
+    final HttpServer server = HttpServer.create(new InetSocketAddress(host, 0), 0);
+    server.createContext("/", exchange -> {
+      exchange.getResponseHeaders().add("Location", location);
+      exchange.sendResponseHeaders(302, -1);
+      exchange.close();
+    });
+    server.start();
+    return server;
+  }
+
+  private List<Result> runLoadCSV(final String url) {
+    final List<Result> results = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "LOAD CSV WITH HEADERS FROM '" + url + "' AS row RETURN row.secret AS secret")) {
+        while (rs.hasNext())
+          results.add(rs.next());
+      }
+    });
+    return results;
+  }
+
+  @Test
+  void loadCSVRemoteLoopbackBlockedByDefault() throws Exception {
+    // The default block-list includes 127.0.0.0/8, so a LOAD CSV pointed at a loopback service must be refused
+    // before any connection is made (this is the exact SSRF attack from the advisory).
+    final HttpServer server = startServer("127.0.0.1", "text/csv", "secret\nleaked\n");
+    try {
+      final String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/internal.csv";
+      assertThatThrownBy(() -> runLoadCSV(url))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("non-public or restricted address");
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void loadCSVRemoteMetadataAddressBlockedByDefault() {
+    // Cloud instance metadata endpoint (link-local 169.254.0.0/16) is blocked by default. No server needed:
+    // validation fails on the resolved IP before any socket is opened.
+    final String url = "http://169.254.169.254/latest/meta-data/iam/security-credentials/";
+    assertThatThrownBy(() -> runLoadCSV(url))
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("non-public or restricted address");
+  }
+
+  @Test
+  void loadCSVRemoteUrlsDisabled() throws Exception {
+    final HttpServer server = startServer("127.0.0.1", "text/csv", "secret\nleaked\n");
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS, false);
+      final String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/internal.csv";
+      assertThatThrownBy(() -> runLoadCSV(url))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("remote URLs are disabled");
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void loadCSVRemoteFetchWorksWhenBlocklistCleared() throws Exception {
+    // With IP filtering disabled, a legitimate remote fetch (here simulated on loopback) succeeds.
+    final HttpServer server = startServer("127.0.0.1", "text/csv", "secret\nhello\n");
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES, "");
+      final String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/data.csv";
+      final List<Result> results = runLoadCSV(url);
+      assertThat(results).hasSize(1);
+      assertThat(results.get(0).<String>getProperty("secret")).isEqualTo("hello");
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void loadCSVRemoteRedirectIsFollowedWhenAllowed() throws Exception {
+    // Two loopback servers: A redirects to B. With filtering disabled, the manual redirect follower reaches B.
+    final HttpServer target = startServer("127.0.0.1", "text/csv", "secret\nfollowed\n");
+    final String targetUrl = "http://127.0.0.1:" + target.getAddress().getPort() + "/data.csv";
+    final HttpServer redirector = startRedirectServer("127.0.0.1", targetUrl);
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES, "");
+      final String url = "http://127.0.0.1:" + redirector.getAddress().getPort() + "/start";
+      final List<Result> results = runLoadCSV(url);
+      assertThat(results).hasSize(1);
+      assertThat(results.get(0).<String>getProperty("secret")).isEqualTo("followed");
+    } finally {
+      redirector.stop(0);
+      target.stop(0);
+    }
+  }
+
+  @Test
+  void loadCSVRemoteRedirectToBlockedAddressIsBlocked() throws Exception {
+    // First hop (loopback) is allowed by a custom block-list; the redirect target (8.8.8.8) is blocked and must be
+    // rejected on re-validation before any connection to it is opened. This closes the redirect-based SSRF bypass.
+    final HttpServer redirector = startRedirectServer("127.0.0.1", "http://8.8.8.8/internal.csv");
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES, "8.8.8.0/24");
+      final String url = "http://127.0.0.1:" + redirector.getAddress().getPort() + "/start";
+      assertThatThrownBy(() -> runLoadCSV(url))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("non-public or restricted address");
+    } finally {
+      redirector.stop(0);
+    }
+  }
+
+  @Test
+  void loadCSVRemoteRedirectToFileSchemeIsBlocked() throws Exception {
+    // A redirect that downgrades to a non-http(s) scheme (file://) must be rejected even with IP filtering disabled.
+    final HttpServer redirector = startRedirectServer("127.0.0.1", "file:///etc/passwd");
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES, "");
+      final String url = "http://127.0.0.1:" + redirector.getAddress().getPort() + "/start";
+      assertThatThrownBy(() -> runLoadCSV(url))
+          .isInstanceOf(SecurityException.class)
+          .hasMessageContaining("disallowed URL scheme");
+    } finally {
+      redirector.stop(0);
+    }
   }
 }
