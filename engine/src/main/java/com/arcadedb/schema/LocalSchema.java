@@ -1950,6 +1950,11 @@ public class LocalSchema implements Schema {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
           databasePath + File.separator + SCHEMA_FILE_NAME);
     }
+
+    // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
+    // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
+    // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
+    updateSecurity();
   }
 
   public synchronized JSONObject toJSON() {
