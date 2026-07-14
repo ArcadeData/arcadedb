@@ -132,6 +132,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         subIndex = (LSMTreeIndexCompacted) database.getSchema().getFileById(subIndexFileId);
         subIndex.mainIndex = mainIndex;
         subIndex.binaryKeyTypes = binaryKeyTypes;
+        // The flag is not persisted in the page header: a sub-index materialised by the component factory defaults to false. It
+        // must match this index, because it decides whether the tf/docLength varints trailing every posting are consumed when a
+        // value is read back. A mismatch desynchronises the value stream and silently decodes the rest of the entry as garbage.
+        subIndex.setStoreTermFrequency(isStoreTermFrequency());
       }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
