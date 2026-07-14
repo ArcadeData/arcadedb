@@ -444,6 +444,23 @@ public enum GlobalConfiguration {
       directory and path traversal (../) is blocked. Empty string means no restriction.""",
       String.class, ""),
 
+  OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS("arcadedb.opencypher.loadCsv.allowRemoteUrls", SCOPE.DATABASE,
+      """
+      Allow LOAD CSV to fetch data from remote http:// and https:// URLs. When enabled (default), remote fetches are still \
+      restricted by arcadedb.opencypher.loadCsv.blockedIpRanges to prevent Server-Side Request Forgery (SSRF) against internal \
+      services. Disable to block all remote URL access in locked-down or multi-tenant deployments.""",
+      Boolean.class, true),
+
+  OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES("arcadedb.opencypher.loadCsv.blockedIpRanges", SCOPE.DATABASE,
+      """
+      Comma-separated list of CIDR ranges that LOAD CSV remote http(s) fetches are NOT allowed to reach. Enforced against the \
+      resolved IP address of the target host and re-checked on every redirect hop to prevent Server-Side Request Forgery (SSRF). \
+      Defaults to loopback, private (RFC 1918), link-local (including the cloud metadata address 169.254.169.254), carrier-grade \
+      NAT, multicast and reserved ranges. Set to an empty string to disable IP filtering (not recommended).""",
+      String.class,
+      "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,0.0.0.0/8,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,"
+          + "224.0.0.0/4,240.0.0.0/4,255.255.255.255/32,::1/128,::/128,fe80::/10,fc00::/7,ff00::/8"),
+
   OPENCYPHER_ID_BUCKET_BITS("arcadedb.opencypher.idBucketBits", SCOPE.JVM,
       """
       Number of bits reserved for the bucketId when packing a RID into the numeric value returned by the OpenCypher id() function (and SQL's .asCypherRID() method). \
