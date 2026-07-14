@@ -650,7 +650,38 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
     if (raftServer == null)
       return LifeCycle.State.NEW;
-    return raftServer.getLifeCycleState();
+    final LifeCycle.State proxyState = raftServer.getLifeCycleState();
+    if (proxyState != LifeCycle.State.RUNNING)
+      return proxyState;
+    // The RaftServer proxy can stay RUNNING while the per-group division (RaftServerImpl) underneath
+    // is CLOSED or EXCEPTION - the node then rejects every vote/append with ServerNotReadyException
+    // while looking perfectly healthy to anything that only reads the proxy state. That blind spot
+    // left a stranded voter CLOSED indefinitely (the health monitor saw RUNNING and never recovered
+    // it), silently zeroing the cluster's fault tolerance and turning a leader restart into a
+    // permanent full-cluster outage (issue #5271). Report the division's terminal states so the
+    // health monitor treats a dead division exactly like a dead server.
+    try {
+      final RaftServer.Division division = raftServer.getDivision(raftGroup.getGroupId());
+      final LifeCycle.State divisionState = division.getInfo().getLifeCycleState();
+      if (divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION)
+        return divisionState;
+    } catch (final IOException e) {
+      // The proxy hosts no division for the configured group: for a configured member that is at
+      // least as broken as CLOSED - report it so the health monitor rebuilds the server.
+      LogManager.instance().log(this, Level.FINE, "Cannot read Raft division state: %s", e.getMessage());
+      return LifeCycle.State.CLOSED;
+    }
+    return proxyState;
+  }
+
+  /**
+   * The live Ratis division (per-group {@code RaftServerImpl}) for the cluster group.
+   * Package-private: used by tests that need to fault-inject a dead division (issue #5271).
+   *
+   * @throws IOException when the group is not present on this server
+   */
+  RaftServer.Division getRaftDivision() throws IOException {
+    return raftServer.getDivision(raftGroup.getGroupId());
   }
 
   @Override
