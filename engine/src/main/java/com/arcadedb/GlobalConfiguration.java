@@ -906,9 +906,15 @@ public enum GlobalConfiguration {
   HA_RAFT_STORAGE_DIRECTORY("arcadedb.ha.raftStorageDirectory", SCOPE.SERVER,
       """
       Parent directory where Raft storage sub-folders (raft-storage-<nodeName>) are created. \
-      When empty (the default), the server root path is used, preserving the previous default layout. \
-      Set to an absolute path (e.g. /var/lib/arcadedb/raft) to decouple Raft persistence from \
-      the server installation directory, which is required for Kubernetes readOnlyRootFilesystem deployments.""",
+      When empty (the default), Raft storage is placed under the database directory \
+      (<databaseDirectory>/.raft-storage), so persisting the database directory - which every durable \
+      deployment already does - persists the Raft log too. This avoids losing all Raft state on pod \
+      recreation in Kubernetes, where only the database directory is on a PersistentVolume while the \
+      server root path is ephemeral. A legacy raft-storage-<nodeName> directory already present under the \
+      server root path (pre-fix layout) is still reused for backward compatibility. \
+      Set to an absolute path (e.g. /var/lib/arcadedb/raft) to decouple Raft persistence from the \
+      database directory, which is required for Kubernetes readOnlyRootFilesystem deployments with a \
+      dedicated Raft volume.""",
       String.class, ""),
 
   HA_SNAPSHOT_THRESHOLD("arcadedb.ha.snapshotThreshold", SCOPE.SERVER,
