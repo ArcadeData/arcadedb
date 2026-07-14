@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 
 import static com.arcadedb.query.opencypher.temporal.CypherDate.toInt;
+import static com.arcadedb.query.opencypher.temporal.CypherDate.toLong;
 
 /**
  * OpenCypher DateTime value wrapping java.time.ZonedDateTime.
@@ -131,6 +132,14 @@ public class CypherDateTime implements CypherTemporalValue {
   }
 
   public static CypherDateTime fromMap(final Map<String, Object> map) {
+    // Epoch-based construction (Neo4j: epochMillis alone, or epochSeconds with optional nanosecond)
+    if (map.containsKey("epochMillis"))
+      return fromEpochMillis(toLong(map.get("epochMillis")));
+    if (map.containsKey("epochSeconds")) {
+      final long nanos = map.containsKey("nanosecond") ? toLong(map.get("nanosecond")) : 0L;
+      return fromEpoch(toLong(map.get("epochSeconds")), nanos);
+    }
+
     // Check for base datetime
     if (map.containsKey("datetime")) {
       final Object dtVal = map.get("datetime");
