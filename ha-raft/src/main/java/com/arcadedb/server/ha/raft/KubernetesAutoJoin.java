@@ -36,9 +36,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
- * Handles Kubernetes-specific cluster auto-join on StatefulSet scale-up.
- * When a new pod starts without existing Raft storage, it probes running peers and adds itself
- * to the existing cluster via an atomic {@code Mode.ADD} configuration change.
+ * Handles Kubernetes-specific cluster auto-join on StatefulSet scale-up, and doubles as the startup
+ * membership self-check (issue #5275): it runs on every Kubernetes start - including a pod restarting
+ * with persisted Raft storage - probes the peers' <b>live</b> Raft configuration, and re-adds this
+ * node via an atomic {@code Mode.ADD} configuration change when the committed configuration no longer
+ * contains it (e.g. the cluster shrank while the pod was down). When the node is still a member the
+ * probe is a cheap no-op.
  * <p>
  * Jitter is applied before probing to spread traffic when multiple pods start simultaneously.
  * {@code Mode.ADD} is atomic, so concurrent joins from different pods are safe even without
@@ -114,14 +117,14 @@ public class KubernetesAutoJoin {
           if (groupInfo == null || !groupInfo.isSuccess())
             continue;
 
-          final var confOpt = groupInfo.getConf();
-          if (confOpt.isEmpty())
-            continue;
-
-          final var conf = confOpt.get();
+          // Read membership from the reply's RaftGroup, which reflects the peer's LIVE committed
+          // configuration and is always populated. GroupInfoReply.getConf() is never filled over the
+          // gRPC transport in Ratis 3.2.2, so the previous conf-based check made every probe against a
+          // healthy cluster fall through to "no existing cluster found" - the auto-join (and the
+          // issue-#5275 membership self-check that now reuses it) silently never worked.
           boolean alreadyMember = false;
-          for (final var p : conf.getPeersList())
-            if (p.getId().toStringUtf8().equals(localPeerId.toString())) {
+          for (final RaftPeer p : groupInfo.getGroup().getPeers())
+            if (p.getId().equals(localPeerId)) {
               alreadyMember = true;
               break;
             }
