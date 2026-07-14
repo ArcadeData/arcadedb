@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,20 +36,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5163DivisionByZeroTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-issue5163").create();
+class Issue5163DivisionByZeroTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("U");
     database.transaction(() -> database.newVertex("U").set("id", 1).set("zero", 0).set("zeroD", 0.0).save());
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null)
-      database.drop();
   }
 
   private void assertFails(final String cypher) {

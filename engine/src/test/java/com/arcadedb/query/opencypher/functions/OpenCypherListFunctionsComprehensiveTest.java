@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -35,16 +32,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Comprehensive tests for OpenCypher List functions based on Neo4j Cypher documentation.
  * Tests cover all 21 list functions including coll.* functions, keys(), labels(), nodes(), range(), reduce(), relationships(), reverse(), tail(), and to*List() functions.
  */
-class OpenCypherListFunctionsComprehensiveTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-cypher-list-functions");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-
+class OpenCypherListFunctionsComprehensiveTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     // Create test graph matching Neo4j documentation
     database.getSchema().createVertexType("Developer");
     database.getSchema().createVertexType("Administrator");
@@ -65,12 +55,6 @@ class OpenCypherListFunctionsComprehensiveTest {
         (bob)-[:KNOWS]->(daniel), \
         (charlie)-[:KNOWS]->(daniel), \
         (bob)-[:MARRIED]->(eskil)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
   }
 
   // ==================== coll.distinct() Tests ====================

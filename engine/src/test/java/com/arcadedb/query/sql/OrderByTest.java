@@ -19,16 +19,13 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -39,41 +36,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/839
  */
-class OrderByTest {
+class OrderByTest extends TestHelper {
 
-  @BeforeEach
-  void setUp() {
-    GlobalConfiguration.DATE_TIME_FORMAT.setValue("yyyy-MM-dd'T'HH:mm:ss.SSSSSS");
+  @Override
+  protected void beginTest() {
+    final String dateTimeFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS";
+    GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimeFormat);
+    database.getSchema().setDateTimeFormat(dateTimeFormat);
 
-  }
+    database.transaction(() -> {
+      DocumentType dtProduct = database.getSchema().createDocumentType("Product");
+      dtProduct.createProperty("name", Type.STRING);
+      dtProduct.createProperty("type", Type.STRING);
+      dtProduct.createProperty("start", Type.DATETIME_MICROS);
+      dtProduct.createProperty("stop", Type.DATETIME_MICROS);
+      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+      dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "type", "start", "stop");
+    });
 
-  @AfterEach
-  void tearDown() {
-    GlobalConfiguration.resetAll();
+    // REOPEN THE DATABASE TO RELOAD THE SCHEMA FROM DISK
+    reopenDatabase();
   }
 
   @Test
   void localDateTimeOrderBy() {
-    DatabaseFactory databaseFactory = new DatabaseFactory("databases/OrderByTest");
-
-    if (databaseFactory.exists())
-      databaseFactory.open().drop();
-
-    try (Database db = databaseFactory.create()) {
-      db.transaction(() -> {
-        DocumentType dtProduct = db.getSchema().createDocumentType("Product");
-        dtProduct.createProperty("name", Type.STRING);
-        dtProduct.createProperty("type", Type.STRING);
-        dtProduct.createProperty("start", Type.DATETIME_MICROS);
-        dtProduct.createProperty("stop", Type.DATETIME_MICROS);
-        dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-        dtProduct.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "type", "start", "stop");
-      });
-    }
-
-
-    final Database database = databaseFactory.open();
-
     database.transaction(() -> {
       String name;
       String type;

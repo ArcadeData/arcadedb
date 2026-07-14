@@ -18,14 +18,11 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -47,27 +44,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5145AllPatternComprehensionTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-issue5145").create();
-    database.getSchema().createVertexType("User");
-    database.getSchema().createEdgeType("FRIEND");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null && database.isOpen())
-      database.drop();
-  }
-
+class Issue5145AllPatternComprehensionTest extends TestHelper {
   private static final String FLAG_QUERY =
       "MATCH (u:User {active: true}) " +
       "WITH u, [(u)-[:FRIEND]->(f:User) | f.active] AS actives " +
       "WHERE size(actives) > 0 AND all(a IN actives WHERE a = false) " +
       "SET u.flagged = true";
+
+  @Override
+  protected void beginTest() {
+    database.getSchema().createVertexType("User");
+    database.getSchema().createEdgeType("FRIEND");
+  }
 
   private long flaggedCount() {
     return ((Number) database.query("opencypher",

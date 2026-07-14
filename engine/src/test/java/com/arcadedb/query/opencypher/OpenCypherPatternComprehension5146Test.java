@@ -18,12 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -36,12 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class OpenCypherPatternComprehension5146Test {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-pc-5146").create();
+class OpenCypherPatternComprehension5146Test extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.command("opencypher",
         """
         CREATE
@@ -52,12 +45,6 @@ class OpenCypherPatternComprehension5146Test {
           (src)-[:QE {w: 1}]->(t2),
           (src)-[:QE {w: 2}]->(t3),
           (src)-[:QE {w: 3}]->(t4)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
   }
 
   @Test

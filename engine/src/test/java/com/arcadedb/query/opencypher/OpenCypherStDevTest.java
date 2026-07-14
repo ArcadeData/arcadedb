@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,23 +33,12 @@ import static org.assertj.core.api.Assertions.within;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-class OpenCypherStDevTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-stdev").create();
+class OpenCypherStDevTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("Val");
     database.transaction(() ->
       database.command("opencypher", "CREATE (:Val {v: 10.0}), (:Val {v: 20.0}), (:Val {v: 30.0})"));
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null) {
-      database.drop();
-      database = null;
-    }
   }
 
   @Test
@@ -102,7 +88,7 @@ class OpenCypherStDevTest {
 
     // Drop and recreate with single value
     database.drop();
-    database = new DatabaseFactory("./databases/test-stdev").create();
+    database = factory.create();
     database.getSchema().createVertexType("Val");
     database.transaction(() ->
       database.command("opencypher", "CREATE (:Val {v: 42.0})"));

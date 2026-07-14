@@ -38,7 +38,7 @@ class GloVeReopenVerificationTest {
 
   @Test
   void gloVeDatabaseReopensCorrectly() {
-    final DatabaseFactory factory = new DatabaseFactory("../databases/glovedb");
+    final DatabaseFactory factory = new DatabaseFactory("target/databases/glovedb");
 
     // Skip test if database doesn't exist
     if (!factory.exists()) {

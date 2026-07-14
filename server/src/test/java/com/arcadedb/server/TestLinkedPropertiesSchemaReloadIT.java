@@ -141,6 +141,7 @@ public class TestLinkedPropertiesSchemaReloadIT {
   private void testSchema() {
     boolean AUTO_TRANS = false;
 
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
     ContextConfiguration config = new ContextConfiguration();
     ArcadeDBServer server = null;

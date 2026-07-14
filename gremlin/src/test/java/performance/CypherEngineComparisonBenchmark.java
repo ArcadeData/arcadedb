@@ -89,8 +89,8 @@ class CypherEngineComparisonBenchmark {
     // Use Java engine for Gremlin (secure, not Groovy)
     GlobalConfiguration.GREMLIN_ENGINE.setValue("java");
 
-    FileUtils.deleteRecursively(new File("./databases/test-comparison-benchmark"));
-    database = new DatabaseFactory("./databases/test-comparison-benchmark").create();
+    FileUtils.deleteRecursively(new File("target/databases/test-comparison-benchmark"));
+    database = new DatabaseFactory("target/databases/test-comparison-benchmark").create();
 
     // Create schema with properties
     database.transaction(() -> {

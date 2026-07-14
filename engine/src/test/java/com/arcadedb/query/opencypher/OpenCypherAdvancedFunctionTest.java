@@ -18,14 +18,11 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
@@ -36,15 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for advanced Cypher functions: Path, List, String, and Type Conversion functions.
  */
-class OpenCypherAdvancedFunctionTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-advanced-functions");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
+class OpenCypherAdvancedFunctionTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
 
@@ -57,13 +48,6 @@ class OpenCypherAdvancedFunctionTest {
         (charlie:Person {name: 'Charlie', age: 35}), \
         (alice)-[:KNOWS {since: 2020}]->(bob), \
         (bob)-[:KNOWS {since: 2021}]->(charlie)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null) {
-      database.drop();
-    }
   }
 
   // ==================== String Functions ====================

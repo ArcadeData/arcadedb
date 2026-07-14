@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
@@ -49,12 +50,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * COLLECT collects values into a list.
  * UNWIND expands a list into individual rows.
  */
-class OpenCypherCollectUnwindTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-collect-unwind").create();
+class OpenCypherCollectUnwindTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("City");
     database.getSchema().createEdgeType("LIVES_IN");
@@ -71,13 +69,6 @@ class OpenCypherCollectUnwindTest {
             (alice)-[:LIVES_IN]->(nyc),
             (bob)-[:LIVES_IN]->(nyc),
             (charlie)-[:LIVES_IN]->(la)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null) {
-      database.drop();
-    }
   }
 
   // ===== COLLECT Tests =====
@@ -548,7 +539,7 @@ class OpenCypherCollectUnwindTest {
 
     @BeforeEach
     void setUp() {
-      tagDatabase = new DatabaseFactory("./target/databases/testopencypher-issue3758").create();
+      tagDatabase = TestHelper.createDatabase("./target/databases/testopencypher-issue3758");
 
       tagDatabase.getSchema().createVertexType("Question");
       tagDatabase.getSchema().createVertexType("Tag");
@@ -725,7 +716,7 @@ class OpenCypherCollectUnwindTest {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/issue-3129").create();
+      database = TestHelper.createDatabase("./target/databases/issue-3129");
       database.getSchema().createVertexType("CHUNK");
     }
 
@@ -845,7 +836,7 @@ class OpenCypherCollectUnwindTest {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/issue-3138").create();
+      database = TestHelper.createDatabase("./target/databases/issue-3138");
       database.getSchema().createVertexType("Source");
       database.getSchema().createVertexType("Target");
       database.getSchema().createEdgeType("in");
@@ -1265,7 +1256,7 @@ class OpenCypherCollectUnwindTest {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./databases/test-issue-3154").create();
+      database = TestHelper.createDatabase("./target/databases/test-issue-3154");
       database.getSchema().createVertexType("CHUNK");
       database.getSchema().createVertexType("CHUNK_EMBEDDING");
       database.getSchema().createVertexType("USER_RIGHTS");

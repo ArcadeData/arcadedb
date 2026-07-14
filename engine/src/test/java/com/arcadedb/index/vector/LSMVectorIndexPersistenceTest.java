@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests that LSM vector indexes persist correctly to schema.json and can be loaded after database restart.
  */
 class LSMVectorIndexPersistenceTest {
-  private static final String DB_PATH = "databases/test-vector-persistence";
+  private static final String DB_PATH = "target/databases/test-vector-persistence";
 
   @AfterEach
   void cleanup() {
