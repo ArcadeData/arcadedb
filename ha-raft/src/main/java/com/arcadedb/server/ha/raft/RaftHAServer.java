@@ -555,8 +555,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         ? RaftStorage.StartupOption.RECOVER
         : RaftStorage.StartupOption.FORMAT;
 
-    final boolean hadExistingStorage = hasExistingRaftStorage();
-
     final Parameters parameters = buildParameters(configuration);
 
     raftServer = RaftServer.newBuilder()
@@ -590,8 +588,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // changes. Wired into ArcadeStateMachine.notifyLeaderChanged below via runBootstrapIfEligible.
     this.bootstrapElection = new BootstrapElection(this, arcadeServer);
 
-    // K8s auto-join: if running in Kubernetes with no existing storage, try to join an existing cluster
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S) && !hadExistingStorage)
+    // K8s auto-join / membership self-check: probe the peers' live Raft configuration and re-ADD this
+    // node if absent. Runs on EVERY Kubernetes start, not only when the local Raft storage is missing
+    // (issue #5275): a node restarting with persisted storage may have been dropped from the committed
+    // configuration while it was down (e.g. by the pre-#5275 shutdown auto-leave), and its own storage
+    // still claiming membership meant it waited forever for a leader that would never dial a non-member.
+    // When the node is still a member the probe is a cheap no-op ("already a member").
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
       new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties).tryAutoJoin();
 
     final long healthInterval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
@@ -983,16 +986,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       transactionBroker = null;
     }
 
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
-      // Best-effort graceful leave during shutdown: leaveCluster() now surfaces failures (issue #4796),
-      // but the pod is going down regardless, so a refusal (e.g. would breach quorum) or a transient
-      // error must not abort the shutdown sequence.
-      try {
-        leaveCluster();
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Could not leave cluster gracefully on shutdown: %s", e.getMessage());
-      }
-    }
+    // NOTE (issue #5275): this method deliberately does NOT remove the node from the Raft
+    // configuration. The former Kubernetes auto-leave here meant every graceful pod shutdown (rollout,
+    // eviction, kubectl delete pod) silently shrank the committed membership - and because persisted
+    // Raft storage skipped the boot-time auto-join, the recreated pod (same StatefulSet name) was never
+    // re-added: fault tolerance silently dropped while every status surface still showed a full cluster.
+    // A pod shutdown means "temporarily unreachable", not "gone": the same pod name comes back by
+    // construction. An intentional scale-down must remove the peer explicitly (POST /api/v1/cluster/leave
+    // before stopping, or DELETE /api/v1/cluster/peer/<id> from a surviving node).
 
     // Suppress noisy Ratis gRPC warnings during shutdown (AlreadyClosedException, CANCELLED streams).
     // These are harmless - internal replication threads take a moment to notice the server is closed.
@@ -1173,6 +1174,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public RaftGroup getRaftGroup() {
     return raftGroup;
+  }
+
+  /**
+   * The live {@link RaftProperties} the Ratis server was started with, or {@code null} before
+   * {@link #start()}. Package-private: used by tests that exercise {@link KubernetesAutoJoin}
+   * directly against a running cluster (issue #5275).
+   */
+  RaftProperties getRaftProperties() {
+    return raftProperties;
   }
 
   public Map<RaftPeerId, String> getHttpAddresses() {
