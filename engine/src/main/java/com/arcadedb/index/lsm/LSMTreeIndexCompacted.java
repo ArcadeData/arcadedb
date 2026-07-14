@@ -576,9 +576,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           --pageInSeries;
 
         if (resultInRootPage.valueBeginPositions != null && resultInRootPage.valueBeginPositions.length > 1) {
+          // Newest leaf first. A key whose values overflow one leaf is written oldest-chunk-first onto ascending pages, so
+          // walking the root entries in order would visit the oldest chunk first. That inverts the deletion semantics of
+          // lookupInPageAndAddInResultset, whose deletedRIDs set only suppresses RIDs encountered AFTER the tombstone: a
+          // tombstone in an early chunk would then kill the live re-add sitting in a later chunk. Every other level of this
+          // reader (mutable pages, series, values within a page) already walks newest to oldest for the same reason.
           final List<RID> pages = readAllValuesFromResult(rootPageBuffer, resultInRootPage);
-          for (RID page : pages) {
-            final int pageNum = (int) page.getPosition();
+          for (int p = pages.size() - 1; p > -1; --p) {
+            final int pageNum = (int) pages.get(p).getPosition();
             if (pageNum < 1)
               continue;
 
