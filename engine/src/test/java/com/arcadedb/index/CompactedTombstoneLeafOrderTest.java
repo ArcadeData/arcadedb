@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
@@ -87,7 +88,7 @@ class CompactedTombstoneLeafOrderTest extends TestHelper {
 
     final List<RID> touched = new ArrayList<>();
     database.transaction(() -> {
-      final Iterator<com.arcadedb.database.Record> it = database.iterateType("Doc", false);
+      final Iterator<Record> it = database.iterateType("Doc", false);
       int n = 0;
       while (it.hasNext()) {
         final RID rid = it.next().getIdentity();
@@ -118,7 +119,7 @@ class CompactedTombstoneLeafOrderTest extends TestHelper {
 
     final Set<RID> expected = new HashSet<>();
     database.transaction(() -> {
-      final Iterator<com.arcadedb.database.Record> it = database.iterateType("Doc", false);
+      final Iterator<Record> it = database.iterateType("Doc", false);
       while (it.hasNext()) {
         final Document doc = (Document) it.next();
         if (doc.getString("words").contains("data"))
