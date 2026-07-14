@@ -21,6 +21,7 @@ package com.arcadedb.server.mcp;
 import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
+import com.arcadedb.server.mcp.tools.FullTextSearchTool;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
 import com.arcadedb.server.mcp.tools.ListDatabasesTool;
@@ -54,6 +55,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     TOOLS_LIST.put(GetSchemaTool.getDefinition());
     TOOLS_LIST.put(QueryTool.getDefinition());
     TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
+    TOOLS_LIST.put(FullTextSearchTool.getDefinition());
     TOOLS_LIST.put(ServerStatusTool.getDefinition());
     TOOLS_LIST.put(ProfilerStartTool.getDefinition());
     TOOLS_LIST.put(ProfilerStopTool.getDefinition());
@@ -160,6 +162,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
         case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
         case "query" -> QueryTool.execute(server, user, args, config);
         case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
+        case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
         case "server_status" -> ServerStatusTool.execute(server, user, args, config);
         case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
         case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
@@ -220,6 +223,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
       case "list_databases" -> result.getJSONArray("databases", new JSONArray()).length() + " database(s)";
       case "get_schema" -> result.getJSONArray("types", new JSONArray()).length() + " type(s)";
       case "query", "execute_command" -> result.getInt("count", 0) + " record(s)";
+      case "full_text_search" -> result.getInt("count", 0) + " hit(s)";
       case "server_status" -> "ok";
       case "profiler_start" -> result.getString("status", "ok");
       case "profiler_stop" -> result.getInt("totalQueries", 0) + " queries captured";

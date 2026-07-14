@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.mcp;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -50,6 +51,47 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("enabled", true)
         .put("allowReads", true)
         .put("allowedUsers", new JSONArray().put("root")));
+    seedFullTextIndex();
+  }
+
+  private void seedFullTextIndex() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("Article"))
+      return;
+
+    db.transaction(() -> {
+      // A single bucket keeps BM25 statistics (document frequency, average document length) computed over one
+      // consistent corpus; the index scores per bucket, so a multi-bucket type could otherwise let term frequency
+      // lose to a per-bucket IDF difference and make the ranking assertions flaky.
+      db.command("sql", "CREATE DOCUMENT TYPE Article BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY Article.title STRING");
+      db.command("sql", "CREATE PROPERTY Article.content STRING");
+      db.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+      db.command("sql", "CREATE INDEX ON Article (title) UNIQUE");
+
+      db.command("sql", "INSERT INTO Article SET title = 'Doc1', content = 'java programming language'");
+      db.command("sql", "INSERT INTO Article SET title = 'Doc2', content = 'python scripting language'");
+      // All three documents tokenize to exactly three terms, so BM25 length normalization is identical across them.
+      // Doc3 therefore outranks Doc1 and Doc2 purely on term frequency for 'language' (3 occurrences against 1),
+      // which gives the ranking test an unambiguous top hit. Keep the three lengths equal when editing this seed.
+      db.command("sql", "INSERT INTO Article SET title = 'Doc3', content = 'language language language'");
+
+      // A second full-text index on Article, so 'typeName: Article' alone is ambiguous between the two.
+      db.command("sql", "CREATE INDEX ON Article (title, content) FULL_TEXT");
+
+      // The schema strips spaces when deriving an index name, so a property named 'my prop' yields Spaced[myprop].
+      db.command("sql", "CREATE DOCUMENT TYPE Spaced BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY Spaced.`my prop` STRING");
+      db.command("sql", "CREATE INDEX ON Spaced (`my prop`) FULL_TEXT");
+      db.command("sql", "INSERT INTO Spaced SET `my prop` = 'java tooling'");
+
+      // A full-text index declared on a supertype is named for the supertype and still returns subtype records.
+      db.command("sql", "CREATE DOCUMENT TYPE Searchable");
+      db.command("sql", "CREATE PROPERTY Searchable.text STRING");
+      db.command("sql", "CREATE INDEX ON Searchable (text) FULL_TEXT");
+      db.command("sql", "CREATE DOCUMENT TYPE Decision EXTENDS Searchable");
+      db.command("sql", "INSERT INTO Decision SET text = 'approved the java migration'");
+    });
   }
 
   @Test
@@ -77,7 +119,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(10);
+    assertThat(tools.length()).isEqualTo(11);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -90,6 +132,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasProfilerStatus = false;
     boolean hasGetServerSettings = false;
     boolean hasSetServerSetting = false;
+    boolean hasFullTextSearch = false;
 
     for (int i = 0; i < tools.length(); i++) {
       final String name = tools.getJSONObject(i).getString("name");
@@ -104,6 +147,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "profiler_status" -> hasProfilerStatus = true;
       case "get_server_settings" -> hasGetServerSettings = true;
       case "set_server_setting" -> hasSetServerSetting = true;
+      case "full_text_search" -> hasFullTextSearch = true;
       }
     }
     assertThat(hasListDatabases).isTrue();
@@ -116,6 +160,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasProfilerStatus).isTrue();
     assertThat(hasGetServerSettings).isTrue();
     assertThat(hasSetServerSetting).isTrue();
+    assertThat(hasFullTextSearch).isTrue();
   }
 
   @Test
@@ -828,6 +873,260 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(errorText).contains("nonexistent_db");
     assertThat(errorText).containsIgnoringCase("available databases");
     assertThat(errorText).contains("graph");
+  }
+
+  @Test
+  void fullTextSearchByIndexName() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getString("indexName")).isEqualTo("Article[content]");
+    assertThat(payload.getString("similarity")).isEqualTo("BM25");
+    assertThat(payload.getInt("count")).isEqualTo(1);
+
+    final JSONObject hit = payload.getJSONArray("results").getJSONObject(0);
+    assertThat(hit.getString("rid")).startsWith("#");
+    assertThat(hit.getFloat("score")).isGreaterThan(0f);
+    assertThat(hit.getJSONObject("properties").getString("title")).isEqualTo("Doc1");
+  }
+
+  @Test
+  void fullTextSearchRanksAndLimits() throws Exception {
+    final JSONObject unlimitedResponse = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "language"));
+
+    final JSONObject unlimitedPayload = new JSONObject(
+        unlimitedResponse.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    // Doc1, Doc2 and Doc3 all contain "language".
+    assertThat(unlimitedPayload.getInt("count")).isEqualTo(3);
+
+    final JSONArray results = unlimitedPayload.getJSONArray("results");
+    final JSONObject first = results.getJSONObject(0);
+    final JSONObject second = results.getJSONObject(1);
+    assertThat(first.getFloat("score")).isGreaterThanOrEqualTo(second.getFloat("score"));
+    // Doc3 repeats "language" three times where Doc1 and Doc2 mention it once, and all three are the same length,
+    // so term frequency alone must put Doc3 on top. This assertion fails if the score-descending sort is dropped.
+    assertThat(first.getJSONObject("properties").getString("title")).isEqualTo("Doc3");
+
+    final JSONObject limitedResponse = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "language")
+        .put("limit", 1));
+
+    final JSONObject limitedPayload = new JSONObject(
+        limitedResponse.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    // The limit must cut the result set down to the single best-scoring hit, not an arbitrary one.
+    assertThat(limitedPayload.getInt("count")).isEqualTo(1);
+    final JSONObject limitedHit = limitedPayload.getJSONArray("results").getJSONObject(0);
+    assertThat(limitedHit.getJSONObject("properties").getString("title")).isEqualTo("Doc3");
+  }
+
+  @Test
+  void fullTextSearchRejectsNonPositiveLimit() throws Exception {
+    final JSONObject zeroResponse = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java")
+        .put("limit", 0));
+
+    assertThat(zeroResponse.getBoolean("isError", false)).isTrue();
+    final String zeroErrorText = zeroResponse.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(zeroErrorText).containsIgnoringCase("limit");
+
+    final JSONObject negativeResponse = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java")
+        .put("limit", -1));
+
+    assertThat(negativeResponse.getBoolean("isError", false)).isTrue();
+    final String negativeErrorText = negativeResponse.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(negativeErrorText).containsIgnoringCase("limit");
+  }
+
+  @Test
+  void fullTextSearchDerivesIndexNameWithSpacesStripped() throws Exception {
+    // The schema registered this index as Spaced[myprop]; deriving 'Spaced[my prop]' verbatim would never match it.
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("typeName", "Spaced")
+        .put("properties", new JSONArray().put("my prop"))
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getString("indexName")).isEqualTo("Spaced[myprop]");
+    assertThat(payload.getInt("count")).isEqualTo(1);
+  }
+
+  @Test
+  void fullTextSearchRejectsBlankQueryText() throws Exception {
+    // The Lucene parser turns a blank query into IndexException("Invalid search query: "), which names no cause. The
+    // tool must reject it with a message that says which argument is wrong.
+    for (final String blank : new String[] { "", "   " }) {
+      final JSONObject response = callTool("full_text_search", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("indexName", "Article[content]")
+          .put("queryText", blank));
+
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+      assertThat(errorText).contains("queryText");
+      assertThat(errorText).doesNotContain("Invalid search query");
+    }
+  }
+
+  @Test
+  void fullTextSearchDeniedWhenReadsDisabled() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("not allowed");
+  }
+
+  @Test
+  void fullTextSearchIndexNameWinsOverTypeName() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[content]")
+        .put("typeName", "Searchable")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    // 'typeName' addresses an unrelated index (Searchable[text]); 'indexName' must win and be used as-is.
+    assertThat(payload.getString("indexName")).isEqualTo("Article[content]");
+  }
+
+  @Test
+  void fullTextSearchByTypeNameAndProperties() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("typeName", "Article")
+        .put("properties", new JSONArray().put("content"))
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getString("indexName")).isEqualTo("Article[content]");
+    assertThat(payload.getInt("count")).isEqualTo(1);
+  }
+
+  @Test
+  void fullTextSearchByTypeNameAloneWhenUnambiguous() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("typeName", "Searchable")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isFalse();
+
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    // The index lives on the supertype; the hit is a Decision, a subtype record.
+    assertThat(payload.getString("indexName")).isEqualTo("Searchable[text]");
+    assertThat(payload.getInt("count")).isEqualTo(1);
+    assertThat(payload.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("@type")).isEqualTo("Decision");
+  }
+
+  @Test
+  void fullTextSearchAmbiguousTypeNameListsCandidates() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("typeName", "Article")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("Article[content]");
+    assertThat(errorText).contains("Article[title,content]");
+  }
+
+  @Test
+  void fullTextSearchOnSubtypeNameGuidesToSupertypeIndex() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("typeName", "Decision")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("Decision");
+    assertThat(errorText).contains("Searchable[text]");
+    assertThat(errorText).containsIgnoringCase("supertype");
+  }
+
+  @Test
+  void fullTextSearchUnknownIndexListsAvailable() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Artcle[content]")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("Artcle[content]");
+    assertThat(errorText).containsIgnoringCase("available full-text indexes");
+    assertThat(errorText).contains("Article[content]");
+  }
+
+  @Test
+  void fullTextSearchOnNonFullTextIndexIsRejected() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[title]")
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("Article[title]");
+    assertThat(errorText).contains("is not a full-text index");
+    assertThat(errorText).containsIgnoringCase("available full-text indexes");
+    assertThat(errorText).contains("Article[content]");
+  }
+
+  @Test
+  void fullTextSearchWithoutAddressingIsRejected() throws Exception {
+    final JSONObject response = callTool("full_text_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("queryText", "java"));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("indexName");
+    assertThat(errorText).contains("typeName");
   }
 
   // ---- Helper methods ----
