@@ -83,9 +83,9 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   }
 
   private static final Set<String> LOOPBACK_IPS = Set.of("127.0.0.1", "0:0:0:0:0:0:0:1", "::1");
-  // Minimum spacing between re-resolutions while the allowlist is still incomplete. Bounds DNS load
-  // under a connection flood at startup while still letting the allowlist converge within ~1s.
-  private static final long        INCOMPLETE_RESOLVE_FLOOR_MS = 1_000L;
+  // Minimum spacing between miss-triggered re-resolutions. Bounds DNS load under a connection flood
+  // (at startup or from a non-peer) while letting the allowlist converge within ~1s.
+  private static final long        MISS_RESOLVE_FLOOR_MS = 1_000L;
 
   private final List<String>                 peerHosts;
   // Number of declared peer hosts that must resolve before the startup fail-open ends: a Raft
@@ -168,9 +168,14 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     if (allowedIps.get().contains(ip))
       return true;
 
-    // Miss: re-resolve to pick up restarted peers with new IPs. While the allowlist has never been
-    // complete (startup), use a short floor so it converges fast; once complete, respect refreshIntervalMs.
-    resolveIfStale(currentResolveFloor());
+    // Miss: re-resolve to pick up restarted peers with new IPs, always on the short floor (issue
+    // #5268). On Kubernetes a connection from an unknown IP is the NORMAL case for a recreated pod,
+    // not an intrusion - and the DNS-gap resolutions during the pod recreation keep bumping the
+    // last-resolve timestamp, so gating this path on the full refreshIntervalMs made the recreated
+    // peer's one-shot join probe lose the race essentially every time. The floor still bounds DNS
+    // load under a connection flood; the steady-state interval remains in force for the proactive
+    // background refresh.
+    resolveIfStale(missResolveFloor());
     if (allowedIps.get().contains(ip))
       return true;
 
@@ -230,7 +235,12 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
   /** Re-resolution floor: the full interval once complete, a short floor while still converging at startup. */
   private long currentResolveFloor() {
-    return everCompletelyResolved ? refreshIntervalMs : Math.min(refreshIntervalMs, INCOMPLETE_RESOLVE_FLOOR_MS);
+    return everCompletelyResolved ? refreshIntervalMs : missResolveFloor();
+  }
+
+  /** Short floor for miss-triggered re-resolution: converge fast without letting a flood hammer DNS. */
+  private long missResolveFloor() {
+    return Math.min(refreshIntervalMs, MISS_RESOLVE_FLOOR_MS);
   }
 
   /** Re-resolves only if at least {@code floor} ms have elapsed since the last resolution. */

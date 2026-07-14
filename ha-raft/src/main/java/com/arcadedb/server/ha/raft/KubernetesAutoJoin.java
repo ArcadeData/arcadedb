@@ -30,9 +30,12 @@ import org.apache.ratis.protocol.SetConfigurationRequest;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.util.TimeDuration;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -66,11 +69,36 @@ public class KubernetesAutoJoin {
   // Short timeouts for the probe client to avoid blocking for the full default gRPC timeout
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS   = 3;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS   = 5;
+  // Retry backoff for tryAutoJoinWithRetry (issue #5268): the one-shot probe reliably lost the race
+  // against the peers' allowlist DNS refresh on pod recreation, stranding the node forever.
+  static final long RETRY_BACKOFF_INITIAL_MS = 2_000L;
+  static final long RETRY_BACKOFF_MAX_MS     = 60_000L;
+
+  /** Result of a single auto-join probe round. */
+  public enum Outcome {
+    /** This node was added to the cluster's committed configuration. */
+    JOINED,
+    /** The live configuration already contains this node; nothing to do. */
+    ALREADY_MEMBER,
+    /** No reachable peer reported an existing cluster (cold start, or every probe failed/was rejected). */
+    NO_CLUSTER_FOUND,
+    /** A peer accepted the probe but rejected the configuration change (e.g. no settled leader yet). */
+    ADD_REJECTED,
+    /** The probing thread was interrupted (shutdown). */
+    INTERRUPTED
+  }
+
+  /** Pluggable sleeper so tests can drive the jitter/backoff deterministically. */
+  @FunctionalInterface
+  interface Sleeper {
+    void sleep(long ms) throws InterruptedException;
+  }
 
   private final ArcadeDBServer server;
   private final RaftGroup      raftGroup;
   private final RaftPeerId     localPeerId;
   private final RaftProperties raftProperties;
+  private       Sleeper        sleeper = Thread::sleep;
 
   public KubernetesAutoJoin(final ArcadeDBServer server, final RaftGroup raftGroup,
       final RaftPeerId localPeerId, final RaftProperties raftProperties) {
@@ -80,25 +108,67 @@ public class KubernetesAutoJoin {
     this.raftProperties = raftProperties;
   }
 
+  /** Package-private test hook: replaces the real sleeps so retry tests run instantly. */
+  void setSleeperForTesting(final Sleeper sleeper) {
+    this.sleeper = sleeper;
+  }
+
   /**
-   * Attempts to join an existing Raft cluster by contacting a peer and adding this server.
-   * If no existing cluster is found (fresh cold-start deployment), this is a no-op - the Raft
-   * server already has the full peer list from HA_SERVER_LIST, so normal Raft leader election
-   * proceeds without risk of split-brain.
+   * Runs {@link #tryAutoJoin()} with exponential backoff until the node has joined (or confirmed
+   * membership), the thread is interrupted, or {@code keepRetrying} turns false (issue #5268). The
+   * one-shot probe reliably lost the race against the peers' allowlist DNS refresh on pod recreation
+   * and then parked forever with the node NOT_READY and nothing retrying on either side; the retry
+   * makes the join path self-sufficient. The caller supplies the continuation condition - typically
+   * "not shutting down and no leader is known yet": once a leader is visible this node is either a
+   * functioning member or a cold-start election completed, and retrying is pointless.
    */
-  public void tryAutoJoin() {
+  public Outcome tryAutoJoinWithRetry(final BooleanSupplier keepRetrying) {
+    long backoffMs = RETRY_BACKOFF_INITIAL_MS;
+    for (int attempt = 1; ; attempt++) {
+      final Outcome outcome = tryAutoJoin();
+      if (outcome == Outcome.JOINED || outcome == Outcome.ALREADY_MEMBER || outcome == Outcome.INTERRUPTED)
+        return outcome;
+      if (!keepRetrying.getAsBoolean())
+        return outcome;
+      HALog.log(this, HALog.BASIC, "K8s auto-join: attempt %d did not join (%s); retrying in %dms",
+          attempt, outcome, backoffMs);
+      try {
+        sleeper.sleep(backoffMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return Outcome.INTERRUPTED;
+      }
+      backoffMs = Math.min(backoffMs * 2, RETRY_BACKOFF_MAX_MS);
+    }
+  }
+
+  /**
+   * Runs one probe round: attempts to join an existing Raft cluster by contacting a peer and adding
+   * this server. If no existing cluster is found (fresh cold-start deployment), this is a no-op -
+   * the Raft server already has the full peer list from HA_SERVER_LIST, so normal Raft leader
+   * election proceeds without risk of split-brain.
+   *
+   * @return the probe outcome; production callers go through {@link #tryAutoJoinWithRetry} so a
+   *         transiently-lost race (issue #5268) is retried instead of stranding the node
+   */
+  public Outcome tryAutoJoin() {
     final long jitterMin = computeJitterMinMs();
     final long jitterMax = Math.max(jitterMin + 100, AUTO_JOIN_JITTER_MAX_MS);
     final long jitterMs = jitterMin < jitterMax ? ThreadLocalRandom.current().nextLong(jitterMin, jitterMax) : jitterMin;
     HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing (min=%d, max=%d)...", jitterMs, jitterMin, jitterMax);
     try {
-      Thread.sleep(jitterMs);
+      sleeper.sleep(jitterMs);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      return;
+      return Outcome.INTERRUPTED;
     }
 
     HALog.log(this, HALog.BASIC, "K8s auto-join: attempting to join existing cluster...");
+
+    // Per-peer failure reasons, reported in the final log line: the join failure used to be
+    // completely silent on the affected node (the only evidence was the rejection log on the OTHER
+    // pods), which is the observability gap called out in issue #5268.
+    final Map<String, String> probeFailures = new LinkedHashMap<>();
 
     for (final RaftPeer peer : raftGroup.getPeers()) {
       if (peer.getId().equals(localPeerId))
@@ -131,7 +201,7 @@ public class KubernetesAutoJoin {
 
           if (alreadyMember) {
             HALog.log(this, HALog.BASIC, "K8s auto-join: already a member of the cluster");
-            return;
+            return Outcome.ALREADY_MEMBER;
           }
 
           // Find our peer definition in the configured group
@@ -156,24 +226,35 @@ public class KubernetesAutoJoin {
               .build();
 
           final RaftClientReply joinReply = tempClient.admin().setConfiguration(addArgs);
-          if (!joinReply.isSuccess())
+          if (!joinReply.isSuccess()) {
             LogManager.instance().log(this, Level.WARNING, "K8s auto-join: add peer rejected: %s",
                 joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown");
-          else
-            HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster via atomic add");
-
-          return;
+            return Outcome.ADD_REJECTED;
+          }
+          HALog.log(this, HALog.BASIC, "K8s auto-join: successfully joined cluster via atomic add");
+          return Outcome.JOINED;
         }
       } catch (final Exception e) {
+        probeFailures.put(peer.getId().toString(), e.getMessage());
         HALog.log(this, HALog.DETAILED, "K8s auto-join: peer %s not reachable (%s), trying next...",
             peer.getId(), e.getMessage());
       }
     }
 
-    LogManager.instance().log(this, Level.INFO,
-        """
-        K8s auto-join: no existing cluster found. This node will participate in \
-        Raft leader election with the configured peer group once peers are reachable""");
+    if (probeFailures.isEmpty())
+      LogManager.instance().log(this, Level.INFO,
+          """
+          K8s auto-join: no existing cluster found. This node will participate in \
+          Raft leader election with the configured peer group once peers are reachable""");
+    else
+      // At least one probe failed outright (unreachable peer, rejected connection, timeout): surface
+      // the per-peer reasons at WARNING so the join failure is diagnosable on THIS node instead of
+      // only via the rejection logs on the other pods (issue #5268).
+      LogManager.instance().log(this, Level.WARNING,
+          "K8s auto-join: could not join an existing cluster; probe failures per peer: %s. "
+              + "This node will participate in Raft leader election with the configured peer group once peers are reachable",
+          probeFailures);
+    return Outcome.NO_CLUSTER_FOUND;
   }
 
   /**

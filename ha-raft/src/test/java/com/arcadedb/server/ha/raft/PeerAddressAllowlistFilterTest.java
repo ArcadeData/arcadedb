@@ -477,4 +477,56 @@ class PeerAddressAllowlistFilterTest {
     assertThat(f.isEverCompletelyResolved()).isTrue();
     assertThat(f.getAllowedIps()).contains("10.1.13.9");
   }
+
+  @Test
+  void missReresolvesImmediatelyAfterPodRecreation() {
+    // Issue #5268: a StatefulSet pod is recreated with a new IP. The allowlist is fully resolved
+    // (holding the OLD incarnation's IP), and the DNS-gap resolutions during the pod recreation keep
+    // bumping the last-resolve timestamp - so the new incarnation's one-shot join probe used to land
+    // inside refreshIntervalMs and be rejected WITHOUT re-resolving, losing the race essentially
+    // every time (3/3 measured in the reporter's environment). An unknown IP must trigger a
+    // re-resolve on the short miss floor instead of waiting out the steady-state interval.
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.0.0.1"));
+    dns.table.put("peerB", List.of("10.0.0.2"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA", "peerB"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.isEverCompletelyResolved()).isTrue();
+    assertThat(f.isAllowed("10.0.0.2")).isTrue();
+
+    // peerB's pod is recreated: DNS now serves the new IP.
+    dns.table.put("peerB", List.of("10.0.0.99"));
+    clock.set(5_000); // past the 1s miss floor, well inside the 30s refresh interval
+
+    assertThat(f.isAllowed("10.0.0.99"))
+        .as("a connection from an unknown IP must re-resolve peer DNS before rejecting")
+        .isTrue();
+  }
+
+  @Test
+  void missReresolveIsRateLimitedByTheShortFloor() {
+    // The miss-path re-resolve must still be rate-limited (the short floor) so a connection flood
+    // from a non-peer cannot hammer DNS: within the floor a genuinely-unknown IP is rejected against
+    // the cached allowlist without another resolution.
+    final AtomicLong clock = new AtomicLong(0);
+    final int[] resolutions = { 0 };
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.0.0.1"));
+    final PeerAddressAllowlistFilter.HostResolver counting = host -> {
+      resolutions[0]++;
+      return dns.resolve(host);
+    };
+    final PeerAddressAllowlistFilter f = new PeerAddressAllowlistFilter(List.of("peerA"), 30_000L, 0L, 300_000L,
+        clock::get, counting);
+    final int afterConstruction = resolutions[0];
+
+    clock.set(2_000);
+    assertThat(f.isAllowed("10.9.9.9")).isFalse(); // miss past the floor: one re-resolve
+    final int afterFirstMiss = resolutions[0];
+    assertThat(afterFirstMiss).isGreaterThan(afterConstruction);
+
+    clock.set(2_500); // within the 1s floor of the previous re-resolve
+    assertThat(f.isAllowed("10.9.9.8")).isFalse();
+    assertThat(resolutions[0]).as("misses inside the floor must not re-resolve again").isEqualTo(afterFirstMiss);
+  }
 }

@@ -117,8 +117,9 @@ class Issue5275MembershipSelfHealIT extends BaseRaftHATest {
 
     // Startup membership self-check (what the k8s start path now runs on every boot): the probe must
     // detect this node is absent from the live configuration and atomically re-add it.
-    new KubernetesAutoJoin(getServer(followerIndex), followerRaft.getRaftGroup(),
-        followerRaft.getLocalPeerId(), followerRaft.getRaftProperties()).tryAutoJoin();
+    final KubernetesAutoJoin.Outcome outcome = new KubernetesAutoJoin(getServer(followerIndex),
+        followerRaft.getRaftGroup(), followerRaft.getLocalPeerId(), followerRaft.getRaftProperties()).tryAutoJoin();
+    assertThat(outcome).isEqualTo(KubernetesAutoJoin.Outcome.JOINED);
 
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> {
