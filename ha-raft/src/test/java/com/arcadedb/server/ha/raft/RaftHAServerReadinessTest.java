@@ -95,4 +95,27 @@ class RaftHAServerReadinessTest {
     // the bound" and report Ready - the probe must fail closed.
     assertThat(isReadyForTrafficState(true, true, false, 900, 1000, 100)).isFalse();
   }
+
+  @Test
+  void followerWithResyncInFlightIsNotReadyEvenWithinLagBound() {
+    // Issue #5273: a follower whose data may be divergent (snapshot resync queued/running, or a
+    // database still marked diverged after a WAL gap) must fail closed even when its raw applied-index
+    // lag is within the bound (here commit == applied).
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, true)).isFalse();
+    // Once the resync clears, the same caught-up follower is Ready again.
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false)).isTrue();
+  }
+
+  @Test
+  void leaderWithResyncFlagIsNotReady() {
+    // Defensive: a resync flag set while this node believes it is leader still fails closed. The leader
+    // never resyncs from a peer, so in practice this only guards a transitional inconsistency.
+    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, true)).isFalse();
+  }
+
+  @Test
+  void sixArgOverloadDefaultsToNoResync() {
+    // The legacy 6-arg predicate behaves exactly as before (resyncInProgress defaults to false).
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100)).isTrue();
+  }
 }
