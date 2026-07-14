@@ -1463,8 +1463,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final boolean localInConfig = conf != null && isPeerInConfig(conf.getCurrentPeers(), localPeerId);
       final long commitIndex = division.getRaftLog().getLastCommittedIndex();
       final long appliedIndex = info.getLastAppliedIndex();
+      // A snapshot resync in flight (or a database still diverged awaiting one) means this node's data
+      // may be divergent; do not advertise Ready until it clears (issue #5273).
+      final ArcadeStateMachine sm = getStateMachine();
+      final boolean resyncInProgress = sm != null && sm.isResyncInProgress();
       return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
-          maxLagEntries);
+          maxLagEntries, resyncInProgress);
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.FINE, "Cannot read Raft state for readiness probe", e);
       return false;
@@ -1482,7 +1486,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries) {
+    return isReadyForTrafficState(leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries,
+        false);
+  }
+
+  /**
+   * Overload of {@link #isReadyForTrafficState(boolean, boolean, boolean, long, long, long)} that also
+   * fails closed while a snapshot resync is in flight (issue #5273). A follower that is downloading a
+   * snapshot - or that still has a database marked diverged after a WAL version gap and awaiting its
+   * resync - may hold divergent data, so it must not advertise Ready until the resync clears, even if
+   * its raw applied-index lag happens to be within {@code maxLagEntries}. The leader never resyncs from
+   * a peer, so this gate only affects followers in practice.
+   */
+  static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
+      final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
+      final boolean resyncInProgress) {
     if (!leaderPresent || !localInConfig)
+      return false;
+    if (resyncInProgress)
       return false;
     if (leader)
       return true;

@@ -2029,7 +2029,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // a time; concurrent requests are dropped. The flag also feeds isSnapshotDownloadPending() so
     // the stale-follower check does not re-arm while a download is already in flight.
     if (!snapshotDownloadInProgress.compareAndSet(false, true)) {
-      HALog.log(this, HALog.BASIC, "Snapshot download already in progress, skipping duplicate request");
+      // Another resync (from an overlapping WAL-gap / watchdog / leader-install path) is already
+      // running; this request is folded into it. Log at INFO so a "triggering snapshot resync" SEVERE
+      // always has a visible terminal disposition instead of vanishing silently (issue #5273).
+      LogManager.instance().log(this, Level.INFO,
+          "Snapshot resync already in progress; folding this request into the in-flight download (its completion will be logged once)");
       return;
     }
     try {
@@ -2041,17 +2045,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
+      int resynced = 0;
       for (final String dbName : server.getDatabaseNames()) {
         // install() keeps the database open during the download and rolls back on failure, so a
         // watchdog-triggered resync never leaves it closed.
-        if (server.existsDatabase(dbName))
+        if (server.existsDatabase(dbName)) {
           SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
               leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+          resynced++;
+        }
       }
-      LogManager.instance().log(this, Level.INFO, "Snapshot download triggered by watchdog completed");
+      LogManager.instance().log(this, Level.INFO,
+          "Snapshot resync completed: reinstalled %d database(s) from the leader; diverged state cleared", resynced);
       clearDivergedState();
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Snapshot download triggered by watchdog failed", e);
+      LogManager.instance().log(this, Level.SEVERE, "Snapshot resync failed", e);
     } finally {
       snapshotDownloadInProgress.set(false);
     }
@@ -2196,6 +2204,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public boolean isSnapshotDownloadPending() {
     return needsSnapshotDownload.get() || snapshotDownloadInProgress.get();
+  }
+
+  /**
+   * Returns {@code true} while this node may hold divergent data pending a snapshot resync: either a
+   * snapshot download is queued/running ({@link #isSnapshotDownloadPending()}) or at least one database
+   * is still marked diverged after a WAL version gap and awaiting its resync. Used to gate HA readiness
+   * so a follower never advertises {@code /api/v1/ready} 200 while a resync is in flight (issue #5273);
+   * the flag clears once {@link #clearDivergedState()} / {@link #clearDivergedDatabase(String)} run at
+   * the end of a successful resync.
+   */
+  public boolean isResyncInProgress() {
+    return isSnapshotDownloadPending() || !divergedDatabases.isEmpty();
   }
 
   /**

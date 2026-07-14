@@ -42,6 +42,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,6 +50,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -135,6 +137,16 @@ class BootstrapElection {
   // Poll interval while waiting for the division to become readable. Package-private and non-final so
   // tests can set it to 0 and spin without sleeping.
   long                                  commitIndexReadinessPollMs    = 100L;
+  // Backoff between bootstrap-state probe rounds. A peer whose HTTP/security stack is still
+  // initializing when the probe arrives (common in a parallel cold boot where every pod starts at
+  // once) answers 401/403/5xx; treating that as a definitive "no state" could elect a stale baseline
+  // (issue #5273). We retry such probes within the overall bootstrap-timeout budget instead. Package-
+  // private and non-final so tests can shorten them.
+  long                                  probeRetryBackoffMs           = 500L;
+  // Per-attempt HTTP timeout ceiling for a single bootstrap-state probe. The overall budget is
+  // HA_BOOTSTRAP_TIMEOUT_MS (default 120s); capping each attempt lets an unreachable/slow peer be
+  // retried rather than consuming the whole budget in one hung attempt.
+  long                                  probeAttemptTimeoutMs         = 5_000L;
 
   BootstrapElection(final RaftHAServer haServer, final ArcadeDBServer server) {
     this.haServer = haServer;
@@ -301,49 +313,39 @@ class BootstrapElection {
     // Self state computed locally to avoid a self-loop HTTP call.
     final Map<String, PeerState> selfStates = computeLocalStates(localId, dbFilter);
 
-    // Fan out to other peers in parallel; bounded by timeoutMs.
-    final List<CompletableFuture<Map<RaftPeerId, Map<String, PeerState>>>> futures = new ArrayList<>();
+    // Collect every other peer's state, retrying transient probe failures (401/403/5xx/unreachable)
+    // within the overall bootstrap-timeout budget instead of treating the first failure as a
+    // definitive "no state" (issue #5273).
+    final Map<RaftPeerId, String> peerAddresses = new LinkedHashMap<>();
     for (final RaftPeer peer : peers) {
       if (peer.getId().equals(localId))
         continue;
       final String httpAddr = httpAddresses.get(peer.getId());
       if (httpAddr == null) {
         LogManager.instance().log(this, Level.WARNING,
-            "Bootstrap: peer %s has no known HTTP address; skipping", peer.getId());
+            "Bootstrap: peer %s has no known HTTP address; the election assumes it holds NO local data", peer.getId());
         continue;
       }
-      futures.add(queryPeer(peer.getId(), httpAddr, dbFilter, timeoutMs));
+      peerAddresses.put(peer.getId(), httpAddr);
     }
 
-    final Map<RaftPeerId, Map<String, PeerState>> remoteStates = new HashMap<>();
-    final long deadline = System.currentTimeMillis() + timeoutMs;
-    for (final CompletableFuture<Map<RaftPeerId, Map<String, PeerState>>> f : futures) {
-      final long remaining = Math.max(0, deadline - System.currentTimeMillis());
-      try {
-        final Map<RaftPeerId, Map<String, PeerState>> result = f.get(remaining, TimeUnit.MILLISECONDS);
-        if (result != null)
-          remoteStates.putAll(result);
-      } catch (final TimeoutException te) {
-        // Pending peer didn't respond by deadline; logged below.
-        f.cancel(true);
-      } catch (final Exception e) {
-        // Individual peer error; logged below.
-      }
-    }
+    final List<RaftPeerId> assumedEmpty = new ArrayList<>();
+    final Map<RaftPeerId, Map<String, PeerState>> remoteStates = collectRemoteStatesWithRetry(
+        peerAddresses, (pid, addr, attemptMs) -> queryPeer(pid, addr, dbFilter, attemptMs),
+        timeoutMs, Math.min(timeoutMs, probeAttemptTimeoutMs), probeRetryBackoffMs,
+        haServer::isLeader, assumedEmpty);
 
-    // Identify any configured peer that didn't report and warn loudly.
-    final Set<RaftPeerId> heard = new HashSet<>(remoteStates.keySet());
-    heard.add(localId);
-    final List<String> missing = new ArrayList<>();
-    for (final RaftPeer peer : peers)
-      if (!heard.contains(peer.getId()))
-        missing.add(peer.getId().toString());
-    if (!missing.isEmpty())
+    // Any configured peer that never returned a usable state after retries: warn loudly and state
+    // exactly what the election assumes for it (empty baseline) so the operator can reason about
+    // whether a stale baseline could have been chosen (issue #5273).
+    if (!assumedEmpty.isEmpty())
       LogManager.instance().log(this, Level.SEVERE,
           """
-          Bootstrap timeout: peers %s did not report state within %dms; proceeding with majority. \
-          Unreachable peers will catch up via leader-shipped snapshot when they reconnect.""",
-          missing, timeoutMs);
+          Bootstrap: peers %s did not return a usable state within %dms (after retries); the election \
+          ASSUMES they hold no local data (empty baseline) and proceeds with the peers that responded. \
+          If one of these peers actually holds the freshest copy it will resync from the elected leader \
+          when it reconnects.""",
+          assumedEmpty, timeoutMs);
 
     // Pivot: from peer→db→state to db→list of (peer, state).
     final Map<String, List<PeerState>> byDb = new HashMap<>();
@@ -355,12 +357,98 @@ class BootstrapElection {
     return byDb;
   }
 
-  private CompletableFuture<Map<RaftPeerId, Map<String, PeerState>>> queryPeer(final RaftPeerId peerId,
-      final String httpAddr, final Set<String> dbFilter, final long timeoutMs) {
+  /**
+   * Round-based, retrying collection of remote peer states. Each round probes every still-unresolved
+   * peer in parallel (via {@code prober}); peers that answer with data are resolved, peers that answer
+   * with a retryable failure (401/403/5xx/unreachable - typically a peer whose HTTP/security stack is
+   * still initializing during a parallel cold boot, issue #5273) are re-probed on the next round after
+   * {@code backoffMs}. The loop stops when every peer is resolved, the {@code overallTimeoutMs} budget
+   * is exhausted, or {@code keepGoing} reports this node is no longer the leader. Peers still
+   * unresolved at the end are added to {@code assumedEmptyOut} so the caller can log what the election
+   * assumes for them. Package-private and static so the retry/backoff/deadline logic is unit-testable
+   * with an injected {@code prober} and no real HTTP.
+   */
+  static Map<RaftPeerId, Map<String, PeerState>> collectRemoteStatesWithRetry(
+      final Map<RaftPeerId, String> peerAddresses, final ProbeFunction prober,
+      final long overallTimeoutMs, final long attemptTimeoutMs, final long backoffMs,
+      final BooleanSupplier keepGoing, final List<RaftPeerId> assumedEmptyOut) {
+    final Map<RaftPeerId, Map<String, PeerState>> results = new HashMap<>();
+    // Peers still needing a definitive answer; the address is kept so we can re-probe.
+    final Map<RaftPeerId, String> pending = new LinkedHashMap<>(peerAddresses);
+    // Monotonic deadline: nanoTime is immune to wall-clock steps and the (now - start) form is
+    // overflow-safe.
+    final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(overallTimeoutMs);
+    while (!pending.isEmpty() && System.nanoTime() < deadlineNanos && keepGoing.getAsBoolean()) {
+      final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+      final long perAttemptMs = Math.max(1, Math.min(remainingMs, attemptTimeoutMs));
+
+      // Fan out this round in parallel.
+      final Map<RaftPeerId, CompletableFuture<ProbeOutcome>> round = new LinkedHashMap<>();
+      for (final Map.Entry<RaftPeerId, String> e : pending.entrySet())
+        round.put(e.getKey(), prober.probe(e.getKey(), e.getValue(), perAttemptMs));
+
+      boolean anyRetryable = false;
+      for (final Map.Entry<RaftPeerId, CompletableFuture<ProbeOutcome>> e : round.entrySet()) {
+        final RaftPeerId peerId = e.getKey();
+        ProbeOutcome outcome;
+        try {
+          outcome = e.getValue().get(perAttemptMs, TimeUnit.MILLISECONDS);
+        } catch (final TimeoutException te) {
+          e.getValue().cancel(true);
+          outcome = ProbeOutcome.retryable("probe timed out");
+        } catch (final Exception ex) {
+          outcome = ProbeOutcome.retryable(ex.getMessage());
+        }
+        switch (outcome.result()) {
+        case OK -> {
+          results.put(peerId, outcome.states());
+          pending.remove(peerId);
+        }
+        case FATAL ->
+          // Definitive answer that isn't going to change on retry (e.g. Raft HA not enabled on the
+          // peer): stop probing it. It ends up in assumedEmptyOut below.
+          pending.remove(peerId);
+        case RETRYABLE -> anyRetryable = true;
+        }
+      }
+
+      if (!pending.isEmpty() && anyRetryable && System.nanoTime() < deadlineNanos && keepGoing.getAsBoolean()) {
+        try {
+          Thread.sleep(backoffMs);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    }
+
+    if (assumedEmptyOut != null)
+      for (final RaftPeerId peerId : peerAddresses.keySet())
+        if (!results.containsKey(peerId))
+          assumedEmptyOut.add(peerId);
+    return results;
+  }
+
+  /**
+   * Whether an HTTP status returned by a peer's {@code /bootstrap-state} probe should be retried
+   * (rather than concluded as "no state"). {@code 401}/{@code 403} are the common case during a
+   * parallel cold boot: the probed peer's HTTP server is up but its security stack is still
+   * initializing so the shared cluster credentials are momentarily rejected (issue #5273).
+   * {@code 408}/{@code 425}/{@code 429} and any {@code 5xx} are likewise transient "not ready yet"
+   * answers. Everything else (notably {@code 200} success and {@code 400}/{@code 404} "Raft HA not
+   * enabled / no such endpoint") is definitive.
+   */
+  static boolean isRetryableProbeStatus(final int statusCode) {
+    return statusCode == 401 || statusCode == 403 || statusCode == 408 || statusCode == 425
+        || statusCode == 429 || statusCode >= 500;
+  }
+
+  private CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
+      final String httpAddr, final Set<String> dbFilter, final long attemptTimeoutMs) {
     final String url = "http://" + httpAddr + "/api/v1/cluster/bootstrap-state";
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(url))
-        .timeout(Duration.ofMillis(timeoutMs))
+        .timeout(Duration.ofMillis(attemptTimeoutMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString("{}"));
     final String token = haServer.getClusterToken();
@@ -370,10 +458,15 @@ class BootstrapElection {
 
     return HTTP.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {
-          if (resp.statusCode() != 200) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Bootstrap: peer %s responded with HTTP %d to /bootstrap-state", peerId, resp.statusCode());
-            return null;
+          final int status = resp.statusCode();
+          if (status != 200) {
+            final boolean retryable = isRetryableProbeStatus(status);
+            // Transient failures are expected during a parallel cold boot and are retried below, so
+            // log them at INFO (not WARNING) to avoid alarming operators mid-recovery (issue #5273).
+            LogManager.instance().log(this, retryable ? Level.INFO : Level.WARNING,
+                "Bootstrap: peer %s responded with HTTP %d to /bootstrap-state%s", peerId, status,
+                retryable ? " (transient; retrying within the bootstrap budget)" : "");
+            return retryable ? ProbeOutcome.retryable("HTTP " + status) : ProbeOutcome.fatal("HTTP " + status);
           }
           try {
             final JSONObject json = new JSONObject(resp.body());
@@ -387,17 +480,18 @@ class BootstrapElection {
               result.put(name, new PeerState(peerId, name, db.getString("fingerprint"),
                   db.getLong("lastTxId")));
             }
-            return Map.of(peerId, result);
+            return ProbeOutcome.ok(result);
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING,
                 "Bootstrap: peer %s returned malformed JSON: %s", peerId, e.getMessage());
-            return null;
+            return ProbeOutcome.retryable("malformed JSON: " + e.getMessage());
           }
         })
         .exceptionally(t -> {
-          LogManager.instance().log(this, Level.WARNING,
-              "Bootstrap: failed to query peer %s: %s", peerId, t.getMessage());
-          return null;
+          LogManager.instance().log(this, Level.INFO,
+              "Bootstrap: failed to query peer %s (transient; retrying within the bootstrap budget): %s",
+              peerId, t.getMessage());
+          return ProbeOutcome.retryable(t.getMessage());
         });
   }
 
@@ -471,12 +565,23 @@ class BootstrapElection {
     for (final String dbName : dbNames) {
       final PeerState local = localStateFor(states.get(dbName), localId);
       if (local == null || local.lastTxId < 0) {
-        // The elected source does not hold this database (or holds no data for it). This is only
-        // reachable when an operator staged a database onto a different node outside Raft; warn so
-        // the misconfiguration is visible. The node that does hold it keeps its copy; the overwrite
-        // guard handles reconciliation if a baseline is ever committed for it later.
-        LogManager.instance().log(this, Level.WARNING,
-            "Bootstrap: elected source %s has no local data for '%s'; skipping its baseline", localId, dbName);
+        // The elected source contributes no usable bootstrap state for this database, so there is
+        // nothing to seed from it and its baseline is skipped. This is only reachable when an operator
+        // staged a database onto a different node outside Raft, OR when this database was not part of
+        // the elected source's own reported state at election time. Distinguish the two so the message
+        // is not misleading during an outage recovery (issue #5273): "no local data" here means "no
+        // bootstrap state / no committed transaction id", NOT "the database files are missing" - any
+        // on-disk copy is left untouched and reconciled by the overwrite guard if a baseline is
+        // committed for it later.
+        if (local == null)
+          LogManager.instance().log(this, Level.WARNING,
+              "Bootstrap: elected source %s did not report bootstrap state for '%s' (database not present or not yet "
+                  + "open on this node at election time); skipping its baseline. Any on-disk copy is left untouched.",
+              localId, dbName);
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Bootstrap: elected source %s holds '%s' but it reports no committed transaction id (lastTxId=-1); "
+                  + "nothing to seed, skipping its baseline. The on-disk copy is left untouched.", localId, dbName);
         continue;
       }
 
@@ -571,5 +676,33 @@ class BootstrapElection {
 
   /** Per-peer per-database state collected during bootstrap. */
   record PeerState(RaftPeerId peerId, String dbName, String fingerprint, long lastTxId) {
+  }
+
+  /** A single peer probe, injected so {@link #collectRemoteStatesWithRetry} is testable without HTTP. */
+  @FunctionalInterface
+  interface ProbeFunction {
+    CompletableFuture<ProbeOutcome> probe(RaftPeerId peerId, String httpAddr, long attemptTimeoutMs);
+  }
+
+  /** Classification of one {@code /bootstrap-state} probe attempt. */
+  enum ProbeResult {
+    OK,        // peer answered 200 with its state
+    RETRYABLE, // transient failure (401/403/5xx/unreachable): re-probe within the budget
+    FATAL      // definitive non-answer that won't change on retry (e.g. Raft HA not enabled)
+  }
+
+  /** Outcome of one {@code /bootstrap-state} probe attempt. {@code states} is non-null only for {@link ProbeResult#OK}. */
+  record ProbeOutcome(ProbeResult result, Map<String, PeerState> states, String detail) {
+    static ProbeOutcome ok(final Map<String, PeerState> states) {
+      return new ProbeOutcome(ProbeResult.OK, states, null);
+    }
+
+    static ProbeOutcome retryable(final String detail) {
+      return new ProbeOutcome(ProbeResult.RETRYABLE, null, detail);
+    }
+
+    static ProbeOutcome fatal(final String detail) {
+      return new ProbeOutcome(ProbeResult.FATAL, null, detail);
+    }
   }
 }
