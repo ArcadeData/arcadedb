@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
@@ -38,6 +39,7 @@ import java.io.FileInputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -351,6 +353,16 @@ public class SnapshotHttpHandler implements HttpHandler {
         for (final File sealedFile : sealedFiles)
           addFileToZip(zipOut, sealedFile, manifest);
 
+      // Ship the recency marker (issue #5277). last-tx-id.bin is written on a clean close and on WAL
+      // rotation, but a follower that receives this database via snapshot and is later force-killed
+      // before either happens has no WAL and no marker, so it reports lastTxId=-1 for fully intact
+      // data and is needlessly re-installed from a full snapshot at the next cold bootstrap. The
+      // LIVE counter is used because the leader's own on-disk copy is stale while the database is
+      // open; it is read under the same suspendFlushAndExecute window as the data files above.
+      final long lastTxId = ((LocalDatabase) db.getEmbedded()).getLastTransactionId();
+      if (lastTxId >= 0)
+        addBytesToZip(zipOut, TransactionManager.LAST_TX_ID_FILE_NAME, longToBytes(lastTxId), manifest);
+
       // Final entry: the manifest. Anything truncated upstream drops this entry, so the follower's
       // "manifest present?" check turns a silently-short archive into a loud, retryable failure.
       final ZipEntry manifestEntry = new ZipEntry(SnapshotManager.MANIFEST_ENTRY_NAME);
@@ -428,6 +440,27 @@ public class SnapshotHttpHandler implements HttpHandler {
     }
     zipOut.closeEntry();
     manifest.add(new SnapshotManager.ManifestEntry(inputFile.getName(), size, crc.getValue()));
+  }
+
+  /**
+   * Writes an in-memory payload as a ZIP entry and appends its manifest record. Used for entries
+   * synthesized at snapshot time (e.g. the {@code last-tx-id.bin} recency marker, issue #5277) whose
+   * on-disk counterpart on the leader is stale while the database is open.
+   */
+  private void addBytesToZip(final ZipOutputStream zipOut, final String name, final byte[] payload,
+      final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
+    final ZipEntry entry = new ZipEntry(name);
+    zipOut.putNextEntry(entry);
+    zipOut.write(payload);
+    zipOut.closeEntry();
+    final CRC32 crc = new CRC32();
+    crc.update(payload);
+    manifest.add(new SnapshotManager.ManifestEntry(name, payload.length, crc.getValue()));
+  }
+
+  /** Big-endian 8-byte encoding, matching {@code DataOutputStream.writeLong} used by TransactionManager. */
+  private static byte[] longToBytes(final long value) {
+    return ByteBuffer.allocate(8).putLong(value).array();
   }
 
   /**
