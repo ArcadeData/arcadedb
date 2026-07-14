@@ -403,6 +403,49 @@ class OpenCypherTemporalFunctionsComprehensiveTest {
   }
 
   @Test
+  void datetimeFromEpochSecondsMap() {
+    // Issue #5274: datetime({epochSeconds: ...}) must honor the epoch value, not fall back to a default date
+    final ResultSet result = database.command("opencypher",
+        "RETURN datetime({epochSeconds: 0}) AS mapSeconds, datetime.fromepoch(0, 0) AS functionSeconds");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    Assertions.assertThat(row.getProperty("mapSeconds").toString()).isEqualTo("1970-01-01T00:00Z");
+    Assertions.assertThat(row.<Object>getProperty("mapSeconds").toString())
+        .isEqualTo(row.<Object>getProperty("functionSeconds").toString());
+  }
+
+  @Test
+  void datetimeFromEpochMillisMap() {
+    // Issue #5274: datetime({epochMillis: ...}) must honor the epoch value
+    final ResultSet result = database.command("opencypher",
+        "RETURN datetime({epochMillis: 1000}) AS mapMillis, datetime.fromepochmillis(1000) AS functionMillis");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    final var row = result.next();
+    Assertions.assertThat(row.getProperty("mapMillis").toString()).isEqualTo("1970-01-01T00:00:01Z");
+    Assertions.assertThat(row.<Object>getProperty("mapMillis").toString())
+        .isEqualTo(row.<Object>getProperty("functionMillis").toString());
+  }
+
+  @Test
+  void datetimeFromEpochSecondsMapWithNanos() {
+    // Neo4j: nanosecond can be combined with epochSeconds for sub-second precision
+    final ResultSet result = database.command("opencypher",
+        "RETURN datetime({epochSeconds: 1000000000, nanosecond: 123456789}) AS result");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    Assertions.assertThat(result.next().getProperty("result").toString())
+        .isEqualTo("2001-09-09T01:46:40.123456789Z");
+  }
+
+  @Test
+  void datetimeFromEpochSecondsMapNegative() {
+    final ResultSet result = database.command("opencypher",
+        "RETURN datetime({epochSeconds: -1}) AS result");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    Assertions.assertThat(result.next().getProperty("result").toString())
+        .isEqualTo("1969-12-31T23:59:59Z");
+  }
+
+  @Test
   void datetimeFromString() {
     final ResultSet result = database.command("opencypher",
         "RETURN datetime('2015-07-21T21:40:32.142+0100') AS result");
