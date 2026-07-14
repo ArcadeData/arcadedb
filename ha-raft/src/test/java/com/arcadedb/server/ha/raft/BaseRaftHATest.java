@@ -89,17 +89,20 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * Subclasses that set {@code HA_RAFT_STORAGE_DIRECTORY} via {@code onServerConfiguration()}
    * must override this method to clean up the custom directory, as shown in
    * {@link RaftStorageDirectoryIT}.
+   * <p>
+   * Since issue #5272 the default Raft storage lives under the database directory
+   * ({@code <databaseDirectory>/.raft-storage}), which {@code super.deleteDatabaseFolders()} already
+   * removes; the explicit deletion below additionally cleans the legacy under-root-path location so a
+   * stale directory left by an old build does not block startup.
    */
   @Override
   protected void deleteDatabaseFolders() {
     super.deleteDatabaseFolders();
-    String raftDir = GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY.getValueAsString();
-    if (raftDir == null || raftDir.isBlank())
-      raftDir = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
-    if (raftDir == null)
+    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    if (rootPath == null)
       return;
     for (int i = 0; i < getServerCount(); i++)
-      FileUtils.deleteRecursively(new File(raftDir, "raft-storage-" + peerIdForIndex(i)));
+      FileUtils.deleteRecursively(new File(rootPath, "raft-storage-" + peerIdForIndex(i)));
   }
 
   @Override

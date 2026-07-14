@@ -147,6 +147,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          RaftClusterManager        clusterManager;
   private final    Object                    recoveryLock          = new Object();
   private volatile boolean                   shutdownRequested     = false;
+  private volatile boolean                   legacyRaftStorageWarningLogged = false;
   private volatile LifeCycle.State           forcedStateForTesting = null;
   private          HealthMonitor             healthMonitor;
   // Follower-side Raft log catch-up narrative. Driven by the health-monitor tick; only active on a
@@ -2088,10 +2089,74 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private File getRaftStorageDir() {
-    String raftDir = configuration.getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY);
-    if (raftDir == null || raftDir.isBlank())
-      raftDir = arcadeServer.getRootPath();
-    return new File(raftDir, "raft-storage-" + localPeerId);
+    final File dir = resolveRaftStorageDir(
+        configuration.getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY),
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        arcadeServer.getRootPath(), localPeerId.toString());
+    warnIfLegacyRaftStorage(dir);
+    return dir;
+  }
+
+  /**
+   * Resolves the on-disk Raft storage directory for a peer. Kept as a package-visible static so tests
+   * and the server agree on the default location (issue #5272).
+   * <p>
+   * Precedence:
+   * <ol>
+   *   <li>an explicit {@code arcadedb.ha.raftStorageDirectory} is always honored - absolute decoupling,
+   *       required for read-only-root-filesystem deployments;</li>
+   *   <li>otherwise the default is {@code <databaseDirectory>/.raft-storage/raft-storage-<peerId>} so
+   *       that persisting the database directory (which every durable deployment already does) also
+   *       persists the Raft log. The pre-#5272 default was the server root path, a <i>sibling</i> of the
+   *       database directory, which on Kubernetes lands on ephemeral disk while only {@code databases/}
+   *       is on the PersistentVolume - so a pod recreation silently discarded all Raft state;</li>
+   *   <li>backward compatibility: if the new default does not yet exist but a legacy
+   *       {@code <serverRootPath>/raft-storage-<peerId>} directory does, the legacy location is reused, so
+   *       an in-place upgrade of a deployment that persisted the server root path does not FORMAT a fresh
+   *       empty log and self-inflict the very divergence this fix prevents. The caller emits a one-time
+   *       WARNING recommending migration or an explicit {@code raftStorageDirectory}.</li>
+   * </ol>
+   */
+  static File resolveRaftStorageDir(final String configuredRaftDir, final String databaseDirectory,
+      final String serverRootPath, final String peerId) {
+    final String subdir = "raft-storage-" + peerId;
+
+    if (configuredRaftDir != null && !configuredRaftDir.isBlank())
+      return new File(configuredRaftDir, subdir);
+
+    final File newDefault = databaseDirectory != null && !databaseDirectory.isBlank()
+        ? new File(new File(databaseDirectory, ".raft-storage"), subdir)
+        : new File(serverRootPath, subdir);
+
+    if (!newDefault.exists()) {
+      final File legacy = new File(serverRootPath, subdir);
+      if (legacy.exists() && !legacy.equals(newDefault))
+        return legacy;
+    }
+    return newDefault;
+  }
+
+  /**
+   * Emits a one-time WARNING when the resolved Raft storage directory is the legacy pre-#5272 location
+   * (directly under the server root path) rather than the new default under the database directory.
+   */
+  private void warnIfLegacyRaftStorage(final File resolvedDir) {
+    if (legacyRaftStorageWarningLogged)
+      return;
+    if (configuration.getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY) != null
+        && !configuration.getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY).isBlank())
+      return;
+    final File rootPath = new File(arcadeServer.getRootPath());
+    final File parent = resolvedDir.getParentFile();
+    if (parent != null && parent.equals(rootPath)) {
+      legacyRaftStorageWarningLogged = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Raft storage is using the legacy location '%s' (under the server root path). Set '%s' explicitly "
+              + "or move it under the database directory ('%s/.raft-storage') so Raft state is persisted together "
+              + "with the databases (issue #5272).",
+          resolvedDir.getAbsolutePath(), GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY.getKey(),
+          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    }
   }
 
   /**
