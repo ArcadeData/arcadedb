@@ -18,29 +18,20 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
-;
 
 /**
  * Cypher Verification test for Cost-Based Query Optimizer.
  * Ensures that optimizations are correctly applied by checking EXPLAIN output.
  */
-public class OpenCypherOptimizerVerificationTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-optimizer-verification").create();
-
+public class OpenCypherOptimizerVerificationTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     // Create schema with properties
     database.transaction(() -> {
       final var personType = database.getSchema().createVertexType("Person");
@@ -94,14 +85,6 @@ public class OpenCypherOptimizerVerificationTest {
       database.getSchema().getOrCreateVertexType("Company")
         .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
     });
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null) {
-      database.drop();
-      database = null;
-    }
   }
 
   @Test

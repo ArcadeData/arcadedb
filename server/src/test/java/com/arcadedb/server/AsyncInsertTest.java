@@ -156,10 +156,7 @@ class AsyncInsertTest {
 
   @BeforeEach
   void beginTests() {
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("./databases/" + DATABASE_NAME)) {
-      if (databaseFactory.exists())
-        databaseFactory.open().drop();
-    }
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
 
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);

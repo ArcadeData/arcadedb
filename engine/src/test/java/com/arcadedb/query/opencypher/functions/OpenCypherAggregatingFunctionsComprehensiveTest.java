@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -35,16 +32,9 @@ import static org.assertj.core.api.Assertions.within;
  * Comprehensive tests for OpenCypher Aggregating functions based on Neo4j Cypher documentation.
  * Tests cover: avg(), collect(), count(), max(), min(), percentileCont(), percentileDisc(), stDev(), stDevP(), sum()
  */
-class OpenCypherAggregatingFunctionsComprehensiveTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-cypher-aggregating-functions");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-
+class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     // Create test graph matching Neo4j documentation
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Movie");
@@ -66,12 +56,6 @@ class OpenCypherAggregatingFunctionsComprehensiveTest {
         (keanu)-[:KNOWS]->(kathryn), \
         (carrie)-[:KNOWS]->(guy), \
         (liam)-[:KNOWS]->(guy)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
   }
 
   // ==================== avg() Tests ====================

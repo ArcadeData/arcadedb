@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -25,8 +26,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -42,20 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class OpenCypherTimestampTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-timestamp").create();
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null)
-      database.drop();
-  }
-
+class OpenCypherTimestampTest extends TestHelper {
   @Test
   void timestampReturnsLong() {
     final long before = System.currentTimeMillis();

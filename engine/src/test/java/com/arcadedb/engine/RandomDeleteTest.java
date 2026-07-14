@@ -18,8 +18,8 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableVertex;
@@ -33,7 +33,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class RandomDeleteTest {
+class RandomDeleteTest extends TestHelper {
   private final static int    TOT_RECORDS = 100_000;
   private final static String TYPE        = "Product";
   private static final int    CYCLES      = 3;
@@ -41,50 +41,42 @@ class RandomDeleteTest {
   @Test
   @Tag("slow")
   void smallRecords() {
-    try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/randomDeleteTest")) {
-      if (databaseFactory.exists())
-        databaseFactory.open().drop();
+    final Database db = database;
 
-      try (Database db = databaseFactory.create()) {
-        db.getSchema().createVertexType(TYPE, 1);
+    db.getSchema().createVertexType(TYPE, 1);
 
-        final List<RID> rids = new ArrayList<>(TOT_RECORDS);
-        db.transaction(() -> {
-          insert(db, rids);
-          assertThat(db.countType(TYPE, true)).isEqualTo(TOT_RECORDS);
+    final List<RID> rids = new ArrayList<>(TOT_RECORDS);
+    db.transaction(() -> {
+      insert(db, rids);
+      assertThat(db.countType(TYPE, true)).isEqualTo(TOT_RECORDS);
 
-          // DELETE FROM 1 TO N
-          for (int i = 0; i < TOT_RECORDS; i++)
-            db.deleteRecord(rids.get(i).asVertex());
+      // DELETE FROM 1 TO N
+      for (int i = 0; i < TOT_RECORDS; i++)
+        db.deleteRecord(rids.get(i).asVertex());
 
-          assertThat(db.countType(TYPE, true)).isEqualTo(0);
-        });
+      assertThat(db.countType(TYPE, true)).isEqualTo(0);
+    });
 
-        db.transaction(() -> {
-          // DELETE RANDOMLY X TIMES
-          for (int cycle = 0; cycle < CYCLES; cycle++) {
-            insert(db, rids);
-            checkRecords(db, rids);
+    db.transaction(() -> {
+      // DELETE RANDOMLY X TIMES
+      for (int cycle = 0; cycle < CYCLES; cycle++) {
+        insert(db, rids);
+        checkRecords(db, rids);
 
-            for (int deleted = 0; deleted < TOT_RECORDS; ) {
-              final int i = ThreadLocalRandom.current().nextInt(TOT_RECORDS);
-              final RID rid = rids.get(i);
-              if (rid != null) {
-                db.deleteRecord(rid.asVertex());
-                rids.set(i, null);
-                ++deleted;
-              }
-            }
+        for (int deleted = 0; deleted < TOT_RECORDS; ) {
+          final int i = ThreadLocalRandom.current().nextInt(TOT_RECORDS);
+          final RID rid = rids.get(i);
+          if (rid != null) {
+            db.deleteRecord(rid.asVertex());
+            rids.set(i, null);
+            ++deleted;
           }
-
-          assertThat(db.countType(TYPE, true)).isEqualTo(0);
-
-        });
-      } finally {
-        if (databaseFactory.exists())
-          databaseFactory.open().drop();
+        }
       }
-    }
+
+      assertThat(db.countType(TYPE, true)).isEqualTo(0);
+
+    });
   }
 
   private void checkRecords(Database db, List<RID> rids) {

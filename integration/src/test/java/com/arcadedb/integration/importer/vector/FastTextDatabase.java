@@ -71,7 +71,7 @@ public class FastTextDatabase {
 
     final Database database;
 
-    final DatabaseFactory factory = new DatabaseFactory("databases/textdb");
+    final DatabaseFactory factory = new DatabaseFactory("target/databases/textdb");
 
     // TODO: REMOVE THIS
 //    if (factory.exists())

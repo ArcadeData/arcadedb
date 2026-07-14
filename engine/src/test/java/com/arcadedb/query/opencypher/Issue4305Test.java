@@ -18,15 +18,12 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -47,23 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue4305Test {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/issue4305");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null && database.isOpen())
-      database.drop();
-  }
-
+class Issue4305Test extends TestHelper {
   @Test
   void propertyNamedLatStaysNumeric() {
     database.command("opencypher", "CREATE (:City {lat: 1.0, lon: 2.0})");

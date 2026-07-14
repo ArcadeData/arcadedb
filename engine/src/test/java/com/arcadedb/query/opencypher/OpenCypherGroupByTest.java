@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -31,19 +28,14 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-;
-
 /**
  * Tests for implicit GROUP BY in Cypher.
  * When a RETURN clause contains both aggregation functions and non-aggregated expressions,
  * the non-aggregated expressions become grouping keys.
  */
-class OpenCypherGroupByTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-group-by").create();
+class OpenCypherGroupByTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("Product");
     database.getSchema().createEdgeType("PURCHASED");
@@ -59,13 +51,6 @@ class OpenCypherGroupByTest {
         (charlie:Person {name: 'Charlie', age: 35, city: 'LA'}), \
         (david:Person {name: 'David', age: 40, city: 'LA'}), \
         (eve:Person {name: 'Eve', age: 28, city: 'SF'})""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null) {
-      database.drop();
-    }
   }
 
   @Test

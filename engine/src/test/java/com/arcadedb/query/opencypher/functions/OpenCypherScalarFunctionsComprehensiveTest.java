@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher.functions;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -38,16 +35,9 @@ import org.assertj.core.api.Assertions;
  * startNode(), timestamp(), toBoolean(), toBooleanOrNull(), toFloat(), toFloatOrNull(),
  * toInteger(), toIntegerOrNull(), type(), valueType()
  */
-class OpenCypherScalarFunctionsComprehensiveTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-cypher-scalar-functions");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-
+class OpenCypherScalarFunctionsComprehensiveTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     // Create test graph matching Neo4j documentation
     database.getSchema().createVertexType("Developer");
     database.getSchema().createVertexType("Administrator");
@@ -69,12 +59,6 @@ class OpenCypherScalarFunctionsComprehensiveTest {
         (bob)-[:KNOWS]->(daniel), \
         (charlie)-[:KNOWS]->(daniel), \
         (bob)-[:MARRIED]->(eskil)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
   }
 
   // ==================== char_length() Tests ====================

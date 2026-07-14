@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,24 +38,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue5164IntegerOverflowTest {
+class Issue5164IntegerOverflowTest extends TestHelper {
   private static final long MAX = Long.MAX_VALUE;
   private static final long MIN = Long.MIN_VALUE;
 
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-issue5164").create();
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("U");
     database.transaction(() -> database.newVertex("U")
         .set("id", 1).set("max", MAX).set("min", MIN).set("neg", -1L).set("two", 2L).save());
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null)
-      database.drop();
   }
 
   private void assertOverflow(final String cypher) {

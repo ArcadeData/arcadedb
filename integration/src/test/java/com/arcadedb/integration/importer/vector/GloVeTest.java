@@ -67,7 +67,7 @@ public class GloVeTest {
 
     final Database database;
 
-    final DatabaseFactory factory = new DatabaseFactory("databases/glovedb");
+    final DatabaseFactory factory = new DatabaseFactory("target/databases/glovedb");
 
     // TODO: REMOVE THIS
 //    if (factory.exists())

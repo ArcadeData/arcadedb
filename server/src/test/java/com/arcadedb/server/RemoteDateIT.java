@@ -158,6 +158,7 @@ class RemoteDateIT {
 
   @BeforeEach
   void beginTest() {
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     final ContextConfiguration serverConfiguration = new ContextConfiguration();
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");

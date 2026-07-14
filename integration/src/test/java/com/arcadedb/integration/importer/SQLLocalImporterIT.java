@@ -35,9 +35,9 @@ class SQLLocalImporterIT {
   void importOrientDB() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
+    FileUtils.deleteRecursively(new File("target/databases/importedFromOrientDB"));
 
-    try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
+    try (final Database database = new DatabaseFactory("target/databases/importedFromOrientDB").create()) {
       database.getConfiguration()
           .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
 
@@ -49,6 +49,6 @@ class SQLLocalImporterIT {
     }
 
     TestHelper.checkActiveDatabases();
-    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
+    FileUtils.deleteRecursively(new File("target/databases/importedFromOrientDB"));
   }
 }

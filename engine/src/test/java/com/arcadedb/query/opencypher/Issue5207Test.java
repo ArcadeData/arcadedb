@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -35,23 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression test for issue #5207: nullIf() on a node property returned the value instead of null
  * because the stored property (Integer) was compared to the literal (Long) with type-strict equality.
  */
-class Issue5207Test {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    final DatabaseFactory factory = new DatabaseFactory("./databases/test-issue-5207");
-    if (factory.exists())
-      factory.open().drop();
-    database = factory.create();
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null)
-      database.drop();
-  }
-
+class Issue5207Test extends TestHelper {
   @Test
   void nullIfOnPropertyValueMatchesLiteral() {
     database.command("opencypher", "CREATE (:A {v:1}), (:A {v:2})");

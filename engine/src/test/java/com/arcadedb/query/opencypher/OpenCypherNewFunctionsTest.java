@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,20 +31,7 @@ import static org.assertj.core.api.Assertions.within;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class OpenCypherNewFunctionsTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-new-functions").create();
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null)
-      database.drop();
-  }
-
+class OpenCypherNewFunctionsTest extends TestHelper {
   // ============ isNaN() tests ============
 
   @Test

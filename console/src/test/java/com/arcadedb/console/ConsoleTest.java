@@ -240,8 +240,6 @@ class ConsoleTest {
   void importNeo4jConsoleOK() throws Exception {
     final String DATABASE_PATH = "testNeo4j";
 
-    FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
-
     final Console newConsole = new Console();
     newConsole.parse("create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.neo");
     newConsole.close();
@@ -281,8 +279,6 @@ class ConsoleTest {
   @Test
   void importCSVConsoleOK() throws Exception {
     final String DATABASE_PATH = "testCSV";
-
-    FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
 
     final Console newConsole = new Console();
     newConsole.parse("create database " + DATABASE_PATH + "");

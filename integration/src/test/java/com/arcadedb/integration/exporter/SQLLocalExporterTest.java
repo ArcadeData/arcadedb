@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class SQLLocalExporterTest {
 
-  public static final String DATABASE_PATH = "databases/importedFromOrientDB";
+  public static final String DATABASE_PATH = "target/databases/importedFromOrientDB";
 
   @BeforeEach
   @AfterEach
@@ -52,7 +52,7 @@ public class SQLLocalExporterTest {
   void importAndExportDatabase() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
       database.getConfiguration()
           .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE,
               ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
@@ -80,7 +80,7 @@ public class SQLLocalExporterTest {
   void importAndExportPartialDatabase() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
       database.getConfiguration()
           .setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE,
               ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()) * 10);
@@ -108,7 +108,7 @@ public class SQLLocalExporterTest {
   @Test
   void exportAndReimportSmallDatabase() {
     // Test case for issue #1839 - exported database cannot be imported
-    final String dbPath = "databases/testExportImport";
+    final String dbPath = "target/databases/testExportImport";
     FileUtils.deleteRecursively(new File(dbPath));
 
     try (final Database database = new DatabaseFactory(dbPath).create()) {
@@ -151,7 +151,7 @@ public class SQLLocalExporterTest {
     }
 
     // Now try to import it into a new database
-    final String dbPath2 = "databases/testExportImport2";
+    final String dbPath2 = "target/databases/testExportImport2";
     FileUtils.deleteRecursively(new File(dbPath2));
 
     try (final Database database2 = new DatabaseFactory(dbPath2).create()) {

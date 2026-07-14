@@ -18,8 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -34,19 +34,14 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-;
-
 /**
  * Tests for pattern predicates in WHERE clauses.
  * Pattern predicates test whether a pattern exists in the graph.
  * Examples: WHERE (n)-[:KNOWS]->(), WHERE NOT (a)-[:LIKES]->(b)
  */
-class OpenCypherPatternPredicateTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/test-pattern-predicate").create();
+class OpenCypherPatternPredicateTest extends TestHelper {
+  @Override
+  protected void beginTest() {
     database.getSchema().createVertexType("Person");
     database.getSchema().createEdgeType("KNOWS");
     database.getSchema().createEdgeType("LIKES");
@@ -66,13 +61,6 @@ class OpenCypherPatternPredicateTest {
         (alice)-[:KNOWS]->(bob), \
         (alice)-[:KNOWS]->(charlie), \
         (bob)-[:LIKES]->(alice)""");
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null) {
-      database.drop();
-    }
   }
 
   @Test
@@ -221,33 +209,33 @@ class OpenCypherPatternPredicateTest {
   /** See issue #3331 */
   @Nested
   class PatternComprehensionReturnTypeRegression {
-    private Database database;
+    private Database db;
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/test-issue3331").create();
-      database.getSchema().createVertexType("Person");
-      database.getSchema().createEdgeType("KNOWS");
+      db = TestHelper.createDatabase("./target/databases/test-issue3331");
+      db.getSchema().createVertexType("Person");
+      db.getSchema().createEdgeType("KNOWS");
     }
 
     @AfterEach
     void tearDown() {
-      if (database != null) {
-        database.drop();
-        database = null;
+      if (db != null) {
+        db.drop();
+        db = null;
       }
     }
 
     @Test
     void patternComprehensionFromIssue() {
       // Exact scenario from issue #3331
-      database.transaction(() ->
-        database.command("opencypher",
+      db.transaction(() ->
+        db.command("opencypher",
             """
             CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
             (a)-[:KNOWS]->(:Person {name:'C'})"""));
 
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (a:Person {name: 'A'}) \
           RETURN [(a)-->(friend) WHERE friend.name <> 'B' | friend.name] AS result""")) {
@@ -264,13 +252,13 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternComprehensionNoFilter() {
       // Pattern comprehension without WHERE clause
-      database.transaction(() ->
-        database.command("opencypher",
+      db.transaction(() ->
+        db.command("opencypher",
             """
             CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
             (a)-[:KNOWS]->(:Person {name:'C'})"""));
 
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (a:Person {name: 'A'}) \
           RETURN [(a)-->(friend) | friend.name] AS result""")) {
@@ -287,13 +275,13 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternComprehensionWithRelType() {
       // Pattern comprehension with specific relationship type
-      database.transaction(() ->
-        database.command("opencypher",
+      db.transaction(() ->
+        db.command("opencypher",
             """
             CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
             (a)-[:LIKES]->(:Person {name:'C'})"""));
 
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (a:Person {name: 'A'}) \
           RETURN [(a)-[:KNOWS]->(friend) | friend.name] AS result""")) {
@@ -310,11 +298,11 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternComprehensionEmptyResult() {
       // Pattern comprehension that matches nothing
-      database.transaction(() ->
-        database.command("opencypher",
+      db.transaction(() ->
+        db.command("opencypher",
             "CREATE (:Person {name:'A'})"));
 
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (a:Person {name: 'A'}) \
           RETURN [(a)-->(friend) | friend.name] AS result""")) {
@@ -335,13 +323,13 @@ class OpenCypherPatternPredicateTest {
      */
     @Test
     void patternComprehensionTwoHopAnonymousMiddleNode() {
-      database.transaction(() ->
-          database.command("opencypher",
+      db.transaction(() ->
+          db.command("opencypher",
               """
               CREATE (p:Person {probe: true}), (m:Person {gid: 2}), (t:Person {gid: 3}), \
               (p)-[:KNOWS]->(m), (m)-[:KNOWS]->(t)"""));
 
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (p:Person {probe: true}) \
           RETURN [(p)-[:KNOWS]->(:Person)-[:KNOWS]->(target:Person) | target.gid] AS targets""")) {
@@ -358,13 +346,13 @@ class OpenCypherPatternPredicateTest {
     /** See issue #5007: a 2-hop pattern comprehension with a named middle node must keep working. */
     @Test
     void patternComprehensionTwoHopNamedMiddleNode() {
-      database.transaction(() ->
-          database.command("opencypher",
+      db.transaction(() ->
+          db.command("opencypher",
               """
               CREATE (p:Person {probe: true}), (m:Person {gid: 2}), (t:Person {gid: 3}), \
               (p)-[:KNOWS]->(m), (m)-[:KNOWS]->(t)"""));
 
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (p:Person {probe: true}) \
           RETURN [(p)-[:KNOWS]->(mid:Person)-[:KNOWS]->(target:Person) | target.gid] AS targets""")) {
@@ -382,32 +370,32 @@ class OpenCypherPatternPredicateTest {
   /** See issue #3938: existential pattern predicate must filter by target-node properties too. */
   @Nested
   class ExistentialPatternPredicateTargetPropertiesRegression {
-    private Database database;
+    private Database db;
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/test-issue3938").create();
-      database.getSchema().createVertexType("Person");
-      database.getSchema().createVertexType("Country");
-      database.getSchema().createEdgeType("LIVING_IN");
+      db = TestHelper.createDatabase("./target/databases/test-issue3938");
+      db.getSchema().createVertexType("Person");
+      db.getSchema().createVertexType("Country");
+      db.getSchema().createEdgeType("LIVING_IN");
 
-      database.transaction(() -> {
-        database.command("opencypher",
+      db.transaction(() -> {
+        db.command("opencypher",
             """
             CREATE (:Country {name: 'Germany'}), \
             (:Country {name: 'United Kingdom'}), \
             (:Person {name: 'Alice'}), \
             (:Person {name: 'Bob'}), \
             (:Person {name: 'Charlie'})""");
-        database.command("opencypher",
+        db.command("opencypher",
             """
             MATCH (p:Person {name: 'Alice'}), (c:Country {name: 'Germany'}) \
             CREATE (p)-[:LIVING_IN]->(c)""");
-        database.command("opencypher",
+        db.command("opencypher",
             """
             MATCH (p:Person {name: 'Bob'}), (c:Country {name: 'United Kingdom'}) \
             CREATE (p)-[:LIVING_IN]->(c)""");
-        database.command("opencypher",
+        db.command("opencypher",
             """
             MATCH (p:Person {name: 'Charlie'}), (c:Country {name: 'Germany'}) \
             CREATE (p)-[:LIVING_IN]->(c)""");
@@ -416,16 +404,16 @@ class OpenCypherPatternPredicateTest {
 
     @AfterEach
     void tearDown() {
-      if (database != null) {
-        database.drop();
-        database = null;
+      if (db != null) {
+        db.drop();
+        db = null;
       }
     }
 
     @Test
     void patternPredicateFiltersByTargetNodeProperties() {
       // Only people living in Germany must pass the predicate.
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (p:Person) \
           WHERE (p)-[:LIVING_IN]->(:Country {name: 'Germany'}) \
@@ -440,7 +428,7 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternPredicateFiltersByTargetNodePropertiesAnonymousEnd() {
       // Anonymous end node with property constraint only.
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (p:Person) \
           WHERE (p)-[:LIVING_IN]->({name: 'Germany'}) \
@@ -455,7 +443,7 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternPredicateFilteredRowDoesNotLeakIntoDownstreamMatch() {
       // The predicate must cut Bob off, so a later MATCH cannot reintroduce United Kingdom.
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (p:Person) \
           WHERE (p)-[:LIVING_IN]->(:Country {name: 'Germany'}) \
@@ -474,7 +462,7 @@ class OpenCypherPatternPredicateTest {
     @Test
     void negatedPatternPredicateHonorsTargetNodeProperties() {
       // Only people NOT living in Germany must pass.
-      try (final ResultSet rs = database.query("opencypher",
+      try (final ResultSet rs = db.query("opencypher",
           """
           MATCH (p:Person) \
           WHERE NOT (p)-[:LIVING_IN]->(:Country {name: 'Germany'}) \
@@ -493,7 +481,7 @@ class OpenCypherPatternPredicateTest {
 
     @BeforeEach
     void setUp() {
-      db = new DatabaseFactory("./databases/test-inline-rel-predicate").create();
+      db = TestHelper.createDatabase("./target/databases/test-inline-rel-predicate");
       db.getSchema().createVertexType("Person");
       db.getSchema().createEdgeType("KNOWS");
       db.command("opencypher",
@@ -507,8 +495,10 @@ class OpenCypherPatternPredicateTest {
 
     @AfterEach
     void tearDown() {
-      if (db != null)
+      if (db != null) {
         db.drop();
+        db = null;
+      }
     }
 
     @Test

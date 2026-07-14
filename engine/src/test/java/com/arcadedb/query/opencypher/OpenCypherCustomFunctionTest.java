@@ -18,13 +18,10 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,22 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Tests for custom function support in OpenCypher queries.
  * Tests SQL, JavaScript, and Cypher-defined functions callable from Cypher expressions.
  */
-class OpenCypherCustomFunctionTest {
-  private Database database;
-
-  @BeforeEach
-  void setUp() {
-    database = new DatabaseFactory("./databases/testcustomfunc").create();
-  }
-
-  @AfterEach
-  void tearDown() {
-    if (database != null) {
-      database.drop();
-      database = null;
-    }
-  }
-
+class OpenCypherCustomFunctionTest extends TestHelper {
   // Phase 1: SQL Function Tests
 
   @Test

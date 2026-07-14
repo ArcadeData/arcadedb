@@ -1768,7 +1768,7 @@ class LSMVectorIndexTest extends TestHelper {
    */
   @Test
   void vectorIndexGraphFileNotClosedBug() throws Exception {
-    final String dbPath = "databases/test-graph-file-not-closed";
+    final String dbPath = "target/databases/test-graph-file-not-closed";
     final File dbDir = new File(dbPath);
 
     // Clean up any existing database
@@ -1907,7 +1907,7 @@ class LSMVectorIndexTest extends TestHelper {
    */
   @Test
   void graphFileDiscoveryAfterReload() throws Exception {
-    final String dbPath = "databases/test-graph-file-discovery";
+    final String dbPath = "target/databases/test-graph-file-discovery";
     final File dbDir = new File(dbPath);
 
     // Clean up any existing database
@@ -2011,7 +2011,7 @@ class LSMVectorIndexTest extends TestHelper {
    */
   // @Test - Disabled due to separate JVector bug
   void testGraphPersistenceMultipleCycles_Disabled() throws Exception {
-    final String dbPath = "databases/test-graph-persistence-cycles";
+    final String dbPath = "target/databases/test-graph-persistence-cycles";
     final File dbDir = new File(dbPath);
 
     // Clean up

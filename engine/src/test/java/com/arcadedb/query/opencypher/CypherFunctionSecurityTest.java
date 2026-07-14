@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
@@ -35,21 +32,7 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOf
 /**
  * Tests for security boundary conditions in Cypher functions.
  */
-class CypherFunctionSecurityTest {
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./databases/test-function-security").create();
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null) {
-      database.drop();
-    }
-  }
-
+class CypherFunctionSecurityTest extends TestHelper {
   @Test
   void utilSleepMaxDuration() {
     final ResultSet rs = database.query("opencypher", "RETURN util.sleep(999999999999) AS result");
