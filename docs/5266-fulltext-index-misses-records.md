@@ -60,3 +60,27 @@ have the token removed in one transaction and added back in the next; after comp
 return all 3000. Fails without the fix (1000 documents missing - exactly the ones touched), passes with it.
 
 Regression run: 551 tests / 90 classes across the index, LSM, compaction and full-text suites - 0 failures.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5270 (related to #5266, does not close it)
+
+## Review cycles
+
+- **cycle 1** (`651046d`) - gemini: defensive null check on `subIndex` after `getFileById`. Declined: the NPE
+  risk is pre-existing and unchanged by the diff (the next line already dereferences it), and the whole block
+  is inside a `catch (Exception)` that logs SEVERE and drops the index, so the proposed `IndexException` is
+  handled identically. claude: no bugs; four non-blocking notes. Applied the `Record` import; added a note to
+  the PR body on `limit` truncation now taking the newest values (strictly safer - the old order could
+  early-exit before a later chunk's tombstone and return a deleted value). Declined `@Tag("slow")` (test runs
+  0.53-0.80s) and declined moving the tracking doc (25 `docs/<issue>-<name>.md` files are already tracked, so
+  it is an established convention).
+- **cycle 2** (`984fea2`) - claude: "No bugs or security concerns found"; three optional polish items.
+  Reported honestly that the `storeTermFrequency` guard has no failing test and cannot have one:
+  `LocalSchema.getFileById` returns the already-registered component, so the flag is already correct in every
+  reachable in-process path. Kept it as an explicit local invariant rather than relying on the
+  `initComponents()` / `readConfiguration()` ordering coincidence.
+
+## Final state
+
+clean-approval - both bots reviewed, no blocking findings. Merge is the maintainer's call.
