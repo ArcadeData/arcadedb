@@ -665,11 +665,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final LifeCycle.State divisionState = division.getInfo().getLifeCycleState();
       if (divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION)
         return divisionState;
-    } catch (final IOException e) {
-      // The proxy hosts no division for the configured group: for a configured member that is at
-      // least as broken as CLOSED - report it so the health monitor rebuilds the server.
+    } catch (final Exception e) {
+      // The division cannot be read - typically a transient window while the server is starting or an
+      // in-place restart is re-registering the group. Report the (RUNNING) proxy state rather than
+      // CLOSED: mapping this window to CLOSED would make the health monitor restart a healthy,
+      // still-initializing server in a loop. A genuinely dead division reports CLOSED/EXCEPTION from
+      // getInfo() above once readable.
       LogManager.instance().log(this, Level.FINE, "Cannot read Raft division state: %s", e.getMessage());
-      return LifeCycle.State.CLOSED;
     }
     return proxyState;
   }
@@ -1085,7 +1087,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     try {
       return raftServer.getDivision(raftGroup.getGroupId()).getInfo().isLeader();
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // Also guards the IllegalStateException Ratis throws while an in-place restart re-initializes
+      // the division (issue #5271): status reads must degrade to "unknown", never propagate.
       LogManager.instance().log(this, Level.WARNING, "Error checking leader status", e);
       return false;
     }
@@ -1100,7 +1104,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     try {
       return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLeaderId();
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // Also guards the IllegalStateException Ratis throws while an in-place restart re-initializes
+      // the division (issue #5271). Callers (including the k8s auto-join retry loop) treat null as
+      // "leader unknown"; propagating here would kill background threads mid-restart.
       LogManager.instance().log(this, Level.WARNING, "Error getting leader ID", e);
       return null;
     }
@@ -1829,7 +1836,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return -1;
     try {
       return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getLastAppliedIndex();
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // Ratis throws IllegalStateException ("stateMachineUpdater is uninitialized") while an in-place
+      // restart re-initializes the division (issue #5271); report "unknown" instead of propagating.
       return -1;
     }
   }
@@ -1839,7 +1848,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return -1;
     try {
       return raftServer.getDivision(raftGroup.getGroupId()).getRaftLog().getLastCommittedIndex();
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // See getLastAppliedIndex: degrade to "unknown" during an in-place restart (issue #5271).
       return -1;
     }
   }
@@ -1849,7 +1859,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return -1;
     try {
       return raftServer.getDivision(raftGroup.getGroupId()).getInfo().getCurrentTerm();
-    } catch (final IOException e) {
+    } catch (final Exception e) {
+      // See getLastAppliedIndex: degrade to "unknown" during an in-place restart (issue #5271).
       return -1;
     }
   }
