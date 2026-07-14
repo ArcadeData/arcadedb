@@ -327,7 +327,7 @@ public class CypherSemanticValidator {
   // ==============================
 
   private void validateVariableScope(final CypherStatement statement) {
-    validateVariableScope(statement, new HashSet<>());
+    validateVariableScope(statement, new HashSet<>(), Set.of());
   }
 
   /**
@@ -335,8 +335,14 @@ public class CypherSemanticValidator {
    * visible when the statement begins. Top-level statements start with an empty scope; a CALL
    * subquery body starts with only the variables it imports (explicit {@code CALL (v) { ... }} scope
    * list, {@code CALL (*)}, or an importing {@code WITH}).
+   * <p>
+   * {@code shadowed} holds the names declared in an enclosing scope that this subquery body did NOT
+   * import. Such a name is not a free identifier the body may re-declare: a CREATE/MERGE pattern that
+   * binds it would silently mint a fresh anonymous vertex instead of writing against the outer entity,
+   * so it is rejected as undefined.
    */
-  private void validateVariableScope(final CypherStatement statement, final Set<String> scope) {
+  private void validateVariableScope(final CypherStatement statement, final Set<String> scope,
+      final Set<String> shadowed) {
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     if (clausesInOrder == null || clausesInOrder.isEmpty())
       return; // Can't validate scope without clause ordering
@@ -363,12 +369,14 @@ public class CypherSemanticValidator {
               for (final RelationshipPattern rel : path.getRelationships())
                 if (rel.hasProperties())
                   checkPropertyValuesScope(rel.getProperties(), scope);
+              checkPatternVarsNotShadowed(path, scope, shadowed);
               addBoundVarsFromPattern(path, scope);
             }
           break;
         case MERGE:
           final MergeClause mergeClause = entry.getTypedClause();
           if (mergeClause != null) {
+            checkPatternVarsNotShadowed(mergeClause.getPathPattern(), scope, shadowed);
             addBoundVarsFromPattern(mergeClause.getPathPattern(), scope);
             // Validate ON CREATE SET / ON MATCH SET variables
             validateSetClauseScope(mergeClause.getOnCreateSet(), scope);
@@ -546,7 +554,7 @@ public class CypherSemanticValidator {
           final SubqueryClause subqueryClause = entry.getTypedClause();
           if (subqueryClause != null && subqueryClause.getInnerStatement() != null) {
             // Validate the subquery body: outer variables are visible only if imported (issue #5213).
-            validateSubqueryScope(subqueryClause, scope);
+            validateSubqueryScope(subqueryClause, scope, shadowed);
             final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
             if (innerReturn != null)
               for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
@@ -574,7 +582,8 @@ public class CypherSemanticValidator {
    * Referencing an outer variable that is not imported raises an undefined-variable error, matching
    * Neo4j (issue #5213).
    */
-  private void validateSubqueryScope(final SubqueryClause clause, final Set<String> outerScope) {
+  private void validateSubqueryScope(final SubqueryClause clause, final Set<String> outerScope,
+      final Set<String> outerShadowed) {
     final List<String> scopeVariables = clause.getScopeVariables();
 
     // Explicit scope list applies uniformly to every UNION branch of the body.
@@ -595,23 +604,59 @@ public class CypherSemanticValidator {
     final CypherStatement inner = clause.getInnerStatement();
     if (inner instanceof UnionStatement union) {
       for (final CypherStatement branch : union.getQueries())
-        validateSubqueryBranchScope(branch, outerScope, explicitSeed);
+        validateSubqueryBranchScope(branch, outerScope, outerShadowed, explicitSeed);
     } else
-      validateSubqueryBranchScope(inner, outerScope, explicitSeed);
+      validateSubqueryBranchScope(inner, outerScope, outerShadowed, explicitSeed);
   }
 
   private void validateSubqueryBranchScope(final CypherStatement branch, final Set<String> outerScope,
-      final Set<String> explicitSeed) {
+      final Set<String> outerShadowed, final Set<String> explicitSeed) {
     final Set<String> seed;
-    if (explicitSeed != null)
+    final Set<String> imported;
+    if (explicitSeed != null) {
       seed = new HashSet<>(explicitSeed);
-    else if (startsWithImportingWith(branch))
+      imported = explicitSeed;
+    } else if (startsWithImportingWith(branch)) {
       // The importing WITH may reference outer variables; it then resets the scope to its projections,
       // so exposing the whole outer scope here does not leak variables past the WITH.
       seed = new HashSet<>(outerScope);
-    else
+      imported = importedNamesFromLeadingWith(branch, outerScope);
+    } else {
       seed = new HashSet<>();
-    validateVariableScope(branch, seed);
+      imported = Set.of();
+    }
+
+    // Outer names the body did not import are shadowed: they may not be re-bound by a write pattern.
+    final Set<String> shadowed = new HashSet<>(outerScope);
+    shadowed.addAll(outerShadowed);
+    shadowed.removeAll(imported);
+
+    validateVariableScope(branch, seed, shadowed);
+  }
+
+  /**
+   * Returns the outer names that survive the leading importing {@code WITH} of a subquery body, i.e. the
+   * variables actually imported. {@code WITH *} imports the whole outer scope.
+   * <p>
+   * This tracks the <i>names still bound after the WITH</i>, not the source variables they were computed
+   * from, because that is what the shadowing check needs: a re-aliased item ({@code WITH a AS x}) leaves
+   * {@code a} unbound, so {@code a} stays shadowed and a later {@code CREATE (a)} in the body is rejected.
+   */
+  private static Set<String> importedNamesFromLeadingWith(final CypherStatement branch, final Set<String> outerScope) {
+    final WithClause withClause = branch.getClausesInOrder().get(0).getTypedClause();
+    final Set<String> imported = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      final Expression expr = item.getExpression();
+      if (expr instanceof StarExpression ||
+          (expr instanceof VariableExpression && "*".equals(((VariableExpression) expr).getVariableName())))
+        return new HashSet<>(outerScope);
+      final String name = item.getAlias() != null ?
+          item.getAlias() :
+          (expr instanceof VariableExpression ? ((VariableExpression) expr).getVariableName() : null);
+      if (name != null && outerScope.contains(name))
+        imported.add(name);
+    }
+    return imported;
   }
 
   private static boolean startsWithImportingWith(final CypherStatement statement) {
@@ -619,6 +664,29 @@ public class CypherSemanticValidator {
     if (clauses == null || clauses.isEmpty())
       return false;
     return clauses.get(0).getType() == ClauseEntry.ClauseType.WITH;
+  }
+
+  /**
+   * Rejects a CREATE/MERGE pattern variable that is not visible in the current scope but is declared in
+   * an enclosing one without having been imported. Binding it here would create a fresh anonymous entity
+   * rather than write against the outer one, which is a silent data-loss bug (issue #5257).
+   */
+  private void checkPatternVarsNotShadowed(final PathPattern path, final Set<String> scope, final Set<String> shadowed) {
+    if (shadowed.isEmpty() || path == null)
+      return;
+
+    if (path.hasPathVariable())
+      checkVarNotShadowed(path.getPathVariable(), scope, shadowed);
+    for (final NodePattern node : path.getNodes())
+      checkVarNotShadowed(node.getVariable(), scope, shadowed);
+    for (final RelationshipPattern rel : path.getRelationships())
+      checkVarNotShadowed(rel.getVariable(), scope, shadowed);
+  }
+
+  private void checkVarNotShadowed(final String var, final Set<String> scope, final Set<String> shadowed) {
+    if (var != null && isValidVariableName(var) && !scope.contains(var) && shadowed.contains(var))
+      throw new CommandSemanticException("UndefinedVariable: Variable '" + var
+          + "' not defined: it is declared in an outer scope but not imported into the CALL subquery");
   }
 
   private void checkExpressionScope(final Expression expr, final Set<String> scope) {
