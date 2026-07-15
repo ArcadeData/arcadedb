@@ -110,6 +110,19 @@ public class ComparisonExpression implements BooleanExpression {
     return compareValuesTernary(leftValue, rightValue);
   }
 
+  /**
+   * Returns a comparator that applies this operator's Cypher semantics to two already-evaluated values,
+   * for callers that must agree with the operator but do not have operand expressions to hand (e.g. the
+   * IN operator comparing the left operand against each list element, issue #5293). The result is usable
+   * only through {@link #evaluateWithValues(Object, Object)}: it carries no operand expressions, so
+   * {@link #evaluate(Result, CommandContext)}, {@link #evaluateTernary(Result, CommandContext)} and
+   * {@link #getText()} do not apply to it. Reuse one instance per call site rather than allocating per
+   * comparison, so the temporal coercion memo stays effective.
+   */
+  public static ComparisonExpression valueComparator(final Operator operator) {
+    return new ComparisonExpression(null, operator, null);
+  }
+
   private Object compareValuesTernary(final Object left, final Object right) {
     // In OpenCypher, any comparison involving null returns null
     if (left == null || right == null)

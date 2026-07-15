@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.RID;
-import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -37,6 +35,11 @@ public class InExpression implements BooleanExpression {
   private final Expression expression;
   private final List<Expression> list;
   private final boolean isNot;
+
+  // Membership is equality against each element, so the element check reuses the = operator's
+  // comparator (issue #5293) rather than a second, drifting implementation. Held per AST node so no
+  // wrapper is allocated per element per row.
+  private final ComparisonExpression equalityComparator = ComparisonExpression.valueComparator(ComparisonExpression.Operator.EQUALS);
 
   public InExpression(final Expression expression, final List<Expression> list, final boolean isNot) {
     this.expression = expression;
@@ -114,56 +117,20 @@ public class InExpression implements BooleanExpression {
   }
 
   /**
-   * Three-valued comparison for IN operator.
+   * Three-valued comparison of one list element against the left operand.
    * Returns Boolean.TRUE if definitely equal, Boolean.FALSE if definitely not equal,
    * null if uncertain (involves null comparisons where non-null elements match).
+   * <p>
+   * Membership is defined in terms of equality, so this delegates to the {@code =} operator's
+   * comparator instead of re-implementing it (issue #5293). The previous hand-rolled version tried
+   * {@code a.equals(b)} before dispatching on type, which imported Java's Double.equals contract
+   * (NaN equals itself) and Java's Map.equals contract (null equals null) into Cypher, making
+   * {@code NaN IN [NaN]} return true while {@code NaN = NaN} returns false. Delegating also gives IN
+   * the temporal coercion, array coercion and map 3VL that {@code =} already implements.
    */
   private Boolean valuesCompare(final Object a, final Object b) {
-    if (a == null || b == null)
-      return null; // null = anything is null in Cypher
-
-    // List equality: must use 3VL element-wise comparison (not Java equals)
-    // because Java's ArrayList.equals treats null==null as true, but Cypher requires null
-    if (a instanceof List && b instanceof List) {
-      final List<?> listA = (List<?>) a;
-      final List<?> listB = (List<?>) b;
-      if (listA.size() != listB.size())
-        return false;
-      boolean hasNull = false;
-      for (int i = 0; i < listA.size(); i++) {
-        final Boolean elemCmp = valuesCompare(listA.get(i), listB.get(i));
-        if (elemCmp == null)
-          hasNull = true;
-        else if (!elemCmp)
-          return false; // Definitely not equal
-      }
-      return hasNull ? null : true;
-    }
-
-    // Direct equality (handles booleans, strings, etc.)
-    if (a.equals(b))
-      return true;
-
-    // Numeric comparison (handles int/long/double cross-type)
-    if (a instanceof Number && b instanceof Number) {
-      if ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer))
-        return ((Number) a).longValue() == ((Number) b).longValue();
-      return ((Number) a).doubleValue() == ((Number) b).doubleValue();
-    }
-
-    // id()/elementId() interop (issue #4183): id() now returns a Long-encoded RID, but legacy queries
-    // still pass an RID string. Coerce the Long side to its encoded form so {@code id(n) IN
-    // ["#1:0"]} keeps matching the records whose id() now reports {@code 4294967296}. See the same
-    // coercion in {@link ComparisonExpression#compareValuesTernary} for the equality path. Only the
-    // RID-string form is coerced - numeric strings are ambiguous and treating them as ids would
-    // break the Cypher TCK invariant that 5 IN ["5"] returns false.
-    if (a instanceof Number leftNum && b instanceof String rightStr && RID.is(rightStr))
-      return leftNum.longValue() == IdFunction.encodeRidAsLong(new RID(rightStr));
-    if (a instanceof String leftStr && b instanceof Number rightNum && RID.is(leftStr))
-      return IdFunction.encodeRidAsLong(new RID(leftStr)) == rightNum.longValue();
-
-    // Different types that aren't both numbers
-    return false;
+    final Object cmp = equalityComparator.evaluateWithValues(a, b);
+    return cmp == null ? null : (Boolean) cmp;
   }
 
   @Override
