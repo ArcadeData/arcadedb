@@ -19,6 +19,7 @@
 package com.arcadedb.function.graph;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -53,7 +54,12 @@ public class LabelsFunction implements StatelessFunction {
     }
     if (args[0] instanceof Result result && result.getElement().isPresent() && result.getElement().get() instanceof Vertex v)
       return Labels.getLabels(v);
-    throw new CommandExecutionException("InvalidArgumentValue: labels() requires a node argument, got: " +
+    // Type validation: labels() only works on nodes. Passing anything else is a client-side type error
+    // (the query hands a scalar/relationship to a node-only function), classified by the openCypher TCK as
+    // a runtime TypeError. Throw a CommandSemanticException so the transport layer reports it as a 400
+    // client error carrying the descriptive message, not a 500 transaction-commit failure. See issue #5299,
+    // which mirrors the same fix already applied to type() in #5204.
+    throw new CommandSemanticException("TypeError: labels() requires a node argument, got " +
         args[0].getClass().getSimpleName());
   }
 }
