@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -137,6 +138,51 @@ class OpenCypherFunctionTest extends TestHelper {
     final List<?> keysList = (List<?>) keys;
     assertThat(keysList.contains("name")).isTrue();
     assertThat(keysList.contains("age")).isTrue();
+  }
+
+  @Test
+  void keysFunctionOnMap() {
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN keys({a: 1, b: 2}) AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    final List<String> keys = result.getProperty("result");
+    assertThat(keys).containsExactlyInAnyOrder("a", "b");
+  }
+
+  @Test
+  void keysFunctionOnEmptyMap() {
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN keys({}) AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    final List<?> keys = result.getProperty("result");
+    assertThat(keys).isEmpty();
+  }
+
+  @Test
+  void keysFunctionOnNull() {
+    final ResultSet resultSet = database.query("opencypher",
+        "RETURN keys(null) AS result");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    assertThat(result.<Object>getProperty("result")).isNull();
+  }
+
+  @Test
+  void keysFunctionRejectsUnsupportedTypes() {
+    // Issue #5281: keys() must reject scalar and list arguments with a type error
+    // instead of silently returning an empty list, matching Neo4j/openCypher semantics.
+    for (final String expr : new String[] { "42", "'hello'", "true", "[1, 2, 3]" }) {
+      assertThatThrownBy(() -> {
+        final ResultSet rs = database.query("opencypher", "RETURN keys(" + expr + ") AS result");
+        rs.hasNext();
+      }).as("keys(%s) must raise a type error", expr)
+          .hasMessageContaining("keys() requires a node, relationship, or map argument");
+    }
   }
 
   @Test
