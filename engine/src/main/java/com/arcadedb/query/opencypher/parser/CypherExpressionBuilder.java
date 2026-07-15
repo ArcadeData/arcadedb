@@ -1966,7 +1966,10 @@ class CypherExpressionBuilder {
   Expression parseComparisonFromExpression8(final Cypher25Parser.Expression8Context ctx) {
     // Expression8 has multiple expression7 children with comparison operators between them
     if (ctx.expression7().size() > 1) {
-      // Found a comparison, get the operator
+      // Collect all operators, in textual order, for chained comparisons (issue #5284).
+      // Per the OpenCypher spec a chain like "a < b < c" is equivalent to "a < b AND b < c":
+      // every adjacent comparison must hold, not only the first one.
+      final List<ComparisonExpression.Operator> operators = new ArrayList<>();
       for (int i = 1; i < ctx.getChildCount(); i++) {
         if (ctx.getChild(i) instanceof TerminalNode) {
           final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
@@ -1981,14 +1984,21 @@ class CypherExpressionBuilder {
           else if (type == Cypher25Parser.LE) op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
           else if (type == Cypher25Parser.GE) op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
 
-          if (op != null) {
-            final Expression left = parseExpressionFromText(ctx.expression7(0));
-            final Expression right = parseExpressionFromText(ctx.expression7(1));
-            final ComparisonExpression comparison = new ComparisonExpression(left, op, right);
-            // Wrap BooleanExpression in an Expression adapter
-            return new BooleanWrapperExpression(comparison);
-          }
+          if (op != null)
+            operators.add(op);
         }
+      }
+
+      if (!operators.isEmpty()) {
+        BooleanExpression result = null;
+        for (int i = 0; i < operators.size(); i++) {
+          final Expression left = parseExpressionFromText(ctx.expression7(i));
+          final Expression right = parseExpressionFromText(ctx.expression7(i + 1));
+          final ComparisonExpression comparison = new ComparisonExpression(left, operators.get(i), right);
+          result = result == null ? comparison : new LogicalExpression(LogicalExpression.Operator.AND, result, comparison);
+        }
+        // Wrap the (possibly conjoined) BooleanExpression in an Expression adapter
+        return new BooleanWrapperExpression(result);
       }
     }
 
