@@ -18,12 +18,14 @@
  */
 package com.arcadedb.e2e;
 
+import com.arcadedb.Constants;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
 import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import com.arcadedb.schema.MaterializedView;
@@ -343,8 +345,11 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
 
   @Test
   void Issue5279MultipleTransactionsTestHttp() {
-    database.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
-    database.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
+    createDatabase();
+    RemoteDatabase db = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
+
+    db.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
+    db.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
       System.out.println("bucket = " + bucket.getName());
     });
     List<RemoteDatabase> alTx = new ArrayList<>();
@@ -353,8 +358,7 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     int concurrentIntent = 10;
     System.out.println("START inserting");
     for (int i = 0; i < concurrentIntent; i++) {
-      RemoteDatabase tx = new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");
-      ;
+      RemoteDatabase tx = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
       tx.begin();
       alTx.add(tx);
 
@@ -406,4 +410,73 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     }
     System.out.println("committed");
   }
+
+  private void createDatabase() {
+    final RemoteServer httpServer = new RemoteServer(
+        host,
+        httpPort,
+        "root",
+        "playwithdata");
+
+    if (httpServer.exists("test5279")) {
+      System.out.println("Dropping existing database test5279");
+      httpServer.drop("test5279");
+    }
+
+    httpServer.create("test5279");
+  }
+
+  private void createDatabaseLocalhost() {
+    final RemoteServer httpServer = new RemoteServer(
+        "localhost",
+        2480,
+        "root",
+        "playwithdata");
+
+    if (httpServer.exists("test5279")) {
+      System.out.println("Dropping existing database test5279");
+      httpServer.drop("test5279");
+    }
+
+    httpServer.create("test5279");
+  }
+
+
+
+  @Test
+  @Disabled
+  void Issue5279MultipleTransactionsTestHttpLocalhost() {
+    createDatabaseLocalhost();
+    RemoteDatabase db = new RemoteDatabase("localhost", 2480, "test5279", "root", "playwithdata");
+
+    db.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
+    db.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
+      System.out.println("bucket = " + bucket.getName());
+    });
+    List<RemoteDatabase> alTx = new ArrayList<>();
+    Set<String> concurrentPage = new HashSet<>();
+    boolean concurrentDetected = false;
+    int concurrentIntent = 10;
+    System.out.println("START inserting");
+    for (int i = 0; i < concurrentIntent; i++) {
+      RemoteDatabase tx = new RemoteDatabase("localhost", 2480, "test5279", "root", "playwithdata");
+      tx.begin();
+      alTx.add(tx);
+
+      MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
+      svt1.set("svex", "concurrent test" + i);
+      svt1.save();
+
+      System.out.println("" + i + ": " + svt1.getIdentity());
+    }
+
+    System.out.println("START committing");
+    for (int i = 0; i < concurrentIntent; i++) {
+      RemoteDatabase tx = alTx.get(i);
+      System.out.println("commitin " + i);
+      tx.commit();
+    }
+    System.out.println("committed");
+  }
+
 }
