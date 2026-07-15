@@ -109,6 +109,10 @@ public final class HealthMonitor {
   private final    long                     staleFollowerRecoveryDurationMs;
   private final    boolean                  divergedFollowerRecoveryEnabled;
   private final    int                      divergedFollowerMaxReformats;
+  // Crash-loop escalation (issue #5291): how many consecutive CLOSED/EXCEPTION restarts may fail to stick
+  // before the monitor escalates (reformat once, then give up). 0 disables the escalation (legacy behaviour:
+  // restart on every unhealthy tick forever).
+  private final    int                      crashLoopRestartThreshold;
   private volatile ScheduledExecutorService executor;
   // Wall-clock time (ms) when the current uninterrupted lag streak was first observed; -1 = not lagging.
   private          long                     lagObservedSinceMs          = -1;
@@ -119,6 +123,11 @@ public final class HealthMonitor {
   private          int                      divergenceReformatCount     = 0;
   private          long                     divergenceHealthySinceMs    = -1;
   private          boolean                  divergenceRecoveryExhausted = false;
+  // Crash-loop tracking (#5291): consecutive CLOSED/EXCEPTION restarts in the current unhealthy streak,
+  // whether we already escalated to a one-shot reformat, and whether we have given up (logged once).
+  private          int                      crashRestartStreak          = 0;
+  private          boolean                  crashLoopReformatTried       = false;
+  private          boolean                  crashLoopEscalated           = false;
   // Injectable for deterministic tests; defaults to the system clock.
   private          LongSupplier             clock                       = System::currentTimeMillis;
 
@@ -139,12 +148,20 @@ public final class HealthMonitor {
   public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
       final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled,
       final int divergedFollowerMaxReformats) {
+    this(target, intervalMs, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs, divergedFollowerRecoveryEnabled,
+        divergedFollowerMaxReformats, 0);
+  }
+
+  public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
+      final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled,
+      final int divergedFollowerMaxReformats, final int crashLoopRestartThreshold) {
     this.target = target;
     this.intervalMs = intervalMs;
     this.staleFollowerLagThreshold = staleFollowerLagThreshold;
     this.staleFollowerRecoveryDurationMs = staleFollowerRecoveryDurationMs;
     this.divergedFollowerRecoveryEnabled = divergedFollowerRecoveryEnabled;
     this.divergedFollowerMaxReformats = divergedFollowerMaxReformats;
+    this.crashLoopRestartThreshold = crashLoopRestartThreshold;
   }
 
   /** Package-private test hook to drive the persistence logic deterministically. */
@@ -187,22 +204,87 @@ public final class HealthMonitor {
     target.reportResyncProgress();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
-      HALog.log(this, HALog.BASIC, "Health monitor detected Ratis %s state, attempting recovery", state);
-      target.restartRatisIfNeeded();
-      // A Ratis restart will reinitialize the state machine and re-detect any snapshot gap, so
-      // drop any pending stale-follower / stuck-divergence streak (and the reformat budget) to avoid
-      // a redundant recovery right after the restart.
-      lagObservedSinceMs = -1;
-      stuckObservedSinceMs = -1;
-      divergenceReformatCount = 0;
-      divergenceHealthySinceMs = -1;
-      divergenceRecoveryExhausted = false;
+      handleUnhealthyState(state);
       return;
     }
+    // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
+    crashRestartStreak = 0;
+    crashLoopReformatTried = false;
+    crashLoopEscalated = false;
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
     checkStaleFollower();
     checkStuckFollower();
+  }
+
+  /**
+   * Handles a Ratis lifecycle stuck in {@code CLOSED}/{@code EXCEPTION} with crash-loop escalation (issue
+   * #5291). A plain {@link HealthTarget#restartRatisIfNeeded()} uses Ratis {@code RECOVER}, which reloads
+   * the existing storage. When that storage is self-inconsistent - e.g. a term-inverted persisted log or a
+   * poisoned snapshot-install where an entry {@code (t:3, i:4946)} is applied after {@code (t:4, i:4945)} -
+   * the {@code StateMachineUpdater} throws {@code Failed updateLastAppliedTermIndex} a few hundred ms after
+   * the Ratis server object builds successfully. Because the build itself succeeded,
+   * {@code restartRatis()}'s own consecutive-failure escape never fires and the node returns to CLOSED and
+   * is restarted every tick indefinitely.
+   * <p>
+   * With {@code crashLoopRestartThreshold > 0}, once restarts stop sticking (the node has been CLOSED on
+   * every tick of the streak past the threshold) we escalate exactly once to a reformat-and-rejoin (which
+   * fixes purely-local corruption by letting the leader reconcile this node via snapshot-install), and if
+   * it still crash-loops we stop restarting and raise a single SEVERE alert for operator intervention - a
+   * poisoned snapshot/log served by the leader re-poisons every fresh join, so a coordinated full-cluster
+   * reformat is required. With the threshold at 0 the escalation is disabled and every unhealthy tick just
+   * restarts, preserving the pre-#5291 behaviour.
+   */
+  private void handleUnhealthyState(final LifeCycle.State state) {
+    crashRestartStreak++;
+
+    // Already escalated and gave up: do not resume the restart churn. The node stays down (readiness
+    // fails) and the SEVERE alert already told the operator; a pod/process restart is the way out.
+    if (crashLoopEscalated)
+      return;
+
+    if (crashLoopRestartThreshold > 0 && crashRestartStreak > crashLoopRestartThreshold) {
+      if (divergedFollowerRecoveryEnabled && !crashLoopReformatTried) {
+        crashLoopReformatTried = true;
+        LogManager.instance().log(this, Level.WARNING,
+            "Ratis crash-loop: %d consecutive %s restarts did not stick; escalating to a Raft-storage reformat "
+                + "+ rejoin so the leader can reconcile this node via snapshot-install (issue #5291)",
+            crashRestartStreak, state);
+        target.recoverFromDivergence();
+        // Give the reformat a full fresh streak to prove it stuck before counting toward give-up.
+        resetStreaksAfterRestart();
+        crashRestartStreak = 0;
+        return;
+      }
+      // Reformat already attempted (or divergence recovery disabled) and it still crash-loops: the
+      // corruption is not local. Stop restarting and surface it once for operator intervention.
+      crashLoopEscalated = true;
+      LogManager.instance().log(this, Level.SEVERE,
+          "Ratis crash-loop persists after %d restarts%s; giving up automatic restart - operator intervention "
+              + "required. A follower that keeps returning to %s (e.g. 'Failed updateLastAppliedTermIndex: newTI "
+              + "< oldTI') usually indicates a term-inverted Raft log or snapshot served by the leader; a "
+              + "coordinated full-cluster Raft-storage reformat may be required (issue #5291)",
+          crashRestartStreak, crashLoopReformatTried ? " and a storage reformat" : "", state);
+      resetStreaksAfterRestart();
+      return;
+    }
+
+    HALog.log(this, HALog.BASIC, "Health monitor detected Ratis %s state, attempting recovery", state);
+    target.restartRatisIfNeeded();
+    resetStreaksAfterRestart();
+  }
+
+  /**
+   * Drops any pending stale-follower / stuck-divergence streak (and the reformat budget) after a Ratis
+   * restart, because the restart reinitializes the state machine and re-detects any snapshot gap, so a
+   * lag/divergence recovery fired right after would be redundant.
+   */
+  private void resetStreaksAfterRestart() {
+    lagObservedSinceMs = -1;
+    stuckObservedSinceMs = -1;
+    divergenceReformatCount = 0;
+    divergenceHealthySinceMs = -1;
+    divergenceRecoveryExhausted = false;
   }
 
   /**

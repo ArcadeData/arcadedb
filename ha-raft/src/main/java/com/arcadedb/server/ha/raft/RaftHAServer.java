@@ -617,8 +617,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY);
     final int divergedFollowerMaxReformats = configuration.getValueAsInteger(
         GlobalConfiguration.HA_DIVERGED_FOLLOWER_MAX_REFORMATS);
+    // Reuse the Ratis restart-retry cap as the crash-loop escalation threshold (issue #5291): a RECOVER
+    // restart that keeps returning to CLOSED (e.g. a term-inverted persisted log) never trips restartRatis()'s
+    // own escape because the server object builds successfully each time, so the health monitor bounds the
+    // non-sticking restart streak here and escalates (reformat once, then give up loudly).
+    final int crashLoopRestartThreshold = configuration.getValueAsInteger(
+        GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
-        divergedFollowerRecovery, divergedFollowerMaxReformats);
+        divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold);
     this.healthMonitor.start();
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING))
       this.resyncProgressTracker = new FollowerResyncProgressTracker(
