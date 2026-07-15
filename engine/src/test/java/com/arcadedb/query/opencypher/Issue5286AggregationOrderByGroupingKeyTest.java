@@ -20,6 +20,9 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #5286: ordering by a grouping-key expression that is projected under an
@@ -154,5 +158,79 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
   public void orderByAliasedGroupingKeyAmongSeveral() {
     assertThat(column("MATCH (n:P) RETURN n.name AS nm, n.age AS a, count(*) AS c ORDER BY n.age", "nm")) //
         .containsExactly("a", "b", "c");
+  }
+
+  /**
+   * An ORDER BY built out of a grouping key is well defined too: the grouping key is constant per
+   * group, so the enclosing expression is. Neo4j sorts this; it is resolved by substituting the
+   * projected part, i.e. sorting on {@code a + 1}.
+   */
+  @Test
+  public void orderByExpressionContainingGroupingKey() {
+    assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age + 1", "a")) //
+        .containsExactly(10, 20, 30);
+    assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age + 1 DESC", "a")) //
+        .containsExactly(30, 20, 10);
+  }
+
+  /**
+   * The substitution reaches inside function-call arguments.
+   */
+  @Test
+  public void orderByFunctionOfGroupingKey() {
+    assertThat(column("MATCH (n:P) RETURN n.name AS nm, count(*) AS c ORDER BY toUpper(n.name) DESC", "nm")) //
+        .containsExactly("c", "b", "a");
+  }
+
+  /**
+   * When the node itself is the grouping key, a property of it is well defined per group and must
+   * sort: the read follows the variable to the column it was projected as.
+   */
+  @Test
+  public void orderByPropertyOfProjectedNode() {
+    assertThat(column("MATCH (n:P) RETURN n AS node, count(*) AS c ORDER BY n.age", "c")) //
+        .containsExactly(1L, 1L, 1L);
+    final List<Object> ages = new ArrayList<>();
+    try (final ResultSet rs = database.query("cypher", "MATCH (n:P) RETURN n AS node, count(*) AS c ORDER BY n.age")) {
+      while (rs.hasNext())
+        ages.add(((Document) rs.next().getProperty("node")).get("age"));
+    }
+    assertThat(ages).containsExactly(10, 20, 30);
+  }
+
+  /**
+   * A reference the projection dropped has no value to sort on. Reporting it is what Neo4j does, and
+   * it is the point of the fix: the query used to return unsorted rows and say nothing.
+   */
+  @Test
+  public void orderByNonGroupingKeyRejected() {
+    assertThatThrownBy(() -> database.query("cypher", "MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.name").close())
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("not defined");
+  }
+
+  /**
+   * An ORDER BY item that mixes an aggregation with a complex non-aggregated part is ambiguous by
+   * specification, even when that part is projected (openCypher ReturnOrderBy6 [5]). Resolving the
+   * part to its output column would make the query compile, so the substitution must leave items
+   * containing an aggregation alone. Covered by the TCK; pinned here because it is the one shape the
+   * rewrite must deliberately not touch.
+   */
+  @Test
+  public void orderByComplexExpressionWithAggregationStaysAmbiguous() {
+    assertThatThrownBy(() -> database
+        .query("cypher", "MATCH (n:P) RETURN n.age + 1, count(*) AS c ORDER BY n.age + 1 + count(*)").close())
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("AmbiguousAggregationExpression");
+  }
+
+  /**
+   * By contrast a simple projected property read inside an aggregation-containing ORDER BY item is
+   * legal and must keep compiling (openCypher ReturnOrderBy6 [3]).
+   */
+  @Test
+  public void orderBySimplePropertyWithAggregationStillCompiles() {
+    assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age + count(*)", "a")) //
+        .containsExactlyInAnyOrder(10, 20, 30);
   }
 }
