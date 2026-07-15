@@ -48,4 +48,24 @@ public class MCPToolUtils {
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
     return server.getDatabase(databaseName);
   }
+
+  /**
+   * Quotes an identifier (type name, relationship type, or property key) for safe inclusion in a Cypher
+   * statement. Cypher cannot bind identifiers as parameters, so they are backtick-quoted here. An identifier
+   * that is null, blank, or itself contains a backtick is rejected, which guarantees the quoting cannot be
+   * escaped and no clause can be injected through an identifier. Values are never routed through this method;
+   * they are always bound as parameters.
+   *
+   * @param kind human-readable label for the identifier, used only in the rejection message
+   * @param raw  the identifier as supplied by the caller
+   * @return the identifier wrapped in backticks
+   */
+  public static String quoteIdentifier(final String kind, final String raw) {
+    if (raw == null || raw.isBlank())
+      throw new IllegalArgumentException("The " + kind + " must not be null or blank");
+    if (raw.indexOf('`') >= 0)
+      throw new IllegalArgumentException(
+          "The " + kind + " '" + raw + "' contains a backtick, which is not supported");
+    return "`" + raw + "`";
+  }
 }
