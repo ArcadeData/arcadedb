@@ -77,6 +77,51 @@ public class MCPToolUtils {
   }
 
   /**
+   * Returns a required non-blank string argument, throwing an {@link IllegalArgumentException} that names the field
+   * when it is missing or blank. Reading with a {@code null} default avoids the raw parser exception a bare lookup
+   * of an absent key would throw, so the caller gets a clean, self-correcting error.
+   */
+  public static String requireString(final JSONObject args, final String field) {
+    final String value = args.getString(field, null);
+    if (value == null || value.isBlank())
+      throw new IllegalArgumentException("'" + field + "' is required");
+    return value;
+  }
+
+  /**
+   * Returns a required object argument that must contain at least one property, throwing an
+   * {@link IllegalArgumentException} that names the field otherwise.
+   */
+  public static JSONObject requireNonEmptyObject(final JSONObject args, final String field) {
+    final JSONObject value = args.getJSONObject(field, null);
+    if (value == null || value.length() == 0)
+      throw new IllegalArgumentException("'" + field + "' is required and must contain at least one property");
+    return value;
+  }
+
+  /**
+   * Appends a {@code MERGE (<variable>:`<typeName>` {`k`: $prefix0, ...})} node pattern to {@code cypher}, binding
+   * each match-key value into {@code params} under {@code <prefix>0}, {@code <prefix>1}, ... Identifiers (type name
+   * and keys) are backtick-quoted via {@link #quoteIdentifier}; values are always bound as parameters. The prefix
+   * keeps this node's parameters from colliding with other nodes/clauses in the same statement.
+   */
+  public static void appendNodeMerge(final StringBuilder cypher, final Map<String, Object> params,
+      final String variable, final String typeName, final JSONObject matchKeys, final String paramPrefix) {
+    cypher.append("MERGE (").append(variable).append(':')
+        .append(quoteIdentifier("type name", typeName)).append(" {");
+    int i = 0;
+    for (final String key : matchKeys.keySet()) {
+      if (i > 0)
+        cypher.append(", ");
+      final String p = paramPrefix + i;
+      cypher.append(quoteIdentifier("match key", key)).append(": $").append(p);
+      params.put(p, matchKeys.get(key));
+      i++;
+    }
+    cypher.append("})");
+  }
+
+  /**
    * Executes a parameterized Cypher write and returns its records. The statement is analyzed to determine its
    * operation types, which are gated through the same permission path as {@code execute_command}; a
    * {@code MERGE ... SET} yields {@code {CREATE, UPDATE}}, so both insert and update must be allowed. Values are

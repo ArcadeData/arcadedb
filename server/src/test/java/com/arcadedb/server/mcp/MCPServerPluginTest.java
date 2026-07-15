@@ -1587,6 +1587,46 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(resp.getJSONArray("content").getJSONObject(0).getString("text")).contains("not allowed");
   }
 
+  @Test
+  void upsertRelationshipRejectsEmptyMatchKeys() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject resp = callTool("upsert_relationship", new JSONObject()
+        .put("database", "graph")
+        .put("fromType", "Author")
+        .put("fromMatchKeys", new JSONObject())
+        .put("toType", "Book")
+        .put("toMatchKeys", new JSONObject().put("isbn", "111"))
+        .put("relType", "WROTE"));
+
+    assertThat(resp.getBoolean("isError")).isTrue();
+    assertThat(resp.getJSONArray("content").getJSONObject(0).getString("text")).contains("fromMatchKeys");
+  }
+
+  @Test
+  void upsertEntityRejectsBacktickIdentifier() throws Exception {
+    // The backtick guard lives in quoteIdentifier; this asserts it is actually wired into the tool path.
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject resp = callTool("upsert_entity", new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "Bad`Type")
+        .put("matchKeys", new JSONObject().put("id", "1")));
+
+    assertThat(resp.getBoolean("isError")).isTrue();
+    assertThat(resp.getJSONArray("content").getJSONObject(0).getString("text")).contains("backtick");
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {

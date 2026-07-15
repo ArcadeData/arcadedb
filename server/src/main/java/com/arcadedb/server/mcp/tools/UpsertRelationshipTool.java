@@ -51,19 +51,19 @@ public class UpsertRelationshipTool {
                     .put("description", "The source vertex type. Created automatically if it does not exist"))
                 .put("fromMatchKeys", new JSONObject()
                     .put("type", "object")
-                    .put("description", "property:value pairs identifying the source vertex; must be non-empty"))
+                    .put("description", "property:value pairs identifying the source vertex; must be non-empty. Values should be scalars"))
                 .put("toType", new JSONObject()
                     .put("type", "string")
                     .put("description", "The destination vertex type. Created automatically if it does not exist"))
                 .put("toMatchKeys", new JSONObject()
                     .put("type", "object")
-                    .put("description", "property:value pairs identifying the destination vertex; must be non-empty"))
+                    .put("description", "property:value pairs identifying the destination vertex; must be non-empty. Values should be scalars"))
                 .put("relType", new JSONObject()
                     .put("type", "string")
                     .put("description", "The edge type. Created automatically if it does not exist"))
                 .put("relProperties", new JSONObject()
                     .put("type", "object")
-                    .put("description", "property:value pairs to write on the matched or created edge")))
+                    .put("description", "property:value pairs to write on the matched or created edge. Values should be scalars")))
             .put("required", new JSONArray()
                 .put("database").put("fromType").put("fromMatchKeys")
                 .put("toType").put("toMatchKeys").put("relType")));
@@ -71,13 +71,13 @@ public class UpsertRelationshipTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = require(args, "database");
-    final String fromType = require(args, "fromType");
-    final String toType = require(args, "toType");
-    final String relType = require(args, "relType");
+    final String databaseName = MCPToolUtils.requireString(args, "database");
+    final String fromType = MCPToolUtils.requireString(args, "fromType");
+    final String toType = MCPToolUtils.requireString(args, "toType");
+    final String relType = MCPToolUtils.requireString(args, "relType");
 
-    final JSONObject fromMatchKeys = requireKeys(args, "fromMatchKeys");
-    final JSONObject toMatchKeys = requireKeys(args, "toMatchKeys");
+    final JSONObject fromMatchKeys = MCPToolUtils.requireNonEmptyObject(args, "fromMatchKeys");
+    final JSONObject toMatchKeys = MCPToolUtils.requireNonEmptyObject(args, "toMatchKeys");
     final JSONObject relProperties = args.getJSONObject("relProperties", null);
 
     final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
@@ -85,9 +85,9 @@ public class UpsertRelationshipTool {
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder cypher = new StringBuilder();
 
-    appendNodeMerge(cypher, params, "a", fromType, fromMatchKeys, "f");
+    MCPToolUtils.appendNodeMerge(cypher, params, "a", fromType, fromMatchKeys, "f");
     cypher.append('\n');
-    appendNodeMerge(cypher, params, "b", toType, toMatchKeys, "t");
+    MCPToolUtils.appendNodeMerge(cypher, params, "b", toType, toMatchKeys, "t");
     cypher.append('\n')
         .append("MERGE (a)-[r:")
         .append(MCPToolUtils.quoteIdentifier("relationship type", relType))
@@ -111,33 +111,4 @@ public class UpsertRelationshipTool {
     return MCPToolUtils.executeParameterizedWrite(database, cypher.toString(), params, config);
   }
 
-  private static void appendNodeMerge(final StringBuilder cypher, final Map<String, Object> params,
-      final String variable, final String typeName, final JSONObject matchKeys, final String paramPrefix) {
-    cypher.append("MERGE (").append(variable).append(':')
-        .append(MCPToolUtils.quoteIdentifier("type name", typeName)).append(" {");
-    int i = 0;
-    for (final String key : matchKeys.keySet()) {
-      if (i > 0)
-        cypher.append(", ");
-      final String p = paramPrefix + i;
-      cypher.append(MCPToolUtils.quoteIdentifier("match key", key)).append(": $").append(p);
-      params.put(p, matchKeys.get(key));
-      i++;
-    }
-    cypher.append("})");
-  }
-
-  private static String require(final JSONObject args, final String field) {
-    final String value = args.getString(field, null);
-    if (value == null || value.isBlank())
-      throw new IllegalArgumentException("'" + field + "' is required");
-    return value;
-  }
-
-  private static JSONObject requireKeys(final JSONObject args, final String field) {
-    final JSONObject keys = args.getJSONObject(field, null);
-    if (keys == null || keys.length() == 0)
-      throw new IllegalArgumentException("'" + field + "' is required and must contain at least one property");
-    return keys;
-  }
 }

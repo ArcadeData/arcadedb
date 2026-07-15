@@ -50,46 +50,25 @@ public class UpsertEntityTool {
                     .put("description", "The vertex type. Created automatically if it does not exist"))
                 .put("matchKeys", new JSONObject()
                     .put("type", "object")
-                    .put("description", "property:value pairs used as the match/merge key; must be non-empty"))
+                    .put("description", "property:value pairs used as the match/merge key; must be non-empty. Values should be scalars"))
                 .put("setProperties", new JSONObject()
                     .put("type", "object")
-                    .put("description", "property:value pairs to write on the matched or created vertex")))
+                    .put("description", "property:value pairs to write on the matched or created vertex. Values should be scalars")))
             .put("required", new JSONArray().put("database").put("typeName").put("matchKeys")));
   }
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = args.getString("database", null);
-    if (databaseName == null || databaseName.isBlank())
-      throw new IllegalArgumentException("'database' is required");
-
-    final String typeName = args.getString("typeName", null);
-    if (typeName == null || typeName.isBlank())
-      throw new IllegalArgumentException("'typeName' is required");
-
-    final JSONObject matchKeys = args.getJSONObject("matchKeys", null);
-    if (matchKeys == null || matchKeys.length() == 0)
-      throw new IllegalArgumentException("'matchKeys' is required and must contain at least one property");
-
+    final String databaseName = MCPToolUtils.requireString(args, "database");
+    final String typeName = MCPToolUtils.requireString(args, "typeName");
+    final JSONObject matchKeys = MCPToolUtils.requireNonEmptyObject(args, "matchKeys");
     final JSONObject setProperties = args.getJSONObject("setProperties", null);
 
     final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
     final Map<String, Object> params = new HashMap<>();
-    final StringBuilder cypher = new StringBuilder("MERGE (n:")
-        .append(MCPToolUtils.quoteIdentifier("type name", typeName))
-        .append(" {");
-
-    int m = 0;
-    for (final String key : matchKeys.keySet()) {
-      if (m > 0)
-        cypher.append(", ");
-      final String p = "m" + m;
-      cypher.append(MCPToolUtils.quoteIdentifier("match key", key)).append(": $").append(p);
-      params.put(p, matchKeys.get(key));
-      m++;
-    }
-    cypher.append("})");
+    final StringBuilder cypher = new StringBuilder();
+    MCPToolUtils.appendNodeMerge(cypher, params, "n", typeName, matchKeys, "m");
 
     if (setProperties != null && setProperties.length() > 0) {
       cypher.append(" SET ");
