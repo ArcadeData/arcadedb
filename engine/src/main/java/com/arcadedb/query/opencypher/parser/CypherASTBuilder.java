@@ -928,8 +928,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse ORDER BY, SKIP, LIMIT from returnBody
     OrderByClause orderByClause = null;
     if (body.orderBy() != null) {
-      // An ORDER BY item that repeats a projected expression sorts on the projected column (#5283)
-      orderByClause = ProjectedOrderByNormalizer.normalize(visitOrderBy(body.orderBy()), items, distinct);
+      // An ORDER BY item that repeats a projected expression sorts on the projected column
+      // (#5283 for DISTINCT, #5286 for aggregation)
+      boolean aggregating = false;
+      for (final ReturnClause.ReturnItem item : items)
+        if (item.getExpression().containsAggregation()) {
+          aggregating = true;
+          break;
+        }
+      orderByClause = ProjectedOrderByNormalizer.normalize(visitOrderBy(body.orderBy()), items, distinct || aggregating);
     }
 
     Expression skip = null;
