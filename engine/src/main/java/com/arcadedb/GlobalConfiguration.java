@@ -1111,7 +1111,11 @@ public enum GlobalConfiguration {
   HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,
       """
       Maximum consecutive Ratis restart attempts by the health monitor before the server shuts down \
-      for cluster-level recovery. Raise when partition-recovery scenarios cause legitimate rapid restarts.""",
+      for cluster-level recovery. Raise when partition-recovery scenarios cause legitimate rapid restarts. \
+      Also bounds the crash-loop escalation: when a RECOVER restart keeps returning to CLOSED (e.g. a \
+      term-inverted persisted Raft log or a poisoned snapshot-install) without the restart itself failing, \
+      the health monitor escalates after this many non-sticking restarts (reformat + rejoin once, then give \
+      up with a SEVERE alert) instead of restarting forever (issue #5291).""",
       Integer.class, 10),
 
   HA_STOP_SERVER_ON_REPLICATION_FAILURE("arcadedb.ha.stopServerOnReplicationFailure", SCOPE.SERVER,

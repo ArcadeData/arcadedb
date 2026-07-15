@@ -439,6 +439,99 @@ class HealthMonitorTest {
     assertThat(fake.divergenceRecover.get()).isEqualTo(4);
   }
 
+  // --- Crash-loop escalation (issue #5291) ---
+
+  private static HealthMonitor crashLoopMonitor(final FakeHealthTarget fake, final boolean divergedEnabled,
+      final int crashLoopThreshold) {
+    // interval 0 so tick() runs synchronously; no clock needed - crash-loop escalation counts ticks, not time.
+    return new HealthMonitor(fake, 1000, 0L, 5000L, divergedEnabled, 2, crashLoopThreshold);
+  }
+
+  @Test
+  void crashLoopDisabledWhenThresholdZero() {
+    // Threshold 0 preserves the legacy behaviour: every CLOSED tick just restarts, forever, no escalation.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.state.set(LifeCycle.State.CLOSED);
+    final HealthMonitor monitor = crashLoopMonitor(fake, true, 0);
+    for (int i = 0; i < 20; i++)
+      monitor.tick();
+    assertThat(fake.recoveryCalls.get()).isEqualTo(20);
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void crashLoopEscalatesToReformatThenGivesUp() {
+    // A CLOSED restart that never sticks: after the threshold, escalate once to a reformat; if it still
+    // crash-loops, stop restarting entirely (give up) instead of looping forever.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.state.set(LifeCycle.State.CLOSED);
+    final HealthMonitor monitor = crashLoopMonitor(fake, true, 3);
+
+    // Ticks 1..3 restart normally (streak <= threshold).
+    monitor.tick();
+    monitor.tick();
+    monitor.tick();
+    assertThat(fake.recoveryCalls.get()).isEqualTo(3);
+    assertThat(fake.divergenceRecover.get()).isZero();
+
+    // Tick 4 crosses the threshold: escalate to a one-shot reformat (no plain restart this tick).
+    monitor.tick();
+    assertThat(fake.recoveryCalls.get()).isEqualTo(3);
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
+
+    // The reformat reset the streak; ticks 5..7 restart normally again while it fails to stick.
+    monitor.tick();
+    monitor.tick();
+    monitor.tick();
+    assertThat(fake.recoveryCalls.get()).isEqualTo(6);
+
+    // Tick 8 crosses the threshold again with the reformat already spent: give up (SEVERE, once).
+    monitor.tick();
+    assertThat(fake.divergenceRecover.get()).as("reformat is one-shot per episode").isEqualTo(1);
+
+    // All further ticks are no-ops: neither restart nor reformat - the churn is stopped.
+    for (int i = 0; i < 10; i++)
+      monitor.tick();
+    assertThat(fake.recoveryCalls.get()).as("no more restarts after give-up").isEqualTo(6);
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
+  }
+
+  @Test
+  void crashLoopGivesUpDirectlyWhenDivergenceRecoveryDisabled() {
+    // With divergence recovery disabled there is no reformat step: escalation goes straight to give-up.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.state.set(LifeCycle.State.CLOSED);
+    final HealthMonitor monitor = crashLoopMonitor(fake, false, 3);
+
+    for (int i = 0; i < 3; i++)
+      monitor.tick(); // normal restarts
+    assertThat(fake.recoveryCalls.get()).isEqualTo(3);
+
+    monitor.tick(); // crosses threshold -> give up (no reformat available)
+    for (int i = 0; i < 5; i++)
+      monitor.tick();
+    assertThat(fake.recoveryCalls.get()).as("stopped restarting at give-up").isEqualTo(3);
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void crashLoopStreakResetsWhenHealthyAgain() {
+    // A restart that sticks (node returns to RUNNING) before the threshold must never escalate: the streak
+    // resets, so a later genuinely-new incident starts counting from zero.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    final HealthMonitor monitor = crashLoopMonitor(fake, true, 3);
+
+    for (int cycle = 0; cycle < 5; cycle++) {
+      fake.state.set(LifeCycle.State.CLOSED);
+      monitor.tick();
+      monitor.tick(); // two CLOSED ticks (below threshold 3)
+      fake.state.set(LifeCycle.State.RUNNING);
+      monitor.tick(); // recovered -> streak resets
+    }
+    assertThat(fake.recoveryCalls.get()).as("every CLOSED tick restarted, none escalated").isEqualTo(10);
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
   @Test
   void divergenceBudgetReArmsAfterHealthyPeriod() {
     // Once the follower looks healthy for 5x the duration, the prior episode is forgotten and the
