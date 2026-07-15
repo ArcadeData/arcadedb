@@ -24,6 +24,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
+import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.CollectionUtils;
@@ -340,7 +342,7 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
   }
 
   @Test
-  void Issue5279MultipleTransactionsTest() {
+  void Issue5279MultipleTransactionsTestHttp() {
     database.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
     database.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
       System.out.println("bucket = " + bucket.getName());
@@ -351,7 +353,8 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     int concurrentIntent = 10;
     System.out.println("START inserting");
     for (int i = 0; i < concurrentIntent; i++) {
-      RemoteDatabase tx =  new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");;
+      RemoteDatabase tx = new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");
+      ;
       tx.begin();
       alTx.add(tx);
 
@@ -365,7 +368,40 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     System.out.println("START committing");
     for (int i = 0; i < concurrentIntent; i++) {
       RemoteDatabase tx = alTx.get(i);
-      System.out.println("commitin "+i);
+      System.out.println("commitin " + i);
+      tx.commit();
+    }
+    System.out.println("committed");
+  }
+
+  @Test
+  void Issue5279MultipleTransactionsTestGrpc() {
+    database.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
+    database.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
+      System.out.println("bucket = " + bucket.getName());
+    });
+    RemoteGrpcServer gs = new RemoteGrpcServer(host, grpcPort, "root", "playwithdata", true, List.of());
+    List<RemoteDatabase> alTx = new ArrayList<>();
+    Set<String> concurrentPage = new HashSet<>();
+    boolean concurrentDetected = false;
+    int concurrentIntent = 10;
+    System.out.println("START inserting");
+    for (int i = 0; i < concurrentIntent; i++) {
+      RemoteGrpcDatabase tx = new RemoteGrpcDatabase(gs, host, grpcPort, httpPort, "beer", "root", "playwithdata");
+      tx.begin();
+      alTx.add(tx);
+
+      MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
+      svt1.set("svex", "concurrent test" + i);
+      svt1.save();
+
+      System.out.println("" + i + ": " + svt1.getIdentity());
+    }
+
+    System.out.println("START committing");
+    for (int i = 0; i < concurrentIntent; i++) {
+      RemoteDatabase tx = alTx.get(i);
+      System.out.println("commitin " + i);
       tx.commit();
     }
     System.out.println("committed");
