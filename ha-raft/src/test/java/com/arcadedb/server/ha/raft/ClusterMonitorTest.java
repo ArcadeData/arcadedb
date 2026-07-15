@@ -392,6 +392,60 @@ class ClusterMonitorTest {
     assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
   }
 
+  // --- Reachability-aware status (issue #5291) ---
+
+  @Test
+  void caughtUpButUnreachableReportsStalledNotHealthy() {
+    // A follower whose member is CLOSED/crash-looping still shows matchIndex caught up (a stale high-water
+    // mark) while it has not answered an RPC for a long time. Keying health on lag alone masks it as
+    // HEALTHY/lag-0 while it crashes ~20x/min; the reachability signal must downgrade it (issue #5291).
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 0L, null, false, 10_000L);
+    monitor.updateLeaderCommitIndex(5000);
+
+    // Caught up AND answering RPCs recently -> HEALTHY.
+    monitor.updateReplicaMatchIndex("replica1", 5000, 0L);
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.HEALTHY);
+
+    // Still caught up (lag 0) but no successful RPC for 60s (>= 10s threshold) -> STALLED, not HEALTHY.
+    monitor.updateReplicaMatchIndex("replica1", 5000, 60_000L);
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
+    // The reachability narrative / channel-reset own the logging; the status fix must not emit the
+    // misleading "matchIndex stuck ... disk saturation ... leader election" STALLED message here.
+    assertThat(captured.linesAtLevel(Level.SEVERE)).noneMatch(l -> l.message.contains("disk"));
+  }
+
+  @Test
+  void caughtUpAndReachableStaysHealthy() {
+    // Guard against false positives: an elapsed time below the threshold must not downgrade a caught-up
+    // follower. A healthy follower answers heartbeats well within the unreachable threshold.
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 0L, null, false, 10_000L);
+    monitor.updateLeaderCommitIndex(5000);
+    monitor.updateReplicaMatchIndex("replica1", 5000, 9_999L);
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.HEALTHY);
+  }
+
+  @Test
+  void unreachableStatusRecoversToHealthyWhenRpcResumes() {
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 0L, null, false, 10_000L);
+    monitor.updateLeaderCommitIndex(5000);
+    monitor.updateReplicaMatchIndex("replica1", 5000, 60_000L);
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
+
+    // The follower answers an RPC again: reachability is restored, so a caught-up replica is HEALTHY again.
+    monitor.updateReplicaMatchIndex("replica1", 5000, 0L);
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.HEALTHY);
+  }
+
+  @Test
+  void unreachableStatusDisabledWhenThresholdZero() {
+    // With the unreachable threshold disabled (0) the classification stays lag-only: a caught-up replica is
+    // HEALTHY regardless of how long since its last RPC, preserving the pre-#5291 behaviour.
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 0L, null, false, 0L);
+    monitor.updateLeaderCommitIndex(5000);
+    monitor.updateReplicaMatchIndex("replica1", 5000, 600_000L);
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.HEALTHY);
+  }
+
   /**
    * Issue #4841: a stale lag streak must not survive into the next term either. If a replica was mid
    * stall-streak when this node lost leadership, {@link ClusterMonitor#reset()} must clear the streak
