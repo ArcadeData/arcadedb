@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -40,7 +41,9 @@ public class RightFunction implements StatelessFunction {
     final String str = args[0].toString();
     final int length = ((Number) args[1]).intValue();
     if (length < 0)
-      throw new CommandExecutionException("right(): negative length is not supported: " + length);
+      // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching Neo4j/Memgraph.
+      // CommandSemanticException extends CommandParsingException, which the HTTP handler maps to 400. See issue #5296.
+      throw new CommandSemanticException("right(): negative length is not supported: " + length);
     return str.substring(Math.max(0, str.length() - length));
   }
 }
