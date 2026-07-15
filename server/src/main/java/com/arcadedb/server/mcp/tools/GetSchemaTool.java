@@ -59,6 +59,15 @@ public class GetSchemaTool {
 
     final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
 
+    return buildSchema(database, databaseName);
+  }
+
+  /**
+   * Builds the JSON schema document for a database. The single source of truth for schema shaping: the get_schema
+   * tool and the arcadedb://{database}/schema resource both render from here, so their content cannot drift apart.
+   * Performs no permission or authorization check; the caller is responsible for both.
+   */
+  public static JSONObject buildSchema(final Database database, final String databaseName) {
     final Schema schema = database.getSchema();
     final JSONArray types = new JSONArray();
 

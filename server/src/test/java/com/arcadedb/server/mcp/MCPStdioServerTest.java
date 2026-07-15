@@ -224,6 +224,60 @@ class MCPStdioServerTest extends BaseGraphServerTest {
     assertThat(resp3.has("result")).isTrue();
   }
 
+  @Test
+  void initializeAdvertisesResourcesAndInstructions() throws Exception {
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 400)
+        .put("method", "initialize")
+        .put("params", new JSONObject());
+
+    final JSONObject response = sendSingleRequest(request);
+
+    final JSONObject result = response.getJSONObject("result");
+    final JSONObject resources = result.getJSONObject("capabilities").getJSONObject("resources");
+    assertThat(resources.getBoolean("listChanged")).isFalse();
+    assertThat(resources.getBoolean("subscribe")).isFalse();
+    assertThat(result.getString("instructions")).contains("arcadedb://{database}/schema");
+  }
+
+  @Test
+  void resourcesList() throws Exception {
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 401)
+        .put("method", "resources/list")
+        .put("params", new JSONObject());
+
+    final JSONObject response = sendSingleRequest(request);
+
+    final JSONArray resources = response.getJSONObject("result").getJSONArray("resources");
+    boolean foundGraph = false;
+    for (int i = 0; i < resources.length(); i++)
+      if ("arcadedb://graph/schema".equals(resources.getJSONObject(i).getString("uri")))
+        foundGraph = true;
+    assertThat(foundGraph).isTrue();
+  }
+
+  @Test
+  void resourcesRead() throws Exception {
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 402)
+        .put("method", "resources/read")
+        .put("params", new JSONObject().put("uri", "arcadedb://graph/schema"));
+
+    final JSONObject response = sendSingleRequest(request);
+
+    final JSONArray contents = response.getJSONObject("result").getJSONArray("contents");
+    assertThat(contents.length()).isEqualTo(1);
+    assertThat(contents.getJSONObject(0).getString("mimeType")).isEqualTo("application/json");
+
+    final JSONObject schema = new JSONObject(contents.getJSONObject(0).getString("text"));
+    assertThat(schema.getString("database")).isEqualTo("graph");
+    assertThat(schema.getJSONArray("types").length()).isGreaterThan(0);
+  }
+
   // ---- Helpers ----
 
   private JSONObject sendSingleRequest(final JSONObject request) {

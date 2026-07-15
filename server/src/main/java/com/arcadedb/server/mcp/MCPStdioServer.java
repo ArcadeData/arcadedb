@@ -18,24 +18,12 @@
  */
 package com.arcadedb.server.mcp;
 
-import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
-import com.arcadedb.server.mcp.tools.FullTextSearchTool;
-import com.arcadedb.server.mcp.tools.GetSchemaTool;
-import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
-import com.arcadedb.server.mcp.tools.ListDatabasesTool;
-import com.arcadedb.server.mcp.tools.ProfilerStartTool;
-import com.arcadedb.server.mcp.tools.ProfilerStatusTool;
-import com.arcadedb.server.mcp.tools.ProfilerStopTool;
-import com.arcadedb.server.mcp.tools.QueryTool;
-import com.arcadedb.server.mcp.tools.ServerStatusTool;
-import com.arcadedb.server.mcp.tools.SetServerSettingTool;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.mcp.MCPDispatcher.MCPResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.io.BufferedReader;
@@ -48,36 +36,17 @@ import java.util.logging.Level;
 /**
  * MCP server using stdio transport (JSON-RPC 2.0 over stdin/stdout, newline-delimited).
  * This allows ArcadeDB to work natively with mcp-proxy, Claude Desktop, Cursor, etc.
+ * Owns the stdio envelope only; all protocol routing lives in {@link MCPDispatcher}.
  */
 public class MCPStdioServer {
-  private static final String    MCP_PROTOCOL_VERSION = "2025-03-26";
-  private static final JSONArray TOOLS_LIST;
-
-  static {
-    TOOLS_LIST = new JSONArray();
-    TOOLS_LIST.put(ListDatabasesTool.getDefinition());
-    TOOLS_LIST.put(GetSchemaTool.getDefinition());
-    TOOLS_LIST.put(QueryTool.getDefinition());
-    TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
-    TOOLS_LIST.put(FullTextSearchTool.getDefinition());
-    TOOLS_LIST.put(ServerStatusTool.getDefinition());
-    TOOLS_LIST.put(ProfilerStartTool.getDefinition());
-    TOOLS_LIST.put(ProfilerStopTool.getDefinition());
-    TOOLS_LIST.put(ProfilerStatusTool.getDefinition());
-    TOOLS_LIST.put(GetServerSettingsTool.getDefinition());
-    TOOLS_LIST.put(SetServerSettingTool.getDefinition());
-  }
-
-  private final ArcadeDBServer   server;
-  private final MCPConfiguration config;
+  private final MCPDispatcher      dispatcher;
   private final ServerSecurityUser user;
-  private final InputStream      input;
-  private final PrintStream      output;
+  private final InputStream        input;
+  private final PrintStream        output;
 
   public MCPStdioServer(final ArcadeDBServer server, final MCPConfiguration config, final ServerSecurityUser user,
       final InputStream input, final PrintStream output) {
-    this.server = server;
-    this.config = config;
+    this.dispatcher = new MCPDispatcher(server, config, "stdio");
     this.user = user;
     this.input = input;
     this.output = output;
@@ -141,101 +110,10 @@ public class MCPStdioServer {
   }
 
   private String dispatch(final JSONObject request) {
-    final String method = request.getString("method", "");
-    final JSONObject params = request.getJSONObject("params", new JSONObject());
-    final Object id = request.opt("id");
+    final MCPResponse response = dispatcher.dispatch(request, user);
 
-    LogManager.instance().log(this, Level.INFO, "MCP stdio %s (user=%s)", method, user.getName());
-
-    return switch (method) {
-      case "initialize" -> handleInitialize(id);
-      case "notifications/initialized" -> null; // notifications get no response
-      case "tools/list" -> handleToolsList(id);
-      case "tools/call" -> handleToolsCall(id, params);
-      case "ping" -> jsonRpcResult(id, new JSONObject());
-      default -> jsonRpcError(id, -32601, "Method not found: " + method);
-    };
-  }
-
-  private String handleInitialize(final Object id) {
-    final JSONObject result = new JSONObject();
-    result.put("protocolVersion", MCP_PROTOCOL_VERSION);
-
-    final JSONObject serverInfo = new JSONObject();
-    serverInfo.put("name", "arcadedb");
-    serverInfo.put("version", Constants.getVersion());
-    result.put("serverInfo", serverInfo);
-
-    final JSONObject capabilities = new JSONObject();
-    capabilities.put("tools", new JSONObject().put("listChanged", false));
-    result.put("capabilities", capabilities);
-
-    return jsonRpcResult(id, result);
-  }
-
-  private String handleToolsList(final Object id) {
-    final JSONObject result = new JSONObject();
-    result.put("tools", TOOLS_LIST);
-    return jsonRpcResult(id, result);
-  }
-
-  private String handleToolsCall(final Object id, final JSONObject params) {
-    final String toolName = params.getString("name", "");
-    final JSONObject args = params.getJSONObject("arguments", new JSONObject());
-
-    LogManager.instance().log(this, Level.INFO, "MCP stdio tools/call '%s' (user=%s)", toolName, user.getName());
-
-    try {
-      final JSONObject toolResult = switch (toolName) {
-        case "list_databases" -> ListDatabasesTool.execute(server, user, args, config);
-        case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
-        case "query" -> QueryTool.execute(server, user, args, config);
-        case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
-        case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
-        case "server_status" -> ServerStatusTool.execute(server, user, args, config);
-        case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
-        case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
-        case "profiler_status" -> ProfilerStatusTool.execute(server, user, args, config);
-        case "get_server_settings" -> GetServerSettingsTool.execute(server, user, args, config);
-        case "set_server_setting" -> SetServerSettingTool.execute(server, user, args, config);
-        default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
-      };
-
-      final JSONObject result = new JSONObject();
-      final JSONArray content = new JSONArray();
-      content.put(new JSONObject()
-          .put("type", "text")
-          .put("text", toolResult.toString()));
-      result.put("content", content);
-      result.put("isError", false);
-      return jsonRpcResult(id, result);
-
-    } catch (final SecurityException e) {
-      LogManager.instance().log(this, Level.INFO, "MCP stdio tools/call '%s' -> permission denied: %s", toolName, e.getMessage());
-      return toolError(id, e.getMessage());
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "MCP stdio tools/call '%s' -> error: %s", toolName, e.getMessage());
-      return toolError(id, e.getMessage());
-    }
-  }
-
-  private static String toolError(final Object id, final String message) {
-    final JSONObject result = new JSONObject();
-    final JSONArray content = new JSONArray();
-    content.put(new JSONObject()
-        .put("type", "text")
-        .put("text", message));
-    result.put("content", content);
-    result.put("isError", true);
-    return jsonRpcResult(id, result);
-  }
-
-  private static String jsonRpcResult(final Object id, final JSONObject result) {
-    final JSONObject response = new JSONObject();
-    response.put("jsonrpc", "2.0");
-    response.put("id", id);
-    response.put("result", result);
-    return response.toString();
+    // A null body is a JSON-RPC notification, which is written back as nothing at all.
+    return response.json() == null ? null : response.json().toString();
   }
 
   private static String jsonRpcError(final Object id, final int code, final String message) {
