@@ -34,6 +34,10 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,10 +101,10 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     assertThat(friendOf.getIn()).isEqualTo(you);
 
     me.getEdges(Vertex.DIRECTION.OUT, "FriendOf").forEach(e ->
-      assertThat(e).isEqualTo(friendOf));
+        assertThat(e).isEqualTo(friendOf));
 
     database.query("sql", "select expand(out('FriendOf')) from Person where name = 'me'").stream().forEach(r ->
-      assertThat(r.<String>getProperty("name")).isEqualTo("you"));
+        assertThat(r.<String>getProperty("name")).isEqualTo("you"));
   }
 
   @Test
@@ -262,8 +266,8 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
 
     IntStream.range(1, 100001).forEach(i ->
 
-      database.command("sqlscript",
-          "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3] RETURN embedding;".formatted(i)));
+        database.command("sqlscript",
+            "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3] RETURN embedding;".formatted(i)));
 
     LocalDateTime end = LocalDateTime.now();
     System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
@@ -321,12 +325,12 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     StringBuilder sb = new StringBuilder();
 
     database.transaction(() ->
-      IntStream.range(1, 100001).forEach(i -> {
+        IntStream.range(1, 100001).forEach(i -> {
 
-        database.command("sql",
-            "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3];".formatted(i));
+          database.command("sql",
+              "INSERT INTO `TEXT_EMBEDDING` SET str = meow_%d, embedding = [0.1,0.2,0.3];".formatted(i));
 
-      }));
+        }));
     LocalDateTime end = LocalDateTime.now();
     System.out.println("Execution time: " + Duration.between(start, end).toSeconds() + " seconds");
 
@@ -335,4 +339,32 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
 
   }
 
+  @Test
+  void Issue5279MultipleTransactionsTest() {
+
+    database.command("sql", "create vertex type SimpleVertexEx if not exists");
+    List<RemoteDatabase> alTx = new ArrayList<>();
+    Set<String> concurrentPage = new HashSet<>();
+    boolean concurrentDetected = false;
+    int concurrentIntent = 10;
+    System.out.println("START inserting");
+    for (int i = 0; i < concurrentIntent; i++) {
+      RemoteDatabase tx =  new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");;
+      tx.begin();
+      alTx.add(tx);
+
+      MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
+      svt1.set("svex", "concurrent test" + i);
+      svt1.save();
+
+      System.out.println("" + i + ": " + svt1.getIdentity());
+    }
+
+    System.out.println("START committing");
+    for (RemoteDatabase tx : alTx) {
+      tx.commit();
+    }
+
+    System.out.println("committed");
+  }
 }
