@@ -430,35 +430,41 @@ public class CypherSemanticValidator {
             checkExpressionScope(item.getExpression(), scope);
           // Build the scope for ORDER BY
           if (withClause.getOrderByClause() != null) {
-            final Set<String> orderByScope;
-            if (withClause.hasAggregations()) {
-              // After aggregation, restrict to output aliases + grouping key variables
-              orderByScope = new HashSet<>();
-              for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-                if (item.getAlias() != null)
-                  orderByScope.add(item.getAlias());
-                else if (item.getExpression() instanceof VariableExpression)
-                  orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
-                if (!item.getExpression().containsAggregation())
-                  collectVariableNamesFromExpression(item.getExpression(), orderByScope);
-              }
+            if (withClause.isDistinct() && !withClause.hasAggregations()) {
+              // DISTINCT collapses the input rows, so ORDER BY is restricted to the projected
+              // columns exactly as it is for RETURN DISTINCT (issue #5287)
+              validateDistinctOrderByScope(withClause.getItems(), withClause.getOrderByClause());
             } else {
-              // Non-aggregating WITH: ORDER BY can reference both original scope + aliases
-              orderByScope = new HashSet<>(scope);
-              for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-                if (item.getAlias() != null)
-                  orderByScope.add(item.getAlias());
-                else if (item.getExpression() instanceof VariableExpression)
-                  orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+              final Set<String> orderByScope;
+              if (withClause.hasAggregations()) {
+                // After aggregation, restrict to output aliases + grouping key variables
+                orderByScope = new HashSet<>();
+                for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+                  if (item.getAlias() != null)
+                    orderByScope.add(item.getAlias());
+                  else if (item.getExpression() instanceof VariableExpression)
+                    orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+                  if (!item.getExpression().containsAggregation())
+                    collectVariableNamesFromExpression(item.getExpression(), orderByScope);
+                }
+              } else {
+                // Non-aggregating WITH: ORDER BY can reference both original scope + aliases
+                orderByScope = new HashSet<>(scope);
+                for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+                  if (item.getAlias() != null)
+                    orderByScope.add(item.getAlias());
+                  else if (item.getExpression() instanceof VariableExpression)
+                    orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+                }
               }
+              for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
+                if (item.getExpressionAST() != null) {
+                  if (withClause.hasAggregations())
+                    checkExpressionScopeSkipAggArgs(item.getExpressionAST(), orderByScope);
+                  else
+                    checkExpressionScope(item.getExpressionAST(), orderByScope);
+                }
             }
-            for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
-              if (item.getExpressionAST() != null) {
-                if (withClause.hasAggregations())
-                  checkExpressionScopeSkipAggArgs(item.getExpressionAST(), orderByScope);
-                else
-                  checkExpressionScope(item.getExpressionAST(), orderByScope);
-              }
           }
           // Reset scope to only projected aliases
           scope.clear();
@@ -501,29 +507,7 @@ public class CypherSemanticValidator {
             if (statement.getOrderByClause() != null) {
               if (statement.getReturnClause().isDistinct()) {
                 // After DISTINCT, ORDER BY can only reference returned columns
-                final Set<String> returnedNames = new HashSet<>();
-                for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems()) {
-                  returnedNames.add(item.getOutputName());
-                  if (item.getAlias() != null)
-                    returnedNames.add(item.getAlias());
-                  if (item.getExpression() instanceof VariableExpression)
-                    returnedNames.add(((VariableExpression) item.getExpression()).getVariableName());
-                }
-                for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
-                  final String orderExprText = item.getExpression();
-                  if (orderExprText != null && !returnedNames.contains(orderExprText)) {
-                    if (item.getExpressionAST() != null) {
-                      final Set<String> distinctScope = new HashSet<>();
-                      for (final ReturnClause.ReturnItem rItem : statement.getReturnClause().getReturnItems()) {
-                        if (rItem.getAlias() != null)
-                          distinctScope.add(rItem.getAlias());
-                        else if (rItem.getExpression() instanceof VariableExpression)
-                          distinctScope.add(((VariableExpression) rItem.getExpression()).getVariableName());
-                      }
-                      checkExpressionScope(item.getExpressionAST(), distinctScope);
-                    }
-                  }
-                }
+                validateDistinctOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause());
               } else if (statement.getReturnClause().hasAggregations()) {
                 // After aggregation, ORDER BY scope restricted to aliases + grouping key variables
                 final Set<String> orderByScope = new HashSet<>();
@@ -687,6 +671,37 @@ public class CypherSemanticValidator {
     if (var != null && isValidVariableName(var) && !scope.contains(var) && shadowed.contains(var))
       throw new CommandSemanticException("UndefinedVariable: Variable '" + var
           + "' not defined: it is declared in an outer scope but not imported into the CALL subquery");
+  }
+
+  /**
+   * Validates the ORDER BY of a DISTINCT projection, shared by RETURN DISTINCT and WITH DISTINCT
+   * (issue #5287).
+   * <p>
+   * DISTINCT collapses the input rows, so a variable that fed the projection no longer has a single
+   * value per surviving row and ORDER BY is restricted to the projected columns. An item that repeats
+   * a projected expression is well defined and has already been rewritten to reference that
+   * projection's output column by {@link com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer}
+   * (issue #5283), so it passes the check below as a plain column reference.
+   */
+  private void validateDistinctOrderByScope(final List<ReturnClause.ReturnItem> items, final OrderByClause orderBy) {
+    final Set<String> projectedNames = new HashSet<>();
+    final Set<String> orderByScope = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : items) {
+      projectedNames.add(item.getOutputName());
+      if (item.getAlias() != null)
+        orderByScope.add(item.getAlias());
+      else if (item.getExpression() instanceof VariableExpression)
+        orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+    }
+
+    for (final OrderByClause.OrderByItem item : orderBy.getItems()) {
+      // An item naming a projected output column resolves against the projected row, whatever the
+      // column name looks like (an un-aliased projection is named after its own expression text)
+      if (item.getExpression() != null && projectedNames.contains(item.getExpression()))
+        continue;
+      if (item.getExpressionAST() != null)
+        checkExpressionScope(item.getExpressionAST(), orderByScope);
+    }
   }
 
   private void checkExpressionScope(final Expression expr, final Set<String> scope) {
