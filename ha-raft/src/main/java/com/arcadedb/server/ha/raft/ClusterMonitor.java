@@ -197,9 +197,20 @@ public class ClusterMonitor {
     final long neverAppendedGraceMs = stalledResyncDurationMs > 0 ? stalledResyncDurationMs : NEVER_APPENDED_STALL_GRACE_MS;
     final boolean neverAppendedStalled = neverAppended && now - state.neverAppendedSinceMs >= neverAppendedGraceMs;
 
+    // Issue #5291: a follower can be caught up by matchIndex (lag <= threshold) yet not have answered a
+    // single RPC for a long time - e.g. its Ratis member is CLOSED and crash-looping, so appends fail with
+    // ServerNotReadyException while matchIndex stays frozen at its last high-water mark. Keying health on
+    // lag alone reports it HEALTHY/lag-0 while it crashes ~20x/min. A follower that has not answered an RPC
+    // within the unreachable threshold is not live: matchIndex is a stale high-water mark, not health.
+    // Reuse the existing peer-unreachable threshold (0 = disabled, preserving the lag-only behaviour).
+    final boolean unreachableStale = peerUnreachableThresholdMs > 0 && lastRpcElapsedMs >= peerUnreachableThresholdMs;
+
     // Compute current status based on this tick.
     final ReplicaStatus status;
     if (neverAppendedStalled)
+      status = ReplicaStatus.STALLED;
+    else if (unreachableStale && lag <= lagWarningThreshold)
+      // Caught up but not responding: report STALLED rather than masking it as HEALTHY (issue #5291).
       status = ReplicaStatus.STALLED;
     else if (lag <= lagWarningThreshold)
       status = ReplicaStatus.HEALTHY;
@@ -237,8 +248,10 @@ public class ClusterMonitor {
     // Independent of the resync narrative and of the lag-based stall recovery above.
     trackUnreachableForChannelReset(replicaId, state, lastRpcElapsedMs, now);
 
-    // HEALTHY: nothing to say.
-    if (status == ReplicaStatus.HEALTHY)
+    // HEALTHY: nothing to say. A caught-up-but-unreachable replica is now reported STALLED for status and
+    // metrics (issue #5291), but the reachability narrative (and, if enabled, the channel-reset path) already
+    // own its logging, so skip the lag-warning switch below to avoid a duplicate, mislabeled "disk stall" log.
+    if (status == ReplicaStatus.HEALTHY || (unreachableStale && lag <= lagWarningThreshold))
       return;
 
     // Throttle per replica so a sustained bulk load doesn't spam the log.
