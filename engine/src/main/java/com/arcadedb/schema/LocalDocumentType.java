@@ -1185,6 +1185,17 @@ public class LocalDocumentType implements DocumentType {
     bucketIds = CollectionUtils.addToUnmodifiableList(bucketIds, bucket.getFileId());
     cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
 
+    // PROPAGATE THE NEW BUCKET UP THE INHERITANCE TREE. THE SUPER TYPES ARE OFTEN LINKED BEFORE THE BUCKET EXISTS
+    // (`ALTER TYPE x BUCKET +y`, GROWING AN EXISTING TYPE THROUGH THE TYPE BUILDER), AND THEIR POLYMORPHIC CACHES
+    // ARE OTHERWISE ONLY REBUILT ON SCHEMA RELOAD, LEAVING EVERY POLYMORPHIC READ ON THE SUPER TYPE BLIND TO THIS
+    // BUCKET UNTIL THE NEXT RESTART (ISSUE #5297).
+    if (!superTypes.isEmpty()) {
+      final List<Bucket>  addedBuckets   = List.of(bucket);
+      final List<Integer> addedBucketIds = List.of(bucket.getFileId());
+      for (final LocalDocumentType s : superTypes)
+        s.updatePolymorphicBucketsCache(true, addedBuckets, addedBucketIds);
+    }
+
     bucketSelectionStrategy.setType(this);
 
     if (partitionedAndPopulated)
@@ -1432,6 +1443,15 @@ public class LocalDocumentType implements DocumentType {
     bucketIds = CollectionUtils.removeFromUnmodifiableList(bucketIds, bucket.getFileId());
     cachedPolymorphicBucketIds = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
 
+    // SYMMETRIC TO addBucketInternal: A BUCKET BELONGS TO EXACTLY ONE TYPE, SO ONCE IT IS DETACHED FROM THIS TYPE NO
+    // SUPER TYPE CAN REACH IT ANY LONGER AND EVERY POLYMORPHIC CACHE UP THE TREE MUST DROP IT (ISSUE #5297).
+    if (!superTypes.isEmpty()) {
+      final List<Bucket>  removedBuckets   = List.of(bucket);
+      final List<Integer> removedBucketIds = List.of(bucket.getFileId());
+      for (final LocalDocumentType s : superTypes)
+        s.updatePolymorphicBucketsCache(false, removedBuckets, removedBucketIds);
+    }
+
     // AUTOMATICALLY DROP THE INDEX ON THE REMOVED BUCKET (INCLUDING INHERITED INDEXES FROM PARENT TYPES)
     final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
 
@@ -1607,9 +1627,11 @@ public class LocalDocumentType implements DocumentType {
     if (add) {
       cachedPolymorphicBuckets = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
-      // ADD ALL CACHED
+      // ADD ONLY THE INCOMING BUCKETS, SYMMETRIC WITH THE REMOVE BRANCH: FORWARDING THE WHOLE CACHE WOULD HAND EVERY
+      // ANCESTOR THE BUCKETS IT ALREADY OWNS ON EVERY SINGLE UPDATE, WHICH IS O(TREE) WORK PER BUCKET AND ONLY STAYS
+      // CORRECT BECAUSE addAllToUnmodifiableList HAPPENS TO DEDUPLICATE
       for (LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(add, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
+        s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
     } else {
       cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
