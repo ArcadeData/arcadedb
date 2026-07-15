@@ -72,18 +72,8 @@ public class UpsertEntityTool {
     final StringBuilder cypher = new StringBuilder();
     MCPToolUtils.appendNodeMerge(cypher, params, "n", typeName, matchKeys, "m");
 
-    if (setProperties != null && setProperties.length() > 0) {
-      cypher.append(" SET ");
-      int s = 0;
-      for (final String key : setProperties.keySet()) {
-        if (s > 0)
-          cypher.append(", ");
-        final String p = "s" + s;
-        cypher.append("n.").append(MCPToolUtils.quoteIdentifier("property key", key)).append(" = $").append(p);
-        params.put(p, setProperties.get(key));
-        s++;
-      }
-    }
+    if (setProperties != null && setProperties.length() > 0)
+      MCPToolUtils.appendSetClause(cypher, params, "n", setProperties, "s");
     cypher.append(" RETURN n");
 
     return MCPToolUtils.executeParameterizedWrite(database, cypher.toString(), params, config);

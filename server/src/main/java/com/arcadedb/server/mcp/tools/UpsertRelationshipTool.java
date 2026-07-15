@@ -95,19 +95,8 @@ public class UpsertRelationshipTool {
         .append(MCPToolUtils.quoteIdentifier("relationship type", relType))
         .append("]->(b)");
 
-    if (relProperties != null && relProperties.length() > 0) {
-      cypher.append(" SET ");
-      int r = 0;
-      for (final String key : relProperties.keySet()) {
-        if (r > 0)
-          cypher.append(", ");
-        final String p = "r" + r;
-        cypher.append("r.").append(MCPToolUtils.quoteIdentifier("relationship property key", key))
-            .append(" = $").append(p);
-        params.put(p, relProperties.get(key));
-        r++;
-      }
-    }
+    if (relProperties != null && relProperties.length() > 0)
+      MCPToolUtils.appendSetClause(cypher, params, "r", relProperties, "r");
     cypher.append(" RETURN r");
 
     return MCPToolUtils.executeParameterizedWrite(database, cypher.toString(), params, config);

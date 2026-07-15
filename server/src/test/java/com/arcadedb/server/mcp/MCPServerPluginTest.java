@@ -1627,6 +1627,60 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(resp.getJSONArray("content").getJSONObject(0).getString("text")).contains("backtick");
   }
 
+  @Test
+  void upsertEntityCompositeMatchKeysIsIdempotent() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject args = new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "CompositePerson")
+        .put("matchKeys", new JSONObject().put("firstName", "Ada").put("lastName", "Lovelace"))
+        .put("setProperties", new JSONObject().put("role", "mathematician"));
+
+    callTool("upsert_entity", args);
+    // Repeat with the same two-key match: must resolve to the same node, not create a second.
+    callTool("upsert_entity", new JSONObject(args.toString())
+        .put("setProperties", new JSONObject().put("role", "pioneer")));
+
+    final JSONObject resp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (p:CompositePerson {firstName:'Ada', lastName:'Lovelace'}) RETURN count(p) AS c"));
+    final JSONObject payload = new JSONObject(resp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+  }
+
+  @Test
+  void upsertEntityBindsSetPropertyValuesSoInjectionIsInert() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final String malicious = "'}) DETACH DELETE n //";
+    callTool("upsert_entity", new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "SetInjTest")
+        .put("matchKeys", new JSONObject().put("id", "1"))
+        .put("setProperties", new JSONObject().put("note", malicious)));
+
+    // The node still exists and stores the payload verbatim, proving the SET value was bound, not executed.
+    final JSONObject resp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (n:SetInjTest {id:'1'}) RETURN n.note AS note"));
+    final JSONObject payload = new JSONObject(resp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getJSONArray("records").length()).isEqualTo(1);
+    assertThat(payload.getJSONArray("records").getJSONObject(0).getString("note")).isEqualTo(malicious);
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {

@@ -122,6 +122,26 @@ public class MCPToolUtils {
   }
 
   /**
+   * Appends a {@code SET <variable>.`k` = $prefix0, ...} clause (including the leading {@code " SET "}) to
+   * {@code cypher} for every entry in {@code properties}, binding each value into {@code params} under
+   * {@code <prefix>0}, {@code <prefix>1}, ... Property keys are backtick-quoted; values are always bound. Call only
+   * when {@code properties} is non-empty.
+   */
+  public static void appendSetClause(final StringBuilder cypher, final Map<String, Object> params,
+      final String variable, final JSONObject properties, final String paramPrefix) {
+    cypher.append(" SET ");
+    int i = 0;
+    for (final String key : properties.keySet()) {
+      if (i > 0)
+        cypher.append(", ");
+      final String p = paramPrefix + i;
+      cypher.append(variable).append('.').append(quoteIdentifier("property key", key)).append(" = $").append(p);
+      params.put(p, properties.get(key));
+      i++;
+    }
+  }
+
+  /**
    * Executes a parameterized Cypher write and returns its records. The statement is analyzed to determine its
    * operation types, which are gated through the same permission path as {@code execute_command}; a
    * {@code MERGE ... SET} yields {@code {CREATE, UPDATE}}, so both insert and update must be allowed. Values are
