@@ -106,6 +106,28 @@ class MCPResourcesTest extends BaseGraphServerTest {
   }
 
   @Test
+  void readUnauthorizedDatabaseIsIndistinguishableFromUnknown() {
+    // An existing database the user cannot access must raise the same MCPResourceNotFoundException as an unknown
+    // database, and must be omitted from the list, so resources/read cannot be used to probe which databases exist.
+    if (!getServer(0).getSecurity().existsUser("restricteduser"))
+      getServer(0).getSecurity().createUser(new JSONObject()
+          .put("name", "restricteduser")
+          .put("password", getServer(0).getSecurity().encodePassword("restrictedpass"))
+          .put("databases", new JSONObject()
+              .put("otherdb", new JSONArray().put("admin"))));
+
+    final ServerSecurityUser restricted = getServer(0).getSecurity().authenticate("restricteduser", "restrictedpass", null);
+
+    assertThatThrownBy(() -> MCPResources.read(getServer(0), restricted, config, "arcadedb://graph/schema"))
+        .isInstanceOf(MCPResourceNotFoundException.class)
+        .hasMessageContaining("Resource not found");
+
+    final JSONArray resources = MCPResources.list(getServer(0), restricted, config).getJSONArray("resources");
+    for (int i = 0; i < resources.length(); i++)
+      assertThat(resources.getJSONObject(i).getString("uri")).isNotEqualTo("arcadedb://graph/schema");
+  }
+
+  @Test
   void parseSchemaURIPreservesCaseAndUnderscores() {
     // java.net.URI would lowercase the authority and reject the underscore, silently resolving this to nothing.
     assertThat(MCPResources.parseSchemaURI("arcadedb://My_DB/schema")).isEqualTo("My_DB");
