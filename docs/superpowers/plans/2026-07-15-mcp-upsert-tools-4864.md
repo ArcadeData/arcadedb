@@ -16,15 +16,14 @@
 - **Code style:** import classes (no fully-qualified names in code), `final` on locals and params, single-statement `if` bodies need no braces, match surrounding style. Do **not** add Claude as author anywhere. No issue numbers in Javadoc/comments - state behavioral invariants only.
 - **Safe-by-default is untouched:** introduce no new config flag; `enabled=false` and all write flags `false` out of the box stay as-is.
 - **Field naming deviation from the issue:** the entity type field is `typeName`, not `type` (JSON-Schema keyword collision), matching the `full_text_search` precedent.
-- **Git policy (project CLAUDE.md):** the maintainer performs commits after review. Treat every **Commit** step below as a checkpoint - stage the listed files (`git add ...`) and pause for maintainer review instead of committing autonomously.
+- **Git policy:** commit each task on the isolated `feat/4864-mcp-upsert-tools` branch (working commits, standard TDD checkpoints). Never push and never merge to `main` - the maintainer reviews the whole branch/PR and does the final integration.
 
 ## File Structure
 
 - `server/src/main/java/com/arcadedb/server/mcp/tools/MCPToolUtils.java` — **modify**: add `quoteIdentifier(kind, raw)` (identifier validation + backtick-quoting) and `executeParameterizedWrite(database, cypher, params, config)` (analyze + permission-check + transactional execute + serialize).
 - `server/src/main/java/com/arcadedb/server/mcp/tools/UpsertEntityTool.java` — **create**: `getDefinition()` + `execute(...)` building `MERGE (n:Type {matchKeys}) [SET ...] RETURN n`.
 - `server/src/main/java/com/arcadedb/server/mcp/tools/UpsertRelationshipTool.java` — **create**: `getDefinition()` + `execute(...)` building `MERGE (a) MERGE (b) MERGE (a)-[r]->(b) [SET ...] RETURN r`.
-- `server/src/main/java/com/arcadedb/server/mcp/MCPHttpHandler.java` — **modify**: import + `TOOLS_LIST` entries + `tools/call` dispatch cases + `formatResult` arm.
-- `server/src/main/java/com/arcadedb/server/mcp/MCPStdioServer.java` — **modify**: import + `TOOLS_LIST` entries + dispatch cases.
+- `server/src/main/java/com/arcadedb/server/mcp/MCPDispatcher.java` — **modify**: tool registration is centralized here (both `MCPHttpHandler` and `MCPStdioServer` delegate to it). Add imports, two `TOOLS_LIST` entries, two `toolsCall` dispatch cases, and two `formatResult` arms. The two handler files need **no** changes.
 - `server/src/test/java/com/arcadedb/server/mcp/MCPToolUtilsTest.java` — **create**: unit tests for `quoteIdentifier`.
 - `server/src/test/java/com/arcadedb/server/mcp/MCPServerPluginTest.java` — **modify**: HTTP integration tests + tools/list presence + count assertion `11 → 13`.
 - `server/src/test/java/com/arcadedb/server/mcp/MCPStdioServerTest.java` — **modify**: stdio tools/list count assertion `11 → 13`.
@@ -144,7 +143,7 @@ Expected: PASS (4 tests).
 ```bash
 git add server/src/main/java/com/arcadedb/server/mcp/tools/MCPToolUtils.java \
         server/src/test/java/com/arcadedb/server/mcp/MCPToolUtilsTest.java
-# Pause here for maintainer review/commit per project git policy.
+git commit -m "feat(#4864): add MCPToolUtils.quoteIdentifier for injection-safe Cypher identifiers"
 ```
 
 ---
@@ -154,8 +153,7 @@ git add server/src/main/java/com/arcadedb/server/mcp/tools/MCPToolUtils.java \
 **Files:**
 - Modify: `server/src/main/java/com/arcadedb/server/mcp/tools/MCPToolUtils.java` (add `executeParameterizedWrite`)
 - Create: `server/src/main/java/com/arcadedb/server/mcp/tools/UpsertEntityTool.java`
-- Modify: `server/src/main/java/com/arcadedb/server/mcp/MCPHttpHandler.java`
-- Modify: `server/src/main/java/com/arcadedb/server/mcp/MCPStdioServer.java`
+- Modify: `server/src/main/java/com/arcadedb/server/mcp/MCPDispatcher.java`
 - Test: `server/src/test/java/com/arcadedb/server/mcp/MCPServerPluginTest.java`
 - Test: `server/src/test/java/com/arcadedb/server/mcp/MCPStdioServerTest.java`
 
@@ -437,11 +435,13 @@ public class UpsertEntityTool {
 }
 ```
 
-- [ ] **Step 5: Register in both transports**
+- [ ] **Step 5: Register in `MCPDispatcher`**
 
-In `MCPHttpHandler.java`: add `import com.arcadedb.server.mcp.tools.UpsertEntityTool;`; add `TOOLS_LIST.put(UpsertEntityTool.getDefinition());` after the `FullTextSearchTool` line in the static block; add `case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);` to the `tools/call` dispatch switch; add `case "upsert_entity" -> result.getInt("count", 0) + " record(s)";` to the `formatResult` switch.
-
-In `MCPStdioServer.java`: add `import com.arcadedb.server.mcp.tools.UpsertEntityTool;`; add `TOOLS_LIST.put(UpsertEntityTool.getDefinition());` after the `FullTextSearchTool` line; add `case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);` to the dispatch switch.
+Tool registration is centralized in `MCPDispatcher.java`; both transports delegate to it, so this is the only production file to touch for registration. Make four edits there:
+- Add `import com.arcadedb.server.mcp.tools.UpsertEntityTool;` with the other `tools.*` imports.
+- In the static `TOOLS_LIST` block, add `TOOLS_LIST.put(UpsertEntityTool.getDefinition());` right after the `FullTextSearchTool.getDefinition()` line.
+- In the `toolsCall(...)` dispatch `switch (toolName)`, add `case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);` before the `default -> throw new IllegalArgumentException(...)` arm.
+- In the private `formatResult(final String toolName, final JSONObject result)` `switch`, add `case "upsert_entity" -> result.getInt("count", 0) + " record(s)";`.
 
 - [ ] **Step 6: Update the stdio tool-count assertion**
 
@@ -457,11 +457,10 @@ Expected: PASS. The four new `upsertEntity*` tests pass, `testToolsList` sees 12
 ```bash
 git add server/src/main/java/com/arcadedb/server/mcp/tools/MCPToolUtils.java \
         server/src/main/java/com/arcadedb/server/mcp/tools/UpsertEntityTool.java \
-        server/src/main/java/com/arcadedb/server/mcp/MCPHttpHandler.java \
-        server/src/main/java/com/arcadedb/server/mcp/MCPStdioServer.java \
+        server/src/main/java/com/arcadedb/server/mcp/MCPDispatcher.java \
         server/src/test/java/com/arcadedb/server/mcp/MCPServerPluginTest.java \
         server/src/test/java/com/arcadedb/server/mcp/MCPStdioServerTest.java
-# Pause here for maintainer review/commit per project git policy.
+git commit -m "feat(#4864): add MCP upsert_entity tool"
 ```
 
 ---
@@ -470,8 +469,7 @@ git add server/src/main/java/com/arcadedb/server/mcp/tools/MCPToolUtils.java \
 
 **Files:**
 - Create: `server/src/main/java/com/arcadedb/server/mcp/tools/UpsertRelationshipTool.java`
-- Modify: `server/src/main/java/com/arcadedb/server/mcp/MCPHttpHandler.java`
-- Modify: `server/src/main/java/com/arcadedb/server/mcp/MCPStdioServer.java`
+- Modify: `server/src/main/java/com/arcadedb/server/mcp/MCPDispatcher.java`
 - Test: `server/src/test/java/com/arcadedb/server/mcp/MCPServerPluginTest.java`
 - Test: `server/src/test/java/com/arcadedb/server/mcp/MCPStdioServerTest.java`
 
@@ -721,11 +719,13 @@ public class UpsertRelationshipTool {
 }
 ```
 
-- [ ] **Step 4: Register in both transports**
+- [ ] **Step 4: Register in `MCPDispatcher`**
 
-In `MCPHttpHandler.java`: add `import com.arcadedb.server.mcp.tools.UpsertRelationshipTool;`; add `TOOLS_LIST.put(UpsertRelationshipTool.getDefinition());` after the `UpsertEntityTool` line; add `case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);` to the dispatch switch; add `case "upsert_relationship" -> result.getInt("count", 0) + " record(s)";` to `formatResult` (or fold into the existing `upsert_entity` arm: `case "upsert_entity", "upsert_relationship" -> ...`).
-
-In `MCPStdioServer.java`: add the import, the `TOOLS_LIST.put(...)` line, and the dispatch `case`.
+In `MCPDispatcher.java` (the single registration point) make four edits:
+- Add `import com.arcadedb.server.mcp.tools.UpsertRelationshipTool;` with the other `tools.*` imports.
+- In the static `TOOLS_LIST` block, add `TOOLS_LIST.put(UpsertRelationshipTool.getDefinition());` right after the `UpsertEntityTool.getDefinition()` line from Task 2.
+- In the `toolsCall(...)` dispatch `switch`, add `case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);` before the `default ->` arm.
+- In `formatResult(...)`, fold into the Task-2 arm so it reads `case "upsert_entity", "upsert_relationship" -> result.getInt("count", 0) + " record(s)";`.
 
 - [ ] **Step 5: Update the stdio tool-count assertion**
 
@@ -745,11 +745,10 @@ Expected: PASS across `MCPConfigurationTest`, `MCPPermissionsTest`, `MCPServerPl
 
 ```bash
 git add server/src/main/java/com/arcadedb/server/mcp/tools/UpsertRelationshipTool.java \
-        server/src/main/java/com/arcadedb/server/mcp/MCPHttpHandler.java \
-        server/src/main/java/com/arcadedb/server/mcp/MCPStdioServer.java \
+        server/src/main/java/com/arcadedb/server/mcp/MCPDispatcher.java \
         server/src/test/java/com/arcadedb/server/mcp/MCPServerPluginTest.java \
         server/src/test/java/com/arcadedb/server/mcp/MCPStdioServerTest.java
-# Pause here for maintainer review/commit per project git policy.
+git commit -m "feat(#4864): add MCP upsert_relationship tool"
 ```
 
 ---
@@ -769,5 +768,5 @@ git add server/src/main/java/com/arcadedb/server/mcp/tools/UpsertRelationshipToo
 - **Test isolation:** `MCPServerPluginTest` extends `BaseGraphServerTest`, whose default database is `"graph"`. The new tests create fresh types (`Person`, `InjTest`, `Author`, `Book`, `City`, `Country`) via `MERGE` auto-creation; they do not collide with the `Article` full-text seed. If a type name clashes with another test's data on a shared server instance, rename it - the assertions count only records matching their own keys, so cross-test bleed is unlikely but rename on any surprise.
 - **Why `serializeResult` and not a manual element extract:** a Cypher `RETURN n` / `RETURN r` row is serialized flat (just `@rid`, `@type`, properties) by `JsonSerializer.serializeResult`, exactly as `query`/`execute_command` already emit. No special-casing is needed to get the record-shaped output the spec shows.
 - **Permission precision:** an upsert with no `setProperties`/`relProperties` produces a `MERGE` with no `SET`, which may analyze to `{CREATE}` alone and then require only `allowInsert`. This is intended (the analyzer is the source of truth); the "requires both" tests deliberately include `setProperties`/`relProperties` so the `UPDATE` op is present.
-- **Merge-conflict hotspots:** the `TOOLS_LIST` blocks, dispatch switches, and count assertions in `MCPHttpHandler`/`MCPStdioServer`/`MCPServerPluginTest`/`MCPStdioServerTest` are edited by every Wave-1 sibling. On rebase, reconcile the absolute count (always "+2 for these two tools") rather than assuming 11→13.
+- **Merge-conflict hotspots:** the `TOOLS_LIST` block and the `toolsCall`/`formatResult` switches in `MCPDispatcher.java`, plus the count assertions in `MCPServerPluginTest`/`MCPStdioServerTest`, are edited by every Wave-1 sibling. On rebase, reconcile the absolute count (always "+2 for these two tools") rather than assuming 11→13.
 ```
