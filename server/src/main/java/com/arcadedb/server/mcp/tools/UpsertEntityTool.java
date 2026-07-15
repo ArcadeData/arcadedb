@@ -38,7 +38,9 @@ public class UpsertEntityTool {
             Create or update a single vertex addressed by a match key, without duplicating it. The record is matched \
             (or created) by the 'matchKeys' property:value pairs, then any 'setProperties' are written. Repeated calls \
             with identical 'matchKeys' resolve to the same vertex. Values are bound as parameters, so they are safe to \
-            pass verbatim. Requires both insert and update permission.""")
+            pass verbatim. Requires both insert and update permission. For no-duplicate behavior under concurrent \
+            calls, and to avoid a full type scan per call, create a UNIQUE index on the 'matchKeys' properties; \
+            without one the match is a full scan and concurrent upserts with the same keys can still both create.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject()

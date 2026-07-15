@@ -39,7 +39,9 @@ public class UpsertRelationshipTool {
             matched (or created) by its match keys, then the edge of type 'relType' between them is matched (or created) \
             and any 'relProperties' are written. Repeated calls between the same resolved endpoints with the same \
             'relType' resolve to the same edge. Values are bound as parameters. Requires both insert and update \
-            permission.""")
+            permission. For no-duplicate endpoints under concurrent calls, and to avoid a full type scan per call, \
+            create a UNIQUE index on each endpoint's match-key properties; without one the endpoint match is a full \
+            scan and concurrent upserts with the same keys can still both create.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject()
