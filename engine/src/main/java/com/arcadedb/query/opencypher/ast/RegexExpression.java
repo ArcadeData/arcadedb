@@ -41,16 +41,20 @@ public class RegexExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
-    final Object value = expression.evaluate(result, context);
-    if (value == null) {
-      return false;
-    }
+    // Filtering semantics: a null (unknown) result excludes the row, same as false.
+    return Boolean.TRUE.equals(evaluateTernary(result, context));
+  }
 
-    // Get pattern string
+  @Override
+  public Object evaluateTernary(final Result result, final CommandContext context) {
+    final Object value = expression.evaluate(result, context);
+    // Cypher three-valued logic: a null operand makes the match unknown (null), not false.
+    if (value == null)
+      return null;
+
     final Object patternObj = pattern.evaluate(result, context);
-    if (patternObj == null) {
-      return false;
-    }
+    if (patternObj == null)
+      return null;
 
     final String patternStr = patternObj.toString();
 

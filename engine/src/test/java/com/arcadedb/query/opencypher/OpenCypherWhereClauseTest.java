@@ -176,6 +176,61 @@ public class OpenCypherWhereClauseTest {
     assertThat(result.hasNext()).isFalse();
   }
 
+  // Issue #5282: `=~` must return null (not false) when either operand is null (three-valued logic).
+  @Test
+  void regexReturnsNullWhenPatternIsNull() {
+    final ResultSet rs = database.query("opencypher", "RETURN \"hello\" =~ null AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<Object>getProperty("result")).isNull();
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void regexReturnsNullWhenValueIsNull() {
+    final ResultSet rs = database.query("opencypher", "RETURN null =~ \".*\" AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<Object>getProperty("result")).isNull();
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void regexReturnsNullWhenBothOperandsAreNull() {
+    final ResultSet rs = database.query("opencypher", "RETURN null =~ null AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<Object>getProperty("result")).isNull();
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void regexStillMatchesWhenBothOperandsNonNull() {
+    final ResultSet rs = database.query("opencypher", "RETURN \"hello\" =~ \"h.*o\" AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<Boolean>getProperty("result")).isTrue();
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  // Issue #5282: NOT (null =~ ...) must stay null, not become true.
+  @Test
+  void regexNullPropagatesThroughNot() {
+    final ResultSet rs = database.query("opencypher", "RETURN NOT (\"hello\" =~ null) AS result");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<Object>getProperty("result")).isNull();
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  // Issue #5282: a WHERE predicate that is null on a row must exclude it (same as false in filtering).
+  @Test
+  void regexNullPatternExcludesRowsInWhere() {
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.name =~ null RETURN p.name");
+    assertThat(rs.hasNext()).isFalse();
+  }
+
   @Test
   void whereWithIN() {
     // Test IN operator: name IN ['Alice', 'Bob']
