@@ -54,7 +54,10 @@ public class TypeFunction implements StatelessFunction {
     // runtime TypeError/InvalidArgumentValue. Throw a CommandSemanticException so the transport layer
     // reports it as a 400 client error with the descriptive message, not a 500 transaction-commit
     // failure. See issue #5204.
+    // The valueType() hint is deliberate: type() is regularly mistaken for a value-type introspection
+    // function, which is what valueType() does (issue #5292).
     throw new CommandSemanticException(
-        "TypeError: type() requires a relationship argument, got " + args[0].getClass().getSimpleName());
+        "TypeError: type() requires a relationship argument, got " + args[0].getClass().getSimpleName()
+            + ". Use valueType() to inspect the type of a value");
   }
 }

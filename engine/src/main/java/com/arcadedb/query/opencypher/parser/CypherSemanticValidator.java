@@ -1769,9 +1769,11 @@ public class CypherSemanticValidator {
                 throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
               break;
             case "type":
-              // type() only works on relationships
+              // type() only works on relationships. Point at valueType(), which is what callers who
+              // expect a value-type name are actually after (issue #5292).
               if (argType == VarType.NODE)
-                throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node");
+                throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node"
+                    + ". Use valueType() to inspect the type of a value");
               break;
             case "labels":
               // labels() only works on nodes
