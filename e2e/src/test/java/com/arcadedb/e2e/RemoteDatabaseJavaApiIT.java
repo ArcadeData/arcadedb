@@ -341,8 +341,10 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
 
   @Test
   void Issue5279MultipleTransactionsTest() {
-
     database.command("sql", "create vertex type SimpleVertexEx if not exists");
+    database.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
+      System.out.println("bucket = " + bucket.getName());
+    });
     List<RemoteDatabase> alTx = new ArrayList<>();
     Set<String> concurrentPage = new HashSet<>();
     boolean concurrentDetected = false;
