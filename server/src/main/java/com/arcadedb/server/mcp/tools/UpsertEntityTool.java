@@ -59,7 +59,10 @@ public class UpsertEntityTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = args.getString("database");
+    final String databaseName = args.getString("database", null);
+    if (databaseName == null || databaseName.isBlank())
+      throw new IllegalArgumentException("'database' is required");
+
     final String typeName = args.getString("typeName", null);
     if (typeName == null || typeName.isBlank())
       throw new IllegalArgumentException("'typeName' is required");

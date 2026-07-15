@@ -71,7 +71,7 @@ public class UpsertRelationshipTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = args.getString("database");
+    final String databaseName = require(args, "database");
     final String fromType = require(args, "fromType");
     final String toType = require(args, "toType");
     final String relType = require(args, "relType");
