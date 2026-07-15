@@ -72,8 +72,7 @@ public class MCPToolUtils {
     if (raw == null || raw.isBlank())
       throw new IllegalArgumentException("The " + kind + " must not be null or blank");
     if (raw.indexOf('`') >= 0)
-      throw new IllegalArgumentException(
-          "The " + kind + " '" + raw + "' contains a backtick, which is not supported");
+      throw new IllegalArgumentException("The " + kind + " contains a backtick, which is not supported");
     return "`" + raw + "`";
   }
 

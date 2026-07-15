@@ -1396,6 +1396,45 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void upsertEntityWithoutSetPropertiesCreatesNode() throws Exception {
+    // A bare MERGE (no SET) analyzes to {CREATE, UPDATE}, so both flags are required. This test covers the
+    // no-SET execution path: the node is created and a repeated call matches rather than duplicating it.
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject args = new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "NoSetPerson")
+        .put("matchKeys", new JSONObject().put("name", "Solo"));
+
+    final JSONObject first = callTool("upsert_entity", args);
+    assertThat(first.getBoolean("isError", true)).isFalse();
+
+    final JSONObject firstCountResp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (n:NoSetPerson {name:'Solo'}) RETURN count(n) AS c"));
+    final JSONObject firstCountPayload = new JSONObject(
+        firstCountResp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(firstCountPayload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+
+    // Repeat with identical args (still no setProperties): the MERGE must match, not duplicate.
+    callTool("upsert_entity", new JSONObject(args.toString()));
+
+    final JSONObject secondCountResp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (n:NoSetPerson {name:'Solo'}) RETURN count(n) AS c"));
+    final JSONObject secondCountPayload = new JSONObject(
+        secondCountResp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(secondCountPayload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+  }
+
+  @Test
   void upsertEntityBindsValuesSoInjectionIsInert() throws Exception {
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
@@ -1492,6 +1531,14 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("query", "MATCH (:Author {name:'Ada'})-[r:WROTE]->(:Book {isbn:'111'}) RETURN count(r) AS c"));
     final JSONObject payload = new JSONObject(resp.getJSONArray("content").getJSONObject(0).getString("text"));
     assertThat(payload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+
+    // The second upsert_relationship call must have updated the existing edge's property.
+    final JSONObject yearResp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (:Author {name:'Ada'})-[r:WROTE]->(:Book {isbn:'111'}) RETURN r.year AS y"));
+    final JSONObject yearPayload = new JSONObject(yearResp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(yearPayload.getJSONArray("records").getJSONObject(0).getInt("y")).isEqualTo(1844);
   }
 
   @Test
