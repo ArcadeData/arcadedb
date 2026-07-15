@@ -122,6 +122,7 @@ public class ReturnClause {
     private final Expression expression;
     private final String alias;
     private String originalText;
+    private String expressionText;
 
     public ReturnItem(final Expression expression, final String alias) {
       this.expression = expression;
@@ -138,6 +139,22 @@ public class ReturnClause {
 
     public void setOriginalText(final String originalText) {
       this.originalText = originalText;
+    }
+
+    /**
+     * Sets the canonical text of the projected expression, as produced by the parse tree
+     * (whitespace and comments stripped). Unlike {@link #setOriginalText}, it is recorded for aliased
+     * items too, and it is normalized exactly the way ORDER BY item texts are, so the two can be
+     * compared to decide whether they denote the same expression.
+     *
+     * @see com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer
+     */
+    public void setExpressionText(final String expressionText) {
+      this.expressionText = expressionText;
+    }
+
+    public String getExpressionText() {
+      return expressionText;
     }
 
     public String getOutputName() {

@@ -73,6 +73,7 @@ import com.arcadedb.query.opencypher.rewriter.ComparisonNormalizer;
 import com.arcadedb.query.opencypher.rewriter.CompositeRewriter;
 import com.arcadedb.query.opencypher.rewriter.ConstantFolder;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -909,6 +910,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
       if (alias == null)
         item.setOriginalText(getOriginalText(itemCtx.expression()));
+      // Canonical text, recorded for aliased items too, so ORDER BY can tell whether it repeats
+      // this projected expression (issue #5283)
+      item.setExpressionText(itemCtx.expression().getText());
       items.add(item);
     }
 
@@ -924,7 +928,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse ORDER BY, SKIP, LIMIT from returnBody
     OrderByClause orderByClause = null;
     if (body.orderBy() != null) {
-      orderByClause = visitOrderBy(body.orderBy());
+      // An ORDER BY item that repeats a projected expression sorts on the projected column (#5283)
+      orderByClause = ProjectedOrderByNormalizer.normalize(visitOrderBy(body.orderBy()), items, distinct);
     }
 
     Expression skip = null;
@@ -1038,6 +1043,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         // When no alias, preserve original text from the query (whitespace and case)
         if (alias == null)
           item.setOriginalText(getOriginalText(itemCtx.expression()));
+        // Canonical text, recorded for aliased items too, so ORDER BY can tell whether it repeats
+        // this projected expression (issue #5283)
+        item.setExpressionText(itemCtx.expression().getText());
         items.add(item);
       }
     }

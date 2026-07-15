@@ -24,6 +24,7 @@ import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
+import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -139,11 +140,14 @@ class ClauseDispatcher {
   private void handleReturn(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                             final CypherASTBuilder astBuilder) {
     final Cypher25Parser.ReturnBodyContext body = ctx.returnClause().returnBody();
-    builder.setReturn(astBuilder.visitReturnClause(ctx.returnClause()));
+    final ReturnClause returnClause = astBuilder.visitReturnClause(ctx.returnClause());
+    builder.setReturn(returnClause);
 
     // Extract ORDER BY, SKIP, LIMIT from returnBody
     if (body.orderBy() != null)
-      builder.setOrderBy(astBuilder.visitOrderBy(body.orderBy()));
+      // An ORDER BY item that repeats a projected expression sorts on the projected column (#5283)
+      builder.setOrderBy(ProjectedOrderByNormalizer.normalize(astBuilder.visitOrderBy(body.orderBy()),
+          returnClause.getReturnItems(), returnClause.isDistinct()));
 
     if (body.skip() != null)
       builder.setSkip((Expression) astBuilder.visitSkip(body.skip()));
