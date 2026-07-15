@@ -121,7 +121,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(11);
+    assertThat(tools.length()).isEqualTo(12);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -135,6 +135,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasGetServerSettings = false;
     boolean hasSetServerSetting = false;
     boolean hasFullTextSearch = false;
+    boolean hasUpsertEntity = false;
 
     for (int i = 0; i < tools.length(); i++) {
       final String name = tools.getJSONObject(i).getString("name");
@@ -150,6 +151,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "get_server_settings" -> hasGetServerSettings = true;
       case "set_server_setting" -> hasSetServerSetting = true;
       case "full_text_search" -> hasFullTextSearch = true;
+      case "upsert_entity" -> hasUpsertEntity = true;
       }
     }
     assertThat(hasListDatabases).isTrue();
@@ -163,6 +165,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasGetServerSettings).isTrue();
     assertThat(hasSetServerSetting).isTrue();
     assertThat(hasFullTextSearch).isTrue();
+    assertThat(hasUpsertEntity).isTrue();
   }
 
   @Test
@@ -1356,6 +1359,103 @@ class MCPServerPluginTest extends BaseGraphServerTest {
           .put("allowReads", true)
           .put("allowedUsers", new JSONArray().put("root")));
     }
+  }
+
+  @Test
+  void upsertEntityIsIdempotent() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject args = new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "UpsertPerson")
+        .put("matchKeys", new JSONObject().put("email", "ada@x.com"))
+        .put("setProperties", new JSONObject().put("name", "Ada"));
+
+    final JSONObject first = callTool("upsert_entity", args);
+    assertThat(first.getBoolean("isError", true)).isFalse();
+
+    // Second call with identical matchKeys must not create a second node.
+    callTool("upsert_entity", new JSONObject(args.toString())
+        .put("setProperties", new JSONObject().put("name", "Ada Lovelace")));
+
+    final JSONObject countResp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (p:UpsertPerson {email: 'ada@x.com'}) RETURN count(p) AS c"));
+    final JSONObject countPayload = new JSONObject(
+        countResp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(countPayload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+  }
+
+  @Test
+  void upsertEntityBindsValuesSoInjectionIsInert() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final String malicious = "x'}) DETACH DELETE n //";
+    final JSONObject args = new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "InjTest")
+        .put("matchKeys", new JSONObject().put("k", malicious));
+
+    callTool("upsert_entity", args);
+    callTool("upsert_entity", new JSONObject(args.toString())); // repeat: still one node
+
+    final JSONObject resp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (n:InjTest) RETURN count(n) AS c"));
+    final JSONObject payload = new JSONObject(resp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+  }
+
+  @Test
+  void upsertEntityRequiresBothInsertAndUpdate() throws Exception {
+    // allowUpdate off: a MERGE...SET needs UPDATE, so it must be denied.
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject resp = callTool("upsert_entity", new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "UpsertPerson")
+        .put("matchKeys", new JSONObject().put("email", "denied@x.com"))
+        .put("setProperties", new JSONObject().put("name", "Nope")));
+
+    assertThat(resp.getBoolean("isError")).isTrue();
+    final String text = resp.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("not allowed");
+  }
+
+  @Test
+  void upsertEntityRejectsEmptyMatchKeys() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject resp = callTool("upsert_entity", new JSONObject()
+        .put("database", "graph")
+        .put("typeName", "UpsertPerson")
+        .put("matchKeys", new JSONObject()));
+
+    assertThat(resp.getBoolean("isError")).isTrue();
+    final String text = resp.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("matchKeys");
   }
 
   // ---- Helper methods ----

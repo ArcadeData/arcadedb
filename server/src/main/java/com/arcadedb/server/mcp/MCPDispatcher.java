@@ -34,6 +34,7 @@ import com.arcadedb.server.mcp.tools.ProfilerStopTool;
 import com.arcadedb.server.mcp.tools.QueryTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.mcp.tools.SetServerSettingTool;
+import com.arcadedb.server.mcp.tools.UpsertEntityTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.logging.Level;
@@ -62,6 +63,7 @@ public class MCPDispatcher {
     TOOLS_LIST.put(QueryTool.getDefinition());
     TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
     TOOLS_LIST.put(FullTextSearchTool.getDefinition());
+    TOOLS_LIST.put(UpsertEntityTool.getDefinition());
     TOOLS_LIST.put(ServerStatusTool.getDefinition());
     TOOLS_LIST.put(ProfilerStartTool.getDefinition());
     TOOLS_LIST.put(ProfilerStopTool.getDefinition());
@@ -184,6 +186,7 @@ public class MCPDispatcher {
         case "query" -> QueryTool.execute(server, user, args, config);
         case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
         case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
+        case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
         case "server_status" -> ServerStatusTool.execute(server, user, args, config);
         case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
         case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
@@ -248,6 +251,7 @@ public class MCPDispatcher {
       case "get_schema" -> result.getJSONArray("types", new JSONArray()).length() + " type(s)";
       case "query", "execute_command" -> result.getInt("count", 0) + " record(s)";
       case "full_text_search" -> result.getInt("count", 0) + " hit(s)";
+      case "upsert_entity" -> result.getInt("count", 0) + " record(s)";
       case "server_status" -> "ok";
       case "profiler_start" -> result.getString("status", "ok");
       case "profiler_stop" -> result.getInt("totalQueries", 0) + " queries captured";

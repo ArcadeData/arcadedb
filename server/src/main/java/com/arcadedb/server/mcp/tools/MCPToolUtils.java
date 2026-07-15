@@ -18,11 +18,19 @@
  */
 package com.arcadedb.server.mcp.tools;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.JsonSerializer;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 public class MCPToolUtils {
@@ -67,5 +75,35 @@ public class MCPToolUtils {
       throw new IllegalArgumentException(
           "The " + kind + " '" + raw + "' contains a backtick, which is not supported");
     return "`" + raw + "`";
+  }
+
+  /**
+   * Executes a parameterized Cypher write and returns its records. The statement is analyzed to determine its
+   * operation types, which are gated through the same permission path as {@code execute_command}; a
+   * {@code MERGE ... SET} yields {@code {CREATE, UPDATE}}, so both insert and update must be allowed. Values are
+   * supplied through {@code params} as bound parameters; identifiers must already be quoted by the caller. The
+   * command runs inside a transaction and each result row is serialized with the same configuration the other
+   * write/read tools use.
+   */
+  public static JSONObject executeParameterizedWrite(final Database database, final String cypher,
+      final Map<String, Object> params, final MCPConfiguration config) {
+    final QueryEngine engine = database.getQueryEngine("cypher");
+    final QueryEngine.AnalyzedQuery analyzed = engine.analyze(cypher);
+    ExecuteCommandTool.checkPermission(analyzed.getOperationTypes(), config);
+
+    final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
+        .setIncludeVertexEdges(false)
+        .setUseCollectionSize(false)
+        .setUseCollectionSizeForEdges(false);
+
+    final JSONArray records = new JSONArray();
+    database.transaction(() -> {
+      try (final ResultSet resultSet = database.command("cypher", cypher, params)) {
+        while (resultSet.hasNext())
+          records.put(serializer.serializeResult(database, resultSet.next()));
+      }
+    });
+
+    return new JSONObject().put("records", records).put("count", records.length());
   }
 }
