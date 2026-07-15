@@ -363,10 +363,11 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     }
 
     System.out.println("START committing");
-    for (RemoteDatabase tx : alTx) {
+    for (int i = 0; i < concurrentIntent; i++) {
+      RemoteDatabase tx = alTx.get(i);
+      System.out.println("commitin "+i);
       tx.commit();
     }
-
     System.out.println("committed");
   }
 }
