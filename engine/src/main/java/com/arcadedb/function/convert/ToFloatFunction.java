@@ -19,6 +19,7 @@
 package com.arcadedb.function.convert;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -46,6 +47,11 @@ public class ToFloatFunction implements StatelessFunction {
         return null;
       }
     }
-    throw new CommandExecutionException("TypeError: InvalidArgumentValue - toFloat() cannot convert " + args[0].getClass().getSimpleName());
+    // Unsupported types: Boolean, List, Map, Node, Relationship, Path. Neo4j's toFloat() accepts only
+    // STRING, INTEGER and FLOAT (unlike toInteger(), which also converts BOOLEAN), so a boolean argument is
+    // a client-side type error here. Throw a CommandSemanticException so the transport layer reports it as a
+    // 400 client error with the descriptive message, not a 500 transaction-commit failure. Same pattern as
+    // toString() (see issue #5203). See issue #5294.
+    throw new CommandSemanticException("TypeError: InvalidArgumentValue - toFloat() cannot convert " + args[0].getClass().getSimpleName());
   }
 }
