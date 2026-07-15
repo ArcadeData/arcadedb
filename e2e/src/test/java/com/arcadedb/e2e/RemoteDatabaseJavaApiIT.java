@@ -341,7 +341,7 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
 
   @Test
   void Issue5279MultipleTransactionsTest() {
-    database.command("sql", "create vertex type SimpleVertexEx if not exists");
+    database.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
     database.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
       System.out.println("bucket = " + bucket.getName());
     });
