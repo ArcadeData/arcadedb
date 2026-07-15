@@ -31,6 +31,8 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -1127,6 +1129,233 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
     assertThat(errorText).contains("indexName");
     assertThat(errorText).contains("typeName");
+  }
+
+  @Test
+  void initializeAdvertisesResourcesCapability() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 400)
+        .put("method", "initialize")
+        .put("params", new JSONObject()));
+
+    final JSONObject capabilities = response.getJSONObject("result").getJSONObject("capabilities");
+    assertThat(capabilities.has("resources")).isTrue();
+    final JSONObject resources = capabilities.getJSONObject("resources");
+    assertThat(resources.getBoolean("listChanged")).isFalse();
+    assertThat(resources.getBoolean("subscribe")).isFalse();
+  }
+
+  @Test
+  void resourcesList() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 401)
+        .put("method", "resources/list")
+        .put("params", new JSONObject()));
+
+    final JSONArray resources = response.getJSONObject("result").getJSONArray("resources");
+
+    JSONObject graphResource = null;
+    for (int i = 0; i < resources.length(); i++)
+      if ("arcadedb://graph/schema".equals(resources.getJSONObject(i).getString("uri")))
+        graphResource = resources.getJSONObject(i);
+
+    assertThat(graphResource).isNotNull();
+    assertThat(graphResource.getString("name")).isEqualTo("graph schema");
+    assertThat(graphResource.getString("mimeType")).isEqualTo("application/json");
+  }
+
+  @Test
+  void resourcesListMatchesListDatabases() throws Exception {
+    final JSONObject listResponse = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 402)
+        .put("method", "resources/list")
+        .put("params", new JSONObject()));
+
+    final Set<String> fromResources = new HashSet<>();
+    final JSONArray resources = listResponse.getJSONObject("result").getJSONArray("resources");
+    for (int i = 0; i < resources.length(); i++) {
+      final String uri = resources.getJSONObject(i).getString("uri");
+      fromResources.add(uri.substring("arcadedb://".length(), uri.length() - "/schema".length()));
+    }
+
+    final JSONObject toolResponse = callTool("list_databases", new JSONObject());
+    final JSONArray databases = new JSONObject(
+        toolResponse.getJSONArray("content").getJSONObject(0).getString("text")).getJSONArray("databases");
+
+    final Set<String> fromTool = new HashSet<>();
+    for (int i = 0; i < databases.length(); i++)
+      fromTool.add(databases.getString(i));
+
+    assertThat(fromResources).isEqualTo(fromTool);
+  }
+
+  @Test
+  void resourcesReadMatchesGetSchemaTool() throws Exception {
+    final JSONObject readResponse = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 403)
+        .put("method", "resources/read")
+        .put("params", new JSONObject().put("uri", "arcadedb://graph/schema")));
+
+    final JSONArray contents = readResponse.getJSONObject("result").getJSONArray("contents");
+    assertThat(contents.length()).isEqualTo(1);
+    assertThat(contents.getJSONObject(0).getString("uri")).isEqualTo("arcadedb://graph/schema");
+    assertThat(contents.getJSONObject(0).getString("mimeType")).isEqualTo("application/json");
+
+    final JSONObject toolResponse = callTool("get_schema", new JSONObject().put("database", "graph"));
+    final String toolText = toolResponse.getJSONArray("content").getJSONObject(0).getString("text");
+
+    assertThat(contents.getJSONObject(0).getString("text")).isEqualTo(toolText);
+  }
+
+  @Test
+  void resourcesReadUnknownDatabaseReturnsNotFound() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 404)
+        .put("method", "resources/read")
+        .put("params", new JSONObject().put("uri", "arcadedb://nosuchdb/schema")));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32002);
+  }
+
+  @Test
+  void resourcesReadMalformedUriReturnsNotFound() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 405)
+        .put("method", "resources/read")
+        .put("params", new JSONObject().put("uri", "arcadedb://graph/tables")));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32002);
+  }
+
+  @Test
+  void resourcesDeniedWhenReadsDisabled() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    try {
+      final JSONObject listResponse = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 406)
+          .put("method", "resources/list")
+          .put("params", new JSONObject()));
+
+      // A discovery call stays quiet: nothing is readable, so nothing is listed.
+      assertThat(listResponse.getJSONObject("result").getJSONArray("resources").length()).isZero();
+
+      final JSONObject readResponse = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 407)
+          .put("method", "resources/read")
+          .put("params", new JSONObject().put("uri", "arcadedb://graph/schema")));
+
+      assertThat(readResponse.has("error")).isTrue();
+      assertThat(readResponse.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+      assertThat(readResponse.getJSONObject("error").getString("message")).contains("not allowed");
+    } finally {
+      // Restore for the other tests in this class.
+      saveMCPConfig(new JSONObject()
+          .put("enabled", true)
+          .put("allowReads", true)
+          .put("allowedUsers", new JSONArray().put("root")));
+    }
+  }
+
+  @Test
+  void resourcesListOmitsUnauthorizedDatabases() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowedUsers", new JSONArray().put("root").put("restricteduser")));
+
+    // A user authorized only for a database that does not exist here, so "graph" must not appear in its resource list.
+    if (!getServer(0).getSecurity().existsUser("restricteduser"))
+      getServer(0).getSecurity().createUser(new JSONObject()
+          .put("name", "restricteduser")
+          .put("password", getServer(0).getSecurity().encodePassword("restrictedpass"))
+          .put("databases", new JSONObject()
+              .put("otherdb", new JSONArray().put("admin"))));
+
+    final String restrictedAuth = "Basic " + Base64.getEncoder()
+        .encodeToString("restricteduser:restrictedpass".getBytes(StandardCharsets.UTF_8));
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", restrictedAuth);
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 408)
+        .put("method", "resources/list")
+        .put("params", new JSONObject());
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      final String body = FileUtils.readStreamAsString(connection.getInputStream(), "utf8");
+      final JSONArray resources = new JSONObject(body).getJSONObject("result").getJSONArray("resources");
+
+      for (int i = 0; i < resources.length(); i++)
+        assertThat(resources.getJSONObject(i).getString("uri")).isNotEqualTo("arcadedb://graph/schema");
+    } finally {
+      connection.disconnect();
+      saveMCPConfig(new JSONObject()
+          .put("enabled", true)
+          .put("allowReads", true)
+          .put("allowedUsers", new JSONArray().put("root")));
+    }
+  }
+
+  @Test
+  void disabledServerErrorEchoesRequestId() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 409)
+        .put("method", "initialize")
+        .put("params", new JSONObject());
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(503);
+      // A 503 body arrives on the error stream; it must echo the request id per JSON-RPC 2.0.
+      final String body = FileUtils.readStreamAsString(connection.getErrorStream(), "utf8");
+      final JSONObject response = new JSONObject(body);
+      assertThat(response.getInt("id")).isEqualTo(409);
+      assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+    } finally {
+      connection.disconnect();
+      saveMCPConfig(new JSONObject()
+          .put("enabled", true)
+          .put("allowReads", true)
+          .put("allowedUsers", new JSONArray().put("root")));
+    }
   }
 
   // ---- Helper methods ----
