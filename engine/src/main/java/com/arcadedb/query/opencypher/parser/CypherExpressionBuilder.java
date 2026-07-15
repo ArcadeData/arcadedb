@@ -2160,8 +2160,9 @@ class CypherExpressionBuilder {
         else if (type == Cypher25Parser.MINUS)
           op = ArithmeticExpression.Operator.SUBTRACT;
         else if (type == Cypher25Parser.DOUBLEBAR)
-          // Cypher 25 / GQL concatenation operator: same semantics as + for lists and strings.
-          op = ArithmeticExpression.Operator.ADD;
+          // Cypher 25 / GQL concatenation operator: STRING||STRING or LIST||LIST only, no implicit
+          // coercion of non-STRING operands (issue #5298). Distinct from + which appends/coerces.
+          op = ArithmeticExpression.Operator.CONCAT;
 
         if (op != null) {
           final Expression right = parseArithmeticExpression5(operands.get(operandIndex));

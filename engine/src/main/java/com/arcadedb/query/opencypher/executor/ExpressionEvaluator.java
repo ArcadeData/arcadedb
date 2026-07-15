@@ -173,6 +173,10 @@ public class ExpressionEvaluator {
     if (leftValue == null || rightValue == null)
       return null;
 
+    // GQL / Cypher 25 concatenation operator || (strict typing, no implicit coercion, issue #5298).
+    if (expression.getOperator() == ArithmeticExpression.Operator.CONCAT)
+      return ArithmeticExpression.concatenate(leftValue, rightValue);
+
     // List concatenation/append for + operator (must be checked before string concatenation).
     // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
     if (expression.getOperator() == ArithmeticExpression.Operator.ADD) {
@@ -230,6 +234,7 @@ public class ExpressionEvaluator {
       case DIVIDE -> l / r; // IEEE 754: 0.0/0.0=NaN, x/0.0=±Infinity
       case MODULO -> r != 0 ? l % r : Double.NaN;
       case POWER -> Math.pow(l, r);
+      case CONCAT -> throw new IllegalStateException("CONCAT is handled before numeric arithmetic");
     };
   }
 

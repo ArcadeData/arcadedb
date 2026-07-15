@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -46,7 +47,8 @@ public class ArithmeticExpression implements Expression {
     MULTIPLY("*"),
     DIVIDE("/"),
     MODULO("%"),
-    POWER("^");
+    POWER("^"),
+    CONCAT("||");
 
     private final String symbol;
 
@@ -98,6 +100,10 @@ public class ArithmeticExpression implements Expression {
     // Handle null values
     if (leftValue == null || rightValue == null)
       return null;
+
+    // GQL / Cypher 25 concatenation operator || (strict typing, no implicit coercion, issue #5298).
+    if (operator == Operator.CONCAT)
+      return concatenate(leftValue, rightValue);
 
     // List concatenation/append for + operator (must be checked before string concatenation).
     // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
@@ -156,6 +162,7 @@ public class ArithmeticExpression implements Expression {
       case DIVIDE -> l / r; // IEEE 754: 0.0/0.0=NaN, x/0.0=±Infinity (matches Neo4j / OpenCypher TCK)
       case MODULO -> r != 0 ? l % r : Double.NaN;
       case POWER -> Math.pow(l, r);
+      case CONCAT -> throw new IllegalStateException("CONCAT is handled before numeric arithmetic");
     };
   }
 
@@ -189,10 +196,37 @@ public class ArithmeticExpression implements Expression {
         case DIVIDE -> { checkIntegerDivisorNotZero(op, r); yield Math.divideExact(l, r); } // truncates toward zero, guards Long.MIN_VALUE / -1
         case MODULO -> { checkIntegerDivisorNotZero(op, r); yield l % r; }
         case POWER -> throw new IllegalStateException("POWER is not an integer operation");
+        case CONCAT -> throw new IllegalStateException("CONCAT is not an integer operation");
       };
     } catch (final ArithmeticException e) {
       throw new CommandExecutionException("long overflow", e);
     }
+  }
+
+  /**
+   * GQL / Cypher 25 string-or-list concatenation operator {@code ||}. Unlike {@code +}, it does NOT implicitly
+   * coerce operands: concatenating a STRING with a non-STRING (or a LIST with a non-LIST) is a type error in Neo4j
+   * (the OpenCypher reference implementation), issue #5298. Both operands must be STRING, or both must be LIST;
+   * {@code toString()} is required to concatenate non-STRING values. {@code null} operands propagate to {@code null}
+   * and are handled by the callers before reaching here. Note that {@code +} can append a single element to a LIST,
+   * while {@code ||} cannot - that too is a type error, matching Neo4j.
+   */
+  public static Object concatenate(final Object leftValue, final Object rightValue) {
+    final List<Object> leftList = MultiValue.getMultiValueAsList(leftValue);
+    final List<Object> rightList = MultiValue.getMultiValueAsList(rightValue);
+    if (leftList != null && rightList != null) {
+      final List<Object> combined = new ArrayList<>(leftList);
+      combined.addAll(rightList);
+      return combined;
+    }
+
+    if (leftValue instanceof String && rightValue instanceof String)
+      return (String) leftValue + rightValue;
+
+    throw new CommandSemanticException(
+        "Type mismatch: both operands of the '||' concatenation operator must be STRING or both must be LIST, but got "
+            + leftValue.getClass().getSimpleName() + " and " + rightValue.getClass().getSimpleName()
+            + " (use toString() to convert non-STRING values)");
   }
 
   /**
