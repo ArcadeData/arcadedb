@@ -74,7 +74,7 @@ class MCPStdioServerTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(12);
+    assertThat(tools.length()).isEqualTo(13);
   }
 
   @Test

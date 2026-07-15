@@ -121,7 +121,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(12);
+    assertThat(tools.length()).isEqualTo(13);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -136,6 +136,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasSetServerSetting = false;
     boolean hasFullTextSearch = false;
     boolean hasUpsertEntity = false;
+    boolean hasUpsertRelationship = false;
 
     for (int i = 0; i < tools.length(); i++) {
       final String name = tools.getJSONObject(i).getString("name");
@@ -152,6 +153,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "set_server_setting" -> hasSetServerSetting = true;
       case "full_text_search" -> hasFullTextSearch = true;
       case "upsert_entity" -> hasUpsertEntity = true;
+      case "upsert_relationship" -> hasUpsertRelationship = true;
       }
     }
     assertThat(hasListDatabases).isTrue();
@@ -166,6 +168,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasSetServerSetting).isTrue();
     assertThat(hasFullTextSearch).isTrue();
     assertThat(hasUpsertEntity).isTrue();
+    assertThat(hasUpsertRelationship).isTrue();
   }
 
   @Test
@@ -1456,6 +1459,85 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(resp.getBoolean("isError")).isTrue();
     final String text = resp.getJSONArray("content").getJSONObject(0).getString("text");
     assertThat(text).contains("matchKeys");
+  }
+
+  @Test
+  void upsertRelationshipDoesNotDuplicateEdge() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject args = new JSONObject()
+        .put("database", "graph")
+        .put("fromType", "Author")
+        .put("fromMatchKeys", new JSONObject().put("name", "Ada"))
+        .put("toType", "Book")
+        .put("toMatchKeys", new JSONObject().put("isbn", "111"))
+        .put("relType", "WROTE")
+        .put("relProperties", new JSONObject().put("year", 1843));
+
+    final JSONObject first = callTool("upsert_relationship", args);
+    assertThat(first.getBoolean("isError", true)).isFalse();
+
+    // Repeat with a different property value: the edge must be updated, not duplicated.
+    callTool("upsert_relationship", new JSONObject(args.toString())
+        .put("relProperties", new JSONObject().put("year", 1844)));
+
+    final JSONObject resp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (:Author {name:'Ada'})-[r:WROTE]->(:Book {isbn:'111'}) RETURN count(r) AS c"));
+    final JSONObject payload = new JSONObject(resp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+  }
+
+  @Test
+  void upsertRelationshipAutoCreatesEndpoints() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    callTool("upsert_relationship", new JSONObject()
+        .put("database", "graph")
+        .put("fromType", "City")
+        .put("fromMatchKeys", new JSONObject().put("name", "Turin"))
+        .put("toType", "Country")
+        .put("toMatchKeys", new JSONObject().put("name", "Italy"))
+        .put("relType", "IN_COUNTRY"));
+
+    final JSONObject resp = callTool("query", new JSONObject()
+        .put("database", "graph")
+        .put("language", "cypher")
+        .put("query", "MATCH (c:City {name:'Turin'})-[:IN_COUNTRY]->(n:Country {name:'Italy'}) RETURN count(*) AS c"));
+    final JSONObject payload = new JSONObject(resp.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
+  }
+
+  @Test
+  void upsertRelationshipDeniedWithoutInsert() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", false)
+        .put("allowUpdate", true)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject resp = callTool("upsert_relationship", new JSONObject()
+        .put("database", "graph")
+        .put("fromType", "Author")
+        .put("fromMatchKeys", new JSONObject().put("name", "X"))
+        .put("toType", "Book")
+        .put("toMatchKeys", new JSONObject().put("isbn", "999"))
+        .put("relType", "WROTE"));
+
+    assertThat(resp.getBoolean("isError")).isTrue();
+    assertThat(resp.getJSONArray("content").getJSONObject(0).getString("text")).contains("not allowed");
   }
 
   // ---- Helper methods ----
