@@ -92,16 +92,17 @@ public class MCPDispatcher {
    * anything else, so that server state is not disclosed to unauthenticated callers.
    */
   public MCPResponse dispatch(final JSONObject request, final ServerSecurityUser user) {
+    // Echo the JSON-RPC id on every error response when the request carries one, per JSON-RPC 2.0.
+    final Object id = request != null ? request.opt("id") : null;
+
     if (user == null)
-      return error(null, -32600, "Authentication required", 401);
+      return error(id, -32600, "Authentication required", 401);
 
     if (!config.isEnabled())
-      return error(null, -32600, "MCP server is disabled", 503);
+      return error(id, -32600, "MCP server is disabled", 503);
 
     if (request == null)
-      return error(null, -32700, "Parse error: empty request body", 200);
-
-    final Object id = request.opt("id");
+      return error(id, -32700, "Parse error: empty request body", 200);
 
     if (!config.isUserAllowed(user.getName()))
       return error(id, -32600, "User not authorized for MCP access", 403);

@@ -1320,6 +1320,44 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void disabledServerErrorEchoesRequestId() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 409)
+        .put("method", "initialize")
+        .put("params", new JSONObject());
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(503);
+      // A 503 body arrives on the error stream; it must echo the request id per JSON-RPC 2.0.
+      final String body = FileUtils.readStreamAsString(connection.getErrorStream(), "utf8");
+      final JSONObject response = new JSONObject(body);
+      assertThat(response.getInt("id")).isEqualTo(409);
+      assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+    } finally {
+      connection.disconnect();
+      saveMCPConfig(new JSONObject()
+          .put("enabled", true)
+          .put("allowReads", true)
+          .put("allowedUsers", new JSONArray().put("root")));
+    }
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {
