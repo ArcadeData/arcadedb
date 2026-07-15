@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
@@ -1705,7 +1706,13 @@ class CypherExpressionBuilder {
         return new CypherLocalDateTime((LocalDateTime) baseValue).getTemporalProperty(propertyName);
       }
 
-      return null;
+      // Type validation: property access only works on property-bearing types. Primitive types
+      // (Integer, String, Boolean, List, etc.) don't have properties, so accessing one is a type
+      // error - mirroring PropertyAccessExpression (variable-bound access) and Neo4j semantics.
+      // Note: a null base short-circuits to null above (property access on null propagates null).
+      throw new CommandExecutionException(
+          "TypeError: Cannot access property '" + propertyName + "' on " +
+          baseValue.getClass().getSimpleName() + " value");
     }
 
     @Override
