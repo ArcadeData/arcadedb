@@ -145,9 +145,10 @@ class ClauseDispatcher {
 
     // Extract ORDER BY, SKIP, LIMIT from returnBody
     if (body.orderBy() != null)
-      // An ORDER BY item that repeats a projected expression sorts on the projected column (#5283)
+      // An ORDER BY item that repeats a projected expression sorts on the projected column
+      // (#5283 for DISTINCT, #5286 for aggregation)
       builder.setOrderBy(ProjectedOrderByNormalizer.normalize(astBuilder.visitOrderBy(body.orderBy()),
-          returnClause.getReturnItems(), returnClause.isDistinct()));
+          returnClause.getReturnItems(), returnClause.isDistinct() || returnClause.hasAggregations()));
 
     if (body.skip() != null)
       builder.setSkip((Expression) astBuilder.visitSkip(body.skip()));

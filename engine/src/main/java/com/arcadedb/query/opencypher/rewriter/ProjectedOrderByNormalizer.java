@@ -26,30 +26,37 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Rewrites the ORDER BY items of a DISTINCT projection that repeat one of the projected expressions
- * so they reference that projection's output column instead (issue #5283).
+ * Rewrites the ORDER BY items of a collapsing projection that repeat one of the projected
+ * expressions so they reference that projection's output column instead (issues #5283, #5286).
  * <p>
- * A DISTINCT projection collapses its input rows, so the variables that fed it no longer have a
- * single well-defined value per surviving row. ORDER BY is therefore restricted to the projected
- * columns, and {@code RETURN DISTINCT n.active AS active ORDER BY n.name} is correctly an error. But
- * when the ORDER BY expression <em>is</em> one of the projected expressions, it is constant within
- * every dedup group by construction, so it stays well defined:
+ * A DISTINCT or aggregating projection collapses its input rows, so the variables that fed it no
+ * longer have a single well-defined value per surviving row. ORDER BY is therefore restricted to the
+ * projected columns, and {@code RETURN DISTINCT n.active AS active ORDER BY n.name} is correctly an
+ * error. But when the ORDER BY expression <em>is</em> one of the projected expressions, it is
+ * constant within every group by construction, so it stays well defined:
  * <pre>
  *   MATCH (n:BugA) RETURN DISTINCT n.active AS active ORDER BY n.active
+ *   MATCH (n:BugA) RETURN n.age AS a, count(*) AS c ORDER BY n.age
  * </pre>
- * must sort exactly as {@code ORDER BY active} does. Neo4j, Memgraph and FalkorDB all accept this
- * form; Neo4j resolves it the same way, by rewriting such an ORDER BY expression to the projection's
- * alias before the scope check runs.
+ * Both must sort exactly as ordering by the alias does. Neo4j, Memgraph and FalkorDB all accept the
+ * DISTINCT form; Neo4j resolves both the same way, by rewriting such an ORDER BY expression to the
+ * projection's alias before the scope check runs.
  * <p>
  * Rewriting (rather than merely widening the scope check to let the original variable through) is
  * what makes the sort well defined rather than accidentally correct: the sort then reads the
- * already-projected column instead of re-evaluating the expression against whichever member of the
- * dedup group happened to survive. It is also cheaper, since it replaces a per-comparison property
- * lookup on the record with a map lookup on the projected row.
+ * already-projected column instead of re-evaluating the expression against a row that the collapse
+ * has changed underneath it. For DISTINCT that row is an arbitrary member of the dedup group; for
+ * aggregation the feeding variables are gone from it altogether, which is why ordering by an aliased
+ * grouping key used to be silently ignored rather than merely non-deterministic (#5286). It is also
+ * cheaper, since it replaces a per-comparison property lookup on the record with a map lookup on the
+ * projected row.
  * <p>
  * Identity is decided on the canonical parse-tree text of both sides, so it is insensitive to
  * whitespace ({@code n.age+1} matches a projected {@code n.age + 1}) but never conflates two
- * different expressions.
+ * different expressions. Matching is whole-expression only: an ORDER BY expression that merely
+ * <em>contains</em> a projected expression ({@code ORDER BY n.age + 1} against a projected
+ * {@code n.age}) is not rewritten, because the AST nodes do not render a canonical per-node text
+ * that could be compared subexpression by subexpression.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -62,16 +69,17 @@ public class ProjectedOrderByNormalizer {
    * Returns an ORDER BY clause whose items that repeat a projected expression have been replaced by
    * references to the corresponding output column.
    *
-   * @param orderBy     the ORDER BY clause to normalize, may be null
-   * @param items       the projected items of the RETURN/WITH clause
-   * @param distinct    whether the projection is DISTINCT; no rewrite is applied otherwise, since a
-   *                    non-DISTINCT projection keeps the input scope and needs no normalization
+   * @param orderBy    the ORDER BY clause to normalize, may be null
+   * @param items      the projected items of the RETURN/WITH clause
+   * @param collapsing whether the projection collapses its input rows (DISTINCT or aggregating). No
+   *                   rewrite is applied otherwise, since a plain projection keeps its input scope
+   *                   and its ORDER BY resolves against it unchanged
    *
    * @return the original clause when nothing matched, a rewritten copy otherwise
    */
   public static OrderByClause normalize(final OrderByClause orderBy, final List<ReturnClause.ReturnItem> items,
-      final boolean distinct) {
-    if (!distinct || orderBy == null || orderBy.isEmpty() || items == null || items.isEmpty())
+      final boolean collapsing) {
+    if (!collapsing || orderBy == null || orderBy.isEmpty() || items == null || items.isEmpty())
       return orderBy;
 
     List<OrderByClause.OrderByItem> rewritten = null;
