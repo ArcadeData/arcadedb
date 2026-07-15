@@ -108,6 +108,11 @@ public class ConstantFolder extends ExpressionRewriter {
    * Fold constant arithmetic operations.
    */
   private Object foldArithmetic(final Object left, final Object right, final ArithmeticExpression.Operator op) {
+    // GQL / Cypher 25 concatenation operator || (strict typing, no implicit coercion, issue #5298).
+    // A type mismatch throws here and is swallowed by the caller, deferring the error to execution time.
+    if (op == ArithmeticExpression.Operator.CONCAT)
+      return ArithmeticExpression.concatenate(left, right);
+
     // List concatenation/append (must be checked before string concatenation)
     if (op == ArithmeticExpression.Operator.ADD) {
       if (left instanceof List && right instanceof List) {
@@ -156,6 +161,7 @@ public class ConstantFolder extends ExpressionRewriter {
       case DIVIDE -> l / r;
       case MODULO -> r != 0 ? l % r : Double.NaN;
       case POWER -> Math.pow(l, r);
+      case CONCAT -> throw new IllegalStateException("CONCAT is handled before numeric arithmetic");
     };
   }
 

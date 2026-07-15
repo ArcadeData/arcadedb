@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -547,6 +548,72 @@ class OpenCypherFunctionTest extends TestHelper {
       final Result r = resultSet.next();
       final List<Object> list = (List<Object>) r.getProperty("result");
       assertThat(list).containsExactly(1L, 2L, 3L);
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #5298: || rejects mixed STRING/non-STRING operands instead of implicitly coercing them.
+  // Neo4j (the OpenCypher reference implementation) raises a type error for these; only + coerces.
+  @Test
+  void stringConcatenationWithBooleanIsRejected() {
+    final Database db = newIsolatedDatabase("concat-string-boolean");
+    try {
+      assertThatThrownBy(() -> db.query("opencypher", "RETURN 'prefix' || true AS result").nextIfAvailable())
+          .isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("||");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #5298: STRING || INTEGER must be a type error, not "prefix42".
+  @Test
+  void stringConcatenationWithIntegerIsRejected() {
+    final Database db = newIsolatedDatabase("concat-string-integer");
+    try {
+      assertThatThrownBy(() -> db.query("opencypher", "RETURN 'prefix' || 42 AS result").nextIfAvailable())
+          .isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("||");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #5298: STRING || DATE must be a type error, not "prefix2025-01-01".
+  @Test
+  void stringConcatenationWithDateIsRejected() {
+    final Database db = newIsolatedDatabase("concat-string-date");
+    try {
+      assertThatThrownBy(() -> db.query("opencypher", "RETURN 'prefix' || date('2025-01-01') AS result").nextIfAvailable())
+          .isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("||");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #5298: explicit toString() conversion keeps working after the strict check.
+  @Test
+  void stringConcatenationWithExplicitConversion() {
+    final Database db = newIsolatedDatabase("concat-string-explicit");
+    try {
+      final ResultSet rs = db.query("opencypher", "RETURN 'prefix' || toString(42) AS result");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("result")).isEqualTo("prefix42");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #5298: unlike +, || cannot append a single element to a LIST (Neo4j parity).
+  @Test
+  void listAppendViaConcatIsRejected() {
+    final Database db = newIsolatedDatabase("concat-list-append");
+    try {
+      assertThatThrownBy(() -> db.query("opencypher", "RETURN [1, 2] || 3 AS result").nextIfAvailable())
+          .isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("||");
     } finally {
       db.drop();
     }
