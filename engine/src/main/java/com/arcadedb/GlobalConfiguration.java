@@ -1204,8 +1204,12 @@ public enum GlobalConfiguration {
       How long in milliseconds a replica must stay continuously STALLED (its matchIndex not advancing while the leader \
       keeps committing - e.g. stuck at -1 after a rolling upgrade) before the LEADER actively forces it to resync from \
       the leader. This is the leader-driven counterpart to HA_STALE_FOLLOWER_LAG_THRESHOLD: it covers the case where the \
-      follower cannot self-detect the stall because its own commit index never advances. Defaults to 60000; set to 0 to \
-      disable leader-driven stalled-replica recovery (the STALLED condition is still detected and logged).""",
+      follower cannot self-detect the stall because its own commit index never advances. A follower still at the \
+      never-appended sentinel (matchIndex = -1 while the leader holds committed entries, issue #5295) is treated as \
+      STALLED regardless of the numeric lag, so it is recovered even when the leader is only a few entries ahead (where \
+      the lag stays below HA_REPLICATION_LAG_WARNING); the same duration doubles as the grace before its status flips \
+      from HEALTHY to STALLED, so a brief join / snapshot-install window is not misreported. Defaults to 60000; set to 0 \
+      to disable leader-driven stalled-replica recovery (the STALLED condition is still detected and logged).""",
       Long.class, 60_000L),
 
   HA_SNAPSHOT_MAX_ENTRY_SIZE("arcadedb.ha.snapshotMaxEntrySize", SCOPE.SERVER,
