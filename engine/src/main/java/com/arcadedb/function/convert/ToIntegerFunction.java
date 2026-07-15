@@ -19,6 +19,7 @@
 package com.arcadedb.function.convert;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -52,6 +53,9 @@ public class ToIntegerFunction implements StatelessFunction {
         return null;
       }
     }
-    throw new CommandExecutionException("TypeError: InvalidArgumentValue - toInteger() cannot convert " + args[0].getClass().getSimpleName());
+    // Unsupported types: List, Map, Node, Relationship, Path. A client-side type error, so throw a
+    // CommandSemanticException to surface it as a 400 client error instead of a 500 transaction-commit
+    // failure. Same pattern as toString() (see issue #5203). See issue #5294.
+    throw new CommandSemanticException("TypeError: InvalidArgumentValue - toInteger() cannot convert " + args[0].getClass().getSimpleName());
   }
 }

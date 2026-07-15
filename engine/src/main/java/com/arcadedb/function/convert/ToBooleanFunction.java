@@ -19,6 +19,7 @@
 package com.arcadedb.function.convert;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -44,7 +45,9 @@ public class ToBooleanFunction implements StatelessFunction {
     if (args[0] instanceof Boolean)
       return args[0];
     if (args[0] instanceof Float || args[0] instanceof Double)
-      throw new CommandExecutionException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
+      // Neo4j's toBoolean() rejects FLOAT: a client-side type error, so surface it as a 400 via
+      // CommandSemanticException instead of a 500 transaction-commit failure. See issue #5294.
+      throw new CommandSemanticException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
     if (args[0] instanceof Number)
       return ((Number) args[0]).longValue() != 0L;
     if (args[0] instanceof String) {
@@ -55,6 +58,9 @@ public class ToBooleanFunction implements StatelessFunction {
         return Boolean.FALSE;
       return null;
     }
-    throw new CommandExecutionException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
+    // Unsupported types: List, Map, Node, Relationship, Path. A client-side type error, so throw a
+    // CommandSemanticException to surface it as a 400 client error instead of a 500 transaction-commit
+    // failure. Same pattern as toString() (see issue #5203). See issue #5294.
+    throw new CommandSemanticException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
   }
 }
