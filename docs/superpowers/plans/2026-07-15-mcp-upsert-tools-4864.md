@@ -179,7 +179,7 @@ In `MCPServerPluginTest.java`, add these methods (they use the existing `callToo
 
     final JSONObject args = new JSONObject()
         .put("database", "graph")
-        .put("typeName", "Person")
+        .put("typeName", "UpsertPerson")
         .put("matchKeys", new JSONObject().put("email", "ada@x.com"))
         .put("setProperties", new JSONObject().put("name", "Ada"));
 
@@ -193,7 +193,7 @@ In `MCPServerPluginTest.java`, add these methods (they use the existing `callToo
     final JSONObject countResp = callTool("query", new JSONObject()
         .put("database", "graph")
         .put("language", "cypher")
-        .put("query", "MATCH (p:Person {email: 'ada@x.com'}) RETURN count(p) AS c"));
+        .put("query", "MATCH (p:UpsertPerson {email: 'ada@x.com'}) RETURN count(p) AS c"));
     final JSONObject countPayload = new JSONObject(
         countResp.getJSONArray("content").getJSONObject(0).getString("text"));
     assertThat(countPayload.getJSONArray("records").getJSONObject(0).getInt("c")).isEqualTo(1);
@@ -237,7 +237,7 @@ In `MCPServerPluginTest.java`, add these methods (they use the existing `callToo
 
     final JSONObject resp = callTool("upsert_entity", new JSONObject()
         .put("database", "graph")
-        .put("typeName", "Person")
+        .put("typeName", "UpsertPerson")
         .put("matchKeys", new JSONObject().put("email", "denied@x.com"))
         .put("setProperties", new JSONObject().put("name", "Nope")));
 
@@ -257,7 +257,7 @@ In `MCPServerPluginTest.java`, add these methods (they use the existing `callToo
 
     final JSONObject resp = callTool("upsert_entity", new JSONObject()
         .put("database", "graph")
-        .put("typeName", "Person")
+        .put("typeName", "UpsertPerson")
         .put("matchKeys", new JSONObject()));
 
     assertThat(resp.getBoolean("isError")).isTrue();
@@ -765,7 +765,7 @@ git commit -m "feat(#4864): add MCP upsert_relationship tool"
 
 ## Notes for the implementer
 
-- **Test isolation:** `MCPServerPluginTest` extends `BaseGraphServerTest`, whose default database is `"graph"`. The new tests create fresh types (`Person`, `InjTest`, `Author`, `Book`, `City`, `Country`) via `MERGE` auto-creation; they do not collide with the `Article` full-text seed. If a type name clashes with another test's data on a shared server instance, rename it - the assertions count only records matching their own keys, so cross-test bleed is unlikely but rename on any surprise.
+- **Test isolation:** `MCPServerPluginTest` extends `BaseGraphServerTest`, whose default database is `"graph"`. That fixture already reserves the type names `V1`, `V2` (vertex), `E1`, `E2` (edge), and **`Person` (a DOCUMENT type)** - so a vertex `MERGE (n:Person …)` fails with `SchemaException: Type 'Person' is not a vertex type`. The upsert tests therefore use prefixed, collision-free type names (`UpsertPerson`, `InjTest`, `Author`, `Book`, `City`, `Country`) that `MERGE` auto-creates as vertex/edge types. They also don't collide with the `Article` full-text seed. If a new type name ever clashes with fixture data, prefix it - the assertions count only records matching their own keys.
 - **Why `serializeResult` and not a manual element extract:** a Cypher `RETURN n` / `RETURN r` row is serialized flat (just `@rid`, `@type`, properties) by `JsonSerializer.serializeResult`, exactly as `query`/`execute_command` already emit. No special-casing is needed to get the record-shaped output the spec shows.
 - **Permission precision:** an upsert with no `setProperties`/`relProperties` produces a `MERGE` with no `SET`, which may analyze to `{CREATE}` alone and then require only `allowInsert`. This is intended (the analyzer is the source of truth); the "requires both" tests deliberately include `setProperties`/`relProperties` so the `UPDATE` op is present.
 - **Merge-conflict hotspots:** the `TOOLS_LIST` block and the `toolsCall`/`formatResult` switches in `MCPDispatcher.java`, plus the count assertions in `MCPServerPluginTest`/`MCPStdioServerTest`, are edited by every Wave-1 sibling. On rebase, reconcile the absolute count (always "+2 for these two tools") rather than assuming 11→13.
