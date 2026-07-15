@@ -430,40 +430,23 @@ public class CypherSemanticValidator {
             checkExpressionScope(item.getExpression(), scope);
           // Build the scope for ORDER BY
           if (withClause.getOrderByClause() != null) {
-            if (withClause.isDistinct() && !withClause.hasAggregations()) {
-              // DISTINCT collapses the input rows, so ORDER BY is restricted to the projected
-              // columns exactly as it is for RETURN DISTINCT (issue #5287)
-              validateDistinctOrderByScope(withClause.getItems(), withClause.getOrderByClause());
+            if (withClause.hasAggregations() || withClause.isDistinct()) {
+              // A collapsing WITH restricts ORDER BY to the projected columns, exactly as the
+              // matching RETURN form does (issues #5286, #5287)
+              validateCollapsedOrderByScope(withClause.getItems(), withClause.getOrderByClause(),
+                  withClause.hasAggregations());
             } else {
-              final Set<String> orderByScope;
-              if (withClause.hasAggregations()) {
-                // After aggregation, restrict to output aliases + grouping key variables
-                orderByScope = new HashSet<>();
-                for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-                  if (item.getAlias() != null)
-                    orderByScope.add(item.getAlias());
-                  else if (item.getExpression() instanceof VariableExpression)
-                    orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
-                  if (!item.getExpression().containsAggregation())
-                    collectVariableNamesFromExpression(item.getExpression(), orderByScope);
-                }
-              } else {
-                // Non-aggregating WITH: ORDER BY can reference both original scope + aliases
-                orderByScope = new HashSet<>(scope);
-                for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-                  if (item.getAlias() != null)
-                    orderByScope.add(item.getAlias());
-                  else if (item.getExpression() instanceof VariableExpression)
-                    orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
-                }
+              // Non-aggregating WITH: ORDER BY can reference both original scope + aliases
+              final Set<String> orderByScope = new HashSet<>(scope);
+              for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+                if (item.getAlias() != null)
+                  orderByScope.add(item.getAlias());
+                else if (item.getExpression() instanceof VariableExpression)
+                  orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
               }
               for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
-                if (item.getExpressionAST() != null) {
-                  if (withClause.hasAggregations())
-                    checkExpressionScopeSkipAggArgs(item.getExpressionAST(), orderByScope);
-                  else
-                    checkExpressionScope(item.getExpressionAST(), orderByScope);
-                }
+                if (item.getExpressionAST() != null)
+                  checkExpressionScope(item.getExpressionAST(), orderByScope);
             }
           }
           // Reset scope to only projected aliases
@@ -507,21 +490,11 @@ public class CypherSemanticValidator {
             if (statement.getOrderByClause() != null) {
               if (statement.getReturnClause().isDistinct()) {
                 // After DISTINCT, ORDER BY can only reference returned columns
-                validateDistinctOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause());
+                validateCollapsedOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause(), false);
               } else if (statement.getReturnClause().hasAggregations()) {
-                // After aggregation, ORDER BY scope restricted to aliases + grouping key variables
-                final Set<String> orderByScope = new HashSet<>();
-                for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems()) {
-                  if (item.getAlias() != null)
-                    orderByScope.add(item.getAlias());
-                  else if (item.getExpression() instanceof VariableExpression)
-                    orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
-                  if (!item.getExpression().containsAggregation())
-                    collectVariableNamesFromExpression(item.getExpression(), orderByScope);
-                }
-                for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
-                  if (item.getExpressionAST() != null)
-                    checkExpressionScopeSkipAggArgs(item.getExpressionAST(), orderByScope);
+                // Likewise after aggregation: what the projection did not keep, ORDER BY cannot sort
+                // on. Reporting it beats the sort silently doing nothing (issue #5286).
+                validateCollapsedOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause(), true);
               }
             }
           }
@@ -674,16 +647,29 @@ public class CypherSemanticValidator {
   }
 
   /**
-   * Validates the ORDER BY of a DISTINCT projection, shared by RETURN DISTINCT and WITH DISTINCT
-   * (issue #5287).
+   * Validates the ORDER BY of a collapsing projection, shared by RETURN and WITH in both their
+   * DISTINCT (issues #5283, #5287) and aggregating (issue #5286) forms.
    * <p>
-   * DISTINCT collapses the input rows, so a variable that fed the projection no longer has a single
-   * value per surviving row and ORDER BY is restricted to the projected columns. An item that repeats
-   * a projected expression is well defined and has already been rewritten to reference that
-   * projection's output column by {@link com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer}
-   * (issue #5283), so it passes the check below as a plain column reference.
+   * Collapsing the input rows leaves the variables that fed the projection without a single value per
+   * surviving row, so ORDER BY is restricted to the projected columns. Whatever ORDER BY could still
+   * resolve against those columns has already been rewritten to reference them by
+   * {@link com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer} - the whole item when it
+   * repeats a projected expression, or the parts of it that do - so it reaches the check below as a
+   * plain column reference. Anything left pointing at a collapsed variable genuinely has no value to
+   * sort on and is reported here.
+   *
+   * An item that itself contains an aggregation is the exception: openCypher keeps the grouping-key
+   * variables referencable inside it (ReturnOrderBy6/WithOrderBy4 [3]/[18] require
+   * {@code ORDER BY me.age + count(you.age)} to compile when {@code me.age} is projected), and draws
+   * the line between a simple grouping-key read and a complex expression in
+   * {@link #checkAmbiguousAggregation} instead. Such an item keeps the wider scope so that check, not
+   * this one, gets to report it.
+   *
+   * @param aggregating whether the projection aggregates, which admits the grouping-key variables into
+   *                    the scope of ORDER BY items that contain an aggregation
    */
-  private void validateDistinctOrderByScope(final List<ReturnClause.ReturnItem> items, final OrderByClause orderBy) {
+  private void validateCollapsedOrderByScope(final List<ReturnClause.ReturnItem> items, final OrderByClause orderBy,
+      final boolean aggregating) {
     final Set<String> projectedNames = new HashSet<>();
     final Set<String> orderByScope = new HashSet<>();
     for (final ReturnClause.ReturnItem item : items) {
@@ -694,12 +680,25 @@ public class CypherSemanticValidator {
         orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
     }
 
+    Set<String> aggregationScope = null;
+
     for (final OrderByClause.OrderByItem item : orderBy.getItems()) {
       // An item naming a projected output column resolves against the projected row, whatever the
       // column name looks like (an un-aliased projection is named after its own expression text)
       if (item.getExpression() != null && projectedNames.contains(item.getExpression()))
         continue;
-      if (item.getExpressionAST() != null)
+      if (item.getExpressionAST() == null)
+        continue;
+
+      if (aggregating && item.getExpressionAST().containsAggregation()) {
+        if (aggregationScope == null) {
+          aggregationScope = new HashSet<>(orderByScope);
+          for (final ReturnClause.ReturnItem projected : items)
+            if (!projected.getExpression().containsAggregation())
+              collectVariableNamesFromExpression(projected.getExpression(), aggregationScope);
+        }
+        checkExpressionScopeSkipAggArgs(item.getExpressionAST(), aggregationScope);
+      } else
         checkExpressionScope(item.getExpressionAST(), orderByScope);
     }
   }

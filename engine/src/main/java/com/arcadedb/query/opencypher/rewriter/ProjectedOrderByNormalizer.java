@@ -18,12 +18,15 @@
  */
 package com.arcadedb.query.opencypher.rewriter;
 
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Rewrites the ORDER BY items of a collapsing projection that repeat one of the projected
@@ -83,21 +86,74 @@ public class ProjectedOrderByNormalizer {
       return orderBy;
 
     List<OrderByClause.OrderByItem> rewritten = null;
+    ProjectedExpressionSubstituter substituter = null;
 
     final List<OrderByClause.OrderByItem> orderByItems = orderBy.getItems();
     for (int i = 0; i < orderByItems.size(); i++) {
       final OrderByClause.OrderByItem orderByItem = orderByItems.get(i);
+
+      // The whole item repeats a projected expression: sort directly on that output column
       final String outputName = findProjectedOutputName(items, orderByItem.getExpression());
-      if (outputName == null)
+      if (outputName != null) {
+        if (rewritten == null)
+          rewritten = new ArrayList<>(orderByItems);
+        rewritten.set(i,
+            new OrderByClause.OrderByItem(outputName, orderByItem.isAscending(), new VariableExpression(outputName)));
+        continue;
+      }
+
+      // Otherwise the item may still be built out of projected expressions (ORDER BY n.age + 1) or
+      // read a property of a projected variable (RETURN n AS node ... ORDER BY n.age)
+      if (orderByItem.getExpressionAST() == null)
+        continue;
+
+      // An item that mixes an aggregation with a non-aggregated part is ambiguous by specification,
+      // even when that part is projected (openCypher ReturnOrderBy6/WithOrderBy4:
+      // "Fail if more complex expressions, even if returned, are used inside an order by item which
+      // contains an aggregation expression"). Resolving the part here would defeat that diagnosis, so
+      // such an item is left exactly as written for the validator to reject.
+      if (orderByItem.getExpressionAST().containsAggregation())
+        continue;
+
+      if (substituter == null)
+        substituter = newSubstituter(items);
+
+      final Object substituted = substituter.rewrite(orderByItem.getExpressionAST());
+      if (substituted == orderByItem.getExpressionAST() || !(substituted instanceof Expression))
         continue;
 
       if (rewritten == null)
         rewritten = new ArrayList<>(orderByItems);
 
-      rewritten.set(i, new OrderByClause.OrderByItem(outputName, orderByItem.isAscending(), new VariableExpression(outputName)));
+      // The item text is left as written: it names no output column, so ORDER BY falls through to
+      // evaluating the substituted AST, which is what carries the resolution
+      rewritten.set(i,
+          new OrderByClause.OrderByItem(orderByItem.getExpression(), orderByItem.isAscending(), (Expression) substituted));
     }
 
     return rewritten == null ? orderBy : new OrderByClause(rewritten);
+  }
+
+  /**
+   * Builds a substituter that maps each projected expression, and each bare-variable projection, onto
+   * the output column it is projected as.
+   */
+  private static ProjectedExpressionSubstituter newSubstituter(final List<ReturnClause.ReturnItem> items) {
+    final Map<String, String> outputNameByExpressionText = new HashMap<>();
+    final Map<String, String> outputNameByVariable = new HashMap<>();
+
+    for (final ReturnClause.ReturnItem item : items) {
+      final Expression expression = item.getExpression();
+      if (expression == null)
+        continue;
+
+      // First projection of an expression wins, matching the leftmost-column reading of a duplicate
+      outputNameByExpressionText.putIfAbsent(expression.getText(), item.getOutputName());
+      if (expression instanceof VariableExpression)
+        outputNameByVariable.putIfAbsent(((VariableExpression) expression).getVariableName(), item.getOutputName());
+    }
+
+    return new ProjectedExpressionSubstituter(outputNameByExpressionText, outputNameByVariable);
   }
 
   /**

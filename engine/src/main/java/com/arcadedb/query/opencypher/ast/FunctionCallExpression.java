@@ -118,6 +118,15 @@ public class FunctionCallExpression implements Expression {
     return functionName;
   }
 
+  /**
+   * Returns the function name as it was written in the query. Function names are case-insensitive, so
+   * this differs from {@link #getFunctionName()} only in case, and matters when the call has to be
+   * rendered back or rebuilt without losing the spelling the user chose.
+   */
+  public String getOriginalFunctionName() {
+    return originalFunctionName;
+  }
+
   public List<Expression> getArguments() {
     return arguments;
   }
