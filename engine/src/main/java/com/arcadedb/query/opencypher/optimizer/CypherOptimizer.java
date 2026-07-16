@@ -52,6 +52,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.EdgeType;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -306,37 +307,103 @@ public class CypherOptimizer {
   }
 
   /**
-   * Validates the selected anchor against UNIDIRECTIONAL edge constraints.
-   * If the anchor is on the target side of a directed UNIDIRECTIONAL edge,
-   * the expand operator would need to traverse incoming edges which don't exist.
-   * In that case, force the source side as the anchor instead.
+   * Validates the selected anchor against UNIDIRECTIONAL edge constraints (issue #5306).
+   * <p>
+   * Unidirectional edges do not store incoming links on the target vertex, so a hop can only be
+   * traversed from source to target. A cost-based anchor may therefore sit somewhere that cannot
+   * reach every other pattern node following edge directions - the expansion then silently yields
+   * zero rows. The previous guard only re-anchored a single hop, which is insufficient for a chain
+   * like {@code (q)-[:R1]->(a)-[:R2]->(u)} where the only valid anchor is the head {@code q}.
+   * <p>
+   * Here we require the anchor to reach ALL pattern nodes over the direction-constrained pattern
+   * graph. If the selected anchor cannot, we re-select the lowest-cost anchor among the nodes that
+   * can. If none qualifies (disconnected / cyclic unidirectional pattern), the original anchor is
+   * kept so the planner behaves as before rather than throwing.
    */
   private AnchorSelection validateAnchorForUnidirectionalEdges(final AnchorSelection anchor,
       final LogicalPlan logicalPlan) {
-    final String anchorVar = anchor.getVariable();
-    final var schema = database.getSchema();
+    // Fast path: without any unidirectional edge, every hop is reversible and any anchor is valid.
+    if (!hasUnidirectionalEdge(logicalPlan))
+      return anchor;
 
-    for (final LogicalRelationship rel : logicalPlan.getRelationships()) {
-      // Check if the anchor is the target of an OUT relationship (would need IN traversal)
-      // or the source of an IN relationship (would need OUT traversal from the other side)
-      final boolean anchorIsTarget = anchorVar.equals(rel.getTargetVariable()) && rel.getDirection() == Direction.OUT;
-      final boolean anchorIsSource = anchorVar.equals(rel.getSourceVariable()) && rel.getDirection() == Direction.IN;
+    if (anchorReachesAllNodes(anchor.getVariable(), logicalPlan))
+      return anchor;
 
-      if (anchorIsTarget || anchorIsSource) {
-        // Check if any edge type in this relationship is UNIDIRECTIONAL
-        for (final String edgeTypeName : rel.getTypes()) {
-          if (schema.existsType(edgeTypeName) && schema.getType(edgeTypeName) instanceof EdgeType et && !et.isBidirectional()) {
-            // Force the other side as the anchor
-            final String correctAnchorVar = anchorIsTarget ? rel.getSourceVariable() : rel.getTargetVariable();
-            final LogicalNode correctNode = logicalPlan.getNodes().get(correctAnchorVar);
-            if (correctNode != null)
-              return anchorSelector.evaluateNodeDirect(correctNode, logicalPlan);
-            break;
-          }
-        }
+    AnchorSelection best = null;
+    double lowestCost = Double.MAX_VALUE;
+    for (final LogicalNode node : logicalPlan.getNodes().values()) {
+      if (!anchorReachesAllNodes(node.getVariable(), logicalPlan))
+        continue;
+      final AnchorSelection candidate = anchorSelector.evaluateNodeDirect(node, logicalPlan);
+      if (candidate.getEstimatedCost() < lowestCost) {
+        lowestCost = candidate.getEstimatedCost();
+        best = candidate;
       }
     }
-    return anchor;
+    return best != null ? best : anchor;
+  }
+
+  /**
+   * Returns true if any relationship in the pattern uses a unidirectional (non-bidirectional) edge type.
+   */
+  private boolean hasUnidirectionalEdge(final LogicalPlan logicalPlan) {
+    final var schema = database.getSchema();
+    for (final LogicalRelationship rel : logicalPlan.getRelationships())
+      for (final String edgeTypeName : rel.getTypes())
+        if (schema.existsType(edgeTypeName) && schema.getType(edgeTypeName) instanceof EdgeType et && !et.isBidirectional())
+          return true;
+    return false;
+  }
+
+  /**
+   * Breadth-first reachability from {@code anchorVar} over the pattern graph, honoring edge
+   * direction for unidirectional edges (source→target only) and allowing both directions for
+   * bidirectional ones. Returns true when every pattern node is reachable.
+   */
+  private boolean anchorReachesAllNodes(final String anchorVar, final LogicalPlan logicalPlan) {
+    final var schema = database.getSchema();
+    final Set<String> visited = new HashSet<>();
+    final ArrayDeque<String> queue = new ArrayDeque<>();
+    visited.add(anchorVar);
+    queue.add(anchorVar);
+
+    while (!queue.isEmpty()) {
+      final String current = queue.poll();
+      for (final LogicalRelationship rel : logicalPlan.getRelationships()) {
+        final String source = rel.getSourceVariable();
+        final String target = rel.getTargetVariable();
+        final Direction direction = rel.getDirection();
+
+        boolean bidirectional = true;
+        for (final String edgeTypeName : rel.getTypes())
+          if (schema.existsType(edgeTypeName) && schema.getType(edgeTypeName) instanceof EdgeType et && !et.isBidirectional()) {
+            bidirectional = false;
+            break;
+          }
+
+        // Determine the always-traversable direction (the side that owns the OUT edge) and whether
+        // the reverse hop is possible (only over bidirectional edges).
+        final String forwardFrom;
+        final String forwardTo;
+        if (direction == Direction.IN) {
+          forwardFrom = target;
+          forwardTo = source;
+        } else {
+          // OUT and BOTH both store an OUT edge on the source side.
+          forwardFrom = source;
+          forwardTo = target;
+        }
+
+        final boolean reverseTraversable = bidirectional || direction == Direction.BOTH;
+
+        if (current.equals(forwardFrom) && visited.add(forwardTo))
+          queue.add(forwardTo);
+        if (reverseTraversable && current.equals(forwardTo) && visited.add(forwardFrom))
+          queue.add(forwardFrom);
+      }
+    }
+
+    return visited.containsAll(logicalPlan.getNodes().keySet());
   }
 
   /**

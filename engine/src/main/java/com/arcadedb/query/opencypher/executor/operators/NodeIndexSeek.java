@@ -19,22 +19,29 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Physical operator that performs an index seek for vertices.
@@ -66,9 +73,14 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     return new ResultSet() {
+      private TypeIndex index = null;
+      private List<Object> seekKeys = null;   // one entry per value to seek (IN-list expands to N entries)
+      private int seekIndex = 0;
       private IndexCursor cursor = null;
+      private Set<RID> seen = null;            // de-duplicate RIDs across multiple seek values (IN-list set semantics)
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
+      private boolean initialized = false;
       private boolean finished = false;
 
       @Override
@@ -93,42 +105,91 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         return buffer.get(bufferIndex++);
       }
 
+      private void initialize() {
+        initialized = true;
+
+        final DocumentType type = context.getDatabase().getSchema().getType(label);
+        // A non-vertex type with the same name (edge/document type) matches no node pattern (issue #5194)
+        if (!(type instanceof VertexType)) {
+          finished = true;
+          return;
+        }
+
+        // Get the index
+        index = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
+        if (index == null) {
+          finished = true;
+          return;
+        }
+
+        // Resolve the seek keys at runtime (parameters change per execution). A single equality value
+        // yields one key; an IN-list (issue #5306) yields one key per list element, with duplicates
+        // removed and result RIDs de-duplicated to honor set-membership semantics.
+        seekKeys = new ArrayList<>();
+        if (propertyValue instanceof InListValues inList) {
+          seen = new HashSet<>();
+          for (final Expression element : inList.getValues()) {
+            final Object resolved = resolveValue(element);
+            if (resolved instanceof Collection<?> coll) {
+              for (final Object v : coll)
+                addSeekKey(v);
+            } else if (resolved != null && resolved.getClass().isArray()) {
+              for (final Object v : MultiValue.getMultiValueAsList(resolved))
+                addSeekKey(v);
+            } else
+              addSeekKey(resolved);
+          }
+        } else {
+          addSeekKey(resolveValue(propertyValue));
+        }
+
+        if (seekKeys.isEmpty())
+          finished = true;
+      }
+
+      private void addSeekKey(final Object value) {
+        if (value != null)
+          seekKeys.add(value);
+      }
+
+      private Object resolveValue(final Object value) {
+        if (value instanceof ParameterExpression) {
+          final String paramName = ((ParameterExpression) value).getParameterName();
+          if (context.getInputParameters() != null)
+            return context.getInputParameters().get(paramName);
+          return null;
+        }
+        if (value instanceof LiteralExpression)
+          return ((LiteralExpression) value).getValue();
+        return value;
+      }
+
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
 
-        // Initialize cursor on first call
-        if (cursor == null) {
-          final DocumentType type = context.getDatabase().getSchema().getType(label);
-          // A non-vertex type with the same name (edge/document type) matches no node pattern (issue #5194)
-          if (!(type instanceof VertexType)) {
-            finished = true;
+        if (!initialized) {
+          initialize();
+          if (finished)
             return;
-          }
-
-          // Get the index
-          final TypeIndex index = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
-          if (index == null) {
-            finished = true;
-            return;
-          }
-
-          // Resolve property value at runtime (parameters change per execution)
-          Object resolvedValue = propertyValue;
-          if (resolvedValue instanceof ParameterExpression) {
-            final String paramName = ((ParameterExpression) resolvedValue).getParameterName();
-            if (context.getInputParameters() != null)
-              resolvedValue = context.getInputParameters().get(paramName);
-          }
-
-          // Perform index lookup
-          final Object[] keys = new Object[]{resolvedValue};
-          cursor = index.get(keys);
         }
 
-        // Fetch up to n matching vertices
-        while (buffer.size() < n && cursor.hasNext()) {
+        while (buffer.size() < n) {
+          // Advance to the next seek value when the current cursor is exhausted.
+          if (cursor == null || !cursor.hasNext()) {
+            if (seekIndex >= seekKeys.size()) {
+              finished = true;
+              return;
+            }
+            cursor = index.get(new Object[] { seekKeys.get(seekIndex++) });
+            continue;
+          }
+
           final Identifiable identifiable = cursor.next();
+
+          // Skip already-emitted vertices when seeking multiple IN-list values (set semantics).
+          if (seen != null && !seen.add(identifiable.getIdentity()))
+            continue;
 
           // Load the actual record from the identifiable (may be RID)
           final Vertex vertex = identifiable.asVertex();
@@ -137,10 +198,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           final ResultInternal result = new ResultInternal();
           result.setProperty(variable, vertex);
           buffer.add(result);
-        }
-
-        if (!cursor.hasNext()) {
-          finished = true;
         }
       }
 

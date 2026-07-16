@@ -169,7 +169,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final int[] sourceNodeIds = sourceNodeIdsBuf;
     final int totalSources = sourceCount; // effectively final for lambda capture
     final int parallelism = Runtime.getRuntime().availableProcessors();
-    final int chunkSize = (totalSources + parallelism - 1) / parallelism;
+    // Guard against an empty source set: chunkSize must never be 0 (issue #5306, it later divides by it).
+    final int chunkSize = Math.max(1, (totalSources + parallelism - 1) / parallelism);
 
     // If fused aggregation is enabled, use the parallel aggregating path
     if (groupKeyVariables != null)
