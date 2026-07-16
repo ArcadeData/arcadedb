@@ -79,7 +79,7 @@ public class ArcadeGraphManager implements GraphManager {
   @Override
   public Graph getGraph(final String graphName) {
     Graph graph = graphs.get(graphName);
-    if (graph == null) {
+    if (graph == null || isStale(graph)) {
       graph = getOrCreateArcadeGraph(graphName);
     }
     return graph;
@@ -108,32 +108,39 @@ public class ArcadeGraphManager implements GraphManager {
 
   @Override
   public TraversalSource getTraversalSource(final String traversalSourceName) {
-    TraversalSource ts = traversalSources.get(traversalSourceName);
-    if (ts == null) {
-      String dbName = traversalSourceName;
+    String dbName = traversalSourceName;
 
-      // Handle "g" as alias for the default/first available database
-      if ("g".equals(traversalSourceName) && serverInstance != null) {
-        final Set<String> dbNames = serverInstance.getDatabaseNames();
-        if (!dbNames.isEmpty()) {
-          // Use "graph" if available, otherwise use the first database
-          if (dbNames.contains("graph")) {
-            dbName = "graph";
-          } else {
-            dbName = dbNames.iterator().next();
-          }
-          LogManager.instance().log(this, Level.INFO,
-              "Mapping 'g' alias to database '%s'", dbName);
+    // Handle "g" as alias for the default/first available database
+    if ("g".equals(traversalSourceName) && serverInstance != null) {
+      final Set<String> dbNames = serverInstance.getDatabaseNames();
+      if (!dbNames.isEmpty()) {
+        // Use "graph" if available, otherwise use the first database
+        if (dbNames.contains("graph")) {
+          dbName = "graph";
+        } else {
+          dbName = dbNames.iterator().next();
         }
-      }
-
-      // Try to create from database
-      final Graph graph = getOrCreateArcadeGraph(dbName);
-      if (graph != null) {
-        ts = graph.traversal();
-        traversalSources.put(traversalSourceName, ts);
+        LogManager.instance().log(this, Level.INFO,
+            "Mapping 'g' alias to database '%s'", dbName);
       }
     }
+
+    // Return the cached traversal source only when the graph it wraps is still open. If the
+    // underlying database was closed and reopened (see getOrCreateArcadeGraph) the cached source
+    // targets a closed LocalDatabase and every traversal would fail with DatabaseIsClosedException,
+    // so it must be rebuilt against the reopened database (issue #5307).
+    TraversalSource ts = traversalSources.get(traversalSourceName);
+    if (ts != null && !isStale(graphs.get(dbName)))
+      return ts;
+
+    // Try to (re)create from database
+    final Graph graph = getOrCreateArcadeGraph(dbName);
+    if (graph != null) {
+      ts = graph.traversal();
+      traversalSources.put(traversalSourceName, ts);
+    } else
+      ts = null;
+
     return ts;
   }
 
@@ -243,7 +250,17 @@ public class ArcadeGraphManager implements GraphManager {
     // Check if already created
     Graph graph = graphs.get(databaseName);
     if (graph != null) {
-      return graph;
+      if (!isStale(graph))
+        return graph;
+
+      // The cached ArcadeGraph wraps a ServerDatabase whose LocalDatabase has been closed and
+      // reopened by ArcadeDBServer.getDatabase() (which swaps in a brand new ServerDatabase). Evict
+      // the stale wrapper - along with any traversal source derived from it - so it is rebuilt below
+      // against the reopened database instead of failing forever with DatabaseIsClosedException.
+      LogManager.instance().log(this, Level.INFO,
+          "Evicting stale Gremlin graph for database '%s' after its underlying database was reopened", databaseName);
+      graphs.remove(databaseName);
+      traversalSources.values().removeIf(ts -> ts.getGraph() == graph);
     }
 
     // Check if database exists
@@ -269,6 +286,16 @@ public class ArcadeGraphManager implements GraphManager {
           "Failed to create ArcadeGraph for database '%s': %s", databaseName, e.getMessage());
       return null;
     }
+  }
+
+  /**
+   * A cached {@link ArcadeGraph} is stale when the database it wraps is no longer open. This happens
+   * when {@code ArcadeDBServer.getDatabase()} closes and reopens the underlying {@code LocalDatabase}
+   * (e.g. triggered by concurrent DDL) and swaps in a fresh {@code ServerDatabase}: the {@code ArcadeGraph}
+   * still references the old, now-closed instance. See issue #5307.
+   */
+  private static boolean isStale(final Graph graph) {
+    return graph instanceof ArcadeGraph && !((ArcadeGraph) graph).getDatabase().isOpen();
   }
 
   private void closeTx(final Set<String> graphSourceNamesToCloseTxOn, final Transaction.Status status) {
