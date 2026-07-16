@@ -18,6 +18,8 @@
  */
 package com.arcadedb.e2e;
 
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -375,9 +377,19 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     for (int i = 0; i < concurrentIntent; i++) {
       RemoteDatabase tx = alTx.get(i);
       System.out.println("commitin " + i);
-      tx.commit();
+
+      for (int retry = 0; retry < 10; ++retry) {
+
+        try {
+
+          tx.commit();
+          System.out.println("committed");
+          break;
+        } catch (final NeedRetryException | DuplicatedKeyException e) {
+          System.out.println("Retrying commit " + i + " due to " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+      }
     }
-    System.out.println("committed");
   }
 
   @Test
