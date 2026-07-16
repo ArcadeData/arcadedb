@@ -894,6 +894,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Called by Ratis for non-state-machine log entries (configuration changes, no-ops) so that
+   * {@link BaseStateMachine#getLastAppliedTermIndex()} stays in sync with the applied log position.
+   * <p>
+   * Normally the term sequence is non-decreasing (Raft monotonicity). At leader-transition boundaries,
+   * however, committed entries from the old leader (term T) can appear in the applied queue immediately
+   * after a snapshot whose term was recorded as T+1 (because
+   * {@link #notifyInstallSnapshotFromLeader} uses {@code firstTermIndexInLog.getTerm()} as the snapshot
+   * term - an upper-bound value, not the true last-applied term). When the StateMachineUpdater then
+   * tries to apply such an entry, Ratis 3.2.2's internal monotonicity assertion throws
+   * {@link IllegalStateException}. If allowed to propagate, that exception reaches
+   * {@code StateMachineUpdater.run()}'s catch block, which calls {@code raftServer.shutdown()} and
+   * turns a transient edge case into an unclean shutdown that leaves all nodes stuck in split-vote
+   * state after restart (issue #575).
+   * <p>
+   * Ratis 3.2.2's {@code updateLastAppliedTermIndex} uses {@code AtomicReference.getAndSet} <em>before</em>
+   * the assertion, so {@code lastAppliedTermIndex} is already updated correctly when the exception is
+   * thrown. Catching it here has no effect on applied-index tracking; it only prevents the exception
+   * from escaping to the StateMachineUpdater.
+   */
+  @Override
+  public void notifyTermIndexUpdated(final long term, final long index) {
+    try {
+      super.notifyTermIndexUpdated(term, index);
+    } catch (final IllegalStateException e) {
+      // Backward term at a leader-transition boundary. The getAndSet inside updateLastAppliedTermIndex
+      // already advanced lastAppliedTermIndex to (term, index); only the assertion failed. Log and
+      // continue so the StateMachineUpdater stays alive and the cluster can self-heal (issue #575).
+      LogManager.instance().log(this, Level.WARNING,
+          "Backward term in notifyTermIndexUpdated (t:%d, i:%d) - leader-transition boundary, continuing (issue #575): %s",
+          term, index, e.getMessage());
+    }
+  }
+
+  /**
    * Called by Ratis when the follower's log is too far behind the leader's compacted log.
    * Individual log entries are no longer available, so a full database snapshot must be
    * downloaded from the leader. Delegates to {@link SnapshotInstaller#install} for crash-safe
