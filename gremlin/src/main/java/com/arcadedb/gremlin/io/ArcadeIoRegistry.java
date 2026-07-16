@@ -19,8 +19,10 @@
 package com.arcadedb.gremlin.io;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
 import org.apache.tinkerpop.gremlin.structure.io.AbstractIoRegistry;
+import org.apache.tinkerpop.gremlin.structure.io.binary.GraphBinaryIo;
 
 import java.util.Map;
 
@@ -38,6 +40,13 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
 
   public ArcadeIoRegistry(final BasicDatabase database) {
     this.database = database;
+
+    // REGISTER THE GraphBinary CUSTOM-TYPE SERIALIZER FOR RID SO THAT A TRAVERSAL RESULT CARRYING A RAW RID
+    // (E.G. THE VALUE OF A LINK PROPERTY) CAN BE SERIALIZED BY THE GREMLIN SERVER (ISSUE #5309). THE LOOKUP IS
+    // BY CONCRETE CLASS, SO REGISTER BOTH RID AND ITS DatabaseRID SUBCLASS.
+    final RIDSerializer ridSerializer = new RIDSerializer();
+    register(GraphBinaryIo.class, RID.class, ridSerializer);
+    register(GraphBinaryIo.class, DatabaseRID.class, ridSerializer);
   }
 
   public BasicDatabase getDatabase() {
