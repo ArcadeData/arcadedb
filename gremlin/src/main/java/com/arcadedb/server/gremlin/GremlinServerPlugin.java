@@ -20,6 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.gremlin.ArcadeGraph;
+import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -30,13 +31,24 @@ import org.apache.tinkerpop.gremlin.server.Settings;
 import java.io.File;
 import java.io.FileInputStream;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.logging.Level;
 
 public class GremlinServerPlugin implements ServerPlugin {
   private static final String               CONFIG_GREMLIN_SERVER_YAML = "/config/gremlin-server.yaml";
+  private static final String               IO_REGISTRIES_KEY          = "ioRegistries";
+  private static final String               ARCADE_IO_REGISTRY         = ArcadeIoRegistry.class.getName();
+
+  // SERIALIZERS CONFIGURED WHEN NONE ARE DECLARED IN gremlin-server.yaml. THEY MIRROR THE SHIPPED CONFIGURATION SO THAT
+  // ARCADEDB TYPES (VERTICES, EDGES AND RAW RIDs - SEE ISSUE #5309) ARE ALWAYS SERIALIZABLE, EVEN WITH DEFAULT SETTINGS.
+  private static final String[]             DEFAULT_SERIALIZERS        = {
+      "org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1",
+      "org.apache.tinkerpop.gremlin.util.ser.GraphSONMessageSerializerV3",
+      "org.apache.tinkerpop.gremlin.util.ser.GraphSONMessageSerializerV2" };
   private              ArcadeDBServer       server;
   private              ContextConfiguration configuration;
   private              GremlinServer        gremlinServer;
@@ -97,12 +109,54 @@ public class GremlinServerPlugin implements ServerPlugin {
     // would cause ArcadeGraph to create the database on first access (issue #3661).
     initPreConfiguredDatabases(settings);
 
+    // GUARANTEE THAT ARCADEDB TYPES (VERTICES, EDGES AND RAW RIDs) CAN BE SERIALIZED REGARDLESS OF THE (POSSIBLY
+    // ABSENT OR CUSTOM) gremlin-server.yaml, BY ENSURING ArcadeIoRegistry IS REGISTERED ON EVERY SERIALIZER (#5309).
+    ensureArcadeIoRegistry(settings);
+
     gremlinServer = new GremlinServer(settings);
     try {
       gremlinServer.start();
     } catch (final Exception e) {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
+  }
+
+  /**
+   * Ensures that {@link ArcadeIoRegistry} is registered on every configured serializer so that ArcadeDB types
+   * (vertices, edges and raw RIDs) round-trip correctly. When {@code gremlin-server.yaml} declares no serializers, the
+   * shipped default set (GraphBinary v1, GraphSON v3, GraphSON v2) is installed; when it does, each entry is augmented
+   * with the registry if missing. Without this, a traversal result carrying a raw RID (e.g. the value of a LINK
+   * property) fails to be serialized with "Serializer for type com.arcadedb.database.DatabaseRID not found" (#5309).
+   */
+  private void ensureArcadeIoRegistry(final Settings settings) {
+    if (settings.serializers == null || settings.serializers.isEmpty()) {
+      final List<Settings.SerializerSettings> serializers = new ArrayList<>(DEFAULT_SERIALIZERS.length);
+      for (final String className : DEFAULT_SERIALIZERS) {
+        final Settings.SerializerSettings serializer = new Settings.SerializerSettings();
+        serializer.className = className;
+        serializer.config = new HashMap<>();
+        addArcadeIoRegistry(serializer);
+        serializers.add(serializer);
+      }
+      settings.serializers = serializers;
+    } else {
+      for (final Settings.SerializerSettings serializer : settings.serializers)
+        addArcadeIoRegistry(serializer);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private void addArcadeIoRegistry(final Settings.SerializerSettings serializer) {
+    if (serializer.config == null)
+      serializer.config = new HashMap<>();
+
+    final Object existing = serializer.config.get(IO_REGISTRIES_KEY);
+    final List<Object> registries = existing instanceof List ? new ArrayList<>((List<Object>) existing) : new ArrayList<>();
+
+    if (!registries.contains(ARCADE_IO_REGISTRY))
+      registries.add(ARCADE_IO_REGISTRY);
+
+    serializer.config.put(IO_REGISTRIES_KEY, registries);
   }
 
   /**
