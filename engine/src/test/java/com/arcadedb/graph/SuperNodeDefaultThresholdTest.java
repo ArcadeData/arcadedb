@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Both tests below assert edge-list reads over a vertex promoted that way, using the aggregation reported in
  * issue #565 ({@code both().size()}).
  */
+@Tag("slow")
 class SuperNodeDefaultThresholdTest extends TestHelper {
   private int savedThreshold;
   private int savedStripes;

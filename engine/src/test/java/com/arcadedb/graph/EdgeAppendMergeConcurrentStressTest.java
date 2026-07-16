@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * committed-state + appends and drop a concurrent removal's relink - producing a chain whose bytes no longer
  * parse, which surfaces later as a truncated read (BufferUnderflowException) on any traversal of the vertex.
  */
+@Tag("slow")
 class EdgeAppendMergeConcurrentStressTest extends TestHelper {
   private static final int THREADS         = 8;
   private static final int EDGES_PER_THREAD = 400;
@@ -153,7 +155,6 @@ class EdgeAppendMergeConcurrentStressTest extends TestHelper {
 
     final int expected = THREADS * EDGES_PER_THREAD - removed.get();
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges;
-    System.out.println(">>> expected=" + expected + " removed=" + removed.get() + " edgeAppendMerges=" + merges);
 
     // The whole point of this test is the REBASE path: if no merge ever fired, a green result proves nothing.
     assertThat(merges).as("edge-append rebase must actually have fired").isGreaterThan(0);
@@ -164,7 +165,6 @@ class EdgeAppendMergeConcurrentStressTest extends TestHelper {
       try (final ResultSet rs = database.query("SQL",
           "SELECT number, both().size() FROM Account ORDER BY both().size() DESC LIMIT 5")) {
         final Result top = rs.next();
-        System.out.println(">>> TOP ROW: " + top.toJSON());
         assertThat(top.<Number>getProperty("both().size()").intValue()).isEqualTo(expected);
       }
       // EVERY SURVIVING EDGE MUST STILL BE REACHABLE (no append lost to a rebase).

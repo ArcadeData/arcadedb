@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -51,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * short concurrent run reliably exercises the multi-page + rebase combination the 64 KB default only hits at
  * scale. The fix makes multi-page/indirected chunk records non-rebasable (full retry instead).
  */
+@Tag("slow")
 class EdgeAppendMergeMultiPageChunkTest extends TestHelper {
   private static final int ADDERS     = 8;
   private static final int PER_ADDER  = 1_500;

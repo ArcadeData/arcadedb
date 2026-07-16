@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -46,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * committed-state + appends and drop the relink, leaving a chain whose bytes no longer parse - the truncated
  * read surfaces as java.nio.BufferUnderflowException on the next traversal (the shape reported in #565).
  */
+@Tag("slow")
 class EdgeAppendMergeRaceTest extends TestHelper {
   private int     savedThreshold;
   private boolean savedMerge;
@@ -169,8 +171,6 @@ class EdgeAppendMergeRaceTest extends TestHelper {
       thread.join();
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges;
-    System.out.println(">>> added=" + addedCount.get() + " removed=" + removedCount.get()
-        + " edgeAppendMerges=" + merges + " errors=" + errors.size());
 
     if (!errors.isEmpty()) {
       errors.getFirst().printStackTrace();

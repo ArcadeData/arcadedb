@@ -259,30 +259,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public boolean existsRecord(final RID rid) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
-    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-
-    if (pageId >= pageCount.get()) {
-      final int txPageCount = getTotalPages();
-      if (pageId >= txPageCount)
-        return false;
-    }
-
     try {
-      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
-
-      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-      if (positionInPage >= recordCountInPage)
-        return false;
-
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
-      if (recordPositionInPage == 0)
-        // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
-        return false;
-
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-
-      return recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER || recordSize[0] == FIRST_CHUNK;
+      final long[] recordSize = readRecordSizeMarker(rid);
+      return recordSize != null && (recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER
+          || recordSize[0] == FIRST_CHUNK);
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on checking record existence for " + rid);
@@ -300,29 +280,45 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Reads the CURRENT state through the transaction (the caller holds the file's commit lock).
    */
   public boolean isRecordStoredInSinglePage(final RID rid) {
-    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
-    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-
-    if (pageId >= pageCount.get() && pageId >= getTotalPages())
+    if (rid == null || rid.getPosition() < 0)
       return false;
 
     try {
-      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
-
-      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-      if (positionInPage >= recordCountInPage)
-        return false;
-
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
-      if (recordPositionInPage == 0)
-        return false;
-
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      return recordSize[0] > 0;
+      final long[] recordSize = readRecordSizeMarker(rid);
+      return recordSize != null && recordSize[0] > 0;
 
     } catch (final IOException e) {
-      throw new DatabaseOperationException("Error on checking record layout for " + rid);
+      throw new DatabaseOperationException("Error on checking record layout for " + rid, e);
     }
+  }
+
+  /**
+   * Reads the raw size marker of the record's slot on its page through the transaction (positive = in-place
+   * record, {@link #RECORD_PLACEHOLDER_POINTER}, {@link #FIRST_CHUNK}, {@link #NEXT_CHUNK}, negative =
+   * placeholder content), or {@code null} when the page or slot does not exist or the record was deleted.
+   */
+  private long[] readRecordSizeMarker(final RID rid) throws IOException {
+    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
+    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+
+    if (pageId >= pageCount.get()) {
+      final int txPageCount = getTotalPages();
+      if (pageId >= txPageCount)
+        return null;
+    }
+
+    final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+
+    final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+    if (positionInPage >= recordCountInPage)
+      return null;
+
+    final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+    if (recordPositionInPage == 0)
+      // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
+      return null;
+
+    return page.readNumberAndSize(recordPositionInPage);
   }
 
   @Override
