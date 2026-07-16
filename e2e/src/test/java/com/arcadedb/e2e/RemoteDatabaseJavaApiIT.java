@@ -18,7 +18,6 @@
  */
 package com.arcadedb.e2e;
 
-import com.arcadedb.Constants;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -42,6 +41,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -441,8 +443,6 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     httpServer.create("test5279");
   }
 
-
-
   @Test
   @Disabled
   void Issue5279MultipleTransactionsTestHttpLocalhost() {
@@ -479,4 +479,59 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     System.out.println("committed");
   }
 
+  @Test
+  void Issue5279MultipleTransactionsTestMultiThread() {
+    createDatabase();
+    RemoteDatabase db = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
+
+    db.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
+    db.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
+      System.out.println("bucket = " + bucket.getName());
+    });
+
+    ExecutorService executor = Executors.newFixedThreadPool(5);
+    AtomicInteger count = new AtomicInteger(0);
+    for (int i = 0; i < 5; i++) {
+      executor.submit(() -> {
+
+        RemoteDatabase tx = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
+
+        for (int j = 0; j < 10; j++) {
+
+          try {
+            tx.transaction(() -> {
+              MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
+              svt1.set("svex", "concurrent test" + count.incrementAndGet());
+              svt1.set("thid", Thread.currentThread().threadId());
+              svt1.save();
+            }, false, 10);
+          } catch (Exception e) {
+            System.out.println("Error in thread " + Thread.currentThread().threadId() + ": " + e.getMessage());
+          }
+
+        }
+      });
+    }
+
+    executor.shutdown();
+    while (!executor.isTerminated()) {
+
+      db.query("sql", "select count(*) as inserted from SimpleVertexEx").stream().forEach(r -> {
+        System.out.println("Count: " + r.getProperty("inserted"));
+        try {
+          Thread.sleep(100);
+        } catch (InterruptedException e) {
+          throw new RuntimeException(e);
+        }
+      });
+    }
+
+    db.query("sql", "select count(*) as inserted from SimpleVertexEx").stream().forEach(r -> {
+      System.out.println("Final Count: " + r.getProperty("inserted"));
+    });
+    db.query("sql", "select * from SimpleVertexEx").stream().forEach(r -> {
+      System.out.println(r.toJSON());
+    });
+
+  }
 }
