@@ -292,6 +292,46 @@ public enum PostgresType {
   }
 
   /**
+   * Maps an ArcadeDB schema Type to a PostgreSQL type, resolving the element type of a LIST from the
+   * property's declared "OF" clause.
+   *
+   * @param arcadeType The ArcadeDB schema type
+   * @param ofType     The declared element type name of a LIST/MAP property, or null when undeclared
+   *
+   * @return The corresponding PostgreSQL type
+   */
+  public static PostgresType getTypeFromArcade(final Type arcadeType, final String ofType) {
+    if (arcadeType == Type.LIST)
+      return getArrayTypeForOfType(ofType);
+    return getTypeFromArcade(arcadeType);
+  }
+
+  /**
+   * Resolves the array type of a "LIST OF &lt;ofType&gt;" property. An ofType that does not name a scalar
+   * {@link Type} refers to an embedded document type, so the list is advertised as json[]; this mirrors the
+   * convention used by Type.coerceCollectionOfType. An undeclared ofType stays text[].
+   */
+  private static PostgresType getArrayTypeForOfType(final String ofType) {
+    if (ofType == null)
+      return ARRAY_TEXT;
+
+    final Type elementType = Type.getTypeByName(ofType);
+    if (elementType == null)
+      // Not a scalar: the list holds embedded documents of a schema type.
+      return ARRAY_JSON;
+
+    return switch (elementType) {
+      case BOOLEAN -> ARRAY_BOOLEAN;
+      case INTEGER, SHORT, BYTE -> ARRAY_INT;
+      case LONG -> ARRAY_LONG;
+      case FLOAT -> ARRAY_REAL;
+      case DOUBLE -> ARRAY_DOUBLE;
+      case MAP, EMBEDDED -> ARRAY_JSON;
+      default -> ARRAY_TEXT;
+    };
+  }
+
+  /**
    * Maps an ArcadeDB schema Type to a PostgreSQL type.
    *
    * @param arcadeType The ArcadeDB schema type

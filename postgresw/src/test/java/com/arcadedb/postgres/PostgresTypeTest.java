@@ -376,6 +376,32 @@ class PostgresTypeTest {
   }
 
   @Test
+  void getTypeFromArcadeListOfEmbeddedDocumentType() {
+    // An ofType that names no scalar Type refers to an embedded document type: issue #5289.
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "Product")).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "EMBEDDED")).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "MAP")).isEqualTo(PostgresType.ARRAY_JSON);
+  }
+
+  @Test
+  void getTypeFromArcadeListOfScalar() {
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, null)).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "STRING")).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "LONG")).isEqualTo(PostgresType.ARRAY_LONG);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "INTEGER")).isEqualTo(PostgresType.ARRAY_INT);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "BOOLEAN")).isEqualTo(PostgresType.ARRAY_BOOLEAN);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "DOUBLE")).isEqualTo(PostgresType.ARRAY_DOUBLE);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "FLOAT")).isEqualTo(PostgresType.ARRAY_REAL);
+  }
+
+  @Test
+  void getTypeFromArcadeNonListIgnoresOfType() {
+    assertThat(PostgresType.getTypeFromArcade(Type.EMBEDDED, "Product")).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.MAP, "Product")).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.STRING, "Product")).isEqualTo(PostgresType.VARCHAR);
+  }
+
+  @Test
   void getTypeFromArcadeMap() {
     assertThat(PostgresType.getTypeFromArcade(Type.MAP)).isEqualTo(PostgresType.JSON);
   }
