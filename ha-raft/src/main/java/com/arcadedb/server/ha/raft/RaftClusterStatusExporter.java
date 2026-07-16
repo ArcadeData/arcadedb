@@ -31,6 +31,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.logging.Level;
 
 /**
@@ -45,7 +46,7 @@ class RaftClusterStatusExporter {
 
   private final    RaftHAServer   haServer;
   private final    ClusterMonitor clusterMonitor;
-  private volatile int            lastClusterConfigHash;
+  private volatile int            lastStableSignature;
 
   RaftClusterStatusExporter(final RaftHAServer haServer, final ClusterMonitor clusterMonitor) {
     this.haServer = haServer;
@@ -145,27 +146,52 @@ class RaftClusterStatusExporter {
   // -- Cluster Configuration Printing --
 
   /**
-   * Prints an ASCII table showing the current cluster configuration.
-   * Called on leader changes so the operator can see the cluster state at a glance.
+   * Immutable snapshot of everything the cluster configuration table renders: the Raft term, the
+   * commit index, one row per committed member ({@code SERVER, ADDRESS, ROLE, LAG, LATENCY, STATUS})
+   * and one row per database with a bootstrap baseline. Extracted so the re-emit decision and the
+   * rendering are pure functions testable without a live Raft cluster (issue #5304).
+   */
+  static final class ConfigSnapshot {
+    final long           term;
+    final long           commitIndex;
+    final List<String[]> rows;
+    final List<String[]> baselineRows;
+    final int            configuredServers;
+
+    ConfigSnapshot(final long term, final long commitIndex, final List<String[]> rows,
+        final List<String[]> baselineRows, final int configuredServers) {
+      this.term = term;
+      this.commitIndex = commitIndex;
+      this.rows = rows;
+      this.baselineRows = baselineRows;
+      this.configuredServers = configuredServers;
+    }
+  }
+
+  /**
+   * Prints an ASCII table showing the current cluster configuration. Called when this node becomes
+   * leader and from every lag-monitor tick, so the logged view converges to the committed membership
+   * instead of freezing on the state captured at election time (issue #5304: a single bootstrap-window
+   * emission raced a member's join by 112 ms and permanently showed 2 of 3 members).
+   * <p>
+   * Deduplicated on a STABLE signature (term, member ids, addresses, roles, replica statuses) that
+   * excludes the volatile LAG/LATENCY columns and the commit index: a membership change, role change
+   * or replica-status transition re-emits the table, while ordinary lag fluctuation between ticks
+   * does not flood the log. This also keeps duplicate leader-change events (multiple servers in the
+   * same JVM) from printing the same table twice.
    */
   void printClusterConfiguration() {
-    if (!haServer.isLeader())
-      return;
-
     try {
-      final String output = buildClusterConfigurationTable();
-      if (output == null)
+      final ConfigSnapshot snapshot = collectSnapshot(true);
+      if (snapshot == null)
         return;
 
-      // Only print if the configuration actually changed (avoid duplicate logs when
-      // multiple servers in the same JVM each receive the same leader change event)
-      final int hash = output.hashCode();
-      if (hash == lastClusterConfigHash)
+      final int signature = stableSignature(snapshot);
+      if (signature == lastStableSignature)
         return;
-      lastClusterConfigHash = hash;
+      lastStableSignature = signature;
 
-      // Use warning level on purpose for a few releases until the whole HA module has been road tested
-      LogManager.instance().log(this, Level.WARNING, "%s", output);
+      emit(renderTable(snapshot));
 
     } catch (final Exception e) {
       // Best-effort: don't let formatting errors disrupt the cluster
@@ -173,11 +199,31 @@ class RaftClusterStatusExporter {
     }
   }
 
+  /** Log-emission seam, overridable in tests. */
+  void emit(final String output) {
+    // Use warning level on purpose for a few releases until the whole HA module has been road tested
+    LogManager.instance().log(this, Level.WARNING, "%s", output);
+  }
+
   /**
-   * Builds the ASCII cluster configuration table as a string. Returns {@code null} when there are
-   * no peers to render. Visible for tests.
+   * Builds the ASCII cluster configuration table as a string, unconditionally (even on followers,
+   * where lag/latency columns will be empty). Returns {@code null} when there are no peers to render.
+   * Used by {@link RaftHAServer#getClusterConfigurationTable()} for tests and diagnostics.
    */
   String buildClusterConfigurationTable() {
+    final ConfigSnapshot snapshot = collectSnapshot(false);
+    return snapshot == null ? null : renderTable(snapshot);
+  }
+
+  /**
+   * Collects the current cluster configuration from the local Raft division. Returns {@code null}
+   * when there are no peers to render, or - with {@code leaderOnly} - when this node is not the
+   * leader. Overridable in tests.
+   */
+  ConfigSnapshot collectSnapshot(final boolean leaderOnly) {
+    if (leaderOnly && !haServer.isLeader())
+      return null;
+
     final RaftPeerId leaderId = haServer.getLeaderId();
     final long term = haServer.getCurrentTerm();
     final long commitIndex = haServer.getCommitIndex();
@@ -225,43 +271,73 @@ class RaftClusterStatusExporter {
       rows.add(new String[] { peerId, address, role, lagStr, latencyStr, statusStr });
     }
 
-    // Calculate column widths
+    // Deterministic row order: getLivePeers() gives no ordering guarantee, and a mere reordering must
+    // not change the stable signature (it would re-emit an identical membership picture).
+    rows.sort((a, b) -> a[0].compareTo(b[0]));
+
+    return new ConfigSnapshot(term, commitIndex, rows, collectBootstrapBaselines(), haServer.getConfiguredServers());
+  }
+
+  /**
+   * Hash over the stable columns only: the term plus each member's id, address, role and replica
+   * status. LAG, LATENCY and the commit index are deliberately excluded - they move on nearly every
+   * lag-monitor tick and would defeat the deduplication (issue #5304).
+   */
+  static int stableSignature(final ConfigSnapshot snapshot) {
+    int h = Long.hashCode(snapshot.term);
+    for (final String[] row : snapshot.rows) {
+      h = 31 * h + Objects.hashCode(row[0]); // SERVER
+      h = 31 * h + Objects.hashCode(row[1]); // ADDRESS
+      h = 31 * h + Objects.hashCode(row[2]); // ROLE
+      h = 31 * h + Objects.hashCode(row[5]); // STATUS
+    }
+    return h;
+  }
+
+  /** Renders the ASCII cluster configuration table for the given snapshot. Pure function. */
+  static String renderTable(final ConfigSnapshot snapshot) {
     final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY", "STATUS" };
     final int[] widths = new int[headers.length];
     for (int i = 0; i < headers.length; i++)
       widths[i] = headers[i].length();
-    for (final String[] row : rows)
+    for (final String[] row : snapshot.rows)
       for (int i = 0; i < row.length; i++)
         widths[i] = Math.max(widths[i], row[i].length());
 
-    // Format table
     final StringBuilder sb = new StringBuilder();
-    sb.append(String.format("CLUSTER CONFIGURATION (term=%d, commitIndex=%d)%n", term, commitIndex));
+    sb.append(String.format("CLUSTER CONFIGURATION (term=%d, commitIndex=%d)%n", snapshot.term, snapshot.commitIndex));
 
     appendSeparator(sb, widths);
     appendRow(sb, widths, headers);
     appendSeparator(sb, widths);
-    for (final String[] row : rows)
+    for (final String[] row : snapshot.rows)
       appendRow(sb, widths, row);
     appendSeparator(sb, widths);
+
+    // Issue #5304: never present a bootstrap-window snapshot as authoritative. While the committed
+    // membership is smaller than the configured server list, say so explicitly; the table is
+    // re-emitted when the missing members join.
+    if (snapshot.rows.size() < snapshot.configuredServers)
+      sb.append(String.format("NOTE: %d of %d configured servers are in the committed membership - not yet converged; "
+          + "this table is logged again when membership or replica status changes.%n",
+          snapshot.rows.size(), snapshot.configuredServers));
 
     // Issue #4147 phase 7: bootstrap baselines per database. Only printed when at least one
     // database has a baseline; otherwise the section is omitted to keep the output uncluttered
     // for clusters that pre-date the bootstrap feature.
-    appendBootstrapBaselines(sb);
+    appendBootstrapBaselines(sb, snapshot.baselineRows);
 
     return sb.toString();
   }
 
   /**
-   * If any database has a committed bootstrap baseline, print a "BOOTSTRAP BASELINES" section
-   * with one row per database. Skipped silently when there are none, so existing log output
-   * stays unchanged for clusters that never engaged the bootstrap path.
+   * Collects one row per database with a committed bootstrap baseline. Empty when there are none, so
+   * existing log output stays unchanged for clusters that never engaged the bootstrap path.
    */
-  private void appendBootstrapBaselines(final StringBuilder sb) {
+  private List<String[]> collectBootstrapBaselines() {
     final var stateMachine = haServer.getStateMachine();
     if (stateMachine == null)
-      return;
+      return List.of();
 
     final List<String[]> rows = new ArrayList<>();
     for (final String dbName : haServer.getServer().getDatabaseNames()) {
@@ -270,6 +346,11 @@ class RaftClusterStatusExporter {
         continue;
       rows.add(new String[] { dbName, String.valueOf(baseline.lastTxId()), abbreviate(baseline.fingerprint()) });
     }
+    return rows;
+  }
+
+  /** If any database has a committed bootstrap baseline, print a "BOOTSTRAP BASELINES" section. */
+  private static void appendBootstrapBaselines(final StringBuilder sb, final List<String[]> rows) {
     if (rows.isEmpty())
       return;
 
@@ -321,6 +402,10 @@ class RaftClusterStatusExporter {
       for (final var fs : haServer.getFollowerStates())
         clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), (Long) fs.get("matchIndex"),
             (Long) fs.get("lastRpcElapsedMs"));
+      // Issue #5304: with the per-replica classifications refreshed, re-emit the CLUSTER CONFIGURATION
+      // table when the stable picture (membership, roles, statuses, term) changed since the last
+      // emission, so the logged view converges instead of freezing on the election-time snapshot.
+      printClusterConfiguration();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error checking replica lag", e);
     }
