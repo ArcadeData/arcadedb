@@ -681,6 +681,17 @@ public class TransactionContext implements Transaction {
 
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
+      // MULTI-PAGE / INDIRECTED CHUNK: the rebase re-derives ONE page, but a record whose content continues on
+      // other pages was drain-written there through page copies created only at drain time - copies that PASS
+      // the version check while carrying this transaction's STALE view of the record's continuation bytes.
+      // Rebasing would commit that stale slice, silently reverting concurrent appends on the continuation page
+      // (issue #565: zeroed/shifted chunk tails on chunks straddling a page boundary). Only a record living
+      // entirely in place on the conflicted page can be safely re-derived; anything else falls back to a full
+      // retry.
+      if (!bucket.isRecordStoredInSinglePage(segmentRID))
+        throw new ConcurrentModificationException(
+            "Edge-append rebase not possible: chunk " + segmentRID + " spans multiple pages. Please retry the operation");
+
       // Load the chunk fresh from the (now current) page, bypassing the tx record cache which still holds the
       // stale, already-appended instance. A concurrently-vanished chunk (RecordNotFoundException) cannot happen
       // under the held commit lock; if it ever did, fall back to a full retry rather than aborting the tx.
