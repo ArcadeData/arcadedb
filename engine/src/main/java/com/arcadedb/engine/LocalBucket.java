@@ -289,6 +289,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Tells whether the record is stored entirely in place on its own page (positive size marker), as opposed to
+   * a placeholder indirection or a multi-page record whose continuation chunks live on other pages. The
+   * commit-time edge-append rebase ({@code TransactionContext.rebaseEdgeAppends}) relies on this: rebasing
+   * re-reads and re-writes a record assuming its bytes live on the ONE conflicted page, so any record with
+   * content on other pages must fall back to a full-transaction retry - re-writing it would publish the
+   * transaction's stale copy of the continuation pages, silently reverting concurrently committed bytes there
+   * (those pages pass the MVCC version check because their transaction copy is created only at drain time).
+   * Reads the CURRENT state through the transaction (the caller holds the file's commit lock).
+   */
+  public boolean isRecordStoredInSinglePage(final RID rid) {
+    final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
+    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+
+    if (pageId >= pageCount.get() && pageId >= getTotalPages())
+      return false;
+
+    try {
+      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (positionInPage >= recordCountInPage)
+        return false;
+
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        return false;
+
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      return recordSize[0] > 0;
+
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on checking record layout for " + rid);
+    }
+  }
+
   @Override
   public void deleteRecord(final RID rid) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
