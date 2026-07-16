@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -386,12 +387,26 @@ class PostgresTypeTest {
   @Test
   void getTypeFromArcadeListOfScalar() {
     assertThat(PostgresType.getTypeFromArcade(Type.LIST, null)).isEqualTo(PostgresType.ARRAY_TEXT);
+    // A blank ofType names no type at all, so it must not be mistaken for an embedded document type.
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "")).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "   ")).isEqualTo(PostgresType.ARRAY_TEXT);
     assertThat(PostgresType.getTypeFromArcade(Type.LIST, "STRING")).isEqualTo(PostgresType.ARRAY_TEXT);
     assertThat(PostgresType.getTypeFromArcade(Type.LIST, "LONG")).isEqualTo(PostgresType.ARRAY_LONG);
     assertThat(PostgresType.getTypeFromArcade(Type.LIST, "INTEGER")).isEqualTo(PostgresType.ARRAY_INT);
     assertThat(PostgresType.getTypeFromArcade(Type.LIST, "BOOLEAN")).isEqualTo(PostgresType.ARRAY_BOOLEAN);
     assertThat(PostgresType.getTypeFromArcade(Type.LIST, "DOUBLE")).isEqualTo(PostgresType.ARRAY_DOUBLE);
     assertThat(PostgresType.getTypeFromArcade(Type.LIST, "FLOAT")).isEqualTo(PostgresType.ARRAY_REAL);
+  }
+
+  /**
+   * The declared-schema path and the value path must agree, otherwise a column's OID would depend on whether
+   * its list happens to be empty. A list of BigDecimal is typed ARRAY_TEXT by getArrayTypeForElementType, so
+   * LIST OF DECIMAL must resolve to ARRAY_TEXT too, despite the scalar DECIMAL mapping to DOUBLE.
+   */
+  @Test
+  void getTypeFromArcadeListOfDecimalMatchesValuePath() {
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "DECIMAL")).isEqualTo(PostgresType.ARRAY_TEXT);
+    assertThat(PostgresType.getTypeForValue(List.of(new BigDecimal("1.23")))).isEqualTo(PostgresType.ARRAY_TEXT);
   }
 
   @Test

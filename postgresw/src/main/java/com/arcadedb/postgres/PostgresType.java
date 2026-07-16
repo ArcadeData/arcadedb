@@ -296,7 +296,8 @@ public enum PostgresType {
    * property's declared "OF" clause.
    *
    * @param arcadeType The ArcadeDB schema type
-   * @param ofType     The declared element type name of a LIST/MAP property, or null when undeclared
+   * @param ofType     The declared element type name of a LIST property, or null when undeclared. Ignored for
+   *                   any other type.
    *
    * @return The corresponding PostgreSQL type
    */
@@ -312,7 +313,7 @@ public enum PostgresType {
    * convention used by Type.coerceCollectionOfType. An undeclared ofType stays text[].
    */
   private static PostgresType getArrayTypeForOfType(final String ofType) {
-    if (ofType == null)
+    if (ofType == null || ofType.isBlank())
       return ARRAY_TEXT;
 
     final Type elementType = Type.getTypeByName(ofType);
@@ -320,6 +321,9 @@ public enum PostgresType {
       // Not a scalar: the list holds embedded documents of a schema type.
       return ARRAY_JSON;
 
+    // Every branch must agree with getArrayTypeForElementType, which types a populated list from its first
+    // element: a mismatch would make a column's OID depend on whether the list is empty. DECIMAL therefore
+    // falls through to ARRAY_TEXT, because a list of BigDecimal has no match there either.
     return switch (elementType) {
       case BOOLEAN -> ARRAY_BOOLEAN;
       case INTEGER, SHORT, BYTE -> ARRAY_INT;

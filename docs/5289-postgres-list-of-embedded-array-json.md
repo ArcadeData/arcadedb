@@ -27,8 +27,14 @@ the same column could flap between `text[]` and `json[]` across result sets.
 
 - `PostgresType.getTypeFromArcade(Type, String ofType)` - new overload resolving a LIST's element type from
   the declared `OF` clause. An `ofType` that names no scalar `Type` refers to an embedded document type and
-  maps to `ARRAY_JSON`; scalars map to their matching array type; an undeclared `ofType` stays `ARRAY_TEXT`.
-  This reuses the discriminator convention already established by `Type.coerceCollectionOfType` (#5261).
+  maps to `ARRAY_JSON`; scalars map to their matching array type; an undeclared or blank `ofType` stays
+  `ARRAY_TEXT`. This reuses the discriminator convention already established by `Type.coerceCollectionOfType`
+  (#5261).
+
+  Every scalar branch must agree with `getArrayTypeForElementType` (the value path), otherwise the OID would
+  again depend on whether the list is empty. `DECIMAL` therefore maps to `ARRAY_TEXT`, not `ARRAY_DOUBLE`:
+  `getArrayTypeForElementType` has no `BigDecimal`/`Number` branch, so a populated list of `BigDecimal` is
+  `ARRAY_TEXT`. Locked by `getTypeFromArcadeListOfDecimalMatchesValuePath`.
 - `PostgresNetworkExecutor.getColumnsFromQuerySchema` - passes `prop.getOfType()` (schema path).
 - `PostgresNetworkExecutor.getColumns` - for an empty list, prefers the declared `LIST OF <type>` via the new
   `getDeclaredListType` helper (value path), keeping the OID stable across rows.
