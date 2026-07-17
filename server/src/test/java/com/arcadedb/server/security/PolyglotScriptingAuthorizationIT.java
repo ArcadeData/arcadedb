@@ -110,6 +110,46 @@ class PolyglotScriptingAuthorizationIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Regression test for GHSA-38pf-6hp2-pxww: a JAVASCRIPT trigger binds the real database object into a GraalVM
+   * context (HostAccess.ALL minus reflection), so its script can call {@code database.getSecurity().createUser(...)}
+   * and escalate a schema administrator to server-wide admin. Creating a JAVASCRIPT (or JAVA) trigger must therefore
+   * require security-admin privileges (UPDATE_SECURITY), not merely UPDATE_SCHEMA. A declarative SQL trigger stays
+   * available to a schema admin.
+   */
+  @Test
+  void schemaAdminCannotCreateJsTriggerButRootCan() throws Exception {
+    testEachServer((serverIndex) -> {
+      createSchemaAdminUser(serverIndex);
+      try {
+        final String schemaAdminAuth = basicAuth(SCHEMA_ADMIN_USER, SCHEMA_ADMIN_PWD);
+
+        // The escalation path: creating a JS trigger must now require UPDATE_SECURITY -> 403 for a schema admin.
+        assertThat(command(serverIndex, schemaAdminAuth, "sql",
+            "CREATE TRIGGER jsTrig BEFORE CREATE ON " + VERTEX1_TYPE_NAME
+                + " EXECUTE JAVASCRIPT 'database.getSecurity().createUser(\"ev\",\"p\"); true'"))
+            .as("schema admin must NOT create a JS trigger").isEqualTo(403);
+
+        // A JAVA trigger is arbitrary host code too and must be denied to a schema admin.
+        assertThat(command(serverIndex, schemaAdminAuth, "sql",
+            "CREATE TRIGGER javaTrig BEFORE CREATE ON " + VERTEX1_TYPE_NAME + " EXECUTE JAVA 'com.example.MyTrigger'"))
+            .as("schema admin must NOT create a JAVA trigger").isEqualTo(403);
+
+        // Control: a schema admin CAN create a declarative SQL trigger (needs UPDATE_SCHEMA, which it has).
+        assertThat(command(serverIndex, schemaAdminAuth, "sql",
+            "CREATE TRIGGER sqlTrig BEFORE CREATE ON " + VERTEX1_TYPE_NAME + " EXECUTE SQL 'SELECT 1'"))
+            .as("schema admin may create a SQL trigger").isEqualTo(200);
+
+        // Positive control: root (security admin) can still create a JS trigger.
+        assertThat(command(serverIndex, basicAuth("root", DEFAULT_PASSWORD_FOR_TESTS), "sql",
+            "CREATE TRIGGER jsTrigRoot BEFORE CREATE ON " + VERTEX1_TYPE_NAME + " EXECUTE JAVASCRIPT 'true'"))
+            .as("root may create a JS trigger").isEqualTo(200);
+      } finally {
+        deleteUser(serverIndex, SCHEMA_ADMIN_USER);
+      }
+    });
+  }
+
   private static final String SCHEMA_ADMIN_USER = "schema-admin";
   private static final String SCHEMA_ADMIN_PWD  = "schemaadmin1";
 
