@@ -30,6 +30,10 @@ import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
+import org.apache.ratis.metrics.MetricRegistries;
+import org.apache.ratis.metrics.MetricRegistryInfo;
+import org.apache.ratis.metrics.RatisMetricRegistry;
+import org.apache.ratis.metrics.impl.RatisMetricRegistryImpl;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -46,6 +50,8 @@ import org.apache.ratis.server.RaftServerRpc;
 import org.apache.ratis.server.RaftServerRpcWithProxy;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
+import org.apache.ratis.thirdparty.com.codahale.metrics.MetricRegistry;
+import org.apache.ratis.thirdparty.com.codahale.metrics.Timer;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
 
@@ -64,6 +70,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedMap;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -2032,6 +2039,114 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Leader-&gt;follower replication round-trip latency, in milliseconds, keyed by follower peer id.
+   * Unlike {@code lastRpcElapsedMs} (age of the last RPC, which on an idle cluster just tracks the
+   * heartbeat cadence - issue #5314), this is the actual measured RTT of the {@code appendEntries}
+   * RPC: the full replication path (network + gRPC + TLS + serialization). Because heartbeats
+   * <em>are</em> empty {@code appendEntries} RPCs, the figure stays meaningful even with no write
+   * traffic, so no load is required to observe it.
+   * <p>
+   * The data is read from Ratis' gRPC log-appender latency timers, which the leader already maintains
+   * per follower: {@code ratis_grpc.log_appender.{leaderMemberId}.{follower}_latency} (appendEntries
+   * carrying entries) and {@code ...{follower}_heartbeat_latency} (empty heartbeats). Both measure the
+   * same round trip; we report their count-weighted mean, so the value naturally reflects heartbeat RTT
+   * while idle and shifts to the real append RTT under write load.
+   * <p>
+   * Best-effort observability: reaching into Ratis' internal Dropwizard registry is isolated here and
+   * never allowed to disturb the cluster - any failure (not leader, registry not yet created, Ratis
+   * internals changed) yields an empty map rather than an exception. Returns an empty map when this
+   * node is not the leader.
+   */
+  public Map<String, ReplicationLatency> getReplicationLatencies() {
+    final Map<String, ReplicationLatency> result = new HashMap<>();
+    if (raftServer == null || !isLeader())
+      return result;
+
+    try {
+      final RaftServer.Division division = raftServer.getDivision(raftGroup.getGroupId());
+      final String localMemberId = division.getMemberId().toString();
+
+      final List<Map<String, Object>> followers = getFollowerStates();
+      if (followers.isEmpty())
+        return result;
+
+      // Locate THIS leader's gRPC log-appender registry. Filtering by member id is required because a
+      // single JVM may host several servers in tests, each with its own registry keyed by member id.
+      MetricRegistry dropWizard = null;
+      for (final RatisMetricRegistry registry : MetricRegistries.global().getMetricRegistries()) {
+        final MetricRegistryInfo info = registry.getMetricRegistryInfo();
+        if ("ratis_grpc".equals(info.getApplicationName())
+            && "log_appender".equals(info.getMetricsComponentName())
+            && localMemberId.equals(info.getPrefix())
+            && registry instanceof RatisMetricRegistryImpl impl) {
+          dropWizard = impl.getDropWizardMetricRegistry();
+          break;
+        }
+      }
+      if (dropWizard == null)
+        return result;
+
+      final SortedMap<String, Timer> timers = dropWizard.getTimers();
+      for (final Map<String, Object> follower : followers) {
+        final String peerId = (String) follower.get("peerId");
+        if (peerId == null)
+          continue;
+        final ReplicationLatency latency = meanReplicationLatency(timers, peerId);
+        if (latency != null)
+          result.put(peerId, latency);
+      }
+    } catch (final Exception e) {
+      // Never let metric scraping affect replication: fall through to whatever was collected so far.
+      LogManager.instance().log(this, Level.FINE, "Unable to read Ratis replication latency metrics", e);
+    }
+    return result;
+  }
+
+  /**
+   * Aggregates a follower's appendEntries and heartbeat latency timers into a single count-weighted
+   * RTT. The snapshot mean is nanoseconds; we convert to milliseconds. Returns {@code null} when
+   * neither timer has recorded a single RPC yet (nothing meaningful to show).
+   */
+  private static ReplicationLatency meanReplicationLatency(final SortedMap<String, Timer> timers, final String follower) {
+    // Names are fully qualified as ...{memberId}.{follower}_latency / ..._heartbeat_latency. The leading
+    // '.' guard prevents a follower "n1" from matching another follower "xn1".
+    final String appendSuffix = "." + follower + "_latency";
+    final String heartbeatSuffix = "." + follower + "_heartbeat_latency";
+
+    double weightedSumNanos = 0d;
+    double weightedP99Nanos = 0d;
+    double maxNanos = 0d;
+    long totalCount = 0L;
+    for (final Map.Entry<String, Timer> entry : timers.entrySet()) {
+      final String name = entry.getKey();
+      if (!name.endsWith(appendSuffix) && !name.endsWith(heartbeatSuffix))
+        continue;
+      final Timer timer = entry.getValue();
+      final long count = timer.getCount();
+      if (count <= 0)
+        continue;
+      final var snapshot = timer.getSnapshot();
+      weightedSumNanos += snapshot.getMean() * count;
+      weightedP99Nanos += snapshot.get99thPercentile() * count;
+      maxNanos = Math.max(maxNanos, snapshot.getMax());
+      totalCount += count;
+    }
+    if (totalCount == 0L)
+      return null;
+
+    final double toMs = 1_000_000d;
+    return new ReplicationLatency(weightedSumNanos / totalCount / toMs, weightedP99Nanos / totalCount / toMs, maxNanos / toMs);
+  }
+
+  /**
+   * Measured leader-&gt;follower replication round-trip latency in milliseconds (issue #5314): mean and
+   * 99th percentile are count-weighted across the follower's appendEntries and heartbeat timers; max is
+   * the worst single sample observed. All values load-independent (heartbeats keep the timers fed).
+   */
+  public record ReplicationLatency(double meanMs, double p99Ms, double maxMs) {
+  }
+
+  /**
    * Returns one map per follower with its {@code peerId}, {@code matchIndex}, {@code nextIndex} and
    * {@code lastRpcElapsedMs}, as seen by this leader.
    * <p>
@@ -2150,7 +2265,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Returns the formatted ASCII cluster configuration table, or {@code null} if not available
    * (e.g. no peers known). Useful for tests and diagnostics. Note: this builds the table
-   * unconditionally (even on followers, where lag/latency columns will be empty).
+   * unconditionally (even on followers, where lag/rtt/last-contact columns will be empty).
    */
   public String getClusterConfigurationTable() {
     return statusExporter.buildClusterConfigurationTable();

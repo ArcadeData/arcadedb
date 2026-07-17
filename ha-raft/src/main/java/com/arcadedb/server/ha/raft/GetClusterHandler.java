@@ -105,6 +105,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     for (final HAReplicationStatsProvider.FollowerSample sample : followerSamples)
       followerHealth.put(sample.peerId(), sample);
 
+    // Real measured leader->follower replication round-trip latency (issue #5314). Distinct from
+    // lastContactMs (RPC staleness): this is the appendEntries/heartbeat RTT and stays meaningful on an
+    // idle cluster. Previously no latency figure was exposed in this JSON at all.
+    final Map<String, RaftHAServer.ReplicationLatency> replicationLatencies = raftHAServer.getReplicationLatencies();
+
     final JSONArray peers = new JSONArray();
     for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
       final JSONObject peerJson = new JSONObject();
@@ -124,6 +129,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         peerJson.put("replicaStatus", health.status());
         peerJson.put("laggingForMs", health.laggingForMs());
         peerJson.put("lagging", lagWarningThreshold > 0 && health.replicationLag() > lagWarningThreshold);
+        final RaftHAServer.ReplicationLatency rtt = replicationLatencies.get(peerId);
+        if (rtt != null) {
+          peerJson.put("replicationRttMs", rtt.meanMs());
+          peerJson.put("replicationRttP99Ms", rtt.p99Ms());
+        }
       }
 
       peers.put(peerJson);
