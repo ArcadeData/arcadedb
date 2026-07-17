@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.Constants;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -116,16 +117,24 @@ public class MCPDispatcher {
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] %s (user=%s)", transport, method, user.getName());
 
-    return switch (method) {
-      case "initialize" -> result(id, initialize());
-      case "notifications/initialized" -> new MCPResponse(204, null);
-      case "tools/list" -> result(id, new JSONObject().put("tools", TOOLS_LIST));
-      case "tools/call" -> toolsCall(id, params, user);
-      case "resources/list" -> resourcesList(id, user);
-      case "resources/read" -> resourcesRead(id, params, user);
-      case "ping" -> result(id, new JSONObject());
-      default -> error(id, -32601, "Method not found: " + method, 200);
-    };
+    try {
+      return switch (method) {
+        case "initialize" -> result(id, initialize());
+        case "notifications/initialized" -> new MCPResponse(204, null);
+        case "tools/list" -> result(id, new JSONObject().put("tools", TOOLS_LIST));
+        case "tools/call" -> toolsCall(id, params, user);
+        case "resources/list" -> resourcesList(id, user);
+        case "resources/read" -> resourcesRead(id, params, user);
+        case "ping" -> result(id, new JSONObject());
+        default -> error(id, -32601, "Method not found: " + method, 200);
+      };
+    } finally {
+      // A tool or resource read binds the authenticated principal onto this thread's DatabaseContext (so the engine
+      // permission gates enforce, see MCPToolUtils.bindCurrentUser / GHSA-6x73-v3rc-f57c). This transport runs on a
+      // pooled worker thread, so the binding MUST be dropped here or it would leak onto the next request served by
+      // the same thread. A no-op when nothing was bound (initialize/ping/tools-list/notifications).
+      DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+    }
   }
 
   private JSONObject initialize() {
