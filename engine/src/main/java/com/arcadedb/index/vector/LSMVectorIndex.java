@@ -4190,6 +4190,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("graphState", (long) graphState.ordinal()); // LOADING=0, IMMUTABLE=1, MUTABLE=2
     stats.put("graphNodeCount", graphIndex != null ? (long) graphIndex.getIdUpperBound() : 0L);
     stats.put("mutationsSinceRebuild", (long) mutationsSinceSerialize.get());
+    stats.put("asyncRebuildInProgress", asyncRebuildInProgress ? 1L : 0L);
 
     // Calculate mutations threshold (use configured value or default)
     final int defaultMutationsThreshold = getDatabase().getConfiguration()

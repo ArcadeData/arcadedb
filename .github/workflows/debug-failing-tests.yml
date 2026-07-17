@@ -1,0 +1,44 @@
+name: Debug - previously failing unit tests
+
+# Temporary fast-feedback workflow for branch fix/ci-unit-tests-29607237674: runs ONLY the four unit tests
+# that failed in the referenced main CI run, so a green/red signal comes back in minutes instead of a full
+# reactor build. Delete this file before merging the fix.
+
+on:
+  push:
+    branches:
+      - fix/ci-unit-tests-29607237674
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  failing-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: Run the four previously-failing unit tests
+        run: >
+          ./mvnw -pl engine -am test --batch-mode --errors --show-version -DfailIfNoTests=false
+          -Dtest='Issue4547ReadOnlyRecoveryLockLeakTest,CreatePropertyStatementExecutionTest#linkedTypeConstraint,LSMVectorIndexRebuildTest#timerShouldResetOnNewMutations+asyncRebuildShouldBeRetriggeredForMutationsDuringBuild'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Unit Tests Reporter
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        if: success() || failure()
+        with:
+          name: Debug Failing Tests Report
+          path: "**/surefire-reports/TEST*.xml"
+          only-summary: 'false'
+          list-tests: 'all'
+          reporter: java-junit
