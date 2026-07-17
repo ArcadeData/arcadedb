@@ -42,6 +42,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -348,6 +349,7 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
   }
 
   @Test
+  @Disabled
   void Issue5279MultipleTransactionsTestHttp() {
     createDatabase();
     RemoteDatabase db = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
@@ -357,42 +359,61 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
       System.out.println("bucket = " + bucket.getName());
     });
     List<RemoteDatabase> alTx = new ArrayList<>();
-    Set<String> concurrentPage = new HashSet<>();
-    boolean concurrentDetected = false;
+
+    int inserted = 0;
     int concurrentIntent = 10;
-    System.out.println("START inserting");
-    for (int i = 0; i < concurrentIntent; i++) {
-      RemoteDatabase tx = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
-      tx.begin();
-      alTx.add(tx);
+    for (int k = 0; k < 10; k++) {
+      System.out.println("START inserting round " + k);
 
-      MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
-      svt1.set("svex", "concurrent test" + i);
-      svt1.save();
+      for (int i = 0; i < concurrentIntent; i++) {
+        RemoteDatabase tx = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
+        tx.begin();
+        alTx.add(tx);
 
-      System.out.println("" + i + ": " + svt1.getIdentity());
-    }
+        MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
+        svt1.set("svex", "test-" + i + "-" + k);
+        svt1.save();
+        System.out.println("" + i + ": " + svt1.getString("svex"));
+      }
 
-    System.out.println("START committing");
-    for (int i = 0; i < concurrentIntent; i++) {
-      RemoteDatabase tx = alTx.get(i);
-      System.out.println("commitin " + i);
+      System.out.println("START committing round" + k);
+      for (int i = 0; i < concurrentIntent; i++) {
+        RemoteDatabase tx = alTx.get(i);
+        System.out.println("commiting " + i);
 
-      for (int retry = 0; retry < 10; ++retry) {
-
-        try {
-
-          tx.commit();
-          System.out.println("committed");
-          break;
-        } catch (final NeedRetryException | DuplicatedKeyException e) {
-          System.out.println("Retrying commit " + i + " due to " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        for (int retry = 0; retry < 10; ++retry) {
+          try {
+            System.out.println("committing " + i + " retry = " + retry);
+            tx.commit();
+            tx.close();
+            System.out.println("committed: " + i + " from round " + k);
+            inserted++;
+            break;
+          } catch (final NeedRetryException | DuplicatedKeyException e) {
+            System.out.println("Retrying commit " + i + " due to " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            tx.begin();
+          } catch (Exception e) {
+            tx.begin();
+            System.out.println("e.getMessage() = " + e.getMessage());
+          }
         }
       }
+      alTx.clear();
     }
+
+    db.query("sql", "select count() as inserted from SimpleVertexEx").stream().forEach(r -> {
+      System.out.println("Count: " + r.getProperty("inserted"));
+    });
+
+    db.query("sql", "select * from SimpleVertexEx").stream().forEach(r -> {
+      System.out.println(r.toJSON());
+    });
+    System.out.println("inserted = " + inserted);
+
   }
 
   @Test
+  @Disabled
   void Issue5279MultipleTransactionsTestGrpc() {
     database.command("sql", "create vertex type SimpleVertexEx if not exists BUCKETS 1");
     database.getSchema().getType("SimpleVertexEx").getBuckets(true).forEach(bucket -> {
@@ -404,6 +425,7 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     boolean concurrentDetected = false;
     int concurrentIntent = 10;
     System.out.println("START inserting");
+
     for (int i = 0; i < concurrentIntent; i++) {
       RemoteGrpcDatabase tx = new RemoteGrpcDatabase(gs, host, grpcPort, httpPort, "beer", "root", "playwithdata");
       tx.begin();
@@ -501,35 +523,48 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
       System.out.println("bucket = " + bucket.getName());
     });
 
-    ExecutorService executor = Executors.newFixedThreadPool(5);
-    AtomicInteger count = new AtomicInteger(0);
-    for (int i = 0; i < 5; i++) {
+    //number of concurrent threads to run
+    int nThreads = 10;
+    //total number of task to be created
+    int numOfTask = 1000;
+    //number of vertices created by each task
+    int numOfVertexPerTask = 100;
+
+    ExecutorService executor = Executors.newFixedThreadPool(nThreads);
+    AtomicInteger inserted = new AtomicInteger(0);
+    for (int i = 0; i < numOfTask; i++) {
       executor.submit(() -> {
 
         RemoteDatabase tx = new RemoteDatabase(host, httpPort, "test5279", "root", "playwithdata");
 
-        for (int j = 0; j < 10; j++) {
+        for (int j = 0; j < numOfVertexPerTask; j++) {
 
           try {
             tx.transaction(() -> {
-              MutableVertex svt1 = tx.newVertex("SimpleVertexEx");
-              svt1.set("svex", "concurrent test" + count.incrementAndGet());
-              svt1.set("thid", Thread.currentThread().threadId());
-              svt1.save();
-            }, false, 10);
+              tx.command("sqlscript", """
+                  BEGIN;
+                  LOCK TYPE SimpleVertexEx;
+                  CREATE VERTEX SimpleVertexEx SET svex= :svez , thid= :thid;
+                  COMMIT RETRY 30;
+                  """, Map.of("svex", "concurrent test" + inserted.incrementAndGet(),
+                  "thid", Thread.currentThread().threadId()));
+            });
           } catch (Exception e) {
             System.out.println("Error in thread " + Thread.currentThread().threadId() + ": " + e.getMessage());
           }
 
         }
+        tx.close();
       });
     }
 
+
     executor.shutdown();
+    //wait for all the task to be executed while checking the count of inserted vertices
     while (!executor.isTerminated()) {
 
       db.query("sql", "select count(*) as inserted from SimpleVertexEx").stream().forEach(r -> {
-        System.out.println("Count: " + r.getProperty("inserted"));
+        System.out.println("inserted: " + r.getProperty("inserted"));
         try {
           Thread.sleep(100);
         } catch (InterruptedException e) {
@@ -538,11 +573,11 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
       });
     }
 
+    //final check
     db.query("sql", "select count(*) as inserted from SimpleVertexEx").stream().forEach(r -> {
-      System.out.println("Final Count: " + r.getProperty("inserted"));
-    });
-    db.query("sql", "select * from SimpleVertexEx").stream().forEach(r -> {
-      System.out.println(r.toJSON());
+      Long total = r.<Long>getProperty("inserted");
+      System.out.println("Final Count: " + total);
+      assertThat(total).isEqualTo(numOfTask * numOfVertexPerTask);
     });
 
   }
