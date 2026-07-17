@@ -60,31 +60,21 @@ Verified the tests genuinely catch the bug by reverting the production change an
 
 Results: `postgresw` 220 unit + 110 integration tests pass.
 
-## Review cycles
+## Review
 
-### Cycle 1 - `67a53e9`
+PR: https://github.com/ArcadeData/arcadedb/pull/5313 - final state: clean approval (2 cycles).
 
-`gemini-code-assist` (COMMENTED) raised one medium finding: the value path's array switch has no `Byte[]`
-case, so a `Byte[]` reaches the throwing `default`. Verified and accepted:
-
-- **Reachable.** `byte[]` is matched earlier and returns `ARRAY_CHAR`, but `Byte[]` is not a `byte[]`, so it
-  falls into the switch. `InputParameter.isPrimitiveOrWrapperArray` deliberately passes `Byte[]` through
-  un-converted rather than boxing it into a collection, so a query parameter or projection can carry one to
-  the wire. Same crash class as Finding 1, reached via a parameter rather than a property declaration.
-- **Mapped to `ARRAY_INT`, not `ARRAY_CHAR`.** The competing anchor is the primitive/boxed symmetry with
-  `byte[]` -> `ARRAY_CHAR`. `ARRAY_INT` wins: `getTypeForValue(Byte)` -> `INTEGER`,
-  `getArrayTypeForElementType(Byte)` -> `ARRAY_INT` and `getArrayTypeForOfType`'s `INTEGER, SHORT, BYTE ->
-  ARRAY_INT` all agree a `Byte` element is int-ish, and only `Type.BINARY` maps `byte[].class`, so a `Byte[]`
-  does not carry the blob meaning. `byte[] -> ARRAY_CHAR` is also the mapping the issue's Finding 4 already
-  calls incorrect, so anchoring to it would inherit a decision due to change.
-
-Rather than adding the single reported case, the fix closes the family: every type in
-`InputParameter.isPrimitiveOrWrapperArray` is now covered, and
-`valuePathTypesEveryPrimitiveAndWrapperArrayWithoutThrowing` asserts none of them throws. Verified the new
-tests catch the defect by removing the `Byte[]` case and observing 2 `IllegalStateException`s.
-
-`gemini-code-assist` also noted that its consumer GitHub integration is being sunset (no action).
-No findings from `claude`.
+- **Cycle 1 (`67a53e9`)** - `gemini` flagged that the value path's array switch has no `Byte[]` case.
+  Verified reachable and fixed: `Byte[]` is not `byte[]`, and `InputParameter.isPrimitiveOrWrapperArray`
+  passes it through un-converted, so a query parameter can carry one to the wire - the same crash as
+  Finding 1 via a different route. Mapped to `ARRAY_INT` rather than following `byte[] -> ARRAY_CHAR`,
+  because only `byte[].class` carries `Type.BINARY`'s blob meaning while `getTypeForValue(Byte)`,
+  `getArrayTypeForElementType(Byte)` and `getArrayTypeForOfType` all treat a `Byte` element as int4.
+  Closed the whole family rather than the single reported case.
+- **Cycle 2 (`a10df87`)** - `claude` approved (LGTM, no bugs found). `gemini`'s only comment was its cycle-1
+  one re-anchored, already applied. Two non-blocking notes not actioned: unused switch pattern bindings
+  (claude itself endorsed matching the surrounding style), and a request to call the wire-visible behaviour
+  change out in **release notes** - see Impact below, left for the maintainer.
 
 ## Impact
 
