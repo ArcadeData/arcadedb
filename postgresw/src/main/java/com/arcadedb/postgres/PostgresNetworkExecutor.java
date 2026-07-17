@@ -43,6 +43,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
@@ -59,6 +60,7 @@ import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -781,7 +783,17 @@ public class PostgresNetworkExecutor extends Thread {
           // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
           // the nested object instead of re-escaping it as an opaque VARCHAR string.
           final Object value = row.getProperty(p);
-          final PostgresType pgType = PostgresType.getTypeForValue(value);
+          PostgresType pgType = PostgresType.getTypeForValue(value);
+
+          // An empty list carries no element to infer the type from, so getTypeForValue falls back to text[].
+          // Prefer the declared "LIST OF <type>" (issue #5289) so a column's OID does not depend on whether
+          // the first row's list happens to be empty.
+          if (value instanceof Collection<?> collection && collection.isEmpty()) {
+            final PostgresType declaredType = getDeclaredListType(row, p);
+            if (declaredType != null)
+              pgType = declaredType;
+          }
+
           if (pgType.isArrayType() || pgType.isNativeScalarType() || pgType == PostgresType.JSON)
             columns.put(p, pgType);
           else
@@ -797,6 +809,26 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     return columns;
+  }
+
+  /**
+   * Returns the array type declared by the schema for a LIST property, or null when the row is not a schema
+   * element or the property is not a declared LIST.
+   */
+  private PostgresType getDeclaredListType(final Result row, final String propertyName) {
+    final Document element = row.getElement().orElse(null);
+    if (element == null)
+      return null;
+
+    final DocumentType documentType = element.getType();
+    if (documentType == null)
+      return null;
+
+    final Property property = documentType.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null || property.getType() != Type.LIST)
+      return null;
+
+    return PostgresType.getTypeFromArcade(property.getType(), property.getOfType());
   }
 
   /**
@@ -871,7 +903,7 @@ public class PostgresNetworkExecutor extends Thread {
       for (final String propName : docType.getPropertyNames()) {
         final Property prop = docType.getProperty(propName);
         if (prop != null && prop.getType() != null) {
-          columns.put(propName, PostgresType.getTypeFromArcade(prop.getType()));
+          columns.put(propName, PostgresType.getTypeFromArcade(prop.getType(), prop.getOfType()));
         } else {
           columns.put(propName, PostgresType.VARCHAR);
         }
