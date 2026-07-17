@@ -25,7 +25,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
-import com.arcadedb.server.mcp.tools.FullTextSearchTool;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
 import com.arcadedb.server.mcp.tools.ListDatabasesTool;
@@ -35,8 +34,6 @@ import com.arcadedb.server.mcp.tools.ProfilerStopTool;
 import com.arcadedb.server.mcp.tools.QueryTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.mcp.tools.SetServerSettingTool;
-import com.arcadedb.server.mcp.tools.UpsertEntityTool;
-import com.arcadedb.server.mcp.tools.UpsertRelationshipTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.logging.Level;
@@ -51,12 +48,12 @@ public class MCPDispatcher {
 
   private static final String INSTRUCTIONS =
       """
-      You are connected to an ArcadeDB multi-model database server. Follow these rules:
-      1. ALWAYS call list_databases first when you do not know the target database name. Never guess it.
-      2. Prefer Cypher (language: 'cypher') for graph queries unless SQL is explicitly requested.
-      3. Use the 'query' tool for read-only operations (SELECT, MATCH, RETURN) and 'execute_command' for writes (CREATE, INSERT, UPDATE, DELETE, MERGE).
-      4. Call get_schema before writing queries against an unfamiliar database to understand its types and properties. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead: it carries the same content without spending a tool call.
-      5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.""";
+          You are connected to an ArcadeDB multi-model database server. Follow these rules:
+          1. ALWAYS call list_databases first when you do not know the target database name. Never guess it.
+          2. Prefer Cypher (language: 'cypher') for graph queries unless SQL is explicitly requested.
+          3. Use the 'query' tool for read-only operations (SELECT, MATCH, RETURN) and 'execute_command' for writes (CREATE, INSERT, UPDATE, DELETE, MERGE).
+          4. Call get_schema before writing queries against an unfamiliar database to understand its types and properties. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead: it carries the same content without spending a tool call.
+          5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.""";
 
   static {
     TOOLS_LIST = new JSONArray();
@@ -64,9 +61,6 @@ public class MCPDispatcher {
     TOOLS_LIST.put(GetSchemaTool.getDefinition());
     TOOLS_LIST.put(QueryTool.getDefinition());
     TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
-    TOOLS_LIST.put(FullTextSearchTool.getDefinition());
-    TOOLS_LIST.put(UpsertEntityTool.getDefinition());
-    TOOLS_LIST.put(UpsertRelationshipTool.getDefinition());
     TOOLS_LIST.put(ServerStatusTool.getDefinition());
     TOOLS_LIST.put(ProfilerStartTool.getDefinition());
     TOOLS_LIST.put(ProfilerStopTool.getDefinition());
@@ -175,8 +169,6 @@ public class MCPDispatcher {
     } catch (final SecurityException e) {
       LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read -> permission denied: %s", transport, e.getMessage());
       return error(id, -32600, e.getMessage(), 200);
-    } catch (final MCPResourceNotFoundException e) {
-      return error(id, -32002, e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] resources/read -> error: %s", transport, e.getMessage());
       return error(id, -32603, "Internal error: " + e.getMessage(), 200);
@@ -196,9 +188,6 @@ public class MCPDispatcher {
         case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
         case "query" -> QueryTool.execute(server, user, args, config);
         case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
-        case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
-        case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
-        case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);
         case "server_status" -> ServerStatusTool.execute(server, user, args, config);
         case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
         case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
