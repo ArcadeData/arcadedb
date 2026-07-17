@@ -3895,14 +3895,12 @@ public class SelectExecutionPlanner {
     }
 
     if (item.getRids() != null && !item.getRids().isEmpty()) {
-      if (item.getRids().size() == 1) {
-        final PInteger bucket = item.getRids().getFirst().getBucket();
+      for (final Rid rid : item.getRids()) {
+        final PInteger bucket = rid.getBucket();
+        if (bucket == null)
+          // Computed/parameterized RID (e.g. rid: :param): the bucket is only known at runtime, defer resolution
+          return null;
         buckets.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
-      } else {
-        for (final Rid rid : item.getRids()) {
-          final PInteger bucket = rid.getBucket();
-          buckets.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
-        }
       }
       return buckets;
     } else if (item.getInputParams() != null && item.getInputParams().size() > 0) {

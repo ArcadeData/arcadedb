@@ -1018,8 +1018,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       case "rid":
         if (valueObj instanceof Rid) {
           item.rid = (Rid) valueObj;
+        } else if (valueObj instanceof final Expression expr) {
+          if (expr.rid != null) {
+            // Literal RID such as #13:32960 - visitRidLiteral wraps the Rid in an Expression
+            item.rid = expr.rid;
+          } else {
+            // Parameterized or computed RID such as :rid - keep the expression and resolve it against
+            // the command context at plan time (Rid.toRecordId)
+            final Rid computed = new Rid(-1);
+            computed.expression = expr;
+            item.rid = computed;
+          }
+        } else {
+          throw new CommandSQLParsingException("MATCH rid filter must be a RID or an expression evaluating to a RID, got: " + valueObj);
         }
-        // RID might be embedded in a complex expression, for now just skip if not direct Rid
         break;
       case "as":
         // Extract identifier name from the expression
