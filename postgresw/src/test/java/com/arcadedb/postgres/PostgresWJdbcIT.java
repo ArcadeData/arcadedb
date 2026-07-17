@@ -39,7 +39,9 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
@@ -732,6 +734,95 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("_json");
           assertThat(meta.getColumnTypeName(rs.findColumn("certifications"))).isEqualToIgnoringCase("_text");
           assertThat((Object[]) rs.getArray("embedded_list").getArray()).isEmpty();
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5311: an ARRAY_OF_SHORTS property made the whole query fail. The value path's array switch had no
+   * short[]/Short[] case, so it reached its throwing default and the client got an error instead of rows.
+   */
+  @Test
+  void shortArrayPropertyIsQueryable() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Reading IF NOT EXISTS;
+            CREATE PROPERTY Reading.shorts IF NOT EXISTS ARRAY_OF_SHORTS;
+
+            INSERT INTO Reading SET shorts = [1,2];
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Reading")) {
+          assertThat(rs.next()).isTrue();
+          // Shorts are advertised as int4[]: there is no int2[] type to announce them with.
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("shorts"))).isEqualToIgnoringCase("_int4");
+          assertThat((Object[]) rs.getArray("shorts").getArray()).containsExactly(1, 2);
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5311: the schema path had no case for the ARRAY_OF_* and sub-second DATETIME_* types, so it collapsed
+   * them to a scalar varchar. Querying the same type empty and then populated must advertise the same OID.
+   */
+  @Test
+  void arrayAndDatetimeColumnsKeepTheirTypeWhenTheResultSetIsEmpty() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Sample IF NOT EXISTS;
+            CREATE PROPERTY Sample.shorts  IF NOT EXISTS ARRAY_OF_SHORTS;
+            CREATE PROPERTY Sample.ints    IF NOT EXISTS ARRAY_OF_INTEGERS;
+            CREATE PROPERTY Sample.longs   IF NOT EXISTS ARRAY_OF_LONGS;
+            CREATE PROPERTY Sample.floats  IF NOT EXISTS ARRAY_OF_FLOATS;
+            CREATE PROPERTY Sample.doubles IF NOT EXISTS ARRAY_OF_DOUBLES;
+            CREATE PROPERTY Sample.micros  IF NOT EXISTS DATETIME_MICROS;
+            CREATE PROPERTY Sample.nanos   IF NOT EXISTS DATETIME_NANOS;
+            CREATE PROPERTY Sample.seconds IF NOT EXISTS DATETIME_SECOND;
+            """);
+      }
+
+      final Map<String, String> expectedTypeNames = new LinkedHashMap<>();
+      expectedTypeNames.put("shorts", "_int4");
+      expectedTypeNames.put("ints", "_int4");
+      expectedTypeNames.put("longs", "_int8");
+      expectedTypeNames.put("floats", "_float4");
+      expectedTypeNames.put("doubles", "_float8");
+      expectedTypeNames.put("micros", "timestamp");
+      expectedTypeNames.put("nanos", "timestamp");
+      expectedTypeNames.put("seconds", "timestamp");
+
+      // No rows: RowDescription comes from the schema path. Before the fix every column below reported varchar.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Sample WHERE 1=0")) {
+          final var meta = rs.getMetaData();
+          for (final var expected : expectedTypeNames.entrySet())
+            assertThat(meta.getColumnTypeName(rs.findColumn(expected.getKey()))).as("empty result set, column %s", expected.getKey())
+                .isEqualToIgnoringCase(expected.getValue());
+        }
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("INSERT INTO Sample SET shorts = [1,2], ints = [3,4], longs = [5,6], floats = [1.5], "
+            + "doubles = [2.5], micros = sysdate(), nanos = sysdate(), seconds = sysdate()");
+      }
+
+      // Rows present: RowDescription comes from the value path and must announce the very same OIDs.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Sample")) {
+          assertThat(rs.next()).isTrue();
+          final var meta = rs.getMetaData();
+          for (final var expected : expectedTypeNames.entrySet())
+            assertThat(meta.getColumnTypeName(rs.findColumn(expected.getKey()))).as("populated result set, column %s",
+                expected.getKey()).isEqualToIgnoringCase(expected.getValue());
         }
       }
     }
