@@ -266,6 +266,12 @@ public enum PostgresType {
     } else if (val.getClass().isArray()) {
       // Handle Java arrays
       return switch (val) {
+        // Shorts and boxed bytes widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short or a
+        // Byte element, and there is no int2[] entry to pair with a narrower answer. Only the primitive byte[]
+        // means BINARY (handled above); a Byte[] is an array of small integers.
+        case short[] shorts -> PostgresType.ARRAY_INT;
+        case Short[] shorts -> PostgresType.ARRAY_INT;
+        case Byte[] bytes -> PostgresType.ARRAY_INT;
         case int[] ints -> PostgresType.ARRAY_INT;
         case Integer[] ints -> PostgresType.ARRAY_INT;
         case long[] longs -> PostgresType.ARRAY_LONG;
@@ -292,6 +298,50 @@ public enum PostgresType {
   }
 
   /**
+   * Maps an ArcadeDB schema Type to a PostgreSQL type, resolving the element type of a LIST from the
+   * property's declared "OF" clause.
+   *
+   * @param arcadeType The ArcadeDB schema type
+   * @param ofType     The declared element type name of a LIST property, or null when undeclared. Ignored for
+   *                   any other type.
+   *
+   * @return The corresponding PostgreSQL type
+   */
+  public static PostgresType getTypeFromArcade(final Type arcadeType, final String ofType) {
+    if (arcadeType == Type.LIST)
+      return getArrayTypeForOfType(ofType);
+    return getTypeFromArcade(arcadeType);
+  }
+
+  /**
+   * Resolves the array type of a "LIST OF &lt;ofType&gt;" property. An ofType that does not name a scalar
+   * {@link Type} refers to an embedded document type, so the list is advertised as json[]; this mirrors the
+   * convention used by Type.coerceCollectionOfType. An undeclared ofType stays text[].
+   */
+  private static PostgresType getArrayTypeForOfType(final String ofType) {
+    if (ofType == null || ofType.isBlank())
+      return ARRAY_TEXT;
+
+    final Type elementType = Type.getTypeByName(ofType);
+    if (elementType == null)
+      // Not a scalar: the list holds embedded documents of a schema type.
+      return ARRAY_JSON;
+
+    // Every branch must agree with getArrayTypeForElementType, which types a populated list from its first
+    // element: a mismatch would make a column's OID depend on whether the list is empty. DECIMAL therefore
+    // falls through to ARRAY_TEXT, because a list of BigDecimal has no match there either.
+    return switch (elementType) {
+      case BOOLEAN -> ARRAY_BOOLEAN;
+      case INTEGER, SHORT, BYTE -> ARRAY_INT;
+      case LONG -> ARRAY_LONG;
+      case FLOAT -> ARRAY_REAL;
+      case DOUBLE -> ARRAY_DOUBLE;
+      case MAP, EMBEDDED -> ARRAY_JSON;
+      default -> ARRAY_TEXT;
+    };
+  }
+
+  /**
    * Maps an ArcadeDB schema Type to a PostgreSQL type.
    *
    * @param arcadeType The ArcadeDB schema type
@@ -303,6 +353,8 @@ public enum PostgresType {
       return PostgresType.VARCHAR;
     }
 
+    // Every branch must agree with getTypeForValue, which types a column from a sample row: a mismatch would make
+    // the column's OID depend on whether the result set happens to be empty.
     return switch (arcadeType) {
       case BOOLEAN -> PostgresType.BOOLEAN;
       case INTEGER -> PostgresType.INTEGER;
@@ -312,10 +364,14 @@ public enum PostgresType {
       case DOUBLE -> PostgresType.DOUBLE;
       case BYTE -> PostgresType.SMALLINT;
       case STRING -> PostgresType.VARCHAR;
-      case DATETIME -> PostgresType.TIMESTAMP;
+      case DATETIME, DATETIME_MICROS, DATETIME_NANOS, DATETIME_SECOND -> PostgresType.TIMESTAMP;
       case DATE -> PostgresType.DATE;
       case BINARY -> PostgresType.VARCHAR; // No direct binary type, use VARCHAR
       case LIST -> PostgresType.ARRAY_TEXT;
+      case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS -> PostgresType.ARRAY_INT;
+      case ARRAY_OF_LONGS -> PostgresType.ARRAY_LONG;
+      case ARRAY_OF_FLOATS -> PostgresType.ARRAY_REAL;
+      case ARRAY_OF_DOUBLES -> PostgresType.ARRAY_DOUBLE;
       case MAP, EMBEDDED -> PostgresType.JSON;
       case LINK -> PostgresType.VARCHAR;
       case DECIMAL -> PostgresType.DOUBLE;
