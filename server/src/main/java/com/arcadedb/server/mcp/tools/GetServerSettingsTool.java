@@ -26,7 +26,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -61,12 +60,17 @@ public class GetServerSettingsTool {
       if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE)
         continue;
 
+      // Redact every secret setting using the single source of truth (GlobalConfiguration.isHidden(),
+      // which already flags clusterToken/*password*), instead of an ad-hoc "contains password" check that
+      // leaked arcadedb.ha.clusterToken in clear and enabled cluster-forwarded-auth root impersonation
+      // (GHSA-p9wc-4fhr-78wm, sibling of the GetServerHandler fix for GHSA-46hj-24h4-j8gf).
+      final boolean hidden = cfg.isHidden();
       final JSONObject setting = new JSONObject();
       setting.put("key", cfg.getKey());
-      setting.put("value", maskSensitive(cfg.getKey(), cfg.getValue()));
+      setting.put("value", hidden ? "*****" : normalize(cfg.getValue()));
       setting.put("description", cfg.getDescription());
       setting.put("overridden", contextKeys.contains(cfg.getKey()));
-      setting.put("default", maskSensitive(cfg.getKey(), cfg.getDefValue()));
+      setting.put("default", hidden ? "*****" : normalize(cfg.getDefValue()));
       settings.put(setting);
     }
 
@@ -75,9 +79,7 @@ public class GetServerSettingsTool {
     return result;
   }
 
-  private static Object maskSensitive(final String key, final Object value) {
-    if (key.toLowerCase(Locale.ENGLISH).contains("password"))
-      return "*****";
+  private static Object normalize(final Object value) {
     if (value instanceof Class<?> clazz)
       return clazz.getName();
     return value;
