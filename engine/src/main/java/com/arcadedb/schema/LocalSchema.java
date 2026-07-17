@@ -637,7 +637,17 @@ public class LocalSchema implements Schema {
 
   @Override
   public void createTrigger(final Trigger trigger) {
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    // A JAVASCRIPT or JAVA trigger is arbitrary host code that fires with the engine's own privileges: the JS
+    // executor binds the real database object into a GraalVM context (HostAccess.ALL minus reflection), so the
+    // script can reach database.getSecurity().createUser(...) and mint a server-wide admin, and the JAVA executor
+    // loads and runs an arbitrary class. Creating one therefore requires security-admin (UPDATE_SECURITY), not
+    // merely UPDATE_SCHEMA - mirroring the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g) and closing
+    // the UPDATE_SCHEMA -> server-admin escalation (GHSA-38pf-6hp2-pxww). A declarative SQL trigger is not host
+    // code and keeps the standard schema-level protection.
+    if (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT || trigger.getActionType() == Trigger.ActionType.JAVA)
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+    else
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       // Validate trigger does not already exist
