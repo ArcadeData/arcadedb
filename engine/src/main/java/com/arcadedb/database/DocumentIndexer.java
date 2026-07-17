@@ -35,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -610,12 +611,12 @@ public class DocumentIndexer {
           oldKeyValues[i] = getPropertyValue(originalRecord, propertyNamesArray[i]);
           newKeyValues[i] = getPropertyValue(modifiedRecord, propertyNamesArray[i]);
 
-          if (!keyValuesAreModified &&
-              ((newKeyValues[i] == null && oldKeyValues[i] != null) ||
-                  (newKeyValues[i] != null && !newKeyValues[i].equals(oldKeyValues[i])))
-          ) {
+          // Use content-aware comparison: array-typed keys (e.g. the float[] of a vector index) do not override
+          // Object.equals(), so two independently deserialized-but-identical arrays would compare unequal and
+          // trigger a spurious remove()+put() on every record update (issue #5318). Objects.deepEquals falls back
+          // to Object.equals() for scalar keys and to element-wise Arrays.equals() for array keys.
+          if (!keyValuesAreModified && !Objects.deepEquals(newKeyValues[i], oldKeyValues[i]))
             keyValuesAreModified = true;
-          }
         }
 
         indexNewKeyValues[indexPos] = newKeyValues;

@@ -3655,9 +3655,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // During commit phases, TransactionIndexContext.commit() calls this method directly
       lock.writeLock().lock();
       try {
-        // Find all vectors with matching RID and mark as deleted
+        // Find all vectors with matching RID and mark as deleted. Resolve them in O(k) through the RID reverse index
+        // instead of scanning every vector id in the index (issue #5318): the old full scan made any record update on
+        // a vector-indexed type O(index size), so bulk updates degraded quadratically.
         final List<Integer> deletedIds = new ArrayList<>();
-        for (int vectorId : vectorIndex.getAllVectorIds().toArray()) {
+        for (final int vectorId : vectorIndex.getVectorIdsForRid(rid)) {
           final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
           if (loc != null && loc.rid.equals(rid) && !loc.deleted) {
             vectorIndex.markDeleted(vectorId);
