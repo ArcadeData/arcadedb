@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -71,6 +70,7 @@ class RaftClusterStatusExporter {
 
     // Peer list with replication state (follower indices available only on leader)
     final var followerStates = haServer.getFollowerStates();
+    final var replicationLatencies = haServer.getReplicationLatencies();
     final var peers = new JSONArray();
     final RaftPeerId leaderId = haServer.getLeaderId();
     for (final RaftPeer peer : haServer.getLivePeers()) {
@@ -86,6 +86,15 @@ class RaftClusterStatusExporter {
         if (peerId.equals(fs.get("peerId"))) {
           peerJSON.put("matchIndex", fs.get("matchIndex"));
           peerJSON.put("nextIndex", fs.get("nextIndex"));
+          // Time since the leader last heard from this follower (issue #5314): the honest meaning of the
+          // value the CLUSTER CONFIGURATION table used to mislabel as "LATENCY".
+          peerJSON.put("lastContactMs", fs.get("lastRpcElapsedMs"));
+          // Real measured appendEntries/heartbeat round-trip latency (issue #5314), load-independent.
+          final RaftHAServer.ReplicationLatency rtt = replicationLatencies.get(peerId);
+          if (rtt != null) {
+            peerJSON.put("replicationRttMs", rtt.meanMs());
+            peerJSON.put("replicationRttP99Ms", rtt.p99Ms());
+          }
           if (clusterMonitor != null) {
             final var lags = clusterMonitor.getReplicaLags();
             final Long lag = lags.get(peerId);
@@ -147,9 +156,9 @@ class RaftClusterStatusExporter {
 
   /**
    * Immutable snapshot of everything the cluster configuration table renders: the Raft term, the
-   * commit index, one row per committed member ({@code SERVER, ADDRESS, ROLE, LAG, LATENCY, STATUS})
-   * and one row per database with a bootstrap baseline. Extracted so the re-emit decision and the
-   * rendering are pure functions testable without a live Raft cluster (issue #5304).
+   * commit index, one row per committed member ({@code SERVER, ADDRESS, ROLE, LAG, RTT, LAST CONTACT,
+   * STATUS}) and one row per database with a bootstrap baseline. Extracted so the re-emit decision and
+   * the rendering are pure functions testable without a live Raft cluster (issue #5304).
    */
   static final class ConfigSnapshot {
     final long           term;
@@ -175,8 +184,8 @@ class RaftClusterStatusExporter {
    * emission raced a member's join by 112 ms and permanently showed 2 of 3 members).
    * <p>
    * Deduplicated on a STABLE signature (term, member ids, addresses, roles, replica statuses) that
-   * excludes the volatile LAG/LATENCY columns and the commit index: a membership change, role change
-   * or replica-status transition re-emits the table, while ordinary lag fluctuation between ticks
+   * excludes the volatile LAG/RTT/LAST CONTACT columns and the commit index: a membership change, role
+   * change or replica-status transition re-emits the table, while ordinary lag fluctuation between ticks
    * does not flood the log. This also keeps duplicate leader-change events (multiple servers in the
    * same JVM) from printing the same table twice.
    */
@@ -207,7 +216,7 @@ class RaftClusterStatusExporter {
 
   /**
    * Builds the ASCII cluster configuration table as a string, unconditionally (even on followers,
-   * where lag/latency columns will be empty). Returns {@code null} when there are no peers to render.
+   * where lag/rtt/last-contact columns will be empty). Returns {@code null} when there are no peers to render.
    * Used by {@link RaftHAServer#getClusterConfigurationTable()} for tests and diagnostics.
    */
   String buildClusterConfigurationTable() {
@@ -240,6 +249,10 @@ class RaftClusterStatusExporter {
       followerState.put(peerId, new long[] { matchIndex, lastRpcMs });
     }
 
+    // Measured leader->follower replication RTT per follower (issue #5314): the real appendEntries/
+    // heartbeat round-trip, load-independent, distinct from the LAST CONTACT staleness figure below.
+    final Map<String, RaftHAServer.ReplicationLatency> rttByPeer = haServer.getReplicationLatencies();
+
     // Build table rows
     final List<String[]> rows = new ArrayList<>();
     for (final RaftPeer peer : peers) {
@@ -249,26 +262,28 @@ class RaftClusterStatusExporter {
       final String address = peer.getAddress();
 
       String lagStr = "";
-      String latencyStr = "";
+      String rttStr = "";
+      String lastContactStr = "";
       String statusStr = "";
       if (!isPeerLeader) {
         final long[] state = followerState.get(peerId);
         if (state != null) {
           final long lag = commitIndex - state[0];
           lagStr = lag > 0 ? String.valueOf(lag) : "0";
-          // Only show latency when there's active replication traffic (recent RPC).
-          // During idle periods lastRpcElapsedMs just reflects time since last heartbeat.
-          final long elapsedMs = state[1];
-          final long heartbeatInterval =
-              haServer.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
-          if (elapsedMs <= heartbeatInterval)
-            latencyStr = elapsedMs + " ms";
+          // LAST CONTACT = time since the leader last heard from this follower (issue #5314). On an idle
+          // cluster it just tracks the heartbeat cadence, and it is most useful precisely when it grows
+          // large (an election is imminent as it nears electionTimeoutMin), so it is always shown - it is
+          // not, and never was, the network latency the old "LATENCY" header implied.
+          lastContactStr = state[1] + " ms";
         }
+        final RaftHAServer.ReplicationLatency rtt = rttByPeer.get(peerId);
+        if (rtt != null)
+          rttStr = String.format("%.2f ms", rtt.meanMs());
         if (clusterMonitor != null)
           statusStr = clusterMonitor.getReplicaStatus(peerId).name();
       }
 
-      rows.add(new String[] { peerId, address, role, lagStr, latencyStr, statusStr });
+      rows.add(new String[] { peerId, address, role, lagStr, rttStr, lastContactStr, statusStr });
     }
 
     // Deterministic row order: getLivePeers() gives no ordering guarantee, and a mere reordering must
@@ -280,8 +295,8 @@ class RaftClusterStatusExporter {
 
   /**
    * Hash over the stable columns only: the term plus each member's id, address, role and replica
-   * status. LAG, LATENCY and the commit index are deliberately excluded - they move on nearly every
-   * lag-monitor tick and would defeat the deduplication (issue #5304).
+   * status. LAG, RTT, LAST CONTACT and the commit index are deliberately excluded - they move on nearly
+   * every lag-monitor tick and would defeat the deduplication (issue #5304).
    */
   static int stableSignature(final ConfigSnapshot snapshot) {
     int h = Long.hashCode(snapshot.term);
@@ -289,14 +304,14 @@ class RaftClusterStatusExporter {
       h = 31 * h + Objects.hashCode(row[0]); // SERVER
       h = 31 * h + Objects.hashCode(row[1]); // ADDRESS
       h = 31 * h + Objects.hashCode(row[2]); // ROLE
-      h = 31 * h + Objects.hashCode(row[5]); // STATUS
+      h = 31 * h + Objects.hashCode(row[6]); // STATUS
     }
     return h;
   }
 
   /** Renders the ASCII cluster configuration table for the given snapshot. Pure function. */
   static String renderTable(final ConfigSnapshot snapshot) {
-    final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY", "STATUS" };
+    final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "RTT", "LAST CONTACT", "STATUS" };
     final int[] widths = new int[headers.length];
     for (int i = 0; i < headers.length; i++)
       widths[i] = headers[i].length();

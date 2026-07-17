@@ -69,9 +69,17 @@ class RaftClusterStatusExporterReemitTest {
     }
   }
 
+  // Columns since issue #5314: SERVER, ADDRESS, ROLE, LAG, RTT, LAST CONTACT, STATUS. The pre-existing
+  // tests below do not exercise RTT (they cover the re-emit logic), so this helper leaves it empty and
+  // maps the old "latency" argument to its honest home, the LAST CONTACT column.
   private static String[] row(final String id, final String address, final String role, final String lag,
-      final String latency, final String status) {
-    return new String[] { id, address, role, lag, latency, status };
+      final String lastContact, final String status) {
+    return row(id, address, role, lag, "", lastContact, status);
+  }
+
+  private static String[] row(final String id, final String address, final String role, final String lag,
+      final String rtt, final String lastContact, final String status) {
+    return new String[] { id, address, role, lag, rtt, lastContact, status };
   }
 
   private static ConfigSnapshot snapshot(final long term, final long commitIndex, final int configuredServers,
@@ -226,6 +234,60 @@ class RaftClusterStatusExporterReemitTest {
 
     assertThat(exporter.emitted).hasSize(2);
     assertThat(exporter.emitted.get(1)).doesNotContain("configured servers");
+  }
+
+  @Test
+  void headerRenamesLatencyToLastContactAndAddsRtt() {
+    // Issue #5314: the old "LATENCY" header actually showed time-since-last-RPC, not the round trip.
+    // It is renamed to the honest "LAST CONTACT", and a real "RTT" column is added alongside it.
+    final TestExporter exporter = new TestExporter();
+    exporter.snapshot = snapshot(20, 913, 2,
+        row("arcadedb-1", "arcadedb-1:2424", "Leader", "", "", ""),
+        row("arcadedb-2", "arcadedb-2:2424", "Follower", "0", "2408 ms", "HEALTHY"));
+
+    exporter.printClusterConfiguration();
+
+    final String table = exporter.emitted.get(0);
+    assertThat(table).contains("LAST CONTACT");
+    assertThat(table).contains("RTT");
+    assertThat(table).doesNotContain("LATENCY");
+    // The staleness figure is now under LAST CONTACT, always shown (it was previously suppressed when it
+    // exceeded the heartbeat window - exactly when it matters most).
+    assertThat(table).contains("2408 ms");
+  }
+
+  @Test
+  void rttColumnRendersMeasuredRoundTrip() {
+    // The RTT column carries the real, sub-millisecond replication round-trip even while LAST CONTACT
+    // sits at multiple seconds on an idle cluster - the two are independent quantities (issue #5314).
+    final TestExporter exporter = new TestExporter();
+    exporter.snapshot = snapshot(20, 913, 2,
+        row("arcadedb-1", "arcadedb-1:2424", "Leader", "", "", "", ""),
+        row("arcadedb-2", "arcadedb-2:2424", "Follower", "0", "0.65 ms", "2408 ms", "HEALTHY"));
+
+    exporter.printClusterConfiguration();
+
+    final String table = exporter.emitted.get(0);
+    assertThat(table).contains("0.65 ms"); // RTT
+    assertThat(table).contains("2408 ms"); // LAST CONTACT
+  }
+
+  @Test
+  void rttChangeAloneDoesNotReemit() {
+    // RTT is as volatile as LAG/LAST CONTACT and must be excluded from the stable signature, or the
+    // table would re-flood the log on every lag-monitor tick (issue #5304 treatment, issue #5314 scope).
+    final TestExporter exporter = new TestExporter();
+    exporter.snapshot = snapshot(20, 913, 2,
+        row("arcadedb-1", "arcadedb-1:2424", "Leader", "", "", "", ""),
+        row("arcadedb-2", "arcadedb-2:2424", "Follower", "0", "0.61 ms", "2400 ms", "HEALTHY"));
+    exporter.printClusterConfiguration();
+
+    exporter.snapshot = snapshot(20, 954, 2,
+        row("arcadedb-1", "arcadedb-1:2424", "Leader", "", "", "", ""),
+        row("arcadedb-2", "arcadedb-2:2424", "Follower", "0", "0.72 ms", "2412 ms", "HEALTHY"));
+    exporter.printClusterConfiguration();
+
+    assertThat(exporter.emitted).hasSize(1);
   }
 
   @Test
