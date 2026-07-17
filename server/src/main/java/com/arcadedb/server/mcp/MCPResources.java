@@ -18,11 +18,12 @@
  */
 package com.arcadedb.server.mcp;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
+import com.arcadedb.server.mcp.tools.MCPToolUtils;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.TreeSet;
@@ -75,7 +76,10 @@ public class MCPResources {
     if (databaseName == null || !server.existsDatabase(databaseName) || !user.canAccessToDatabase(databaseName))
       throw new MCPResourceNotFoundException("Resource not found: " + uri);
 
-    final Database database = server.getDatabase(databaseName);
+    final ServerDatabase database = server.getDatabase(databaseName);
+    // Bind the principal so engine permission gates enforce for MCP callers (GHSA-6x73-v3rc-f57c); cleared by
+    // MCPDispatcher in a finally.
+    MCPToolUtils.bindCurrentUser(database, user);
     final JSONObject schema = GetSchemaTool.buildSchema(database, databaseName);
 
     final JSONArray contents = new JSONArray();

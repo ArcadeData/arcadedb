@@ -23,6 +23,8 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
@@ -54,7 +56,29 @@ public class MCPToolUtils {
     }
     if (!user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
-    return server.getDatabase(databaseName);
+
+    final ServerDatabase database = server.getDatabase(databaseName);
+    bindCurrentUser(database, user);
+    return database;
+  }
+
+  /**
+   * Binds the authenticated MCP principal onto the current thread's {@link DatabaseContext} so the engine's
+   * per-user permission gates ({@code LocalDatabase.checkPermissionsOnDatabase} / {@code checkPermissionsOnFile})
+   * actually enforce for MCP callers, exactly as the HTTP, Bolt, Postgres and gRPC transports do. Those gates are
+   * deliberately no-ops when no user is bound (the mechanism embedded and HA-apply contexts use to skip checks), so
+   * without this binding every gate silently passes and a non-root MCP user escalates to arbitrary writes, DDL,
+   * security mutation, and (via a {@code js} query) in-JVM script execution (GHSA-6x73-v3rc-f57c).
+   * <p>
+   * The binding lives on the request thread and MUST be cleared once the tool completes; {@link com.arcadedb.server.mcp.MCPDispatcher}
+   * does this in a finally via {@link DatabaseContext#removeCurrentThreadContexts()} so the principal never leaks onto
+   * the pooled worker thread.
+   */
+  public static void bindCurrentUser(final DatabaseInternal database, final ServerSecurityUser user) {
+    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context == null)
+      context = DatabaseContext.INSTANCE.init(database);
+    context.setCurrentUser(user.getDatabaseUser(database));
   }
 
   /**
