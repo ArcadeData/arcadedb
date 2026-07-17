@@ -266,6 +266,10 @@ public enum PostgresType {
     } else if (val.getClass().isArray()) {
       // Handle Java arrays
       return switch (val) {
+        // Shorts widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short element, and there is
+        // no int2[] entry to pair with a narrower answer.
+        case short[] shorts -> PostgresType.ARRAY_INT;
+        case Short[] shorts -> PostgresType.ARRAY_INT;
         case int[] ints -> PostgresType.ARRAY_INT;
         case Integer[] ints -> PostgresType.ARRAY_INT;
         case long[] longs -> PostgresType.ARRAY_LONG;
@@ -347,6 +351,8 @@ public enum PostgresType {
       return PostgresType.VARCHAR;
     }
 
+    // Every branch must agree with getTypeForValue, which types a column from a sample row: a mismatch would make
+    // the column's OID depend on whether the result set happens to be empty.
     return switch (arcadeType) {
       case BOOLEAN -> PostgresType.BOOLEAN;
       case INTEGER -> PostgresType.INTEGER;
@@ -356,10 +362,14 @@ public enum PostgresType {
       case DOUBLE -> PostgresType.DOUBLE;
       case BYTE -> PostgresType.SMALLINT;
       case STRING -> PostgresType.VARCHAR;
-      case DATETIME -> PostgresType.TIMESTAMP;
+      case DATETIME, DATETIME_MICROS, DATETIME_NANOS, DATETIME_SECOND -> PostgresType.TIMESTAMP;
       case DATE -> PostgresType.DATE;
       case BINARY -> PostgresType.VARCHAR; // No direct binary type, use VARCHAR
       case LIST -> PostgresType.ARRAY_TEXT;
+      case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS -> PostgresType.ARRAY_INT;
+      case ARRAY_OF_LONGS -> PostgresType.ARRAY_LONG;
+      case ARRAY_OF_FLOATS -> PostgresType.ARRAY_REAL;
+      case ARRAY_OF_DOUBLES -> PostgresType.ARRAY_DOUBLE;
       case MAP, EMBEDDED -> PostgresType.JSON;
       case LINK -> PostgresType.VARCHAR;
       case DECIMAL -> PostgresType.DOUBLE;
