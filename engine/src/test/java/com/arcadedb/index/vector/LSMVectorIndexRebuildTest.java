@@ -495,28 +495,32 @@ class LSMVectorIndexRebuildTest extends TestHelper {
         database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
     });
 
-    // Trigger async rebuild via search
+    // Note the current build-snapshot generation, then trigger the async rebuild via a search.
+    final long snapshotGenBefore = lsmIndex.getStats().get("rebuildSnapshotGeneration");
     results = lsmIndex.findNeighborsFromVector(queryVector, 10);
     assertThat(results).isNotEmpty();
 
-    // Wait until the async rebuild is actually running before we start injecting more vectors.
-    Awaitility.await("async rebuild started")
+    // Wait (bounded) until the async rebuild has snapshotted its start counter. Vectors inserted after this
+    // point are recorded past the snapshot, so the rebuild must NOT fold them into its own subtraction
+    // (issue #3683). This replaces a fixed 200ms "let it start" sleep whose injection window was missed under
+    // CI load; the bound keeps a rebuild delayed behind the single-permit REBUILD_SEMAPHORE from hanging the test.
+    Awaitility.await("async rebuild snapshotted its start counter")
         .atMost(Duration.ofSeconds(30))
         .pollInterval(Duration.ofMillis(20))
-        .until(() -> lsmIndex.getStats().get("asyncRebuildInProgress") == 1L);
+        .until(() -> lsmIndex.getStats().get("rebuildSnapshotGeneration") > snapshotGenBefore);
 
-    // Keep inserting vectors for as long as the rebuild is running. The rebuild subtracts only the mutation
-    // count it snapshotted at its start (issue #3683), so vectors inserted after that snapshot - which this
-    // loop guarantees, since it spans the whole build - must survive as a non-zero counter afterwards. This
-    // replaces a fixed 200ms "let it start" sleep whose injection window was missed under CI load.
-    int injectedDuringBuild = 0;
-    while (lsmIndex.getStats().get("asyncRebuildInProgress") == 1L) {
-      final float[] v = generateRandomVector(random);
-      database.transaction(() -> database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) v));
-      injectedDuringBuild++;
-      Thread.sleep(10);
-    }
-    assertThat(injectedDuringBuild).as("expected at least one vector to be injected during the async rebuild").isGreaterThan(0);
+    // Add more vectors DURING the async rebuild, guaranteed to land after the snapshot taken above.
+    final int vectorsDuringBuild = threshold + 5;
+    database.transaction(() -> {
+      for (int i = 0; i < vectorsDuringBuild; i++)
+        database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
+    });
+
+    // Wait (bounded) for the async rebuild to finish.
+    Awaitility.await("async rebuild finished")
+        .atMost(Duration.ofSeconds(30))
+        .pollInterval(Duration.ofMillis(100))
+        .until(() -> lsmIndex.getStats().get("asyncRebuildInProgress") == 0L);
 
     // After the async rebuild completes, the mutations added DURING the build must be preserved.
     stats = lsmIndex.getStats();

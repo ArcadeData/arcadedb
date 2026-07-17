@@ -26,10 +26,14 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Run the four previously-failing unit tests
+      # Runs the two non-vector target tests plus the WHOLE vector index package: the vector rebuild fixes
+      # depend on the JVM-wide single-permit rebuild semaphore, so exercising the full package (not just the
+      # two tests in isolation) reproduces the cross-test contention that must not deadlock.
+      - name: Run the previously-failing unit tests plus the full vector index package
         run: >
-          ./mvnw -pl engine -am test --batch-mode --errors --show-version -DfailIfNoTests=false
-          -Dtest='Issue4547ReadOnlyRecoveryLockLeakTest,CreatePropertyStatementExecutionTest#linkedTypeConstraint,LSMVectorIndexRebuildTest#timerShouldResetOnNewMutations+asyncRebuildShouldBeRetriggeredForMutationsDuringBuild'
+          ./mvnw -pl engine -am test --batch-mode --errors --show-version
+          -DexcludedGroups=slow,benchmark -Dsurefire.failIfNoSpecifiedTests=false
+          -Dtest='Issue4547ReadOnlyRecoveryLockLeakTest,CreatePropertyStatementExecutionTest#linkedTypeConstraint,com.arcadedb.index.vector.**'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
