@@ -27,9 +27,10 @@ Two defects in how the Postgres wire types a RowDescription column:
 
 Scoped to items 1 and 2 of the issue's suggested scope.
 
-- `getTypeForValue`: added `short[]`/`Short[]` -> `ARRAY_INT`. Shorts widen to `int4[]` because
-  `getArrayTypeForElementType` already answers `ARRAY_INT` for a `Short` element and `PostgresType` has no
-  `int2[]` entry to pair with a narrower answer.
+- `getTypeForValue`: added `short[]`/`Short[]`/`Byte[]` -> `ARRAY_INT`. These widen to `int4[]` because
+  `getArrayTypeForElementType` already answers `ARRAY_INT` for a `Short` or `Byte` element and `PostgresType`
+  has no `int2[]` entry to pair with a narrower answer. `Byte[]` was found during review (see below) and is
+  the same crash reached via a query parameter rather than a property declaration.
 - `getTypeFromArcade`: added the 8 missing cases - `ARRAY_OF_SHORTS`/`ARRAY_OF_INTEGERS` -> `ARRAY_INT`,
   `ARRAY_OF_LONGS` -> `ARRAY_LONG`, `ARRAY_OF_FLOATS` -> `ARRAY_REAL`, `ARRAY_OF_DOUBLES` -> `ARRAY_DOUBLE`,
   and `DATETIME_MICROS`/`DATETIME_NANOS`/`DATETIME_SECOND` -> `TIMESTAMP` (folded into the existing
@@ -57,7 +58,33 @@ table against silently skipping a `Type` added to the enum later.
 Verified the tests genuinely catch the bug by reverting the production change and confirming they fail
 (4 failures + 1 `IllegalStateException`), then restoring it.
 
-Results: `postgresw` 218 unit + 110 integration tests pass.
+Results: `postgresw` 220 unit + 110 integration tests pass.
+
+## Review cycles
+
+### Cycle 1 - `67a53e9`
+
+`gemini-code-assist` (COMMENTED) raised one medium finding: the value path's array switch has no `Byte[]`
+case, so a `Byte[]` reaches the throwing `default`. Verified and accepted:
+
+- **Reachable.** `byte[]` is matched earlier and returns `ARRAY_CHAR`, but `Byte[]` is not a `byte[]`, so it
+  falls into the switch. `InputParameter.isPrimitiveOrWrapperArray` deliberately passes `Byte[]` through
+  un-converted rather than boxing it into a collection, so a query parameter or projection can carry one to
+  the wire. Same crash class as Finding 1, reached via a parameter rather than a property declaration.
+- **Mapped to `ARRAY_INT`, not `ARRAY_CHAR`.** The competing anchor is the primitive/boxed symmetry with
+  `byte[]` -> `ARRAY_CHAR`. `ARRAY_INT` wins: `getTypeForValue(Byte)` -> `INTEGER`,
+  `getArrayTypeForElementType(Byte)` -> `ARRAY_INT` and `getArrayTypeForOfType`'s `INTEGER, SHORT, BYTE ->
+  ARRAY_INT` all agree a `Byte` element is int-ish, and only `Type.BINARY` maps `byte[].class`, so a `Byte[]`
+  does not carry the blob meaning. `byte[] -> ARRAY_CHAR` is also the mapping the issue's Finding 4 already
+  calls incorrect, so anchoring to it would inherit a decision due to change.
+
+Rather than adding the single reported case, the fix closes the family: every type in
+`InputParameter.isPrimitiveOrWrapperArray` is now covered, and
+`valuePathTypesEveryPrimitiveAndWrapperArrayWithoutThrowing` asserts none of them throws. Verified the new
+tests catch the defect by removing the `Byte[]` case and observing 2 `IllegalStateException`s.
+
+`gemini-code-assist` also noted that its consumer GitHub integration is being sunset (no action).
+No findings from `claude`.
 
 ## Impact
 

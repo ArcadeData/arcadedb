@@ -266,10 +266,12 @@ public enum PostgresType {
     } else if (val.getClass().isArray()) {
       // Handle Java arrays
       return switch (val) {
-        // Shorts widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short element, and there is
-        // no int2[] entry to pair with a narrower answer.
+        // Shorts and boxed bytes widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short or a
+        // Byte element, and there is no int2[] entry to pair with a narrower answer. Only the primitive byte[]
+        // means BINARY (handled above); a Byte[] is an array of small integers.
         case short[] shorts -> PostgresType.ARRAY_INT;
         case Short[] shorts -> PostgresType.ARRAY_INT;
+        case Byte[] bytes -> PostgresType.ARRAY_INT;
         case int[] ints -> PostgresType.ARRAY_INT;
         case Integer[] ints -> PostgresType.ARRAY_INT;
         case long[] longs -> PostgresType.ARRAY_LONG;

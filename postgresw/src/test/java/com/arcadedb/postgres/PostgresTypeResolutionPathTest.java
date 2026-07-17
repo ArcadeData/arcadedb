@@ -143,6 +143,35 @@ class PostgresTypeResolutionPathTest {
   }
 
   @Test
+  void valuePathTypesBoxedByteArraysAsIntArrays() {
+    // Only the primitive byte[] carries Type.BINARY's blob meaning; a Byte[] is an array of small integers, and
+    // Byte elements already resolve to int4 everywhere else (getTypeForValue, getArrayTypeForElementType).
+    assertThat(PostgresType.getTypeForValue(new Byte[] { 1, 2 })).isEqualTo(PostgresType.ARRAY_INT);
+    assertThat(PostgresType.getTypeForValue(new byte[] { 1, 2 })).isEqualTo(PostgresType.ARRAY_CHAR);
+  }
+
+  @Test
+  void valuePathTypesEveryPrimitiveAndWrapperArrayWithoutThrowing() {
+    // SQL passes these through to the wire un-converted rather than boxing them into a collection (see
+    // InputParameter.isPrimitiveOrWrapperArray), so each one reaches the value path's array switch. Any type
+    // missing a case there hits its throwing default and fails the whole query, which is what #5311 reported
+    // for short[]. Assert the family is covered rather than only the reported member.
+    final List<Object> arrays = List.of(
+        new byte[] { 1 }, new Byte[] { 1 },
+        new short[] { 1 }, new Short[] { 1 },
+        new int[] { 1 }, new Integer[] { 1 },
+        new long[] { 1L }, new Long[] { 1L },
+        new float[] { 1f }, new Float[] { 1f },
+        new double[] { 1d }, new Double[] { 1d },
+        new boolean[] { true }, new Boolean[] { true },
+        new char[] { 'a' }, new Character[] { 'a' },
+        new String[] { "a" });
+
+    for (final Object array : arrays)
+      assertThat(PostgresType.getTypeForValue(array)).as("value path of %s", array.getClass().getSimpleName()).isNotNull();
+  }
+
+  @Test
   void schemaPathTypesArrayTypesAsArrays() {
     assertThat(PostgresType.getTypeFromArcade(Type.ARRAY_OF_SHORTS)).isEqualTo(PostgresType.ARRAY_INT);
     assertThat(PostgresType.getTypeFromArcade(Type.ARRAY_OF_INTEGERS)).isEqualTo(PostgresType.ARRAY_INT);
