@@ -50,6 +50,12 @@ COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY config /home/arcadedb/config
 COPY --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
 
+# scratch ships no /tmp. java.io.tmpdir defaults to /tmp and some libraries (Lucene, Netty) may
+# write temporary files or unpack native code there, which would fail with IOException on a bare
+# scratch image. Materialize /tmp with the WORKDIR trick before switching to the real working dir.
+# It is created root-owned 0755 (writable by the default root runtime user); a non-root --user run
+# should bind-mount a writable /tmp.
+WORKDIR /tmp
 WORKDIR /home/arcadedb
 
 # scratch has no /etc/passwd and no shell, so there is no `adduser`/`chown`/`useradd` binary to
