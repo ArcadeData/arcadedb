@@ -19,7 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
@@ -152,15 +154,32 @@ class CreatePropertyStatementExecutionTest extends TestHelper {
       database.newDocument("Invoice").set("products",//
         List.of(database.newDocument("Invoice").save())).save())).isInstanceOf(ValidationException.class);
 
-    assertThatThrownBy(() -> validInvoice[0].set("tags", List.of(3, "hard to close")).save()).isInstanceOf(ValidationException.class);
+    // A scalar value whose runtime type differs from the collection's declared ofType is coerced to that
+    // ofType on the write path (consistent with top-level scalar properties), so it does not fail validation:
+    // the LIST OF STRING coerces the integer 3 to "3" and the MAP OF STRING coerces the float 10.0 to its
+    // string form. Structural mismatches (links/embedded documents of the wrong type) still throw below.
+    database.transaction(() -> validInvoice[0].set("tags", List.of(3, "hard to close")).save());
+    assertThat((List<Object>) validInvoice[0].get("tags")).containsExactly("3", "hard to close");
 
-    assertThatThrownBy(() -> validInvoice[0].set("settings", Map.of("test", 10F)).save()).isInstanceOf(ValidationException.class);
+    database.transaction(() -> validInvoice[0].set("settings", Map.of("test", 10F)).save());
+    assertThat(((Map<?, ?>) validInvoice[0].get("settings")).get("test")).isInstanceOf(String.class);
 
-    assertThatThrownBy(() -> database.transaction(() ->
-      validInvoice[0].set("mainProduct", database.newDocument("Invoice").save()).save())).isInstanceOf(ValidationException.class);
+    // Each structural-constraint check below reloads a fresh copy of the committed invoice: a transaction
+    // that rolls back on the expected ValidationException must not leave dirty in-memory state (such as a
+    // link to a rolled-back record) that would corrupt the following check.
+    final RID invoiceRID = validInvoice[0].getIdentity();
 
-    assertThatThrownBy(() -> database.transaction(() ->
-      validInvoice[0].newEmbeddedDocument("Invoice", "embedded").save())).isInstanceOf(ValidationException.class);
+    // A LINK declared "of Product" rejects a link to a document of a different type.
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument invoice = ((Document) database.lookupByRID(invoiceRID, true)).modify();
+      invoice.set("mainProduct", database.newDocument("Invoice").save()).save();
+    })).isInstanceOf(ValidationException.class);
+
+    // An EMBEDDED declared "of Product" rejects an embedded document of a different type.
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument invoice = ((Document) database.lookupByRID(invoiceRID, true)).modify();
+      invoice.newEmbeddedDocument("Invoice", "embedded").save();
+    })).isInstanceOf(ValidationException.class);
   }
 
   @Test
