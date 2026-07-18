@@ -383,9 +383,14 @@ public class BinaryComparator {
 
     final int minSize = (int) Math.min(b1Size, b2Size);
 
+    // Compare bytes UNSIGNED to stay consistent with every other string/byte comparison in the engine
+    // (UnsignedBytesComparator, the static compareBytes and compare() for TYPE_STRING). A signed comparison
+    // sorts UTF-8 continuation/lead bytes (>= 0x80, negative as a Java byte) before ASCII, which desynchronizes
+    // the LSM binary-search seek from the range-cursor stop condition and makes partial-prefix lookups on
+    // composite indexes return rows of unrelated keys when the key holds accented/multi-byte characters (#5321).
     for (int i = 0; i < minSize; ++i) {
-      final byte b1 = buffer1[i];
-      final byte b2 = buffer2.getByte();
+      final int b1 = buffer1[i] & 0xFF;
+      final int b2 = buffer2.getByte() & 0xFF;
 
       if (b1 > b2)
         return 1;
