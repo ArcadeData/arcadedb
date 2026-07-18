@@ -43,10 +43,16 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Set up GraalVM (Community, JDK 25)
+      # java-version is pinned to the EXACT patch release (not "25") to match
+      # native/pom.xml's native.graalvm.version, which pins the Truffle/polyglot artifacts to the
+      # same patch. A builder/Truffle version skew fails the native build at feature registration
+      # (NoSuchMethodError: OptimizedTruffleRuntime.getLoopNodeFactory()) - see docs/native-image.md
+      # "Prerequisites". If you bump native.graalvm.version in native/pom.xml, bump this
+      # java-version to match in the SAME change.
+      - name: Set up GraalVM (Community, JDK 25.0.2)
         uses: graalvm/setup-graalvm@0def53c0fd8534bc13416c9469f5be45265824fd # v1.6.1
         with:
-          java-version: "25"
+          java-version: "25.0.2"
           distribution: "graalvm-community"
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: "true"
