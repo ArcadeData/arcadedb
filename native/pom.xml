@@ -47,6 +47,13 @@
             the JVM engine build untouched while letting the JS language embed into the image.
         -->
         <native.graalvm.version>25.0.2</native.graalvm.version>
+        <!--
+            Flag plumbed through by the CI matrix (native-image.yml) for the two static-musl Linux
+            targets. A no-op today: the profile below activates but contributes no extra build args
+            yet. Task 7 (static-musl Docker images) fills in the actual static/musl native-image
+            buildArgs (the "static" and "libc=musl" flags), conditioned on this same profile.
+        -->
+        <native.static>false</native.static>
     </properties>
 
     <dependencyManagement>
@@ -225,4 +232,23 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+            Activated by -Dnative.static=true (see native-image.yml's two required Linux jobs, which
+            also install musl-tools before invoking Maven). Currently a no-op placeholder: Task 7
+            adds the actual static/musl native-image buildArgs here (the "static" and "libc=musl"
+            flags), scoped to this profile so the default dynamic-linked build on macOS/Windows is
+            unaffected.
+        -->
+        <profile>
+            <id>native-static</id>
+            <activation>
+                <property>
+                    <name>native.static</name>
+                    <value>true</value>
+                </property>
+            </activation>
+        </profile>
+    </profiles>
 </project>
