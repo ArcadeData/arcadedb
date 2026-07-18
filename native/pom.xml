@@ -111,6 +111,9 @@
                 <configuration>
                     <mainClass>${mainClass}</mainClass>
                     <imageName>${imageName}</imageName>
+                    <metadataRepository>
+                        <enabled>true</enabled>
+                    </metadataRepository>
                     <buildArgs>
                         <buildArg>--no-fallback</buildArg>
                         <buildArg>-H:+ReportExceptionStackTraces</buildArg>
