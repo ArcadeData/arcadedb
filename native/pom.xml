@@ -48,12 +48,19 @@
         -->
         <native.graalvm.version>25.0.2</native.graalvm.version>
         <!--
-            Flag plumbed through by the CI matrix (native-image.yml) for the two static-musl Linux
-            targets. A no-op today: the profile below activates but contributes no extra build args
-            yet. Task 7 (static-musl Docker images) fills in the actual static/musl native-image
-            buildArgs (the "static" and "libc=musl" flags), conditioned on this same profile.
+            Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
+            Activates the native-static profile below, which appends the fully-static musl
+            native-image buildArgs (static linking, libc=musl). Produces a scratch-compatible
+            binary. See native.mostlystatic below for the linux/arm64 counterpart, which cannot
+            use this mode (no musl static JDK libs for aarch64 - oracle/graal#4645).
         -->
         <native.static>false</native.static>
+        <!--
+            Flag plumbed through by the CI matrix (native-image.yml) for the linux/arm64 job.
+            Activates the native-mostly-static profile below. See that profile's comment for why
+            linux/arm64 uses a different build mode than linux/amd64's native.static.
+        -->
+        <native.mostlystatic>false</native.mostlystatic>
     </properties>
 
     <dependencyManagement>
@@ -266,6 +273,57 @@
                             <buildArgs combine.children="append">
                                 <buildArg>--static</buildArg>
                                 <buildArg>--libc=musl</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Activated by -Dnative.mostlystatic=true (see native-image.yml's linux/arm64 job).
+            Appends -H:+StaticExecutableWithDynamicLibC to the base native-maven-plugin buildArgs
+            declared above, producing a "mostly-static" executable: everything is statically
+            linked except glibc itself, which stays dynamically loaded at runtime (glibc's own
+            NSS name-service-switch mechanism requires dlopen, which is incompatible with a fully
+            static glibc link - this is GraalVM's documented middle ground for glibc targets that
+            can't go fully static).
+
+            linux/arm64 needs this different mode instead of native-static's fully static musl
+            build because GraalVM CE ships no static musl JDK libraries for aarch64: the
+            graalvm-community-jdk-25.0.2 linux-aarch64 release tarball has
+            lib/static/linux-aarch64/glibc but not lib/static/linux-aarch64/musl (linux-amd64 ships
+            both) - see oracle/graal#4645 (closed not-planned). The resulting binary needs a glibc
+            runtime (a tiny distroless glibc base image), not `scratch`, unlike native-static's
+            fully static musl output - see native/src/main/docker/Dockerfile.native.distroless
+            and docs/native-image.md.
+
+            combine.children="append" is required for the same reason documented on native-static
+            above: Maven's default profile/base plugin-configuration merge for a repeated
+            <buildArg> element is positional, not a union, so an unmarked <buildArgs> here would
+            silently replace one of the base build's flags instead of adding a new one.
+
+            Mutually exclusive with native-static by convention, not by XML constraint: the CI
+            matrix sets exactly one of -Dnative.static=true / -Dnative.mostlystatic=true per Linux
+            leg, never both. Neither property defaults to true, so this profile - like
+            native-static - is inactive on the default dynamic-linked build used on macOS/Windows.
+        -->
+        <profile>
+            <id>native-mostly-static</id>
+            <activation>
+                <property>
+                    <name>native.mostlystatic</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <configuration>
+                            <buildArgs combine.children="append">
+                                <buildArg>-H:+StaticExecutableWithDynamicLibC</buildArg>
                             </buildArgs>
                         </configuration>
                     </plugin>
