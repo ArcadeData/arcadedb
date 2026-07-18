@@ -27,6 +27,7 @@ import com.arcadedb.log.LogManager;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -105,7 +106,12 @@ public class PageManagerFlushThread extends Thread {
     public final List<MutablePage> pages;
 
     public PagesToFlush(final List<MutablePage> pages) {
-      this.pages = pages;
+      // removeAllPagesOfDatabase()/removePagesOfFileFromBatch() mutate this list (clear()/it.remove()) when a
+      // database or file is dropped, so it must be mutable. The hot commit path already hands us a fresh
+      // ArrayList; only rare callers (e.g. compaction passing List.of(page)) supply an immutable list, which we
+      // wrap here so a later drop does not throw UnsupportedOperationException - without adding an allocation to
+      // the common path.
+      this.pages = pages == null || pages instanceof ArrayList ? pages : new ArrayList<>(pages);
       this.database = pages == null || pages.isEmpty() ? null : pages.getFirst().pageId.getDatabase();
     }
   }
