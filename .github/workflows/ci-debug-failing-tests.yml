@@ -31,8 +31,10 @@ jobs:
           java-version: 21
           cache: "maven"
 
+      # The whole reactor, as the main build-and-package job does. Excluding load-tests here breaks the
+      # build: e2e-ha depends on its test-jar, so the reactor no longer resolves.
       - name: Build without tests
-        run: ./mvnw install -DskipTests --batch-mode --errors --show-version -pl '!e2e,!load-tests'
+        run: ./mvnw clean install -DskipTests --batch-mode --errors --show-version
 
       - name: Cache Maven artifacts
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
