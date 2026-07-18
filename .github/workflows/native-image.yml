@@ -1,0 +1,16 @@
+name: Native Image
+
+# Stub. This enables the `workflow_dispatch` event so the full Native Image workflow, which lives
+# on the `feat/native-image` branch, can be run manually against that branch: workflow_dispatch
+# only registers a workflow as dispatchable once a workflow of this name exists on the default
+# branch, and dispatching executes the version of the file present on the selected ref. This stub
+# is replaced by the real 5-target build/smoke/Docker workflow when the native-image feature merges.
+on:
+  workflow_dispatch:
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: echo "Stub. The full native-image workflow lives on feat/native-image; dispatch that branch to run it."
