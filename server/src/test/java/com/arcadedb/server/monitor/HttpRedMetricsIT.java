@@ -52,7 +52,12 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     assertThat(anyTimer).isNotNull();
 
     // The query route must be tagged with the template, not the concrete database name "graph".
-    final Timer queryTimer = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "/query/{database}").timer();
+    // Every tag of the tuple this test drove is pinned: the ITs share one reused fork, so meters from
+    // earlier test classes are still registered under this name and a path-only lookup returns an
+    // arbitrary one of them. Those stale meters record nothing for this test, so asserting a count on
+    // one is a false failure that depends purely on test ordering.
+    final Timer queryTimer = Metrics.globalRegistry.find("arcadedb.http.requests")
+        .tag("path", "/query/{database}").tag("db", "graph").tag("method", "POST").tag("status", "200").timer();
     assertThat(queryTimer).isNotNull();
     assertThat(queryTimer.count()).isGreaterThanOrEqualTo(1L);
 
