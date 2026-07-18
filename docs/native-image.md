@@ -216,3 +216,138 @@ true` (or similar) as a real fix, since it targets a resolver ArcadeDB's native 
 including it would be a harmless no-op at best and misleading documentation at worst. If a future
 dependency change adds `netty-resolver-dns` to a module compiled into the native image, revisit this
 section rather than assuming the belt-and-suspenders flag above covers it.
+
+## Docker images: split build mode per Linux architecture
+
+Task 8 of the native-image spike. `native-image.yml`'s `docker` job packages each required Linux
+binary into a minimal container image and pushes per-arch tags; the `manifest` job stitches them
+into one multi-arch tag. Both Linux targets are "static-ish" for exactly the reason explained
+above (`scratch`/distroless bases have no shared libraries to satisfy a dynamically-linked
+binary), but they get there by two **different** build modes, because GraalVM CE cannot build a
+fully-static musl binary for `linux/arm64`:
+
+| Arch | `-D` property | `native/pom.xml` profile | Build args added | Result | Docker base |
+|---|---|---|---|---|---|
+| linux/amd64 | `-Dnative.static=true` | `native-static` | `--static --libc=musl` | fully static, zero dynamic dependencies | `native/src/main/docker/Dockerfile.native.scratch` - `FROM scratch` |
+| linux/arm64 | `-Dnative.mostlystatic=true` | `native-mostly-static` | `-H:+StaticExecutableWithDynamicLibC` | static except glibc itself (dynamically loaded at runtime) | `native/src/main/docker/Dockerfile.native.distroless` - `FROM gcr.io/distroless/base-debian12:nonroot` |
+
+`linux/arm64` cannot use `native-static`'s `--static --libc=musl` combination: as documented
+above, the GraalVM CE JDK 25 release ships no `lib/static/linux-aarch64/musl` (only `glibc`),
+so that link fails with "Missing libraries: java, nio, net, zip" regardless of toolchain setup
+(oracle/graal#4645, closed not-planned). `-H:+StaticExecutableWithDynamicLibC` is GraalVM's own
+documented "mostly static" fallback for glibc targets that can't go fully static: everything
+statically linked except glibc, which stays dynamically `dlopen`'d at runtime (this is also *why*
+it can't go further - glibc's NSS mechanism needs `dlopen`, which is incompatible with static
+linking). The two properties are activated independently and are mutually exclusive by CI
+convention (each Linux leg of the matrix sets exactly one); neither defaults to `true`, so
+neither affects the plain dynamic-linked builds used on macOS/Windows. Verify locally:
+
+```bash
+# Neither profile active by default
+mvn -Pnative help:active-profiles -pl native | grep native-static      # no output
+mvn -Pnative help:active-profiles -pl native | grep native-mostly-static  # no output
+
+# Each property activates only its own profile
+mvn -Pnative -Dnative.static=true       help:active-profiles -pl native | grep native-static
+mvn -Pnative -Dnative.mostlystatic=true help:active-profiles -pl native | grep native-mostly-static
+```
+
+Because the CI matrix now distinguishes build mode per Linux leg (`linkmode: musl-static` for
+amd64, `linkmode: mostly-static` for arm64), the "Set up musl toolchain" step in
+`native-image.yml` only runs on the amd64 leg - it would be pure wasted CI time on arm64, since
+that leg never attempts `--libc=musl` in the first place. One side effect: `exercise.sh`'s
+Postgres-wire smoke check WARN-skips (rather than hard-failing) on the arm64 leg, because that
+step is also what installs `postgresql-client`; this is an accepted, documented trade-off, not an
+oversight.
+
+### The two Dockerfiles
+
+`native/src/main/docker/Dockerfile.native.scratch` (linux/amd64 only):
+- `FROM scratch` - no libc, no shell, no package manager.
+- `COPY`s in the static-musl binary, `config/` (staged from `package/src/main/config`), and a
+  `ca-certificates.crt` bundle (scratch has no trust store at all - needed for HTTPS
+  import/replication/MCP-client code paths). Note: GraalVM Native Image bakes a snapshot of the
+  *build machine's* JDK cacerts trust store into the image at build time by default; this PEM
+  bundle provides an OS-level trust store for anything that reads it explicitly, but does not
+  itself change the JVM's default trust anchors. Documented as a known caveat, not resolved here.
+- No `adduser`/`chown` is possible (no shell), so the image runs as UID 0 unless the caller
+  overrides it with `docker run --user <uid>:<gid>` - see the run example below.
+
+`native/src/main/docker/Dockerfile.native.distroless` (linux/arm64 only):
+- `FROM gcr.io/distroless/base-debian12:nonroot` - glibc, libssl and a CA bundle already baked in
+  (verified against distroless's published image contents: the `base` variant, unlike
+  `static`, includes glibc + `ca-certificates`; no separate cert `COPY` needed here, unlike the
+  scratch image above).
+- The `:nonroot` tag bakes in a `nonroot:nonroot` (65532:65532) user/group, so this image runs
+  non-root by default with no `--user` override required - unlike scratch, which has no
+  `/etc/passwd` at all.
+
+Both images preserve the same `EXPOSE`/`VOLUME` surface as `package/src/main/docker/Dockerfile`,
+scoped to the protocol modules the native build actually bundles (`native/pom.xml`'s
+dependencies: server, console, studio, graphql, postgresw, redisw, mongodbw, bolt, grpcw - no
+Gremlin, hence no port 8182): `2480` (HTTP/Studio), `2424` (binary/replication), `5432`
+(Postgres), `6379` (Redis), `27017` (MongoDB), `7687` (Bolt - `GlobalConfiguration.BOLT_PORT`'s
+default, and easy to miss since it wasn't in the original task brief's port list), and `50051`
+(gRPC). Volumes: `config`, `databases`, `backups`, `replication`, `log`, matching the JVM image.
+
+Neither image has a shell, so neither can use a `JAVA_OPTS`-reading wrapper script the way
+`package/src/main/docker/Dockerfile`'s `bin/server.sh` does (the README's documented
+`docker run ... -e JAVA_OPTS="-Darcadedb.server.rootPassword=..."` pattern for the JVM image does
+not carry over). Both `ENTRYPOINT`s are exec-form arrays invoking the static binary directly (the
+binary is itself the "java" replacement); extra `-D` flags are passed as trailing `docker run`
+arguments, which Docker appends after the `ENTRYPOINT` array:
+
+```bash
+docker run --rm -p 2480:2480 \
+  -v "$(pwd)/databases:/home/arcadedb/databases" \
+  --user 1000:1000 \
+  arcadedata/arcadedb:<version>-native \
+  -Darcadedb.server.rootPassword=PlayWithData123!
+```
+
+`--user 1000:1000` is only meaningful (and only necessary) for the `scratch`/amd64 image; the
+`distroless`/arm64 image already runs as its baked-in non-root UID by default. Substitute a UID
+that owns the host-side `databases` bind mount, or `chown` that directory to match. `<version>` is
+the plain Maven `project.version` (e.g. `26.8.1`, matching this repo's release-tag convention - no
+`v` prefix), and `-native` (no arch suffix) is the multi-arch manifest tag; `-native-amd64` /
+`-native-arm64` are the per-arch tags if a specific architecture is needed directly.
+
+### CI jobs: `docker` and `manifest`
+
+`native-image.yml`'s `docker` job runs once per required Linux arch (`needs: build`, on that
+arch's own native runner - no QEMU cross-emulation is involved anywhere in this workflow), and:
+1. Downloads that arch's binary artifact and stages a build context (`ctx/`): the binary
+   (`chmod`ped executable via `COPY --chmod=0755`), `config/` copied from
+   `package/src/main/config`, and (amd64 only) `ca-certificates.crt`.
+2. `docker buildx build`s with the arch-appropriate Dockerfile, tagging
+   `arcadedata/arcadedb:<version>-native-<arch>`.
+3. Smoke-tests the built image: runs it, polls `GET /api/v1/ready` for up to 60s, and fails the
+   job if it never comes up.
+
+The `manifest` job (`needs: docker`) stitches the two per-arch tags into
+`arcadedata/arcadedb:<version>-native` via `docker buildx imagetools create`.
+
+**Push gating (safe default, chosen and documented here):** `native-image.yml` has no `push:`
+trigger at all - only `workflow_dispatch` and `release` (`types: [published]`) - so an ordinary
+branch push can never reach the `docker`/`manifest` jobs in the first place. On top of that,
+within the `docker` job itself, only a published release (`github.event_name == 'release'`) logs
+into Docker Hub and passes `--push` to `buildx build`; a manual `workflow_dispatch` run instead
+builds with `--load` (loads into the runner's local Docker daemon, never touches the registry)
+and still runs the full smoke test against that locally-loaded image. This lets a maintainer
+manually trigger the workflow from any branch to validate the Dockerfiles/build context/smoke
+test end-to-end without publishing anything under `arcadedata/arcadedb`. The `manifest` job only
+runs `if: github.event_name == 'release'`, since a `workflow_dispatch` run never pushes per-arch
+tags for it to stitch.
+
+### What is CI-only
+
+This entire section describes CI-verified behavior. Author's environment for Task 8 was an arm64
+macOS machine, which cannot build a Linux native binary (musl or mostly-static-glibc) or run a
+Linux `docker buildx build` targeting either Dockerfile without the Linux binary the CI matrix
+produces - so none of the following were built or run locally, and are verification gaps closed
+only by the CI matrix + `docker`/`manifest` jobs: the `linux/amd64` static-musl and `linux/arm64`
+mostly-static-glibc native-image builds themselves; either Dockerfile actually building an image;
+the smoke test against a running container; and the multi-arch `imagetools create` manifest.
+What *was* verified locally: `native/pom.xml`'s profile activation/mutual-exclusivity (the
+`help:active-profiles` commands above), the workflow YAML's validity, `actionlint` (shellcheck
+embedded) cleanliness, and `hadolint` cleanliness on both Dockerfiles.
