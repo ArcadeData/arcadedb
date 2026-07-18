@@ -64,6 +64,8 @@ public class RedisQueryMetricsIT extends BaseGraphServerTest {
     final long beforeCount = internalTimerCount();
 
     try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
+
       // PING
       jedis.ping();
 
