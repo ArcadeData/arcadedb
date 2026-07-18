@@ -170,7 +170,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     assertThatThrownBy(() -> assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue()).isInstanceOf(Exception.class);
 
     assertThat(console.parse("create user albert identified by einstein grant connect to db1")).isTrue();
-    assertThat(console.parse("create user jeff identified by amazon grant connect to db1:readonly")).isTrue();
+    assertThat(console.parse("create user jeff identified by amazonaws grant connect to db1:readonly")).isTrue();
     assertThat(console.parse("drop user albert")).isTrue();
   }
 
