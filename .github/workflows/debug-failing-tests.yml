@@ -33,7 +33,7 @@ jobs:
         run: >
           ./mvnw -pl engine -am test --batch-mode --errors --show-version
           -DexcludedGroups=slow,benchmark -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest='Issue4547ReadOnlyRecoveryLockLeakTest,CreatePropertyStatementExecutionTest#linkedTypeConstraint,com.arcadedb.index.vector.**'
+          -Dtest='Issue4547ReadOnlyRecoveryLockLeakTest,CreatePropertyStatementExecutionTest#linkedTypeConstraint,com.arcadedb.index.vector.**,PageManagerFlushImmutableBatchDropTest,LSMTreeCompactionCorrectnessTest,com.arcadedb.engine.PageManagerFlush**'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
