@@ -135,7 +135,7 @@ If your deployment needs Gremlin or OpenTelemetry tracing, use the JVM distribut
 
 ## Target matrix
 
-`.github/workflows/native-image.yml` builds five targets. Native Image cannot cross-compile, so
+`.github/workflows/native-image.yml` builds four targets. Native Image cannot cross-compile, so
 each target is built on a runner of that same OS/architecture:
 
 | Target | Runner | Status |
@@ -143,20 +143,17 @@ each target is built on a runner of that same OS/architecture:
 | linux/amd64 | `ubuntu-latest` | **Required** - fully static (musl) |
 | linux/arm64 | `ubuntu-24.04-arm` | **Required** - mostly static (glibc) |
 | macos/arm64 | `macos-15` | Best-effort |
-| macos/amd64 | `macos-15-intel` | Best-effort |
 | windows/amd64 | `windows-latest` | Best-effort |
 
-The two Linux targets are `required: true` in the CI matrix and gate the workflow; the other three
-are `required: false` (`continue-on-error`), so a failure there does not redden the run. There is no
-`windows/arm64` leg: GitHub does not offer a free Windows-on-ARM hosted runner.
+The two Linux targets are `required: true` in the CI matrix and gate the workflow; the other two are
+`required: false` (`continue-on-error`), so a failure there does not redden the run.
 
-**`macos/amd64` is a likely dead leg.** GitHub fully retired the free `macos-13` (Intel) hosted
-runner; the closest still-available x64 macOS label is `macos-15-intel`, but that label is part of
-GitHub's paid "Larger Runners" tier and only schedules jobs if the repository/org has that
-entitlement enabled. This repository has already hit the same wall elsewhere and disabled the
-equivalent legs in `test-python-*.yml`. Until that entitlement exists (or GitHub reintroduces a free
-x64 macOS runner), the `macos/amd64` native-image leg is expected to simply not run rather than fail
-loudly.
+**No macos/amd64 or windows/arm64 targets.** There is no free hosted runner for either. GitHub
+retired the free `macos-13` (Intel) runner, and the only remaining x64 macOS label, `macos-15-intel`,
+is part of GitHub's paid "Larger Runners" tier - it is not enabled here and fails at job setup (this
+repository hit the same wall and disabled the equivalent legs in `test-python-*.yml`), so the
+`macos/amd64` leg was removed rather than shipped permanently red. GitHub offers no free
+Windows-on-ARM runner either.
 
 ## Docker images
 

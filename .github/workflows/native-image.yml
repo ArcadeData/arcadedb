@@ -22,13 +22,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-13 (Intel) has been fully retired by GitHub since this plan was drafted - it is no
-        # longer a valid hosted-runner label (see actions/runner-images#13518 and the current
-        # README at https://github.com/actions/runner-images, checked 2026-07-18). macos-15-intel is
-        # the closest still-GA x64 macOS replacement, but it is a "Larger Runners" label: it only
-        # schedules if this org/repo has that (paid) entitlement enabled. macos-14 (arm64) is also
-        # mid-deprecation as of this date (actions/runner-images#13518), so macos/arm64 uses macos-15
-        # instead to avoid shipping a new workflow pinned to an image already on its way out.
+        # No free hosted runner exists for macOS x64 or Windows arm64, so neither is built. GitHub
+        # retired the free macos-13 Intel runner (actions/runner-images#13518); macos-15-intel is a
+        # paid "Larger Runners" label that isn't enabled here and fails at job setup, so macos/amd64
+        # is dropped rather than shipping a permanently-red leg. macos/arm64 uses macos-15 (macos-14
+        # is mid-deprecation). Native-image cannot cross-compile, so each target builds on its own
+        # runner.
         # linkmode distinguishes the two Linux build modes (see the "Set up musl toolchain" and
         # "Build native image" steps below, and native/pom.xml's native-static/native-mostly-static
         # profiles):
@@ -44,7 +43,6 @@ jobs:
           - { runner: ubuntu-latest,    os_name: linux,   arch: amd64, required: true,  linkmode: musl-static   }
           - { runner: ubuntu-24.04-arm, os_name: linux,   arch: arm64, required: true,  linkmode: mostly-static }
           - { runner: macos-15,         os_name: macos,   arch: arm64, required: false, linkmode: dynamic       }
-          - { runner: macos-15-intel,   os_name: macos,   arch: amd64, required: false, linkmode: dynamic       }
           - { runner: windows-latest,   os_name: windows, arch: amd64, required: false, linkmode: dynamic       }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
