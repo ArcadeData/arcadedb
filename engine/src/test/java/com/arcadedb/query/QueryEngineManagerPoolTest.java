@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 
@@ -29,6 +31,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -40,8 +43,55 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The pool's behaviour matters operationally (it backs every parallel query), so these tests
  * pin the contract independently of the rest of the engine. The pool itself is a JVM-wide
  * singleton, so the tests target observable behaviour rather than reconfiguring the singleton.
+ * <p>
+ * <b>Pinning discipline.</b> Saturating the pool means blocking every one of its worker threads.
+ * Because the pool is shared by the whole JVM, a leaked latch leaves those workers blocked for
+ * the rest of the surefire fork; every later caller that waits on an untimed {@code Future.get()}
+ * (e.g. {@code GraphAlgorithms.awaitFutures}) then hangs forever. So every test that pins workers
+ * MUST take the latch inside a try/finally that releases it, with no assertion or pool interaction
+ * placed before the {@code try}. The class-level timeout is the backstop if that discipline slips.
  */
+@Timeout(120)
 class QueryEngineManagerPoolTest {
+
+  /**
+   * How long a pinning task is given to reach a worker thread. Generous on purpose: the pool is
+   * shared, so on a loaded CI runner the workers may be finishing other engine work when the
+   * pinning tasks are submitted. A tight bound here is the difference between a stable test and a
+   * spurious failure.
+   */
+  private static final int WORKER_PIN_TIMEOUT_SECONDS = 30;
+
+  /**
+   * Worker count read from the pool itself rather than recomputed from {@code availableProcessors()}.
+   * The pool honours {@code arcadedb.queryParallelismPoolThreads}, so a guess based on CPU count can
+   * be too low (queue never fills, no fallback happens) or too high (the pin latch never reaches
+   * zero) depending on how the JVM was configured.
+   */
+  private static int maxPoolThreads() {
+    return ((ThreadPoolExecutor) QueryEngineManager.getInstance().getExecutorService()).getMaximumPoolSize();
+  }
+
+  /**
+   * Guards the pinning discipline described in the class javadoc: after every test the shared pool
+   * must still be able to run work on its own threads.
+   * <p>
+   * A leaked pin is otherwise undetectable here and lethal later - the pool is JVM-wide, so the
+   * next caller that waits on an untimed future blocks for the lifetime of the fork, with no error
+   * and no output to attribute it to. Both leak shapes are caught: if the workers are pinned and
+   * the queue is full the canary is redirected to the caller thread by the rejection policy (so the
+   * thread id comes back equal to ours), and if the queue still has room the canary sits in it
+   * forever (so the timed get expires). Either way this fails fast, right next to the culprit.
+   */
+  @AfterEach
+  void poolMustNotBeLeftSaturated() throws Exception {
+    final long callerThreadId = Thread.currentThread().threadId();
+    final Future<Long> canary = QueryEngineManager.getInstance().getExecutorService()
+        .submit(() -> Thread.currentThread().threadId());
+    assertThat(canary.get(WORKER_PIN_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        .as("pool must be left usable: a test leaked a pinned worker and poisoned the shared pool")
+        .isNotEqualTo(callerThreadId);
+  }
 
   /** {@link QueryEngineManager.PoolStats} fields are non-negative and self-consistent at rest. */
   @Test
@@ -82,30 +132,33 @@ class QueryEngineManagerPoolTest {
   void callerRunsFallbackTicksWhenQueueSaturates() throws Exception {
     final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
     final QueryEngineManager.PoolStats before = QueryEngineManager.getInstance().getExecutorStats();
-    final int poolSize = Math.max(2, Runtime.getRuntime().availableProcessors());
+    final int poolSize = maxPoolThreads();
     final int queueCapacity = before.queueCapacityRemaining() + before.queueDepth();
     final CountDownLatch release = new CountDownLatch(1);
     final CountDownLatch allWorkersBusy = new CountDownLatch(poolSize);
 
-    // Pin every worker thread on a latch so the queue actually fills.
-    for (int i = 0; i < poolSize; i++) {
-      executor.submit(() -> {
-        try {
-          allWorkersBusy.countDown();
-          release.await();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
-      });
-    }
-    assertThat(allWorkersBusy.await(5, TimeUnit.SECONDS))
-        .as("all workers should pick up the blocking task within 5s").isTrue();
-
-    // Fill the queue. Each task is a no-op runnable; they remain queued until release fires.
-    for (int i = 0; i < queueCapacity; i++)
-      executor.submit(() -> { /* no-op */ });
-
+    // Everything that touches the pool lives inside this try: the finally is the only thing that
+    // un-pins the shared worker threads, so nothing may throw before we get here.
     try {
+      // Pin every worker thread on a latch so the queue actually fills.
+      for (int i = 0; i < poolSize; i++) {
+        executor.submit(() -> {
+          try {
+            allWorkersBusy.countDown();
+            release.await();
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        });
+      }
+      assertThat(allWorkersBusy.await(WORKER_PIN_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+          .as("all %d workers should pick up the blocking task within %ds", poolSize, WORKER_PIN_TIMEOUT_SECONDS)
+          .isTrue();
+
+      // Fill the queue. Each task is a no-op runnable; they remain queued until release fires.
+      for (int i = 0; i < queueCapacity; i++)
+        executor.submit(() -> { /* no-op */ });
+
       // The next submit must trigger caller-runs. Use a sentinel that records its execution
       // thread so we can assert it ran on this thread.
       final long callerThreadId = Thread.currentThread().threadId();
@@ -153,6 +206,15 @@ class QueryEngineManagerPoolTest {
         (AtomicLong) throttleField.get(QueryEngineManager.getInstance());
     throttle.set(0L);
 
+    // Read the pool geometry before swapping the logger, so that the swap is the last thing that
+    // happens before the try: nothing between it and the finally can throw and strand the
+    // substitute logger in place for the rest of the fork.
+    final int poolSize = maxPoolThreads();
+    final QueryEngineManager.PoolStats before = QueryEngineManager.getInstance().getExecutorStats();
+    final int queueCapacity = before.queueCapacityRemaining() + before.queueDepth();
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch allWorkersBusy = new CountDownLatch(poolSize);
+
     // Capture WARNING logs via the LogManager logger swap. The production logger writes to the
     // server console (and routes through the slf4j chain in production); the test substitutes a
     // simple list-collector for the duration of the test, then restores.
@@ -175,11 +237,6 @@ class QueryEngineManagerPoolTest {
       @Override public void flush() {}
     });
 
-    final int poolSize = Math.max(2, Runtime.getRuntime().availableProcessors());
-    final QueryEngineManager.PoolStats before = QueryEngineManager.getInstance().getExecutorStats();
-    final int queueCapacity = before.queueCapacityRemaining() + before.queueDepth();
-    final CountDownLatch release = new CountDownLatch(1);
-    final CountDownLatch allWorkersBusy = new CountDownLatch(poolSize);
     try {
       for (int i = 0; i < poolSize; i++) {
         executor.submit(() -> {
@@ -191,7 +248,11 @@ class QueryEngineManagerPoolTest {
           }
         });
       }
-      allWorkersBusy.await(5, TimeUnit.SECONDS);
+      // Asserted, not ignored: if the workers never pinned, the queue below never fills and the
+      // saturation this test exists to observe would silently not happen.
+      assertThat(allWorkersBusy.await(WORKER_PIN_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+          .as("all %d workers should pick up the blocking task within %ds", poolSize, WORKER_PIN_TIMEOUT_SECONDS)
+          .isTrue();
       for (int i = 0; i < queueCapacity; i++)
         executor.submit(() -> { /* no-op */ });
 
