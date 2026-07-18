@@ -236,9 +236,17 @@
     <profiles>
         <!--
             Activated by -Dnative.static=true (see native-image.yml's two required Linux jobs, which
-            also install musl-tools before invoking Maven). Currently a no-op placeholder: Task 7
-            adds the actual static/musl native-image buildArgs here (the "static" and "libc=musl"
-            flags), scoped to this profile so the default dynamic-linked build on macOS/Windows is
+            install and configure the musl+zlib toolchain before invoking Maven - see the "Set up
+            musl toolchain" step). Appends the static and libc=musl native-image flags to the base
+            native-maven-plugin buildArgs declared above, producing a fully statically-linked
+            (musl-libc) executable that runs on `scratch`. combine.children="append" is required
+            here: the plugin's buildArgs element is declared with multiple buildArg children in the
+            base build/plugins block above, and Maven's default Xpp3Dom merge for a profile plugin
+            configuration with the same groupId/artifactId is a positional merge (dominant child at
+            index N overrides recessive child at index N) rather than a union; without
+            combine.children="append" the two buildArg elements below would silently replace two of
+            the base build's flags instead of extending the list. This scoping also keeps the default
+            dynamic-linked build used on macOS/Windows (and any future non-static Linux job)
             unaffected.
         -->
         <profile>
@@ -249,6 +257,20 @@
                     <value>true</value>
                 </property>
             </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <configuration>
+                            <buildArgs combine.children="append">
+                                <buildArg>--static</buildArg>
+                                <buildArg>--libc=musl</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 </project>
