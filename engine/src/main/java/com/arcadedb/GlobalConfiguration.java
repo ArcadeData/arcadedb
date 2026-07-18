@@ -1311,6 +1311,10 @@ public enum GlobalConfiguration {
   REDIS_DEFAULT_DATABASE("arcadedb.redis.defaultDatabase", SCOPE.SERVER,
       "Default database name for Redis protocol connections. If set, RAM commands (SET, GET, etc.) will use this database's globalVariables. Empty means no default (requires SELECT command or key prefix)", String.class, ""),
 
+  REDIS_TLS("arcadedb.redis.tls", SCOPE.SERVER,
+      "When true, the Redis wire-protocol listener accepts only TLS connections, using the shared SSL key/trust store settings (arcadedb.ssl.*). The AUTH credentials are then encrypted in transit. Default is false",
+      Boolean.class, false),
+
   // MONGO
   MONGO_PORT("arcadedb.mongo.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Mongo plugin. Default is 27017", Integer.class, 27017),
