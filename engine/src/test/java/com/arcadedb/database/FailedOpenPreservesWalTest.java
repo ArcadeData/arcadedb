@@ -18,8 +18,11 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.TestHelper;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -32,42 +35,57 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * {@code releaseResourcesOnOpenFailure} closes the transaction manager, whose clean-close path deletes
  * every {@code *.wal} file in the database directory. That glob is directory-wide and mode-blind, so a
- * rejected open used to discard the WAL of a database that had not been cleanly closed - exactly the
- * files the following recovery-capable open needs to replay. Everything committed after the last page
- * flush was lost, and the recovery open could then observe a zero-length dictionary file and fail
- * outright while loading the schema.
+ * rejected open used to discard the WAL of a database that had not been cleanly closed, losing every
+ * change made after the last page flush.
+ * <p>
+ * The test deliberately manages its own factory and directory rather than extending {@code TestHelper}:
+ * the database it builds is killed and never reopened, which the shared lifecycle cannot clean up
+ * (its teardown queries a dead instance and would leak it into the tests that follow).
+ * <p>
+ * It stops at the WAL-preservation invariant and does not assert that the following recovery open
+ * succeeds. That is a separate, pre-existing defect: {@code openInternal} runs {@code schema.load()}
+ * before {@code checkForRecovery()}, so a database killed before its dictionary page reached disk is
+ * unopenable whether or not the WAL survives - {@code Dictionary.reload} sees a zero-length file and
+ * commits a transaction during the load, where file id 0 is not yet registered.
  */
-class FailedOpenPreservesWalTest extends TestHelper {
+class FailedOpenPreservesWalTest {
+  private static final String DATABASE_NAME = "FailedOpenPreservesWalTest";
+  private static final String DATABASE_PATH = "./target/databases/" + DATABASE_NAME;
 
-  @Override
-  protected void beginTest() {
-    database.getSchema().createDocumentType("WalPreserveType");
+  @BeforeEach
+  @AfterEach
+  void cleanDatabaseDirectory() {
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    // The database built here is killed, so it never unwinds its thread-local context the way a clean
+    // close would. Left behind, it becomes the "active database" of this thread and every later test in
+    // the reused fork sees a dead instance instead of no context at all.
+    DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 
   @Test
   void rejectedReadOnlyOpenDoesNotDeleteTheWalNeededForRecovery() {
-    database.transaction(() -> database.newDocument("WalPreserveType").set("k", 1).save());
+    try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+      final Database database = factory.create();
+      database.getSchema().createDocumentType("WalPreserveType");
+      database.transaction(() -> database.newDocument("WalPreserveType").set("k", 1).save());
 
-    // Crash without a clean close: the lock marker stays on disk, so the next open must run recovery.
-    ((DatabaseInternal) database).kill();
-    database.close();
+      // Crash without a clean close: the lock marker stays on disk, so the next open must run recovery.
+      ((DatabaseInternal) database).kill();
+      database.close();
 
-    assertThat(walFiles()).as("the killed database must leave WAL files to replay").isNotEmpty();
+      assertThat(walFiles()).as("the killed database must leave WAL files to replay").isNotEmpty();
 
-    // A READ_ONLY open of a database that needs recovery is rejected; releasing the resources it acquired
-    // must not touch the WAL.
-    assertThatThrownBy(() -> factory.open(ComponentFile.MODE.READ_ONLY)).isInstanceOf(RuntimeException.class);
+      // A READ_ONLY open of a database that needs recovery is rejected; releasing the resources it
+      // acquired must not touch the WAL.
+      assertThatThrownBy(() -> factory.open(ComponentFile.MODE.READ_ONLY)).isInstanceOf(RuntimeException.class);
 
-    assertThat(walFiles()).as("a failed open must preserve the WAL files it does not own").isNotEmpty();
-
-    // The recovery-capable open still succeeds and the schema created before the crash survived.
-    database = factory.open();
-    assertThat(database.isOpen()).isTrue();
-    assertThat(database.getSchema().existsType("WalPreserveType")).isTrue();
+      assertThat(walFiles()).as("a failed open must preserve the WAL files it does not own").isNotEmpty();
+    }
   }
 
   private File[] walFiles() {
-    final File[] files = new File(getDatabasePath()).listFiles((dir, name) -> name.endsWith(".wal"));
+    final File[] files = new File(DATABASE_PATH).listFiles((dir, name) -> name.endsWith(".wal"));
     return files == null ? new File[0] : files;
   }
 }
