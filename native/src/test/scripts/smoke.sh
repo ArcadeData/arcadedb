@@ -63,66 +63,12 @@ ARCADEDB_ROOT_PASSWORD="$PASS" \
   >"$WORK/server.log" 2>&1 &
 SRV_PID=$!
 
-echo "[smoke] waiting for HTTP ready on :$HTTP"
-READY=0
-for i in $(seq 1 60); do
-  if curl -fsS "http://$HOST:$HTTP/api/v1/ready" >/dev/null 2>&1; then
-    READY=1
-    break
-  fi
-  if ! kill -0 "$SRV_PID" 2>/dev/null; then
-    echo "[smoke] FAIL: server exited early"
-    tail -50 "$WORK/server.log"
-    exit 1
-  fi
-  sleep 2
-done
-if [ "$READY" -ne 1 ]; then
-  echo "[smoke] FAIL: HTTP never ready"
-  tail -50 "$WORK/server.log"
-  exit 1
-fi
-
-req() { curl -fsS -u "$DB_USER:$PASS" -H 'Content-Type: application/json' "$@"; }
-
-echo "[smoke] Studio index"
-OUT="$(req "http://$HOST:$HTTP/")"
-grep -qi "arcadedb" <<<"$OUT" || {
-  echo "[smoke] FAIL: Studio index"
-  exit 1
-}
-
-echo "[smoke] create DB"
-req -X POST "http://$HOST:$HTTP/api/v1/server" -d '{"command":"create database smoke"}' >/dev/null
-
-echo "[smoke] SQL round-trip"
-req -X POST "http://$HOST:$HTTP/api/v1/command/smoke" \
-  -d '{"language":"sql","command":"CREATE DOCUMENT TYPE T"}' >/dev/null
-req -X POST "http://$HOST:$HTTP/api/v1/command/smoke" \
-  -d '{"language":"sql","command":"INSERT INTO T SET n = 42"}' >/dev/null
-OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/query/smoke" -d '{"language":"sql","command":"SELECT n FROM T"}')"
-grep -q '42' <<<"$OUT" || {
-  echo "[smoke] FAIL: SQL, got $OUT"
-  exit 1
-}
-
-echo "[smoke] Cypher round-trip"
-OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/command/smoke" \
-  -d '{"language":"cypher","command":"CREATE (a:Person {name:\"Ada\"}) RETURN a.name AS n"}')"
-grep -q 'Ada' <<<"$OUT" || {
-  echo "[smoke] FAIL: Cypher, got $OUT"
-  exit 1
-}
-
-echo "[smoke] Postgres-wire round-trip"
-if command -v psql >/dev/null 2>&1; then
-  OUT="$(PGPASSWORD="$PASS" psql -h "$HOST" -p "$PG" -U "$DB_USER" -d smoke -tAc 'SELECT 1')"
-  grep -q '1' <<<"$OUT" || {
-    echo "[smoke] FAIL: Postgres wire, got $OUT"
-    exit 1
-  }
-else
-  echo "[smoke] WARN: psql not installed, skipping Postgres-wire assertion"
-fi
+# The actual HTTP-readiness wait plus Studio/SQL/Cypher/Postgres-wire (and, opportunistically,
+# Redis/Bolt/Mongo/gRPC) assertions live in exercise.sh so trace.sh can replay the identical
+# checks against a server it starts itself under the GraalVM native-image tracing agent.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST="$HOST" HTTP="$HTTP" PG="$PG" DB_USER="$DB_USER" PASS="$PASS" \
+  SRV_PID="$SRV_PID" SERVER_LOG="$WORK/server.log" \
+  "$SCRIPT_DIR/exercise.sh"
 
 echo "[smoke] PASS"
