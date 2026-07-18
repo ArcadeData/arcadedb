@@ -75,7 +75,7 @@ fi
 req() { curl -fsS -u "$DB_USER:$PASS" -H 'Content-Type: application/json' "$@"; }
 
 echo "[exercise] Studio index"
-OUT="$(req "http://$HOST:$HTTP/")"
+OUT="$(req "http://$HOST:$HTTP/")" || true
 grep -qi "arcadedb" <<<"$OUT" || {
   echo "[exercise] FAIL: Studio index"
   exit 1
@@ -89,7 +89,7 @@ req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
   -d '{"language":"sql","command":"CREATE DOCUMENT TYPE T"}' >/dev/null
 req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
   -d '{"language":"sql","command":"INSERT INTO T SET n = 42"}' >/dev/null
-OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/query/$DB" -d '{"language":"sql","command":"SELECT n FROM T"}')"
+OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/query/$DB" -d '{"language":"sql","command":"SELECT n FROM T"}')" || true
 grep -q '42' <<<"$OUT" || {
   echo "[exercise] FAIL: SQL, got $OUT"
   exit 1
@@ -97,7 +97,7 @@ grep -q '42' <<<"$OUT" || {
 
 echo "[exercise] Cypher round-trip"
 OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
-  -d '{"language":"cypher","command":"CREATE (a:Person {name:\"Ada\"}) RETURN a.name AS n"}')"
+  -d '{"language":"cypher","command":"CREATE (a:Person {name:\"Ada\"}) RETURN a.name AS n"}')" || true
 grep -q 'Ada' <<<"$OUT" || {
   echo "[exercise] FAIL: Cypher, got $OUT"
   exit 1
@@ -108,7 +108,7 @@ grep -q 'Ada' <<<"$OUT" || {
 # build) fails the build loudly rather than silently degrading.
 echo "[exercise] JS round-trip"
 OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
-  -d '{"language":"js","command":"40 + 2"}')"
+  -d '{"language":"js","command":"40 + 2"}')" || true
 grep -q '"value":42' <<<"$OUT" || {
   echo "[exercise] FAIL: JS, got $OUT"
   exit 1
@@ -116,7 +116,7 @@ grep -q '"value":42' <<<"$OUT" || {
 
 echo "[exercise] Postgres-wire round-trip"
 if command -v psql >/dev/null 2>&1; then
-  OUT="$(PGPASSWORD="$PASS" psql -h "$HOST" -p "$PG" -U "$DB_USER" -d "$DB" -tAc 'SELECT 1')"
+  OUT="$(PGPASSWORD="$PASS" psql -h "$HOST" -p "$PG" -U "$DB_USER" -d "$DB" -tAc 'SELECT 1')" || true
   grep -q '1' <<<"$OUT" || {
     echo "[exercise] FAIL: Postgres wire, got $OUT"
     exit 1
