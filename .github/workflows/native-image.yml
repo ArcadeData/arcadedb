@@ -48,14 +48,66 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-native-maven-
 
-      # musl-tools is what the two required Linux jobs need to link statically; postgresql-client
-      # closes the local no-psql gap so exercise.sh's Postgres-wire check actually runs instead of
-      # WARN-skipping (see native/src/test/scripts/exercise.sh).
-      - name: Install Linux build/test dependencies
+      # The two required Linux jobs build fully static (--static --libc=musl, native/pom.xml's
+      # native-static profile) executables. That needs more than the compiler:
+      #  1. musl-tools + musl-dev (apt) - musl-dev is what actually matters here: on Ubuntu it
+      #     installs the arch-prefixed compiler wrapper native-image's musl toolchain probe looks
+      #     for (x86_64-linux-musl-gcc / aarch64-linux-musl-gcc - see oracle/graal#7103), plus musl's
+      #     own static libc.a/headers under /usr/{include,lib}/<triplet>-linux-musl/ (verified against
+      #     Ubuntu 24.04 "noble" package file lists for both amd64 and arm64: the layout and binary
+      #     name are identical modulo the `x86_64`/`aarch64` triplet, so `uname -m` genericizes this
+      #     across the matrix without an arch if/else). musl-tools additionally provides the
+      #     unprefixed `musl-gcc`/`musl-ldd` convenience wrapper.
+      #  2. A musl-linked static zlib (native-image links libz for the JDK's zip/net code under
+      #     --libc=musl), per GraalVM's "Static and Mostly-Static Images" guide
+      #     (https://www.graalvm.org/latest/reference-manual/native-image/guides/build-static-executables/).
+      #     musl-gcc's generated specs file (/usr/lib/<triplet>-linux-musl/musl-gcc.specs) passes
+      #     -nostdinc/-nostdlib and restricts header/library search to that same <triplet>-linux-musl
+      #     directory - it does NOT fall back to the generic /usr/include or /usr/lib search path.
+      #     zlib must therefore be installed with --includedir/--libdir pointed AT that directory
+      #     (confirmed via musl's own tools/musl-gcc.specs.sh: "-nostdinc -isystem $incdir" /
+      #     "-nostdlib" + "-L$libdir"), not a plain --prefix=/usr, or native-image's `-lz` link step
+      #     will not find it without extra -H:CLibraryPath/-H:CIncludePath buildArgs (native/pom.xml
+      #     intentionally adds only --static --libc=musl, nothing path-related).
+      #
+      # postgresql-client closes the local no-psql gap so exercise.sh's Postgres-wire check actually
+      # runs instead of WARN-skipping (see native/src/test/scripts/exercise.sh).
+      #
+      # KNOWN GAP - confirmed 2026-07-18 against the graalvm-community-jdk-25.0.2 release tarballs
+      # this workflow's setup-graalvm step installs: the linux-aarch64 distribution ships
+      # lib/static/linux-aarch64/glibc but NOT lib/static/linux-aarch64/musl (linux-amd64 ships
+      # both). --static --libc=musl will fail at the native-image link stage on the arm64 job
+      # ("Missing libraries: java, nio, net, zip") regardless of the toolchain setup below, until
+      # Oracle ships musl static JDK libs for aarch64 (see oracle/graal#4645, closed not-planned) or
+      # ArcadeDB builds/vendors its own. The toolchain/zlib setup below is still correct and
+      # forward-compatible for when that gap closes; until then, expect the arm64 static leg of this
+      # workflow to fail here even though the steps themselves are right. See docs/native-image.md.
+      - name: Set up musl toolchain (static Linux builds)
         if: ${{ matrix.os_name == 'linux' }}
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y musl-tools postgresql-client
+          sudo apt-get install -y musl-tools musl-dev postgresql-client
+
+          TRIPLET="$(uname -m)-linux-musl"
+          MUSL_GCC="${TRIPLET}-gcc"
+          MUSL_INCDIR="/usr/include/${TRIPLET}"
+          MUSL_LIBDIR="/usr/lib/${TRIPLET}"
+          command -v "$MUSL_GCC" >/dev/null || { echo "::error::$MUSL_GCC not found after installing musl-dev"; exit 1; }
+
+          ZLIB_VERSION="1.3.2"
+          curl -fsSL "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" -o /tmp/zlib.tar.gz
+          tar xzf /tmp/zlib.tar.gz -C /tmp
+          (
+            cd "/tmp/zlib-${ZLIB_VERSION}"
+            CC="$MUSL_GCC" ./configure --static --prefix=/usr --includedir="$MUSL_INCDIR" --libdir="$MUSL_LIBDIR"
+            make -j"$(nproc)"
+            sudo make install
+          )
+
+          echo "CC=$MUSL_GCC" >> "$GITHUB_ENV"
+          "$MUSL_GCC" --version
+          "$MUSL_GCC" -print-file-name=libz.a
 
       - name: Build native image
         shell: bash
