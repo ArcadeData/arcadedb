@@ -122,6 +122,43 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
   }
 
   @Test
+  void helloWithAuthOptionAuthenticates() {
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      // HELLO carrying the AUTH option authenticates and negotiates the protocol in one round-trip.
+      final Object reply = jedis.sendCommand(Protocol.Command.HELLO, "2", "AUTH", USER, PASSWORD);
+      assertThat(reply).isNotNull();
+
+      // The connection is now authenticated: the normal command flow works.
+      assertThat(jedis.ping()).isEqualTo("PONG");
+    }
+  }
+
+  @Test
+  void helloWithoutAuthIsRejectedBeforeAuthentication() {
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      final JedisDataException error = catchThrowableOfType(JedisDataException.class,
+          () -> jedis.sendCommand(Protocol.Command.HELLO, "2"));
+      assertThat(error).isNotNull();
+      assertThat(error.getMessage()).contains("NOAUTH");
+
+      // Still unauthenticated.
+      final JedisDataException stillDenied = catchThrowableOfType(JedisDataException.class, jedis::ping);
+      assertThat(stillDenied).isNotNull();
+      assertThat(stillDenied.getMessage()).contains("NOAUTH");
+    }
+  }
+
+  @Test
+  void helloWithWrongCredentialsIsRejected() {
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      final JedisDataException error = catchThrowableOfType(JedisDataException.class,
+          () -> jedis.sendCommand(Protocol.Command.HELLO, "2", "AUTH", USER, "wrong-password"));
+      assertThat(error).isNotNull();
+      assertThat(error.getMessage()).contains("WRONGPASS");
+    }
+  }
+
+  @Test
   void userCannotAccessUnauthorizedDatabase() {
     // Create a user that can only access a non-existent "otherdb", not the test database.
     final var security = getServer(0).getSecurity();

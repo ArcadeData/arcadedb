@@ -151,11 +151,18 @@ public class RedisNetworkExecutor extends Thread {
       try (final QueryTracer.Span span = QueryTracer.Holder.begin(
           selectedDatabaseName, null, "command", cmdString)) {
 
-        // AUTH is the only command accepted before authentication. Every other command is rejected with
+        // AUTH and HELLO are the only commands accepted before authentication (HELLO must still carry a
+        // valid AUTH option, otherwise it is rejected with NOAUTH). Every other command is rejected with
         // NOAUTH until the connection has provided valid ArcadeDB credentials, mirroring the Postgres and
-        // MongoDB wire-protocol wrappers (GHSA-m46c-jh3x-xwrp).
+        // MongoDB wire-protocol wrappers.
         if ("AUTH".equals(cmdString)) {
           auth(list);
+          appendCrLf();
+          return;
+        }
+
+        if ("HELLO".equals(cmdString)) {
+          hello(list);
           appendCrLf();
           return;
         }
@@ -536,6 +543,67 @@ public class RedisNetworkExecutor extends Thread {
       this.authenticatedUser = null;
       throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
     }
+  }
+
+  /**
+   * Handles the {@code HELLO [protover [AUTH username password]]} handshake. Modern Redis clients use it
+   * to authenticate and negotiate the protocol version in a single round-trip. Only the AUTH-carrying
+   * form is accepted before authentication; a plain HELLO on an unauthenticated connection is rejected
+   * with NOAUTH, matching Redis' own behaviour. Both RESP2 and RESP3 protocol versions are accepted but
+   * the reply is always encoded as a RESP2 map (a flat array of key/value pairs).
+   */
+  private void hello(final List<Object> list) {
+    int idx = 1;
+
+    // Optional protocol version.
+    if (list.size() > idx) {
+      final String maybeVersion = (String) list.get(idx);
+      if (NumberUtils.isIntegerNumber(maybeVersion)) {
+        final int proto = Integer.parseInt(maybeVersion);
+        if (proto < 2 || proto > 3)
+          throw new RedisException("NOPROTO unsupported protocol version");
+        idx++;
+      }
+    }
+
+    // Optional AUTH <username> <password> option.
+    if (list.size() > idx && "AUTH".equalsIgnoreCase((String) list.get(idx))) {
+      if (list.size() < idx + 3)
+        throw new RedisException("ERR Syntax error in HELLO");
+      final String userName = (String) list.get(idx + 1);
+      final String password = (String) list.get(idx + 2);
+      try {
+        this.authenticatedUser = server.getSecurity().authenticate(userName, password, null);
+      } catch (final ServerSecurityException e) {
+        this.authenticatedUser = null;
+        throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
+      }
+    }
+
+    if (authenticatedUser == null)
+      throw new RedisException(
+          "NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time");
+
+    // RESP2 map reply: a flat array of alternating key/value elements (7 pairs = 14 elements).
+    value.append("*14");
+    appendHelloEntry("server", Constants.PRODUCT.toLowerCase(Locale.ENGLISH));
+    appendHelloEntry("version", Constants.getVersion());
+    appendHelloEntry("proto", 2L);
+    appendHelloEntry("id", threadId());
+    appendHelloEntry("mode", "standalone");
+    appendHelloEntry("role", "master");
+    // "modules" maps to an empty array.
+    appendCrLf();
+    respondValue("modules", true);
+    appendCrLf();
+    value.append("*0");
+  }
+
+  private void appendHelloEntry(final String key, final Object entryValue) {
+    appendCrLf();
+    respondValue(key, true);
+    appendCrLf();
+    respondValue(entryValue, !(entryValue instanceof Number));
   }
 
   private void select(final List<Object> list) {
