@@ -1,16 +1,142 @@
 name: Native Image
 
-# Stub. This enables the `workflow_dispatch` event so the full Native Image workflow, which lives
-# on the `feat/native-image` branch, can be run manually against that branch: workflow_dispatch
-# only registers a workflow as dispatchable once a workflow of this name exists on the default
-# branch, and dispatching executes the version of the file present on the selected ref. This stub
-# is replaced by the real 5-target build/smoke/Docker workflow when the native-image feature merges.
 on:
   workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
 
 jobs:
-  stub:
-    runs-on: ubuntu-latest
+  build:
+    name: ${{ matrix.os_name }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.required == false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-13 (Intel) has been fully retired by GitHub since this plan was drafted - it is no
+        # longer a valid hosted-runner label (see actions/runner-images#13518 and the current
+        # README at https://github.com/actions/runner-images, checked 2026-07-18). macos-15-intel is
+        # the closest still-GA x64 macOS replacement, but it is a "Larger Runners" label: it only
+        # schedules if this org/repo has that (paid) entitlement enabled. macos-14 (arm64) is also
+        # mid-deprecation as of this date (actions/runner-images#13518), so macos/arm64 uses macos-15
+        # instead to avoid shipping a new workflow pinned to an image already on its way out.
+        include:
+          - { runner: ubuntu-latest,    os_name: linux,   arch: amd64, required: true,  static: true  }
+          - { runner: ubuntu-24.04-arm, os_name: linux,   arch: arm64, required: true,  static: true  }
+          - { runner: macos-15,         os_name: macos,   arch: arm64, required: false, static: false }
+          - { runner: macos-15-intel,   os_name: macos,   arch: amd64, required: false, static: false }
+          - { runner: windows-latest,   os_name: windows, arch: amd64, required: false, static: false }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - run: echo "Stub. The full native-image workflow lives on feat/native-image; dispatch that branch to run it."
+
+      - name: Set up GraalVM (Community, JDK 25)
+        uses: graalvm/setup-graalvm@0def53c0fd8534bc13416c9469f5be45265824fd # v1.6.1
+        with:
+          java-version: "25"
+          distribution: "graalvm-community"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: "true"
+
+      - name: Cache local Maven repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-${{ matrix.arch }}-native-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-native-maven-
+
+      # musl-tools is what the two required Linux jobs need to link statically; postgresql-client
+      # closes the local no-psql gap so exercise.sh's Postgres-wire check actually runs instead of
+      # WARN-skipping (see native/src/test/scripts/exercise.sh).
+      - name: Install Linux build/test dependencies
+        if: ${{ matrix.os_name == 'linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools postgresql-client
+
+      - name: Build native image
+        shell: bash
+        run: |
+          ARGS=""
+          if [ "${{ matrix.static }}" = "true" ]; then
+            ARGS="-Dnative.static=true"
+          fi
+          mvn -B -ntp -Pnative -pl native -am -DskipTests $ARGS package
+
+      # native-maven-plugin names the executable via os-maven-plugin's os.detected.name/arch
+      # (e.g. osx-aarch_64, linux-x86_64, windows-x86_64), which does NOT match this matrix's
+      # os_name/arch labels (macos/arm64, linux/amd64, ...). Glob for the one file under
+      # native/target/ that isn't a Maven jar/sources-jar/build-report artifact instead of
+      # constructing the name from matrix fields.
+      - name: Locate native binary
+        id: locate
+        shell: bash
+        run: |
+          cd native/target
+          mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*' \
+            ! -name '*.jar' ! -name '*.txt' ! -name '*.o' -print | sed 's|^\./||')
+          if [ "${#CANDIDATES[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one native binary in native/target, found ${#CANDIDATES[@]}"
+            ls -la .
+            exit 1
+          fi
+          echo "bin_name=${CANDIDATES[0]}" >> "$GITHUB_OUTPUT"
+          echo "[locate] native binary: ${CANDIDATES[0]}"
+
+      # Windows smoke is best-effort (job-level continue-on-error already covers it); Git Bash on
+      # the windows-latest runner can execute smoke.sh directly. Only the two Linux jobs pass the
+      # full wire-protocol plugin list, matching trace.sh, so Postgres/Redis/Mongo/Bolt/gRPC are
+      # actually reachable for exercise.sh's checks.
+      - name: Smoke test
+        shell: bash
+        run: |
+          BIN="native/target/${{ steps.locate.outputs.bin_name }}"
+          chmod +x "$BIN" || true
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            PLUGINS="Postgres:com.arcadedb.postgres.PostgresProtocolPlugin"
+            PLUGINS="$PLUGINS,Redis:com.arcadedb.redis.RedisProtocolPlugin"
+            PLUGINS="$PLUGINS,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin"
+            PLUGINS="$PLUGINS,Bolt:com.arcadedb.bolt.BoltProtocolPlugin"
+            PLUGINS="$PLUGINS,Grpc:com.arcadedb.server.grpc.GrpcServerPlugin"
+            native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true "-Darcadedb.server.plugins=$PLUGINS"
+          else
+            native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true
+          fi
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          cd native/target
+          BIN="${{ steps.locate.outputs.bin_name }}"
+          if [ "${{ matrix.os_name }}" = "windows" ]; then
+            ARCHIVE="${BIN%.exe}.zip"
+            7z a "$ARCHIVE" "$BIN"
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256" || shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            ARCHIVE="$BIN.tar.gz"
+            tar czf "$ARCHIVE" "$BIN"
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256" || sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            native/target/arcadedb-*.tar.gz
+            native/target/arcadedb-*.zip
+            native/target/*.sha256
+
+      - name: Attach to release
+        if: ${{ github.event_name == 'release' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            native/target/arcadedb-*.tar.gz native/target/arcadedb-*.zip native/target/*.sha256 \
+            --clobber
