@@ -282,6 +282,14 @@ adversarial load once those call targets get hot enough for runtime compilation.
 here as an accepted, non-blocking risk for this experimental add-on, not something the JS regression
 gate in `native/src/test/scripts/exercise.sh` can detect.
 
+**The native image is NOT production-hardened for multi-tenant or untrusted JS.** Because any
+authenticated caller can reach the relaxed-blocklist builtins above, do not expose the native
+build's `{"language":"js"}` surface to untrusted callers in a shared/multi-tenant deployment until
+this is hardened. Hardening options for a future non-experimental promotion: make GraalJS an opt-in
+piece of the native build (excluded by default, enabled by a build flag) so an operator who does not
+need JS carries neither the unverified AOT paths nor the extra image size, and/or pin the
+native-image builder to a Truffle version that keeps the blocklist enforced.
+
 ### Binary size
 
 The native binary is currently large - around 732 MiB - mostly because `native/pom.xml` passes

@@ -351,18 +351,19 @@ jobs:
           docker run -d --name native-smoke -p 2480:2480 \
             "${{ steps.build.outputs.tag }}" \
             -Darcadedb.server.rootPassword=PlayWithData123!
-          READY=""
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:2480/api/v1/ready; then
-              READY=1
-              break
-            fi
-            sleep 2
-          done
+          # Validate the PACKAGED IMAGE end-to-end, not just first readiness: run the same
+          # exercise.sh hard-asserts (HTTP/Studio/SQL/Cypher/JS) against the running container so
+          # image-packaging regressions (missing /tmp, bad config copy, volume permissions) that
+          # still let the process reach "ready" are caught. exercise.sh waits for HTTP readiness
+          # itself. Wire protocols warn-skip here (their ports are not published and the default
+          # entrypoint enables no wire plugin); the build-job smoke already asserts them with
+          # WIRE_STRICT=1 on the two Linux legs.
+          rc=0
+          native/src/test/scripts/exercise.sh || rc=$?
           docker logs native-smoke
           docker rm -f native-smoke
-          if [ -z "$READY" ]; then
-            echo "::error::container never became ready"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::container exercise.sh failed (rc=$rc)"
             exit 1
           fi
 
