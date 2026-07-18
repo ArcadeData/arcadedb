@@ -103,6 +103,17 @@ grep -q 'Ada' <<<"$OUT" || {
   exit 1
 }
 
+# GraalJS ships embedded in the native image (see docs/native-image.md); this is a hard assertion,
+# not a best-effort WARN-skip, so a regression that drops JS from the image (or from the JVM
+# build) fails the build loudly rather than silently degrading.
+echo "[exercise] JS round-trip"
+OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
+  -d '{"language":"js","command":"40 + 2"}')"
+grep -q '"value":42' <<<"$OUT" || {
+  echo "[exercise] FAIL: JS, got $OUT"
+  exit 1
+}
+
 echo "[exercise] Postgres-wire round-trip"
 if command -v psql >/dev/null 2>&1; then
   OUT="$(PGPASSWORD="$PASS" psql -h "$HOST" -p "$PG" -U "$DB_USER" -d "$DB" -tAc 'SELECT 1')"
