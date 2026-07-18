@@ -5,14 +5,20 @@ on:
   release:
     types: [published]
 
+# Least privilege by default: only the build job's "Attach to release" step needs write, and it
+# scopes it below. The docker/manifest jobs authenticate to Docker Hub via secrets, not the
+# GITHUB_TOKEN, so they keep the read default.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: ${{ matrix.os_name }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.required == false }}
+    # Scoped write: the "Attach to release" step uploads assets via `gh release upload`.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
