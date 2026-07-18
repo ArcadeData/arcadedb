@@ -116,10 +116,15 @@ jobs:
         run: |
           (
             sleep 2700
-            echo "::warning::Unit tests still running after 45m - dumping JVM thread stacks"
-            for pid in $(jps -q 2>/dev/null); do
-              echo "===== jstack $pid ====="
-              jstack "$pid" 2>&1 || true
+            # Repeats until killed: a single dump at 45m would show a healthy build and tell us
+            # nothing about a hang that only begins afterwards.
+            while true; do
+              echo "::warning::Unit tests still running - dumping JVM thread stacks"
+              for pid in $(jps -q 2>/dev/null); do
+                echo "===== jstack $pid ====="
+                jstack "$pid" 2>&1 || true
+              done
+              sleep 300
             done
           ) &
           watchdog=$!

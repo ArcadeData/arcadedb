@@ -33,6 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -78,19 +79,46 @@ class QueryEngineManagerPoolTest {
    * <p>
    * A leaked pin is otherwise undetectable here and lethal later - the pool is JVM-wide, so the
    * next caller that waits on an untimed future blocks for the lifetime of the fork, with no error
-   * and no output to attribute it to. Both leak shapes are caught: if the workers are pinned and
-   * the queue is full the canary is redirected to the caller thread by the rejection policy (so the
-   * thread id comes back equal to ours), and if the queue still has room the canary sits in it
-   * forever (so the timed get expires). Either way this fails fast, right next to the culprit.
+   * and no output to attribute it to. Both leak shapes are caught: if the queue still has room the
+   * canary sits in it behind the pinned workers until the timed get expires, and if the queue is
+   * full the rejection policy keeps redirecting the canary to this thread until the deadline. Both
+   * paths raise an {@link AssertionError} naming the pinning discipline, so the CI log explains
+   * itself rather than showing a bare timeout.
    */
   @AfterEach
   void poolMustNotBeLeftSaturated() throws Exception {
+    final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
     final long callerThreadId = Thread.currentThread().threadId();
-    final Future<Long> canary = QueryEngineManager.getInstance().getExecutorService()
-        .submit(() -> Thread.currentThread().threadId());
-    assertThat(canary.get(WORKER_PIN_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-        .as("pool must be left usable: a test leaked a pinned worker and poisoned the shared pool")
-        .isNotEqualTo(callerThreadId);
+    final long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(WORKER_PIN_TIMEOUT_SECONDS);
+
+    // Retried rather than judged on a single sample. A saturation test's finally releases the pinned
+    // workers but does not wait for them to drain the queue, so for a short window afterwards the
+    // queue is still full and the rejection policy legitimately runs the canary on this thread.
+    // Reading that first inline run as a leak would make this guard flaky under exactly the load
+    // conditions the rest of the class was fixed to survive.
+    while (true) {
+      final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+      if (remainingMs <= 0)
+        throw new AssertionError("pool left saturated: the canary was still being redirected to the caller thread after "
+            + WORKER_PIN_TIMEOUT_SECONDS + "s, so a test leaked a pinned worker and poisoned the shared pool");
+
+      final Future<Long> canary = executor.submit(() -> Thread.currentThread().threadId());
+      final long ranOnThreadId;
+      try {
+        ranOnThreadId = canary.get(remainingMs, TimeUnit.MILLISECONDS);
+      } catch (final TimeoutException e) {
+        // Built here, not via assertThat: the timeout fires before any assertion can run, and this
+        // is the likelier of the two leak shapes (a pin that leaks before the queue is filled leaves
+        // the canary queued behind it forever). Without this the CI log shows a bare
+        // TimeoutException with nothing to connect it to the pinning discipline.
+        throw new AssertionError("pool left saturated: the canary never reached a worker thread within "
+            + WORKER_PIN_TIMEOUT_SECONDS + "s, so a test leaked a pinned worker and poisoned the shared pool", e);
+      }
+      if (ranOnThreadId != callerThreadId)
+        // Ran on a pool thread: the pool is healthy again.
+        return;
+      Thread.sleep(25);
+    }
   }
 
   /** {@link QueryEngineManager.PoolStats} fields are non-negative and self-consistent at rest. */
