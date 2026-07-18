@@ -34,7 +34,8 @@
 # in. Pinned by digest for reproducibility, matching this repo's other base-image pins.
 FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
 RUN mkdir -p /skel/databases /skel/backups /skel/replication /skel/log && \
-    chown -R 0:0 /skel
+    chown -R 0:0 /skel && \
+    mkdir -p /skeltmp
 
 FROM scratch
 
@@ -61,10 +62,11 @@ COPY --from=dirs --chown=0:0 /skel/ /home/arcadedb/
 
 # scratch ships no /tmp. java.io.tmpdir defaults to /tmp and some libraries (Lucene, Netty) may
 # write temporary files or unpack native code there, which would fail with IOException on a bare
-# scratch image. Materialize /tmp with the WORKDIR trick before switching to the real working dir.
-# It is created root-owned 0755 (writable by the default root runtime user); a non-root --user run
-# should bind-mount a writable /tmp.
-WORKDIR /tmp
+# scratch image. Materialize /tmp as a sticky, world-writable (1777) directory from the builder
+# stage so the server can write there under ANY `docker run --user <uid>` value, not just the
+# default root - matching the non-root example in docs/native-image.md.
+COPY --from=dirs --chmod=1777 /skeltmp /tmp
+
 WORKDIR /home/arcadedb
 
 # scratch has no /etc/passwd and no shell, so there is no `adduser`/`chown`/`useradd` binary to

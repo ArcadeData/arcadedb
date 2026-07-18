@@ -27,7 +27,9 @@ set -euo pipefail
 # tests: any argument beyond $1 is forwarded verbatim to the server process, so
 # JVM-style "-Dprop=value" overrides and plugin activation flags pass through.
 #
-# Requires ARCADEDB_HOME to point at the distribution root (config/, lib/, bin/).
+# The server executable in $1 is self-contained (the GraalVM native binary, or the JVM
+# distribution's bin/server.sh which resolves its own home); this script reads no ARCADEDB_HOME
+# and assumes no surrounding distribution layout.
 
 EXE="${1:?path to server executable required}"
 shift || true
