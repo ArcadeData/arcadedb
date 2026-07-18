@@ -27,14 +27,22 @@ set -euo pipefail
 # the agent only records what the instrumented JVM actually does, so smoke.sh and trace.sh must
 # drive identical HTTP/SQL/Cypher/wire-protocol traffic against the process they each start.
 #
-# Every wire-protocol check below is best-effort: if the corresponding plugin was not enabled on
-# this server run (the port never opens) or the local machine lacks the client tool, the check
-# prints a WARN and is skipped rather than failing the script. This keeps smoke.sh's assertions
-# (Studio/SQL/Cypher/Postgres) unchanged while letting trace.sh, which enables every wire plugin,
-# exercise the extra protocols opportunistically.
+# Every wire-protocol check below (Postgres/Redis/Bolt/Mongo/gRPC) is best-effort BY DEFAULT: if
+# the corresponding plugin was not enabled on this server run (the port never opens) or the local
+# machine lacks the client tool, the check prints a WARN and is skipped rather than failing the
+# script. This keeps local/macOS/Windows runs, where client tools are not guaranteed to be
+# installed, working while letting trace.sh, which enables every wire plugin, exercise the extra
+# protocols opportunistically.
+#
+# Set WIRE_STRICT=1 to turn every one of those WARN-skips into a hard FAIL instead: a missing
+# client tool, an unreachable port, or a wrong response all fail the script immediately. This is
+# for CI legs that deliberately enable every wire plugin (see native-image.yml's linux/amd64 and
+# linux/arm64 smoke steps) - there, a WARN-skip would let a native regression that breaks e.g.
+# Bolt or Redis stay green, exactly the failure mode this flag closes.
 #
 # Env overrides (all optional, defaults match smoke.sh / GlobalConfiguration defaults):
 #   HOST, HTTP, PG, REDIS_PORT, MONGO_PORT, BOLT_PORT, GRPC_PORT, DB_USER, PASS, DB
+#   WIRE_STRICT - "1" to hard-fail instead of WARN-skip on wire-protocol checks, see above
 #   SRV_PID    - if set and the process dies while waiting for HTTP readiness, fail fast
 #   SERVER_LOG - if set, tailed on failure
 
@@ -48,9 +56,23 @@ GRPC_PORT="${GRPC_PORT:-50051}"
 DB_USER="${DB_USER:-root}"
 PASS="${PASS:-PlayWithData123!}"
 DB="${DB:-smoke}"
+WIRE_STRICT="${WIRE_STRICT:-0}"
 
 EX_WORK="$(mktemp -d)"
 trap 'rm -rf "$EX_WORK"' EXIT
+
+# wire_fail <message>: the single decision point for every wire-protocol check's best-effort vs.
+# strict behavior (see the WIRE_STRICT comment near the top of this file). Called via `||` or as
+# the else-branch of an `if`, so under `set -e` a WARN return is a normal (zero) exit that lets
+# the script continue, while a STRICT "exit 1" aborts it immediately.
+wire_fail() {
+  if [ "$WIRE_STRICT" = "1" ]; then
+    echo "[exercise] FAIL: $1"
+    exit 1
+  else
+    echo "[exercise] WARN: $1"
+  fi
+}
 
 echo "[exercise] waiting for HTTP ready on :$HTTP"
 READY=0
@@ -117,12 +139,9 @@ grep -q '"value":42' <<<"$OUT" || {
 echo "[exercise] Postgres-wire round-trip"
 if command -v psql >/dev/null 2>&1; then
   OUT="$(PGPASSWORD="$PASS" psql -h "$HOST" -p "$PG" -U "$DB_USER" -d "$DB" -tAc 'SELECT 1')" || true
-  grep -q '1' <<<"$OUT" || {
-    echo "[exercise] FAIL: Postgres wire, got $OUT"
-    exit 1
-  }
+  grep -q '1' <<<"$OUT" || wire_fail "Postgres wire, got $OUT"
 else
-  echo "[exercise] WARN: psql not installed, skipping Postgres-wire assertion"
+  wire_fail "psql not installed, skipping Postgres-wire assertion"
 fi
 
 # Opens fd $1 to $2:$3 for raw read/write. Returns non-zero (without aborting under `set -e`,
@@ -161,10 +180,10 @@ if tcp_connect 3 "$HOST" "$REDIS_PORT"; then
   if grep -qi 'PONG' "$RESP_FILE" 2>/dev/null; then
     echo "[exercise] Redis PING -> PONG"
   else
-    echo "[exercise] WARN: Redis PING did not return PONG (got: $(cat "$RESP_FILE" 2>/dev/null))"
+    wire_fail "Redis PING did not return PONG (got: $(cat "$RESP_FILE" 2>/dev/null))"
   fi
 else
-  echo "[exercise] WARN: Redis port $REDIS_PORT not reachable (plugin not enabled?), skipping"
+  wire_fail "Redis port $REDIS_PORT not reachable (plugin not enabled?), skipping"
 fi
 
 echo "[exercise] Bolt handshake (port $BOLT_PORT)"
@@ -180,27 +199,31 @@ if tcp_connect 4 "$HOST" "$BOLT_PORT"; then
     if [ -n "$NEGOTIATED" ] && [ "$NEGOTIATED" != "00000000" ]; then
       echo "[exercise] Bolt negotiated version bytes: $NEGOTIATED"
     else
-      echo "[exercise] WARN: Bolt handshake did not negotiate a version (got: ${NEGOTIATED:-<empty>})"
+      wire_fail "Bolt handshake did not negotiate a version (got: ${NEGOTIATED:-<empty>})"
     fi
   else
-    echo "[exercise] WARN: xxd not installed, skipping Bolt negotiation decode"
+    wire_fail "xxd not installed, skipping Bolt negotiation decode"
   fi
 else
-  echo "[exercise] WARN: Bolt port $BOLT_PORT not reachable (plugin not enabled?), skipping"
+  wire_fail "Bolt port $BOLT_PORT not reachable (plugin not enabled?), skipping"
 fi
 
 echo "[exercise] Mongo hello (port $MONGO_PORT)"
-if command -v python3 >/dev/null 2>&1 && tcp_connect 5 "$HOST" "$MONGO_PORT"; then
-  exec 5<&- 5>&- 2>/dev/null || true
-  # python3's socket module builds the OP_MSG {hello:1} handshake by hand (no bson/pymongo
-  # dependency available on this machine) so this stays a plain stdlib call.
-  if python3 "$(dirname "${BASH_SOURCE[0]}")/mongo_hello.py" "$HOST" "$MONGO_PORT"; then
-    echo "[exercise] Mongo hello -> reply received"
+if command -v python3 >/dev/null 2>&1; then
+  if tcp_connect 5 "$HOST" "$MONGO_PORT"; then
+    exec 5<&- 5>&- 2>/dev/null || true
+    # python3's socket module builds the OP_MSG {hello:1} handshake by hand (no bson/pymongo
+    # dependency available on this machine) so this stays a plain stdlib call.
+    if python3 "$(dirname "${BASH_SOURCE[0]}")/mongo_hello.py" "$HOST" "$MONGO_PORT"; then
+      echo "[exercise] Mongo hello -> reply received"
+    else
+      wire_fail "Mongo hello did not return a reply"
+    fi
   else
-    echo "[exercise] WARN: Mongo hello did not return a reply"
+    wire_fail "Mongo port $MONGO_PORT not reachable (plugin not enabled?), skipping"
   fi
 else
-  echo "[exercise] WARN: Mongo port $MONGO_PORT not reachable or python3 missing, skipping"
+  wire_fail "python3 not installed, skipping Mongo hello check"
 fi
 
 echo "[exercise] gRPC reflection list (port $GRPC_PORT)"
@@ -208,10 +231,10 @@ if command -v grpcurl >/dev/null 2>&1; then
   if GRPC_OUT="$(grpcurl -plaintext -connect-timeout 3 -max-time 5 "$HOST:$GRPC_PORT" list 2>&1)"; then
     echo "[exercise] gRPC services: $(tr '\n' ' ' <<<"$GRPC_OUT")"
   else
-    echo "[exercise] WARN: gRPC reflection list failed (plugin not enabled?): $GRPC_OUT"
+    wire_fail "gRPC reflection list failed (plugin not enabled?): $GRPC_OUT"
   fi
 else
-  echo "[exercise] WARN: grpcurl not installed, skipping gRPC reflection check"
+  wire_fail "grpcurl not installed, skipping gRPC reflection check"
 fi
 
 echo "[exercise] PASS"

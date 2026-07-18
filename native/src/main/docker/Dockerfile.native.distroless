@@ -33,7 +33,21 @@
 # Dockerfile.native.scratch's ENTRYPOINT comment applies here too. The `:nonroot` tag additionally
 # bakes in a non-root `nonroot:nonroot` (65532:65532) user/group, so - unlike scratch, which has
 # no /etc/passwd at all - this image runs non-root by default with no --user override needed.
-FROM gcr.io/distroless/base-debian12:nonroot
+#
+# Pinned by digest (in addition to the :nonroot tag, kept for readability) to match the JVM
+# Dockerfile's supply-chain posture: a floating tag can be repointed upstream without notice,
+# while the digest guarantees the exact image content this Dockerfile was validated against.
+# Resolve the current digest with:
+#   docker buildx imagetools inspect gcr.io/distroless/base-debian12:nonroot --format '{{.Manifest.Digest}}'
+#
+# Tiny builder stage: distroless/base has no shell/mkdir/chown to create the VOLUME directories
+# below owned by the nonroot (65532:65532) runtime user, so pre-create them here and COPY the
+# resulting tree in. Pinned by digest, matching the base image's own pin above.
+FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
+RUN mkdir -p /skel/databases /skel/backups /skel/replication /skel/log && \
+    chown -R 65532:65532 /skel
+
+FROM gcr.io/distroless/base-debian12:nonroot@sha256:6c806311d31c11d364a8d13a022af5a48f29e43bd585ad6b51f1bb447f83d239
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
@@ -43,6 +57,7 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 #   ./config   -> config templates, copied verbatim from package/src/main/config
 COPY --chown=nonroot:nonroot config /home/arcadedb/config
 COPY --chown=nonroot:nonroot --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
+COPY --from=dirs --chown=65532:65532 /skel/ /home/arcadedb/
 
 WORKDIR /home/arcadedb
 

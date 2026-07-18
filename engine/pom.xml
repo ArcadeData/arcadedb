@@ -38,6 +38,13 @@
         <gson.version>2.14.0</gson.version>
         <lz4-java.version>1.11.1</lz4-java.version>
         <lucene.version>10.5.0</lucene.version>
+        <!--
+            If this version changes, native/pom.xml's native.graalvm.version AND the
+            native-image.yml setup-graalvm java-version must move in lockstep: the native-image
+            builder pins a matching GraalVM CE patch release, and a builder/Truffle version skew
+            breaks the native build at feature registration (see native/pom.xml's
+            native.graalvm.version comment for the exact failure mode).
+        -->
         <graalvm.version>25.1.3</graalvm.version>
         <jvector.version>4.0.0-rc.8-hf1</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
