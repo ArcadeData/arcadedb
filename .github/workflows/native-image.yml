@@ -86,11 +86,6 @@ jobs:
       #     -H:CLibraryPath/-H:CIncludePath buildArgs (native/pom.xml intentionally adds only
       #     --static --libc=musl, nothing path-related).
       #
-      # postgresql-client closes the local no-psql gap so exercise.sh's Postgres-wire check
-      # actually runs instead of WARN-skipping (see native/src/test/scripts/exercise.sh) - but
-      # only for this (amd64) leg, since this step no longer runs on arm64; the arm64 leg's
-      # exercise.sh run WARN-skips that one check instead of hard-failing.
-      #
       # linux/arm64 (linkmode: mostly-static) deliberately does NOT run this step: GraalVM CE
       # ships no static musl JDK libraries for aarch64 (the graalvm-community-jdk-25.0.2
       # linux-aarch64 release tarball has lib/static/linux-aarch64/glibc but not
@@ -107,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y musl-tools musl-dev postgresql-client
+          sudo apt-get install -y musl-tools musl-dev
 
           TRIPLET="$(uname -m)-linux-musl"
           MUSL_GCC="${TRIPLET}-gcc"
@@ -145,15 +140,23 @@ jobs:
       # native-maven-plugin names the executable via os-maven-plugin's os.detected.name/arch
       # (e.g. osx-aarch_64, linux-x86_64, windows-x86_64), which does NOT match this matrix's
       # os_name/arch labels (macos/arm64, linux/amd64, ...). Glob for the one file under
-      # native/target/ that isn't a Maven jar/sources-jar/build-report artifact instead of
-      # constructing the name from matrix fields.
+      # native/target/ that IS the executable instead of constructing the name from matrix
+      # fields or excluding known non-binary extensions: the latter is brittle because
+      # native-image build-report artifacts (e.g. svm_err_*.md, other future report formats) can
+      # match 'arcadedb-*' without matching any of the excluded extensions and trip the `-ne 1`
+      # guard below. Select by the executable bit instead (Linux/macOS: `-perm -u+x`; Windows has
+      # no meaningful POSIX exec bit, so match the '.exe' suffix native-maven-plugin always adds
+      # there instead).
       - name: Locate native binary
         id: locate
         shell: bash
         run: |
           cd native/target
-          mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*' \
-            ! -name '*.jar' ! -name '*.txt' ! -name '*.o' -print | sed 's|^\./||')
+          if [ "${{ matrix.os_name }}" = "windows" ]; then
+            mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*.exe' -print | sed 's|^\./||')
+          else
+            mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*' -perm -u+x -print | sed 's|^\./||')
+          fi
           if [ "${#CANDIDATES[@]}" -ne 1 ]; then
             echo "::error::expected exactly one native binary in native/target, found ${#CANDIDATES[@]}"
             ls -la .
@@ -162,10 +165,46 @@ jobs:
           echo "bin_name=${CANDIDATES[0]}" >> "$GITHUB_OUTPUT"
           echo "[locate] native binary: ${CANDIDATES[0]}"
 
+      # Wire-protocol client tools for exercise.sh's Postgres/gRPC checks, installed on BOTH Linux
+      # legs (amd64 AND arm64: the musl-toolchain step above runs only on amd64, so relying on it
+      # would leave arm64 without psql, which is exactly the gap the WIRE_STRICT hard-fail below
+      # would otherwise trip on). Both Linux legs pass the full wire-protocol plugin list to the
+      # Smoke test step below and now run it with WIRE_STRICT=1, so a missing client tool here
+      # would fail the build - these installs make that a non-issue instead of a false negative.
+      #   postgresql-client - psql, for the Postgres-wire check (apt package, both arches).
+      #   grpcurl            - for the gRPC reflection-list check. No apt package; installed from
+      #                        the upstream release tarball, matched to the runner's arch.
+      #   python3 (Mongo) and xxd (Bolt) are NOT installed here: both ship preinstalled on the
+      #   ubuntu-latest and ubuntu-24.04-arm runner images already (see actions/runner-images'
+      #   published Ubuntu 24.04 software manifests), so nothing to add for those two checks.
+      - name: Install wire-protocol client tools (Linux)
+        if: ${{ matrix.os_name == 'linux' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+          GRPCURL_VERSION="1.9.3"
+          case "${{ matrix.arch }}" in
+            amd64) GRPCURL_ARCH="x86_64" ;;
+            arm64) GRPCURL_ARCH="arm64" ;;
+            *)     echo "::error::unknown matrix.arch '${{ matrix.arch }}' for grpcurl install"; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" \
+            -o /tmp/grpcurl.tar.gz
+          sudo tar xzf /tmp/grpcurl.tar.gz -C /usr/local/bin grpcurl
+          rm -f /tmp/grpcurl.tar.gz
+          grpcurl --version
+          psql --version
+
       # Windows smoke is best-effort (job-level continue-on-error already covers it); Git Bash on
       # the windows-latest runner can execute smoke.sh directly. Only the two Linux jobs pass the
       # full wire-protocol plugin list, matching trace.sh, so Postgres/Redis/Mongo/Bolt/gRPC are
-      # actually reachable for exercise.sh's checks.
+      # actually reachable for exercise.sh's checks - and, per the client-tools step above, both
+      # Linux legs now have every client tool those checks need. WIRE_STRICT=1 turns those checks
+      # from best-effort WARN-skips into hard assertions on those two legs, so a native-image
+      # regression that breaks e.g. Bolt or Redis fails the build instead of staying green;
+      # macOS/Windows deliberately leave WIRE_STRICT unset (client tools not guaranteed there).
       - name: Smoke test
         shell: bash
         run: |
@@ -177,7 +216,7 @@ jobs:
             PLUGINS="$PLUGINS,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin"
             PLUGINS="$PLUGINS,Bolt:com.arcadedb.bolt.BoltProtocolPlugin"
             PLUGINS="$PLUGINS,Grpc:com.arcadedb.server.grpc.GrpcServerPlugin"
-            native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true "-Darcadedb.server.plugins=$PLUGINS"
+            WIRE_STRICT=1 native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true "-Darcadedb.server.plugins=$PLUGINS"
           else
             native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true
           fi

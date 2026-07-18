@@ -28,6 +28,14 @@
 # no static musl JDK libraries for aarch64 (oracle/graal#4645, closed not-planned) - see
 # Dockerfile.native.distroless and docs/native-image.md for that target and the full rationale.
 #
+# Tiny builder stage: scratch has no shell/mkdir/chown to create the VOLUME directories below
+# owned by the runtime UID, so pre-create them here (owned by root/uid 0, matching this image's
+# default runtime user - see the "runs as UID 0" note further down) and COPY the resulting tree
+# in. Pinned by digest for reproducibility, matching this repo's other base-image pins.
+FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
+RUN mkdir -p /skel/databases /skel/backups /skel/replication /skel/log && \
+    chown -R 0:0 /skel
+
 FROM scratch
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
@@ -49,6 +57,7 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY config /home/arcadedb/config
 COPY --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
+COPY --from=dirs --chown=0:0 /skel/ /home/arcadedb/
 
 # scratch ships no /tmp. java.io.tmpdir defaults to /tmp and some libraries (Lucene, Netty) may
 # write temporary files or unpack native code there, which would fail with IOException on a bare
