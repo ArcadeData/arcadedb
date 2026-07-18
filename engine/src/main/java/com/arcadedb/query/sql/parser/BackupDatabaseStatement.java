@@ -24,7 +24,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -104,7 +103,9 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         LogManager.instance().log(this, Level.SEVERE,
             String.format("Error on backup database '%s' to directory '%s'",
                 context.getDatabase().getName(), backupDirectory), e);
-        throw new CommandParsingException(
+        // THE STATEMENT PARSED CORRECTLY: A BACKUP THAT FAILS AT RUNTIME IS AN EXECUTION ERROR, NOT A CLIENT
+        // PARSING ERROR, AND MUST NOT BE REPORTED AS HTTP 400
+        throw new CommandExecutionException(
             String.format("Backup failed for database '%s' to directory '%s'",
                 context.getDatabase().getName(), backupDirectory), e);
       }

@@ -667,6 +667,10 @@ public class RemoteHttpComponent extends RWLockContext {
         return new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {
         return new TransactionException(detail);
+      } else if ("com.arcadedb.server.http.HttpSessionException".equals(exception)) {
+        // SERVER-SIDE SUBCLASS OF TransactionException: THE WIRE CARRIES ONLY THE CLASS NAME, SO THE
+        // SUBCLASS RELATIONSHIP MUST BE RESTORED EXPLICITLY HERE
+        return new TransactionException(detail);
       } else if (exception.equals(TimeoutException.class.getName())) {
         return new TimeoutException(detail);
       } else if (exception.equals(SchemaException.class.getName())) {
