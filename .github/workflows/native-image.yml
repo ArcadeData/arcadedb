@@ -365,10 +365,20 @@ jobs:
           # WIRE_STRICT=1 on the two Linux legs.
           rc=0
           native/src/test/scripts/exercise.sh || rc=$?
-          docker logs native-smoke
+          LOGS="$(docker logs native-smoke 2>&1)"
+          echo "$LOGS"
           docker rm -f native-smoke
           if [ "$rc" -ne 0 ]; then
             echo "::error::container exercise.sh failed (rc=$rc)"
+            exit 1
+          fi
+          # exercise.sh can stay green through a NON-FATAL startup failure - e.g. a class that JUL
+          # loads reflectively from arcadedb-log.properties (FileHandler) being absent from the
+          # native image throws ClassNotFoundException at boot but only degrades logging. Scan the
+          # container's own startup output and fail on those, so a missing-reflection-metadata
+          # regression can't slip through behind a passing functional smoke.
+          if grep -qiE "ClassNotFoundException|Can't load log handler" <<<"$LOGS"; then
+            echo "::error::container startup logged a ClassNotFoundException / log-handler load failure"
             exit 1
           fi
 
