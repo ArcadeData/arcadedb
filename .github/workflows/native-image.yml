@@ -22,12 +22,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # No free hosted runner exists for macOS x64 or Windows arm64, so neither is built. GitHub
-        # retired the free macos-13 Intel runner (actions/runner-images#13518); macos-15-intel is a
-        # paid "Larger Runners" label that isn't enabled here and fails at job setup, so macos/amd64
-        # is dropped rather than shipping a permanently-red leg. macos/arm64 uses macos-15 (macos-14
-        # is mid-deprecation). Native-image cannot cross-compile, so each target builds on its own
-        # runner.
+        # Only linux/amd64, linux/arm64, and windows/amd64 are built in CI. macOS is not built here:
+        # there is no free hosted x64 macOS runner (GitHub retired macos-13; macos-15-intel is a paid
+        # "Larger Runners" label not enabled here that fails at setup), and the free macos-15 (arm64,
+        # ~7 GB RAM) cannot build this native image without thrashing swap for 40+ minutes -
+        # native-image wants ~80% of system RAM and this image's build heap is ~630 MB, which does not
+        # fit. macOS arm64 binaries are a fast local build instead (`mvn -Pnative ...`; see
+        # docs/native-image.md). There is likewise no free Windows-on-ARM runner. Native-image cannot
+        # cross-compile, so each target builds on its own runner.
         # linkmode distinguishes the two Linux build modes (see the "Set up musl toolchain" and
         # "Build native image" steps below, and native/pom.xml's native-static/native-mostly-static
         # profiles):
@@ -38,11 +40,10 @@ jobs:
         #                     (oracle/graal#4645), so the amd64 leg's fully-static musl mode
         #                     cannot link here. Needs a glibc runtime - see
         #                     native/src/main/docker/Dockerfile.native.distroless.
-        #   dynamic        - macOS/Windows: ordinary dynamically-linked build, unchanged.
+        #   dynamic        - Windows: ordinary dynamically-linked build, unchanged.
         include:
           - { runner: ubuntu-latest,    os_name: linux,   arch: amd64, required: true,  linkmode: musl-static   }
           - { runner: ubuntu-24.04-arm, os_name: linux,   arch: arm64, required: true,  linkmode: mostly-static }
-          - { runner: macos-15,         os_name: macos,   arch: arm64, required: false, linkmode: dynamic       }
           - { runner: windows-latest,   os_name: windows, arch: amd64, required: false, linkmode: dynamic       }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
