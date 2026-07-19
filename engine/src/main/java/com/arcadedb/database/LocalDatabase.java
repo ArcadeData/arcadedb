@@ -2404,12 +2404,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     try {
       if (transactionManager != null)
-        // preserveWalFiles: an open that failed is not a clean close and must never delete the WAL. The
-        // deletion branch is directory-wide and mode-blind, so a rejected open (a READ_ONLY open of a
-        // database needing recovery, for instance) would otherwise remove the very WAL files the next
-        // recovery-capable open needs to replay - discarding every change that had not yet reached the
-        // data files. This instance may not even own a WAL pool; it never owns the right to delete one.
-        transactionManager.close(false, true);
+        transactionManager.close(false);
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.WARNING, "Error on closing transaction manager after a failed open of database '%s'", e, name);
