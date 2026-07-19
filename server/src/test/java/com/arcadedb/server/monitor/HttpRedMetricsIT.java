@@ -100,10 +100,14 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
         .count();
     assertThat(rawUnmatchedMeters).isZero();
 
-    // All unmatched traffic collapses onto a single bounded path tag.
-    final Timer collapsed = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "unmatched").timer();
-    assertThat(collapsed).isNotNull();
-    assertThat(collapsed.count()).isGreaterThanOrEqualTo(50L);
+    // All unmatched traffic collapses onto a single bounded path tag. The 50 requests above may split
+    // across status or method tags, and earlier test classes in the reused fork leave their own
+    // "unmatched" meters behind, so the count is summed over every meter carrying the tag rather than
+    // read off whichever single one the lookup happens to return.
+    final java.util.Collection<Timer> collapsed = Metrics.globalRegistry.find("arcadedb.http.requests")
+        .tag("path", "unmatched").timers();
+    assertThat(collapsed).isNotEmpty();
+    assertThat(collapsed.stream().mapToLong(Timer::count).sum()).isGreaterThanOrEqualTo(50L);
   }
 
   private void hitGet(final String path) throws Exception {
