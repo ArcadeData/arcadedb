@@ -109,26 +109,29 @@ class ExpressionTypeDetector {
    * Returns null if not a comprehension.
    */
   Expression tryParseComprehensions(final Cypher25Parser.ExpressionContext ctx) {
-    final String exprText = ctx.getText();
+    // A comprehension is only the whole expression when its parse-tree span covers the entire
+    // expression. The previous length-tolerance heuristic (len >= exprText.length() - 2) wrongly
+    // swallowed a trailing 2-char arithmetic operator such as /2, *2 or +1, silently dropping it
+    // (issue #5342). Token-span equality is exact and lets those cases fall through to arithmetic.
 
     // reduce expressions
     final Cypher25Parser.ReduceExpressionContext reduceCtx = builder.findReduceExpressionRecursive(ctx);
-    if (reduceCtx != null && reduceCtx.getText().length() >= exprText.length() - 2)
+    if (reduceCtx != null && spansFullExpression(reduceCtx, ctx))
       return builder.parseReduceExpression(reduceCtx);
 
     // allReduce expressions
     final Cypher25Parser.AllReduceExpressionContext allReduceCtx = builder.findAllReduceExpressionRecursive(ctx);
-    if (allReduceCtx != null && allReduceCtx.getText().length() >= exprText.length() - 2)
+    if (allReduceCtx != null && spansFullExpression(allReduceCtx, ctx))
       return builder.parseAllReduceExpression(allReduceCtx);
 
     // Pattern comprehensions
     final Cypher25Parser.PatternComprehensionContext patternCompCtx = builder.findPatternComprehensionRecursive(ctx);
-    if (patternCompCtx != null && patternCompCtx.getText().length() >= exprText.length() - 2)
+    if (patternCompCtx != null && spansFullExpression(patternCompCtx, ctx))
       return builder.parsePatternComprehension(patternCompCtx);
 
     // List comprehensions
     final Cypher25Parser.ListComprehensionContext listCompCtx = builder.findListComprehensionRecursive(ctx);
-    if (listCompCtx != null && listCompCtx.getText().length() >= exprText.length() - 2)
+    if (listCompCtx != null && spansFullExpression(listCompCtx, ctx))
       return builder.parseListComprehension(listCompCtx);
 
     return null;

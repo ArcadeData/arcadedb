@@ -496,6 +496,57 @@ class CypherReduceAndShortestPathTest extends TestHelper {
   // Integration Tests (reduce + shortestPath combined)
   // ============================================================================
 
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/5342
+   * A reduce() expression followed by a trailing arithmetic operator in RETURN silently
+   * dropped the operator, returning the raw reduce value instead of applying the operator.
+   * reduce(s=0, x IN [1,4] | s+x) = 5, so /2 -> 2, *2 -> 10, +1 -> 6.
+   */
+  @Test
+  void reduceFollowedByArithmeticOperator() {
+    // Division
+    ResultSet rs = database.query("opencypher", "RETURN reduce(s=0, x IN [1,4] | s+x)/2 AS r");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("r").longValue()).isEqualTo(2L);
+    assertThat(rs.hasNext()).isFalse();
+
+    // Multiplication
+    rs = database.query("opencypher", "RETURN reduce(s=0, x IN [1,4] | s+x)*2 AS r");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("r").longValue()).isEqualTo(10L);
+    assertThat(rs.hasNext()).isFalse();
+
+    // Addition
+    rs = database.query("opencypher", "RETURN reduce(s=0, x IN [1,4] | s+x)+1 AS r");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("r").longValue()).isEqualTo(6L);
+    assertThat(rs.hasNext()).isFalse();
+
+    // Subtraction
+    rs = database.query("opencypher", "RETURN reduce(s=0, x IN [1,4] | s+x)-1 AS r");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("r").longValue()).isEqualTo(4L);
+    assertThat(rs.hasNext()).isFalse();
+
+    // Multi-digit operand (was already working: > 2 trailing chars) - guard against regression
+    rs = database.query("opencypher", "RETURN reduce(s=0, x IN [1,4] | s+x)+10 AS r");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("r").longValue()).isEqualTo(15L);
+    assertThat(rs.hasNext()).isFalse();
+
+    // Control: parenthesized reduce must still work
+    rs = database.query("opencypher", "RETURN (reduce(s=0, x IN [1,4] | s+x))/2 AS r");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("r").longValue()).isEqualTo(2L);
+    assertThat(rs.hasNext()).isFalse();
+
+    // Control: bare reduce must still work
+    rs = database.query("opencypher", "RETURN reduce(s=0, x IN [1,4] | s+x) AS r");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("r").longValue()).isEqualTo(5L);
+    assertThat(rs.hasNext()).isFalse();
+  }
+
   @Test
   void reduceInListComprehension() {
     // Use reduce with collected values
