@@ -135,25 +135,25 @@ If your deployment needs Gremlin or OpenTelemetry tracing, use the JVM distribut
 
 ## Target matrix
 
-`.github/workflows/native-image.yml` builds four targets. Native Image cannot cross-compile, so
+`.github/workflows/native-image.yml` builds three targets. Native Image cannot cross-compile, so
 each target is built on a runner of that same OS/architecture:
 
 | Target | Runner | Status |
 |---|---|---|
 | linux/amd64 | `ubuntu-latest` | **Required** - fully static (musl) |
 | linux/arm64 | `ubuntu-24.04-arm` | **Required** - mostly static (glibc) |
-| macos/arm64 | `macos-15` | Best-effort |
 | windows/amd64 | `windows-latest` | Best-effort |
 
-The two Linux targets are `required: true` in the CI matrix and gate the workflow; the other two are
+The two Linux targets are `required: true` in the CI matrix and gate the workflow; `windows/amd64` is
 `required: false` (`continue-on-error`), so a failure there does not redden the run.
 
-**No macos/amd64 or windows/arm64 targets.** There is no free hosted runner for either. GitHub
-retired the free `macos-13` (Intel) runner, and the only remaining x64 macOS label, `macos-15-intel`,
-is part of GitHub's paid "Larger Runners" tier - it is not enabled here and fails at job setup (this
-repository hit the same wall and disabled the equivalent legs in `test-python-*.yml`), so the
-`macos/amd64` leg was removed rather than shipped permanently red. GitHub offers no free
-Windows-on-ARM runner either.
+**macOS is a local build, not a CI target.** No free hosted runner can produce a macOS native image
+here: GitHub retired the free `macos-13` (Intel) runner and the only remaining x64 macOS label
+(`macos-15-intel`) is a paid "Larger Runners" tier not enabled here; and the free `macos-15` (arm64,
+~7 GB RAM) cannot build this image without thrashing swap for 40+ minutes, because `native-image`
+wants roughly 80% of system RAM and this build's image heap is ~630 MB. Build the macOS arm64 binary
+locally instead - it is fast on a real Mac (`mvn -Pnative -pl native -am -DskipTests package`, a few
+minutes). There is likewise no free Windows-on-ARM runner.
 
 ## Docker images
 
