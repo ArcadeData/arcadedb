@@ -508,7 +508,7 @@ public class Console {
       for (final String db : databasesName) {
         final int colonPos = db.indexOf(":");
         if (colonPos > -1) {
-          final String dbname = db.substring(0, colonPos - 1).trim();
+          final String dbname = db.substring(0, colonPos).trim();
           final String dbgroup = db.substring(colonPos + 1).trim();
           databases.put(dbname, dbgroup);
         } else {

@@ -137,7 +137,11 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
     Thread.sleep(5000);
-    assertThatThrownBy(() -> assertThat(console.parse("commit")).isTrue()).isInstanceOf(Exception.class);
+    // The idle sweep has removed the session by now. A commit carrying an unresolvable session id
+    // degrades to a session-less no-op rather than failing, so that an idempotent retry of a commit
+    // that already succeeded still reports success (#5026). What matters is that nothing was persisted,
+    // which the query below asserts.
+    assertThat(console.parse("commit")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
@@ -170,7 +174,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     assertThatThrownBy(() -> assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue()).isInstanceOf(Exception.class);
 
     assertThat(console.parse("create user albert identified by einstein grant connect to db1")).isTrue();
-    assertThat(console.parse("create user jeff identified by amazon grant connect to db1:readonly")).isTrue();
+    assertThat(console.parse("create user jeff identified by amazonaws grant connect to db1:readonly")).isTrue();
     assertThat(console.parse("drop user albert")).isTrue();
   }
 

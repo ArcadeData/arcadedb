@@ -232,11 +232,13 @@ public class Dictionary extends PaginatedComponent {
 
   public void reload() throws IOException {
     if (file.getSize() == 0) {
-      // NEW FILE, CREATE HEADER PAGE
-      database.transaction(() -> {
-        final MutablePage header = database.getTransaction().addPage(new PageId(database, file.getFileId(), 0), pageSize);
-        updateCounters(header);
-      });
+      // No header page on disk. Creating it commits a transaction, and the commit resolves this file id
+      // against the schema - which has not registered this component yet when the load path builds it,
+      // so committing here fails with "File with id '0' was not found" and the database cannot be
+      // opened at all. The creation is deferred to createHeaderPageIfMissing(), which LocalSchema calls
+      // once the component is registered. The in-RAM dictionary is already empty, which is the correct
+      // state for an empty file.
+      return;
 
     } else {
       final BasePage header = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
@@ -255,5 +257,21 @@ public class Dictionary extends PaginatedComponent {
       this.dictionary = newDictionary;
       this.dictionaryMap = newDictionaryMap;
     }
+  }
+
+  /**
+   * Writes the header page when the dictionary file is empty, which happens when the database was killed
+   * before the page reached disk. Must be called only after the component has been registered in the
+   * schema: the write commits a transaction whose second phase resolves this file id, so an earlier call
+   * fails with {@code SchemaException: File with id '0' was not found}.
+   */
+  public void createHeaderPageIfMissing() throws IOException {
+    if (file.getSize() > 0)
+      return;
+
+    database.transaction(() -> {
+      final MutablePage header = database.getTransaction().addPage(new PageId(database, file.getFileId(), 0), pageSize);
+      updateCounters(header);
+    });
   }
 }

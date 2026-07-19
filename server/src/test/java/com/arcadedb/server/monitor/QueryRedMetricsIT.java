@@ -45,8 +45,11 @@ class QueryRedMetricsIT extends BaseGraphServerTest {
   void queryDurationTimerIsTaggedByDatabaseAndLanguage() throws Exception {
     post("/api/v1/query/graph", "{\"language\":\"sql\",\"command\":\"select 1 as one\"}");
 
+    // protocol is pinned too: the ITs share one reused fork, so a meter left by an earlier test class
+    // under the same db/language/type but a different protocol would otherwise match first and be
+    // asserted on, failing on a count this test never contributed to.
     final Timer queryTimer = Metrics.globalRegistry.find("arcadedb.query.duration")
-        .tag("db", "graph").tag("language", "sql").tag("type", "query").timer();
+        .tag("protocol", "http").tag("db", "graph").tag("language", "sql").tag("type", "query").timer();
     assertThat(queryTimer).isNotNull();
     assertThat(queryTimer.count()).isGreaterThanOrEqualTo(1L);
   }
@@ -56,7 +59,7 @@ class QueryRedMetricsIT extends BaseGraphServerTest {
     post("/api/v1/command/graph", "{\"language\":\"sql\",\"command\":\"select 1 as one\"}");
 
     final Timer commandTimer = Metrics.globalRegistry.find("arcadedb.query.duration")
-        .tag("db", "graph").tag("language", "sql").tag("type", "command").timer();
+        .tag("protocol", "http").tag("db", "graph").tag("language", "sql").tag("type", "command").timer();
     assertThat(commandTimer).isNotNull();
     assertThat(commandTimer.count()).isGreaterThanOrEqualTo(1L);
   }
