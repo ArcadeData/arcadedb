@@ -52,7 +52,12 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     assertThat(anyTimer).isNotNull();
 
     // The query route must be tagged with the template, not the concrete database name "graph".
-    final Timer queryTimer = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "/query/{database}").timer();
+    // Every tag of the tuple this test drove is pinned: the ITs share one reused fork, so meters from
+    // earlier test classes are still registered under this name and a path-only lookup returns an
+    // arbitrary one of them. Those stale meters record nothing for this test, so asserting a count on
+    // one is a false failure that depends purely on test ordering.
+    final Timer queryTimer = Metrics.globalRegistry.find("arcadedb.http.requests")
+        .tag("path", "/query/{database}").tag("db", "graph").tag("method", "POST").tag("status", "200").timer();
     assertThat(queryTimer).isNotNull();
     assertThat(queryTimer.count()).isGreaterThanOrEqualTo(1L);
 
@@ -95,10 +100,14 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
         .count();
     assertThat(rawUnmatchedMeters).isZero();
 
-    // All unmatched traffic collapses onto a single bounded path tag.
-    final Timer collapsed = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "unmatched").timer();
-    assertThat(collapsed).isNotNull();
-    assertThat(collapsed.count()).isGreaterThanOrEqualTo(50L);
+    // All unmatched traffic collapses onto a single bounded path tag. The 50 requests above may split
+    // across status or method tags, and earlier test classes in the reused fork leave their own
+    // "unmatched" meters behind, so the count is summed over every meter carrying the tag rather than
+    // read off whichever single one the lookup happens to return.
+    final java.util.Collection<Timer> collapsed = Metrics.globalRegistry.find("arcadedb.http.requests")
+        .tag("path", "unmatched").timers();
+    assertThat(collapsed).isNotEmpty();
+    assertThat(collapsed.stream().mapToLong(Timer::count).sum()).isGreaterThanOrEqualTo(50L);
   }
 
   private void hitGet(final String path) throws Exception {

@@ -200,6 +200,11 @@ public class LocalSchema implements Schema {
         if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
           dictionary = (Dictionary) componentFactory.createComponent(file, mode);
           registerFile(dictionary);
+          // Only now can the dictionary write a missing header page: doing so commits a transaction
+          // that has to resolve the dictionary's file id, which registerFile above has just made
+          // resolvable. Relevant when the database was killed before the page reached disk.
+          if (mode == ComponentFile.MODE.READ_WRITE)
+            dictionary.createHeaderPageIfMissing();
           break;
         }
     }
