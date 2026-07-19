@@ -75,7 +75,7 @@
         <maven-central-publishing-plugin.version>0.11.0</maven-central-publishing-plugin.version>
         <license-maven-plugin.version>5.0.0</license-maven-plugin.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
-        <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
+        <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.5</testcontainers.version>
         <logback-classic.version>1.5.38</logback-classic.version>
