@@ -592,6 +592,15 @@
       ]
     },
     {
+      "type": "com.arcadedb.log.LogFormatter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
       "type": "com.arcadedb.metrics.otlp.OtlpMetricsPlugin"
     },
     {
@@ -647,6 +656,15 @@
     },
     {
       "type": "com.arcadedb.tracing.TracingPlugin"
+    },
+    {
+      "type": "com.arcadedb.utility.AnsiLogFormatter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
     },
     {
       "type": "com.google.common.util.concurrent.AbstractFutureState"
@@ -2012,6 +2030,24 @@
       "methods": [
         {
           "name": "get",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.util.logging.ConsoleHandler",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.util.logging.FileHandler",
+      "methods": [
+        {
+          "name": "<init>",
           "parameterTypes": []
         }
       ]
