@@ -22,7 +22,7 @@
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.0",
     "@popperjs/core": "^2.11.8",
-    "apexcharts": "^5.16.0",
+    "apexcharts": "^6.1.0",
     "bootstrap": "^5.3.8",
     "codemirror": "^5.65.21",
     "cytoscape": "^3.34.0",
