@@ -20,7 +20,7 @@
     "version": "npm run security-check && npm run build && git add src/main/resources/static/dist package.json package-lock.json"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.3.0",
+    "@fortawesome/fontawesome-free": "^7.3.1",
     "@popperjs/core": "^2.11.8",
     "apexcharts": "^6.1.0",
     "bootstrap": "^5.3.8",
