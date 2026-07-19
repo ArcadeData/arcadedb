@@ -206,7 +206,7 @@ public class TransactionManager {
       // above; leave them (and the caller leaves the lock file) so the next open runs recovery and replays.
       LogManager.instance().log(this, Level.SEVERE,
           "Preserving the WAL files of database '%s': not all pages reached the disk (%s), the next open will recover them",
-          null, database.getName(), preserveWalFiles ? "flush wait gave up" : "unacked WAL pages");
+          null, database.getName(), preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
     } else {
       // DELETE ALL THE WAL FILES AT OS-LEVEL
       final File dir = new File(database.getDatabasePath());
