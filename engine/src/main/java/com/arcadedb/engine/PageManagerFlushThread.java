@@ -28,6 +28,7 @@ import com.arcadedb.log.LogManager;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -68,6 +69,11 @@ public class PageManagerFlushThread extends Thread {
   // unsuspend already drained the deferred map, leaving it stuck in deferredByDatabase / pageIndex forever.
   // Also the monitor new suspenders wait on while a resume is in flight (see resumingDatabases).
   private final        ConcurrentHashMap<Database, Object>                      suspendLocks        = new ConcurrentHashMap<>();
+  // Per-database mutex serializing detachPendingPages against resumeFlushing's Phase 1. Phase 1 detaches the deferred
+  // batches and writes them from the resuming thread, outside both the queue and nextPagesToFlush, so without this
+  // lock a replay could take the pipeline for empty and have its page written over by a deferred copy landing later.
+  // Lock ordering is always this monitor BEFORE any batch.pages monitor; the flush thread takes batch.pages alone.
+  private final        ConcurrentHashMap<Database, Object>                      replayDrainLocks    = new ConcurrentHashMap<>();
 
   /**
    * O(1) index: pageId → most recent MutablePage in the flush queue or currently being flushed.
@@ -441,42 +447,47 @@ public class PageManagerFlushThread extends Thread {
     // end of the method, so the caller still observes its own cancellation and the re-enqueue phase below runs
     // interrupt-free.
     boolean restoreCallerInterrupt = false;
-    final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
-    if (deferred != null) {
-      for (final PagesToFlush batch : deferred) {
-        if (!batch.database.isOpen())
-          continue;
-        synchronized (batch.pages) {
-          for (final MutablePage page : batch.pages) {
-            if (!batch.database.isOpen())
-              break;
-            try {
-              pageManager.flushPage(page);
-            } catch (final DatabaseMetadataException e) {
-              // FILE DELETED, CONTINUE WITH THE NEXT PAGES
-              LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
-            } catch (final InterruptedIOException e) {
-              // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
-              // retry the write once.
-              restoreCallerInterrupt = true;
-              Thread.interrupted();
+    // Serialized against detachPendingPages: the detach must either see these batches (and take its page out of
+    // them) or run after they have all reached the disk. Otherwise a superseded copy written here could land after
+    // a replicated write and roll the page version backwards.
+    synchronized (replayDrainLock(database)) {
+      final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
+      if (deferred != null) {
+        for (final PagesToFlush batch : deferred) {
+          if (!batch.database.isOpen())
+            continue;
+          synchronized (batch.pages) {
+            for (final MutablePage page : batch.pages) {
+              if (!batch.database.isOpen())
+                break;
               try {
                 pageManager.flushPage(page);
-              } catch (final DatabaseMetadataException | IOException e2) {
-                // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
-                // would skip the unsuspend phases below, leaving the database suspended with batches stranded
-                // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
-                // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
-                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+              } catch (final DatabaseMetadataException e) {
+                // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+              } catch (final InterruptedIOException e) {
+                // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
+                // retry the write once.
+                restoreCallerInterrupt = true;
                 Thread.interrupted();
+                try {
+                  pageManager.flushPage(page);
+                } catch (final DatabaseMetadataException | IOException e2) {
+                  // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
+                  // would skip the unsuspend phases below, leaving the database suspended with batches stranded
+                  // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
+                  // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
+                  LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                  Thread.interrupted();
+                }
+              } catch (final IOException e) {
+                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+              } finally {
+                // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
+                deferredRAMBytes.addAndGet(-page.getPhysicalSize());
+                removeFromFlushIndex(page);
+                bumpFlushProgress(page);
               }
-            } catch (final IOException e) {
-              LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
-            } finally {
-              // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
-              deferredRAMBytes.addAndGet(-page.getPhysicalSize());
-              removeFromFlushIndex(page);
-              bumpFlushProgress(page);
             }
           }
         }
@@ -540,6 +551,10 @@ public class PageManagerFlushThread extends Thread {
     return suspendLocks.computeIfAbsent(database, k -> new Object());
   }
 
+  private Object replayDrainLock(final Database database) {
+    return replayDrainLocks.computeIfAbsent(database, k -> new Object());
+  }
+
   public void closeAndJoin() throws InterruptedException {
     running = false;
     queue.offer(SHUTDOWN_THREAD);
@@ -596,6 +611,7 @@ public class PageManagerFlushThread extends Thread {
     // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
     suspendLocks.remove(database);
+    replayDrainLocks.remove(database);
     suspended.remove(database);
     resumingDatabases.remove(database);
     flushedPagesPerDatabase.remove(database);
@@ -624,6 +640,101 @@ public class PageManagerFlushThread extends Thread {
     // Finally clean any index entry for a page currently being flushed.
     pageIndex.entrySet()
         .removeIf(e -> database.equals(e.getKey().getDatabase()) && e.getKey().getFileId() == fileId);
+  }
+
+  /**
+   * Takes EVERY copy of {@code pageId} pending in the flush pipeline out of it and hands them to the caller, which
+   * becomes responsible for writing the most recent one to disk. Used by {@link TransactionManager#applyChanges},
+   * which writes replicated / recovery pages straight to the file: while an older copy of the same page stays in the
+   * pipeline, reads resolve it from {@link #pageIndex} instead of the file, and the eventual flush of that copy
+   * overwrites the replicated page and rolls its version backwards.
+   * <p>
+   * Copies are matched by {@link PageId}, NOT by reference identity: successive commits can leave more than one
+   * {@link MutablePage} for the same page pending at once (the newest in {@link #pageIndex}, an older one still
+   * sitting in an earlier batch - the two-instance case {@link #removeFromFlushIndex} exists for, issue #4544).
+   * Removing only the indexed instance would leave the older copy free to write the superseded version over the
+   * replicated one. Every returned copy is superseded by the most recent one, whose content is a full page image
+   * covering all of them, so the caller writes that one and releases the others' WAL acks.
+   * <p>
+   * The batch currently being written is also visited: the flush thread mutates the very same list, so the removal
+   * may lose that race, which is why the caller waits for the in-flight batch to complete before writing.
+   * <p>
+   * Serialized against {@link #resumeFlushing}'s Phase 1 through {@link #replayDrainLock}: that phase detaches the
+   * deferred batches and writes them from the resuming thread, outside both {@link #queue} and
+   * {@link #nextPagesToFlush}, so without the mutex this walk could find the pipeline empty while a superseded copy
+   * was still on its way to the disk.
+   * <p>
+   * ASSUMPTION: no other thread is scheduling a flush of this page concurrently. {@link #scheduleFlushOfPages}
+   * publishes to {@link #pageIndex} BEFORE enqueueing, so a commit sitting between those two statements would have
+   * its batch enqueued after this detach walked the queue, and that batch would still carry a superseded copy. This
+   * holds on the only caller's path: replicated and crash-recovery replay is the sole writer of the pages it
+   * applies - it goes through {@code writePageWithLock}, which never touches this pipeline - and it runs on a
+   * follower or during recovery, where no local transaction is committing pages.
+   *
+   * @return every detached copy, most recent one included; empty when nothing was pending for this page.
+   */
+  List<MutablePage> detachPendingPages(final Database database, final PageId pageId) {
+    // O(1) fast path for the common replay case of a page that is not in the pipeline at all. Deliberately
+    // conservative: it skips the walk only when the WHOLE pipeline is empty, because a copy can outlive its
+    // pageIndex entry (a newer instance flushed out of order removes the entry while an older one is still queued),
+    // so "no entry for this pageId" alone would not prove the batches are clean.
+    if (pageIndex.isEmpty() && queue.isEmpty() && deferredRAMBytes.get() == 0 && nextPagesToFlush.get() == null)
+      return Collections.emptyList();
+
+    synchronized (replayDrainLock(database)) {
+      final MutablePage indexed = pageIndex.remove(pageId);
+      final List<MutablePage> detached = new ArrayList<>(1);
+
+      // Iterated directly rather than through a snapshot: ArrayBlockingQueue's iterator is weakly consistent and
+      // never throws ConcurrentModificationException, and this runs per replayed page, so the copy would be pure
+      // overhead. The walk is bounded by the flush queue depth (arcadedb.pageFlushQueue) plus the deferred backlog,
+      // which is itself capped by arcadedb.flushSuspendMaxDeferredRAM.
+      for (final PagesToFlush batch : queue)
+        removePagesOfPageIdFromBatch(batch, pageId, detached);
+
+      removePagesOfPageIdFromBatch(nextPagesToFlush.get(), pageId, detached);
+
+      final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.get(database);
+      if (deferred != null)
+        for (final PagesToFlush batch : deferred)
+          // The copies leave the deferred backlog, so release their reserved RAM accounting (issue #4728).
+          deferredRAMBytes.addAndGet(-removePagesOfPageIdFromBatch(batch, pageId, detached));
+
+      // The indexed copy is missing from every batch only in the mid-enqueue window ruled out above, but adding it
+      // here keeps the caller's contract - "the pipeline no longer holds this page" - true without relying on it.
+      if (indexed != null && !containsInstance(detached, indexed))
+        detached.add(indexed);
+
+      return detached;
+    }
+  }
+
+  private static boolean containsInstance(final List<MutablePage> pages, final MutablePage page) {
+    for (int i = 0; i < pages.size(); i++)
+      if (pages.get(i) == page)
+        return true;
+    return false;
+  }
+
+  /** Removes every copy of {@code pageId} from a batch into {@code detached} and returns the sum of their in-RAM size. */
+  private long removePagesOfPageIdFromBatch(final PagesToFlush batch, final PageId pageId,
+      final List<MutablePage> detached) {
+    // pages is null for the SHUTDOWN_THREAD marker.
+    if (batch == null || batch.pages == null)
+      return 0;
+
+    long removedBytes = 0;
+    synchronized (batch.pages) {
+      for (final Iterator<MutablePage> it = batch.pages.iterator(); it.hasNext(); ) {
+        final MutablePage page = it.next();
+        if (pageId.equals(page.getPageId())) {
+          it.remove();
+          detached.add(page);
+          removedBytes += page.getPhysicalSize();
+        }
+      }
+    }
+    return removedBytes;
   }
 
   /** Removes the dropped file's pages from a batch and returns the sum of their in-RAM size (issue #4728). */
