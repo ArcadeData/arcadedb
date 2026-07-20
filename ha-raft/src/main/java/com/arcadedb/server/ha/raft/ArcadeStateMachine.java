@@ -396,6 +396,59 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Ratis's {@link BaseStateMachine} enforces a strict, term-first monotonic invariant on
+   * {@code lastAppliedTermIndex}: every update must be {@code >=} the previous one, comparing TERM
+   * before INDEX. When the invariant is violated it halts the {@code StateMachineUpdater} thread,
+   * which on ArcadeDB crash-loops the whole node and wedges leader election for the entire cluster.
+   * <p>
+   * One violation is <b>benign and must be tolerated</b>: a follower-installed snapshot can seed an
+   * inflated applied TERM. {@link #notifyInstallSnapshotFromLeader} records the term of the first log
+   * entry AFTER the snapshot as the snapshot's term, but that entry is not yet in the follower's log
+   * at install time and a later leadership-change reconciliation can settle it on a LOWER term. When
+   * Ratis then applies the real next committed entry, its {@code index} advances (genuine forward
+   * progress) while its {@code term} is lower than the over-recorded snapshot term - tripping the
+   * invariant even though nothing is actually wrong (issues #575, #593: the Locstat cluster stuck with
+   * all nodes {@code VOTING_FOR_ME} after {@code snapshot.11_39707283} vs a term-10 entry at
+   * 39707284).
+   * <p>
+   * A committed Raft log never has a strictly lower term at a strictly higher index, so this exact
+   * shape - index up, term down - cannot represent a genuine log inconsistency; it only arises from an
+   * over-recorded snapshot term. We therefore realign the recorded term downward (via Ratis's own
+   * unchecked {@link #setLastAppliedTermIndex}) and continue, logging a WARNING so operators still see
+   * it. Every other ordering (index not advancing, or term not regressing) is delegated to
+   * {@code super} unchanged, so real invariant violations still fail loudly.
+   */
+  @Override
+  protected boolean updateLastAppliedTermIndex(final TermIndex newTI) {
+    final TermIndex oldTI = getLastAppliedTermIndex();
+    if (isBenignSnapshotTermRegression(oldTI, newTI)) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Tolerating applied-term realignment %s -> %s: the index advances (real progress) but the term "
+              + "regressed from an over-recorded snapshot term; accepting the correction instead of halting "
+              + "the state machine (issues #575, #593)", oldTI, newTI);
+      // Mirrors BaseStateMachine's advancing-update path (store + return true) but without the strict
+      // term-first assertion. The transaction-future completion in super runs only on the no-op path
+      // (newTI equals oldTI), so an advancing update like this one has no additional bookkeeping.
+      setLastAppliedTermIndex(newTI);
+      return true;
+    }
+    return super.updateLastAppliedTermIndex(newTI);
+  }
+
+  /**
+   * Returns {@code true} for the one applied-term-index transition ArcadeDB tolerates over Ratis's
+   * strict monotonic check: the {@code index} strictly advances while the {@code term} strictly
+   * regresses - the fingerprint of an over-recorded (inflated) snapshot term being corrected by the
+   * real next committed entry (issues #575, #593). All other transitions return {@code false} and stay
+   * subject to Ratis's invariant enforcement. Package-private and static for direct unit testing.
+   */
+  static boolean isBenignSnapshotTermRegression(final TermIndex oldTI, final TermIndex newTI) {
+    return oldTI != null && newTI != null
+        && newTI.getIndex() > oldTI.getIndex()
+        && newTI.getTerm() < oldTI.getTerm();
+  }
+
+  /**
    * Called by Ratis on the leader when a client request is received, before the entry is
    * replicated. Sets a marker in the {@link TransactionContext} so that {@link #applyTransaction}
    * can identify entries that were originated (and pre-applied) by this node in the current
