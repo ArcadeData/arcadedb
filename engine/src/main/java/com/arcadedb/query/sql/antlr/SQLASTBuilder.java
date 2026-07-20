@@ -4619,11 +4619,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (expr.json != null) {
         // Direct JSON literal from jsonLiteral alternative
         ops.json = expr.json;
-      } else if (expr.mathExpression instanceof final BaseExpression baseExpr) {
+      } else if (expr.mathExpression instanceof final BaseExpression baseExpr && baseExpr.expression != null
+          && baseExpr.expression.json != null) {
         // JSON literal parsed as baseExpression mapLit alternative
-        if (baseExpr.expression != null && baseExpr.expression.json != null) {
-          ops.json = baseExpr.expression.json;
-        }
+        ops.json = baseExpr.expression.json;
+      } else {
+        // Not a JSON literal: keep the expression (input parameter, LET variable, sub-query, ...) and resolve it at execution time
+        ops.expression = expr;
       }
     } else if (ctx.CONTENT() != null) {
       ops.type = UpdateOperations.TYPE_CONTENT;

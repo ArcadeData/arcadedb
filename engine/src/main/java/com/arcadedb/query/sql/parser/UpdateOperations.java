@@ -41,6 +41,10 @@ public class UpdateOperations extends SimpleNode {
   public Json                      json;
   public JsonArray                 jsonArray;
   public InputParameter            inputParam;
+  /**
+   * Set for MERGE when the payload is not a JSON literal (for example an input parameter or any other expression).
+   */
+  public Expression                expression;
   public List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
   public List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
 
@@ -73,7 +77,10 @@ public class UpdateOperations extends SimpleNode {
       break;
     case TYPE_MERGE:
       builder.append("MERGE ");
-      json.toString(params, builder);
+      if (json != null)
+        json.toString(params, builder);
+      else if (expression != null)
+        expression.toString(params, builder);
       break;
     case TYPE_CONTENT:
       builder.append("CONTENT ");
@@ -128,6 +135,7 @@ public class UpdateOperations extends SimpleNode {
     result.json = json == null ? null : json.copy();
     result.jsonArray = jsonArray == null ? null : jsonArray.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
+    result.expression = expression == null ? null : expression.copy();
     result.updateIncrementItems = updateIncrementItems == null ? null : updateIncrementItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.updateRemoveItems = updateRemoveItems == null ? null : updateRemoveItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -154,6 +162,8 @@ public class UpdateOperations extends SimpleNode {
       return false;
     if (!Objects.equals(inputParam, that.inputParam))
       return false;
+    if (!Objects.equals(expression, that.expression))
+      return false;
     if (!Objects.equals(updateIncrementItems, that.updateIncrementItems))
       return false;
     return Objects.equals(updateRemoveItems, that.updateRemoveItems);
@@ -167,6 +177,7 @@ public class UpdateOperations extends SimpleNode {
     result = 31 * result + (json != null ? json.hashCode() : 0);
     result = 31 * result + (jsonArray != null ? jsonArray.hashCode() : 0);
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
+    result = 31 * result + (expression != null ? expression.hashCode() : 0);
     result = 31 * result + (updateIncrementItems != null ? updateIncrementItems.hashCode() : 0);
     result = 31 * result + (updateRemoveItems != null ? updateRemoveItems.hashCode() : 0);
     return result;
@@ -196,6 +207,10 @@ public class UpdateOperations extends SimpleNode {
     return inputParam;
   }
 
+  public Expression getExpression() {
+    return expression;
+  }
+
   public List<UpdateIncrementItem> getUpdateIncrementItems() {
     return updateIncrementItems;
   }
@@ -222,6 +237,9 @@ public class UpdateOperations extends SimpleNode {
     }
     if (this.inputParam != null) {
       result.put("inputParam", this.inputParam.toString());
+    }
+    if (this.expression != null) {
+      result.put("expression", this.expression.toString());
     }
     if (updateIncrementItems != null) {
       result.put("updateIncrementItems", updateIncrementItems);

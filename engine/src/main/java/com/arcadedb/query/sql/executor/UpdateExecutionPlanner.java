@@ -189,7 +189,12 @@ public class UpdateExecutionPlanner {
           plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), context));
           break;
         case UpdateOperations.TYPE_MERGE:
-          plan.chain(new UpdateMergeStep(op.getJson(), context));
+          if (op.getJson() != null)
+            plan.chain(new UpdateMergeStep(op.getJson(), context));
+          else if (op.getExpression() != null)
+            plan.chain(new UpdateMergeStep(op.getExpression(), context));
+          else
+            throw new CommandExecutionException("Missing payload for UPDATE MERGE: " + op);
           break;
         case UpdateOperations.TYPE_CONTENT:
           if (op.getJson() != null) {
