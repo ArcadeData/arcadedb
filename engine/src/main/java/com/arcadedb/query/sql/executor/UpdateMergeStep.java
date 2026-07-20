@@ -26,6 +26,8 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Json;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -86,14 +88,51 @@ public class UpdateMergeStep extends AbstractExecutionStep {
   }
 
   private Map<String, Object> resolveExpression(final Record record, final CommandContext context) {
-    final Object value = expression.execute(record, context);
-    if (value instanceof Map)
-      return (Map<String, Object>) value;
+    if (expression == null)
+      throw new CommandExecutionException("Missing payload for UPDATE MERGE");
+
+    Object value = expression.execute(record, context);
+
+    // A sub-query payload evaluates to a collection: accept it only when it identifies a single record
+    if (value instanceof Collection<?> collection) {
+      if (collection.size() != 1)
+        throw new CommandExecutionException(
+            "Invalid value for UPDATE MERGE, expected a single map but found " + collection.size() + " items");
+      value = collection.iterator().next();
+    }
+
+    if (value instanceof Map<?, ?> map)
+      return checkStringKeys(map);
     else if (value instanceof Document document)
       return document.toMap(false);
     else if (value instanceof Result result)
-      return result.toMap();
+      return toPropertyMap(result);
     throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map but found: " + value);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> checkStringKeys(final Map<?, ?> map) {
+    for (final Object key : map.keySet())
+      if (!(key instanceof String))
+        throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map with string keys but found: " + key);
+    return (Map<String, Object>) map;
+  }
+
+  /**
+   * Converts a result into the map of the properties to merge. Metadata ({@code @rid}, {@code @type}, ...) and computed
+   * pseudo-properties ({@code $score}, ...) are excluded so they never end up stored on the target record.
+   */
+  private static Map<String, Object> toPropertyMap(final Result result) {
+    final Map<String, Object> map = new LinkedHashMap<>();
+    for (final String name : result.getPropertyNames()) {
+      if (name.isEmpty())
+        continue;
+      final char prefix = name.charAt(0);
+      if (prefix == '@' || prefix == '$')
+        continue;
+      map.put(name, result.getProperty(name));
+    }
+    return map;
   }
 
   @Override

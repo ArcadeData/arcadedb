@@ -3,6 +3,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -132,6 +133,51 @@ class UpdateMergeTest {
     assertThat(row.<String>getProperty("canonical_id")).isEqualTo("LOCAL_ENTITY:12345");
     assertThat(row.<String>getProperty("name_norm")).isEqualTo("Aspirin");
     assertThat(row.<Boolean>getProperty("grounded")).isTrue();
+  }
+
+  @Test
+  void updateMergeWithDocumentParameterDoesNotLeakMetadata() {
+    database.transaction(() -> {
+      final Document source = (Document) database.query("sql", "SELECT FROM V WHERE name = 'John'").next().getElement().get();
+
+      final ResultSet result = database.command("sql", "UPDATE V MERGE :payload WHERE name = 'Jane'", Map.of("payload", source));
+      assertThat(result.hasNext()).isTrue();
+    });
+
+    final ResultSet result = database.query("sql", "SELECT FROM V WHERE city = 'New York' AND age = 30");
+    // both John and the merged Jane now match
+    assertThat(result.stream().count()).isEqualTo(2);
+
+    final Result jane = database.query("sql", "SELECT FROM V WHERE city = 'New York'").next();
+    assertThat(jane.getPropertyNames()).doesNotContain("@rid", "@type", "@cat");
+  }
+
+  @Test
+  void updateMergeWithSubQueryDoesNotLeakMetadata() {
+    database.transaction(() -> {
+      final ResultSet result = database.command("sql",
+          "UPDATE V MERGE (SELECT city, age FROM V WHERE name = 'John') WHERE name = 'Jane'");
+      assertThat(result.hasNext()).isTrue();
+    });
+
+    final ResultSet result = database.query("sql", "SELECT FROM V WHERE name = 'Jane'");
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(row.<String>getProperty("city")).isEqualTo("New York");
+    assertThat(row.<Integer>getProperty("age")).isEqualTo(30);
+    assertThat(row.getPropertyNames()).doesNotContain("@rid", "@type", "@cat");
+  }
+
+  @Test
+  void updateMergeWithNonStringKeyMapFails() {
+    final Map<Object, Object> payload = new HashMap<>();
+    payload.put(42, "answer");
+
+    database.transaction(() -> {
+      assertThatThrownBy(() -> database.command("sql", "UPDATE V MERGE :payload WHERE name = 'John'", Map.of("payload", payload)))
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("string keys");
+    });
   }
 
   @Test

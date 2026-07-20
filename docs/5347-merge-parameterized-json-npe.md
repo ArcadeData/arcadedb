@@ -63,6 +63,44 @@ All four fail on `main` with the NPE and pass with the fix.
   pre-existing/environmental GraalVM-JavaScript tests (`TriggerSQLTest` JS triggers,
   `SQLVectorHybridSearchBlogPostTest` JS helpers) and one benchmark, all unrelated to this change.
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5348
+
+## Review cycles
+
+### Cycle 1 - head `5ec4abf`
+
+Reviewers: `gemini-code-assist` (COMMENTED, 1 medium inline), `claude[bot]` (issue comment).
+
+Addressed:
+
+- **`Result` branch leaked metadata** (claude). `Result.toMap()` on an element-backed result returns
+  `element.toMap(true)`, injecting `@rid` / `@type` / `@cat`, which the merge loop would have stored on
+  the target record. Replaced with `toPropertyMap(Result)`, which iterates `getPropertyNames()` and skips
+  `@`-prefixed metadata and `$`-prefixed computed pseudo-properties (`$score`, `$similarity`).
+- **Unchecked `Map` cast** (claude). A map with non-String keys previously erased through the cast and blew
+  up with a raw `ClassCastException` in the merge loop. `checkStringKeys` now validates and raises
+  `CommandExecutionException`, keeping the "expected a map" contract uniform.
+- **Defensive null check on `expression`** (gemini). `resolveExpression` now throws
+  `CommandExecutionException("Missing payload for UPDATE MERGE")` instead of NPE-ing if both payload fields
+  are null.
+- **Test coverage gap for the `Document` / `Result` branches** (claude). Added
+  `updateMergeWithDocumentParameterDoesNotLeakMetadata`, `updateMergeWithSubQueryDoesNotLeakMetadata`, and
+  `updateMergeWithNonStringKeyMapFails`.
+
+The sub-query test surfaced a further gap: a sub-query expression evaluates to a `Collection` of `Result`,
+not a bare `Result`, so `UPDATE V MERGE (SELECT ...)` still failed. `resolveExpression` now unwraps a
+single-element collection and raises a clear `CommandExecutionException` for zero or many items.
+
+Not addressed:
+
+- claude's note that a `null` payload yields `CommandExecutionException` rather than a no-op. claude itself
+  judged the current behavior fine for this fix; changing MERGE null semantics is out of scope for an NPE fix.
+- claude's suggestion that `updateMergeWithNonMapParameterFails` also assert the record was not partially
+  mutated. The merge loop resolves the whole payload before any `doc.set`, so partial mutation is not
+  reachable via that path; claude flagged it as non-essential.
+
 ## Impact
 
 Behavior change is limited to `UPDATE ... MERGE <non-JSON-literal>` and
