@@ -330,5 +330,43 @@
                 </plugins>
             </build>
         </profile>
+
+        <!--
+            Activated by -Dnative.lowmem=true. Constrains native-image's peak memory so the build
+            can fit on a RAM-starved runner (the free GitHub macos-15 Apple-Silicon runner has only
+            ~7 GB; native-image otherwise grabs ~80% of RAM and thrashes swap for 40+ minutes on this
+            GraalJS/Truffle-embedded image - see native-image.yml's macos leg and docs/native-image.md).
+            -J-Xmx5g caps the builder JVM heap (leaving headroom for the OS and the final linker,
+            which needs a lot for a ~700 MB image); a parallelism of 2 cuts the number of concurrent
+            compiler threads (each holds compilation state) down from the default; -Ob is quick-build
+            mode (skips the expensive optimizations, trading some runtime performance for much lower
+            build time and memory) which is acceptable for a best-effort convenience binary.
+            combine.children="append" for the same positional-merge reason documented on native-static
+            above. Inactive by default, so the Linux/Windows builds are unaffected.
+        -->
+        <profile>
+            <id>native-lowmem</id>
+            <activation>
+                <property>
+                    <name>native.lowmem</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <configuration>
+                            <buildArgs combine.children="append">
+                                <buildArg>-J-Xmx5g</buildArg>
+                                <buildArg>--parallelism=2</buildArg>
+                                <buildArg>-Ob</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 </project>
