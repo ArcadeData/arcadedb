@@ -40,8 +40,11 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private final        String      userName;
   private              String[]    groups;
   private volatile     boolean[][] fileAccessMap     = null;
-  private              long        resultSetLimit    = -1;
-  private              long        readTimeout       = -1;
+  // Written under the updateDatabaseConfiguration() monitor but read by unsynchronized getters on the query
+  // path, so they are volatile: without it a reader has no visibility guarantee and a 64-bit read is not
+  // required to be atomic, which would let a query observe a torn limit.
+  private volatile     long        resultSetLimit    = -1;
+  private volatile     long        readTimeout       = -1;
   // INVARIANT: never mutated in place. updateDatabaseConfiguration() builds a replacement and swaps it in,
   // so a reader racing with a security refresh sees either the previous or the next set of permissions,
   // never a partially rebuilt one that would deny an access the user actually holds.
@@ -130,6 +133,12 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   }
 
   public synchronized void updateDatabaseConfiguration(final JSONObject configuredGroups) {
+    // The limits below keep the most restrictive value across the groups of ONE configuration, so they have
+    // to start over on every call. Carrying them across calls would pin the user to the tightest value ever
+    // configured and silently ignore a refresh that relaxes or drops a limit.
+    resultSetLimit = -1;
+    readTimeout = -1;
+
     // WORK ON A COPY AND SWAP IT AT THE END
     final boolean[] newDatabaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 

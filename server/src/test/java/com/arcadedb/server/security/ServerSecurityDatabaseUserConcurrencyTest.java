@@ -79,4 +79,33 @@ class ServerSecurityDatabaseUserConcurrencyTest {
 
     assertThat(denials.get()).as("permission denied while the security map was being refreshed").isZero();
   }
+
+  /**
+   * updateDatabaseConfiguration() picks the most restrictive limit across the groups of a single
+   * configuration. It must recompute from scratch on every call, otherwise a refresh that relaxes or drops
+   * a limit is ignored and the user stays pinned to the tightest value ever configured.
+   */
+  @Test
+  void refreshingTheConfigurationCanRelaxLimits() {
+    final ServerSecurityDatabaseUser user = new ServerSecurityDatabaseUser("db", "root", new String[] { "admin" });
+
+    user.updateDatabaseConfiguration(groupsWithLimits(10, 100));
+    assertThat(user.getResultSetLimit()).isEqualTo(10);
+    assertThat(user.getReadTimeout()).isEqualTo(100);
+
+    user.updateDatabaseConfiguration(groupsWithLimits(50, 500));
+    assertThat(user.getResultSetLimit()).as("a relaxed result set limit is picked up").isEqualTo(50);
+    assertThat(user.getReadTimeout()).as("a relaxed read timeout is picked up").isEqualTo(500);
+
+    // Dropping the limits entirely restores "unlimited"
+    user.updateDatabaseConfiguration(new JSONObject().put("admin", new JSONObject().put("access", new JSONArray())));
+    assertThat(user.getResultSetLimit()).as("a removed result set limit goes back to unlimited").isEqualTo(-1);
+    assertThat(user.getReadTimeout()).as("a removed read timeout goes back to unlimited").isEqualTo(-1);
+  }
+
+  private static JSONObject groupsWithLimits(final long resultSetLimit, final long readTimeout) {
+    return new JSONObject().put("admin", new JSONObject().put("access", new JSONArray())
+        .put("resultSetLimit", resultSetLimit)
+        .put("readTimeout", readTimeout));
+  }
 }

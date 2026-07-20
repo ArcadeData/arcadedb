@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
@@ -55,7 +56,7 @@ class ConcurrentGetOrCreateTypeTest extends TestHelper {
     final ConcurrentLinkedQueue<Throwable> errors = new ConcurrentLinkedQueue<>();
     final CountDownLatch start = new CountDownLatch(1);
     final CountDownLatch done = new CountDownLatch(THREADS);
-    final List<Thread> threads = new java.util.ArrayList<>(THREADS);
+    final List<Thread> threads = new ArrayList<>(THREADS);
 
     for (int i = 0; i < THREADS; ++i) {
       final Thread thread = new Thread(() -> {

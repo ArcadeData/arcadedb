@@ -67,7 +67,8 @@ public class TypeBuilder<T> {
     // incomplete and both try to associate the same bucket, the loser failing with "the bucket is already
     // associated to the type". The lookup runs under the shared lock so a type being built by another
     // thread - which publishes itself into schema.types BEFORE its buckets are added - is never observed
-    // half-populated; anything that mutates re-checks under the exclusive lock.
+    // half-populated; anything that mutates re-checks under the exclusive lock. The fast path can also throw,
+    // for the type-already-exists and wrong-type cases, exactly as the locked path does.
     final T alreadyComplete = database.executeInReadLock(() -> {
       final LocalDocumentType existing = schema.types.get(typeName);
       return existing != null && isComplete(existing) ? (T) checkExistingIsCompatible(existing) : null;
