@@ -155,15 +155,30 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
-  // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728), and since
-  // issue #5346 also the replication-channel resets and their leadership-transfer escalation. One worker is
+  // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
   private final    ThreadPoolExecutor        stalledResyncExecutor = createStalledResyncExecutor();
+  // Runs replication-channel resets and their leadership-transfer escalation off the lag-monitor thread
+  // (issue #5346). Deliberately NOT the resync executor: a resync task blocks on HTTP to an unhealthy
+  // follower for as long as the connect timeout, and channel recovery queued behind it would be delayed by
+  // exactly the outage it exists to repair. Its rejection policy discards instead of running on the caller,
+  // so a saturated queue can never stall replica classification - the invariant the off-thread move buys.
+  private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
   // is not going to.
   private static final long                  ESCALATION_TRANSFER_TIMEOUT_MS = 10_000L;
+  // Minimum interval between two leadership-transfer escalations raised by THIS node for the SAME follower
+  // (issue #5346). ClusterMonitor's per-streak latch is wiped by clusterMonitor.reset() on every leadership
+  // acquisition, so without a node-local cooldown a follower that is permanently unreachable for a
+  // node-independent reason would bounce leadership around the healthy peers forever: each new leader would
+  // build its own appender, fail, and escalate onward. The cooldown bounds that to one transfer per healthy
+  // peer per window, after which the cluster settles on the log-and-stop path.
+  private static final long                  ESCALATION_COOLDOWN_MS = 30 * 60_000L;
+  // Last escalation timestamp per follower id, for the cooldown above. Node-local and intentionally NOT
+  // cleared on leadership change - that is precisely what makes it bound cross-node flapping.
+  private final    Map<String, Long>         lastChannelEscalationAtMs = new ConcurrentHashMap<>();
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
@@ -464,7 +479,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (targetId.equals(localPeerId))
       return; // the leader keeps no appender channel to itself
 
-    stalledResyncExecutor.execute(() -> {
+    channelRecoveryExecutor.execute(() -> {
       // Issue #5346: log what the peer name resolves to on both sides of the reset. When the channel is
       // wedged despite healthy DNS (the reported incident), this is the evidence that distinguishes "the
       // reset re-resolved to a new IP" from "re-resolution was never the problem".
@@ -495,8 +510,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String rpcAddress = peerRaftAddress(peerId);
     if (rpcAddress == null)
       return "<unknown peer address>";
-    final int colon = rpcAddress.lastIndexOf(':');
-    final String host = colon > 0 ? rpcAddress.substring(0, colon) : rpcAddress;
+    final String host = extractHost(rpcAddress);
+    if (host == null)
+      return "<unknown peer address>";
     try {
       final InetAddress[] resolved = InetAddress.getAllByName(host);
       final StringBuilder buffer = new StringBuilder(host).append("=[");
@@ -535,12 +551,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (RaftPeerId.valueOf(peerId).equals(localPeerId))
       return;
 
-    stalledResyncExecutor.execute(() -> {
+    channelRecoveryExecutor.execute(() -> {
       // Leadership may have moved while this task sat in the queue; a transfer from a non-leader is
       // rejected by Ratis and would only log noise. Re-check before choosing a target so the choice is
       // made against the configuration this node is actually leading.
       if (shutdownRequested || !isLeader())
         return;
+
+      // Cooldown gate (see ESCALATION_COOLDOWN_MS): refuse to bounce leadership for the same follower
+      // again so soon. Checked here, after the leadership re-check, so a task that is dropped for any
+      // earlier reason does not consume the window.
+      if (!admitChannelEscalation(lastChannelEscalationAtMs, peerId, System.currentTimeMillis())) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Follower '%s' still has a dead replication channel, but this node already transferred leadership for it "
+                + "within the last %dms; not escalating again - the follower is unreachable for a reason a fresh "
+                + "appender does not fix, so operator intervention is required.",
+            peerId, ESCALATION_COOLDOWN_MS);
+        return;
+      }
 
       final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor);
       if (target == null) {
@@ -563,6 +591,29 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             targetId, peerId, e.getMessage());
       }
     });
+  }
+
+  /**
+   * Admits or refuses a leadership-transfer escalation for {@code peerId} at {@code now}, recording the
+   * timestamp when it admits (issue #5346). Returns {@code true} at most once per
+   * {@link #ESCALATION_COOLDOWN_MS} per follower.
+   * <p>
+   * This is what bounds cross-node leadership flapping. {@link ClusterMonitor}'s per-streak latch cannot do
+   * it: {@code clusterMonitor.reset()} wipes every replica's channel state on each leadership acquisition
+   * (issue #4841), so each new leader would otherwise arrive with a fresh escalation budget and hand the
+   * problem on to the next peer indefinitely. Because this map is node-local and survives leadership
+   * changes, a permanently unreachable follower costs at most one transfer per healthy peer per window and
+   * then settles on the operator-intervention path.
+   * <p>
+   * Package-private so the cooldown can be unit-tested without a live cluster.
+   */
+  static boolean admitChannelEscalation(final Map<String, Long> lastEscalationAtMs, final String peerId,
+      final long now) {
+    final Long last = lastEscalationAtMs.get(peerId);
+    if (last != null && now - last < ESCALATION_COOLDOWN_MS)
+      return false;
+    lastEscalationAtMs.put(peerId, now);
+    return true;
   }
 
   /**
@@ -602,6 +653,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
     }
     return false;
+  }
+
+  /**
+   * Single-worker pool for replication-channel recovery (issue #5346). Unlike the resync executor it
+   * discards on saturation instead of running the task on the caller: the caller is the lag-monitor thread
+   * that classifies every replica, and a discarded reset costs nothing because the monitor retries it on
+   * the next interval. A discarded escalation is logged loudly since it is a one-shot.
+   */
+  private static ThreadPoolExecutor createChannelRecoveryExecutor() {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(32), r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-channel-recovery");
+      t.setDaemon(true);
+      return t;
+    }, (r, e) -> LogManager.instance().log(RaftHAServer.class, Level.WARNING,
+        "Replication-channel recovery queue is full; dropping this task. A dropped channel reset is retried on the "
+            + "next interval; a dropped escalation leaves the follower on the operator-intervention path."));
+    executor.allowCoreThreadTimeOut(true);
+    return executor;
   }
 
   private static ThreadPoolExecutor createStalledResyncExecutor() {
@@ -1205,6 +1275,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
     stopLagMonitor();
     stalledResyncExecutor.shutdownNow();
+    channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
       transactionBroker.stop();
       transactionBroker = null;

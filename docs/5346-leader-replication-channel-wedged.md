@@ -60,6 +60,30 @@ Scoped to the two items above, which correspond to suggestions 1 and 2 in the is
 Gated by a new `arcadedb.ha.peerChannelResetEscalation` (Boolean, default `true`). Setting it to `false`
 restores the previous log-and-stop behaviour.
 
+### Bounding leadership churn
+
+Escalation assumes a fresh appender on a new leader recovers the channel, which held for the reported
+incident. If instead a follower is unreachable for a node-independent, permanent reason, the naive version
+flaps: `n0` escalates to `n1`, `n1` builds its own appender to the dead follower, fails, and escalates
+back to `n0`. `ClusterMonitor`'s per-streak latch cannot bound this, because `clusterMonitor.reset()`
+wipes every replica's channel state on each leadership acquisition (issue #4841), so each new leader
+arrives with a fresh budget.
+
+The bound therefore lives in `RaftHAServer`, which is node-local and is **not** reset on leadership
+change: `admitChannelEscalation` admits at most one escalation per follower per 30-minute cooldown. A
+permanently unreachable follower now costs at most one transfer per healthy peer per window, after which
+every peer refuses and the cluster settles on the operator-intervention path.
+
+### Thread-safety of the recovery path
+
+Channel recovery runs on its own single-worker `channelRecoveryExecutor`, not on the resync executor. A
+resync task blocks on HTTP to an unhealthy follower for as long as the connect timeout, and channel
+recovery queued behind it would be delayed by exactly the outage it exists to repair. Its rejection policy
+**discards with a warning** rather than `CallerRunsPolicy`: the caller is the single lag-monitor thread
+that classifies every replica, and running a blocking DNS lookup or a 10 s leadership transfer there would
+defeat the point of moving the work off-thread. A discarded reset costs nothing (the monitor retries it on
+the next interval); a discarded escalation is logged loudly since it is a one-shot.
+
 ## Out of scope
 
 - Suggestion 3 (peer build/protocol version handshake on the Raft channel) is a feature, not a fix for

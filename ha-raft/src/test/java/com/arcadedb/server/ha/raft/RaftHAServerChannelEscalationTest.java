@@ -23,7 +23,9 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -86,6 +88,44 @@ class RaftHAServerChannelEscalationTest {
     final List<RaftPeer> peers = List.of(peer("n0", 0), peer("n1", 0), peer("n2", 0));
     final RaftPeer target = RaftHAServer.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", monitor);
     assertThat(target).isNull();
+  }
+
+  /**
+   * The cooldown is what bounds cross-node leadership flapping when a follower is unreachable for a reason
+   * a fresh appender cannot fix. ClusterMonitor's per-streak latch cannot do it, because
+   * {@code clusterMonitor.reset()} wipes channel state on every leadership acquisition, so each new leader
+   * would arrive with a fresh budget and pass the problem on forever.
+   */
+  @Test
+  void escalationForTheSamePeerIsAdmittedOnlyOncePerCooldown() {
+    final Map<String, Long> escalations = new HashMap<>();
+    final long t0 = 1_000_000L;
+
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0)).isTrue();
+    // Same peer, well inside the window: refused, so leadership is not bounced again.
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 60_000L)).isFalse();
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 29 * 60_000L)).isFalse();
+  }
+
+  @Test
+  void escalationIsAdmittedAgainAfterTheCooldownElapses() {
+    final Map<String, Long> escalations = new HashMap<>();
+    final long t0 = 1_000_000L;
+
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0)).isTrue();
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 31 * 60_000L)).isTrue();
+    // ...and the window restarts from the admitted escalation.
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 32 * 60_000L)).isFalse();
+  }
+
+  @Test
+  void cooldownIsTrackedPerFollower() {
+    final Map<String, Long> escalations = new HashMap<>();
+    final long t0 = 1_000_000L;
+
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0)).isTrue();
+    // A different follower wedging at the same time is a distinct incident and must not be suppressed.
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n3", t0)).isTrue();
   }
 
   @Test
