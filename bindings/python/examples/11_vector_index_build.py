@@ -1884,8 +1884,8 @@ def main() -> None:
     parser.add_argument(
         "--max-connections",
         type=int,
-        default=16,
-        help="HNSW max connections / m (default: 16)",
+        default=32,
+        help="maxConnections / Vamana per-layer degree (default: 32; use 2*M to match an hnswlib config)",
     )
     parser.add_argument(
         "--beam-width",
