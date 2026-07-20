@@ -626,6 +626,54 @@ public class PageManagerFlushThread extends Thread {
         .removeIf(e -> database.equals(e.getKey().getDatabase()) && e.getKey().getFileId() == fileId);
   }
 
+  /**
+   * Takes the page pending for {@code pageId} out of the flush pipeline and hands it to the caller, which becomes
+   * responsible for writing it to disk. Used by {@link TransactionManager#applyChanges}, which writes replicated /
+   * recovery pages straight to the file: while an older copy of the same page stays in the pipeline, reads resolve
+   * it from {@link #pageIndex} instead of the file, and the eventual flush of that copy overwrites the replicated
+   * page and rolls its version backwards.
+   * <p>
+   * The page is removed from the queued and deferred batches by reference identity so a NEWER copy queued for the
+   * same {@link PageId} is never dropped by mistake, matching {@link #removeFromFlushIndex}. The batch currently
+   * being written is also visited: the flush thread mutates the very same list, so the removal may lose that race,
+   * which is why the caller waits for the in-flight batch to complete before writing.
+   *
+   * @return the detached page, or {@code null} when nothing was pending for this page.
+   */
+  MutablePage detachPendingPage(final Database database, final PageId pageId) {
+    final MutablePage pending = pageIndex.remove(pageId);
+    if (pending == null)
+      return null;
+
+    for (final PagesToFlush batch : queue.stream().toList())
+      removePageFromBatch(batch, pending);
+
+    removePageFromBatch(nextPagesToFlush.get(), pending);
+
+    final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.get(database);
+    if (deferred != null)
+      for (final PagesToFlush batch : deferred)
+        // The page leaves the deferred backlog, so release its reserved RAM accounting (issue #4728).
+        deferredRAMBytes.addAndGet(-removePageFromBatch(batch, pending));
+
+    return pending;
+  }
+
+  /** Removes a single page instance from a batch and returns its in-RAM size, or 0 when it was not there. */
+  private long removePageFromBatch(final PagesToFlush batch, final MutablePage target) {
+    if (batch == null || batch.pages == null)
+      return 0;
+
+    synchronized (batch.pages) {
+      for (final Iterator<MutablePage> it = batch.pages.iterator(); it.hasNext(); )
+        if (it.next() == target) {
+          it.remove();
+          return target.getPhysicalSize();
+        }
+    }
+    return 0;
+  }
+
   /** Removes the dropped file's pages from a batch and returns the sum of their in-RAM size (issue #4728). */
   private long removePagesOfFileFromBatch(final PagesToFlush pagesToFlush, final Database database, final int fileId) {
     // pages is null for the SHUTDOWN_THREAD marker.

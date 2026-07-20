@@ -488,6 +488,37 @@ public class PageManager extends LockContext {
     totalPagesWritten.incrementAndGet();
   }
 
+  /**
+   * Writes to disk, and takes out of the asynchronous flush pipeline, any page still pending for {@code pageId}.
+   * <p>
+   * Callers that write a page directly to its file instead of going through the flush queue
+   * ({@link TransactionManager#applyChanges} during replicated / recovery replay) must call this first. A committed
+   * page is published to the read cache and to the flush thread's index before it reaches the disk, and while that
+   * older copy is still pending {@link #loadPage} resolves the page from the queue instead of from the file - so the
+   * replicated write stays invisible to every later read - and the eventual flush of that copy overwrites the
+   * replicated page, rolling its version backwards. Pushing the pending copy to disk here (rather than discarding it)
+   * preserves its content, which is the only baseline the WAL delta can be applied on top of.
+   */
+  public void materializePendingFlushOfPage(final Database database, final PageId pageId)
+      throws IOException, InterruptedException {
+    final PageManagerFlushThread thread = flushThread;
+    if (thread == null)
+      return;
+
+    final MutablePage pending = thread.detachPendingPage(database, pageId);
+    if (pending == null)
+      return;
+
+    // The flush thread may have taken the page's batch before the detach reached it: let the in-flight write finish,
+    // or it could still land after the caller's write and revert the page on disk.
+    thread.waitForCurrentFlushToComplete(database);
+
+    flushPage(pending);
+
+    // The read cache holds the same pending copy: drop it so the caller reads the content just written.
+    removePageFromCache(pageId);
+  }
+
   public PPageManagerStats getStats() {
     final PPageManagerStats stats = new PPageManagerStats();
     stats.maxRAM = maxRAM;
