@@ -43,6 +43,12 @@ preceding tests, sometimes it does not.
   in an earlier batch - the two-instance case `removeFromFlushIndex` exists for, #4544), and removing only the indexed
   one would leave the older copy free to write the superseded version over the replicated one. Deferred removals
   release their reserved RAM accounting (#4728).
+- The detach is serialized against `resumeFlushing`'s Phase 1 by a per-database mutex. That phase detaches the
+  deferred batches and writes them from the resuming thread (a backup or HA-snapshot unsuspend), outside both the
+  queue and `nextPagesToFlush`, so without the mutex a replay could find the pipeline empty while a superseded copy
+  was still on its way to disk. An O(1) fast path skips the batch walk entirely when the whole pipeline is quiet,
+  which is the common case on a follower; it is deliberately conservative because a copy can outlive its `pageIndex`
+  entry when a newer instance flushes out of order.
 - `PageManager.materializePendingFlushOfPage(database, pageId)` detaches the copies, waits for the in-flight batch to
   finish (the detach can lose that race, and a write landing after ours would revert the page), writes the most recent
   copy to disk via `flushPage`, releases the superseded copies' WAL acks (exactly-once via `takeWALFile`, as the
@@ -90,9 +96,15 @@ park page 0 in genuine deferred batches:
 - `mvn -pl engine test -Dtest=Issue5326ApplyChangesPendingFlushTest` - fails before the fix, passes after.
 - `mvn -pl engine test -Dtest='Issue4712*,Issue4510*,ApplyChanges*,Issue5326*,*PageManager*,*FlushThread*,*WAL*,Issue4928*,Issue4544*,Issue4728*,Issue5068*'`
   - 54 tests, 0 failures.
-- `mvn -pl engine test -Dtest='com.arcadedb.engine.**,com.arcadedb.database.**'` - 642 tests, 0 failures; the single
-  error is `TimeSeriesEmbeddedBenchmark.run` failing with `No space left on device` on the build machine, unrelated to
-  this change.
+- `mvn -pl engine test -Dtest='com.arcadedb.engine.**'` - 506 tests, 0 failures; the single error is
+  `TimeSeriesEmbeddedBenchmark.run` failing with `No space left on device` on the build machine, unrelated to this
+  change (it fails the same way on an unmodified tree).
+
+## Known gaps
+
+- The `InterruptedException` path in `applyChanges` is covered by reasoning and comments, not by a test. Interrupting
+  mid-drain deterministically needs the white-box harness style of `PageManagerFlushThreadInterruptTest` (#5068); left
+  for a follow-up.
 
 ## Impact
 
