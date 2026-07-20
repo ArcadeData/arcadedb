@@ -94,7 +94,12 @@ public class MoveVertexExecutionPlanner {
         plan.chain(new UpdateRemoveStep(op.getUpdateRemoveItems(), ctx));
         break;
       case UpdateOperations.TYPE_MERGE:
-        plan.chain(new UpdateMergeStep(op.getJson(), ctx));
+        if (op.getJson() != null)
+          plan.chain(new UpdateMergeStep(op.getJson(), ctx));
+        else if (op.getExpression() != null)
+          plan.chain(new UpdateMergeStep(op.getExpression(), ctx));
+        else
+          throw new CommandExecutionException("Missing payload for MOVE VERTEX ... MERGE: " + op);
         break;
       case UpdateOperations.TYPE_CONTENT:
         plan.chain(new UpdateContentStep(op.getJson(), ctx));

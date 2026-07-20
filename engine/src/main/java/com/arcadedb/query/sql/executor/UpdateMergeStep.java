@@ -21,7 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Json;
 
 import java.util.Map;
@@ -30,11 +32,19 @@ import java.util.Map;
  * Created by luigidellaquila on 09/08/16.
  */
 public class UpdateMergeStep extends AbstractExecutionStep {
-  private final Json json;
+  private final Json       json;
+  private final Expression expression;
 
   public UpdateMergeStep(final Json json, final CommandContext context) {
     super(context);
     this.json = json;
+    this.expression = null;
+  }
+
+  public UpdateMergeStep(final Expression expression, final CommandContext context) {
+    super(context);
+    this.json = null;
+    this.expression = expression;
   }
 
   @Override
@@ -70,15 +80,25 @@ public class UpdateMergeStep extends AbstractExecutionStep {
 
   private void handleMerge(final Record record, final CommandContext context) {
     final MutableDocument doc = ((Document) record).modify();
-    final Map<String, Object> map = json.toMap(record, context);
+    final Map<String, Object> map = json != null ? json.toMap(record, context) : resolveExpression(record, context);
     for (final Map.Entry<String, Object> entry : map.entrySet())
       doc.set(entry.getKey(), entry.getValue());
+  }
+
+  private Map<String, Object> resolveExpression(final Record record, final CommandContext context) {
+    final Object value = expression.execute(record, context);
+    if (value instanceof Map)
+      return (Map<String, Object>) value;
+    else if (value instanceof Document document)
+      return document.toMap(false);
+    else if (value instanceof Result result)
+      return result.toMap();
+    throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map but found: " + value);
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    final String result = spaces + "+ UPDATE MERGE\n" + spaces + "  " + json;
-    return result;
+    return spaces + "+ UPDATE MERGE\n" + spaces + "  " + (json != null ? json : expression);
   }
 }
