@@ -502,10 +502,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
               peerId, before);
       });
     } catch (final RejectedExecutionException e) {
-      // Free to drop: ClusterMonitor retries the reset on its next interval, and the attempt it just
-      // consumed is bounded by the same budget either way.
-      LogManager.instance().log(this, Level.FINE,
-          "Replication-channel recovery queue is saturated; skipping this reset for follower '%s' (retried next interval).",
+      // Not free: ClusterMonitor incremented channelResetCount before invoking this handler, so the dropped
+      // task still consumed one of CHANNEL_RESET_MAX_ATTEMPTS. The monitor retries on its next interval, but
+      // a run of drops can reach the escalation cap without five resets ever executing. Only reachable when
+      // several followers wedge at once (the single worker is otherwise idle and a reset is fast), which is
+      // why it is reported rather than compensated for.
+      LogManager.instance().log(this, Level.WARNING,
+          "Replication-channel recovery queue is saturated; the reset for follower '%s' was dropped and its attempt "
+              + "still counted against the retry budget.",
           peerId);
     }
   }
@@ -550,8 +554,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The transfer target is chosen with the same rules as a manual step-down and is never the wedged follower
    * itself. When no healthy target exists (e.g. a two-node cluster whose only follower is the wedged one, or
    * every remaining peer is lagging) the previous behaviour is kept: log for operator intervention rather
-   * than flap leadership onto a peer that cannot serve. Runs on {@link #stalledResyncExecutor} because the
+   * than flap leadership onto a peer that cannot serve. Runs on {@link #channelRecoveryExecutor} because the
    * transfer blocks on network I/O and the caller is the lag-monitor thread.
+   * <p>
+   * Thread-safety: the task reads {@link ClusterMonitor} state (via {@code selectChannelEscalationTarget} ->
+   * {@code isReplicaLagging}) and the Raft configuration from the recovery thread while the lag-monitor
+   * thread mutates that state. This is the same tolerated-staleness contract the existing
+   * {@code stepDown()} path relies on - {@code replicaStates} is a {@link ConcurrentHashMap} and
+   * {@code leaderCommitIndex} is volatile - and a target chosen from a tick-old snapshot is still valid,
+   * because Ratis rejects a transfer to a peer that has since become unsuitable.
    */
   void escalateWedgedPeerChannel(final String peerId) {
     if (peerId == null || raftServer == null || shutdownRequested || !isLeader())
@@ -596,6 +607,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             "Transferring leadership to '%s' to rebuild the replication appender for wedged follower '%s' (issue #5346).",
             targetId, peerId);
         try {
+          // A failure below leaves the cooldown consumed, deliberately: the transfer was attempted, and a
+          // node that cannot hand off leadership would otherwise re-attempt every reset cycle. The next
+          // escalation for this follower waits out the window, or comes from another peer.
           transferLeadership(targetId, ESCALATION_TRANSFER_TIMEOUT_MS);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE,
