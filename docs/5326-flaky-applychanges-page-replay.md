@@ -72,6 +72,11 @@ state deterministically, applies a WAL entry at `baseVersion + 1` and asserts th
 
 Before the fix it fails on the first assertion (the pending copy survives) and on the version assertions.
 
+A second test, `applyChangesTakesTheDeferredBatchCopyOutOfThePipeline`, drives the same defect through the real flush
+pipeline: flushing is suspended so an ordinary commit parks page 0 in a genuine deferred batch, then `applyChanges`
+must detach it, and after resuming the batch must no longer be able to write the superseded version over the
+replicated one. It covers the identity-based batch removal and the #4728 deferred-RAM decrement.
+
 ## Verification
 
 - `mvn -pl engine test -Dtest=Issue5326ApplyChangesPendingFlushTest` - fails before the fix, passes after.
@@ -86,3 +91,19 @@ Before the fix it fails on the first assertion (the pending copy survives) and o
 Beyond de-flaking CI, this closes a real durability hole on the replication and crash-recovery path: a replicated page
 write could previously be silently reverted by a stale queued flush, which is the version-regression signature behind
 the `WALVersionGapException` cascades referenced in #4510 and #5322.
+
+## Review cycle 1 (PR #5349, head 3c9118b)
+
+- gemini-code-assist: `detachPendingPage` copied the flush queue via `queue.stream().toList()`. Applied - the
+  `ArrayBlockingQueue` iterator is weakly consistent, and this runs once per replayed page, so the snapshot was pure
+  overhead. The two neighbouring dropped-file methods keep the snapshot idiom; they run only on rare drop events.
+- claude: the batch-removal and deferred-RAM paths were never executed by a test. Applied - added
+  `applyChangesTakesTheDeferredBatchCopyOutOfThePipeline`, which goes through `setSuspended` + a real commit.
+- claude: the mid-enqueue window (`scheduleFlushOfPages` publishes to `pageIndex` before `queue.offer`) is not covered
+  by the detach. Applied as documentation - `detachPendingPage` now states the single-writer assumption that makes it
+  unreachable on the replay path.
+- claude: interrupt between the detach and `flushPage` leaves the page off the pipeline and off the disk. Applied as
+  documentation in `materializePendingFlushOfPage` - the page stays durable because its WAL ack is only released
+  inside `flushPage`, so the WAL entry survives and is replayed on the next open.
+- claude (optional): make `materializePendingFlushOfPage` package-private. Skipped - it matches the visibility of the
+  sibling `writePageWithLock`, which the reviewer noted; tightening one without the other would be inconsistent.

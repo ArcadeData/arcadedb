@@ -510,7 +510,9 @@ public class PageManager extends LockContext {
       return;
 
     // The flush thread may have taken the page's batch before the detach reached it: let the in-flight write finish,
-    // or it could still land after the caller's write and revert the page on disk.
+    // or it could still land after the caller's write and revert the page on disk. An interrupt here leaves the page
+    // detached but not yet written: it stays durable because its WAL ack has NOT been released (notifyPageFlushed
+    // runs inside flushPage below), so its WAL entry is preserved and replayed on the next open.
     thread.waitForCurrentFlushToComplete(database);
 
     flushPage(pending);

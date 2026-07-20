@@ -108,4 +108,85 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
     final ImmutablePage reloaded = pageManager.getImmutablePage(pageId, pageSize, false, true);
     assertThat(reloaded.getVersion()).isEqualTo(baseVersion + 1);
   }
+
+  /**
+   * Same defect, but driven through the real flush pipeline instead of a fabricated index entry: the page is scheduled
+   * by an ordinary commit while flushing is suspended, so it sits in a genuine deferred batch. This covers the batch
+   * removal and the deferred-RAM accounting (#4728) that the white-box case above cannot reach, and it verifies the
+   * durability half of the fix: once flushing resumes, the deferred batch must no longer carry a copy able to write
+   * the superseded version over the replicated one.
+   */
+  @Test
+  void applyChangesTakesTheDeferredBatchCopyOutOfThePipeline() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    db.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        db.newDocument("TestType").set("name", "record-" + i).save();
+    });
+
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
+    final int pageSize = file.getPageSize();
+    final PageId pageId = new PageId(db, fileId, 0);
+    final PageManager pageManager = db.getPageManager();
+    final PageManagerFlushThread flushThread = pageManager.getFlushThread();
+
+    assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+
+    final int replicatedVersion;
+
+    // Suspend flushing (what a backup or an HA snapshot ship does) so the next commit's pages are parked in a
+    // deferred batch instead of reaching the disk.
+    flushThread.setSuspended(db, true);
+    try {
+      db.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          db.newDocument("TestType").set("name", "deferred-" + i).save();
+      });
+
+      // Wait for the flush thread to move the committed batch into the deferred backlog.
+      final long deadline = System.currentTimeMillis() + 10_000;
+      while (flushThread.deferredRAMBytes.get() == 0 && System.currentTimeMillis() < deadline)
+        Thread.sleep(10);
+
+      final MutablePage pending = flushThread.pageIndex.get(pageId);
+      assertThat(pending).as("the committed page must still be pending in the flush pipeline").isNotNull();
+      assertThat(flushThread.deferredRAMBytes.get()).isPositive();
+
+      final long deferredBefore = flushThread.deferredRAMBytes.get();
+      final long pendingSize = pending.getPhysicalSize();
+      final int baseVersion = (int) pending.getVersion();
+      replicatedVersion = baseVersion + 1;
+
+      final WALFile.WALPage walPage = new WALFile.WALPage();
+      walPage.fileId = fileId;
+      walPage.pageNumber = 0;
+      walPage.currentPageVersion = baseVersion + 1;
+      walPage.changesFrom = BasePage.PAGE_HEADER_SIZE;
+      walPage.changesTo = BasePage.PAGE_HEADER_SIZE + 10;
+      walPage.currentPageSize = pending.getContentSize();
+      final byte[] content = new byte[11];
+      System.arraycopy(pending.getContent().array(), walPage.changesFrom, content, 0, content.length);
+      walPage.currentContent = new Binary(content);
+
+      final WALFile.WALTransaction walTx = new WALFile.WALTransaction();
+      walTx.txId = 53260;
+      walTx.timestamp = System.currentTimeMillis();
+      walTx.pages = new WALFile.WALPage[] { walPage };
+
+      assertThat(db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false)).isTrue();
+
+      assertThat(flushThread.pageIndex.get(pageId)).isNull();
+      assertThat(flushThread.deferredRAMBytes.get()).isEqualTo(deferredBefore - pendingSize);
+    } finally {
+      // Resuming writes every batch still deferred: none of them may carry the superseded copy of this page.
+      flushThread.setSuspended(db, false);
+    }
+
+    assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+    pageManager.removePageFromCache(pageId);
+    final ImmutablePage reloaded = pageManager.getImmutablePage(pageId, pageSize, false, true);
+    assertThat(reloaded.getVersion()).isEqualTo(replicatedVersion);
+  }
 }

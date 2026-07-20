@@ -637,6 +637,12 @@ public class PageManagerFlushThread extends Thread {
    * same {@link PageId} is never dropped by mistake, matching {@link #removeFromFlushIndex}. The batch currently
    * being written is also visited: the flush thread mutates the very same list, so the removal may lose that race,
    * which is why the caller waits for the in-flight batch to complete before writing.
+   * <p>
+   * ASSUMPTION: no other thread is scheduling a flush of this same page instance concurrently.
+   * {@link #scheduleFlushOfPages} publishes to {@link #pageIndex} BEFORE enqueueing, so a commit sitting between
+   * those two statements would have its batch enqueued after this detach walked the queue, and that batch would
+   * still carry the superseded page. This holds on the only caller's path: replicated and crash-recovery replay is
+   * the sole writer of the pages it applies, so no local commit can be mid-enqueue for them.
    *
    * @return the detached page, or {@code null} when nothing was pending for this page.
    */
@@ -645,7 +651,9 @@ public class PageManagerFlushThread extends Thread {
     if (pending == null)
       return null;
 
-    for (final PagesToFlush batch : queue.stream().toList())
+    // Iterated directly rather than through a snapshot: ArrayBlockingQueue's iterator is weakly consistent and never
+    // throws ConcurrentModificationException, and this runs per replayed page, so the copy would be pure overhead.
+    for (final PagesToFlush batch : queue)
       removePageFromBatch(batch, pending);
 
     removePageFromBatch(nextPagesToFlush.get(), pending);
