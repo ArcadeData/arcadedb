@@ -106,24 +106,28 @@ public class ArcadeGraphManager implements GraphManager {
     return names;
   }
 
-  @Override
-  public TraversalSource getTraversalSource(final String traversalSourceName) {
-    String dbName = traversalSourceName;
-
-    // Handle "g" as alias for the default/first available database
+  /**
+   * Resolves a Gremlin traversal-source alias to the actual ArcadeDB database name. The special alias
+   * {@code "g"} maps to the default database ("graph" if present, otherwise the first available one),
+   * mirroring {@link #getTraversalSource(String)}. Any other alias is the database name itself. This is
+   * the single source of truth for alias resolution so the authorization gate
+   * ({@code ArcadeGremlinAuthorizer}) and the graph lookup always agree on the target database.
+   */
+  public static String resolveDatabaseName(final String traversalSourceName) {
     if ("g".equals(traversalSourceName) && serverInstance != null) {
       final Set<String> dbNames = serverInstance.getDatabaseNames();
-      if (!dbNames.isEmpty()) {
-        // Use "graph" if available, otherwise use the first database
-        if (dbNames.contains("graph")) {
-          dbName = "graph";
-        } else {
-          dbName = dbNames.iterator().next();
-        }
-        LogManager.instance().log(this, Level.INFO,
-            "Mapping 'g' alias to database '%s'", dbName);
-      }
+      if (!dbNames.isEmpty())
+        return dbNames.contains("graph") ? "graph" : dbNames.iterator().next();
     }
+    return traversalSourceName;
+  }
+
+  @Override
+  public TraversalSource getTraversalSource(final String traversalSourceName) {
+    final String dbName = resolveDatabaseName(traversalSourceName);
+
+    if (!dbName.equals(traversalSourceName))
+      LogManager.instance().log(this, Level.INFO, "Mapping 'g' alias to database '%s'", dbName);
 
     // Return the cached traversal source only when the graph it wraps is still open. If the
     // underlying database was closed and reopened (see getOrCreateArcadeGraph) the cached source
