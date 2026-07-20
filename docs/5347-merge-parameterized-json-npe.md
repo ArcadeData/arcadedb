@@ -54,7 +54,15 @@ New methods in `engine/src/test/java/com/arcadedb/query/sql/executor/UpdateMerge
 - `updateMergeWithNonMapParameterFails` - a non-map parameter now yields `CommandExecutionException`
   rather than an NPE.
 
-All four fail on `main` with the NPE and pass with the fix.
+- `updateMergeWithDocumentParameterDoesNotLeakMetadata` / `updateMergeWithSubQueryDoesNotLeakMetadata` -
+  record-shaped payloads must not write `@rid` / `@type` / `@cat` onto the target.
+- `updateMergeWithNonStringKeyMapFails` - a map with non-string keys yields `CommandExecutionException`
+  rather than a raw `ClassCastException` from the merge loop.
+
+`MoveVertexStatementExecutionTest.moveVertexWithParameterizedMerge` covers the parallel
+`MOVE VERTEX ... MERGE :payload` path.
+
+The parameter tests fail on `main` with the NPE and pass with the fix.
 
 ## Verification
 
@@ -67,39 +75,28 @@ All four fail on `main` with the NPE and pass with the fix.
 
 https://github.com/ArcadeData/arcadedb/pull/5348
 
-## Review cycles
+## Payload shapes accepted by MERGE
 
-### Cycle 1 - head `5ec4abf`
+`resolveExpression` normalizes whatever the expression evaluates to:
 
-Reviewers: `gemini-code-assist` (COMMENTED, 1 medium inline), `claude[bot]` (issue comment).
+| Shape | Handling |
+|---|---|
+| `Map` | merged verbatim; keys must be strings, otherwise `CommandExecutionException` |
+| `Document` | `toMap(false)` - `@rid` / `@type` / `@cat` stripped |
+| `Result` | property names only, skipping `@` metadata and `$` computed pseudo-properties (`$score`, ...) |
+| single-element `Collection` | unwrapped, then handled as above (this is the sub-query case) |
+| anything else | `CommandExecutionException` with the offending value |
 
-Addressed:
+A user-supplied map is deliberately merged verbatim: its keys are explicit intent, unlike the metadata a
+record-shaped payload carries implicitly.
 
-- **`Result` branch leaked metadata** (claude). `Result.toMap()` on an element-backed result returns
-  `element.toMap(true)`, injecting `@rid` / `@type` / `@cat`, which the merge loop would have stored on
-  the target record. Replaced with `toPropertyMap(Result)`, which iterates `getPropertyNames()` and skips
-  `@`-prefixed metadata and `$`-prefixed computed pseudo-properties (`$score`, `$similarity`).
-- **Unchecked `Map` cast** (claude). A map with non-String keys previously erased through the cast and blew
-  up with a raw `ClassCastException` in the merge loop. `checkStringKeys` now validates and raises
-  `CommandExecutionException`, keeping the "expected a map" contract uniform.
-- **Defensive null check on `expression`** (gemini). `resolveExpression` now throws
-  `CommandExecutionException("Missing payload for UPDATE MERGE")` instead of NPE-ing if both payload fields
-  are null.
-- **Test coverage gap for the `Document` / `Result` branches** (claude). Added
-  `updateMergeWithDocumentParameterDoesNotLeakMetadata`, `updateMergeWithSubQueryDoesNotLeakMetadata`, and
-  `updateMergeWithNonStringKeyMapFails`.
+## Known follow-ups (not in scope for this NPE fix)
 
-The sub-query test surfaced a further gap: a sub-query expression evaluates to a `Collection` of `Result`,
-not a bare `Result`, so `UPDATE V MERGE (SELECT ...)` still failed. `resolveExpression` now unwraps a
-single-element collection and raises a clear `CommandExecutionException` for zero or many items.
-
-Not addressed:
-
-- claude's note that a `null` payload yields `CommandExecutionException` rather than a no-op. claude itself
-  judged the current behavior fine for this fix; changing MERGE null semantics is out of scope for an NPE fix.
-- claude's suggestion that `updateMergeWithNonMapParameterFails` also assert the record was not partially
-  mutated. The merge loop resolves the whole payload before any `doc.set`, so partial mutation is not
-  reachable via that path; claude flagged it as non-essential.
+- `resolveExpression` re-evaluates the expression per matched record, so a non-correlated sub-query payload
+  runs once per target. This matches the pre-existing per-record `json.toMap(record, context)` contract, so
+  it is not a regression, but caching record-independent payloads would be a worthwhile optimization.
+- A `null` payload raises `CommandExecutionException` rather than being treated as a no-op. Changing MERGE
+  null semantics is a separate behavioral decision.
 
 ## Impact
 

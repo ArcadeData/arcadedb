@@ -101,6 +101,8 @@ public class UpdateMergeStep extends AbstractExecutionStep {
       value = collection.iterator().next();
     }
 
+    // A user-supplied map is merged verbatim: its keys are an explicit intent, unlike the metadata a record-shaped
+    // payload carries implicitly, which the branches below strip
     if (value instanceof Map<?, ?> map)
       return checkStringKeys(map);
     else if (value instanceof Document document)
