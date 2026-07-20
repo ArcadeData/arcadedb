@@ -145,8 +145,10 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
           db.newDocument("TestType").set("name", "deferred-" + i).save();
       });
 
-      // Wait for the flush thread to move the committed batch into the deferred backlog.
-      final long deadline = System.currentTimeMillis() + 10_000;
+      // Wait for the flush thread to move the committed batch into the deferred backlog. The deadline only bounds a
+      // hang: the flush thread polls its queue on a 1s timeout, so 60s is orders of magnitude above the worst-case
+      // deferral latency even on the loaded runners that made #5326 visible in the first place.
+      final long deadline = System.currentTimeMillis() + 60_000;
       while (flushThread.deferredRAMBytes.get() == 0 && System.currentTimeMillis() < deadline)
         Thread.sleep(10);
 
@@ -184,6 +186,89 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
       flushThread.setSuspended(db, false);
     }
 
+    assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+    pageManager.removePageFromCache(pageId);
+    final ImmutablePage reloaded = pageManager.getImmutablePage(pageId, pageSize, false, true);
+    assertThat(reloaded.getVersion()).isEqualTo(replicatedVersion);
+  }
+
+  /**
+   * Two commits of the same page while flushing is suspended leave TWO pending copies: the newest in
+   * {@code pageIndex} and the older one still in the first batch (the two-instance case
+   * {@link PageManagerFlushThread#removeFromFlushIndex} exists for, issue #4544). Detaching only the indexed copy
+   * would leave the older one free to write the superseded version over the replicated one once flushing resumes,
+   * so every copy has to leave the pipeline.
+   */
+  @Test
+  void applyChangesTakesEveryPendingCopyOfThePageOutOfThePipeline() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    db.transaction(() -> db.newDocument("TestType").set("name", "seed").save());
+
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
+    final int pageSize = file.getPageSize();
+    final PageId pageId = new PageId(db, fileId, 0);
+    final PageManager pageManager = db.getPageManager();
+    final PageManagerFlushThread flushThread = pageManager.getFlushThread();
+
+    assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+
+    final int replicatedVersion;
+
+    flushThread.setSuspended(db, true);
+    try {
+      // Two separate commits: two batches, each carrying its own MutablePage for page 0.
+      for (int tx = 0; tx < 2; tx++) {
+        final int round = tx;
+        db.transaction(() -> {
+          for (int i = 0; i < 5; i++)
+            db.newDocument("TestType").set("name", "round-" + round + "-" + i).save();
+        });
+      }
+
+      final long deadline = System.currentTimeMillis() + 60_000;
+      while (flushThread.deferredRAMBytes.get() == 0 && System.currentTimeMillis() < deadline)
+        Thread.sleep(10);
+
+      final MutablePage newest = flushThread.pageIndex.get(pageId);
+      assertThat(newest).as("the twice-committed page must still be pending in the flush pipeline").isNotNull();
+
+      final int baseVersion = (int) newest.getVersion();
+      assertThat(baseVersion).as("both commits must have touched page 0, leaving two pending copies").isGreaterThan(1);
+      replicatedVersion = baseVersion + 1;
+
+      final WALFile.WALPage walPage = new WALFile.WALPage();
+      walPage.fileId = fileId;
+      walPage.pageNumber = 0;
+      walPage.currentPageVersion = replicatedVersion;
+      walPage.changesFrom = BasePage.PAGE_HEADER_SIZE;
+      walPage.changesTo = BasePage.PAGE_HEADER_SIZE + 10;
+      walPage.currentPageSize = newest.getContentSize();
+      final byte[] content = new byte[11];
+      System.arraycopy(newest.getContent().array(), walPage.changesFrom, content, 0, content.length);
+      walPage.currentContent = new Binary(content);
+
+      final WALFile.WALTransaction walTx = new WALFile.WALTransaction();
+      walTx.txId = 53261;
+      walTx.timestamp = System.currentTimeMillis();
+      walTx.pages = new WALFile.WALPage[] { walPage };
+
+      final long deferredBefore = flushThread.deferredRAMBytes.get();
+
+      assertThat(db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false)).isTrue();
+      assertThat(flushThread.pageIndex.get(pageId)).isNull();
+
+      // Both copies left the deferred backlog, not just the indexed one.
+      assertThat(deferredBefore - flushThread.deferredRAMBytes.get())
+          .as("every pending copy of the page must be detached, not only the one in pageIndex")
+          .isEqualTo(2L * newest.getPhysicalSize());
+    } finally {
+      flushThread.setSuspended(db, false);
+    }
+
+    // Resuming writes every batch still deferred. If the older copy had survived the detach it would land here and
+    // roll the page back below the replicated version.
     assertThat(pageManager.waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
     pageManager.removePageFromCache(pageId);
     final ImmutablePage reloaded = pageManager.getImmutablePage(pageId, pageSize, false, true);

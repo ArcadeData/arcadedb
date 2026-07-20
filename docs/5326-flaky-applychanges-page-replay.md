@@ -37,16 +37,20 @@ preceding tests, sometimes it does not.
 
 `applyChanges` now drains the pipeline for the page it is about to write, before reading its version:
 
-- `PageManagerFlushThread.detachPendingPage(database, pageId)` removes the pending `MutablePage` from `pageIndex` and
-  from the queued, in-flight and deferred batches. Batch removal is by reference identity, matching
-  `removeFromFlushIndex`, so a newer copy queued for the same `PageId` is never dropped by mistake. Deferred removals
+- `PageManagerFlushThread.detachPendingPages(database, pageId)` removes EVERY pending `MutablePage` for the page from
+  `pageIndex` and from the queued, in-flight and deferred batches. Copies are matched by `PageId`, not by reference
+  identity: successive commits can leave two instances pending at once (the newest in `pageIndex`, an older one still
+  in an earlier batch - the two-instance case `removeFromFlushIndex` exists for, #4544), and removing only the indexed
+  one would leave the older copy free to write the superseded version over the replicated one. Deferred removals
   release their reserved RAM accounting (#4728).
-- `PageManager.materializePendingFlushOfPage(database, pageId)` detaches the page, waits for the in-flight batch to
-  finish (the detach can lose that race, and a write landing after ours would revert the page), writes the page to disk
-  via `flushPage` and evicts the read-cache copy.
+- `PageManager.materializePendingFlushOfPage(database, pageId)` detaches the copies, waits for the in-flight batch to
+  finish (the detach can lose that race, and a write landing after ours would revert the page), writes the most recent
+  copy to disk via `flushPage`, releases the superseded copies' WAL acks (exactly-once via `takeWALFile`, as the
+  dropped-file purge does) and evicts the read-cache copy.
 
-The pending page is **written**, not discarded: its content is the only baseline the WAL delta can be applied on top
-of, since the disk may be several versions behind it.
+The pending content is **written**, not discarded: it is the only baseline the WAL delta can be applied on top of,
+since the disk may be several versions behind it. The most recent copy is a full page image covering every older one,
+so writing it alone puts all the pending content on disk.
 
 `InterruptedException` from the drain is caught in `applyChanges` and rethrown as `WALException` with the interrupt
 flag restored, so an interrupted replay fails loud instead of leaving a silent version gap.
@@ -72,10 +76,14 @@ state deterministically, applies a WAL entry at `baseVersion + 1` and asserts th
 
 Before the fix it fails on the first assertion (the pending copy survives) and on the version assertions.
 
-A second test, `applyChangesTakesTheDeferredBatchCopyOutOfThePipeline`, drives the same defect through the real flush
-pipeline: flushing is suspended so an ordinary commit parks page 0 in a genuine deferred batch, then `applyChanges`
-must detach it, and after resuming the batch must no longer be able to write the superseded version over the
-replicated one. It covers the identity-based batch removal and the #4728 deferred-RAM decrement.
+Two further tests drive the same defect through the real flush pipeline, with flushing suspended so ordinary commits
+park page 0 in genuine deferred batches:
+
+- `applyChangesTakesTheDeferredBatchCopyOutOfThePipeline` - one commit; covers the batch removal and the #4728
+  deferred-RAM decrement, and asserts that after resuming the batch can no longer write the superseded version.
+- `applyChangesTakesEveryPendingCopyOfThePageOutOfThePipeline` - two commits, so two copies of page 0 are pending at
+  once; asserts the deferred backlog drops by exactly both copies' size, which is what a `PageId`-matched detach does
+  and an identity-matched one does not.
 
 ## Verification
 
@@ -91,19 +99,3 @@ replicated one. It covers the identity-based batch removal and the #4728 deferre
 Beyond de-flaking CI, this closes a real durability hole on the replication and crash-recovery path: a replicated page
 write could previously be silently reverted by a stale queued flush, which is the version-regression signature behind
 the `WALVersionGapException` cascades referenced in #4510 and #5322.
-
-## Review cycle 1 (PR #5349, head 3c9118b)
-
-- gemini-code-assist: `detachPendingPage` copied the flush queue via `queue.stream().toList()`. Applied - the
-  `ArrayBlockingQueue` iterator is weakly consistent, and this runs once per replayed page, so the snapshot was pure
-  overhead. The two neighbouring dropped-file methods keep the snapshot idiom; they run only on rare drop events.
-- claude: the batch-removal and deferred-RAM paths were never executed by a test. Applied - added
-  `applyChangesTakesTheDeferredBatchCopyOutOfThePipeline`, which goes through `setSuspended` + a real commit.
-- claude: the mid-enqueue window (`scheduleFlushOfPages` publishes to `pageIndex` before `queue.offer`) is not covered
-  by the detach. Applied as documentation - `detachPendingPage` now states the single-writer assumption that makes it
-  unreachable on the replay path.
-- claude: interrupt between the detach and `flushPage` leaves the page off the pipeline and off the disk. Applied as
-  documentation in `materializePendingFlushOfPage` - the page stays durable because its WAL ack is only released
-  inside `flushPage`, so the WAL entry survives and is replayed on the next open.
-- claude (optional): make `materializePendingFlushOfPage` package-private. Skipped - it matches the visibility of the
-  sibling `writePageWithLock`, which the reviewer noted; tightening one without the other would be inconsistent.

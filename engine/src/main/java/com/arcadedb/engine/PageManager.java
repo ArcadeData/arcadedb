@@ -499,23 +499,43 @@ public class PageManager extends LockContext {
    * replicated page, rolling its version backwards. Pushing the pending copy to disk here (rather than discarding it)
    * preserves its content, which is the only baseline the WAL delta can be applied on top of.
    */
-  public void materializePendingFlushOfPage(final Database database, final PageId pageId)
+  void materializePendingFlushOfPage(final Database database, final PageId pageId)
       throws IOException, InterruptedException {
     final PageManagerFlushThread thread = flushThread;
     if (thread == null)
       return;
 
-    final MutablePage pending = thread.detachPendingPage(database, pageId);
-    if (pending == null)
+    final List<MutablePage> pending = thread.detachPendingPages(database, pageId);
+    if (pending.isEmpty())
       return;
 
-    // The flush thread may have taken the page's batch before the detach reached it: let the in-flight write finish,
-    // or it could still land after the caller's write and revert the page on disk. An interrupt here leaves the page
-    // detached but not yet written: it stays durable because its WAL ack has NOT been released (notifyPageFlushed
-    // runs inside flushPage below), so its WAL entry is preserved and replayed on the next open.
+    // The flush thread may have taken a batch before the detach reached it: let the in-flight write finish, or it
+    // could still land after the caller's write and revert the page on disk. An interrupt here leaves the copies
+    // detached but not yet written: they stay durable because their WAL acks have NOT been released
+    // (notifyPageFlushed runs inside flushPage below), so their WAL entries are preserved and replayed on the next
+    // open.
     thread.waitForCurrentFlushToComplete(database);
 
-    flushPage(pending);
+    // Successive commits can leave more than one copy pending. The most recent one is a full page image covering
+    // every older one, so writing it alone puts the whole pending content on disk.
+    MutablePage mostRecent = pending.getFirst();
+    for (int i = 1; i < pending.size(); i++)
+      if (pending.get(i).getVersion() > mostRecent.getVersion())
+        mostRecent = pending.get(i);
+
+    flushPage(mostRecent);
+
+    // The superseded copies will never be written. Release their WAL acks - as the dropped-file purge does - or the
+    // stale pending count would keep their WAL files alive forever (the close-time ack gate, #4928). takeWALFile
+    // makes the release exactly-once.
+    for (int i = 0; i < pending.size(); i++) {
+      final MutablePage page = pending.get(i);
+      if (page != mostRecent) {
+        final WALFile walFile = page.takeWALFile();
+        if (walFile != null)
+          walFile.notifyPageFlushed();
+      }
+    }
 
     // The read cache holds the same pending copy: drop it so the caller reads the content just written.
     removePageFromCache(pageId);

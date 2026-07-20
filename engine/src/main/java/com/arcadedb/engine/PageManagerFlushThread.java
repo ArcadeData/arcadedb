@@ -627,59 +627,82 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
-   * Takes the page pending for {@code pageId} out of the flush pipeline and hands it to the caller, which becomes
-   * responsible for writing it to disk. Used by {@link TransactionManager#applyChanges}, which writes replicated /
-   * recovery pages straight to the file: while an older copy of the same page stays in the pipeline, reads resolve
-   * it from {@link #pageIndex} instead of the file, and the eventual flush of that copy overwrites the replicated
-   * page and rolls its version backwards.
+   * Takes EVERY copy of {@code pageId} pending in the flush pipeline out of it and hands them to the caller, which
+   * becomes responsible for writing the most recent one to disk. Used by {@link TransactionManager#applyChanges},
+   * which writes replicated / recovery pages straight to the file: while an older copy of the same page stays in the
+   * pipeline, reads resolve it from {@link #pageIndex} instead of the file, and the eventual flush of that copy
+   * overwrites the replicated page and rolls its version backwards.
    * <p>
-   * The page is removed from the queued and deferred batches by reference identity so a NEWER copy queued for the
-   * same {@link PageId} is never dropped by mistake, matching {@link #removeFromFlushIndex}. The batch currently
-   * being written is also visited: the flush thread mutates the very same list, so the removal may lose that race,
-   * which is why the caller waits for the in-flight batch to complete before writing.
+   * Copies are matched by {@link PageId}, NOT by reference identity: successive commits can leave more than one
+   * {@link MutablePage} for the same page pending at once (the newest in {@link #pageIndex}, an older one still
+   * sitting in an earlier batch - the two-instance case {@link #removeFromFlushIndex} exists for, issue #4544).
+   * Removing only the indexed instance would leave the older copy free to write the superseded version over the
+   * replicated one. Every returned copy is superseded by the most recent one, whose content is a full page image
+   * covering all of them, so the caller writes that one and releases the others' WAL acks.
    * <p>
-   * ASSUMPTION: no other thread is scheduling a flush of this same page instance concurrently.
-   * {@link #scheduleFlushOfPages} publishes to {@link #pageIndex} BEFORE enqueueing, so a commit sitting between
-   * those two statements would have its batch enqueued after this detach walked the queue, and that batch would
-   * still carry the superseded page. This holds on the only caller's path: replicated and crash-recovery replay is
-   * the sole writer of the pages it applies, so no local commit can be mid-enqueue for them.
+   * The batch currently being written is also visited: the flush thread mutates the very same list, so the removal
+   * may lose that race, which is why the caller waits for the in-flight batch to complete before writing.
+   * <p>
+   * ASSUMPTION: no other thread is scheduling a flush of this page concurrently. {@link #scheduleFlushOfPages}
+   * publishes to {@link #pageIndex} BEFORE enqueueing, so a commit sitting between those two statements would have
+   * its batch enqueued after this detach walked the queue, and that batch would still carry a superseded copy. This
+   * holds on the only caller's path: replicated and crash-recovery replay is the sole writer of the pages it
+   * applies - it goes through {@code writePageWithLock}, which never touches this pipeline - and it runs on a
+   * follower or during recovery, where no local transaction is committing pages.
    *
-   * @return the detached page, or {@code null} when nothing was pending for this page.
+   * @return every detached copy, most recent one included; empty when nothing was pending for this page.
    */
-  MutablePage detachPendingPage(final Database database, final PageId pageId) {
-    final MutablePage pending = pageIndex.remove(pageId);
-    if (pending == null)
-      return null;
+  List<MutablePage> detachPendingPages(final Database database, final PageId pageId) {
+    final MutablePage indexed = pageIndex.remove(pageId);
+    final List<MutablePage> detached = new ArrayList<>(1);
 
     // Iterated directly rather than through a snapshot: ArrayBlockingQueue's iterator is weakly consistent and never
     // throws ConcurrentModificationException, and this runs per replayed page, so the copy would be pure overhead.
     for (final PagesToFlush batch : queue)
-      removePageFromBatch(batch, pending);
+      removePagesOfPageIdFromBatch(batch, pageId, detached);
 
-    removePageFromBatch(nextPagesToFlush.get(), pending);
+    removePagesOfPageIdFromBatch(nextPagesToFlush.get(), pageId, detached);
 
     final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.get(database);
     if (deferred != null)
       for (final PagesToFlush batch : deferred)
-        // The page leaves the deferred backlog, so release its reserved RAM accounting (issue #4728).
-        deferredRAMBytes.addAndGet(-removePageFromBatch(batch, pending));
+        // The copies leave the deferred backlog, so release their reserved RAM accounting (issue #4728).
+        deferredRAMBytes.addAndGet(-removePagesOfPageIdFromBatch(batch, pageId, detached));
 
-    return pending;
+    // The indexed copy is missing from every batch only in the mid-enqueue window ruled out above, but adding it
+    // here keeps the caller's contract - "the pipeline no longer holds this page" - true without relying on it.
+    if (indexed != null && !containsInstance(detached, indexed))
+      detached.add(indexed);
+
+    return detached;
   }
 
-  /** Removes a single page instance from a batch and returns its in-RAM size, or 0 when it was not there. */
-  private long removePageFromBatch(final PagesToFlush batch, final MutablePage target) {
+  private static boolean containsInstance(final List<MutablePage> pages, final MutablePage page) {
+    for (int i = 0; i < pages.size(); i++)
+      if (pages.get(i) == page)
+        return true;
+    return false;
+  }
+
+  /** Removes every copy of {@code pageId} from a batch into {@code detached} and returns the sum of their in-RAM size. */
+  private long removePagesOfPageIdFromBatch(final PagesToFlush batch, final PageId pageId,
+      final List<MutablePage> detached) {
+    // pages is null for the SHUTDOWN_THREAD marker.
     if (batch == null || batch.pages == null)
       return 0;
 
+    long removedBytes = 0;
     synchronized (batch.pages) {
-      for (final Iterator<MutablePage> it = batch.pages.iterator(); it.hasNext(); )
-        if (it.next() == target) {
+      for (final Iterator<MutablePage> it = batch.pages.iterator(); it.hasNext(); ) {
+        final MutablePage page = it.next();
+        if (pageId.equals(page.getPageId())) {
           it.remove();
-          return target.getPhysicalSize();
+          detached.add(page);
+          removedBytes += page.getPhysicalSize();
         }
+      }
     }
-    return 0;
+    return removedBytes;
   }
 
   /** Removes the dropped file's pages from a batch and returns the sum of their in-RAM size (issue #4728). */
