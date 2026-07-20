@@ -1,5 +1,7 @@
 # Issue #5326 - Flaky on CI: applyChanges/page-replay tests
 
+PR: https://github.com/ArcadeData/arcadedb/pull/5349
+
 ## Symptom
 
 `Issue4712ReplicatedWriteLockTest`, `Issue4510ForceApplyPartialDeltaTest` and `ApplyChangesPartialReplayTest` fail
@@ -111,3 +113,9 @@ park page 0 in genuine deferred batches:
 Beyond de-flaking CI, this closes a real durability hole on the replication and crash-recovery path: a replicated page
 write could previously be silently reverted by a stale queued flush, which is the version-regression signature behind
 the `WALVersionGapException` cascades referenced in #4510 and #5322.
+- The per-page batch walk is O(deferred backlog) while a backup or HA-snapshot suspend is open on the same database.
+  Bounded by `arcadedb.flushSuspendMaxDeferredRAM` and correct, but worth knowing as a load characteristic of replay
+  during a suspend window.
+- The `detachPendingPages` ASSUMPTION (replay is the sole writer of the pages it applies) is the linchpin of the
+  correctness argument. It holds on the follower and recovery paths today; a future caller of `applyChanges` from a
+  context that also commits locally would silently violate it.
