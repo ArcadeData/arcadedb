@@ -144,7 +144,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
   private final    String                  clusterName;
 
-  private          RaftServer                raftServer;
+  // volatile: reassigned by the recovery path (restartRatis) and cleared by stop(), while background
+  // threads - the health monitor and, since #5345, the log compaction scheduler - read it. Every reader
+  // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
+  private volatile RaftServer                raftServer;
   private          RaftClient                raftClient;
   private          RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
@@ -173,6 +176,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // scheduler issues. A stable ClientId keeps the requests distinguishable in Ratis's logs.
   private final    ClientId                  snapshotClientId      = ClientId.randomId();
   private final    AtomicLong                snapshotCallId        = new AtomicLong();
+  // Resolved Raft storage directory, cached for the free-space probes the compaction scheduler runs on
+  // every tick. Config-derived and constant for this server's lifetime.
+  private volatile File                      cachedRaftStorageDir  = null;
   // Follower-side Raft log catch-up narrative. Driven by the health-monitor tick; only active on a
   // follower with a non-trivial apply backlog (committed-but-not-yet-applied entries) and not installing
   // a snapshot.
@@ -2456,9 +2462,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
      * The Raft storage directory, or its nearest existing ancestor. {@code File.getUsableSpace()}
      * returns 0 for a path that does not exist, which would otherwise read as "disk full" during the
      * window between server start and Ratis creating the directory.
+     * <p>
+     * The configured directory itself is resolved once and cached: {@code resolveRaftStorageDir} is
+     * config-derived and constant for the server's lifetime, and re-running its {@code exists()} probes
+     * on every tick is pointless I/O. The ancestor walk stays per-call because its result legitimately
+     * changes once Ratis creates the directory.
      */
     private File raftStorageVolume() {
-      File dir = getRaftStorageDir();
+      File dir = cachedRaftStorageDir;
+      if (dir == null) {
+        dir = getRaftStorageDir();
+        cachedRaftStorageDir = dir;
+      }
       while (dir != null && !dir.exists())
         dir = dir.getParentFile();
       return dir;

@@ -98,6 +98,9 @@ public final class RaftLogCompactionScheduler {
   private volatile boolean                  underDiskPressure = false;
   // Wall-clock time (ms) of the last emitted disk-pressure WARNING; -1 = never warned.
   private          long                     lastDiskWarningMs = -1L;
+  // Highest snapshot index observed so far, so an idle tick (which Ratis answers with the unchanged
+  // index) is not reported as a compaction. Read/written only on the single scheduler thread.
+  private          long                     lastSnapshotIndex = -1L;
   // Injectable for deterministic tests; defaults to the system clock.
   private          LongSupplier             clock             = System::currentTimeMillis;
 
@@ -150,6 +153,11 @@ public final class RaftLogCompactionScheduler {
     return underDiskPressure;
   }
 
+  /** Visible for tests: highest snapshot index observed, or -1 before any snapshot was taken. */
+  long getLastSnapshotIndex() {
+    return lastSnapshotIndex;
+  }
+
   /**
    * Wrapper that swallows every throwable. A {@code scheduleWithFixedDelay} task that throws is
    * silently cancelled, which would turn a single transient snapshot refusal into the permanent loss
@@ -175,9 +183,15 @@ public final class RaftLogCompactionScheduler {
     final long creationGap = pressure ? DISK_PRESSURE_CREATION_GAP : minEntries;
 
     final long snapshotIndex = target.triggerSnapshot(creationGap);
-    if (snapshotIndex >= 0)
+    // Ratis answers a short-circuited (below the creation gap) request with a SUCCESS reply carrying the
+    // existing snapshot index, so a bare "index >= 0" check would announce a compaction on every idle
+    // tick. Only report when the index actually moved, which is the only case where segments became
+    // purgeable.
+    if (snapshotIndex > lastSnapshotIndex) {
+      lastSnapshotIndex = snapshotIndex;
       HALog.log(this, HALog.BASIC, "Raft log compaction: snapshot at index %d (creationGap=%d)", snapshotIndex,
           creationGap);
+    }
   }
 
   /**
@@ -200,11 +214,11 @@ public final class RaftLogCompactionScheduler {
       return false;
     }
 
-    // Percentage arithmetic on longs: usable * 100 can overflow on volumes above ~92 PB, so divide first
-    // when the numbers are large enough for that to matter.
-    final boolean pressure = usable < Long.MAX_VALUE / 100L
-        ? usable * 100L < total * (long) minFreeSpacePerc
-        : usable / (total / 100L) < minFreeSpacePerc;
+    // Double arithmetic rather than long products: both usable*100 and total*minFreeSpacePerc can
+    // overflow independently on very large volumes, and a wrapped negative product would silently
+    // under-report pressure. A double's 53-bit mantissa is far more precision than a free-space
+    // percentage comparison needs.
+    final boolean pressure = (double) usable / (double) total * 100.0 < minFreeSpacePerc;
     underDiskPressure = pressure;
 
     if (pressure && shouldWarnAboutDiskPressure())

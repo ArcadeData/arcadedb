@@ -39,6 +39,7 @@ class RaftLogCompactionSchedulerTest {
     volatile boolean    failSnapshot      = false;
     volatile long       usableSpace       = 900L;
     volatile long       totalSpace        = 1000L;
+    volatile long       snapshotIndex     = 42L;
 
     @Override
     public boolean isShutdownRequested() {
@@ -50,7 +51,7 @@ class RaftLogCompactionSchedulerTest {
       requestedGaps.add(creationGap);
       if (failSnapshot)
         throw new IllegalStateException("snapshot request refused");
-      return 42L;
+      return snapshotIndex;
     }
 
     @Override
@@ -208,6 +209,65 @@ class RaftLogCompactionSchedulerTest {
 
     now.addAndGet(1);
     assertThat(scheduler.shouldWarnAboutDiskPressure()).isTrue();
+  }
+
+  /**
+   * Ratis answers a request below the creation gap with a SUCCESS reply carrying the <i>existing</i>
+   * snapshot index, so the scheduler must only treat a strictly higher index as a real compaction.
+   */
+  @Test
+  void repeatedTicksAtTheSameIndexAreNotCountedAsNewCompactions() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+
+    scheduler.tick();
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(42L);
+
+    scheduler.tick();
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(42L);
+
+    target.snapshotIndex = 100L;
+    scheduler.tick();
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(100L);
+  }
+
+  /**
+   * The sentinel distinction is load-bearing: a negative reading means "volume size unknown" and must
+   * never be read as pressure, while a genuine zero free bytes on a sized volume is the disk-full case
+   * this scheduler exists to catch.
+   */
+  @Test
+  void negativeUsableSpaceIsUnknownButZeroUsableSpaceIsPressure() {
+    final FakeCompactionTarget unknown = new FakeCompactionTarget();
+    unknown.usableSpace = -1L;
+    final RaftLogCompactionScheduler unknownScheduler = newScheduler(unknown);
+    unknownScheduler.tick();
+    assertThat(unknownScheduler.isUnderDiskPressure()).isFalse();
+    assertThat(unknown.requestedGaps).containsExactly(64L);
+
+    final FakeCompactionTarget full = new FakeCompactionTarget();
+    full.usableSpace = 0L;
+    final RaftLogCompactionScheduler fullScheduler = newScheduler(full);
+    fullScheduler.tick();
+    assertThat(fullScheduler.isUnderDiskPressure()).isTrue();
+    assertThat(full.requestedGaps).containsExactly(1L);
+  }
+
+  /**
+   * Percentage arithmetic must not overflow: long products of petabyte-scale byte counts wrap negative
+   * and would silently under-report a nearly full volume.
+   */
+  @Test
+  void diskPressureIsDetectedOnPetabyteScaleVolumes() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    target.totalSpace = Long.MAX_VALUE / 2L;
+    target.usableSpace = target.totalSpace / 100L; // 1% free, well below the 20% threshold
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+
+    scheduler.tick();
+
+    assertThat(scheduler.isUnderDiskPressure()).isTrue();
+    assertThat(target.requestedGaps).containsExactly(1L);
   }
 
   @Test
