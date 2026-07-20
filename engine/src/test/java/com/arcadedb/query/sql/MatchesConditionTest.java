@@ -22,6 +22,10 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Regression tests for the MATCHES per-context regex pattern cache. */
@@ -68,6 +72,60 @@ class MatchesConditionTest extends TestHelper {
     assertThat(count).isEqualTo(2);
     assertThat(foundAardvark).isTrue();
     assertThat(foundBBking).isTrue();
+  }
+
+  @Test
+  void literalRegexWithMultipleDotsIsAccepted() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Dotted");
+      database.command("sql", "INSERT INTO Dotted SET name = 'abc'");
+    });
+
+    // The cache key derived from this regex contains three dots. It must never be parsed as a
+    // nested property path.
+    final ResultSet rs = database.query("sql", "SELECT name FROM Dotted WHERE name MATCHES '.*.*'");
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("abc");
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void parameterRegexWithMultipleDotsIsAccepted() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE ParamDotted");
+      database.command("sql", "INSERT INTO ParamDotted SET name = 'a.b.c'");
+      database.command("sql", "INSERT INTO ParamDotted SET name = 'zzz'");
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT name FROM ParamDotted WHERE name MATCHES :regex",
+        Map.of("regex", "a\\..\\.."));
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("a.b.c");
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void perRowRegexesWithMultipleDotsStayDistinct() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE DottedItem");
+      database.command("sql", "INSERT INTO DottedItem SET name = 'a.b.c', pattern = 'a\\\\..\\\\..'");
+      database.command("sql", "INSERT INTO DottedItem SET name = 'x.y.z', pattern = 'x\\\\..\\\\..'");
+      // Control rows: name does not match its own multi-dot pattern.
+      database.command("sql", "INSERT INTO DottedItem SET name = 'x.y.z', pattern = 'a\\\\..\\\\..'");
+      database.command("sql", "INSERT INTO DottedItem SET name = 'a.b.c', pattern = 'x\\\\..\\\\..'");
+    });
+
+    // All four rows share one CommandContext, so two distinct multi-dot regexes populate the
+    // pattern cache within a single execution.
+    final ResultSet rs = database.query("sql", "SELECT name FROM DottedItem WHERE name MATCHES pattern ORDER BY name");
+
+    final List<String> names = new ArrayList<>();
+    while (rs.hasNext())
+      names.add(rs.next().getProperty("name"));
+
+    assertThat(names).containsExactly("a.b.c", "x.y.z");
   }
 
   @Test
