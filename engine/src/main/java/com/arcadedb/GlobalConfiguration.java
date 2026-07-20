@@ -940,6 +940,35 @@ public enum GlobalConfiguration {
       Lower values cause more frequent snapshots and earlier log compaction.""",
       Long.class, 100_000L),
 
+  HA_SNAPSHOT_INTERVAL("arcadedb.ha.snapshotInterval", SCOPE.SERVER,
+      """
+      Interval in milliseconds between periodic Raft snapshot checkpoints on every node. \
+      HA_SNAPSHOT_THRESHOLD alone counts entries, so a low-write cluster can run for weeks without ever \
+      reaching it: the snapshot index stays frozen, no log segment is ever purged, and the Raft log grows \
+      until the volume is full. This time-based trigger bounds the retained log by wall-clock age instead. \
+      An ArcadeDB snapshot is a zero-byte marker (the database files on disk are the durable state), so a \
+      tick is cheap; it is additionally a no-op when fewer than HA_SNAPSHOT_MIN_ENTRIES entries were \
+      applied since the last snapshot. Set to 0 to disable and rely on HA_SNAPSHOT_THRESHOLD only. \
+      Note this interval also bounds the reaction time to disk pressure, not just steady-state log \
+      retention: the free-space escalation described in HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC fires on the \
+      next tick, so a volume that fills faster than one interval needs a shorter interval.""",
+      Long.class, 300_000L),
+
+  HA_SNAPSHOT_MIN_ENTRIES("arcadedb.ha.snapshotMinEntries", SCOPE.SERVER,
+      """
+      Minimum number of Raft log entries applied since the last snapshot before a periodic \
+      HA_SNAPSHOT_INTERVAL tick actually takes one. Keeps an idle cluster from rewriting a snapshot marker \
+      that would not advance the purge point. Values below 1 are clamped to 1.""",
+      Long.class, 64L),
+
+  HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC("arcadedb.ha.raftStorageMinFreeSpacePerc", SCOPE.SERVER,
+      """
+      Percentage of free space on the volume hosting HA_RAFT_STORAGE_DIRECTORY below which the periodic \
+      snapshot tick escalates: it forces a snapshot and log purge regardless of HA_SNAPSHOT_MIN_ENTRIES and \
+      logs a throttled WARNING. Guards against the Raft log filling the volume, after which Ratis marks the \
+      log permanently failed and the node rejects every append until restarted. Set to 0 to disable the check.""",
+      Integer.class, 20),
+
   HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
       "HA verbose logging level: 0=off, 1=basic (elections, leader changes), 2=detailed (replication, forwarding), 3=trace (every state machine apply)",
       Integer.class, 0),
