@@ -62,8 +62,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -153,10 +155,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
-  // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
+  // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728), and since
+  // issue #5346 also the replication-channel resets and their leadership-transfer escalation. One worker is
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
   private final    ThreadPoolExecutor        stalledResyncExecutor = createStalledResyncExecutor();
+  // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
+  // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
+  // is not going to.
+  private static final long                  ESCALATION_TRANSFER_TIMEOUT_MS = 10_000L;
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
@@ -302,9 +309,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final boolean resyncNarrative = configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING);
     final long peerUnreachableThresholdMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_UNREACHABLE_THRESHOLD);
     final long peerChannelResetDurationMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_CHANNEL_RESET_DURATION);
+    final boolean peerChannelResetEscalation = configuration.getValueAsBoolean(
+        GlobalConfiguration.HA_PEER_CHANNEL_RESET_ESCALATION);
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
         this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs, peerChannelResetDurationMs,
-        this::resetPeerReplicationChannel);
+        this::resetPeerReplicationChannel, peerChannelResetEscalation ? this::escalateWedgedPeerChannel : null);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -439,7 +448,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * touched and leadership is unchanged, so there is no flapping risk (unlike a leadership transfer).
    * <p>
    * This is the automatic, less-disruptive alternative to the manual {@code transferLeadership} lever
-   * that Gap 1 was previously left to.
+   * that Gap 1 was previously left to; when its bounded retry budget is exhausted the monitor escalates
+   * to {@link #escalateWedgedPeerChannel} (issue #5346).
+   * <p>
+   * The reset runs on {@link #stalledResyncExecutor} rather than inline: closing a channel and resolving
+   * the peer's address are both blocking operations, and the caller is the single lag-monitor thread that
+   * classifies every replica.
    */
   void resetPeerReplicationChannel(final String peerId) {
     final RaftServer server = raftServer;
@@ -450,17 +464,126 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (targetId.equals(localPeerId))
       return; // the leader keeps no appender channel to itself
 
-    // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
-    // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
-    // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
-    if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
-      LogManager.instance().log(this, Level.FINE,
-          "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and reconnect (issue #4696).",
-          peerId);
-    else
+    stalledResyncExecutor.execute(() -> {
+      // Issue #5346: log what the peer name resolves to on both sides of the reset. When the channel is
+      // wedged despite healthy DNS (the reported incident), this is the evidence that distinguishes "the
+      // reset re-resolved to a new IP" from "re-resolution was never the problem".
+      final String before = resolvePeerAddresses(targetId);
+
+      // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
+      // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
+      // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
+      if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
+        LogManager.instance().log(this, Level.FINE,
+            "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and "
+                + "reconnect (issue #4696). Resolved before=%s, after=%s.",
+            peerId, before, resolvePeerAddresses(targetId));
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "Requested a replication-channel reset for follower '%s' (resolved to %s) but the Raft server RPC is not "
+                + "proxy-based; cannot reset the channel.",
+            peerId, before);
+    });
+  }
+
+  /**
+   * Resolves the peer's Raft host to its current IP addresses for diagnostics, as a single printable
+   * string. Never throws: an unresolvable or unknown peer yields a descriptive placeholder, because this
+   * is logging support and must not break the recovery path it annotates.
+   */
+  private String resolvePeerAddresses(final RaftPeerId peerId) {
+    final String rpcAddress = peerRaftAddress(peerId);
+    if (rpcAddress == null)
+      return "<unknown peer address>";
+    final int colon = rpcAddress.lastIndexOf(':');
+    final String host = colon > 0 ? rpcAddress.substring(0, colon) : rpcAddress;
+    try {
+      final InetAddress[] resolved = InetAddress.getAllByName(host);
+      final StringBuilder buffer = new StringBuilder(host).append("=[");
+      for (int i = 0; i < resolved.length; i++) {
+        if (i > 0)
+          buffer.append(',');
+        buffer.append(resolved[i].getHostAddress());
+      }
+      return buffer.append(']').toString();
+    } catch (final UnknownHostException e) {
+      return host + "=<unresolvable: " + e.getMessage() + ">";
+    }
+  }
+
+  /**
+   * Terminal leader-side recovery for a follower whose replication channel is still dead after the bounded
+   * {@link GlobalConfiguration#HA_PEER_CHANNEL_RESET_DURATION} reset budget has been exhausted (issue #5346).
+   * <p>
+   * Resetting the cached proxy is only half a fix: Ratis rebuilds the channel lazily, on the appender's next
+   * send, so when the peer's {@code GrpcLogAppender} is itself wedged no send is ever attempted and the reset
+   * is a silent no-op. In the reported incident all five attempts ran with healthy DNS and open TCP, the
+   * follower stayed at {@code matchIndex = -1} for 5.5 minutes, and only restarting the leader recovered it -
+   * because a new leader builds a brand-new appender. This method performs that appender rebuild without the
+   * restart, by transferring leadership to a healthy peer.
+   * <p>
+   * The transfer target is chosen with the same rules as a manual step-down and is never the wedged follower
+   * itself. When no healthy target exists (e.g. a two-node cluster whose only follower is the wedged one, or
+   * every remaining peer is lagging) the previous behaviour is kept: log for operator intervention rather
+   * than flap leadership onto a peer that cannot serve. Runs on {@link #stalledResyncExecutor} because the
+   * transfer blocks on network I/O and the caller is the lag-monitor thread.
+   */
+  void escalateWedgedPeerChannel(final String peerId) {
+    if (peerId == null || raftServer == null || shutdownRequested || !isLeader())
+      return;
+
+    if (RaftPeerId.valueOf(peerId).equals(localPeerId))
+      return;
+
+    stalledResyncExecutor.execute(() -> {
+      // Leadership may have moved while this task sat in the queue; a transfer from a non-leader is
+      // rejected by Ratis and would only log noise. Re-check before choosing a target so the choice is
+      // made against the configuration this node is actually leading.
+      if (shutdownRequested || !isLeader())
+        return;
+
+      final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor);
+      if (target == null) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Follower '%s' has a permanently dead replication channel and no healthy peer is eligible to take over "
+                + "leadership; giving up automatic recovery - operator intervention is required.",
+            peerId);
+        return;
+      }
+
+      final String targetId = target.getId().toString();
       LogManager.instance().log(this, Level.WARNING,
-          "Requested a replication-channel reset for follower '%s' but the Raft server RPC is not proxy-based; cannot reset the channel.",
-          peerId);
+          "Transferring leadership to '%s' to rebuild the replication appender for wedged follower '%s' (issue #5346).",
+          targetId, peerId);
+      try {
+        transferLeadership(targetId, ESCALATION_TRANSFER_TIMEOUT_MS);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Leadership transfer to '%s' to recover wedged follower '%s' failed: %s; operator intervention is required.",
+            targetId, peerId, e.getMessage());
+      }
+    });
+  }
+
+  /**
+   * Picks the peer that should receive leadership when {@code wedgedPeerId}'s replication channel is
+   * unrecoverable (issue #5346), or {@code null} when none is eligible.
+   * <p>
+   * Delegates the eligibility rules to {@link #selectStepDownTargets} (excludes this node, priority-0
+   * witnesses while real voters exist, and lagging followers; ordered strongest-first) and additionally
+   * excludes the wedged follower. That exclusion is the point of the escalation: the wedged peer is
+   * exactly the node that cannot be reached, so promoting it would trade a dead replication channel for a
+   * dead cluster. It is normally filtered as lagging already, but a follower wedged at a high water mark
+   * can present a small lag, so the exclusion is explicit rather than incidental.
+   * <p>
+   * Package-private and static so the selection can be unit-tested without a live cluster.
+   */
+  static RaftPeer selectChannelEscalationTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final String wedgedPeerId, final ClusterMonitor clusterMonitor) {
+    for (final RaftPeer candidate : selectStepDownTargets(livePeers, localPeerId, clusterMonitor))
+      if (!candidate.getId().toString().equals(wedgedPeerId))
+        return candidate;
+    return null;
   }
 
   /**

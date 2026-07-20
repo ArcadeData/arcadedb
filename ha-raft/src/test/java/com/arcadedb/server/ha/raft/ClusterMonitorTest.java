@@ -600,6 +600,119 @@ class ClusterMonitorTest {
     assertThat(gaveUp.get(0).message).contains("giving up").contains("replica-2");
   }
 
+  /**
+   * Issue #5346: exhausting the bounded reset budget used to be a dead end - the monitor logged one
+   * SEVERE suggesting a manual leadership transfer and then did nothing forever, because the streak only
+   * re-arms when the follower becomes reachable, which never happens for a genuinely wedged channel. The
+   * monitor must now escalate exactly once per streak so the leader can rebuild the appender itself.
+   */
+  @Test
+  void escalatesOnceWhenChannelResetBudgetIsExhausted() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final List<String> resets = new ArrayList<>();
+    final List<String> escalations = new ArrayList<>();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, resets::add,
+        escalations::add);
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L); // streak starts
+
+    // Burn the whole budget, then keep ticking well past it.
+    for (int i = 0; i < ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS + 4; i++) {
+      now.addAndGet(31_000L);
+      monitor.updateReplicaMatchIndex("replica-2", 1000L, 40_000L + i * 31_000L);
+    }
+
+    assertThat(resets).hasSize(ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS);
+    // Escalation fires exactly once for the streak, no matter how many further ticks elapse.
+    assertThat(escalations).containsExactly("replica-2");
+  }
+
+  /**
+   * Issue #5346: after the follower reconnects the whole streak re-arms, so a later wedge escalates
+   * again rather than being permanently suppressed by the earlier give-up.
+   */
+  @Test
+  void escalationReArmsAfterFollowerReconnects() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final List<String> escalations = new ArrayList<>();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, s -> { },
+        escalations::add);
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    for (int i = 0; i < ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS + 2; i++) {
+      now.addAndGet(31_000L);
+      monitor.updateReplicaMatchIndex("replica-2", 1000L, 40_000L + i * 31_000L);
+    }
+    assertThat(escalations).containsExactly("replica-2");
+
+    // Reconnects: streak, attempt counter and give-up flag all clear.
+    now.addAndGet(1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1005L, 150L);
+
+    // Wedges again and burns a fresh budget: escalates a second time.
+    now.addAndGet(1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1005L, 12_000L);
+    for (int i = 0; i < ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS + 2; i++) {
+      now.addAndGet(31_000L);
+      monitor.updateReplicaMatchIndex("replica-2", 1005L, 40_000L + i * 31_000L);
+    }
+    assertThat(escalations).containsExactly("replica-2", "replica-2");
+  }
+
+  /**
+   * Issue #5346: the escalation handler is optional. Without one the monitor must keep the previous
+   * behaviour - a single SEVERE "giving up" line asking for operator intervention - and never NPE.
+   */
+  @Test
+  void withoutEscalationHandlerBudgetExhaustionStillLogsGiveUpOnce() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final List<String> resets = new ArrayList<>();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, resets::add, null);
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+    captured.clear();
+
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    for (int i = 0; i < ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS + 3; i++) {
+      now.addAndGet(31_000L);
+      monitor.updateReplicaMatchIndex("replica-2", 1000L, 40_000L + i * 31_000L);
+    }
+
+    assertThat(resets).hasSize(ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS);
+    final List<CapturedLine> severe = captured.linesAtLevel(Level.SEVERE);
+    assertThat(severe).hasSize(1);
+    assertThat(severe.get(0).message).contains("giving up").contains("replica-2");
+  }
+
+  /**
+   * Issue #5346: a handler that throws must not break the monitor tick, and must not be retried in a
+   * tight loop - the give-up latch is set regardless of the handler outcome.
+   */
+  @Test
+  void escalationHandlerFailureIsContainedAndNotRetried() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final AtomicLong escalationAttempts = new AtomicLong();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, s -> { },
+        s -> {
+          escalationAttempts.incrementAndGet();
+          throw new IllegalStateException("transfer refused");
+        });
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    for (int i = 0; i < ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS + 5; i++) {
+      now.addAndGet(31_000L);
+      monitor.updateReplicaMatchIndex("replica-2", 1000L, 40_000L + i * 31_000L);
+    }
+
+    assertThat(escalationAttempts.get()).isEqualTo(1L);
+  }
+
   @Test
   void noChannelResetWhenDisabled() {
     final AtomicLong now = new AtomicLong(100_000L);

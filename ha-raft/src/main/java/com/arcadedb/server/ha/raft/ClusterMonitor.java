@@ -94,6 +94,7 @@ public class ClusterMonitor {
   private final    long                            peerUnreachableThresholdMs;
   private final    long                            peerChannelResetDurationMs;
   private final    Consumer<String>                unreachablePeerChannelHandler;
+  private final    Consumer<String>                exhaustedPeerChannelHandler;
   private volatile long                            leaderCommitIndex;
   private final    ConcurrentHashMap<String, ReplicaState> replicaStates = new ConcurrentHashMap<>();
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because the test
@@ -138,6 +139,22 @@ public class ClusterMonitor {
       final Consumer<String> stalledReplicaHandler, final boolean resyncNarrativeEnabled,
       final long peerUnreachableThresholdMs, final long peerChannelResetDurationMs,
       final Consumer<String> unreachablePeerChannelHandler) {
+    this(lagWarningThreshold, stalledResyncDurationMs, stalledReplicaHandler, resyncNarrativeEnabled,
+        peerUnreachableThresholdMs, peerChannelResetDurationMs, unreachablePeerChannelHandler, null);
+  }
+
+  /**
+   * @param exhaustedPeerChannelHandler callback invoked (once per unreachable streak) with the peer id when
+   *                                    the bounded {@link #CHANNEL_RESET_MAX_ATTEMPTS} reset budget is
+   *                                    exhausted and the follower is still unreachable (issue #5346). Lets
+   *                                    the leader escalate - e.g. transfer leadership so a fresh appender is
+   *                                    built - instead of only logging. {@code null} keeps the previous
+   *                                    log-and-stop behaviour.
+   */
+  public ClusterMonitor(final long lagWarningThreshold, final long stalledResyncDurationMs,
+      final Consumer<String> stalledReplicaHandler, final boolean resyncNarrativeEnabled,
+      final long peerUnreachableThresholdMs, final long peerChannelResetDurationMs,
+      final Consumer<String> unreachablePeerChannelHandler, final Consumer<String> exhaustedPeerChannelHandler) {
     if (stalledResyncDurationMs > 0 && stalledReplicaHandler == null)
       throw new IllegalArgumentException(
           "stalledReplicaHandler must be non-null when stalledResyncDurationMs > 0 (leader-driven recovery enabled)");
@@ -160,6 +177,7 @@ public class ClusterMonitor {
     this.peerUnreachableThresholdMs = peerUnreachableThresholdMs;
     this.peerChannelResetDurationMs = peerChannelResetDurationMs;
     this.unreachablePeerChannelHandler = unreachablePeerChannelHandler;
+    this.exhaustedPeerChannelHandler = exhaustedPeerChannelHandler;
   }
 
   /** Package-private test hook to drive the stall-duration logic deterministically. */
@@ -408,7 +426,10 @@ public class ClusterMonitor {
    * follower stays unreachable, up to {@link #CHANNEL_RESET_MAX_ATTEMPTS} attempts, so a first reset
    * that does not stick (e.g. the rebuilt channel re-resolves stale DNS while the JVM positive-cache
    * TTL has not expired) does not leave the follower stranded - the exact failure mode this recovery
-   * targets. After the cap it gives up and logs once (SEVERE) for operator intervention. Decoupled from
+   * targets. After the cap it fires {@link #exhaustedPeerChannelHandler} once so the leader can escalate
+   * (issue #5346); with no such handler it logs once (SEVERE) for operator intervention. The escalation is
+   * genuinely terminal for the streak: a wedged channel never becomes reachable again on its own, so
+   * without it the recovery would sit in the given-up state until the leader process restarts. Decoupled from
    * the resync narrative ({@link #resyncNarrativeEnabled}) so it works even with narrative logging off.
    * State is mutated only from the single lag-monitor thread.
    * <p>
@@ -447,11 +468,27 @@ public class ClusterMonitor {
 
     if (state.channelResetCount >= CHANNEL_RESET_MAX_ATTEMPTS) {
       if (!state.channelResetGaveUp) {
+        // Latch BEFORE invoking the handler so a handler that throws is not retried on every later tick
+        // (issue #5346): the budget is spent either way, and a tight escalation loop would be worse than
+        // the single failed attempt.
         state.channelResetGaveUp = true;
+        if (exhaustedPeerChannelHandler == null) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Follower '%s' still unreachable after %d replication-channel resets over %dms; giving up automatic channel "
+                  + "recovery - operator intervention (e.g. a leadership transfer) is required.",
+              replicaId, state.channelResetCount, now - state.channelUnreachableSinceMs);
+          return;
+        }
         LogManager.instance().log(this, Level.SEVERE,
-            "Follower '%s' still unreachable after %d replication-channel resets over %dms; giving up automatic channel "
-                + "recovery - operator intervention (e.g. a leadership transfer) is required.",
+            "Follower '%s' still unreachable after %d replication-channel resets over %dms; escalating to rebuild the "
+                + "appender for it.",
             replicaId, state.channelResetCount, now - state.channelUnreachableSinceMs);
+        try {
+          exhaustedPeerChannelHandler.accept(replicaId);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Channel-reset escalation for follower '%s' failed: %s", replicaId, e.getMessage());
+        }
       }
       return;
     }
