@@ -97,6 +97,45 @@ the next interval); a discarded escalation is logged loudly since it is a one-sh
 
 - `ClusterMonitorTest` - new deterministic clock-driven tests covering escalation on budget exhaustion,
   fire-once-per-streak, re-arm after the follower reconnects, and the disabled/absent-handler paths.
-- `RaftHAServerChannelEscalationTest` - new unit test for the escalation target selection seam, including
-  exclusion of the wedged follower itself.
-- Full `ha-raft` module test suite for regressions.
+- `RaftHAServerChannelEscalationTest` - new unit tests for the escalation target-selection seam (including
+  exclusion of the wedged follower itself) and for the cooldown, including that a no-eligible-target
+  give-up does not consume the cooldown window.
+- Full `ha-raft` module test suite: 706 tests green. Engine configuration tests: 46 green.
+
+### What is deliberately not covered by a test
+
+The core hypothesis - that a fresh appender on a new leader recovers the channel - is **not** verified by
+an automated test. Doing so needs a genuinely wedged gRPC appender, and the in-process harness
+(`BaseRaftHATest`) has no seam to wedge Ratis's internal appender. Killing or partitioning a follower does
+not reproduce the condition, because that path already recovers today; faking it would test the mock
+rather than the hypothesis. The evidence for the mechanism is that a leader restart demonstrably fixed the
+reported incident and a leadership transfer rebuilds the same appender state. The decision logic around
+it (target selection, cooldown, fire-once semantics) is unit-tested.
+
+## Review history
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5353
+
+**Cycle 1** (`249d8b6`) - both bots reviewed. Three points, all verified against the code and fixed in
+`7393935`:
+- *Leadership flapping* (claude): confirmed real. `clusterMonitor.reset()` wipes the escalation latch on
+  every leadership acquisition, so each new leader arrived with a fresh budget and a permanently
+  unreachable follower would bounce leadership between healthy peers indefinitely. Bounded by the
+  node-local 30-minute cooldown described above.
+- *`CallerRunsPolicy`* (both): confirmed real. Channel recovery moved to its own executor that never runs
+  work on the lag-monitor thread and cannot queue behind a long resync HTTP call.
+- *`extractHost` reuse* (gemini): confirmed a real bug, not just duplication - the hand-rolled
+  `lastIndexOf(':')` parser mishandles bracketed IPv6 literals.
+
+**Cycle 2** (`7393935`) - claude reviewed; gemini did not re-review. Fixed in `471a08c`:
+- *Cooldown consumed without a transfer*: confirmed real. The gate ran before target selection, so a
+  null-target give-up burned the window and the refusal message claimed a transfer that never happened.
+  Gate moved to immediately before the transfer.
+- *Dropped escalation is terminal*: the one-shot latch was badly coupled to a lossy executor. Replaced the
+  blanket discard policy with per-submitter rejection handling (dropped reset FINE, dropped escalation
+  SEVERE).
+- *Non-atomic `admitChannelEscalation`*: converted to compare-and-set so correctness does not rest on an
+  implicit single-worker invariant.
+- *Hardcoded cooldown/timeout constants*: declined. Both sit on a rare terminal recovery path, the
+  transfer timeout intentionally matches the existing `stepDown` value, and promoting a constant to a
+  config key later is non-breaking.
