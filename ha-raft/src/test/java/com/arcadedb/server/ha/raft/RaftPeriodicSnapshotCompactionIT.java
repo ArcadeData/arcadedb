@@ -112,6 +112,13 @@ class RaftPeriodicSnapshotCompactionIT extends BaseMiniRaftTest {
       assertThat(division.getStateMachine().getLatestSnapshot())
           .as("peer %s must not have taken a snapshot below the creation gap", peerId)
           .isNull();
+      // Pins the reply contract RaftLogCompactionScheduler.tick() depends on: a short-circuited request
+      // reports the EXISTING snapshot index (0 when there is none), not the current log/commit index.
+      // Were a future Ratis to return the commit index here, the scheduler would log a phantom
+      // compaction every tick and advance its baseline past the real snapshot index.
+      assertThat(reply.getLogIndex())
+          .as("peer %s under-gap reply must carry the existing snapshot index, not the log index", peerId)
+          .isZero();
     }
   }
 

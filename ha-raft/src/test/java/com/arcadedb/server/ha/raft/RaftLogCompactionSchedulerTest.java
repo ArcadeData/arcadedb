@@ -232,6 +232,29 @@ class RaftLogCompactionSchedulerTest {
   }
 
   /**
+   * After a RECOVER restart Ratis already holds a snapshot at some index, which the first (no-op) tick
+   * observes. That index must be recorded as the baseline rather than reported as work this scheduler
+   * did, while a genuine later advance still registers.
+   */
+  @Test
+  void firstTickSeedsTheBaselineIndexWithoutClaimingACompaction() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    target.snapshotIndex = 24_269L; // a snapshot Ratis loaded at startup
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(-1L);
+
+    scheduler.tick();
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(24_269L);
+    assertThat(scheduler.hasReportedCompaction()).isFalse();
+
+    target.snapshotIndex = 24_400L;
+    scheduler.tick();
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(24_400L);
+    assertThat(scheduler.hasReportedCompaction()).isTrue();
+  }
+
+  /**
    * The sentinel distinction is load-bearing: a negative reading means "volume size unknown" and must
    * never be read as pressure, while a genuine zero free bytes on a sized volume is the disk-full case
    * this scheduler exists to catch.

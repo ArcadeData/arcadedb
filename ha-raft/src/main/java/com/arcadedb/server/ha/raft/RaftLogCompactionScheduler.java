@@ -49,6 +49,12 @@ import java.util.logging.Level;
  * When free space on the Raft storage volume drops below the configured percentage the gap is
  * lowered to 1, purging as aggressively as Ratis allows, and a throttled WARNING surfaces the
  * condition before the disk fills.
+ * <p>
+ * <b>Note on pool metrics:</b> this class owns a single-thread scheduled executor, but it is
+ * deliberately not registered with the engine's {@code PoolMetrics} binder. That binder covers pools
+ * that do query or storage work whose saturation an operator must see; this one runs one bounded task
+ * every few minutes with no queue to back up, alongside the other HA housekeeping timers
+ * ({@link HealthMonitor}, the lag monitor), none of which are surfaced there either.
  */
 public final class RaftLogCompactionScheduler {
 
@@ -101,6 +107,12 @@ public final class RaftLogCompactionScheduler {
   // Highest snapshot index observed so far, so an idle tick (which Ratis answers with the unchanged
   // index) is not reported as a compaction. Read/written only on the single scheduler thread.
   private          long                     lastSnapshotIndex = -1L;
+  // Whether any tick has completed yet. The first tick only records the index it observes: after a
+  // RECOVER restart Ratis already holds a snapshot at some index N, and reporting that pre-existing N
+  // as "compacted at index N" would be a phantom compaction line for work this scheduler never did.
+  private          boolean                  firstTickObserved = false;
+  // Whether a real compaction (an index advance after the baseline tick) has ever been reported.
+  private          boolean                  reportedCompaction = false;
   // Injectable for deterministic tests; defaults to the system clock.
   private          LongSupplier             clock             = System::currentTimeMillis;
 
@@ -153,9 +165,14 @@ public final class RaftLogCompactionScheduler {
     return underDiskPressure;
   }
 
-  /** Visible for tests: highest snapshot index observed, or -1 before any snapshot was taken. */
+  /** Visible for tests: highest snapshot index observed, or -1 before the first tick. */
   long getLastSnapshotIndex() {
     return lastSnapshotIndex;
+  }
+
+  /** Visible for tests: whether a real compaction (an advance past the baseline) was ever reported. */
+  boolean hasReportedCompaction() {
+    return reportedCompaction;
   }
 
   /**
@@ -189,9 +206,13 @@ public final class RaftLogCompactionScheduler {
     // purgeable.
     if (snapshotIndex > lastSnapshotIndex) {
       lastSnapshotIndex = snapshotIndex;
-      HALog.log(this, HALog.BASIC, "Raft log compaction: snapshot at index %d (creationGap=%d)", snapshotIndex,
-          creationGap);
+      if (firstTickObserved) {
+        reportedCompaction = true;
+        HALog.log(this, HALog.BASIC, "Raft log compaction: snapshot at index %d (creationGap=%d)", snapshotIndex,
+            creationGap);
+      }
     }
+    firstTickObserved = true;
   }
 
   /**
