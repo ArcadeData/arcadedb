@@ -35,12 +35,14 @@ import org.apache.ratis.metrics.MetricRegistryInfo;
 import org.apache.ratis.metrics.RatisMetricRegistry;
 import org.apache.ratis.metrics.impl.RatisMetricRegistryImpl;
 import org.apache.ratis.proto.RaftProtos;
+import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.SnapshotManagementRequest;
 import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.DivisionInfo;
@@ -79,6 +81,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -111,6 +114,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Package-private so other cluster-internal RPC callers (e.g. LeaderDatabaseQuery) reuse the same constant
   // instead of re-inlining the "root" literal.
   static final String FORWARDED_ROOT_USER = "root";
+
+  // Timeout carried by the node-local snapshot-management requests the log compaction scheduler issues.
+  // Generous: the request is served on the state-machine updater thread, which may be busy applying a
+  // backlog, and a timeout here only skips one compaction tick.
+  private static final long SNAPSHOT_REQUEST_TIMEOUT_MS = 30_000L;
 
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
@@ -158,6 +166,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
   private          HealthMonitor             healthMonitor;
+  // Periodic Raft snapshot/log-purge trigger (issue #5345). Runs on every node, leader and follower
+  // alike, because each Ratis server purges its own log against its own snapshot index.
+  private          RaftLogCompactionScheduler logCompactionScheduler;
+  // Client identity and call-id sequence for the local snapshot-management requests the compaction
+  // scheduler issues. A stable ClientId keeps the requests distinguishable in Ratis's logs.
+  private final    ClientId                  snapshotClientId      = ClientId.randomId();
+  private final    AtomicLong                snapshotCallId        = new AtomicLong();
   // Follower-side Raft log catch-up narrative. Driven by the health-monitor tick; only active on a
   // follower with a non-trivial apply backlog (committed-but-not-yet-applied entries) and not installing
   // a snapshot.
@@ -633,6 +648,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
         divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold);
     this.healthMonitor.start();
+
+    // Periodic snapshot/log-purge trigger (issue #5345). Started on every node, not only the leader:
+    // Ratis purges each server's own log against that server's own snapshot index, so a follower whose
+    // snapshot index never advances fills its volume even while the leader stays healthy.
+    final long snapshotInterval = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INTERVAL);
+    final long snapshotMinEntries = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MIN_ENTRIES);
+    final int raftStorageMinFreeSpacePerc = configuration.getValueAsInteger(
+        GlobalConfiguration.HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC);
+    this.logCompactionScheduler = new RaftLogCompactionScheduler(new RaftLogCompactionTarget(), snapshotInterval,
+        snapshotMinEntries, raftStorageMinFreeSpacePerc);
+    this.logCompactionScheduler.start();
+
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING))
       this.resyncProgressTracker = new FollowerResyncProgressTracker(
           configuration.getValueAsLong(GlobalConfiguration.HA_RESYNC_PROGRESS_INTERVAL),
@@ -1042,6 +1069,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (healthMonitor != null) {
       healthMonitor.stop();
       healthMonitor = null;
+    }
+    if (logCompactionScheduler != null) {
+      logCompactionScheduler.stop();
+      logCompactionScheduler = null;
     }
     stopLagMonitor();
     stalledResyncExecutor.shutdownNow();
@@ -2384,6 +2415,88 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean isExplicitlyConfigured(final ContextConfiguration configuration, final GlobalConfiguration key) {
     return configuration.hasValue(key.getKey()) || System.getProperty(key.getKey()) != null;
+  }
+
+  /**
+   * Binds {@link RaftLogCompactionScheduler} to this server's Ratis instance and Raft storage volume
+   * (issue #5345). Kept as an inner class so the scheduler itself stays free of Ratis and filesystem
+   * details and can be unit-tested against a fake.
+   */
+  private final class RaftLogCompactionTarget implements RaftLogCompactionScheduler.CompactionTarget {
+
+    @Override
+    public boolean isShutdownRequested() {
+      return shutdownRequested;
+    }
+
+    @Override
+    public long triggerSnapshot(final long creationGap) {
+      return takeLocalSnapshot(creationGap);
+    }
+
+    @Override
+    public long getRaftStorageUsableSpaceBytes() {
+      final File dir = raftStorageVolume();
+      return dir != null ? dir.getUsableSpace() : -1L;
+    }
+
+    @Override
+    public long getRaftStorageTotalSpaceBytes() {
+      final File dir = raftStorageVolume();
+      return dir != null ? dir.getTotalSpace() : -1L;
+    }
+
+    @Override
+    public String getRaftStorageDescription() {
+      final File dir = raftStorageVolume();
+      return dir != null ? dir.getAbsolutePath() : "<unknown>";
+    }
+
+    /**
+     * The Raft storage directory, or its nearest existing ancestor. {@code File.getUsableSpace()}
+     * returns 0 for a path that does not exist, which would otherwise read as "disk full" during the
+     * window between server start and Ratis creating the directory.
+     */
+    private File raftStorageVolume() {
+      File dir = getRaftStorageDir();
+      while (dir != null && !dir.exists())
+        dir = dir.getParentFile();
+      return dir;
+    }
+  }
+
+  /**
+   * Asks the local Ratis server to create a snapshot, which is what authorises it to purge log
+   * segments up to the new snapshot index ({@code arcadedb.ha.logPurgeUptoSnapshot}). This is a
+   * node-local admin operation - it is valid on the leader and on followers alike, and does not
+   * replicate.
+   * <p>
+   * Ratis completes the request as a no-op when fewer than {@code creationGap} entries have been
+   * applied since the last snapshot, and rejects it while a snapshot install is in progress.
+   *
+   * @return the resulting snapshot index, or -1 when no snapshot was taken
+   */
+  long takeLocalSnapshot(final long creationGap) {
+    final RaftServer server = raftServer;
+    if (server == null || shutdownRequested)
+      return -1L;
+    if (server.getLifeCycleState() != LifeCycle.State.RUNNING)
+      return -1L;
+
+    try {
+      final RaftClientReply reply = server.snapshotManagement(
+          SnapshotManagementRequest.newCreate(snapshotClientId, localPeerId, raftGroup.getGroupId(),
+              snapshotCallId.incrementAndGet(), SNAPSHOT_REQUEST_TIMEOUT_MS, creationGap));
+      if (reply == null || !reply.isSuccess()) {
+        LogManager.instance().log(this, Level.FINE, "Local Raft snapshot request was not successful: %s", reply);
+        return -1L;
+      }
+      return reply.getLogIndex();
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not take a local Raft snapshot to compact the log: %s", e.getMessage());
+      return -1L;
+    }
   }
 
   /**
