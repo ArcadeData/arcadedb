@@ -62,7 +62,7 @@ public class TextEmbeddingsImporterLSM {
   private          String           similarityFunctionName;
   private          String           vectorPropertyName;
   private          String           idPropertyName    = "name";
-  private          int              maxConnections    = 16;
+  private          int              maxConnections    = 32;
   private          int              beamWidth         = 100;
   private volatile long             embeddingsParsed  = 0L;
   private volatile long             verticesCreated   = 0L;
@@ -89,7 +89,7 @@ public class TextEmbeddingsImporterLSM {
     if (settings.options.containsKey("idProperty"))
       this.idPropertyName = settings.getValue("idProperty", null);
 
-    this.maxConnections = settings.getIntValue("m", 16);
+    this.maxConnections = settings.getIntValue("m", 32);
     this.beamWidth = settings.getIntValue("beamWidth", 100);
 
     if (settings.options.containsKey("normalizeVectors"))
