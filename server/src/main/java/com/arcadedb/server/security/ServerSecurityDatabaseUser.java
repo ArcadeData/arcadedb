@@ -42,7 +42,10 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private volatile     boolean[][] fileAccessMap     = null;
   private              long        resultSetLimit    = -1;
   private              long        readTimeout       = -1;
-  private final        boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  // INVARIANT: never mutated in place. updateDatabaseConfiguration() builds a replacement and swaps it in,
+  // so a reader racing with a security refresh sees either the previous or the next set of permissions,
+  // never a partially rebuilt one that would deny an access the user actually holds.
+  private volatile     boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
   private final        boolean     denyAll;
   // #5269: fileIds already reported as "not yet in security configuration", to log that line at most once per file
   // instead of on every access (which used to flood the logs at thousands of lines/sec under write load).
@@ -126,13 +129,14 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     return true;
   }
 
-  public void updateDatabaseConfiguration(final JSONObject configuredGroups) {
-    // RESET THE ARRAY
-    for (int i = 0; i < DATABASE_ACCESS.values().length; i++)
-      databaseAccessMap[i] = false;
+  public synchronized void updateDatabaseConfiguration(final JSONObject configuredGroups) {
+    // WORK ON A COPY AND SWAP IT AT THE END
+    final boolean[] newDatabaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
-    if (configuredGroups == null)
+    if (configuredGroups == null) {
+      databaseAccessMap = newDatabaseAccessMap;
       return;
+    }
 
     JSONArray access = null;
     for (final String groupName : groups) {
@@ -183,8 +187,10 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (access != null) {
       // UPDATE THE ARRAY WITH LATEST CONFIGURATION
       for (int i = 0; i < access.length(); i++)
-        databaseAccessMap[DATABASE_ACCESS.getByName(access.getString(i)).ordinal()] = true;
+        newDatabaseAccessMap[DATABASE_ACCESS.getByName(access.getString(i)).ordinal()] = true;
     }
+
+    databaseAccessMap = newDatabaseAccessMap;
   }
 
   public synchronized void updateFileAccess(final DatabaseInternal database, final JSONObject configuredGroups) {
