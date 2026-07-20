@@ -22,16 +22,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Targets: linux/amd64 + linux/arm64 (required), windows/amd64 (best-effort), and macos/arm64
-        # (best-effort, EXPERIMENTAL). The free macos-15 (Apple Silicon) runner has only ~7 GB RAM;
-        # native-image otherwise grabs ~80% of RAM and thrashes swap for 40+ minutes on this
-        # GraalJS-embedded image, so the macos leg runs with low-memory tuning (lowmem: true ->
-        # -Dnative.lowmem, i.e. capped builder heap + --parallelism=2 + -Ob, plus a purge/Spotlight-off
-        # step) to try to fit. It stays required:false so a memory failure never reddens the run.
-        # There is no free x64 macOS runner (GitHub retired macos-13; macos-15-intel is a paid Larger
-        # Runner that fails at setup) and no free Windows-on-ARM runner. Native-image cannot
-        # cross-compile, so each target builds on its own runner. macOS arm64 is also a fast local
-        # build (`mvn -Pnative ...`; see docs/native-image.md).
+        # Only linux/amd64, linux/arm64, and windows/amd64 are built in CI. macOS is not built here:
+        # there is no free hosted x64 macOS runner (GitHub retired macos-13; macos-15-intel is a paid
+        # "Larger Runners" label not enabled here that fails at setup), and the free macos-15 (arm64,
+        # ~7 GB RAM) cannot build this native image without thrashing swap for 40+ minutes -
+        # native-image wants ~80% of system RAM and this image's build heap is ~630 MB, which does not
+        # fit. macOS arm64 binaries are a fast local build instead (`mvn -Pnative ...`; see
+        # docs/native-image.md). There is likewise no free Windows-on-ARM runner. Native-image cannot
+        # cross-compile, so each target builds on its own runner.
         # linkmode distinguishes the two Linux build modes (see the "Set up musl toolchain" and
         # "Build native image" steps below, and native/pom.xml's native-static/native-mostly-static
         # profiles):
@@ -44,10 +42,9 @@ jobs:
         #                     native/src/main/docker/Dockerfile.native.distroless.
         #   dynamic        - Windows: ordinary dynamically-linked build, unchanged.
         include:
-          - { runner: ubuntu-latest,    os_name: linux,   arch: amd64, required: true,  linkmode: musl-static,   lowmem: false }
-          - { runner: ubuntu-24.04-arm, os_name: linux,   arch: arm64, required: true,  linkmode: mostly-static, lowmem: false }
-          - { runner: macos-15,         os_name: macos,   arch: arm64, required: false, linkmode: dynamic,       lowmem: true  }
-          - { runner: windows-latest,   os_name: windows, arch: amd64, required: false, linkmode: dynamic,       lowmem: false }
+          - { runner: ubuntu-latest,    os_name: linux,   arch: amd64, required: true,  linkmode: musl-static   }
+          - { runner: ubuntu-24.04-arm, os_name: linux,   arch: arm64, required: true,  linkmode: mostly-static }
+          - { runner: windows-latest,   os_name: windows, arch: amd64, required: false, linkmode: dynamic       }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -132,30 +129,18 @@ jobs:
           "$MUSL_GCC" --version
           "$MUSL_GCC" -print-file-name=libz.a
 
-      # macos-15 (Apple Silicon) is a ~7 GB RAM runner; native-image defaults to ~80% of RAM and
-      # thrashes swap on this image. Reclaim what we can right before the build: stop Spotlight
-      # indexing and purge inactive/file-cache pages back to the free list. Best-effort (|| true) and
-      # only on the lowmem leg; the build itself is further constrained via -Dnative.lowmem below.
-      - name: Free memory before build (macOS low-RAM runner)
-        if: ${{ matrix.lowmem }}
-        run: |
-          sudo mdutil -a -i off || true
-          sudo purge || true
-          vm_stat || true
-
       - name: Build native image
         shell: bash
         run: |
           set -euo pipefail
-          ARGS=()
+          ARGS=""
           case "${{ matrix.linkmode }}" in
-            musl-static)   ARGS+=(-Dnative.static=true) ;;
-            mostly-static) ARGS+=(-Dnative.mostlystatic=true) ;;
-            dynamic)       : ;;
+            musl-static)   ARGS="-Dnative.static=true" ;;
+            mostly-static) ARGS="-Dnative.mostlystatic=true" ;;
+            dynamic)       ARGS="" ;;
             *)              echo "::error::unknown matrix.linkmode '${{ matrix.linkmode }}'"; exit 1 ;;
           esac
-          if [ "${{ matrix.lowmem }}" = "true" ]; then ARGS+=(-Dnative.lowmem=true); fi
-          mvn -B -ntp -Pnative -pl native -am -DskipTests "${ARGS[@]}" package
+          mvn -B -ntp -Pnative -pl native -am -DskipTests $ARGS package
 
       # native-maven-plugin names the executable via os-maven-plugin's os.detected.name/arch
       # (e.g. osx-aarch_64, linux-x86_64, windows-x86_64), which does NOT match this matrix's
