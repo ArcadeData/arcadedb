@@ -948,7 +948,10 @@ public enum GlobalConfiguration {
       until the volume is full. This time-based trigger bounds the retained log by wall-clock age instead. \
       An ArcadeDB snapshot is a zero-byte marker (the database files on disk are the durable state), so a \
       tick is cheap; it is additionally a no-op when fewer than HA_SNAPSHOT_MIN_ENTRIES entries were \
-      applied since the last snapshot. Set to 0 to disable and rely on HA_SNAPSHOT_THRESHOLD only.""",
+      applied since the last snapshot. Set to 0 to disable and rely on HA_SNAPSHOT_THRESHOLD only. \
+      Note this interval also bounds the reaction time to disk pressure, not just steady-state log \
+      retention: the free-space escalation described in HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC fires on the \
+      next tick, so a volume that fills faster than one interval needs a shorter interval.""",
       Long.class, 300_000L),
 
   HA_SNAPSHOT_MIN_ENTRIES("arcadedb.ha.snapshotMinEntries", SCOPE.SERVER,

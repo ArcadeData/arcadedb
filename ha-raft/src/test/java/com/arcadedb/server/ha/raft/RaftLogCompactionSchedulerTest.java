@@ -255,6 +255,31 @@ class RaftLogCompactionSchedulerTest {
   }
 
   /**
+   * A failed first tick must not consume the baseline: otherwise the next successful tick would report
+   * a pre-existing startup snapshot as a compaction, which is exactly what the baseline suppresses.
+   */
+  @Test
+  void aFailedFirstTickDoesNotConsumeTheBaseline() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    target.snapshotIndex = -1L; // Ratis refused the request
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+
+    scheduler.tick();
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(-1L);
+    assertThat(scheduler.hasReportedCompaction()).isFalse();
+
+    // A pre-existing startup snapshot observed by the first SUCCESSFUL tick is still only a baseline.
+    target.snapshotIndex = 24_269L;
+    scheduler.tick();
+    assertThat(scheduler.getLastSnapshotIndex()).isEqualTo(24_269L);
+    assertThat(scheduler.hasReportedCompaction()).isFalse();
+
+    target.snapshotIndex = 24_400L;
+    scheduler.tick();
+    assertThat(scheduler.hasReportedCompaction()).isTrue();
+  }
+
+  /**
    * The sentinel distinction is load-bearing: a negative reading means "volume size unknown" and must
    * never be read as pressure, while a genuine zero free bytes on a sized volume is the disk-full case
    * this scheduler exists to catch.

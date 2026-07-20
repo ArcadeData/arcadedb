@@ -223,7 +223,11 @@ public final class RaftLogCompactionScheduler {
             creationGap);
       }
     }
-    firstTickObserved = true;
+    // Seed the baseline from the first SUCCESSFUL observation only. A failed first tick returns -1;
+    // marking the baseline observed there would let the next successful tick report a pre-existing
+    // startup snapshot as a compaction, defeating the suppression above.
+    if (snapshotIndex >= 0)
+      firstTickObserved = true;
   }
 
   /**
