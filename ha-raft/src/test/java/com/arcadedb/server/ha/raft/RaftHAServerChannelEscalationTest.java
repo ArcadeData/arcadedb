@@ -118,6 +118,28 @@ class RaftHAServerChannelEscalationTest {
     assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 32 * 60_000L)).isFalse();
   }
 
+  /**
+   * The cooldown must be consumed only when a transfer is actually attempted. `escalateWedgedPeerChannel`
+   * therefore selects the target BEFORE admitting: a no-eligible-target give-up must leave the window
+   * intact, or a genuinely recoverable escalation would be suppressed for 30 minutes once a healthy peer
+   * rejoins. This pins the ordering contract that makes that possible - a refused admit is the only thing
+   * that burns the window.
+   */
+  @Test
+  void aRefusedTargetSelectionLeavesTheCooldownWindowIntact() {
+    final Map<String, Long> escalations = new HashMap<>();
+    final long t0 = 1_000_000L;
+
+    // No eligible target: escalateWedgedPeerChannel returns before admitting, so nothing is recorded.
+    final List<RaftPeer> onlyWedgedPeerLeft = List.of(peer("n0", 0), peer("n2", 0));
+    assertThat(RaftHAServer.selectChannelEscalationTarget(onlyWedgedPeerLeft, RaftPeerId.valueOf("n0"), "n2", null))
+        .isNull();
+    assertThat(escalations).isEmpty();
+
+    // A healthy peer rejoins moments later: the escalation is still admitted, not suppressed.
+    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 1_000L)).isTrue();
+  }
+
   @Test
   void cooldownIsTrackedPerFollower() {
     final Map<String, Long> escalations = new HashMap<>();

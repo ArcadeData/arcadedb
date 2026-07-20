@@ -79,6 +79,7 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -479,26 +480,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (targetId.equals(localPeerId))
       return; // the leader keeps no appender channel to itself
 
-    channelRecoveryExecutor.execute(() -> {
-      // Issue #5346: log what the peer name resolves to on both sides of the reset. When the channel is
-      // wedged despite healthy DNS (the reported incident), this is the evidence that distinguishes "the
-      // reset re-resolved to a new IP" from "re-resolution was never the problem".
-      final String before = resolvePeerAddresses(targetId);
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        // Issue #5346: log what the peer name resolves to on both sides of the reset. When the channel is
+        // wedged despite healthy DNS (the reported incident), this is the evidence that distinguishes "the
+        // reset re-resolved to a new IP" from "re-resolution was never the problem".
+        final String before = resolvePeerAddresses(targetId);
 
-      // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
-      // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
-      // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
-      if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
-        LogManager.instance().log(this, Level.FINE,
-            "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and "
-                + "reconnect (issue #4696). Resolved before=%s, after=%s.",
-            peerId, before, resolvePeerAddresses(targetId));
-      else
-        LogManager.instance().log(this, Level.WARNING,
-            "Requested a replication-channel reset for follower '%s' (resolved to %s) but the Raft server RPC is not "
-                + "proxy-based; cannot reset the channel.",
-            peerId, before);
-    });
+        // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
+        // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
+        // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
+        if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
+          LogManager.instance().log(this, Level.FINE,
+              "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and "
+                  + "reconnect (issue #4696). Resolved before=%s, after=%s.",
+              peerId, before, resolvePeerAddresses(targetId));
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Requested a replication-channel reset for follower '%s' (resolved to %s) but the Raft server RPC is not "
+                  + "proxy-based; cannot reset the channel.",
+              peerId, before);
+      });
+    } catch (final RejectedExecutionException e) {
+      // Free to drop: ClusterMonitor retries the reset on its next interval, and the attempt it just
+      // consumed is bounded by the same budget either way.
+      LogManager.instance().log(this, Level.FINE,
+          "Replication-channel recovery queue is saturated; skipping this reset for follower '%s' (retried next interval).",
+          peerId);
+    }
   }
 
   /**
@@ -551,46 +560,60 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (RaftPeerId.valueOf(peerId).equals(localPeerId))
       return;
 
-    channelRecoveryExecutor.execute(() -> {
-      // Leadership may have moved while this task sat in the queue; a transfer from a non-leader is
-      // rejected by Ratis and would only log noise. Re-check before choosing a target so the choice is
-      // made against the configuration this node is actually leading.
-      if (shutdownRequested || !isLeader())
-        return;
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        // Leadership may have moved while this task sat in the queue; a transfer from a non-leader is
+        // rejected by Ratis and would only log noise. Re-check before choosing a target so the choice is
+        // made against the configuration this node is actually leading.
+        if (shutdownRequested || !isLeader())
+          return;
 
-      // Cooldown gate (see ESCALATION_COOLDOWN_MS): refuse to bounce leadership for the same follower
-      // again so soon. Checked here, after the leadership re-check, so a task that is dropped for any
-      // earlier reason does not consume the window.
-      if (!admitChannelEscalation(lastChannelEscalationAtMs, peerId, System.currentTimeMillis())) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Follower '%s' still has a dead replication channel, but this node already transferred leadership for it "
-                + "within the last %dms; not escalating again - the follower is unreachable for a reason a fresh "
-                + "appender does not fix, so operator intervention is required.",
-            peerId, ESCALATION_COOLDOWN_MS);
-        return;
-      }
+        final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor);
+        if (target == null) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Follower '%s' has a permanently dead replication channel and no healthy peer is eligible to take over "
+                  + "leadership; giving up automatic recovery - operator intervention is required.",
+              peerId);
+          return;
+        }
 
-      final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor);
-      if (target == null) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Follower '%s' has a permanently dead replication channel and no healthy peer is eligible to take over "
-                + "leadership; giving up automatic recovery - operator intervention is required.",
-            peerId);
-        return;
-      }
+        // Cooldown gate (see ESCALATION_COOLDOWN_MS): refuse to bounce leadership for the same follower again
+        // so soon. Deliberately the LAST gate, immediately before the transfer, so the window is consumed only
+        // when a transfer is actually attempted - a task dropped earlier (not leader, no eligible target) must
+        // not burn it, or a genuinely recoverable escalation would be suppressed for 30 minutes once a healthy
+        // peer rejoins.
+        if (!admitChannelEscalation(lastChannelEscalationAtMs, peerId, System.currentTimeMillis())) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Follower '%s' still has a dead replication channel, but this node already attempted a leadership transfer "
+                  + "for it within the last %dms; not escalating again - the follower is unreachable for a reason a fresh "
+                  + "appender does not fix, so operator intervention is required.",
+              peerId, ESCALATION_COOLDOWN_MS);
+          return;
+        }
 
-      final String targetId = target.getId().toString();
-      LogManager.instance().log(this, Level.WARNING,
-          "Transferring leadership to '%s' to rebuild the replication appender for wedged follower '%s' (issue #5346).",
-          targetId, peerId);
-      try {
-        transferLeadership(targetId, ESCALATION_TRANSFER_TIMEOUT_MS);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Leadership transfer to '%s' to recover wedged follower '%s' failed: %s; operator intervention is required.",
-            targetId, peerId, e.getMessage());
-      }
-    });
+        final String targetId = target.getId().toString();
+        LogManager.instance().log(this, Level.WARNING,
+            "Transferring leadership to '%s' to rebuild the replication appender for wedged follower '%s' (issue #5346).",
+            targetId, peerId);
+        try {
+          transferLeadership(targetId, ESCALATION_TRANSFER_TIMEOUT_MS);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Leadership transfer to '%s' to recover wedged follower '%s' failed: %s; operator intervention is required.",
+              targetId, peerId, e.getMessage());
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Unlike a reset, this is a ONE-SHOT: ClusterMonitor latches the give-up flag before invoking this
+      // handler and fires it once per unreachable streak, so a dropped escalation never re-fires for that
+      // streak. Surface it at SEVERE rather than letting the follower fall silently onto the
+      // operator-intervention path with only a generic queue-full warning.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Follower '%s' has a permanently dead replication channel but the recovery queue is saturated, so the "
+              + "leadership-transfer escalation was dropped and will not be retried for this outage; operator "
+              + "intervention is required.",
+          peerId);
+    }
   }
 
   /**
@@ -609,11 +632,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean admitChannelEscalation(final Map<String, Long> lastEscalationAtMs, final String peerId,
       final long now) {
-    final Long last = lastEscalationAtMs.get(peerId);
-    if (last != null && now - last < ESCALATION_COOLDOWN_MS)
-      return false;
-    lastEscalationAtMs.put(peerId, now);
-    return true;
+    // Compare-and-set rather than get-then-put: today the only caller is the single-worker
+    // channelRecoveryExecutor, but relying on that invariant would silently allow a double transfer if a
+    // future caller escalates from another thread.
+    while (true) {
+      final Long last = lastEscalationAtMs.putIfAbsent(peerId, now);
+      if (last == null)
+        return true; // first escalation for this follower
+      if (now - last < ESCALATION_COOLDOWN_MS)
+        return false; // inside the window
+      if (lastEscalationAtMs.replace(peerId, last, now))
+        return true;
+      // Lost the race against a concurrent escalation for the same follower: re-read and re-decide.
+    }
   }
 
   /**
@@ -656,10 +687,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Single-worker pool for replication-channel recovery (issue #5346). Unlike the resync executor it
-   * discards on saturation instead of running the task on the caller: the caller is the lag-monitor thread
-   * that classifies every replica, and a discarded reset costs nothing because the monitor retries it on
-   * the next interval. A discarded escalation is logged loudly since it is a one-shot.
+   * Single-worker pool for replication-channel recovery (issue #5346). Unlike the resync executor it must
+   * never run a task on the caller, which is the lag-monitor thread that classifies every replica: a
+   * blocking DNS lookup or a 10 s leadership transfer there would defeat the point of moving the work
+   * off-thread. It therefore keeps the default abort policy and each submitter decides what a rejection
+   * means for it - see {@link #resetPeerReplicationChannel} (free to drop, retried next interval) and
+   * {@link #escalateWedgedPeerChannel} (a one-shot, so a drop must be surfaced to the operator).
    */
   private static ThreadPoolExecutor createChannelRecoveryExecutor() {
     final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
@@ -667,9 +700,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final Thread t = new Thread(r, "arcadedb-raft-channel-recovery");
       t.setDaemon(true);
       return t;
-    }, (r, e) -> LogManager.instance().log(RaftHAServer.class, Level.WARNING,
-        "Replication-channel recovery queue is full; dropping this task. A dropped channel reset is retried on the "
-            + "next interval; a dropped escalation leaves the follower on the operator-intervention path."));
+    });
     executor.allowCoreThreadTimeOut(true);
     return executor;
   }
