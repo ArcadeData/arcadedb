@@ -88,6 +88,29 @@ hash-collision fix.
   pre-existing on `main` (verified by re-running with the fix reverted): GraalVM-JavaScript
   `TriggerSQLTest` / `SQLVectorHybridSearchBlogPostTest` and one benchmark, all unrelated.
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5354
+
+## Review cycles
+
+Cycle 1 - `a9baf19`:
+
+- `claude[bot]`: LGTM, no actionable items. Confirmed the fix reuses the existing opaque cache rather
+  than inventing a mechanism, preserves the #4397 key semantics, and covers both `evaluate()`
+  overloads through the shared `matches()` helper. Noted as non-blocking that a per-row regex column
+  grows `cachedValues` for the command-context lifetime; this is pre-existing behavior from the
+  `setVariable` path and not a regression, so no change was made.
+- `gemini-code-assist`: suggested null-guarding `context` around the two cache calls. Declined - both
+  `evaluate()` overloads already dereference `context` unconditionally before reaching `matches()`
+  (`context.getInputParameters()` on the `rightParam` branch, and `expression.execute(..., context)`
+  on every path), so a null context throws earlier regardless. Guarding only the cache lines would
+  imply a null-safety guarantee the method does not provide. The replaced code called
+  `context.getVariable(key)` with the same unconditional dereference, so null behavior is unchanged
+  by this PR. Rationale posted on the review thread.
+
+No code changes resulted from cycle 1.
+
 ## Impact
 
 Behavior change is confined to `MATCHES`. Regexes containing two or more dots previously always threw;
