@@ -43,10 +43,43 @@ ownership of the database now precedes any write to it.
   that leaves the dictionary page unflushed must still replay the WAL: the type and the record
   committed before the kill survive, and no WAL file is quarantined as `.corrupt`.
 
-Existing recovery/lock tests re-run green: `EmptyDictionaryFileReopenTest`,
+Existing recovery/lock tests re-run green (33 tests, 0 failures, 0 errors): `WalRecoveryCorrectnessTest`,
+`FlushRobustnessTest`, `TransactionManager*Test`, `WALFile*Test`, `EmptyDictionaryFileReopenTest`,
 `FailedOpenPreservesWalTest`, `Issue4511OpenFailureLockLeakTest`,
 `Issue4547ReadOnlyRecoveryLockLeakTest`, `Issue5067KillLockSymmetryTest`,
-`DatabaseFactoryFailedOpenTest`, plus the full `arcadedb-engine` suite.
+`DatabaseFactoryFailedOpenTest`, `DatabaseFactoryTest`.
+
+A wider `com.arcadedb.database.** + engine.** + schema.**` run was also made; it is reported here only
+for completeness, because it was invalidated part-way by the machine running out of disk (the resulting
+`NoClassDefFoundError`s name classes that exist in the tree). The `com.arcadedb.database.**` portion
+completed before that and was compared against the unmodified baseline: the only two failures,
+`DatabaseGetSizeTest.getSizeMultipleCalls` (async page-flush timing) and
+`ScriptTriggerSandboxTest.benignTriggerStillWorks` (GraalVM polyglot class init), reproduce identically
+without this change and are unrelated to it.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5351
+
+## Review cycles
+
+### Cycle 1 - `7ca03dd`
+
+Both gating bots responded. No code changes were required, so the branch ends the cycle unchanged.
+
+- **gemini-code-assist** (COMMENTED, 1 inline) - asked for braces around the single-statement `else`
+  in `prepareRecovery()`. Declined: CLAUDE.md sets the opposite convention ("if statements with only
+  one child sub-statement don't require a curly brace open/close"), and that `else` is verbatim
+  pre-existing code the diff only relocated out of `checkForRecovery()`.
+- **claude** - no blocking findings; confirmed the split is behavior-preserving against the base
+  revision (exception propagation, `.lck` not being in `SUPPORTED_FILE_EXT`, ordering inside
+  `performRecovery()`). Two optional notes, both declined with rationale:
+  - a shared test helper for the `.dict`/`.wal` listing code - `EmptyDictionaryFileReopenTest` already
+    carries its own copy, so self-contained-per-class is the existing convention;
+  - the clean-path `database.lck` creation moving ahead of `schema.load()` - already covered under
+    Notes below.
+
+Final state: `clean-approval`.
 
 ## Notes
 
