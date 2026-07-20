@@ -169,20 +169,22 @@ public class ServerSecurityUser implements SecurityUser {
     ServerSecurityDatabaseUser dbu = new ServerSecurityDatabaseUser(database.getName(), name,
         groupList.toArray(new String[groupList.size()]));
 
+    // INVARIANT: the user must carry its permissions BEFORE it becomes reachable through databaseCache.
+    // Publishing first and configuring afterwards lets a concurrent session pick up the cached instance
+    // while its access map is still empty, denying an access the user actually holds (e.g. a spurious
+    // "User 'root' is not allowed to update schema" when several sessions open the database at once).
+    if (!SecurityManager.ANY.equals(database.getName())) {
+      final JSONObject databaseGroups = syntheticGroupConfig != null ?
+          syntheticGroupConfig :
+          server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
+      dbu.updateDatabaseConfiguration(databaseGroups);
+      dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);
+    }
+
     final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(database.getName(), dbu);
     if (prev != null)
       // USE THE EXISTENT ONE
       dbu = prev;
-
-    if (database != null) {
-      if (!SecurityManager.ANY.equals(database.getName())) {
-        final JSONObject databaseGroups = syntheticGroupConfig != null ?
-            syntheticGroupConfig :
-            server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
-        dbu.updateDatabaseConfiguration(databaseGroups);
-        dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);
-      }
-    }
 
     return dbu;
   }

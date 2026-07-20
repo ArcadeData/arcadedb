@@ -62,17 +62,55 @@ public class TypeBuilder<T> {
 
     final LocalSchema schema = database.getSchema().getEmbedded();
 
+    // INVARIANT: creating a type is a check-then-act (look it up, then add the missing buckets and super
+    // types) and must be atomic, otherwise two callers racing on the same name both observe the type as
+    // incomplete and both try to associate the same bucket, the loser failing with "the bucket is already
+    // associated to the type". The lookup runs under the shared lock so a type being built by another
+    // thread - which publishes itself into schema.types BEFORE its buckets are added - is never observed
+    // half-populated; anything that mutates re-checks under the exclusive lock. The fast path can also throw,
+    // for the type-already-exists and wrong-type cases, exactly as the locked path does.
+    final T alreadyComplete = database.executeInReadLock(() -> {
+      final LocalDocumentType existing = schema.types.get(typeName);
+      return existing != null && isComplete(existing) ? (T) checkExistingIsCompatible(existing) : null;
+    });
+    if (alreadyComplete != null)
+      return alreadyComplete;
+
+    return database.executeInWriteLock(() -> createInternal(schema));
+  }
+
+  /**
+   * A type needs no further work from this builder when it already carries at least the requested number
+   * of buckets and every requested super type.
+   */
+  private boolean isComplete(final LocalDocumentType t) {
+    if (t.buckets.size() < buckets)
+      return false;
+    if (superTypes != null)
+      for (final LocalDocumentType sup : superTypes)
+        if (!t.getSuperTypes().contains(sup))
+          return false;
+    return true;
+  }
+
+  private LocalDocumentType checkExistingIsCompatible(final LocalDocumentType t) {
+    if (!ignoreIfExists)
+      throw new SchemaException("Cannot create type '" + typeName + "' because already exists");
+
+    if (!type.isAssignableFrom(t.getClass())) {
+      final String expectedType = type.isAssignableFrom(VertexType.class) ?
+          "vertex" :
+          type.isAssignableFrom(EdgeType.class) ? "edge" : "document";
+      throw new SchemaException("Type '" + typeName + "' is not a " + expectedType + " type");
+    }
+
+    return t;
+  }
+
+  private T createInternal(final LocalSchema schema) {
     final LocalDocumentType t = schema.types.get(typeName);
     if (t != null) {
-      if (!ignoreIfExists)
-        throw new SchemaException("Cannot create type '" + typeName + "' because already exists");
-
-      if (!type.isAssignableFrom(t.getClass())) {
-        final String expectedType = type.isAssignableFrom(VertexType.class) ?
-            "vertex" :
-            type.isAssignableFrom(EdgeType.class) ? "edge" : "document";
-        throw new SchemaException("Type '" + typeName + "' is not a " + expectedType + " type");
-      }
+      checkExistingIsCompatible(t);
 
       if (t.buckets.size() < buckets) {
         // CREATE MISSING BUCKETS
