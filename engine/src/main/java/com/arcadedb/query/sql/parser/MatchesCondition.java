@@ -67,11 +67,13 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   private boolean matches(final Object value, final String regex, final CommandContext context) {
+    // The key embeds the raw regex, so it must go through the opaque cache: getVariable() would
+    // interpret dots in the key as a nested $var.field path and reject it.
     final String key = "MATCHES_" + regex;
-    Pattern p = (Pattern) context.getVariable(key);
+    Pattern p = (Pattern) context.getCachedValue(key);
     if (p == null) {
       p = Pattern.compile(regex);
-      context.setVariable(key, p);
+      context.setCachedValue(key, p);
     }
 
     if (value instanceof CharSequence sequence) {
