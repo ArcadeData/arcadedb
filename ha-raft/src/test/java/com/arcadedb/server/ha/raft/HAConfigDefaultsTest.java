@@ -65,4 +65,26 @@ class HAConfigDefaultsTest {
   void replicationLagWarningDefault() {
     assertThat(GlobalConfiguration.HA_REPLICATION_LAG_WARNING.getDefValue()).isEqualTo(1000L);
   }
+
+  /**
+   * The periodic snapshot trigger (issue #5345) must be enabled by default: with only the count-based
+   * HA_SNAPSHOT_THRESHOLD, a low-write cluster never purges its Raft log and eventually fills the volume.
+   */
+  @Test
+  void snapshotIntervalDefaultIsEnabled() {
+    assertThat(GlobalConfiguration.HA_SNAPSHOT_INTERVAL.getDefValue()).isEqualTo(300_000L);
+    assertThat(GlobalConfiguration.HA_SNAPSHOT_INTERVAL.getType()).isEqualTo(Long.class);
+  }
+
+  @Test
+  void snapshotMinEntriesDefault() {
+    assertThat(GlobalConfiguration.HA_SNAPSHOT_MIN_ENTRIES.getDefValue()).isEqualTo(64L);
+    assertThat(GlobalConfiguration.HA_SNAPSHOT_MIN_ENTRIES.getType()).isEqualTo(Long.class);
+  }
+
+  @Test
+  void raftStorageMinFreeSpacePercDefault() {
+    assertThat(GlobalConfiguration.HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC.getDefValue()).isEqualTo(20);
+    assertThat(GlobalConfiguration.HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC.getType()).isEqualTo(Integer.class);
+  }
 }
