@@ -2481,6 +2481,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Package-private test hook: a compaction target bound to this server, so an integration test can
+   * assert the free-space probe resolves a real volume without reaching into the scheduler's thread.
+   */
+  RaftLogCompactionScheduler.CompactionTarget newCompactionTargetForTesting() {
+    return new RaftLogCompactionTarget();
+  }
+
+  /**
    * Asks the local Ratis server to create a snapshot, which is what authorises it to purge log
    * segments up to the new snapshot index ({@code arcadedb.ha.logPurgeUptoSnapshot}). This is a
    * node-local admin operation - it is valid on the leader and on followers alike, and does not

@@ -63,5 +63,39 @@ trigger for both.
   gap to 1, the shutdown flag suppresses the tick, a failing snapshot request never escapes the
   scheduler thread, the disk warning is throttled, and unknown volume size is not misread as
   pressure.
+- `RaftPeriodicSnapshotCompactionIT` (new, `ha-raft`): against a real 3-peer Ratis mini-cluster with
+  `ArcadeStateMachine`, asserts a node-local snapshot request succeeds and produces a positive snapshot
+  index on every peer including followers, and pins the reply contract `tick()` depends on (a
+  short-circuited request reports the existing snapshot index, not the log index).
+- `RaftLogCompactionWiringIT` (new, `ha-raft`): against a real `RaftHAServer` HA cluster, covers the
+  seam between the two suites above - `takeLocalSnapshot()` assembling the request from the real client
+  id, peer id and group id, and the compaction target resolving the Raft storage volume for the
+  free-space probe.
 - `HAConfigDefaultsTest` (existing, extended): pins the three new configuration defaults.
 - `mvn -pl ha-raft test` for the ha-raft module.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5350
+
+## Review cycles
+
+| cycle | head SHA | changes | outcome |
+|---|---|---|---|
+| 1 | `29be8ca2b` | initial implementation | gemini: volatile `raftServer`, overflow in percentage math, cache storage dir. claude: no-op ticks logged as compactions, half-covered overflow guard, plus non-blocking notes. |
+| 2 | `1d2129b93` | `raftServer` volatile; double arithmetic for disk pressure; cached storage dir; only report an advanced snapshot index; tests for the sentinel distinction and petabyte-scale volumes | gemini: reposted the (already fixed) volatile comment. claude: phantom first-tick compaction log after a RECOVER restart, no-op reply contract unpinned, PoolMetrics note. |
+| 3 | `4578e3e80` | first tick seeds the baseline without claiming a compaction; IT pins `reply.getLogIndex()`; PoolMetrics note in the class doc | gemini: reposted the same volatile comment a third time. claude: wiring test gap (the main pre-merge ask), `stop()` does not await termination, warning message omits the knob that fired it. |
+| 4 | (this commit) | `RaftLogCompactionWiringIT` closes the wiring gap; `stop()` awaits in-flight ticks; warning names `raftStorageMinFreeSpacePerc` | - |
+
+### Feedback deliberately not actioned
+
+- **gemini, "declare `raftServer` volatile" (repeated on all three head SHAs).** Actioned in cycle 2;
+  the field reads `private volatile RaftServer raftServer;` in the very commits the later copies were
+  posted against. The reposts are stale, not new findings.
+- **claude, "the first genuine compaction on a fresh node is never logged".** This is the deliberate
+  trade-off of suppressing the baseline tick, which claude also called acceptable. Distinguishing "the
+  first snapshot this scheduler created" from "a snapshot Ratis loaded at startup" is not possible from
+  the reply alone, and purging is unaffected - only the log line is.
+- **claude, "`getUsableSpace()` returns 0, not negative, for an unstattable path".** Correct, and the
+  conservative reading (0 free on a sized volume = pressure) is the intended behaviour. Raised as an
+  observation, not a change request.

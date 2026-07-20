@@ -94,6 +94,9 @@ public final class RaftLogCompactionScheduler {
   /** At most one disk-pressure WARNING per this window, matching the engine-wide saturation convention. */
   static final long DISK_WARNING_THROTTLE_MS = 60_000L;
 
+  /** How long {@link #stop()} waits for an in-flight tick before returning. */
+  static final long SHUTDOWN_AWAIT_MS = 2_000L;
+
   private final    CompactionTarget         target;
   private final    long                     intervalMs;
   // Creation gap for a normal tick. Clamped to >= 1 because Ratis reads a gap of 0 as "use the
@@ -151,6 +154,14 @@ public final class RaftLogCompactionScheduler {
     final ScheduledExecutorService current = executor;
     if (current != null) {
       current.shutdownNow();
+      // Briefly await termination so a tick already inside a snapshot request (which carries a 30s Ratis
+      // timeout) finishes before RaftHAServer.stop() tears Ratis down. Re-entry is already blocked by the
+      // shutdownRequested check, so this only avoids a spurious WARNING from a request racing the teardown.
+      try {
+        current.awaitTermination(SHUTDOWN_AWAIT_MS, TimeUnit.MILLISECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
       executor = null;
     }
   }
@@ -244,9 +255,9 @@ public final class RaftLogCompactionScheduler {
 
     if (pressure && shouldWarnAboutDiskPressure())
       LogManager.instance().log(this, Level.WARNING,
-          "Raft storage '%s' is low on space: %d of %d bytes free (below %d%%). Forcing snapshot and log purge. "
-              + "Raft storage must be sized for the log, not just the databases - see arcadedb.ha.snapshotInterval "
-              + "and arcadedb.ha.snapshotThreshold",
+          "Raft storage '%s' is low on space: %d of %d bytes free (below arcadedb.ha.raftStorageMinFreeSpacePerc=%d%%). "
+              + "Forcing snapshot and log purge. Raft storage must be sized for the log, not just the databases - "
+              + "see arcadedb.ha.snapshotInterval and arcadedb.ha.snapshotThreshold",
           target.getRaftStorageDescription(), usable, total, minFreeSpacePerc);
 
     return pressure;
