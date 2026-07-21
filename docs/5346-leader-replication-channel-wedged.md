@@ -1,0 +1,141 @@
+# Issue #5346 - leader's replication channel to a re-IP'd follower stays permanently dead
+
+## Symptom
+
+On a 3-node Kubernetes Raft cluster a follower (`server-2`) was recreated with a new pod IP. It rejoined
+membership cleanly, but the leader never delivered a single `AppendEntries` to it (`matchIndex = -1`) for
+5.5+ minutes. The leader ran all 5 in-process replication-channel resets
+(`arcadedb.ha.peerChannelResetDuration`) and never recovered the channel. DNS from the leader resolved to
+the follower's new IP and TCP to the Raft port was open the whole time, so this was not stale DNS and not
+an L3/L4 reachability failure. Only restarting the leader process fixed it: the new leader built a fresh
+appender, shipped a snapshot, and the follower reached `lag = 0` within seconds.
+
+## Root cause
+
+Two distinct defects in the leader-side channel-recovery path, both in `ha-raft`.
+
+### 1. Exhausting the reset budget is a dead end
+
+`ClusterMonitor.trackUnreachableForChannelReset` fires one reset per `peerChannelResetDurationMs` up to
+`CHANNEL_RESET_MAX_ATTEMPTS` (5). When the budget is exhausted it sets `channelResetGaveUp = true`, logs a
+single SEVERE line telling the operator to transfer leadership, and then does nothing else - forever.
+
+The streak only re-arms when the follower becomes reachable again. For a genuinely wedged channel that
+never happens, so the leader stays in the given-up state until the process is restarted. The log message
+already prescribes the correct remedy (`transfer leadership to that follower's healthy peer to rebuild the
+appender`) and `RaftHAServer` already has every piece needed to perform it - `selectStepDownTargets` and
+`transferLeadership(String, long)` - but nothing wires the two together. The automated 5-attempt recovery
+therefore gives the operator false confidence while leaving a manual leader restart as the only real fix.
+
+### 2. The reset itself is fire-and-forget, and runs on the lag-monitor thread
+
+`RaftHAServer.resetPeerReplicationChannel` calls Ratis `PeerProxyMap.resetProxy(peerId)`, which closes and
+drops the cached channel. Rebuilding is **lazy**: a fresh channel is only created when the appender next
+calls `getProxy(peerId)`. If the peer's `GrpcLogAppender` daemon is itself wedged, no send is ever
+attempted, so no new channel is ever created and the reset is silently a no-op that still burns one of the
+five attempts. This is consistent with the reported incident, where connectivity was demonstrably healthy
+yet no append ever landed.
+
+The reset also ran inline on the single lag-monitor thread, and logged nothing an operator could use to
+tell whether re-resolution actually took effect.
+
+## Fix
+
+Scoped to the two items above, which correspond to suggestions 1 and 2 in the issue.
+
+1. **Automatic escalation (`ClusterMonitor` + `RaftHAServer`).** `ClusterMonitor` gained an optional
+   `exhaustedPeerChannelHandler`, invoked exactly once per unreachable streak at the moment the reset
+   budget is exhausted. `RaftHAServer.escalateWedgedPeerChannel` implements it: it picks a healthy
+   step-down target (reusing `selectStepDownTargets`, explicitly excluding the wedged follower) and
+   transfers leadership to it, which rebuilds the appender on the new leader - the exact remedy the old
+   log line only suggested. When no healthy candidate exists it falls back to the previous
+   operator-intervention log rather than flapping the cluster.
+
+2. **Off-thread reset with resolved-address logging.** The `resetProxy` call and the new escalation both
+   run on the existing bounded single-thread recovery executor instead of the lag-monitor thread, so
+   neither DNS resolution nor a 10 s leadership transfer can stall replica monitoring. The reset path now
+   logs the peer's resolved IP addresses before and after the reset, so an operator can see directly
+   whether re-resolution took effect.
+
+Gated by a new `arcadedb.ha.peerChannelResetEscalation` (Boolean, default `true`). Setting it to `false`
+restores the previous log-and-stop behaviour.
+
+### Bounding leadership churn
+
+Escalation assumes a fresh appender on a new leader recovers the channel, which held for the reported
+incident. If instead a follower is unreachable for a node-independent, permanent reason, the naive version
+flaps: `n0` escalates to `n1`, `n1` builds its own appender to the dead follower, fails, and escalates
+back to `n0`. `ClusterMonitor`'s per-streak latch cannot bound this, because `clusterMonitor.reset()`
+wipes every replica's channel state on each leadership acquisition (issue #4841), so each new leader
+arrives with a fresh budget.
+
+The bound therefore lives in `RaftHAServer`, which is node-local and is **not** reset on leadership
+change: `admitChannelEscalation` admits at most one escalation per follower per 30-minute cooldown. A
+permanently unreachable follower now costs at most one transfer per healthy peer per window, after which
+every peer refuses and the cluster settles on the operator-intervention path.
+
+### Thread-safety of the recovery path
+
+Channel recovery runs on its own single-worker `channelRecoveryExecutor`, not on the resync executor. A
+resync task blocks on HTTP to an unhealthy follower for as long as the connect timeout, and channel
+recovery queued behind it would be delayed by exactly the outage it exists to repair. Its rejection policy
+**discards with a warning** rather than `CallerRunsPolicy`: the caller is the single lag-monitor thread
+that classifies every replica, and running a blocking DNS lookup or a 10 s leadership transfer there would
+defeat the point of moving the work off-thread. A discarded reset costs nothing (the monitor retries it on
+the next interval); a discarded escalation is logged loudly since it is a one-shot.
+
+## Out of scope
+
+- Suggestion 3 (peer build/protocol version handshake on the Raft channel) is a feature, not a fix for
+  this defect, and is better tracked separately. The issue's own caveat notes the incident ran mixed
+  SNAPSHOT builds, so a handshake would have improved diagnosability but is orthogonal to the wedged
+  recovery path.
+- Suggestion 4 (`matchIndex=-1` as a first-class alert) already landed as the distinct SEVERE message
+  added by issue #5295.
+
+## Verification
+
+- `ClusterMonitorTest` - new deterministic clock-driven tests covering escalation on budget exhaustion,
+  fire-once-per-streak, re-arm after the follower reconnects, and the disabled/absent-handler paths.
+- `RaftHAServerChannelEscalationTest` - new unit tests for the escalation target-selection seam (including
+  exclusion of the wedged follower itself) and for the cooldown, including that a no-eligible-target
+  give-up does not consume the cooldown window.
+- Full `ha-raft` module test suite: 706 tests green. Engine configuration tests: 46 green.
+
+### What is deliberately not covered by a test
+
+The core hypothesis - that a fresh appender on a new leader recovers the channel - is **not** verified by
+an automated test. Doing so needs a genuinely wedged gRPC appender, and the in-process harness
+(`BaseRaftHATest`) has no seam to wedge Ratis's internal appender. Killing or partitioning a follower does
+not reproduce the condition, because that path already recovers today; faking it would test the mock
+rather than the hypothesis. The evidence for the mechanism is that a leader restart demonstrably fixed the
+reported incident and a leadership transfer rebuilds the same appender state. The decision logic around
+it (target selection, cooldown, fire-once semantics) is unit-tested.
+
+## Review history
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5353
+
+**Cycle 1** (`249d8b6`) - both bots reviewed. Three points, all verified against the code and fixed in
+`7393935`:
+- *Leadership flapping* (claude): confirmed real. `clusterMonitor.reset()` wipes the escalation latch on
+  every leadership acquisition, so each new leader arrived with a fresh budget and a permanently
+  unreachable follower would bounce leadership between healthy peers indefinitely. Bounded by the
+  node-local 30-minute cooldown described above.
+- *`CallerRunsPolicy`* (both): confirmed real. Channel recovery moved to its own executor that never runs
+  work on the lag-monitor thread and cannot queue behind a long resync HTTP call.
+- *`extractHost` reuse* (gemini): confirmed a real bug, not just duplication - the hand-rolled
+  `lastIndexOf(':')` parser mishandles bracketed IPv6 literals.
+
+**Cycle 2** (`7393935`) - claude reviewed; gemini did not re-review. Fixed in `471a08c`:
+- *Cooldown consumed without a transfer*: confirmed real. The gate ran before target selection, so a
+  null-target give-up burned the window and the refusal message claimed a transfer that never happened.
+  Gate moved to immediately before the transfer.
+- *Dropped escalation is terminal*: the one-shot latch was badly coupled to a lossy executor. Replaced the
+  blanket discard policy with per-submitter rejection handling (dropped reset FINE, dropped escalation
+  SEVERE).
+- *Non-atomic `admitChannelEscalation`*: converted to compare-and-set so correctness does not rest on an
+  implicit single-worker invariant.
+- *Hardcoded cooldown/timeout constants*: declined. Both sit on a rare terminal recovery path, the
+  transfer timeout intentionally matches the existing `stepDown` value, and promoting a constant to a
+  config key later is non-breaking.
