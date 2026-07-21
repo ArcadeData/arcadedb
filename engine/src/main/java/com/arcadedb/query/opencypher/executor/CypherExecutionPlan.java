@@ -1791,6 +1791,7 @@ public class CypherExecutionPlan {
     if (physicalPlan == null || physicalPlan.getAnchor() == null || !physicalPlan.getAnchor().useIndex()
         || physicalPlan.getAnchor().isRangeScan() || physicalPlan.getAnchor().getIndex() == null
         || physicalPlan.getAnchor().getPropertyValue() instanceof InListValues
+        || physicalPlan.getAnchor().getIndex().getPropertyNames() == null
         || physicalPlan.getAnchor().getIndex().getPropertyNames().size() != 1)
       return false;
     if (!statement.isReadOnly() || statement.hasUnwindBeforeMatch() || statement.hasWithBeforeMatch()
