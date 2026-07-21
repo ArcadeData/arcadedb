@@ -62,7 +62,7 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
@@ -125,7 +125,7 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
         db.newDocument("TestType").set("name", "record-" + i).save();
     });
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
@@ -205,7 +205,7 @@ class Issue5326ApplyChangesPendingFlushTest extends TestHelper {
 
     db.transaction(() -> db.newDocument("TestType").set("name", "seed").save());
 
-    final int fileId = db.getSchema().getType("TestType").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("TestType").getBuckets(false).get(0).getFileId();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);

@@ -518,7 +518,7 @@ public class PageManager extends LockContext {
 
     // Successive commits can leave more than one copy pending. The most recent one is a full page image covering
     // every older one, so writing it alone puts the whole pending content on disk.
-    MutablePage mostRecent = pending.getFirst();
+    MutablePage mostRecent = pending.get(0);
     for (int i = 1; i < pending.size(); i++)
       if (pending.get(i).getVersion() > mostRecent.getVersion())
         mostRecent = pending.get(i);

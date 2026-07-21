@@ -1027,7 +1027,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
                 Map.of("id", threadId));
             final List<Record> records = result.list();
             assertThat(records).as("thread %d reads back exactly one node", threadId).hasSize(1);
-            assertThat(records.getFirst().get("id").asLong()).isEqualTo(threadId);
+            assertThat(records.get(0).get("id").asLong()).isEqualTo(threadId);
           } catch (final Throwable t) {
             errors.add(t);
           } finally {

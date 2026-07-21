@@ -39,6 +39,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -978,6 +979,70 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
             assertThat(meta.getColumnTypeName(rs.findColumn(expected.getKey()))).as("populated result set, column %s",
                 expected.getKey()).isEqualToIgnoringCase(expected.getValue());
         }
+      }
+    }
+  }
+
+  /**
+   * Issue #5367: the schema-discovery fallback used for empty result sets (the "WHERE 1=0" probe issued by
+   * Spark/PySpark and other JDBC clients) ignored the projection list and always announced every property of
+   * the type plus the system columns. The RowDescription must instead mirror what the query really projects.
+   */
+  @Test
+  void schemaProbeHonoursTheProjectionList() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE VERTEX TYPE Hero5367 IF NOT EXISTS;
+            CREATE PROPERTY Hero5367.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Hero5367.age IF NOT EXISTS INTEGER;
+            CREATE PROPERTY Hero5367.city IF NOT EXISTS STRING;
+            """);
+      }
+
+      // No rows at all: RowDescription comes from the schema-discovery fallback.
+      assertProbedColumns(conn, "SELECT name FROM Hero5367 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT age, name FROM Hero5367 WHERE 1=0", "age", "name");
+      assertProbedColumns(conn, "SELECT name AS hero FROM Hero5367 WHERE 1=0", "hero");
+      // A star projection, and the ArcadeDB "SELECT FROM" form, keep announcing every column.
+      assertProbedColumns(conn, "SELECT * FROM Hero5367 WHERE 1=0", RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY, "name", "age",
+          "city");
+      assertProbedColumns(conn, "SELECT FROM Hero5367 WHERE 1=0", RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY, "name", "age",
+          "city");
+
+      try (var st = conn.createStatement()) {
+        st.execute("INSERT INTO Hero5367 SET name = 'Valjean', age = 40, city = 'Paris'");
+      }
+
+      // Rows present: the sample-row path must apply the very same projection.
+      assertProbedColumns(conn, "SELECT name FROM Hero5367 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT name, city FROM Hero5367 WHERE 1=0", "name", "city");
+
+      // Sanity check: a projection on a non-empty result set is unaffected.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT name FROM Hero5367")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getMetaData().getColumnCount()).isEqualTo(1);
+          assertThat(rs.getString("name")).isEqualTo("Valjean");
+        }
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("DROP TYPE Hero5367 UNSAFE");
+      }
+    }
+  }
+
+  private void assertProbedColumns(final Connection conn, final String query, final String... expectedColumns)
+      throws SQLException {
+    try (var st = conn.createStatement()) {
+      try (var rs = st.executeQuery(query)) {
+        final var meta = rs.getMetaData();
+        final List<String> columns = new ArrayList<>();
+        for (int i = 1; i <= meta.getColumnCount(); i++)
+          columns.add(meta.getColumnName(i));
+        assertThat(columns).as("query: %s", query).containsExactlyInAnyOrder(expectedColumns);
       }
     }
   }
