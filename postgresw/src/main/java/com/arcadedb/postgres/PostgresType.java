@@ -187,7 +187,12 @@ public enum PostgresType {
     boolean inQuotes = false;
     for (int i = 0; i < content.length(); i++) {
       char c = content.charAt(i);
-      if (c == '"') {
+      if (c == '\\' && i + 1 < content.length()) {
+        // Inside an array literal a backslash escapes the next character, typically a quote or another
+        // backslash (issue #5366). Without this the escaped quote was read as the end of the element.
+        currentElement.append(content.charAt(++i));
+        continue;
+      } else if (c == '"') {
         inQuotes = !inQuotes;
         // Skip the quote character itself for parsing
         continue;
@@ -525,33 +530,42 @@ public enum PostgresType {
         // Format LocalDateTime as PostgreSQL-compatible timestamp in arrays
         sb.append("\"").append(ldt.format(POSTGRES_DATETIME_FORMATTER)).append("\"");
       } else if (element instanceof Binary binary) {
-        sb.append(binary.getString());
+        appendQuoted(sb, binary.getString());
       } else if (element instanceof Collection<?> subCollection) {
         // A nested list is carried as a JSON document (issue #5365): the column is advertised as json[], so the
         // element must be a quoted JSON array. Emitting a nested "{...}" literal instead made the announced OID
         // and the payload disagree, and clients re-parsed the inner braces as a second array dimension.
-        sb.append("\"").append(new JSONArray(subCollection).toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, new JSONArray(subCollection).toString());
       } else if (element.getClass().isArray()) {
-        sb.append("\"").append(new JSONArray(convertPrimitiveArrayToCollection(element)).toString().replace("\"", "\\\""))
-            .append("\"");
+        appendQuoted(sb, new JSONArray(convertPrimitiveArrayToCollection(element)).toString());
       } else if (element instanceof Result result) {
-        sb.append("\"").append(result.toJSON().toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, result.toJSON().toString());
       } else if (element instanceof JSONObject json) {
-        sb.append("\"").append(json.toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, json.toString());
       } else if (element instanceof Map<?, ?> map) {
-        sb.append("\"").append(new JSONObject((Map<String, ?>) map).toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, new JSONObject((Map<String, ?>) map).toString());
       } else if (element instanceof Record record) {
-        sb.append("\"").append(record.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, record.toJSON(true).toString());
       } else if (element instanceof EmbeddedDocument embeddedDocument) {
-        sb.append("\"").append(embeddedDocument.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, embeddedDocument.toJSON(true).toString());
       } else if (element instanceof String str) {
-        sb.append("\"").append(str.replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, str);
       } else {
         sb.append(element == null ? "NULL" : element.toString());
       }
     }
     sb.append("}");
     return sb.toString();
+  }
+
+  /**
+   * Appends a value as a double-quoted element of a Postgres array literal. Inside the quotes both the
+   * backslash and the double quote must be escaped, in that order (issue #5366): escaping only the quote left a
+   * backslash in the data acting as an escape character, so "C:\temp" reached the client as "C:temp" and a
+   * nested JSON document could be truncated in the middle.
+   */
+  private static void appendQuoted(final StringBuilder sb, final String value) {
+    sb.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
   }
 
   /**

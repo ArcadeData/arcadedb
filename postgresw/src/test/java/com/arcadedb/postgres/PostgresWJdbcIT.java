@@ -805,6 +805,95 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   /**
+   * Issue #5366: an embedded document carrying its own list must survive the array literal. Elements of a json[]
+   * column are double-quoted, so the JSON has to be escaped with the array-literal rules ("\" and """), not only
+   * for the quote character.
+   */
+  @Test
+  void embeddedListWithNestedListIsParseable() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Product IF NOT EXISTS;
+            CREATE PROPERTY Product.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Product.embedded_list IF NOT EXISTS LIST OF Product;
+
+            CREATE VERTEX TYPE Supplier IF NOT EXISTS;
+            CREATE PROPERTY Supplier.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Supplier.certifications IF NOT EXISTS LIST;
+            CREATE PROPERTY Supplier.embedded IF NOT EXISTS EMBEDDED OF Product;
+            CREATE PROPERTY Supplier.embedded_list IF NOT EXISTS LIST OF Product;
+
+            INSERT INTO Supplier (name, certifications, embedded, embedded_list) VALUES ('Berlin Sensors GmbH', ['ISO-9001,RoHS'], { "@type": "Product", "name": "CPU"}, [{ "@type": "Product", "name": "CPU", "embedded_list": [{ "@type": "Product", "name": "transistor"}]}]);
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Supplier")) {
+          assertThat(rs.next()).isTrue();
+
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("_json");
+
+          final Object[] elements = (Object[]) rs.getArray("embedded_list").getArray();
+          assertThat(elements).hasSize(1);
+
+          final JSONObject product = new JSONObject(elements[0].toString());
+          assertThat(product.getString("name")).isEqualTo("CPU");
+
+          // The list nested inside the embedded document must still be a JSON array of objects.
+          final JSONArray nested = product.getJSONArray("embedded_list");
+          assertThat(nested.length()).isEqualTo(1);
+          assertThat(nested.getJSONObject(0).getString("name")).isEqualTo("transistor");
+
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5366: quotes and backslashes inside array elements must be escaped with the array-literal rules.
+   * Escaping only the quote left a dangling backslash that truncated the element.
+   */
+  @Test
+  void arrayElementsWithQuotesAndBackslashesRoundTrip() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Note IF NOT EXISTS;
+            CREATE PROPERTY Note.name IF NOT EXISTS STRING;
+
+            CREATE DOCUMENT TYPE Doc IF NOT EXISTS;
+            CREATE PROPERTY Doc.tags IF NOT EXISTS LIST OF STRING;
+            CREATE PROPERTY Doc.notes IF NOT EXISTS LIST OF Note;
+            """);
+      }
+
+      try (var st = conn.prepareStatement("INSERT INTO Doc SET tags = ?, notes = [{ \"@type\": \"Note\", \"name\": ? }]")) {
+        st.setString(1, "say \"hi\" C:\\temp");
+        st.setString(2, "say \"hi\" C:\\temp");
+        st.execute();
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Doc")) {
+          assertThat(rs.next()).isTrue();
+
+          assertThat((Object[]) rs.getArray("tags").getArray()).containsExactly("say \"hi\" C:\\temp");
+
+          final Object[] notes = (Object[]) rs.getArray("notes").getArray();
+          assertThat(notes).hasSize(1);
+          assertThat(new JSONObject(notes[0].toString()).getString("name")).isEqualTo("say \"hi\" C:\\temp");
+
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
+  /**
    * Issue #5311: an ARRAY_OF_SHORTS property made the whole query fail. The value path's array switch had no
    * short[]/Short[] case, so it reached its throwing default and the client got an error instead of rows.
    */
