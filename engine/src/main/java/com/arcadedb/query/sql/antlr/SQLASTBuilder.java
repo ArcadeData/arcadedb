@@ -4199,12 +4199,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             item.setAlias(baseExpr.identifier.suffix.identifier.getValue());
             // Set the modifier chain
             item.modifier = baseExpr.modifier;
-          } else {
-            // Fallback: use string representation
-            final StringBuilder sb = new StringBuilder();
-            baseExpr.toString(Collections.emptyMap(), sb);
-            item.setAlias(sb.toString());
           }
+          // else: a non-identifier base with modifiers (e.g. ORDER BY both().size()) - the alias/recordAttr/
+          // modifier fields stay null and the tail below stores the FULL expression. Collapsing it to its
+          // string representation as an alias made every sort key resolve to a non-existent property (null),
+          // silently returning the rows unsorted.
         } else if (baseExpr.identifier != null) {
           // No modifiers - try simple identifier extraction
           final SuffixIdentifier suffix = baseExpr.identifier.suffix;
