@@ -18,6 +18,7 @@
  */
 package com.arcadedb.test.support;
 
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -103,6 +104,45 @@ public class DatabaseWrapper {
 
   public void close() {
     db.close();
+  }
+
+  // Under HA load the write target is often a follower that periodically installs a Raft snapshot or is
+  // catching up; while it does, the server deflects requests with a retry-worthy 503 ("installing a
+  // snapshot"/"not caught up"). The HTTP client already retries these for a few seconds, but a long install
+  // can exceed that budget, and the gRPC client does not retry at all. Retry the whole operation here so a
+  // transient HA condition never turns into a lost write. Idempotent: the 503 is a pre-execution deflection,
+  // so nothing was committed, and re-using the same id re-inserts the intended record (a genuine duplicate
+  // would surface as a non-transient DuplicatedKeyException and stop the retry).
+  private static final int  MAX_TRANSIENT_RETRIES   = 60;
+  private static final long TRANSIENT_RETRY_DELAY_MS = 500;
+
+  private void executeWithRetry(final Runnable action) {
+    for (int attempt = 0; ; attempt++) {
+      try {
+        action.run();
+        return;
+      } catch (final RuntimeException e) {
+        if (attempt >= MAX_TRANSIENT_RETRIES || !isTransientHaUnavailability(e))
+          throw e;
+        try {
+          TimeUnit.MILLISECONDS.sleep(TRANSIENT_RETRY_DELAY_MS);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+      }
+    }
+  }
+
+  private static boolean isTransientHaUnavailability(final Throwable e) {
+    for (Throwable t = e; t != null; t = t.getCause()) {
+      if (t instanceof NeedRetryException)
+        return true;
+      final String m = t.getMessage();
+      if (m != null && (m.contains("installing a snapshot") || m.contains("please retry") || m.contains("httpErrorCode=503")))
+        return true;
+    }
+    return false;
   }
 
   public void createDatabase() {
@@ -239,17 +279,14 @@ public class DatabaseWrapper {
     for (int userIndex = 1; userIndex <= numberOfUsers; userIndex++) {
       int userId = idSupplier.get();
       try {
-        usersTimer.record(() -> {
-              db.command("sqlscript",
-                  """
-                      BEGIN;
-                      LOCK TYPE User;
-                      CREATE VERTEX User SET id = ?;
-                      COMMIT RETRY 30;
-                      """, userId);
-            }
-
-        );
+        usersTimer.record(() -> executeWithRetry(() ->
+            db.command("sqlscript",
+                """
+                    BEGIN;
+                    LOCK TYPE User;
+                    CREATE VERTEX User SET id = ?;
+                    COMMIT RETRY 30;
+                    """, userId)));
 
         addPhotosOfUser(userId, numberOfPhotos);
 
@@ -287,17 +324,15 @@ public class DatabaseWrapper {
           COMMIT RETRY 30;
           """;
       try {
-        photosTimer.record(() -> {
-              db.command("sqlscript", sqlScript,
-                  Map.of("userId", userId,
-                      "photoId", photoId,
-                      "photoName", photoName,
-                      "description", description,
-                      "tag1", tag1,
-                      "tag2", tag2,
-                      "location", location));
-            }
-        );
+        photosTimer.record(() -> executeWithRetry(() ->
+            db.command("sqlscript", sqlScript,
+                Map.of("userId", userId,
+                    "photoId", photoId,
+                    "photoName", photoName,
+                    "description", description,
+                    "tag1", tag1,
+                    "tag2", tag2,
+                    "location", location))));
 
       } catch (Exception e) {
         Metrics.counter("arcadedb.test.inserted.photos.error").increment();
@@ -375,16 +410,14 @@ public class DatabaseWrapper {
    */
   public void addFriendship(int userId1, int userId2) {
     try {
-      friendshipTimer.record(() -> {
-            db.command("sqlscript",
-                """
-                    BEGIN;
-                    LOCK TYPE User, FriendOf;
-                    CREATE EDGE FriendOf FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?);
-                    COMMIT RETRY 30;
-                    """, userId1, userId2);
-          }
-      );
+      friendshipTimer.record(() -> executeWithRetry(() ->
+          db.command("sqlscript",
+              """
+                  BEGIN;
+                  LOCK TYPE User, FriendOf;
+                  CREATE EDGE FriendOf FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM User WHERE id = ?);
+                  COMMIT RETRY 30;
+                  """, userId1, userId2)));
 
     } catch (Exception e) {
       Metrics.counter("arcadedb.test.inserted.friendship.error").increment();
@@ -394,16 +427,14 @@ public class DatabaseWrapper {
 
   public void addLike(int userId, int photoId) {
     try {
-      likeTimer.record(() -> {
-            db.command("sqlscript",
-                """
-                    BEGIN;
-                    LOCK TYPE User, Photo, Likes;
-                    CREATE EDGE Likes FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM Photo WHERE id = ?);
-                    COMMIT RETRY 30;
-                    """, userId, photoId);
-          }
-      );
+      likeTimer.record(() -> executeWithRetry(() ->
+          db.command("sqlscript",
+              """
+                  BEGIN;
+                  LOCK TYPE User, Photo, Likes;
+                  CREATE EDGE Likes FROM (SELECT FROM User WHERE id = ?) TO (SELECT FROM Photo WHERE id = ?);
+                  COMMIT RETRY 30;
+                  """, userId, photoId)));
 
     } catch (Exception e) {
       Metrics.counter("arcadedb.test.inserted.like.error").increment();

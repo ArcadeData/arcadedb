@@ -231,6 +231,15 @@ public class RemoteHttpComponent extends RWLockContext {
     if (maxRetry < 1)
       maxRetry = 1;
 
+    // Transient HA unavailability (election in progress, a follower installing a snapshot or not yet caught
+    // up - all surfaced as NeedRetryException) has its OWN retry budget, independent of maxRetry. maxRetry
+    // governs IO-error/failover attempts and is 1 for a FIXED connection (the default), which must NOT cap
+    // the retries the server explicitly asked for via a retry-worthy 503. The loop is allowed to run for the
+    // larger of the two budgets; each catch enforces its own bound (IO breaks at maxRetry, NeedRetry at
+    // maxElectionRetries), so widening the loop never over-retries either kind.
+    final int maxElectionRetries = this instanceof RemoteDatabase db ? db.getElectionRetryCount() : 3;
+    final int loopBound = Math.max(maxRetry, maxElectionRetries + 1);
+
     Pair<String, Integer> connectToServer;
     if (connectionStrategy == CONNECTION_STRATEGY.FIXED)
       connectToServer = new Pair<>(originalServer, originalPort);
@@ -241,7 +250,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
     String server = null;
 
-    for (int retry = 0; retry < maxRetry && connectToServer != null; ++retry) {
+    for (int retry = 0; retry < loopBound && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
       String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
 
@@ -379,10 +388,11 @@ public class RemoteHttpComponent extends RWLockContext {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
       } catch (final NeedRetryException e) {
-        // Election in progress - retry with delay.
-        final int maxElectionRetries = this instanceof RemoteDatabase db ? db.getElectionRetryCount() : 3;
+        // Transient HA unavailability (election in progress, follower installing a snapshot / not yet caught
+        // up) - retry on the same server with delay, bounded by its own election budget rather than maxRetry
+        // (which is 1 for a FIXED connection and would otherwise defeat the server's retry-worthy 503).
         final long delayMs = this instanceof RemoteDatabase db ? db.getElectionRetryDelayMs() : 2000L;
-        if (retry + 1 >= maxRetry || retry >= maxElectionRetries) {
+        if (retry >= maxElectionRetries) {
           lastException = e;
           break;
         }
@@ -393,7 +403,7 @@ public class RemoteHttpComponent extends RWLockContext {
           throw new RemoteException("Request interrupted during election retry", ie);
         }
         LogManager.instance().log(this, Level.WARNING,
-            "Election in progress, retrying after %dms (retry=%d/%d)...", null, delayMs, retry, maxRetry);
+            "Transient HA unavailability, retrying after %dms (retry=%d/%d)...", null, delayMs, retry, maxElectionRetries);
       } catch (final RuntimeException e) {
         // Propagate any RuntimeException unchanged (issue #4580): a callback-side bug (e.g. NPE), a
         // malformed-response RemoteException, or a typed ArcadeDB exception (DuplicatedKeyException,
@@ -703,6 +713,15 @@ public class RemoteHttpComponent extends RWLockContext {
       // RETRY
       return new RemoteException("Empty payload received");
     }
+
+    // HTTP 503 Service Unavailable is, by this server's status-code contract, a transient retry-worthy
+    // condition: a node installing a Raft snapshot, not yet caught up, or momentarily unable to execute -
+    // as opposed to 409, which the server reserves for "do not retry" conflicts (committed-remotely,
+    // duplicate key). Some of these 503s carry no typed exception name (notably the snapshot-install
+    // deflection), so they reach here rather than the typed branches above. Surface them as a retryable
+    // NeedRetryException so httpCommand retries instead of losing the operation with a hard RemoteException.
+    if (response.statusCode() == 503)
+      return new NeedRetryException(reason != null ? reason : detail != null ? detail : "Server temporarily unavailable, please retry");
 
     return new RemoteException(
         "Error on executing remote command '" + operation + "' (httpErrorCode=" + response.statusCode()

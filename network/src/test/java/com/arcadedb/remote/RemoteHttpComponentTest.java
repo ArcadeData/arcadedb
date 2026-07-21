@@ -49,6 +49,7 @@ import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -584,6 +585,32 @@ class RemoteHttpComponentTest {
   }
 
   @Test
+  void manageExceptionSnapshotInstall503IsRetryable() {
+    // The snapshot-install deflection replies 503 with an "error" reason but NO typed exception field, so it
+    // must still be classified as a retryable NeedRetryException rather than a hard RemoteException.
+    final JSONObject json = new JSONObject();
+    json.put("error", "Server is installing a snapshot, please retry");
+
+    final HttpResponse<String> response = createMockResponse(503, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+    assertThat(result.getMessage()).isEqualTo("Server is installing a snapshot, please retry");
+  }
+
+  @Test
+  void manageExceptionGeneric503IsRetryable() {
+    // Any bare 503 (readiness: not yet joined / not caught up) is retry-worthy by the server's contract.
+    final JSONObject json = new JSONObject();
+    json.put("error", "Node has not yet joined the Raft group");
+
+    final HttpResponse<String> response = createMockResponse(503, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+  }
+
+  @Test
   void manageExceptionServerIsNotTheLeaderNoDot() {
     final JSONObject json = new JSONObject();
     json.put("exception", ServerIsNotTheLeaderException.class.getName());
@@ -914,6 +941,62 @@ class RemoteHttpComponentTest {
         c.close();
       }
     });
+  }
+
+  /**
+   * A follower installing a Raft snapshot deflects with a retry-worthy 503. Even on a FIXED connection
+   * (maxRetry == 1, the default), the client must honour that transient and retry on the same server rather
+   * than surfacing a hard error that loses the write. The one-shot server replies 503 then 200 on the retry.
+   */
+  @Test
+  void httpCommandRetriesTransient503ThenSucceeds() throws Exception {
+    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+      final int port = serverSocket.getLocalPort();
+      final AtomicInteger requests = new AtomicInteger();
+
+      final Thread serverThread = new Thread(() -> {
+        try {
+          for (int i = 0; i < 2; i++) {
+            final Socket client = serverSocket.accept();
+            final InputStream in = client.getInputStream();
+            final byte[] buf = new byte[8192];
+            int total = 0;
+            while (total < buf.length) {
+              final int n = in.read(buf, total, buf.length - total);
+              if (n < 0)
+                break;
+              total += n;
+              if (new String(buf, 0, total, StandardCharsets.ISO_8859_1).contains("\r\n\r\n"))
+                break;
+            }
+            final boolean first = requests.getAndIncrement() == 0;
+            final String body = first ? "{\"error\":\"Server is installing a snapshot, please retry\"}" : "{}";
+            final String statusLine = first ? "503 Service Unavailable" : "200 OK";
+            final byte[] b = body.getBytes(StandardCharsets.UTF_8);
+            final byte[] header = ("HTTP/1.1 " + statusLine + "\r\nContent-Type: application/json\r\nContent-Length: " + b.length
+                + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1);
+            client.getOutputStream().write(header);
+            client.getOutputStream().write(b);
+            client.getOutputStream().flush();
+            client.close();
+          }
+        } catch (final Exception ignored) {
+          // best-effort: the assertions cover the client side
+        }
+      });
+      serverThread.setDaemon(true);
+      serverThread.start();
+
+      final TestableRemoteHttpComponent c = new TestableRemoteHttpComponent("127.0.0.1", port, "root", "test");
+      c.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+      try {
+        final Object result = c.httpCommand("GET", null, "server", null, null, null, false, true, (response, json) -> json);
+        assertThat(result).isNotNull();
+        assertThat(requests.get()).isEqualTo(2);
+      } finally {
+        c.close();
+      }
+    }
   }
 
   @FunctionalInterface
