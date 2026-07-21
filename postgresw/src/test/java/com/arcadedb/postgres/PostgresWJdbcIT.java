@@ -740,6 +740,71 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   /**
+   * Issue #5365: a LIST whose elements are themselves collections must be advertised as json[] and its elements
+   * encoded as JSON documents. Before the fix the column was announced as text[] while the payload carried a
+   * nested "{{1,2},{3,4}}" literal, so the announced OID and the DataRow bytes disagreed.
+   */
+  @Test
+  void nestedListPropertyReportedAsJsonArray() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Sensor IF NOT EXISTS;
+            CREATE PROPERTY Sensor.matrix IF NOT EXISTS LIST;
+            CREATE PROPERTY Sensor.tags IF NOT EXISTS LIST;
+
+            INSERT INTO Sensor SET matrix = [[1,2],[3,4]], tags = ['a','b'];
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Sensor")) {
+          assertThat(rs.next()).isTrue();
+
+          // Before the fix this reported "_text" while the value was a nested array literal.
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("_json");
+          // A flat list of strings must keep reporting text[].
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
+
+          final Object[] elements = (Object[]) rs.getArray("matrix").getArray();
+          assertThat(elements).hasSize(2);
+          assertThat(new JSONArray(elements[0].toString()).toList()).containsExactly(1, 2);
+          assertThat(new JSONArray(elements[1].toString()).toList()).containsExactly(3, 4);
+
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5365: a "LIST OF LIST" property must be advertised as json[] on the schema path too, so the column
+   * keeps the same OID whether or not the result set carries a sample element.
+   */
+  @Test
+  void nestedListPropertyReportedAsJsonArrayWithoutSampleElement() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Sensor IF NOT EXISTS;
+            CREATE PROPERTY Sensor.matrix IF NOT EXISTS LIST OF LIST;
+            CREATE PROPERTY Sensor.tags IF NOT EXISTS LIST OF STRING;
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Sensor WHERE 1=0")) {
+          final var meta = rs.getMetaData();
+          assertThat(meta.getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("_json");
+          assertThat(meta.getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
+        }
+      }
+    }
+  }
+
+  /**
    * Issue #5311: an ARRAY_OF_SHORTS property made the whole query fail. The value path's array switch had no
    * short[]/Short[] case, so it reached its throwing default and the client got an error instead of rows.
    */

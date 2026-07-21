@@ -1547,17 +1547,37 @@ class PostgresTypeTest {
     assertThat(result).contains("2024-05-19");
   }
 
+  /**
+   * Issue #5365: nested collections are elements of a json[] column, so each one is a quoted JSON array. The
+   * previous nested "{{1,2},{3,4}}" literal announced one dimension and carried two.
+   */
   @Test
   void serializeAsTextNestedCollections() {
     Binary buffer = new Binary();
     List<List<Integer>> list = Arrays.asList(Arrays.asList(1, 2), Arrays.asList(3, 4));
-    PostgresType.ARRAY_TEXT.serializeAsText(PostgresType.ARRAY_TEXT, buffer, list);
+    PostgresType.ARRAY_JSON.serializeAsText(PostgresType.ARRAY_JSON, buffer, list);
     buffer.flip();
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     String result = new String(data);
-    assertThat(result).isEqualTo("{{1,2},{3,4}}");
+    assertThat(result).isEqualTo("{\"[1,2]\",\"[3,4]\"}");
+  }
+
+  /**
+   * Issue #5365: a nested Java array is serialized like a nested collection, as a quoted JSON array.
+   */
+  @Test
+  void serializeAsTextNestedArrays() {
+    Binary buffer = new Binary();
+    List<int[]> list = Arrays.asList(new int[] { 1, 2 }, new int[] { 3, 4 });
+    PostgresType.ARRAY_JSON.serializeAsText(PostgresType.ARRAY_JSON, buffer, list);
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    String result = new String(data);
+    assertThat(result).isEqualTo("{\"[1,2]\",\"[3,4]\"}");
   }
 
   // ==================== isArrayType Tests ====================
@@ -1646,6 +1666,30 @@ class PostgresTypeTest {
   @Test
   void getArrayTypeForElementTypeMap() {
     assertThat(PostgresType.getArrayTypeForElementType(new HashMap<>())).isEqualTo(PostgresType.ARRAY_JSON);
+  }
+
+  /**
+   * Issue #5365: a nested collection or array is an opaque document for Postgres, which has no ragged or mixed
+   * arrays, so the enclosing list must be advertised as json[].
+   */
+  @Test
+  void getArrayTypeForElementTypeNestedCollection() {
+    assertThat(PostgresType.getArrayTypeForElementType(List.of(1, 2))).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new ArrayList<>())).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new int[] { 1, 2 })).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new String[] { "a" })).isEqualTo(PostgresType.ARRAY_JSON);
+  }
+
+  /**
+   * Issue #5365: the schema path must agree with the value path, otherwise the OID of a "LIST OF LIST" column
+   * would depend on whether the result set happens to carry a sample element.
+   */
+  @Test
+  void getTypeFromArcadeListOfListIsJsonArray() {
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "List")).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "Float[]")).isEqualTo(PostgresType.ARRAY_JSON);
+    // A list of scalars is unaffected.
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "String")).isEqualTo(PostgresType.ARRAY_TEXT);
   }
 
   @Test
