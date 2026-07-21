@@ -3014,7 +3014,8 @@ function executeCommand(language, query) {
 let globalCommandProgressTimer = null;
 
 function startCommandProgressMonitor(database, command) {
-  if (!/^\s*check\s+database/i.test(command)) return;
+  // The maintenance commands that publish live progress in the operation registry (issues #5372, #5376).
+  if (!/^\s*(check\s+database|rebuild\s+index|compact\s+index|backup\s+database|import\s+database)/i.test(command)) return;
 
   stopCommandProgressMonitor();
 

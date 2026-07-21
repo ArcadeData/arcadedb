@@ -27,6 +27,8 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -133,21 +135,36 @@ public class RebuildIndexStatement extends DDLStatement {
     };
 
     String indexName = null;
+    // PUBLISH LIVE PROGRESS (issue #5376): one step per index, per-record progress inside each build, pollable
+    // via the progress HTTP endpoint, the console and Studio. Always retired in the finally.
+    final OperationProgress progress = OperationProgressRegistry.instance().register(database.getName(), "rebuild index");
     try {
       final List<String> indexList = new ArrayList<>();
 
+      final List<Index> targetIndexes = new ArrayList<>();
       if (all) {
-        for (final Index idx : database.getSchema().getIndexes()) {
-          if (idx.isAutomatic() && !(idx instanceof TypeIndex)) {
-            indexName = idx.getName();
-            buildIndex(maxAttempts, database, callback, idx, batchSize);
-            indexList.add(idx.getName());
-          }
-        }
-      } else {
-        final Index idx = database.getSchema().getIndexByName(name.getValue());
+        for (final Index idx : database.getSchema().getIndexes())
+          if (idx.isAutomatic() && !(idx instanceof TypeIndex))
+            targetIndexes.add(idx);
+      } else
+        targetIndexes.add(database.getSchema().getIndexByName(name.getValue()));
+
+      int stepIndex = 0;
+      for (final Index idx : targetIndexes) {
         indexName = idx.getName();
-        buildIndex(maxAttempts, database, callback, idx, batchSize);
+        ++stepIndex;
+        final int step = stepIndex;
+        final String stepName = "Rebuilding index '" + idx.getName() + "'";
+        final long recordsTotal = idx.getTypeName() != null ? database.countType(idx.getTypeName(), false) : -1L;
+        progress.onProgress(stepName, step, targetIndexes.size(), 0, recordsTotal);
+
+        final Index.BuildIndexCallback progressCallback = (document, totalIndexed) -> {
+          callback.onDocumentIndexed(document, totalIndexed);
+          if ((totalIndexed & 1023) == 0) // THROTTLED: five volatile writes every 1024 records
+            progress.onProgress(stepName, step, targetIndexes.size(), totalIndexed, recordsTotal);
+        };
+
+        buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
         indexList.add(idx.getName());
       }
       result.setProperty("indexes", indexList);
@@ -175,6 +192,8 @@ public class RebuildIndexStatement extends DDLStatement {
       throw new IndexException(
           "Error on rebuilding index '" + (indexName != null ? indexName : name.getValue()) + "' (error=" + e.getMessage() + ")",
           e);
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
 
     // SUCCESS

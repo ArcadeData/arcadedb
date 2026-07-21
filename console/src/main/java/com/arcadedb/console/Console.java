@@ -810,10 +810,21 @@ public class Console {
    * not applicable (not a monitored command, or the output is redirected to an embedding application).
    * Polling is best-effort: any failure silently stops the rendering, never the command.
    */
+  /** The maintenance commands that publish live progress in the operation registry (issues #5372, #5376). */
+  private static final String[] PROGRESS_MONITORED_COMMANDS = { "check database", "rebuild index", "compact index",
+      "backup database", "import database" };
+
   private Thread startProgressMonitor(final String line) {
     if (output != null || verboseLevel < 2)
       return null;
-    if (!line.trim().toLowerCase(Locale.ENGLISH).startsWith("check database"))
+    final String normalized = line.trim().toLowerCase(Locale.ENGLISH);
+    boolean monitored = false;
+    for (final String command : PROGRESS_MONITORED_COMMANDS)
+      if (normalized.startsWith(command)) {
+        monitored = true;
+        break;
+      }
+    if (!monitored)
       return null;
 
     progressMonitorStopped = false;

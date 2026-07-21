@@ -23,6 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -58,6 +60,12 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     if (this.url != null)
       result.setProperty("fromUrl", this.url.getUrlString());
 
+    // PUBLISH LIVE PROGRESS (issue #5376): the importer runs behind a reflective boundary (integration
+    // module) and its record total is unknown upfront, so only the coarse operation is published - visible in
+    // the progress endpoint, console and Studio while it runs. Always retired in the finally.
+    final OperationProgress progress = OperationProgressRegistry.instance()
+        .register(context.getDatabase().getName(), "import database");
+    progress.onProgress("Importing database", 1, 1, 0, -1);
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
       // Use the outermost database wrapper (e.g. RaftReplicatedDatabase in HA mode) so that
@@ -93,6 +101,8 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
         result.setProperty("result", "FAIL");
       else
         throw new CommandExecutionException("Error on importing database", e.getTargetException());
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
 
     result.setProperty("result", "OK");
