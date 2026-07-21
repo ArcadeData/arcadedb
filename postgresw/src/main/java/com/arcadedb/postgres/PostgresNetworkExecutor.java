@@ -41,6 +41,10 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -888,7 +892,7 @@ public class PostgresNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.INFO,
               "PSQL: getColumnsFromQuerySchema('%s') -> type=%s, sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
               query, typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().threadId());
-        return cols;
+        return applyProjection(query, cols);
       }
 
       // If no rows exist, fall back to schema-defined properties
@@ -909,12 +913,74 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
 
-      return columns;
+      return applyProjection(query, columns);
 
     } catch (Exception e) {
       if (DEBUG)
         LogManager.instance().log(this, Level.WARNING, "PSQL: failed to get columns from schema for query '%s': %s",
             query, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Narrows the columns discovered for the queried type down to what the query really projects. The discovery
+   * above always looks at the whole type (a sample row or the declared properties), so without this step a
+   * probe like {@code SELECT name FROM Character WHERE 1=0} would advertise every property plus the system
+   * columns (issue #5367). The projection is taken from the parsed statement instead of the raw text so
+   * aliases, functions and expressions are handled the same way the executor handles them. When the query has
+   * no projection ({@code SELECT FROM Type}) or cannot be parsed, the full column set is returned unchanged.
+   */
+  private Map<String, PostgresType> applyProjection(final String query, final Map<String, PostgresType> columns) {
+    if (columns == null || columns.isEmpty())
+      return columns;
+
+    final Projection projection = parseProjection(query);
+    if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
+      return columns;
+
+    final Map<String, PostgresType> projected = new LinkedHashMap<>();
+    for (final ProjectionItem item : projection.getItems()) {
+      if (item.isAll()) {
+        // "*" expands to every column discovered for the type
+        projected.putAll(columns);
+        continue;
+      }
+
+      final String alias = item.getProjectionAliasAsString();
+      if (alias == null)
+        // cannot tell what this item produces: rather than announce a wrong set, keep the full one
+        return columns;
+
+      if (item.exclude) {
+        projected.remove(alias);
+        continue;
+      }
+
+      // resolve the type from the projected expression when it is a plain property, else from the alias itself
+      final String source = item.getExpression() != null ? item.getExpression().toString() : null;
+      PostgresType type = source != null ? columns.get(source) : null;
+      if (type == null)
+        type = columns.getOrDefault(alias, PostgresType.VARCHAR);
+
+      projected.put(alias, type);
+    }
+
+    return projected.isEmpty() ? columns : projected;
+  }
+
+  /**
+   * Returns the projection of a SELECT statement, or null when the query is not a parsable SELECT.
+   */
+  private Projection parseProjection(final String query) {
+    try {
+      final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+      final Statement statement = sqlEngine.parse(query, (DatabaseInternal) database);
+      return statement instanceof SelectStatement select ? select.getProjection() : null;
+    } catch (final Exception e) {
+      if (DEBUG)
+        LogManager.instance().log(this, Level.WARNING, "PSQL: cannot parse the projection of query '%s': %s", query,
+            e.getMessage());
       return null;
     }
   }
