@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Example Log4j2 configuration for an application that EMBEDS ArcadeDB.
+
+  ArcadeDB logs through the SLF4J facade when the SLF4J logger is selected with
+  -Darcadedb.log.impl=slf4j. To route those logs through Log4j2, put these on the classpath:
+      org.apache.logging.log4j:log4j-slf4j2-impl        (SLF4J 2.x binding -> Log4j2)
+      org.apache.logging.log4j:log4j-core
+      org.apache.logging.log4j:log4j-layout-template-json  (only for the JSON layout below)
+  and place this file as `log4j2.xml` on the classpath.
+
+  - ArcadeDB loggers are named after the emitting class (com.arcadedb.*).
+  - Per-request correlation is published to the SLF4J MDC, which Log4j2 exposes as the
+    ThreadContext map; reference it with %X{key}:
+      arcadedb.requestId, arcadedb.database, arcadedb.traceId, arcadedb.spanId
+
+  This example reproduces the two formats ArcadeDB offers natively on the JUL logger:
+  an ANSI-coloured console (Console) and a structured JSON console (Json).
+-->
+<Configuration status="WARN">
+  <Properties>
+    <!-- Destination folder for log files. Override with -Darcadedb.logs.dir=/path; defaults to
+         ./logs. This is the SLF4J-backend equivalent of the native `arcadedb.server.logsDirectory`. -->
+    <Property name="LOG_DIR">${sys:arcadedb.logs.dir:-logs}</Property>
+  </Properties>
+
+  <Appenders>
+    <!-- Human-readable, ANSI-coloured console (equivalent to the native "text" format). -->
+    <Console name="Console" target="SYSTEM_OUT">
+      <PatternLayout disableAnsi="false"
+                     pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight{%-5level} [%t] %style{%logger{36}}{cyan} %X{arcadedb.requestId} %X{arcadedb.database} - %msg%n"/>
+    </Console>
+
+    <!-- Structured JSON console (requires log4j-layout-template-json). The ECS template includes
+         the ThreadContext/MDC (arcadedb.* keys). -->
+    <Console name="Json" target="SYSTEM_OUT">
+      <JsonTemplateLayout eventTemplateUri="classpath:EcsLayout.json"/>
+    </Console>
+
+    <!-- Rolling file in ${LOG_DIR}: one file per day, kept for 7 days, compressed on roll. -->
+    <RollingFile name="File" fileName="${LOG_DIR}/arcadedb.log"
+                 filePattern="${LOG_DIR}/arcadedb-%d{yyyy-MM-dd}.log.gz">
+      <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%t] %logger{36} %X{arcadedb.requestId} %X{arcadedb.database} - %msg%n"/>
+      <Policies>
+        <TimeBasedTriggeringPolicy/>
+      </Policies>
+      <DefaultRolloverStrategy max="7"/>
+    </RollingFile>
+  </Appenders>
+
+  <Loggers>
+    <!-- Tune ArcadeDB verbosity here. -->
+    <Logger name="com.arcadedb" level="INFO"/>
+
+    <Root level="WARN">
+      <AppenderRef ref="Console"/>
+      <!-- Add file output, and/or swap Console for structured JSON:
+      <AppenderRef ref="File"/>
+      <AppenderRef ref="Json"/>
+      -->
+    </Root>
+  </Loggers>
+</Configuration>
