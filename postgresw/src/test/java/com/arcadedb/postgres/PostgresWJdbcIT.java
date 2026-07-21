@@ -141,10 +141,12 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
         var rs = st.executeQuery("{sql}select from schema:types");
         while (rs.next()) {
-          if (rs.getArray("properties").getResultSet().next()) {
-            ResultSet props = rs.getArray("properties").getResultSet();
-            assertThat(props.next()).isTrue();
-            assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("LONG");
+          // A list of documents travels as a json array, a map as a json object (issue #5366).
+          final String properties = rs.getString("properties");
+          if (properties.startsWith("[")) {
+            final JSONArray props = new JSONArray(properties);
+            if (!props.isEmpty())
+              assertThat(props.getJSONObject(0).getString("type")).isEqualTo("LONG");
           }
         }
 
@@ -577,10 +579,11 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         try (var rs = st.executeQuery("SELECT * FROM article ORDER BY id")) {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getString("title")).isEqualTo("My first article");
-          //comments is an array of embedded docs on first row
-          ResultSet comments = rs.getArray("comment").getResultSet();
-          assertThat(comments.next()).isTrue();
-          assertThat(new JSONObject(comments.getString("value")).getString("content")).isEqualTo("This is a comment");
+          //comments is an array of embedded docs on first row, carried as a json array (issue #5366)
+          final JSONArray comments = new JSONArray(rs.getString("comment"));
+          assertThat(comments.length()).isEqualTo(2);
+          assertThat(comments.getJSONObject(0).getString("content")).isEqualTo("This is a comment");
+          assertThat(comments.getJSONObject(1).getString("content")).isEqualTo("This is a comment 2");
           //location is an embedded doc
           assertThat(rs.getString("location")).isNotNull();
           assertThat(new JSONObject(rs.getString("location")).getString("name")).contains("My location");
@@ -641,9 +644,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   /**
-   * Issue #5289: a LIST of EMBEDDED documents must be advertised over the Postgres wire protocol as
-   * json[] (OID 199) rather than text[] (OID 1009). When advertised as text[] the client treats each
-   * element as an opaque string and re-escapes the nested JSON.
+   * Issue #5289/#5366: a LIST of EMBEDDED documents must be advertised over the Postgres wire protocol as a
+   * json document (OID 114) holding a JSON array, rather than text[] (OID 1009) or json[] (OID 199). Both
+   * array forms make the client treat every element as an opaque string and re-escape the nested JSON.
    */
   @Test
   void embeddedListPropertyReportedAsJsonArray() throws Exception {
@@ -669,17 +672,17 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.next()).isTrue();
 
           final int listCol = rs.findColumn("embedded_list");
-          // Before the fix this reported "_text"; a list of embedded documents must be json[].
-          assertThat(rs.getMetaData().getColumnTypeName(listCol)).isEqualToIgnoringCase("_json");
+          // Before the fix this reported "_text", then "_json"; a list of embedded documents must be json.
+          assertThat(rs.getMetaData().getColumnTypeName(listCol)).isEqualToIgnoringCase("json");
 
           // A plain LIST of strings must keep reporting text[].
           assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("certifications"))).isEqualToIgnoringCase("_text");
 
-          // Each element must be valid, un-escaped JSON.
-          final Object[] elements = (Object[]) rs.getArray("embedded_list").getArray();
-          assertThat(elements).hasSize(1);
+          // The value must be a plain, un-escaped JSON array of documents.
+          final JSONArray elements = new JSONArray(rs.getString("embedded_list"));
+          assertThat(elements.length()).isEqualTo(1);
 
-          final JSONObject embedded = new JSONObject(elements[0].toString());
+          final JSONObject embedded = elements.getJSONObject(0);
           assertThat(embedded.getString("sku")).isEqualTo("1234");
           assertThat(embedded.getString("name")).isEqualTo("CPU");
 
@@ -691,9 +694,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
 
   /**
-   * Issue #5289: the RowDescription for a "LIST OF &lt;DocumentType&gt;" property must be json[] even when the
-   * declared element type cannot be inferred from the data: an empty result set (schema fallback) or a row
-   * whose list is empty. Otherwise the advertised OID flaps between text[] and json[] across result sets.
+   * Issue #5289/#5366: the RowDescription for a "LIST OF &lt;DocumentType&gt;" property must be json even when
+   * the declared element type cannot be inferred from the data: an empty result set (schema fallback) or a row
+   * whose list is empty. Otherwise the advertised OID flaps between text[] and json across result sets.
    */
   @Test
   void embeddedListReportedAsJsonArrayWithoutSampleElement() throws Exception {
@@ -716,7 +719,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         try (var rs = st.executeQuery("SELECT FROM Supplier WHERE 1=0")) {
           final var meta = rs.getMetaData();
           // Before the fix the schema path collapsed every LIST to text[], ignoring the "OF Product".
-          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("_json");
+          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("json");
           // A LIST without an "OF" clause, and a LIST OF a scalar, must stay text[].
           assertThat(meta.getColumnTypeName(rs.findColumn("certifications"))).isEqualToIgnoringCase("_text");
           assertThat(meta.getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
@@ -732,18 +735,18 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.next()).isTrue();
           final var meta = rs.getMetaData();
           // Before the fix an empty list fell back to text[], so the same column changed OID per result set.
-          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("_json");
+          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("json");
           assertThat(meta.getColumnTypeName(rs.findColumn("certifications"))).isEqualToIgnoringCase("_text");
-          assertThat((Object[]) rs.getArray("embedded_list").getArray()).isEmpty();
+          assertThat(rs.getString("embedded_list")).isEqualTo("[]");
         }
       }
     }
   }
 
   /**
-   * Issue #5365: a LIST whose elements are themselves collections must be advertised as json[] and its elements
-   * encoded as JSON documents. Before the fix the column was announced as text[] while the payload carried a
-   * nested "{{1,2},{3,4}}" literal, so the announced OID and the DataRow bytes disagreed.
+   * Issue #5365/#5366: a LIST whose elements are themselves collections must be advertised as json and carried
+   * as a JSON array. Before the fix the column was announced as text[] while the payload carried a nested
+   * "{{1,2},{3,4}}" literal, so the announced OID and the DataRow bytes disagreed.
    */
   @Test
   void nestedListPropertyReportedAsJsonArray() throws Exception {
@@ -764,14 +767,14 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.next()).isTrue();
 
           // Before the fix this reported "_text" while the value was a nested array literal.
-          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("_json");
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("json");
           // A flat list of strings must keep reporting text[].
           assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
 
-          final Object[] elements = (Object[]) rs.getArray("matrix").getArray();
-          assertThat(elements).hasSize(2);
-          assertThat(new JSONArray(elements[0].toString()).toList()).containsExactly(1, 2);
-          assertThat(new JSONArray(elements[1].toString()).toList()).containsExactly(3, 4);
+          final JSONArray matrix = new JSONArray(rs.getString("matrix"));
+          assertThat(matrix.length()).isEqualTo(2);
+          assertThat(matrix.getJSONArray(0).toList()).containsExactly(1, 2);
+          assertThat(matrix.getJSONArray(1).toList()).containsExactly(3, 4);
 
           assertThat(rs.next()).isFalse();
         }
@@ -780,8 +783,8 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   /**
-   * Issue #5365: a "LIST OF LIST" property must be advertised as json[] on the schema path too, so the column
-   * keeps the same OID whether or not the result set carries a sample element.
+   * Issue #5365/#5366: a "LIST OF LIST" property must be advertised as json on the schema path too, so the
+   * column keeps the same OID whether or not the result set carries a sample element.
    */
   @Test
   void nestedListPropertyReportedAsJsonArrayWithoutSampleElement() throws Exception {
@@ -798,7 +801,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
       try (var st = conn.createStatement()) {
         try (var rs = st.executeQuery("SELECT FROM Sensor WHERE 1=0")) {
           final var meta = rs.getMetaData();
-          assertThat(meta.getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("_json");
+          assertThat(meta.getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("json");
           assertThat(meta.getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
         }
       }
@@ -806,9 +809,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   /**
-   * Issue #5366: an embedded document carrying its own list must survive the array literal. Elements of a json[]
-   * column are double-quoted, so the JSON has to be escaped with the array-literal rules ("\" and """), not only
-   * for the quote character.
+   * Issue #5366: an embedded document carrying its own list must reach the client as plain JSON. Carried inside
+   * a json[] literal every element was quoted and escaped, so JDBC clients (DataGrip/PhpStorm, DbVisualizer)
+   * displayed the escaped text instead of the documents.
    */
   @Test
   void embeddedListWithNestedListIsParseable() throws Exception {
@@ -834,12 +837,17 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         try (var rs = st.executeQuery("SELECT FROM Supplier")) {
           assertThat(rs.next()).isTrue();
 
-          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("_json");
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("json");
 
-          final Object[] elements = (Object[]) rs.getArray("embedded_list").getArray();
-          assertThat(elements).hasSize(1);
+          // The raw value the client displays: a JSON array of documents, with no escaping at all.
+          final String raw = rs.getString("embedded_list");
+          assertThat(raw).doesNotContain("\\");
+          assertThat(raw).startsWith("[").endsWith("]");
 
-          final JSONObject product = new JSONObject(elements[0].toString());
+          final JSONArray elements = new JSONArray(raw);
+          assertThat(elements.length()).isEqualTo(1);
+
+          final JSONObject product = elements.getJSONObject(0);
           assertThat(product.getString("name")).isEqualTo("CPU");
 
           // The list nested inside the embedded document must still be a JSON array of objects.
@@ -884,9 +892,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
           assertThat((Object[]) rs.getArray("tags").getArray()).containsExactly("say \"hi\" C:\\temp");
 
-          final Object[] notes = (Object[]) rs.getArray("notes").getArray();
-          assertThat(notes).hasSize(1);
-          assertThat(new JSONObject(notes[0].toString()).getString("name")).isEqualTo("say \"hi\" C:\\temp");
+          final JSONArray notes = new JSONArray(rs.getString("notes"));
+          assertThat(notes.length()).isEqualTo(1);
+          assertThat(notes.getJSONObject(0).getString("name")).isEqualTo("say \"hi\" C:\\temp");
 
           assertThat(rs.next()).isFalse();
         }
