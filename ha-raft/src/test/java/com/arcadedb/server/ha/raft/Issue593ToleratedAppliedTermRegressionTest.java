@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Ratis's strict term-first monotonic check in {@code BaseStateMachine.updateLastAppliedTermIndex}
  * throws {@code IllegalStateException: Failed updateLastAppliedTermIndex}, halting the
  * {@code StateMachineUpdater} and crash-looping the node until the whole cluster is wedged with all
- * peers {@code VOTING_FOR_ME} (the Locstat field state: {@code snapshot.11_39707283} vs a term-10
+ * peers {@code VOTING_FOR_ME} (the field state: {@code snapshot.11_39707283} vs a term-10
  * entry at 39707284).
  * <p>
  * Unlike the earlier (reverted) attempt, this test does not stub the Raft log: it drives the exact

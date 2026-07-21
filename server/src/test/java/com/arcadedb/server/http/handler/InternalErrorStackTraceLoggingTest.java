@@ -47,7 +47,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Regression test for issue #600 (Locstat): a read-only command
+ * Regression test from a customer report: a read-only command
  * (<pre>SELECT number, both().size() FROM Account ORDER BY both().size() DESC LIMIT 5</pre>) failed with
  * {@code java.nio.BufferUnderflowException}, but the server logged only
  * <pre>Error on transaction execution (PostCommandHandler): Error on executing command</pre>
@@ -60,12 +60,14 @@ import static org.mockito.Mockito.when;
  * ({@code TransactionException("Error on executing command", cause)}) and asserts the logger receives the
  * throwable (the real cause), so the trace is actually written. Before the fix, the captured throwable is null
  * and this test fails.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue600InternalErrorStackTraceTest {
+class InternalErrorStackTraceLoggingTest {
 
   @Test
   void internalErrorDuringCommandLogsFullStackTrace() {
-    // The client's exact shape: a BufferUnderflowException (null message) wrapped by the auto-commit
+    // The reported exact shape: a BufferUnderflowException (null message) wrapped by the auto-commit
     // transaction wrapper as TransactionException("Error on executing command", cause).
     final BufferUnderflowException cause = new BufferUnderflowException();
     final TransactionException wrapped = new TransactionException("Error on executing command", cause);
@@ -81,7 +83,7 @@ class Issue600InternalErrorStackTraceTest {
       LogManager.instance().setLogger(original);
     }
 
-    // 1) THE WIRE CONTRACT STILL MATCHES THE CLIENT REPORT: 500 + BufferUnderflowException in the body.
+    // 1) THE WIRE CONTRACT STILL MATCHES THE REPORT: 500 + BufferUnderflowException in the body.
     assertThat(response.statusCode).isEqualTo(500);
     final JSONObject json = new JSONObject(response.body);
     assertThat(json.getString("error")).isEqualTo("Error on transaction commit");
@@ -90,7 +92,7 @@ class Issue600InternalErrorStackTraceTest {
     // 2) THE FIX: the internal error is logged WITH the throwable, so a real stack trace is emitted.
     assertThat(sawExecutionLog[0]).as("the 'Error on transaction execution' line must be logged").isTrue();
     assertThat(loggedThrowable.get())
-        .as("the internal error must be logged WITH its throwable so the stack trace is printed (issue #600)")
+        .as("the internal error must be logged WITH its throwable so the stack trace is printed")
         .isNotNull();
     // And it must be the REAL cause (BufferUnderflowException), not the opaque wrapper, so the trace is useful.
     assertThat(loggedThrowable.get()).isInstanceOf(BufferUnderflowException.class);
