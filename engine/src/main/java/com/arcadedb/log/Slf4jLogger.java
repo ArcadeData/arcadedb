@@ -21,8 +21,6 @@ package com.arcadedb.log;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.logging.Level;
 
 /**
@@ -63,8 +61,6 @@ public class Slf4jLogger implements Logger {
   private static final int INFO  = 2;
   private static final int DEBUG = 3;
   private static final int TRACE = 4;
-
-  private final ConcurrentMap<String, org.slf4j.Logger> loggersCache = new ConcurrentHashMap<>();
 
   /**
    * Logs {@code message} at {@code level} for {@code requester}, through SLF4J. This fixed-arity
@@ -165,8 +161,9 @@ public class Slf4jLogger implements Logger {
    * Resolves the SLF4J logger for a requester, deriving its name the same way {@link DefaultLogger} does:
    * a {@link String} is used verbatim, a {@link Class} contributes its fully-qualified name, any
    * other object contributes its class name, and {@code null} falls back to {@value #DEFAULT_LOG}.
-   * Resolved loggers are cached locally to avoid repeated {@link LoggerFactory} lookups on the hot
-   * path.
+   * Delegates straight to {@link LoggerFactory#getLogger(String)}, which already performs its own
+   * context-aware caching; a local cache would risk stale loggers or a ClassLoader leak if the
+   * logging context is reloaded.
    */
   private org.slf4j.Logger resolveLogger(final Object requester) {
     final String name;
@@ -179,7 +176,7 @@ public class Slf4jLogger implements Logger {
     else
       name = DEFAULT_LOG;
 
-    return loggersCache.computeIfAbsent(name, LoggerFactory::getLogger);
+    return LoggerFactory.getLogger(name);
   }
 
   /** Prefixes the message with {@code <context> } when a context is set, otherwise returns it unchanged. */
