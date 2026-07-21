@@ -49,6 +49,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   public static final String UNIQUE_INDEX_EXT    = "uctidx";
   public static final String NOTUNIQUE_INDEX_EXT = "nuctidx";
 
+  private static final int MAX_SERIES_CHECKED_ON_LOAD    = 2;
+  private static final int MAX_PROBLEMS_REPORTED_ON_LOAD = 3;
+
+  /** The load-time key-order check runs once per loaded instance, not on every schema change that reloads the index. */
+  private volatile boolean keyOrderCheckedOnLoad = false;
+
   /**
    * Called at cloning time.
    */
@@ -629,6 +635,78 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
   private int getCompactedPageNumberOfSeries(final BasePage currentPage) {
     return currentPage.readInt(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE);
+  }
+
+  /**
+   * Runs {@link #checkRootPagesKeyOrder(int, int)} once per loaded instance and reports the outcome as a WARNING, so an
+   * index left physically mis-ordered by an older build is reported at startup instead of silently under-returning on
+   * every lookup. Never propagates: a failure to run the check must not stop the database from opening.
+   */
+  void checkKeyOrderOnLoad() {
+    if (keyOrderCheckedOnLoad)
+      return;
+    keyOrderCheckedOnLoad = true;
+
+    try {
+      final List<String> problems = checkRootPagesKeyOrder(MAX_SERIES_CHECKED_ON_LOAD, MAX_PROBLEMS_REPORTED_ON_LOAD);
+      if (!problems.isEmpty())
+        LogManager.instance().log(this, Level.WARNING,
+            "Index '%s' is physically ordered differently than the current key comparator, so lookups can return fewer (or foreign) records than a scan: run 'REBUILD INDEX %s'. Details: %s",
+            null, getName(), getName(), problems);
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Error on checking the key order of index '%s' at load time (%s)", null, getName(),
+              e.getMessage());
+    }
+  }
+
+  /**
+   * Bounded variant of {@link #checkKeyOrder(int)} for the open path: it only reads the root page of the most recent
+   * compacted series (one entry per leaf page, so a handful of page reads per index) and checks their order. An index
+   * physically written under a different key order - the state an upgrade past #5321 leaves behind for keys with
+   * multi-byte UTF-8 characters - carries the very same disorder in its root pages, so this catches it at startup and
+   * points at a rebuild, instead of the divergence surfacing much later as a lookup that silently returns fewer rows
+   * than a scan.
+   *
+   * @param maxSeries   maximum number of series to inspect, starting from the most recent one
+   * @param maxProblems maximum number of problems to describe
+   */
+  public List<String> checkRootPagesKeyOrder(final int maxSeries, final int maxProblems) throws IOException {
+    final List<String> problems = new ArrayList<>();
+
+    final int totalPages = getTotalPages();
+    if (totalPages < 2)
+      return problems;
+
+    final BasePage mainPage = database.getPageManager()
+        .getImmutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, true);
+
+    final int effectivePageCount = Math.min(getCompactedPageNumberOfSeries(mainPage), totalPages);
+
+    int series = 0;
+    for (int pageNumber = effectivePageCount - 1; pageNumber > 0 && series < maxSeries && problems.size() < maxProblems; ) {
+      final BasePage lastPage = database.getPageManager()
+          .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
+
+      final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
+      if (rootPageCount == 0 || rootPageCount > pageNumber) {
+        // EMPTY OR INVALID SERIES MARKER: LEAVE IT TO THE FULL CHECK, JUST MOVE TO THE PREVIOUS PAGE
+        --pageNumber;
+        continue;
+      }
+
+      pageNumber -= rootPageCount;
+
+      final BasePage rootPage = database.getPageManager()
+          .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
+
+      checkKeyOrderInPage(rootPage, getCount(rootPage), problems, maxProblems);
+
+      ++series;
+      --pageNumber;
+    }
+
+    return problems;
   }
 
   /**

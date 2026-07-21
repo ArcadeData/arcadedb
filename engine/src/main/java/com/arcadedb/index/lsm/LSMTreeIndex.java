@@ -574,6 +574,28 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return mutable.getStats();
   }
 
+  /**
+   * Checks that both the mutable pages and the compacted sub-index are physically sorted in the order the lookup
+   * applies. A mismatch makes every binary search unreliable - lookups silently return fewer records than a scan, or
+   * records of unrelated keys - and is exactly the state an index created before #5321 is in after an upgrade, when
+   * its keys contain multi-byte UTF-8 characters. Reported as a corrupt index so CHECK DATABASE FIX rebuilds it.
+   */
+  @Override
+  public List<String> checkIntegrity() {
+    final int maxProblems = 20;
+
+    final List<String> problems = new ArrayList<>(mutable.checkKeyOrder(maxProblems));
+
+    final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
+    if (subIndex != null && problems.size() < maxProblems)
+      problems.addAll(subIndex.checkKeyOrder(maxProblems - problems.size()));
+
+    if (!problems.isEmpty())
+      problems.add(0, "the physical key order does not match the current comparator, the index must be rebuilt");
+
+    return problems;
+  }
+
   @Override
   public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
     return mutable.nullStrategy;

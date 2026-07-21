@@ -136,6 +136,11 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         // must match this index, because it decides whether the tf/docLength varints trailing every posting are consumed when a
         // value is read back. A mismatch desynchronises the value stream and silently decodes the rest of the entry as garbage.
         subIndex.setStoreTermFrequency(isStoreTermFrequency());
+
+        // Cheap (root pages only) guard against an index physically written under a different key order than the one
+        // the reader applies, the state an upgrade past #5321 leaves behind: without it the index keeps serving
+        // incomplete lookups silently until someone compares them against a full scan.
+        subIndex.checkKeyOrderOnLoad();
       }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
