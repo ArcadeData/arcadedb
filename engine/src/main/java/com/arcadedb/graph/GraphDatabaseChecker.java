@@ -113,6 +113,10 @@ public class GraphDatabaseChecker {
    * broken chain is rebuilt from the surviving edge records, or by historical bugs. MUST only run on a FULL
    * check (no type/bucket filter): a partial walk would classify the unwalked vertices' segments as orphans.
    * Like the rest of fix mode, assumes no concurrent writers - run it in a maintenance window.
+   * <p>
+   * Known limitation (matching the corrupted-records pattern in the vertex/edge checks): the orphan RIDs are
+   * accumulated in memory and deleted inside one transaction, so a database with an extreme number of orphaned
+   * segments grows both unbounded. Batched commits are a possible follow-up if such corruption is ever seen.
    */
   public Map<String, Object> reclaimOrphanedEdgeSegments(final int verboseLevel, final int maxWarnings) {
     final List<String> warnings = new ArrayList<>();

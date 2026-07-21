@@ -31,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -237,6 +238,35 @@ class GraphDatabaseCheckerOrphanReclaimTest extends TestHelper {
     database.transaction(() ->
         assertThat(hubRid.asVertex(true).countEdges(Vertex.DIRECTION.IN, EDGE_TYPE)).isEqualTo(degree));
     assertThat(((Number) runCheck(false).get("totalWarnings")).longValue()).isEqualTo(0L);
+  }
+
+  /**
+   * Focused regression for the checkEdges data-loss fix: the back-reference probe walking a vertex's BROKEN
+   * edge list must warn (once) and leave the repair to the vertex check - it must NOT flag the vertex or the
+   * edge as corrupted. Before the fix, running just checkEdges with fix deleted the perfectly healthy hub
+   * vertex over its broken chain.
+   */
+  @Test
+  void checkEdgesDoesNotBlameVertexForUnreadableEdgeList() {
+    final int degree = 500;
+    final RID hubRid = createHub(degree);
+
+    final List<RID> oldChunks = collectClassicChainChunks(hubRid);
+    deleteRecordLowLevel(oldChunks.get(1));
+
+    final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database)
+        .checkEdges(EDGE_TYPE, true, 0);
+
+    // NOTHING IS FLAGGED CORRUPTED: not the hub, not the edges probing its broken list.
+    assertThat((Collection<?>) stats.get("corruptedRecords")).isEmpty();
+    // THE UNREADABLE LIST IS WARNED EXACTLY ONCE despite hundreds of edges probing it.
+    assertThat(((Collection<String>) stats.get("warnings")).stream()
+        .filter(w -> w.contains("edge list is unreadable")).count()).isEqualTo(1);
+    // AND THE HUB SURVIVED.
+    database.transaction(() -> assertThat(hubRid.asVertex(true)).isNotNull());
+
+    // REPAIR THE DELIBERATELY BROKEN CHAIN so the TestHelper post-test integrity check finds a clean database.
+    runCheck(true);
   }
 
   /** A type-filtered check walks only part of the graph, so it must NOT reclaim (false orphans otherwise). */
