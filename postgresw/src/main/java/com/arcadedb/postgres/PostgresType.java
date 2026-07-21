@@ -24,6 +24,7 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.BigDecimal;
@@ -336,7 +337,9 @@ public enum PostgresType {
       case LONG -> ARRAY_LONG;
       case FLOAT -> ARRAY_REAL;
       case DOUBLE -> ARRAY_DOUBLE;
-      case MAP, EMBEDDED -> ARRAY_JSON;
+      // Nested collections (issue #5365) join maps and embedded documents in being carried as JSON documents:
+      // a Postgres array is rectangular and homogeneous, an ArcadeDB nested list is neither.
+      case MAP, EMBEDDED, LIST, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> ARRAY_JSON;
       default -> ARRAY_TEXT;
     };
   }
@@ -523,10 +526,14 @@ public enum PostgresType {
         sb.append("\"").append(ldt.format(POSTGRES_DATETIME_FORMATTER)).append("\"");
       } else if (element instanceof Binary binary) {
         sb.append(binary.getString());
-      } else if (element instanceof byte[] bytes) {
-        sb.append(Arrays.toString(bytes));
       } else if (element instanceof Collection<?> subCollection) {
-        sb.append(serializeArrayToString(subCollection, pgType));
+        // A nested list is carried as a JSON document (issue #5365): the column is advertised as json[], so the
+        // element must be a quoted JSON array. Emitting a nested "{...}" literal instead made the announced OID
+        // and the payload disagree, and clients re-parsed the inner braces as a second array dimension.
+        sb.append("\"").append(new JSONArray(subCollection).toString().replace("\"", "\\\"")).append("\"");
+      } else if (element.getClass().isArray()) {
+        sb.append("\"").append(new JSONArray(convertPrimitiveArrayToCollection(element)).toString().replace("\"", "\\\""))
+            .append("\"");
       } else if (element instanceof Result result) {
         sb.append("\"").append(result.toJSON().toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof JSONObject json) {
@@ -635,6 +642,12 @@ public enum PostgresType {
         element instanceof Result ||
         element instanceof EmbeddedDocument ||
         element instanceof Record)
+      return ARRAY_JSON;
+    // A nested collection or array (issue #5365) cannot be announced as a flat array of scalars: a Postgres
+    // array is rectangular and homogeneous while an ArcadeDB nested list can be ragged and mixed. Nested
+    // elements are therefore advertised, and serialized by serializeArrayToString, as JSON documents.
+    if (element instanceof Iterable ||
+        element.getClass().isArray())
       return ARRAY_JSON;
     // Default to text array for all other types
     return ARRAY_TEXT;
