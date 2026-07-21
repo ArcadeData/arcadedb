@@ -142,6 +142,19 @@ public class TraversalPath {
   }
 
   /**
+   * Returns this path in the opposite traversal order.
+   */
+  public TraversalPath reversed() {
+    if (vertices.isEmpty())
+      return new TraversalPath();
+
+    final TraversalPath reversed = new TraversalPath(vertices.get(vertices.size() - 1));
+    for (int i = edges.size() - 1; i >= 0; i--)
+      reversed.addStep(edges.get(i), vertices.get(i));
+    return reversed;
+  }
+
+  /**
    * Returns the path as a flat list of alternating vertices and edges: [v0, e0, v1, e1, v2, ...].
    */
   public List<Object> toAlternatingList() {
