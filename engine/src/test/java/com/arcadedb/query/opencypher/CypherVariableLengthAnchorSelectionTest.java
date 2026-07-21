@@ -114,6 +114,32 @@ class CypherVariableLengthAnchorSelectionTest {
   }
 
   @Test
+  void startsBoundedVariableLengthTraversalFromIndexedInListTarget() {
+    final String query = """
+        MATCH (place:Area)-[:PART_OF*0..3]->(country:Area)
+        WHERE country.id IN $countryIds
+        RETURN country.id AS country, place.id AS place
+        ORDER BY country, place""";
+    final Map<String, Object> parameters = Map.of("countryIds", List.of("country", "region", "absent"));
+
+    try (ResultSet resultSet = database.query("opencypher", query, parameters)) {
+      assertThat(resultSet.stream()
+          .map(row -> row.<String>getProperty("country") + ":" + row.<String>getProperty("place"))
+          .toList())
+          .containsExactly("country:city", "country:country", "country:region", "region:city", "region:region");
+    }
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
+          .contains("INDEX SEEK (country:Area)")
+          .contains("[index: Area[id]]")
+          .contains("2 rows");
+    }
+  }
+
+  @Test
   void preservesRelationshipListInWrittenPathOrder() {
     final String query = """
         MATCH (place:Area)-[relationships:PART_OF*1..3]->(country:Area)
