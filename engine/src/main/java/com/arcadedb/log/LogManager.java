@@ -125,6 +125,14 @@ public class LogManager {
     logger = createLogger();
   }
 
+  /**
+   * Builds the {@link Logger} chosen by {@link #LOG_IMPL_PROPERTY}: {@link Slf4jLogger} for
+   * {@code slf4j}, otherwise the default {@link DefaultLogger}. Any failure constructing the chosen
+   * implementation (e.g. {@code slf4j-api} missing at runtime) is caught and falls back to
+   * {@link DefaultLogger}, so a logging misconfiguration can never prevent startup.
+   *
+   * @return the logger instance to install; never {@code null}
+   */
   private static Logger createLogger() {
     final String impl = System.getProperty(LOG_IMPL_PROPERTY, "").trim().toLowerCase(java.util.Locale.ROOT);
     try {

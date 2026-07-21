@@ -57,7 +57,7 @@ Everything ArcadeDB's built-in logger does is configured, under SLF4J, in the ba
 | ArcadeDB native feature | Native setting | Logback | Log4j2 |
 |---|---|---|---|
 | Console format: text / JSON | `arcadedb.server.logFormat=text\|json` | `CONSOLE` appender (pattern) / `JSON` appender (`JsonEncoder`) | `Console` (PatternLayout) / `Json` (`JsonTemplateLayout`) |
-| Log destination folder | `arcadedb.server.logsDirectory` (default `./log`) | `${LOG_DIR}` property → `-Darcadedb.logs.dir=/path` (default `./logs`) | `${sys:arcadedb.logs.dir}` property → `-Darcadedb.logs.dir=/path` |
+| Log destination folder | `arcadedb.server.logsDirectory` (default `./log`) | `${LOG_DIR}` property → `-Darcadedb.logs.dir=/path` (default `./log`) | `${sys:arcadedb.logs.dir}` property → `-Darcadedb.logs.dir=/path` (default `./log`) |
 | Include trace id/span on each line | `arcadedb.server.logIncludeTrace=true` | add `%X{arcadedb.traceId:-} %X{arcadedb.spanId:-}` to the pattern | add `%X{arcadedb.traceId} %X{arcadedb.spanId}` to the pattern |
 | Per-package verbosity | `arcadedb-log.properties` levels | `<logger name="com.arcadedb" level="INFO"/>` | `<Logger name="com.arcadedb" level="INFO"/>` |
 | Correlation fields in JSON | emitted by `JsonLogFormatter` | `JsonEncoder` includes the MDC automatically | `JsonTemplateLayout` includes the ThreadContext/MDC |

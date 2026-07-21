@@ -21,7 +21,7 @@
   <Properties>
     <!-- Destination folder for log files. Override with -Darcadedb.logs.dir=/path; defaults to
          ./logs. This is the SLF4J-backend equivalent of the native `arcadedb.server.logsDirectory`. -->
-    <Property name="LOG_DIR">${sys:arcadedb.logs.dir:-logs}</Property>
+    <Property name="LOG_DIR">${sys:arcadedb.logs.dir:-log}</Property>
   </Properties>
 
   <Appenders>

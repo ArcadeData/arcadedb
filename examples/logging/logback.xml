@@ -21,7 +21,7 @@
   <!-- Destination folder for log files. Override with -Darcadedb.logs.dir=/path (or an
        ARCADEDB_LOGS_DIR env var); defaults to ./logs. This is the SLF4J-backend equivalent of the
        native logger's `arcadedb.server.logsDirectory`. -->
-  <property name="LOG_DIR" value="${arcadedb.logs.dir:-${ARCADEDB_LOGS_DIR:-logs}}"/>
+  <property name="LOG_DIR" value="${arcadedb.logs.dir:-${ARCADEDB_LOGS_DIR:-log}}"/>
 
   <!-- Human-readable, ANSI-coloured console (equivalent to the native "text" format). -->
   <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
