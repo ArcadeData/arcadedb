@@ -78,6 +78,7 @@ public class Slf4jLogger implements Logger {
    * @param arg1      the first format argument (through {@code arg17}); trailing {@code null}s are unused
    */
   @Override
+  @SuppressWarnings("PMD.ExcessiveParameterList") // 17 args are mandated by the Logger interface (allocation-free path)
   public void log(final Object requester, final Level level, final String message, final Throwable exception,
       final String context,
       final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
@@ -188,6 +189,7 @@ public class Slf4jLogger implements Logger {
    * method's complexity low; takes the arguments explicitly (no {@code Object[]}) so the
    * no-parameter path stays allocation-free.
    */
+  @SuppressWarnings("PMD.ExcessiveParameterList") // mirrors the 17-arg log() overload; no Object[] on purpose
   private static boolean anyNonNull(final Object arg1, final Object arg2, final Object arg3, final Object arg4,
       final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,

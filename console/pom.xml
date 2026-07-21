@@ -84,5 +84,14 @@
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
+        <!-- Runtime SLF4J binding for the runnable console: routes third-party SLF4J logs
+             (dependencies) to java.util.logging. Declared here at runtime because the parent keeps
+             slf4j-jdk14 at test scope so it does not leak to consumers of the library modules. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
+        </dependency>
     </dependencies>
 </project>
