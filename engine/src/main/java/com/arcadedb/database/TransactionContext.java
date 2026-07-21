@@ -313,6 +313,16 @@ public class TransactionContext implements Transaction {
   }
 
   @Override
+  public boolean isUseWAL() {
+    return useWAL;
+  }
+
+  @Override
+  public WALFile.FlushType getWALFlush() {
+    return walFlush;
+  }
+
+  @Override
   public void rollback() {
     LogManager.instance()
         .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
