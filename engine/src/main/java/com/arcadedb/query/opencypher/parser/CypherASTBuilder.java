@@ -73,6 +73,7 @@ import com.arcadedb.query.opencypher.rewriter.ComparisonNormalizer;
 import com.arcadedb.query.opencypher.rewriter.CompositeRewriter;
 import com.arcadedb.query.opencypher.rewriter.ConstantFolder;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.query.opencypher.rewriter.LabelPredicateHoister;
 import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -552,7 +553,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       whereClause = visitWhereClause(ctx.whereClause());
     }
 
-    return new MatchClause(pathPatterns, optional, whereClause);
+    // Move a "WHERE n:Label" conjunct into the node pattern so that the planner can resolve the node
+    // with a label scan instead of iterating every vertex type in the database (issue #5363)
+    return LabelPredicateHoister.hoist(new MatchClause(pathPatterns, optional, whereClause));
   }
 
   @Override

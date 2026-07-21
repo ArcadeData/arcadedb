@@ -151,6 +151,21 @@ public class NodePattern implements PatternElement {
   }
 
   /**
+   * Returns a copy of this node pattern with the given labels, preserving every other attribute
+   * (variable, dynamic labels, properties and their "explicitly specified" flag, disjunction mode).
+   * Used by the label-predicate hoisting rewrite that moves a {@code WHERE n:Label} conjunct into
+   * the pattern so the planner can pick a label scan (issue #5363).
+   *
+   * @param newLabels the labels of the returned pattern
+   *
+   * @return a new node pattern
+   */
+  public NodePattern withLabels(final List<String> newLabels) {
+    return new NodePattern(variable, newLabels, dynamicLabels, explicitProperties ? properties : null,
+        propertiesParameterName, labelDisjunction);
+  }
+
+  /**
    * Returns the first label if present.
    *
    * @return first label or null
