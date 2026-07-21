@@ -470,6 +470,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * regresses - the fingerprint of an over-recorded (inflated) snapshot term being corrected by the
    * real next committed entry (issues #575, #593). All other transitions return {@code false} and stay
    * subject to Ratis's invariant enforcement. Package-private and static for direct unit testing.
+   * <p>
+   * SAFETY PRECONDITION: this shape is provably benign only because every caller feeds either COMMITTED
+   * log entries (a committed Raft log never carries a strictly lower term at a strictly higher index) or
+   * the lifecycle-serialized snapshot seed. Never route synthetic or uncommitted TermIndex values
+   * through {@code updateLastAppliedTermIndex}: a genuine bug with this exact shape would be silently
+   * tolerated (WARNING only) instead of failing loudly.
    */
   static boolean isBenignSnapshotTermRegression(final TermIndex oldTI, final TermIndex newTI) {
     return oldTI != null && newTI != null
