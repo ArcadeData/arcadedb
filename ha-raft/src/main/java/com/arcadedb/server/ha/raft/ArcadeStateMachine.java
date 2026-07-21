@@ -376,6 +376,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
         });
       }
       lastAppliedIndex.set(snapshotIndex);
+      // If the on-disk marker carries an inflated term (issues #575, #593), this seed records it as-is
+      // (the previous applied TermIndex is null here, so no violation is possible) and the first
+      // re-applied entry realigns it via the tolerant updateLastAppliedTermIndex override. The stale
+      // snapshot.<inflatedTerm>_<index> filename persists across restarts until the next snapshot
+      // rolls it over: cosmetic, expected.
       updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
     } else
       lastAppliedIndex.set(-1);
@@ -393,6 +398,89 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public StateMachineStorage getStateMachineStorage() {
     return storage;
+  }
+
+  /**
+   * Ratis's {@link BaseStateMachine} enforces a strict, term-first monotonic invariant on
+   * {@code lastAppliedTermIndex}: every update must be {@code >=} the previous one, comparing TERM
+   * before INDEX. When the invariant is violated it halts the {@code StateMachineUpdater} thread,
+   * which on ArcadeDB crash-loops the whole node and wedges leader election for the entire cluster.
+   * <p>
+   * One violation is <b>benign and must be tolerated</b>: a follower-installed snapshot can seed an
+   * inflated applied TERM. {@link #notifyInstallSnapshotFromLeader} records the term of the first log
+   * entry AFTER the snapshot as the snapshot's term, but that entry is not yet in the follower's log
+   * at install time and a later leadership-change reconciliation can settle it on a LOWER term. When
+   * Ratis then applies the real next committed entry, its {@code index} advances (genuine forward
+   * progress) while its {@code term} is lower than the over-recorded snapshot term - tripping the
+   * invariant even though nothing is actually wrong (issues #575, #593: the Locstat cluster stuck with
+   * all nodes {@code VOTING_FOR_ME} after {@code snapshot.11_39707283} vs a term-10 entry at
+   * 39707284).
+   * <p>
+   * A committed Raft log never has a strictly lower term at a strictly higher index, so this exact
+   * shape - index up, term down - cannot represent a genuine log inconsistency; it only arises from an
+   * over-recorded snapshot term. We therefore realign the recorded term downward (via Ratis's own
+   * unchecked {@link #setLastAppliedTermIndex}) and continue, logging a WARNING so operators still see
+   * it. Every other ordering (index not advancing, or term not regressing) is delegated to
+   * {@code super} unchanged, so real invariant violations still fail loudly.
+   * <p>
+   * This also makes recovery from an already-inflated on-disk marker automatic: on restart,
+   * {@link #reinitialize()} seeds the inflated term while the previous applied TermIndex is still
+   * {@code null} (no violation possible), and the first re-applied entry then takes the tolerant
+   * branch above - the node self-heals without any manual marker rename. The stale marker filename
+   * is cosmetic and is replaced by the next snapshot.
+   */
+  @Override
+  protected boolean updateLastAppliedTermIndex(final TermIndex newTI) {
+    final TermIndex oldTI = getLastAppliedTermIndex();
+    if (isBenignSnapshotTermRegression(oldTI, newTI)) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Tolerating applied-term realignment %s -> %s: the index advances (real progress) but the term "
+              + "regressed from an over-recorded snapshot term; accepting the correction instead of halting "
+              + "the state machine (issues #575, #593)", oldTI, newTI);
+      // Mirrors BaseStateMachine's advancing-update path (store + return true) but without the strict
+      // term-first assertion. Verified against the Ratis 3.2.2 source, which reads:
+      //
+      //   final TermIndex oldTI = lastAppliedTermIndex.getAndSet(newTI);
+      //   if (!newTI.equals(oldTI)) {
+      //     ... Preconditions.assertTrue(newTI.compareTo(oldTI) >= 0, ...);
+      //     return true;                                    // advancing path: NO future completion
+      //   }
+      //   synchronized (transactionFutures) { ... complete(null) ... }  // ONLY the equal/no-op path
+      //
+      // i.e. super completes pending queryStale() futures only on the no-op path (newTI equals oldTI),
+      // never on an advancing update, so this branch has no bookkeeping to replicate: the pending
+      // futures complete on the next duplicate update, which is not a benign regression and therefore
+      // delegates to super (pinned by the pendingStaleQueryFuture... regression test).
+      // RE-VERIFY THIS on any Ratis upgrade.
+      //
+      // The read-then-set is not atomic (super uses a single getAndSet) but cannot interleave: of the
+      // three call sites, applyTransaction runs on the single StateMachineUpdater thread, and both
+      // snapshot seeds run while that thread is not applying entries - reinitialize() is invoked by
+      // the updater itself (startup or reload() while PAUSED) and notifyInstallSnapshotFromLeader
+      // pauses the state machine for the install.
+      setLastAppliedTermIndex(newTI);
+      return true;
+    }
+    return super.updateLastAppliedTermIndex(newTI);
+  }
+
+  /**
+   * Returns {@code true} for the one applied-term-index transition ArcadeDB tolerates over Ratis's
+   * strict monotonic check: the {@code index} strictly advances while the {@code term} strictly
+   * regresses - the fingerprint of an over-recorded (inflated) snapshot term being corrected by the
+   * real next committed entry (issues #575, #593). All other transitions return {@code false} and stay
+   * subject to Ratis's invariant enforcement. Package-private and static for direct unit testing.
+   * <p>
+   * SAFETY PRECONDITION: this shape is provably benign only because every caller feeds either COMMITTED
+   * log entries (a committed Raft log never carries a strictly lower term at a strictly higher index) or
+   * the lifecycle-serialized snapshot seed. Never route synthetic or uncommitted TermIndex values
+   * through {@code updateLastAppliedTermIndex}: a genuine bug with this exact shape would be silently
+   * tolerated (WARNING only) instead of failing loudly.
+   */
+  static boolean isBenignSnapshotTermRegression(final TermIndex oldTI, final TermIndex newTI) {
+    return oldTI != null && newTI != null
+        && newTI.getIndex() > oldTI.getIndex()
+        && newTI.getTerm() < oldTI.getTerm();
   }
 
   /**
@@ -954,23 +1042,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
         //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
         final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
-        // Derive the snapshot term. The true last-entry term inside the snapshot is opaque to us
-        // (ArcadeDB ships database files, not Ratis snapshot chunks), so firstTermIndexInLog.getTerm()
-        // - the term of the first log entry AFTER the snapshot - was used as an upper bound. That upper
-        // bound is NOT safe: it feeds updateLastAppliedTermIndex(snapshotTerm, snapshotIndex) below and
-        // seeds the same value on every restart via reinitialize(). Ratis enforces a monotonic
-        // applied-index invariant, so the next committed entry the follower applies - at
-        // firstTermIndexInLog.getIndex() - must have a term >= snapshotTerm. When a leadership change
-        // bumped the term while the committed entries around the snapshot boundary were still on the
-        // older term, this upper bound OVERSHOOTS the next entry's real term. The StateMachineUpdater
-        // then throws "Failed updateLastAppliedTermIndex: newTI = (t:<lower>, i:N+1) < oldTI =
-        // (t:<higher>, i:N)", crashes, and the node loops on every restart - wedging leader election
-        // for the whole cluster (issues #575, #593). Clamp the recorded term so it can never exceed the
-        // term of the entry this follower will actually apply next; that entry lives in this node's own
-        // Raft log and is the exact value Ratis compares against. When the log entry is not locally
-        // available we keep the upper bound (no behaviour change).
-        final long snapshotTerm = clampSnapshotTermToNextEntry(
-            firstTermIndexInLog.getTerm(), firstTermIndexInLog.getIndex(), localRaftLog());
+        // Use firstTermIndexInLog.getTerm() as the snapshot term. The true last-entry term inside
+        // the snapshot is opaque to us (ArcadeDB ships database files, not Ratis snapshot chunks),
+        // so we use the term of the first available log entry as a safe upper bound. This value is
+        // only used to name the marker file (snapshot.term_index) and as metadata for Ratis's
+        // snapshotIndex tracking; it does not affect data correctness.
+        final long snapshotTerm = firstTermIndexInLog.getTerm();
         final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
 
         // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
@@ -1002,50 +1079,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
           snapshotDownloadInProgress.set(false);
       }
     });
-  }
-
-  /**
-   * This node's live Ratis log, or {@code null} when the division is not currently present (e.g. the
-   * group is mid-(re)initialisation). Used by {@link #clampSnapshotTermToNextEntry} to read the true
-   * term of the entry a follower will apply immediately after a snapshot install.
-   */
-  private RaftLog localRaftLog() {
-    final RaftHAServer raft = this.raftHAServer;
-    if (raft == null)
-      return null;
-    try {
-      final RaftServer.Division division = raft.getRaftDivision();
-      return division != null ? division.getRaftLog() : null;
-    } catch (final Exception e) {
-      // Group not present yet / server closing: fall back to the caller's upper-bound term.
-      return null;
-    }
-  }
-
-  /**
-   * Clamps the term recorded for an installed snapshot so it can never exceed the term of the entry
-   * this node will apply next. {@code proposedTerm} is the upper-bound term of the first log entry
-   * after the snapshot (as supplied by the leader). The snapshot is seeded into
-   * {@code lastAppliedTermIndex} at {@code (proposedTerm, nextEntryIndex - 1)}; Ratis then requires
-   * every subsequently applied entry to be {@code >=} that. If this node's own committed entry at
-   * {@code nextEntryIndex} carries a lower term (a leadership change advanced the term without
-   * superseding the boundary entries), keeping {@code proposedTerm} would violate the monotonic
-   * applied-index invariant and crash the {@code StateMachineUpdater} on every restart (issues #575,
-   * #593). We therefore return the smaller of the two. When the entry is not present in the local log
-   * we cannot improve on the upper bound, so we return it unchanged (no behaviour change).
-   *
-   * @param proposedTerm   the leader-supplied upper-bound term
-   * @param nextEntryIndex index of the first entry to be applied after the snapshot
-   * @param log            this node's Raft log, or {@code null} if unavailable
-   * @return a term guaranteed to be {@code <=} the next applied entry's real term when known
-   */
-  static long clampSnapshotTermToNextEntry(final long proposedTerm, final long nextEntryIndex, final RaftLog log) {
-    if (log == null)
-      return proposedTerm;
-    final TermIndex next = log.getTermIndex(nextEntryIndex);
-    if (next != null && next.getTerm() < proposedTerm)
-      return next.getTerm();
-    return proposedTerm;
   }
 
   public long getElectionCount() {
