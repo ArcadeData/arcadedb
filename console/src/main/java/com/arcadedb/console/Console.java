@@ -29,6 +29,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.misc.IntegrationUtils;
@@ -629,6 +632,9 @@ public class Console {
         }
       });
     } else {
+      // LONG-RUNNING MAINTENANCE COMMANDS (issue #5372): render a live progress line while the synchronous
+      // command runs, polling the local registry (embedded) or the server's progress endpoint (remote).
+      final Thread progressMonitor = startProgressMonitor(line);
       try {
         resultSet = databaseProxy.command(language, line);
       } catch (Exception e) {
@@ -638,6 +644,8 @@ public class Console {
         else
           outputError(e);
         return;
+      } finally {
+        stopProgressMonitor(progressMonitor);
       }
     }
 
@@ -795,6 +803,87 @@ public class Console {
 
   private void outputLine(final int level, final String text, final Object... args) {
     output(level, "\n" + text, args);
+  }
+
+  /**
+   * Starts the live progress line for long-running maintenance commands (issue #5372), or returns null when
+   * not applicable (not a monitored command, or the output is redirected to an embedding application).
+   * Polling is best-effort: any failure silently stops the rendering, never the command.
+   */
+  private Thread startProgressMonitor(final String line) {
+    if (output != null || verboseLevel < 2)
+      return null;
+    if (!line.trim().toLowerCase(Locale.ENGLISH).startsWith("check database"))
+      return null;
+
+    final Thread monitor = new Thread(() -> {
+      int lastRenderedLength = 0;
+      try {
+        while (!Thread.currentThread().isInterrupted()) {
+          Thread.sleep(500);
+          final String rendered = renderProgressLine();
+          if (rendered != null) {
+            // PAD WITH SPACES so a shorter update fully overwrites the previous, longer one.
+            terminal.writer().print("\r" + rendered + " ".repeat(Math.max(0, lastRenderedLength - rendered.length())));
+            terminal.writer().flush();
+            lastRenderedLength = rendered.length();
+          }
+        }
+      } catch (final InterruptedException e) {
+        // COMMAND FINISHED
+      } catch (final Exception e) {
+        // BEST-EFFORT: a progress-polling failure must never disturb the running command
+      } finally {
+        if (lastRenderedLength > 0) {
+          terminal.writer().print("\r" + " ".repeat(lastRenderedLength) + "\r");
+          terminal.writer().flush();
+        }
+      }
+    }, "ArcadeDB-Console-Progress");
+    monitor.setDaemon(true);
+    monitor.start();
+    return monitor;
+  }
+
+  private void stopProgressMonitor(final Thread monitor) {
+    if (monitor == null)
+      return;
+    monitor.interrupt();
+    try {
+      monitor.join(2_000);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /** One line describing the first running operation of the current database, or null when none is running. */
+  private String renderProgressLine() {
+    if (isRemoteDatabase()) {
+      final List<JSONObject> operations = ((RemoteDatabase) databaseProxy).getProgress();
+      if (operations.isEmpty())
+        return null;
+      final JSONObject op = operations.getFirst();
+      return formatProgressLine(op.getString("operation", ""), op.getString("stepName", ""),
+          op.getInt("stepIndex", 0), op.getInt("totalSteps", 0), op.getInt("percentage", -1));
+    }
+
+    final List<OperationProgress> operations = OperationProgressRegistry.instance().getOperations(databaseProxy.getName());
+    if (operations.isEmpty())
+      return null;
+    final OperationProgress op = operations.getFirst();
+    return formatProgressLine(op.getOperation(), op.getStepName(), op.getStepIndex(), op.getTotalSteps(), op.getPercentage());
+  }
+
+  private static String formatProgressLine(final String operation, final String stepName, final int stepIndex,
+      final int totalSteps, final int percentage) {
+    final StringBuilder line = new StringBuilder(128);
+    line.append(operation).append(" [step ").append(stepIndex).append('/').append(totalSteps).append("] ").append(stepName);
+    if (percentage >= 0) {
+      final int filled = percentage / 5;
+      line.append(" |").append("=".repeat(filled)).append(" ".repeat(20 - filled)).append("| ").append(percentage).append('%');
+    } else
+      line.append(" ...");
+    return line.toString();
   }
 
   private void output(final int level, final String text, final Object... args) {

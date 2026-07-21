@@ -21,6 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.engine.DatabaseChecker;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -59,7 +61,18 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     checker.setFix(fix);
     checker.setCompress(compress);
 
-    final Map<String, Object> checkResult = checker.check();
+    // PUBLISH LIVE PROGRESS (issue #5372): pollable while the check runs via the progress HTTP endpoint,
+    // the console and Studio. Always retired in the finally, even when the check fails.
+    final OperationProgress progress = OperationProgressRegistry.instance()
+        .register(context.getDatabase().getName(), fix ? "check database fix" : "check database");
+    checker.setProgressCallback(progress);
+
+    final Map<String, Object> checkResult;
+    try {
+      checkResult = checker.check();
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
+    }
 
     result.setPropertiesFromMap(checkResult);
 

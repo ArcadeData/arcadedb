@@ -37,6 +37,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LongHashSet;
+import com.arcadedb.utility.ProgressCallback;
 
 import java.io.IOException;
 import java.util.*;
@@ -61,6 +62,16 @@ public class DatabaseChecker {
   private final Map<RID, Long>      missingReferences      = new HashMap<>();
   private final Map<RID, String>    missingReferenceErrors = new HashMap<>();
 
+  // Progress reporting (issue #5372): the step plan is computed upfront in check() so every emission carries a
+  // stable stepIndex/totalSteps pair; per-record emissions are throttled to integer-percentage changes.
+  private ProgressCallback progressCallback;
+  private int              currentStep;
+  private int              totalSteps;
+  private String           currentStepName = "";
+  private long             stepDone;
+  private long             stepTotal;
+  private int              lastReportedPct;
+
   public DatabaseChecker(final Database database) {
     this.database = (DatabaseInternal) database;
   }
@@ -84,11 +95,32 @@ public class DatabaseChecker {
     result.put("distinctMissingReferences", 0L);
     result.put("topMissingReferences", new ArrayList<String>());
 
-    checkEdges();
+    // COMPUTE THE STEP PLAN UPFRONT so every progress emission carries a stable stepIndex/totalSteps pair.
+    final List<DocumentType> edgeTypes = new ArrayList<>();
+    final List<DocumentType> vertexTypes = new ArrayList<>();
+    final List<DocumentType> documentTypes = new ArrayList<>();
+    for (final DocumentType type : database.getSchema().getTypes()) {
+      if (types != null && !types.isEmpty() && (type == null || !types.contains(type.getName())))
+        continue;
+      if (type instanceof LocalEdgeType)
+        edgeTypes.add(type);
+      else if (type instanceof LocalVertexType)
+        vertexTypes.add(type);
+      else
+        documentTypes.add(type);
+    }
 
-    checkVertices();
+    currentStep = 0;
+    totalSteps = edgeTypes.size() + vertexTypes.size() + documentTypes.size() // per-type checks
+        + 3 // buckets + external properties + indexes
+        + (fix ? 1 : 0) // rebuild affected indexes
+        + (compress ? 1 : 0);
 
-    checkDocuments();
+    checkEdges(edgeTypes);
+
+    checkVertices(vertexTypes);
+
+    checkDocuments(documentTypes);
 
     checkBuckets(result);
 
@@ -117,6 +149,9 @@ public class DatabaseChecker {
       LogManager.instance().log(this, Level.INFO, "Rebuilding indexes %s...", null, rebuildIndexes);
 
     if (fix)
+      stepBegin("Rebuilding indexes", affectedIndexes.size());
+
+    if (fix)
       for (final Index idx : affectedIndexes) {
         final String bucketName = database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName();
         final Schema.INDEX_TYPE indexType = idx.getType();
@@ -130,7 +165,12 @@ public class DatabaseChecker {
 
         database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
             .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy).create();
+
+        stepTick();
       }
+
+    if (fix)
+      stepComplete();
 
     if (compress)
       compress();
@@ -166,49 +206,53 @@ public class DatabaseChecker {
         .collect(Collectors.toList());
   }
 
-  private void checkDocuments() {
+  private void checkDocuments(final List<DocumentType> documentTypes) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking documents...");
 
     final List<String> warnings = new ArrayList<>();
     final Set<RID> corruptedRecords = new LinkedHashSet<>();
 
-    for (final DocumentType type : database.getSchema().getTypes()) {
-      if (types != null && !types.isEmpty())
-        if (type == null || !types.contains(type.getName()))
-          continue;
+    for (final DocumentType type : documentTypes) {
+      stepBegin("Checking documents '" + type.getName() + "'", database.countType(type.getName(), false));
 
-      if (!(type instanceof LocalVertexType) && !(type instanceof LocalEdgeType)) {
-        database.begin();
-        try {
+      database.begin();
+      try {
 
-          // CHECK RECORD IS OF THE RIGHT TYPE
-          for (final Bucket b : type.getBuckets(false)) {
-            b.scan((rid, view) -> {
-              try {
-                final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
-                record.asDocument(true);
-              } catch (Exception e) {
-                warnings.add("vertex " + rid + " cannot be loaded, removing it");
-                corruptedRecords.add(rid);
-              }
-              return true;
-            }, null);
-          }
-
-        } finally {
-          database.commit();
+        // CHECK RECORD IS OF THE RIGHT TYPE
+        for (final Bucket b : type.getBuckets(false)) {
+          b.scan((rid, view) -> {
+            try {
+              final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
+              record.asDocument(true);
+            } catch (Exception e) {
+              warnings.add("vertex " + rid + " cannot be loaded, removing it");
+              corruptedRecords.add(rid);
+            }
+            stepTick();
+            return true;
+          }, null);
         }
 
-        ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
-        ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll(corruptedRecords);
+      } finally {
+        database.commit();
       }
+
+      stepComplete();
+
+      ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
+      ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll(corruptedRecords);
     }
   }
 
   public void compress() {
     if (database.isTransactionActive())
       database.rollback();
+
+    long totalPagesToCompress = 0;
+    for (final Bucket b : database.getSchema().getBuckets())
+      totalPagesToCompress += ((LocalBucket) b).getTotalPages();
+    stepBegin("Compressing buckets", totalPagesToCompress);
 
     int pageTxBatch = 10;
     int pageBatch = 0;
@@ -237,59 +281,58 @@ public class DatabaseChecker {
         } catch (IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on loading page %d of bucket %s", e, i, bucket.getName());
         }
+        stepTick();
       }
 
       database.commit();
     }
+
+    stepComplete();
   }
 
-  private void checkEdges() {
+  private void checkEdges(final List<DocumentType> edgeTypes) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking edges...");
 
-    for (final DocumentType type : database.getSchema().getTypes()) {
-      if (types != null && !types.isEmpty())
-        if (type == null || !types.contains(type.getName()))
-          continue;
+    for (final DocumentType type : edgeTypes) {
+      ++currentStep;
 
-      if (type instanceof LocalEdgeType) {
-        final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
-        final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
-        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel,
-            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
+      final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
+      final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
+      final Map<String, Object> stats = new GraphDatabaseChecker(database)
+          .setProgress(progressCallback, "Checking edges '" + type.getName() + "'", currentStep, totalSteps)
+          .checkEdges(type.getName(), fix, verboseLevel,
+              Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
 
-        updateStats(stats);
+      updateStats(stats);
 
-        ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
-        ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
-        mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
-            (Map<RID, String>) stats.get("missingReferenceErrors"));
-      }
+      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
+          (Map<RID, String>) stats.get("missingReferenceErrors"));
     }
   }
 
-  private void checkVertices() {
+  private void checkVertices(final List<DocumentType> vertexTypes) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking vertices...");
 
-    for (final DocumentType type : database.getSchema().getTypes()) {
-      if (types != null && !types.isEmpty())
-        if (type == null || !types.contains(type.getName()))
-          continue;
+    for (final DocumentType type : vertexTypes) {
+      ++currentStep;
 
-      if (type instanceof LocalVertexType) {
-        final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
-        final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
-        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel,
-            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
+      final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
+      final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
+      final Map<String, Object> stats = new GraphDatabaseChecker(database)
+          .setProgress(progressCallback, "Checking vertices '" + type.getName() + "'", currentStep, totalSteps)
+          .checkVertices(type.getName(), fix, verboseLevel,
+              Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
 
-        updateStats(stats);
+      updateStats(stats);
 
-        ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
-        ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
-        mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
-            (Map<RID, String>) stats.get("missingReferenceErrors"));
-      }
+      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+      mergeMissingReferences((Map<RID, Long>) stats.get("missingReferences"),
+          (Map<RID, String>) stats.get("missingReferenceErrors"));
     }
   }
 
@@ -323,10 +366,56 @@ public class DatabaseChecker {
     return this;
   }
 
+  /**
+   * Installs a receiver for step-by-step progress of the whole check (issue #5372). The step plan is computed
+   * upfront in {@link #check()}; emissions are throttled to integer-percentage changes so the callback is
+   * never on the hot path.
+   */
+  public DatabaseChecker setProgressCallback(final ProgressCallback progressCallback) {
+    this.progressCallback = progressCallback;
+    return this;
+  }
+
+  /** Starts a new step of the plan and emits it immediately so pollers see the transition right away. */
+  private void stepBegin(final String name, final long total) {
+    ++currentStep;
+    currentStepName = name;
+    stepDone = 0;
+    stepTotal = total;
+    lastReportedPct = -1;
+    if (progressCallback != null)
+      progressCallback.onProgress(currentStepName, currentStep, totalSteps, 0, total);
+  }
+
+  /** One unit of work done in the current step; emits only when the integer percentage changes. */
+  private void stepTick() {
+    if (progressCallback == null)
+      return;
+    ++stepDone;
+    if (stepTotal > 0 && stepDone > stepTotal)
+      stepDone = stepTotal; // COUNT DRIFT (concurrent writes, placeholders): clamp, never report over 100%
+    final int pct = stepTotal > 0 ? (int) (stepDone * 100 / stepTotal) : (int) (stepDone >>> 13);
+    if (pct != lastReportedPct) {
+      lastReportedPct = pct;
+      progressCallback.onProgress(currentStepName, currentStep, totalSteps, stepDone, stepTotal);
+    }
+  }
+
+  /** Emits the current step as finished (done == total). */
+  private void stepComplete() {
+    if (progressCallback == null)
+      return;
+    if (stepTotal > 0)
+      stepDone = stepTotal;
+    progressCallback.onProgress(currentStepName, currentStep, totalSteps, stepDone, stepTotal > 0 ? stepTotal : stepDone);
+  }
+
   /** Detects (and on FIX deletes) external-property records that are no longer referenced by any primary record. */
   private void checkExternalProperties() {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking external-property buckets...");
+
+    stepBegin("Checking external properties", -1);
 
     final List<String> warnings = new ArrayList<>();
     final Set<RID> orphanedExternalRecords = new LinkedHashSet<>();
@@ -431,6 +520,8 @@ public class DatabaseChecker {
     ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
     if (fix)
       ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll(orphanedExternalRecords);
+
+    stepComplete();
   }
 
   /**
@@ -443,11 +534,14 @@ public class DatabaseChecker {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking index metadata...");
 
+    stepBegin("Checking indexes", database.getSchema().getIndexes().length);
+
     final List<String> warnings = new ArrayList<>();
     final Set<String>  corruptedIndexNames = new LinkedHashSet<>();
     final Set<Index>   corruptedIndexes    = new HashSet<>();
 
     for (final Index index : database.getSchema().getIndexes()) {
+      stepTick();
       if (types != null && !types.isEmpty()) {
         final String typeName = index.getTypeName();
         if (typeName == null || !types.contains(typeName))
@@ -475,12 +569,16 @@ public class DatabaseChecker {
     ((LinkedHashSet<String>) result.get("corruptedIndexes")).addAll(corruptedIndexNames);
     ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
 
+    stepComplete();
+
     return corruptedIndexes;
   }
 
   private void checkBuckets(final Map<String, Object> result) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking buckets...");
+
+    stepBegin("Checking buckets", database.getSchema().getBuckets().size());
 
     result.put("pageSize", 0L);
     result.put("totalPages", 0L);
@@ -498,6 +596,8 @@ public class DatabaseChecker {
     result.put("totalActiveEdges", 0L);
 
     for (final Bucket b : database.getSchema().getBuckets()) {
+      stepTick();
+
       final LocalBucket bucket = (LocalBucket) b;
       if (buckets != null && !buckets.isEmpty())
         if (!buckets.contains(bucket.componentName))
@@ -527,6 +627,8 @@ public class DatabaseChecker {
     result.put("avgPageUsed", (Long) result.get("totalPages") > 0 ?
         ((float) (Long) result.get("totalMaxOffset")) / (Long) result.get("totalPages") * 100F / (Long) result.get("pageSize") :
         0F);
+
+    stepComplete();
   }
 
   /**

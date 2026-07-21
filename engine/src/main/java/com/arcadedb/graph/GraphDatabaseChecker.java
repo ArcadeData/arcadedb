@@ -27,6 +27,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.ProgressCallback;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -42,9 +43,65 @@ public class GraphDatabaseChecker {
   private final DatabaseInternal database;
   private final GraphEngine      graphEngine;
 
+  // Progress reporting (issue #5372): the step identity (name/index/totalSteps) is assigned by the caller
+  // (DatabaseChecker owns the step plan); this class emits within-step done/total, throttled to integer
+  // percentage changes so the scan hot loops never pay for the callback.
+  private ProgressCallback progress;
+  private String           progressStepName;
+  private int              progressStepIndex;
+  private int              progressTotalSteps;
+  private long             progressDone;
+  private long             progressTotal;
+  private int              lastReportedPct;
+
   public GraphDatabaseChecker(DatabaseInternal database) {
     this.database = database;
     this.graphEngine = database.getGraphEngine();
+  }
+
+  /** Installs the progress receiver and this checker's step identity in the caller's step plan. */
+  public GraphDatabaseChecker setProgress(final ProgressCallback progress, final String stepName, final int stepIndex,
+      final int totalSteps) {
+    this.progress = progress;
+    this.progressStepName = stepName;
+    this.progressStepIndex = stepIndex;
+    this.progressTotalSteps = totalSteps;
+    return this;
+  }
+
+  /** Starts a (sub-)phase of the current step, emitting it immediately so pollers see the transition. */
+  private void progressBegin(final String name, final long total) {
+    if (progress == null)
+      return;
+    progressStepName = name;
+    progressDone = 0;
+    progressTotal = total;
+    lastReportedPct = -1;
+    progress.onProgress(progressStepName, progressStepIndex, progressTotalSteps, 0, total);
+  }
+
+  /** One unit of work done; emits only when the integer percentage changes. */
+  private void progressTick() {
+    if (progress == null)
+      return;
+    ++progressDone;
+    if (progressTotal > 0 && progressDone > progressTotal)
+      progressDone = progressTotal; // COUNT DRIFT (concurrent writes, placeholders): clamp, never report over 100%
+    final int pct = progressTotal > 0 ? (int) (progressDone * 100 / progressTotal) : (int) (progressDone >>> 13);
+    if (pct != lastReportedPct) {
+      lastReportedPct = pct;
+      progress.onProgress(progressStepName, progressStepIndex, progressTotalSteps, progressDone, progressTotal);
+    }
+  }
+
+  /** Emits the current phase as finished (done == total). */
+  private void progressComplete() {
+    if (progress == null)
+      return;
+    if (progressTotal > 0)
+      progressDone = progressTotal;
+    progress.onProgress(progressStepName, progressStepIndex, progressTotalSteps, progressDone,
+        progressTotal > 0 ? progressTotal : progressDone);
   }
 
   public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel) {
@@ -68,6 +125,9 @@ public class GraphDatabaseChecker {
 
     database.begin();
     try {
+      // TWO FULL PASSES OVER THE TYPE (record-type scan + connectivity walk): progress total is 2x the count.
+      progressBegin(progressStepName, 2 * database.countType(typeName, false));
+
       // CHECK RECORD IS OF THE RIGHT TYPE
       final DocumentType type = database.getSchema().getType(typeName);
       for (final Bucket b : type.getBuckets(false)) {
@@ -79,11 +139,13 @@ public class GraphDatabaseChecker {
             addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " cannot be loaded, removing it");
             addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
           }
+          progressTick();
           return true;
         }, null);
       }
 
       database.scanType(typeName, false, record -> {
+        progressTick();
         try {
           Vertex vertex = record.asVertex(true);
 
@@ -105,11 +167,14 @@ public class GraphDatabaseChecker {
 
         return true;
       }, (rid, exception) -> {
+        progressTick();
         addWarning(warnings, totalWarnings, maxWarnings,
             "vertex " + rid + " cannot be loaded (error: " + describe(exception) + ")");
         addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
         return true;
       });
+
+      progressComplete();
 
       if (fix) {
         if (!reconnectOutEdges.isEmpty() || !reconnectInEdges.isEmpty())
@@ -170,11 +235,14 @@ public class GraphDatabaseChecker {
     final List<Edge> outEdgesToReconnect = new ArrayList<>();
     final List<Edge> inEdgesToReconnect = new ArrayList<>();
 
+    progressBegin(progressStepName == null ? "Rebuilding edge lists" : progressStepName + " - rebuilding edge lists", -1);
+
     for (EdgeType edgeType : edgeTypes) {
       final boolean bidirectional = edgeType.isBidirectional();
       // Scan with an error callback: on a damaged database an unreadable edge record must not abort the whole
       // rebuild - it is skipped (checkEdges reports/deletes it), the surviving records still reconnect.
       database.scanType(edgeType.getName(), false, record -> {
+        progressTick();
         try {
           final Edge e = record.asEdge(true);
           if (corruptedRecords.contains(e.getIdentity()))
@@ -711,6 +779,9 @@ public class GraphDatabaseChecker {
     database.begin();
 
     try {
+      // TWO FULL PASSES OVER THE TYPE (record-type scan + endpoint checks): progress total is 2x the count.
+      progressBegin(progressStepName, 2 * database.countType(typeName, false));
+
       // CHECK RECORD IS OF THE RIGHT TYPE
       final DocumentType type = database.getSchema().getType(typeName);
       for (final Bucket b : type.getBuckets(false)) {
@@ -722,11 +793,13 @@ public class GraphDatabaseChecker {
             addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " cannot be loaded, removing it");
             addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
           }
+          progressTick();
           return true;
         }, null);
       }
 
       database.scanType(typeName, false, record -> {
+        progressTick();
         final RID edgeRID = record.getIdentity();
 
         try {
@@ -805,11 +878,14 @@ public class GraphDatabaseChecker {
 
         return true;
       }, (rid, exception) -> {
+        progressTick();
         addWarning(warnings, totalWarnings, maxWarnings,
             "edge " + rid + " cannot be loaded (error: " + describe(exception) + ")");
         addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
         return true;
       });
+
+      progressComplete();
 
       if (fix) {
         for (final RID rid : corruptedRecords) {
