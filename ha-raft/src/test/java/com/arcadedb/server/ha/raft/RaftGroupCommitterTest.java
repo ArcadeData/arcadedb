@@ -20,17 +20,25 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
+import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.protocol.Message;
+import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class RaftGroupCommitterTest {
 
@@ -263,6 +271,108 @@ class RaftGroupCommitterTest {
       assertThatThrownBy(() -> committer.submitAndWait(new byte[1024]))
           .isInstanceOf(QuorumNotReachedException.class)
           .hasMessageNotContaining("byte budget");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * Regression for issue #4743 (leader churn during GraphBatch bulk load): the entry was dispatched
+   * via {@code raftClient.async().send()} and the reply future failed with the Ratis
+   * "Stream completed: no reply for async request" {@link AlreadyClosedException}. The request may
+   * have reached the Raft log and can still commit after the (same-node) re-election, so the caller
+   * must see a {@link ReplicationDispatchedTimeoutException} (indeterminate outcome, phase 2 must be
+   * marked for local apply) and NOT a plain {@link QuorumNotReachedException} ("safe to roll back").
+   */
+  @Test
+  void dispatchedEntryAsyncFailureSurfacesIndeterminateOutcome() {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    when(client.async().send(any(Message.class))).thenReturn(
+        CompletableFuture.failedFuture(new CompletionException(
+            new AlreadyClosedException("client-X->peer: Stream completed: no reply for async request cid=732"))));
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 2_000);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
+          .isInstanceOf(ReplicationDispatchedTimeoutException.class)
+          .hasMessageContaining("dispatched");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * Regression for issue #4743: during a RaftClient refresh after leader churn, the flusher thread
+   * is interrupted while awaiting the quorum result of an already-dispatched entry (the June log's
+   * "Group commit entry failed: InterruptedException"). The outcome is indeterminate, so the waiting
+   * transaction must observe a {@link ReplicationDispatchedTimeoutException}, not a plain retryable
+   * error that would let the leader roll back (and later origin-skip) a write the followers commit.
+   */
+  @Test
+  void flusherInterruptedMidQuorumWaitSurfacesIndeterminateOutcome() throws Exception {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    final CountDownLatch sent = new CountDownLatch(1);
+    when(client.async().send(any(Message.class))).thenAnswer(inv -> {
+      sent.countDown();
+      return new CompletableFuture<RaftClientReply>(); // never completes: reply lost in the churn
+    });
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 30_000);
+    final CompletableFuture<Throwable> outcome = CompletableFuture.supplyAsync(() -> {
+      try {
+        committer.submitAndWait(new byte[] { 1, 2, 3 });
+        return null;
+      } catch (final Throwable t) {
+        return t;
+      }
+    });
+
+    assertThat(sent.await(5, TimeUnit.SECONDS)).as("entry must be dispatched before the interrupt").isTrue();
+    committer.stop(); // interrupts the flusher mid futures[i].get()
+
+    final Throwable t = outcome.get(5, TimeUnit.SECONDS);
+    assertThat(t).isInstanceOf(ReplicationDispatchedTimeoutException.class);
+    assertThat(t).hasMessageContaining("dispatched");
+  }
+
+  /**
+   * A definitive negative {@link RaftClientReply} still does not prove an earlier internal Ratis
+   * retry of the same call was not appended by a stepping-down leader, so a failed reply for a
+   * dispatched entry must also surface as indeterminate.
+   */
+  @Test
+  void dispatchedEntryFailedReplySurfacesIndeterminateOutcome() {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    final RaftClientReply reply = mock(RaftClientReply.class);
+    when(reply.isSuccess()).thenReturn(false);
+    when(client.async().send(any(Message.class))).thenReturn(CompletableFuture.completedFuture(reply));
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 2_000);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
+          .isInstanceOf(ReplicationDispatchedTimeoutException.class)
+          .hasMessageContaining("dispatched");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * The synchronous-throw path of {@code send()} means the entry never left this node: that failure
+   * stays a plain (safe to roll back) {@link QuorumNotReachedException}, NOT an indeterminate one.
+   */
+  @Test
+  void synchronousDispatchFailureStaysSafelyRetryable() {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    when(client.async().send(any(Message.class)))
+        .thenThrow(new IllegalStateException("SlidingWindow$Client:client-X->RAFT is closed."));
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 2_000);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
+          .isInstanceOf(QuorumNotReachedException.class)
+          .isNotInstanceOf(ReplicationDispatchedTimeoutException.class)
+          .hasMessageContaining("dispatch failed");
     } finally {
       committer.stop();
     }
