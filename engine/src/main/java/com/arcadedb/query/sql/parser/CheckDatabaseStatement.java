@@ -52,7 +52,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     if (context.getDatabase().isTransactionActive())
       context.getDatabase().rollback();
 
-    final DatabaseChecker checker = new DatabaseChecker(context.getDatabase().getWrappedDatabaseInstance());
+    final DatabaseChecker checker = createChecker(context);
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
     checker.setTypes(types.stream().map(x -> x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'") ?
@@ -79,6 +79,11 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /** Package-private seam for tests: lets a test inject a checker whose {@code check()} fails mid-run. */
+  DatabaseChecker createChecker(final CommandContext context) {
+    return new DatabaseChecker(context.getDatabase().getWrappedDatabaseInstance());
   }
 
   @Override

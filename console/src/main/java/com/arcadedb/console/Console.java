@@ -816,13 +816,16 @@ public class Console {
     if (!line.trim().toLowerCase(Locale.ENGLISH).startsWith("check database"))
       return null;
 
+    progressMonitorStopped = false;
     final Thread monitor = new Thread(() -> {
       int lastRenderedLength = 0;
       try {
-        while (!Thread.currentThread().isInterrupted()) {
+        while (!Thread.currentThread().isInterrupted() && !progressMonitorStopped) {
           Thread.sleep(500);
           final String rendered = renderProgressLine();
-          if (rendered != null) {
+          // RE-CHECK THE STOP FLAG RIGHT BEFORE PRINTING: if the command completed while we were polling, a
+          // late line must not interleave with the result rendering on the main thread.
+          if (rendered != null && !progressMonitorStopped) {
             // PAD WITH SPACES so a shorter update fully overwrites the previous, longer one.
             terminal.writer().print("\r" + rendered + " ".repeat(Math.max(0, lastRenderedLength - rendered.length())));
             terminal.writer().flush();
@@ -845,9 +848,14 @@ public class Console {
     return monitor;
   }
 
+  private volatile boolean progressMonitorStopped;
+
   private void stopProgressMonitor(final Thread monitor) {
     if (monitor == null)
       return;
+    // SET THE FLAG FIRST: the interrupt alone leaves a window where a poll in flight could still print after
+    // this method returns and the main thread starts rendering the command result.
+    progressMonitorStopped = true;
     monitor.interrupt();
     try {
       monitor.join(2_000);
@@ -856,7 +864,11 @@ public class Console {
     }
   }
 
-  /** One line describing the first running operation of the current database, or null when none is running. */
+  /**
+   * One line describing the OLDEST running operation of the current database, or null when none is running.
+   * Deliberate limitation: with several concurrent operations on the same database only the oldest is
+   * rendered - a single console line cannot show more, and the HTTP endpoint still exposes all of them.
+   */
   private String renderProgressLine() {
     if (isRemoteDatabase()) {
       final List<JSONObject> operations = ((RemoteDatabase) databaseProxy).getProgress();

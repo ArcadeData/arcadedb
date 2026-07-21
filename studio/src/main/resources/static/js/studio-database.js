@@ -3030,6 +3030,7 @@ function startCommandProgressMonitor(database, command) {
       .done(function (data) {
         if (data.result == null || data.result.length == 0) return;
 
+        // Deliberate limitation: only the oldest running operation is rendered (the endpoint returns all).
         let op = data.result[0];
         let pct = op.percentage >= 0 ? op.percentage : null;
         let label = escapeHtml(op.operation) + " [step " + op.stepIndex + "/" + op.totalSteps + "] " + escapeHtml(op.stepName) + (pct != null ? " - " + pct + "%" : "");

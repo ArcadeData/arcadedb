@@ -131,21 +131,7 @@ class CheckDatabaseProgressTest extends TestHelper {
     }
 
     // THE OPERATION MUST BE RETIRED FROM THE REGISTRY WHEN THE STATEMENT COMPLETES.
+    // The failure path (retire despite a mid-check exception) is covered by CheckDatabaseStatementProgressTest.
     assertThat(OperationProgressRegistry.instance().getOperations(database.getName())).hasSize(before);
-  }
-
-  @Test
-  void sqlStatementRetiresTheOperationOnFailureToo() {
-    createSampleGraph();
-
-    // TYPE FILTER ON A NON-EXISTENT TYPE STILL RUNS AND COMPLETES; the retire-on-completion contract is the
-    // finally block, exercised on the happy path above. Here the statement is run twice back to back to prove
-    // no registrations leak across runs.
-    for (int i = 0; i < 2; i++)
-      try (final ResultSet result = database.command("sql", "CHECK DATABASE")) {
-        result.hasNext();
-      }
-
-    assertThat(OperationProgressRegistry.instance().getOperations(database.getName())).isEmpty();
   }
 }

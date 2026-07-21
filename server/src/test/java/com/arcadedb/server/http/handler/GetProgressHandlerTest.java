@@ -35,6 +35,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -60,7 +62,9 @@ class GetProgressHandlerTest {
 
   private ServerSecurityUser userAuthorizedOn(final String... databases) {
     final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getAuthorizedDatabases()).thenReturn(Set.of(databases));
+    final Set<String> authorized = Set.of(databases);
+    when(user.canAccessToDatabase(anyString()))
+        .thenAnswer(invocation -> authorized.contains("*") || authorized.contains((String) invocation.getArgument(0)));
     return user;
   }
 
@@ -102,17 +106,18 @@ class GetProgressHandlerTest {
   void unauthorizedDatabaseIsRejected() {
     final GetProgressHandler handler = new GetProgressHandler(mock(HttpServer.class));
 
-    final ExecutionResponse response = handler.execute(exchangeFor("someoneelsesdb"), userAuthorizedOn("progressdb"), null);
-
-    assertThat(response.getCode()).isEqualTo(403);
+    // The consolidated checkAuthorizationOnDatabase gate throws SecurityException, mapped to HTTP 403 by the
+    // base handler's catch chain.
+    assertThatThrownBy(() -> handler.execute(exchangeFor("someoneelsesdb"), userAuthorizedOn("progressdb"), null))
+        .isInstanceOf(SecurityException.class);
   }
 
   @Test
   void missingDatabaseParameterIsRejected() {
     final GetProgressHandler handler = new GetProgressHandler(mock(HttpServer.class));
 
-    final ExecutionResponse response = handler.execute(exchangeFor(null), userAuthorizedOn("*"), null);
-
-    assertThat(response.getCode()).isEqualTo(400);
+    // A missing database name throws IllegalArgumentException, mapped to HTTP 400 by the base handler.
+    assertThatThrownBy(() -> handler.execute(exchangeFor(null), userAuthorizedOn("*"), null))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

@@ -126,6 +126,7 @@ public class GraphDatabaseChecker {
     database.begin();
     try {
       // TWO FULL PASSES OVER THE TYPE (record-type scan + connectivity walk): progress total is 2x the count.
+      // countType reads the maintained bucket counters (no scan), so sizing the total is negligible.
       progressBegin(progressStepName, 2 * database.countType(typeName, false));
 
       // CHECK RECORD IS OF THE RIGHT TYPE

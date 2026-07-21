@@ -27,7 +27,6 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.Deque;
-import java.util.Set;
 
 /**
  * Returns the long-running maintenance operations (CHECK DATABASE, ...) currently in progress on this server
@@ -46,15 +45,12 @@ public class GetProgressHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final Deque<String> databaseNameParam = exchange.getQueryParameters().get("database");
-    if (databaseNameParam == null || databaseNameParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
+    final String databaseName = databaseNameParam == null || databaseNameParam.isEmpty() ? null : databaseNameParam.getFirst();
 
-    final String databaseName = databaseNameParam.getFirst();
-
-    // SAME AUTHORIZATION MODEL AS THE OTHER DATABASE ENDPOINTS: the user must be authorized on the database.
-    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
-    if (!allowedDatabases.contains("*") && !allowedDatabases.contains(databaseName))
-      return new ExecutionResponse(403, "{ \"error\" : \"Not authorized on database '" + databaseName + "'\"}");
+    // CONSOLIDATED PER-DATABASE AUTHORIZATION GATE (GHSA-x8mg-6r4p-87pf): throws IllegalArgumentException
+    // (mapped to HTTP 400) on a missing database name and SecurityException (mapped to HTTP 403) when the
+    // authenticated user cannot access the database.
+    checkAuthorizationOnDatabase(user, databaseName);
 
     final JSONArray operations = new JSONArray();
     for (final OperationProgress op : OperationProgressRegistry.instance().getOperations(databaseName))
