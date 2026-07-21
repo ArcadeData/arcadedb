@@ -1580,6 +1580,48 @@ class PostgresTypeTest {
     assertThat(result).isEqualTo("{\"[1,2]\",\"[3,4]\"}");
   }
 
+  /**
+   * Issue #5366: inside a quoted array element the backslash is itself an escape character, so it must be
+   * doubled. Escaping only the quote made "C:\temp" arrive as "C:temp".
+   */
+  @Test
+  void serializeAsTextEscapesBackslashesAndQuotes() {
+    Binary buffer = new Binary();
+    PostgresType.ARRAY_TEXT.serializeAsText(PostgresType.ARRAY_TEXT, buffer, List.of("say \"hi\" C:\\temp"));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("{\"say \\\"hi\\\" C:\\\\temp\"}");
+  }
+
+  /**
+   * Issue #5366: a JSON document nested in an array element is quoted twice, once by JSON and once by the array
+   * literal. Without doubling the backslash the JSON was truncated at its first escaped quote.
+   */
+  @Test
+  void serializeAsTextEscapesNestedJsonQuotes() {
+    Binary buffer = new Binary();
+    final JSONObject json = new JSONObject().put("name", "say \"hi\"");
+    PostgresType.ARRAY_JSON.serializeAsText(PostgresType.ARRAY_JSON, buffer, List.of(json));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("{\"{\\\"name\\\":\\\"say \\\\\\\"hi\\\\\\\"\\\"}\"}");
+  }
+
+  /**
+   * Issue #5366: the inbound parser must undo the array-literal escaping, otherwise a client sending a value
+   * with a quote or a backslash got a truncated or mangled element back.
+   */
+  @Test
+  void parseArrayTextUnescapesQuotesAndBackslashes() {
+    final Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 0,
+        "{\"say \\\"hi\\\" C:\\\\temp\",\"plain\"}".getBytes());
+    assertThat((List<Object>) result).containsExactly("say \"hi\" C:\\temp", "plain");
+  }
+
   // ==================== isArrayType Tests ====================
 
   @Test
