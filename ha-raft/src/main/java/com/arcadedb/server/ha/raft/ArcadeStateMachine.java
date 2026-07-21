@@ -376,6 +376,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
         });
       }
       lastAppliedIndex.set(snapshotIndex);
+      // If the on-disk marker carries an inflated term (issues #575, #593), this seed records it as-is
+      // (the previous applied TermIndex is null here, so no violation is possible) and the first
+      // re-applied entry realigns it via the tolerant updateLastAppliedTermIndex override. The stale
+      // snapshot.<inflatedTerm>_<index> filename persists across restarts until the next snapshot
+      // rolls it over: cosmetic, expected.
       updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
     } else
       lastAppliedIndex.set(-1);
@@ -433,11 +438,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "regressed from an over-recorded snapshot term; accepting the correction instead of halting "
               + "the state machine (issues #575, #593)", oldTI, newTI);
       // Mirrors BaseStateMachine's advancing-update path (store + return true) but without the strict
-      // term-first assertion. Verified against Ratis 3.2.2: super's transaction-future completion runs
-      // only on the no-op path (newTI equals oldTI), so an advancing update like this one has no
-      // additional bookkeeping to replicate - RE-VERIFY THIS on any Ratis upgrade. The read-then-set is
-      // not atomic but is safe: applied-index updates are confined to the single StateMachineUpdater
-      // thread.
+      // term-first assertion. Verified against the Ratis 3.2.2 source, which reads:
+      //
+      //   final TermIndex oldTI = lastAppliedTermIndex.getAndSet(newTI);
+      //   if (!newTI.equals(oldTI)) {
+      //     ... Preconditions.assertTrue(newTI.compareTo(oldTI) >= 0, ...);
+      //     return true;                                    // advancing path: NO future completion
+      //   }
+      //   synchronized (transactionFutures) { ... complete(null) ... }  // ONLY the equal/no-op path
+      //
+      // i.e. super completes pending queryStale() futures only on the no-op path (newTI equals oldTI),
+      // never on an advancing update, so this branch has no bookkeeping to replicate: the pending
+      // futures complete on the next duplicate update, which is not a benign regression and therefore
+      // delegates to super (pinned by the pendingStaleQueryFuture... regression test).
+      // RE-VERIFY THIS on any Ratis upgrade.
+      //
+      // The read-then-set is not atomic (super uses a single getAndSet) but cannot interleave: of the
+      // three call sites, applyTransaction runs on the single StateMachineUpdater thread, and both
+      // snapshot seeds run while that thread is not applying entries - reinitialize() is invoked by
+      // the updater itself (startup or reload() while PAUSED) and notifyInstallSnapshotFromLeader
+      // pauses the state machine for the install.
       setLastAppliedTermIndex(newTI);
       return true;
     }

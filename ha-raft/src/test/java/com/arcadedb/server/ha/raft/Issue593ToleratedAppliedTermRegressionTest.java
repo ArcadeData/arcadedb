@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
@@ -33,6 +34,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -103,6 +105,37 @@ class Issue593ToleratedAppliedTermRegressionTest {
           .doesNotThrowAnyException();
 
       assertThat(sm.getLastAppliedTermIndex()).isEqualTo(TermIndex.valueOf(BOUNDARY_TERM, NEXT_ENTRY_INDEX));
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * Pins the load-bearing Ratis 3.2.2 semantics the tolerant branch relies on: {@code super} completes
+   * pending {@code queryStale()} transaction futures ONLY on the equal/no-op path, never on an
+   * advancing update. The tolerated realignment must therefore behave exactly like super's advancing
+   * path (future stays pending) without breaking the completion pipeline: the next duplicate update is
+   * not a benign regression, delegates to super's no-op path and completes the future. A silently
+   * dropped future here would hang stale linearizable reads.
+   */
+  @Test
+  void pendingStaleQueryFutureStillCompletesAfterToleratedUpdate(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
+    try {
+      sm.updateLastAppliedTermIndex(TermIndex.valueOf(INFLATED_TERM, SNAPSHOT_INDEX));
+
+      final CompletableFuture<Message> stale = sm.queryStale(null, NEXT_ENTRY_INDEX);
+      assertThat(stale).as("registered while the applied index is behind minIndex").isNotDone();
+
+      sm.updateLastAppliedTermIndex(TermIndex.valueOf(BOUNDARY_TERM, NEXT_ENTRY_INDEX));
+      assertThat(stale)
+          .as("identical to super's advancing path in Ratis 3.2.2: futures never complete on an advancing update")
+          .isNotDone();
+
+      // The duplicate update Ratis later issues (e.g. via notifyTermIndexUpdated) is equal, not a
+      // benign regression, so it reaches super's no-op path - the only place futures complete.
+      sm.updateLastAppliedTermIndex(TermIndex.valueOf(BOUNDARY_TERM, NEXT_ENTRY_INDEX));
+      assertThat(stale).as("completion pipeline intact after the tolerated update").isDone();
     } finally {
       sm.close();
     }
