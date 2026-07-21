@@ -1042,6 +1042,54 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Issue #5368: Spark wraps the pushed-down query in a subquery before probing the schema, producing
+   * {@code SELECT * FROM (SELECT name FROM Character) SPARK_GEN_SUBQ_0 WHERE 1=0}. The schema-discovery
+   * fallback only handled a plain type as FROM target, so the probe came back with no RowDescription at all.
+   * The discovery must recurse into the subquery and expose what the subquery projects.
+   */
+  @Test
+  void schemaProbeWrappingASubqueryReturnsTheDescription() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE VERTEX TYPE Hero5368 IF NOT EXISTS;
+            CREATE PROPERTY Hero5368.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Hero5368.age IF NOT EXISTS INTEGER;
+            """);
+      }
+
+      // No rows at all: the description must come from the schema, through the subquery projection.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT name FROM (SELECT name, age FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name AS hero FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "hero");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT * FROM (SELECT age FROM Hero5368) INNER1) OUTER1 WHERE 1=0", "age");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", RID_PROPERTY, TYPE_PROPERTY,
+          CAT_PROPERTY, "name", "age");
+
+      try (var st = conn.createStatement()) {
+        st.execute("INSERT INTO Hero5368 SET name = 'Valjean', age = 40");
+      }
+
+      // Rows present: the sample-row path must resolve the subquery target the same way.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT age FROM (SELECT name, age FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "age");
+
+      // Sanity check: the same subquery without the probe filter still returns data.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT * FROM (SELECT name FROM Hero5368) SPARK_GEN_SUBQ_0")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("name")).isEqualTo("Valjean");
+        }
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("DROP TYPE Hero5368 UNSAFE");
+      }
+    }
+  }
+
   private void assertProbedColumns(final Connection conn, final String query, final String... expectedColumns)
       throws SQLException {
     try (var st = conn.createStatement()) {
