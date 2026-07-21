@@ -35,6 +35,16 @@ public interface Transaction {
 
   void setWALFlush(WALFile.FlushType flush);
 
+  /**
+   * Returns true if the WAL (Write Ahead Log - Transaction Journal) is written for this transaction.
+   */
+  boolean isUseWAL();
+
+  /**
+   * Returns the WAL (Write Ahead Log - Transaction Journal) flush strategy in use for this transaction.
+   */
+  WALFile.FlushType getWALFlush();
+
   boolean isAsyncFlush();
 
   void setAsyncFlush(boolean value);
