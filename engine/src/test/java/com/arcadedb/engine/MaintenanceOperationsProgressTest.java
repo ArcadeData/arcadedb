@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -57,7 +58,12 @@ class MaintenanceOperationsProgressTest extends TestHelper {
     final Thread sampler = new Thread(() -> {
       while (running.get()) {
         samples.addAll(OperationProgressRegistry.instance().getOperations(database.getName()));
-        Thread.yield();
+        try {
+          // 1ms cadence still catches the multi-second rebuild reliably without busy-spinning a CI core.
+          Thread.sleep(1);
+        } catch (final InterruptedException e) {
+          return;
+        }
       }
     });
     sampler.setDaemon(true);
@@ -72,6 +78,7 @@ class MaintenanceOperationsProgressTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   void rebuildIndexPublishesAndRetiresProgress() throws InterruptedException {
     createIndexedType(100_000);
 

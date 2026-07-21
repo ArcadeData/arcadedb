@@ -805,15 +805,15 @@ public class Console {
     output(level, "\n" + text, args);
   }
 
+  /** The maintenance commands that publish live progress in the operation registry (issues #5372, #5376). */
+  private static final String[] PROGRESS_MONITORED_COMMANDS = { "check database", "rebuild index", "compact index",
+      "backup database", "import database" };
+
   /**
    * Starts the live progress line for long-running maintenance commands (issue #5372), or returns null when
    * not applicable (not a monitored command, or the output is redirected to an embedding application).
    * Polling is best-effort: any failure silently stops the rendering, never the command.
    */
-  /** The maintenance commands that publish live progress in the operation registry (issues #5372, #5376). */
-  private static final String[] PROGRESS_MONITORED_COMMANDS = { "check database", "rebuild index", "compact index",
-      "backup database", "import database" };
-
   private Thread startProgressMonitor(final String line) {
     if (output != null || verboseLevel < 2)
       return null;

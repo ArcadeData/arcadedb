@@ -24,11 +24,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.engine.OperationProgress;
-import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -155,7 +155,13 @@ public class RebuildIndexStatement extends DDLStatement {
         ++stepIndex;
         final int step = stepIndex;
         final String stepName = "Rebuilding index '" + idx.getName() + "'";
-        final long recordsTotal = idx.getTypeName() != null ? database.countType(idx.getTypeName(), false) : -1L;
+        // A per-bucket sub-index rebuild scans only its associated bucket, so its step total is that bucket's
+        // count; only a full TypeIndex rebuild scans the whole type. Using countType for a sub-index would cap
+        // the step percentage at ~100/N% on a type spread over N buckets.
+        final int associatedBucketId = idx.getAssociatedBucketId();
+        final long recordsTotal = associatedBucketId > -1 && !(idx instanceof TypeIndex) ?
+            database.getSchema().getBucketById(associatedBucketId).count() :
+            idx.getTypeName() != null ? database.countType(idx.getTypeName(), false) : -1L;
         progress.onProgress(stepName, step, targetIndexes.size(), 0, recordsTotal);
 
         final Index.BuildIndexCallback progressCallback = (document, totalIndexed) -> {
