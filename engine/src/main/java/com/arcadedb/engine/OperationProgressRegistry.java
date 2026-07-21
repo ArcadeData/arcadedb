@@ -31,6 +31,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * it in a finally block. Readers (HTTP progress endpoint, console/Studio pollers) get a weakly-consistent
  * snapshot. The registry is deliberately process-local: in an HA cluster each server reports what it is doing,
  * which is what an operator polling that node wants to see.
+ * <p>
+ * Operations are keyed by DATABASE NAME, JVM-globally: in an embedded process hosting two databases that share
+ * a name (different directories), {@link #getOperations} merges their operations in one snapshot. Accepted for
+ * now - the server never hosts two same-named databases - revisit with identity-based keying if that topology
+ * ever becomes supported.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

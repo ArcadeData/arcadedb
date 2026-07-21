@@ -103,16 +103,25 @@ public class OperationProgress implements ProgressCallback {
   }
 
   public JSONObject toJSON() {
+    // READ EACH VOLATILE ONCE so done/total/percentage in the emitted JSON are mutually consistent. The
+    // snapshot as a whole is still weakly consistent across fields (no lock is taken on the producer), which
+    // is the documented contract and harmless for a progress display.
+    final String currentStepName = stepName;
+    final int currentStepIndex = stepIndex;
+    final int currentTotalSteps = totalSteps;
+    final long currentDone = done;
+    final long currentTotal = total;
+
     final JSONObject json = new JSONObject();
     json.put("id", id);
     json.put("database", databaseName);
     json.put("operation", operation);
-    json.put("stepName", stepName);
-    json.put("stepIndex", stepIndex);
-    json.put("totalSteps", totalSteps);
-    json.put("done", done);
-    json.put("total", total);
-    json.put("percentage", getPercentage());
+    json.put("stepName", currentStepName);
+    json.put("stepIndex", currentStepIndex);
+    json.put("totalSteps", currentTotalSteps);
+    json.put("done", currentDone);
+    json.put("total", currentTotal);
+    json.put("percentage", currentTotal <= 0 ? -1 : (int) Math.min(100L, currentDone * 100L / currentTotal));
     json.put("startedOn", startedOn);
     json.put("elapsedMs", System.currentTimeMillis() - startedOn);
     return json;

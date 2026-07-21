@@ -3048,6 +3048,11 @@ function startCommandProgressMonitor(database, command) {
         }
         $("#commandProgressLabel").html(label);
         $("#commandProgressBar").css("width", (pct != null ? pct : 100) + "%");
+      })
+      .fail(function () {
+        // The endpoint is unavailable (older server, auth change, network): stop polling instead of firing
+        // a failing request every second until the command completes.
+        stopCommandProgressMonitor();
       });
   }, 1000);
 }
