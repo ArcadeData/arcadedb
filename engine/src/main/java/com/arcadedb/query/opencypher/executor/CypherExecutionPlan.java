@@ -73,6 +73,7 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
@@ -253,10 +254,7 @@ public class CypherExecutionPlan {
     if (rootStep == null) {
       // Phase 4: Use optimized physical plan if available
       // Use pre-computed flags from the cached CypherStatement to avoid scanning clause lists per execution
-      if (physicalPlan != null && physicalPlan.getRootOperator() != null
-          && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
-          && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()
-          && !statement.hasWriteBeforeMatch()) {
+      if (canUseOptimizedPhysicalPlan()) {
         // Use optimizer - execute physical operators directly
         // Note: For Phase 4, we only optimize MATCH patterns
         // RETURN, ORDER BY, LIMIT are still handled by execution steps
@@ -314,6 +312,13 @@ public class CypherExecutionPlan {
     }
 
     return resultSet;
+  }
+
+  private boolean canUseOptimizedPhysicalPlan() {
+    return physicalPlan != null && physicalPlan.getRootOperator() != null
+        && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
+        && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()
+        && !statement.hasWriteBeforeMatch();
   }
 
   /**
@@ -488,7 +493,7 @@ public class CypherExecutionPlan {
     explainOutput.append("OpenCypher Native Execution Plan\n");
     explainOutput.append("=================================\n\n");
 
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
+    if (canUseOptimizedPhysicalPlan()) {
       explainOutput.append("Using Cost-Based Query Optimizer\n\n");
       explainOutput.append("Physical Plan:\n");
       explainOutput.append(physicalPlan.getRootOperator().explain(0));
@@ -538,16 +543,9 @@ public class CypherExecutionPlan {
         rootStep = tryOptimizeCountStar(context);
 
         if (rootStep == null) {
-          final boolean hasUnwindBeforeMatch = hasUnwindPrecedingMatch();
-          final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
-
-          final boolean hasVLP2 = hasVariableLengthPath();
-          final boolean hasWriteBeforeMatch2 = statement.hasWriteBeforeMatch();
-          final boolean hasSubquery2 = statement.hasSubquery();
-          if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2
-              && !hasVLP2 && !hasWriteBeforeMatch2 && !hasSubquery2)
+          if (canUseOptimizedPhysicalPlan()) {
             rootStep = buildExecutionStepsWithOptimizer(context);
-          else
+          } else
             rootStep = buildExecutionSteps(context);
         }
 
@@ -576,7 +574,7 @@ public class CypherExecutionPlan {
     if (errorMessage != null)
       profileOutput.append(String.format("\nError: %s\n", errorMessage));
 
-    if (physicalPlan != null && physicalPlan.getRootOperator() != null) {
+    if (canUseOptimizedPhysicalPlan()) {
       profileOutput.append("\nExecution Plan (Cost-Based Optimizer):\n");
       profileOutput.append(physicalPlan.getRootOperator().explain(0));
       profileOutput.append(String.format("\nEstimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
@@ -850,58 +848,6 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Checks if the query has UNWIND before MATCH in clause order.
-   * This is used to disable the optimizer for such queries because the optimizer
-   * doesn't handle clause ordering correctly.
-   */
-  private boolean hasUnwindPrecedingMatch() {
-    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
-    if (clausesInOrder == null || clausesInOrder.isEmpty()) {
-      // Fall back to checking if both UNWIND and MATCH exist
-      return !statement.getUnwindClauses().isEmpty() && !statement.getMatchClauses().isEmpty();
-    }
-
-    // Find the first UNWIND and first MATCH in clause order
-    int firstUnwindOrder = Integer.MAX_VALUE;
-    int firstMatchOrder = Integer.MAX_VALUE;
-
-    for (final ClauseEntry entry : clausesInOrder) {
-      if (entry.getType() == ClauseEntry.ClauseType.UNWIND) {
-        firstUnwindOrder = Math.min(firstUnwindOrder, entry.getOrder());
-      } else if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
-        firstMatchOrder = Math.min(firstMatchOrder, entry.getOrder());
-      }
-    }
-
-    // Return true if UNWIND appears before MATCH
-    return firstUnwindOrder < firstMatchOrder;
-  }
-
-  /**
-   * Checks if the query has WITH before MATCH in clause order.
-   * The optimizer path processes all MATCH clauses first via the physical plan,
-   * which breaks queries like: WITH date(...) AS x MATCH (d:Duration) RETURN x + d.dur
-   * because WITH needs to execute before MATCH to provide variables.
-   */
-  private boolean hasWithPrecedingMatch() {
-    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
-    if (clausesInOrder == null || clausesInOrder.isEmpty())
-      return !statement.getWithClauses().isEmpty() && !statement.getMatchClauses().isEmpty();
-
-    int firstWithOrder = Integer.MAX_VALUE;
-    int firstMatchOrder = Integer.MAX_VALUE;
-
-    for (final ClauseEntry entry : clausesInOrder) {
-      if (entry.getType() == ClauseEntry.ClauseType.WITH)
-        firstWithOrder = Math.min(firstWithOrder, entry.getOrder());
-      else if (entry.getType() == ClauseEntry.ClauseType.MATCH)
-        firstMatchOrder = Math.min(firstMatchOrder, entry.getOrder());
-    }
-
-    return firstWithOrder < firstMatchOrder;
-  }
-
-  /**
    * Checks if the query contains a CALL subquery clause.
    * The optimizer path doesn't handle SUBQUERY steps, so we fall back to the
    * non-optimized execution path when subqueries are present.
@@ -914,23 +860,6 @@ public class CypherExecutionPlan {
     for (final ClauseEntry entry : clausesInOrder) {
       if (entry.getType() == ClauseEntry.ClauseType.SUBQUERY)
         return true;
-    }
-    return false;
-  }
-
-  /**
-   * Checks if any MATCH clause contains a variable-length path pattern.
-   * The optimizer doesn't support VLP (it only uses ExpandAll for fixed-length),
-   * so we fall back to the step-based execution path.
-   */
-  private boolean hasVariableLengthPath() {
-    for (final MatchClause matchClause : statement.getMatchClauses()) {
-      for (final PathPattern path : matchClause.getPathPatterns()) {
-        for (int i = 0; i < path.getRelationshipCount(); i++) {
-          if (path.getRelationship(i).isVariableLength())
-            return true;
-        }
-      }
     }
     return false;
   }
@@ -1624,6 +1553,12 @@ public class CypherExecutionPlan {
         String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
 
+        boolean reversed = shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
+        if (reversed) {
+          sourceNode = pathPattern.getLastNode();
+          sourceVar = sourceNode.getVariable();
+        }
+
         // Check if source node variable is already bound (either from previous MATCH or
         // from earlier patterns in this same MATCH clause)
         boolean sourceAlreadyBound = stepBeforeMatch != null &&
@@ -1636,8 +1571,7 @@ public class CypherExecutionPlan {
         // Example: OPTIONAL MATCH (c:Comment)-[:COMMENTED_ON]->(q) where q is bound
         // Without reversal: scan all Comments → check if each connects to q (slow!)
         // With reversal: start from q → follow INCOMING COMMENTED_ON edges (fast!)
-        boolean reversed = false;
-        if (!sourceAlreadyBound && pathPattern.getRelationshipCount() == 1
+        if (!reversed && !sourceAlreadyBound && pathPattern.getRelationshipCount() == 1
             && !pathPattern.getRelationship(0).isVariableLength()) {
           final NodePattern targetNode = pathPattern.getLastNode();
           final String targetVar = targetNode.getVariable();
@@ -1762,7 +1696,8 @@ public class CypherExecutionPlan {
           AbstractExecutionStep nextStep;
           if (relPattern.isVariableLength()) {
             nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
-                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, boundVariables), context);
+                true, effectiveTargetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, boundVariables),
+                directionOverride, reversed, context);
           } else {
             // Check if this hop requires IN traversal on a unidirectional edge.
             // Unidirectional edges don't store incoming links, so we must restructure:
@@ -1844,6 +1779,36 @@ public class CypherExecutionPlan {
     boundVariables.addAll(matchVariables);
 
     return currentStep;
+  }
+
+  /**
+   * The physical operators do not yet implement variable-length expansion, but their cost-based
+   * anchor selection is still useful to the traditional executor. Limit this bridge to a single,
+   * bounded relationship whose indexed target can be reached through stored incoming adjacency.
+   */
+  private boolean shouldReverseVariableLengthPathFromIndexedAnchor(final MatchClause matchClause,
+      final PathPattern pathPattern) {
+    if (physicalPlan == null || physicalPlan.getAnchor() == null || !physicalPlan.getAnchor().useIndex()
+        || physicalPlan.getAnchor().isRangeScan() || physicalPlan.getAnchor().getIndex() == null
+        || physicalPlan.getAnchor().getPropertyValue() instanceof InListValues
+        || physicalPlan.getAnchor().getIndex().getPropertyNames() == null
+        || physicalPlan.getAnchor().getIndex().getPropertyNames().size() != 1)
+      return false;
+    if (!statement.isReadOnly() || statement.hasUnwindBeforeMatch() || statement.hasWithBeforeMatch()
+        || statement.hasSubquery() || statement.hasWriteBeforeMatch()
+        || statement.getMatchClauses().size() != 1 || matchClause.isOptional()
+        || matchClause.getPathPatterns().size() != 1 || pathPattern.getRelationshipCount() != 1)
+      return false;
+
+    final RelationshipPattern relationship = pathPattern.getRelationship(0);
+    if (!relationship.isVariableLength() || relationship.getMaxHops() == null || !relationship.hasTypes()
+        || isAnyEdgeTypeUnidirectional(relationship.getTypes()))
+      return false;
+
+    final String sourceVariable = pathPattern.getFirstNode().getVariable();
+    final String targetVariable = pathPattern.getLastNode().getVariable();
+    return sourceVariable != null && targetVariable != null && !sourceVariable.equals(targetVariable)
+        && targetVariable.equals(physicalPlan.getAnchor().getVariable());
   }
 
   /**
