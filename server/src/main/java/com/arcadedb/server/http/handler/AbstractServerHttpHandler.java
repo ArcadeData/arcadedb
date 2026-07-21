@@ -454,9 +454,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         reported.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
       } else {
+        // UNEXPECTED INTERNAL ERROR (not a client/validation error handled above): log the FULL stack trace so
+        // an internal fault - e.g. a BufferUnderflowException from a truncated/corrupted record read - is
+        // diagnosable. Passing the throwable is what makes the logger emit the trace; without it no stack trace
+        // is ever printed, at any log level (issue #600). Use realException (the actual cause) for a useful trace.
         LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        e.getMessage());
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s)", realException,
+                        getClass().getSimpleName());
         sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
       }
     } catch (final HttpSessionException e) {
@@ -532,9 +536,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
       } else {
+        // UNEXPECTED INTERNAL ERROR wrapped by the auto-commit transaction wrapper (the client sees the generic
+        // "Error on transaction commit"). Log the FULL stack trace of the real cause: without passing the
+        // throwable the logger never prints a trace, at any level, which is why a BufferUnderflowException on a
+        // read-only command surfaced with no diagnosable trace even at DEBUG (issue #600).
         LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-                        e.getMessage());
+                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s)", realException,
+                        getClass().getSimpleName());
         sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
       }
     } catch (final Throwable e) {
