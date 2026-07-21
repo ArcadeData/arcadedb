@@ -390,7 +390,10 @@ class RaftGroupCommitter {
       } catch (final InterruptedException e) {
         if (!running)
           break;
-        Thread.currentThread().interrupt();
+        // Interrupted while still running (e.g. the flag restored by flushBatch's interrupt
+        // handling made poll() throw): swallow it and keep flushing. The interrupt protocol for
+        // this thread is stop()/transferPendingTo(), which set running=false BEFORE interrupting;
+        // re-asserting the flag here would make the next poll() throw immediately and busy-spin.
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Error in group commit flusher: %s", e.getMessage());
         for (final CancellablePendingEntry p : batch)
@@ -433,6 +436,13 @@ class RaftGroupCommitter {
       }
     }
 
+    // From here every remaining entry has been DISPATCHED: the request entered the Ratis client and
+    // may have reached the leader's Raft log even when the wait below fails (lost reply, interrupt,
+    // timeout, negative reply after internal Ratis retries). Such an entry can still commit on the
+    // followers AND on this node's state machine, so its failure must surface as a
+    // ReplicationDispatchedTimeoutException (indeterminate outcome, issue #4790): the originator then
+    // marks the transaction for local apply instead of rolling back and origin-skipping a write the
+    // rest of the cluster keeps - the silent leader divergence behind issue #4743's bulk-load churn.
     for (int i = 0; i < batch.size(); i++) {
       if (futures[i] == null)
         continue;
@@ -443,7 +453,8 @@ class RaftGroupCommitter {
           final String err = reply.getException() != null ? reply.getException().getMessage() : "replication failed";
           if (isClientClosed(reply.getException()))
             clientClosedDetected = true;
-          batch.get(i).future.complete(new QuorumNotReachedException("Raft replication failed: " + err));
+          batch.get(i).future.complete(new ReplicationDispatchedTimeoutException(
+              "Raft replication failed: " + err + " (entry was dispatched to Raft; outcome unknown)"));
           continue;
         }
 
@@ -466,11 +477,23 @@ class RaftGroupCommitter {
         }
 
         batch.get(i).future.complete(null); // success - after ALL check
+      } catch (final InterruptedException ie) {
+        // The flusher was interrupted (client refresh after leader churn, or shutdown) while
+        // awaiting quorum results. This entry and every remaining one were already dispatched, so
+        // complete them all as indeterminate and stop waiting: lingering here for quorumTimeout per
+        // entry would stall the refresh path that interrupted us.
+        Thread.currentThread().interrupt();
+        for (int j = i; j < batch.size(); j++)
+          if (futures[j] != null && !batch.get(j).future.isDone())
+            batch.get(j).future.complete(new ReplicationDispatchedTimeoutException(
+                "Group commit interrupted while awaiting quorum result (entry was dispatched to Raft; outcome unknown)"));
+        break;
       } catch (final Exception e) {
         if (isClientClosed(e))
           clientClosedDetected = true;
         final String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-        batch.get(i).future.complete(new QuorumNotReachedException("Group commit entry failed: " + detail));
+        batch.get(i).future.complete(new ReplicationDispatchedTimeoutException(
+            "Group commit entry failed: " + detail + " (entry was dispatched to Raft; outcome unknown)"));
       }
     }
 
