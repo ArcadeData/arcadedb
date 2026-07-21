@@ -412,7 +412,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * at install time and a later leadership-change reconciliation can settle it on a LOWER term. When
    * Ratis then applies the real next committed entry, its {@code index} advances (genuine forward
    * progress) while its {@code term} is lower than the over-recorded snapshot term - tripping the
-   * invariant even though nothing is actually wrong (issues #575, #593: the Locstat cluster stuck with
+   * invariant even though nothing is actually wrong (issues #575, #593: a production cluster stuck with
    * all nodes {@code VOTING_FOR_ME} after {@code snapshot.11_39707283} vs a term-10 entry at
    * 39707284).
    * <p>

@@ -33,15 +33,17 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #600 (Locstat): a read-only query
+ * From a customer report: a read-only query
  * <pre>SELECT number, both().size() FROM Account ORDER BY both().size() DESC LIMIT 5</pre>
  * on a database holding a hot Account vertex promoted to the striped super-node layout returned
- * {@code java.nio.BufferUnderflowException}. This test exercises the EXACT client query against a HEALTHY
- * promoted super-node to establish whether the read path itself is defective (issue #600 investigation
- * point 5). A green run means the healthy super-node traversal + {@code both().size()} aggregation is correct,
- * pointing the reported exception at pre-existing on-disk corruption rather than a new read bug.
+ * {@code java.nio.BufferUnderflowException}. This test exercises the EXACT reported query against a HEALTHY
+ * promoted super-node to establish whether the read path itself is defective. A green run means the healthy
+ * super-node traversal + {@code both().size()} aggregation is correct, pointing the reported exception at
+ * pre-existing on-disk corruption rather than a new read bug.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue600SuperNodeBothSizeTest extends TestHelper {
+class SuperNodeBothSizeQueryTest extends TestHelper {
   private int savedThreshold;
   private int savedStripes;
 
@@ -58,7 +60,7 @@ class Issue600SuperNodeBothSizeTest extends TestHelper {
   }
 
   /**
-   * Reproduces the client's query on a healthy promoted super-node. The hot Account collects {@code hotDegree}
+   * Reproduces the reported query on a healthy promoted super-node. The hot Account collects {@code hotDegree}
    * inbound edges - well over the promotion threshold - so its IN edge list is a {@link StripeDirectory} with
    * generation-0 (pre-promotion) chain plus striped chains. {@code both().size()} must aggregate every edge
    * across all of them without throwing.
@@ -116,7 +118,7 @@ class Issue600SuperNodeBothSizeTest extends TestHelper {
 
     final int hubIncoming = hotDegree + coldAccounts; // every cold + every hot source points at the hub
 
-    // THE EXACT CLIENT QUERY - must not throw BufferUnderflowException and must rank the hub first.
+    // THE EXACT REPORTED QUERY - must not throw BufferUnderflowException and must rank the hub first.
     database.transaction(() -> {
       try (final ResultSet rs = database.query("sql",
           "SELECT number, both().size() AS degree FROM Account ORDER BY both().size() DESC LIMIT 5")) {
