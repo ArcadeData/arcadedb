@@ -151,6 +151,13 @@ public class GraphDatabaseChecker {
     return stats;
   }
 
+  /**
+   * Rebuilds the edge lists of the registered vertices from the surviving edge records. NOTE: this is a FULL
+   * scan of every edge type, even when a single vertex needs reconnection - acceptable because it runs only in
+   * fix mode on an already-damaged database, and the pre-existing reconnect path had the same cost. A rebuilt
+   * entry may still point to a far endpoint vertex that no longer exists (the edge record survives, its target
+   * does not): that is the same behaviour as before and the {@code checkEdges} pass reports it.
+   */
   private void reconnectEdges(Set<RID> reconnectOutEdges, Set<RID> reconnectInEdges, Set<RID> corruptedRecords,
       List<String> warnings, AtomicLong totalWarnings, int maxWarnings, Map<String, Object> stats) {
     // BROWSE ALL THE EDGES AND COLLECT THE ONES PART OF THE RECONNECTION
@@ -180,13 +187,11 @@ public class GraphDatabaseChecker {
           if (bidirectional && reconnectInEdges.contains(e.getIn()))
             inEdgesToReconnect.add(e);
         } catch (final Exception e) {
-          addWarning(warnings, totalWarnings, maxWarnings, "edge " + record.getIdentity()
-              + " could not be read during the edge-list rebuild, skipping it (error: " + describe(e) + ")");
+          warnUnreadableEdgeDuringRebuild(warnings, totalWarnings, maxWarnings, record.getIdentity(), e);
         }
         return true;
       }, (rid, exception) -> {
-        addWarning(warnings, totalWarnings, maxWarnings,
-            "edge " + rid + " could not be read during the edge-list rebuild, skipping it (error: " + describe(exception) + ")");
+        warnUnreadableEdgeDuringRebuild(warnings, totalWarnings, maxWarnings, rid, exception);
         return true;
       });
     }
@@ -209,6 +214,12 @@ public class GraphDatabaseChecker {
       addWarning(warnings, totalWarnings, maxWarnings, "reconnected " + inEdgesToReconnect.size() + " incoming edges");
       stats.put("inEdgesToReconnect", inEdgesToReconnect);
     }
+  }
+
+  private static void warnUnreadableEdgeDuringRebuild(final List<String> warnings, final AtomicLong totalWarnings,
+      final int maxWarnings, final Object rid, final Throwable error) {
+    addWarning(warnings, totalWarnings, maxWarnings,
+        "edge " + rid + " could not be read during the edge-list rebuild, skipping it (error: " + describe(error) + ")");
   }
 
   private void checkIncomingEdges(boolean fix, Vertex vertex, List<String> warnings, AtomicLong totalWarnings, int maxWarnings,
