@@ -23,10 +23,13 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
+import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -76,6 +79,30 @@ class Issue593ToleratedAppliedTermRegressionTest {
       assertThat(sm.getLastAppliedTermIndex())
           .as("the recorded term is realigned down to the real next-entry term")
           .isEqualTo(TermIndex.valueOf(BOUNDARY_TERM, NEXT_ENTRY_INDEX));
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * The real crash site is {@code applyTransaction} -> {@code updateLastAppliedTermIndex(long, long)}:
+   * the {@code (long,long)} overload, which in Ratis delegates virtually to the {@code TermIndex}
+   * overload our override intercepts. This test locks in that dispatch by replaying the exact restart
+   * lifecycle of a wedged node through the overload: {@code reinitialize()}-style seed of the inflated
+   * marker term while the previous applied TermIndex is still null (no violation possible), then the
+   * first re-applied entry - tolerated, so an upgraded node self-heals with no manual marker rename.
+   */
+  @Test
+  void restartLifecycleSelfHealsThroughLongOverload(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
+    try {
+      assertThatCode(() -> {
+        updateViaLongOverload(sm, INFLATED_TERM, SNAPSHOT_INDEX);   // reinitialize() seeding the inflated marker
+        updateViaLongOverload(sm, BOUNDARY_TERM, NEXT_ENTRY_INDEX); // applyTransaction re-applying the next entry
+      }).as("an upgraded node restarting on an inflated on-disk marker must self-heal, not crash-loop")
+          .doesNotThrowAnyException();
+
+      assertThat(sm.getLastAppliedTermIndex()).isEqualTo(TermIndex.valueOf(BOUNDARY_TERM, NEXT_ENTRY_INDEX));
     } finally {
       sm.close();
     }
@@ -149,6 +176,25 @@ class Issue593ToleratedAppliedTermRegressionTest {
   }
 
   // --- helpers -------------------------------------------------------------------------------------
+
+  /**
+   * Drives Ratis's protected {@code BaseStateMachine.updateLastAppliedTermIndex(long, long)} - the
+   * exact entry point {@code applyTransaction} and {@code reinitialize()} use in production. It is
+   * protected in a foreign package and not overridden locally, so reflection is required here;
+   * {@code Method.invoke} still dispatches virtually, proving the overload reaches the override.
+   */
+  private static void updateViaLongOverload(final ArcadeStateMachine sm, final long term, final long index)
+      throws Exception {
+    final Method m = BaseStateMachine.class.getDeclaredMethod("updateLastAppliedTermIndex", long.class, long.class);
+    m.setAccessible(true);
+    try {
+      m.invoke(sm, term, index);
+    } catch (final InvocationTargetException e) {
+      if (e.getCause() instanceof RuntimeException re)
+        throw re;
+      throw e;
+    }
+  }
 
   private static ArcadeStateMachine newInitializedStateMachine(final Path tempDir) throws IOException {
     final RaftGroupId groupId = RaftGroupId.valueOf(UUID.randomUUID());

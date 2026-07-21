@@ -417,6 +417,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * unchecked {@link #setLastAppliedTermIndex}) and continue, logging a WARNING so operators still see
    * it. Every other ordering (index not advancing, or term not regressing) is delegated to
    * {@code super} unchanged, so real invariant violations still fail loudly.
+   * <p>
+   * This also makes recovery from an already-inflated on-disk marker automatic: on restart,
+   * {@link #reinitialize()} seeds the inflated term while the previous applied TermIndex is still
+   * {@code null} (no violation possible), and the first re-applied entry then takes the tolerant
+   * branch above - the node self-heals without any manual marker rename. The stale marker filename
+   * is cosmetic and is replaced by the next snapshot.
    */
   @Override
   protected boolean updateLastAppliedTermIndex(final TermIndex newTI) {
@@ -427,8 +433,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "regressed from an over-recorded snapshot term; accepting the correction instead of halting "
               + "the state machine (issues #575, #593)", oldTI, newTI);
       // Mirrors BaseStateMachine's advancing-update path (store + return true) but without the strict
-      // term-first assertion. The transaction-future completion in super runs only on the no-op path
-      // (newTI equals oldTI), so an advancing update like this one has no additional bookkeeping.
+      // term-first assertion. Verified against Ratis 3.2.2: super's transaction-future completion runs
+      // only on the no-op path (newTI equals oldTI), so an advancing update like this one has no
+      // additional bookkeeping to replicate - RE-VERIFY THIS on any Ratis upgrade. The read-then-set is
+      // not atomic but is safe: applied-index updates are confined to the single StateMachineUpdater
+      // thread.
       setLastAppliedTermIndex(newTI);
       return true;
     }
