@@ -106,6 +106,7 @@ public class PostgresNetworkExecutor extends Thread {
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
   private final boolean                     DEBUG                 = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
+  private final boolean                     QUOTED_IDENTIFIERS    = GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS.getValueAsBoolean();
   private final Map<String, Object>         connectionProperties  = new HashMap<>();
   private final Set<String>                 ignoreQueriesAppNames = new HashSet<>(//
       List.of("dbvis", "Database Navigator - Pool"));
@@ -1998,7 +1999,19 @@ public class PostgresNetworkExecutor extends Thread {
       queryText = query.substring(matcher.end()).trim();
     }
 
+    if (QUOTED_IDENTIFIERS && ("sql".equals(language) || "sqlscript".equals(language)) && !isSessionCommand(queryText))
+      // POSTGRES CLIENTS QUOTE IDENTIFIERS WITH DOUBLE QUOTES, WHILE ARCADEDB SQL USES BACK-TICKS (ISSUE #5369)
+      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText);
+
     return new Query(language, queryText);
+  }
+
+  /**
+   * Session commands such as {@code SET search_path TO "$user", public} are handled by the protocol itself and never
+   * reach the SQL engine, so their double quotes must be left alone.
+   */
+  private static boolean isSessionCommand(final String queryText) {
+    return queryText.regionMatches(true, 0, "SET ", 0, 4) || queryText.regionMatches(true, 0, "SHOW ", 0, 5);
   }
 
   private void emptyQueryResponse() {
