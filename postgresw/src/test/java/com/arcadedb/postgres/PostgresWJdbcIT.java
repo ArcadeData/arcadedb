@@ -1161,12 +1161,12 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         JSONArray jsonArray = new JSONArray(randomData);
 
         try (ResultSet rs = st.executeQuery(
-            "INSERT INTO `" + arcadeName + "` SET str = \"meow\", data = " +
+            "INSERT INTO `" + arcadeName + "` SET str = 'meow', data = " +
                 jsonArray + " RETURN data")) {
         }
 
         try (ResultSet rs = st.executeQuery(
-            "SELECT data FROM `" + arcadeName + "` WHERE str = \"meow\"")) {
+            "SELECT data FROM `" + arcadeName + "` WHERE str = 'meow'")) {
           assertThat(rs.next()).isTrue();
 
           Array dataArray = rs.getArray("data");
@@ -1400,8 +1400,8 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         st.execute("create property TEXT_EMBEDDING.embedding if not exists LIST;");
 
         // Use explicit float casting to ensure values are stored as floats, not doubles
-        st.execute("INSERT INTO `TEXT_EMBEDDING` SET str = \"meow\", embedding = [0.1f, 0.2f, 0.3f]");
-        ResultSet resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING` WHERE str = \"meow\"");
+        st.execute("INSERT INTO `TEXT_EMBEDDING` SET str = 'meow', embedding = [0.1f, 0.2f, 0.3f]");
+        ResultSet resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING` WHERE str = 'meow'");
 
         assertThat(resultSet.next()).isTrue();
         Array embeddingArray = resultSet.getArray("embedding");
@@ -1507,7 +1507,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
         // Test INSERT with RETURN - this matches the Python e2e test scenario
         ResultSet resultSet = st.executeQuery(
-            "INSERT INTO `TEXT_EMBEDDING_2` SET str = \"meow\", embedding = [0.1,0.2,0.3] RETURN embedding");
+            "INSERT INTO `TEXT_EMBEDDING_2` SET str = 'meow', embedding = [0.1,0.2,0.3] RETURN embedding");
 
         assertThat(resultSet.next()).isTrue();
         Array embeddingArray = resultSet.getArray("embedding");
@@ -1528,7 +1528,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         assertThat((Float) embeddings[2]).isEqualTo(0.3f, offset(0.0001f));
 
         // Also test regular SELECT query
-        resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING_2` WHERE str = \"meow\"");
+        resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING_2` WHERE str = 'meow'");
         assertThat(resultSet.next()).isTrue();
         embeddingArray = resultSet.getArray("embedding");
         assertThat(embeddingArray).isNotNull();
@@ -1536,6 +1536,51 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         embeddings = (Object[]) embeddingArray.getArray();
         assertThat(embeddings).hasSize(3);
         assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
+      }
+    }
+  }
+
+  /**
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5369">#5369</a>
+   * The Postgres wire protocol must treat a double-quoted token as an identifier (as PostgreSQL and the SQL standard do)
+   * and not as a string literal. Spark and most BI tools always quote column and table names.
+   */
+  @Test
+  void quotedIdentifiersAreNotStringLiterals() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE Character5369");
+        st.execute("INSERT INTO Character5369 SET name = 'Valjean', pos = 1");
+        st.execute("INSERT INTO Character5369 SET name = 'Javert', pos = 2");
+      }
+
+      // QUOTED PROJECTION + QUOTED TYPE: THE VALUE OF THE PROPERTY, NOT THE CONSTANT STRING 'name'
+      try (var st = conn.createStatement()) {
+        final ResultSet rs = st.executeQuery("SELECT \"name\" FROM \"Character5369\" ORDER BY \"pos\"");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isEqualTo("Valjean");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isEqualTo("Javert");
+        assertThat(rs.next()).isFalse();
+      }
+
+      // QUOTED IDENTIFIER IN THE WHERE CLAUSE, SINGLE-QUOTED STRING LITERAL AS THE VALUE
+      try (var st = conn.createStatement()) {
+        final ResultSet rs = st.executeQuery("SELECT \"name\" FROM \"Character5369\" WHERE \"name\" = 'Javert'");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isEqualTo("Javert");
+        assertThat(rs.next()).isFalse();
+      }
+
+      // A DOUBLE QUOTE INSIDE A STRING LITERAL IS NOT AN IDENTIFIER
+      try (var st = conn.createStatement()) {
+        final ResultSet rs = st.executeQuery("SELECT 'the \"name\"' AS label FROM \"Character5369\" LIMIT 1");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("label")).isEqualTo("the \"name\"");
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("DROP TYPE Character5369");
       }
     }
   }

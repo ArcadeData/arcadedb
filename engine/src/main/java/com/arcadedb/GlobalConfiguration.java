@@ -1311,6 +1311,11 @@ public enum GlobalConfiguration {
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
 
+  POSTGRES_QUOTED_IDENTIFIERS("arcadedb.postgres.quotedIdentifiers", SCOPE.SERVER, """
+      Interprets double-quoted tokens in SQL statements received through the Postgres wire protocol as identifiers, as \
+      PostgreSQL and the SQL standard mandate, instead of as string literals. Set to false to restore the legacy \
+      behaviour where a double-quoted token is a string literal. Default is true""", Boolean.class, true),
+
   // BOLT (Neo4j)
   BOLT_PORT("arcadedb.bolt.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for BOLT plugin. Default is 7687", Integer.class, 7687),
