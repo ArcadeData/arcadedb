@@ -266,9 +266,8 @@ public class OpenCypherOptimizerVerificationTest extends TestHelper {
 
   @Test
   void complexWhereClauseWithIndex() {
-    // Note: Complex WHERE clauses with AND/OR are not yet optimized
-    // The optimizer currently only extracts equality predicates from simple comparisons
-    // TODO: Future enhancement - extract predicates from LogicalExpression (AND/OR)
+    // Since issue #5362 the optimizer descends into AND branches, so an indexed equality ANDed with
+    // any other condition still anchors on the index; the whole WHERE stays applied by the Filter.
     final String query = "MATCH (p:Person) WHERE p.id = 30 AND p.age > 25 RETURN p";
     final ResultSet results = database.query("opencypher", query);
 
@@ -287,8 +286,8 @@ public class OpenCypherOptimizerVerificationTest extends TestHelper {
     explainResult.close();
 
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
-    // Current limitation: AND expressions not yet decomposed for index selection
-    assertThat(plan).contains("NodeByLabelScan(p:Person)");
+    assertThat(plan).contains("NodeIndexSeek(p:Person)");
+    assertThat(plan).doesNotContain("NodeByLabelScan(p:Person)");
     assertThat(plan).contains("Filter");
   }
 
