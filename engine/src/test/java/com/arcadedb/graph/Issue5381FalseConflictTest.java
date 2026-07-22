@@ -474,4 +474,181 @@ class Issue5381FalseConflictTest extends TestHelper {
       assertThat(total).isEqualTo((long) hubs * edgesPerHub);
     });
   }
+
+  /**
+   * A merged in-place update must keep secondary indexes consistent. Each record's INDEXED property is updated by
+   * its own thread (distinct co-located records sharing a page => false conflicts absorbed by the merge). Because
+   * the rebase preserves the RID and re-applies the same bytes the transaction computed, the index delete/insert
+   * entries staged for that RID stay valid: every record must be findable by its final value via the index, with
+   * no stale entries pointing at old values.
+   */
+  @Test
+  void mergedInPlaceUpdateKeepsIndexConsistent() throws Exception {
+    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+
+    final int records = 10;
+    final int updatesPerRecord = 300;
+
+    final RID[] rids = new RID[records];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Idx", 1).createProperty("k", Type.STRING);
+      database.command("SQL", "CREATE INDEX ON Idx (k) NOTUNIQUE");
+      for (int i = 0; i < records; i++) {
+        final var doc = database.newDocument("Idx");
+        doc.set("k", String.format("%02d-%08d", i, 0)); // fixed width => same-size in-place updates
+        doc.save();
+        rids[i] = doc.getIdentity();
+      }
+    });
+
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final int[] lastCommitted = new int[records];
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> threads = new ArrayList<>();
+    for (int t = 0; t < records; t++) {
+      final RID rid = rids[t];
+      final int idx = t;
+      final Thread thread = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 1; i <= updatesPerRecord; i++) {
+            final String v = String.format("%02d-%08d", idx, i); // globally unique per (record, iteration)
+            try {
+              database.transaction(() -> rid.asDocument(true).modify().set("k", v).save(), true, 1);
+              lastCommitted[idx] = i;
+            } catch (final ConcurrentModificationException ignore) {
+              // fine; correctness is checked against the actually-committed value below
+            }
+          }
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "idx-" + t);
+      threads.add(thread);
+      thread.start();
+    }
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+
+    if (!errors.isEmpty())
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+
+    final long merges = ((DatabaseInternal) database).getPageManager().getStats().slotMerges;
+    assertThat(merges).as("in-place update merge must fire").isGreaterThan(0);
+
+    database.transaction(() -> {
+      for (int i = 0; i < records; i++) {
+        final String finalValue = String.format("%02d-%08d", i, lastCommitted[i]);
+
+        // The record's stored value matches its last committed write...
+        assertThat(rids[i].asDocument(true).getString("k")).isEqualTo(finalValue);
+
+        // ...and the INDEX finds exactly that record by that value (no lost/duplicated index entry).
+        long hits = 0;
+        RID found = null;
+        try (final var rs = database.query("SQL", "SELECT FROM Idx WHERE k = ?", finalValue)) {
+          while (rs.hasNext()) {
+            found = rs.next().getIdentity().orElse(null);
+            hits++;
+          }
+        }
+        assertThat(hits).as("record " + i + " must be found exactly once by index").isEqualTo(1);
+        assertThat(found).isEqualTo(rids[i]);
+
+        // And no stale index entry survives for a superseded value.
+        if (lastCommitted[i] > 1)
+          try (final var rs = database.query("SQL", "SELECT FROM Idx WHERE k = ?",
+              String.format("%02d-%08d", i, lastCommitted[i] - 1))) {
+            assertThat(rs.hasNext()).as("stale index value for record " + i + " must be gone").isFalse();
+          }
+      }
+    });
+  }
+
+  /**
+   * A DELETE on a page shared with other records must poison it (a delete frees a slot and can relink placeholder
+   * chains), so it is never merged - it falls back to a normal retry. Threads delete their own co-located victims
+   * while other threads update co-located survivors in place; the survivors keep exact values and every victim is
+   * gone, proving the delete fell back cleanly rather than being rebased.
+   */
+  @Test
+  void deleteOnSharedPageFallsBackAndStaysCorrect() throws Exception {
+    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+
+    final int pairs = 6;
+    final int updates = 250;
+
+    final RID[] survivor = new RID[pairs];
+    final RID[] victim = new RID[pairs];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Mix", 1).createProperty("tag", Type.STRING);
+      for (int i = 0; i < pairs; i++) {
+        final var s = database.newDocument("Mix");
+        s.set("tag", String.format("%08d", 0));
+        s.set("role", "survivor");
+        s.save();
+        survivor[i] = s.getIdentity();
+        final var v = database.newDocument("Mix");
+        v.set("role", "victim");
+        v.save();
+        victim[i] = v.getIdentity();
+      }
+    });
+
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final int[] lastCommitted = new int[pairs];
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> threads = new ArrayList<>();
+
+    for (int t = 0; t < pairs; t++) {
+      final RID s = survivor[t];
+      final int idx = t;
+      threads.add(new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 1; i <= updates; i++) {
+            final String v = String.format("%08d", i);
+            try {
+              database.transaction(() -> s.asDocument(true).modify().set("tag", v).save(), true, 1);
+              lastCommitted[idx] = i;
+            } catch (final ConcurrentModificationException ignore) {
+            }
+          }
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "survivor-" + t));
+
+      final RID vic = victim[t];
+      threads.add(new Thread(() -> {
+        try {
+          start.await();
+          // Delete the co-located victim (poisons the shared page); retry until it commits.
+          database.transaction(() -> vic.asDocument(true).delete(), true, 50);
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "deleter-" + t));
+    }
+
+    for (final Thread thread : threads)
+      thread.start();
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+
+    if (!errors.isEmpty())
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+
+    database.transaction(() -> {
+      // Survivors keep their exact last committed value; victims are gone; nothing corrupted.
+      for (int i = 0; i < pairs; i++)
+        assertThat(survivor[i].asDocument(true).getString("tag")).isEqualTo(String.format("%08d", lastCommitted[i]));
+      assertThat(database.countType("Mix", false)).isEqualTo(pairs);
+      try (final var rs = database.query("SQL", "SELECT count(*) AS c FROM Mix WHERE role = 'victim'")) {
+        assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+      }
+    });
+  }
 }
