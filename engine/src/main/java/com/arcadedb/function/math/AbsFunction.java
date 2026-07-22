@@ -22,36 +22,28 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.function.DoubleBinaryOperator;
-
 /**
- * Generic math binary function (e.g. atan2). Always returns a Double, matching the
- * FLOAT return type declared by the Cypher signature of these functions (issue #5382).
+ * abs() function - returns the absolute value of a number preserving the input type,
+ * as per the Cypher contract: abs(INTEGER) returns INTEGER, abs(FLOAT) returns FLOAT.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class MathBinaryFunction implements StatelessFunction {
-  private final String name;
-  private final DoubleBinaryOperator op;
-
-  public MathBinaryFunction(final String name, final DoubleBinaryOperator op) {
-    this.name = name;
-    this.op = op;
-  }
-
+public class AbsFunction implements StatelessFunction {
   @Override
   public String getName() {
-    return name;
+    return "abs";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException(name + "() requires exactly two arguments");
-    if (args[0] == null || args[1] == null)
+    if (args.length != 1)
+      throw new CommandExecutionException("abs() requires exactly one argument");
+    if (args[0] == null)
       return null;
-    if (args[0] instanceof Number && args[1] instanceof Number)
-      return op.applyAsDouble(((Number) args[0]).doubleValue(), ((Number) args[1]).doubleValue());
-    throw new CommandExecutionException(name + "() requires numeric arguments");
+    if (args[0] instanceof Byte || args[0] instanceof Short || args[0] instanceof Integer || args[0] instanceof Long)
+      return Math.abs(((Number) args[0]).longValue());
+    if (args[0] instanceof Number)
+      return Math.abs(((Number) args[0]).doubleValue());
+    throw new CommandExecutionException("abs() requires a numeric argument");
   }
 }

@@ -63,6 +63,7 @@ import com.arcadedb.function.graph.StartNodeFunction;
 import com.arcadedb.function.graph.TypeFunction;
 import com.arcadedb.function.math.ConstantFunction;
 import com.arcadedb.function.math.IsNaNFunction;
+import com.arcadedb.function.math.AbsFunction;
 import com.arcadedb.function.math.MathBinaryFunction;
 import com.arcadedb.function.math.MathUnaryFunction;
 import com.arcadedb.function.math.RandFunction;
@@ -380,7 +381,7 @@ public class CypherFunctionFactory {
       case "ceil" -> new MathUnaryFunction("ceil", Math::ceil);
       case "ceiling" -> new MathUnaryFunction("ceiling", Math::ceil);
       case "floor" -> new MathUnaryFunction("floor", Math::floor);
-      case "abs" -> new MathUnaryFunction("abs", Math::abs);
+      case "abs" -> new AbsFunction();
       case "sqrt" -> new MathUnaryFunction("sqrt", Math::sqrt);
       case "round" -> new RoundFunction();
       case "isnan" -> new IsNaNFunction();
