@@ -71,6 +71,10 @@ class GraphDatabaseCheckerReclaimFailClosedTest extends TestHelper {
         .reclaimOrphanedEdgeSegments(0, Integer.MAX_VALUE);
 
     assertReclaimSkipped(stats);
+    // This drives the SCAN ERROR CALLBACK path: a vertex's edge-pointer prefix is validated at record
+    // construction inside bucket.scan, so the truncated buffer fails to load there (not later in asVertex),
+    // firing scanType's error callback - distinct from the mid-walk markChain path below.
+    assertWarned(stats, "could not be loaded during the orphan reclaim");
 
     // The hub's live IN chunks all survive.
     database.transaction(() -> {
@@ -109,6 +113,8 @@ class GraphDatabaseCheckerReclaimFailClosedTest extends TestHelper {
         .reclaimOrphanedEdgeSegments(0, Integer.MAX_VALUE);
 
     assertReclaimSkipped(stats);
+    // This drives the markChain mid-walk false-return path (a chunk lookup threw part-way).
+    assertWarned(stats, "edge chain could not be fully walked");
 
     // The downstream live chunk beyond the read failure survives (the data-loss the guard prevents).
     database.transaction(() -> {
@@ -164,6 +170,12 @@ class GraphDatabaseCheckerReclaimFailClosedTest extends TestHelper {
     // The skip is reported.
     assertThat(((Collection<String>) stats.get("warnings")).stream()
         .anyMatch(w -> w.contains("did not complete"))).as("the skipped reclaim must be reported").isTrue();
+  }
+
+  private void assertWarned(final Map<String, Object> stats, final String fragment) {
+    final Collection<String> warnings = (Collection<String>) stats.get("warnings");
+    assertThat(warnings.stream().anyMatch(w -> w.contains(fragment)))
+        .as("a warning containing '" + fragment + "' must be emitted; got: " + warnings).isTrue();
   }
 
   /**

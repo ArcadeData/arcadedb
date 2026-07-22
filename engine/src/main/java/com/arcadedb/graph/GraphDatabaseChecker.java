@@ -127,17 +127,26 @@ public class GraphDatabaseChecker {
    *   <li>the reclaim FAILS CLOSED: if in phase 1 any vertex record could not be loaded OR its edge chain could
    *   not be fully walked (a segment read failed ANYWHERE along a live chain - unreadable head, or a mid-chain
    *   chunk lookup that threw), that chain's live tail is missing from the reachable set, so the whole deletion
-   *   phase is skipped (nothing is deleted) rather than risk destroying it.</li>
+   *   phase is skipped (nothing is deleted) rather than risk destroying it. The skip is DELIBERATELY
+   *   database-wide (one unwalkable vertex blocks reclaim everywhere), not scoped to the affected type: a
+   *   vertex's segments can land in any edge-list bucket, so a narrower scope cannot be proven safe. Scoping it
+   *   is a possible future refinement.</li>
    * </ul>
    * <p>
    * Known limitation (matching the corrupted-records pattern in the vertex/edge checks): the whole reachable set
    * (a position entry for EVERY reachable segment across the database, which dominates memory on a large healthy
    * graph) and the orphan RID list are held in memory and the delete runs inside one transaction, so an extreme
-   * database grows them unbounded. Batched commits + a segment-count-bounded reachable set are a possible
-   * follow-up if such scale is ever seen. Phase 1 is also a SECOND full vertex scan (the preceding
-   * {@code checkVertices} already scanned them all): the reachable set could instead be accumulated during that
-   * pass to halve the vertex-scan cost of a full fix - deferred, since keeping the reclaim self-contained is
-   * worth the extra pass on an already-damaged database run in a maintenance window.
+   * database grows them unbounded. Batched commits + a segment-count-bounded reachable set are the mitigation
+   * before this is safe on the very large deployments the feature targets. Phase 1 is also a SECOND full vertex
+   * scan (the preceding {@code checkVertices} already scanned them all): the reachable set could instead be
+   * accumulated during that pass to halve the vertex-scan cost of a full fix - deferred, since keeping the
+   * reclaim self-contained is worth the extra pass on an already-damaged database run in a maintenance window.
+   * <p>
+   * DELIBERATELY ALWAYS-ON: this runs on every full-scope fix, even a no-repair run that reclaims zero segments
+   * (a healthy large graph still pays the scans + reachable set). That is intentional - orphans also come from
+   * historical bugs, not only from a rebuild in THIS run, so gating on "did we rebuild a chain this run" would
+   * never sweep a database that is otherwise clean. An explicit opt-in (e.g. a {@code FIX RECLAIM} keyword) is
+   * the alternative if the always-on cost proves unwelcome; left always-on for now.
    */
   public Map<String, Object> reclaimOrphanedEdgeSegments(final int verboseLevel, final int maxWarnings) {
     final List<String> warnings = new ArrayList<>();
@@ -181,6 +190,9 @@ public class GraphDatabaseChecker {
                   + "the reclaim will be skipped to avoid deleting live data");
             }
           } catch (final Exception e) {
+            // DEFENSIVE TWIN of the scan error callback below: a vertex's edge-pointer prefix is validated at
+            // record construction, so a truncated/corrupt vertex normally fails to load inside the scan and
+            // surfaces through that callback; this catches any residual failure of asVertex here. Same effect.
             reachabilityComplete.set(false);
             addWarning(warnings, totalWarnings, maxWarnings,
                 "vertex " + record.getIdentity() + " could not be walked during the orphan reclaim (error: " + describe(e)
