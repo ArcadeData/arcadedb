@@ -58,7 +58,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class StripedEdgeList extends EdgeLinkedList {
-  private static final String STRIPE_BUCKET_INFIX = "_sn_stripe_";
+  // Package-visible for GraphDatabaseChecker's orphan reclaim, which identifies stripe buckets by name.
+  static final String STRIPE_BUCKET_INFIX = "_sn_stripe_";
 
   /** Guards against stampeding pool creations: one in-flight creation per database+type (value = start ms). */
   private static final ConcurrentHashMap<String, Long> POOLS_IN_CREATION = new ConcurrentHashMap<>();
