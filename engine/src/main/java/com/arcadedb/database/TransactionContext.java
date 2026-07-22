@@ -984,6 +984,7 @@ public class TransactionContext implements Transaction {
     edgeAppendPoisonedPages = null;
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
+    slotRebaseTrackedBytes = 0;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
@@ -1557,6 +1558,7 @@ public class TransactionContext implements Transaction {
     edgeAppendPoisonedPages = null;
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
+    slotRebaseTrackedBytes = 0;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();

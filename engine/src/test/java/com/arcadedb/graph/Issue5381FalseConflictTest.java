@@ -244,6 +244,63 @@ class Issue5381FalseConflictTest extends TestHelper {
   }
 
   /**
+   * A record-GROWTH update (serialized size increases) on a page shared with other records must NOT be merged: it
+   * shifts other slots, so it poisons the page and falls back to a normal retry. Several threads each grow their
+   * OWN co-located record; correctness (each holds exactly its last committed, larger value) proves the growth
+   * path was not rebased onto a stale page.
+   */
+  @Test
+  void growingUpdatesOnCoLocatedRecordsFallBackAndStayCorrect() throws Exception {
+    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+
+    final int records = 6;
+    final int steps = 250;
+
+    final RID[] rids = new RID[records];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Grow", 1).createProperty("tag", Type.STRING);
+      for (int i = 0; i < records; i++) {
+        final var doc = database.newDocument("Grow");
+        doc.set("tag", "");
+        doc.save();
+        rids[i] = doc.getIdentity();
+      }
+    });
+
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> threads = new ArrayList<>();
+    for (int t = 0; t < records; t++) {
+      final RID rid = rids[t];
+      final Thread thread = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 1; i <= steps; i++) {
+            final String value = "x".repeat(i); // strictly growing -> record-growth path -> poison + retry
+            database.transaction(() -> rid.asDocument(true).modify().set("tag", value).save(), true, 50);
+          }
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "grow-" + t);
+      threads.add(thread);
+      thread.start();
+    }
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+
+    if (!errors.isEmpty())
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+
+    // With retries each grow commits; correct final length proves growth fell back cleanly (no torn/merged record).
+    database.transaction(() -> {
+      for (int i = 0; i < records; i++)
+        assertThat(rids[i].asDocument(true).getString("tag")).isEqualTo("x".repeat(steps));
+    });
+  }
+
+  /**
    * With the per-transaction retention cap set tiny, the merge disables itself mid-transaction and every touched
    * page falls back to plain MVCC. This must stay correct: no data loss or corruption, values still consistent.
    */
