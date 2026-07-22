@@ -1554,7 +1554,9 @@ public class CypherExecutionPlan {
         String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
 
-        boolean reversed = shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
+        final boolean reversedFromIndexedAnchor =
+            shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
+        boolean reversed = reversedFromIndexedAnchor;
         if (reversed) {
           sourceNode = pathPattern.getLastNode();
           sourceVar = sourceNode.getVariable();
@@ -1602,7 +1604,7 @@ public class CypherExecutionPlan {
         final BooleanExpression sourcePushdown = sourceAlreadyBound ? null :
             extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables);
         final AbstractExecutionStep sourceStep;
-        if (reversed && physicalPlan.getAnchor().getPropertyValue() instanceof InListValues) {
+        if (reversedFromIndexedAnchor && physicalPlan.getAnchor().getPropertyValue() instanceof InListValues) {
           final var anchor = physicalPlan.getAnchor();
           sourceStep = new IndexSeekStep(anchor.getVariable(), anchor.getIndex().getTypeName(),
               anchor.getPropertyName(), anchor.getPropertyValue(), anchor.getIndex().getIndexName(),

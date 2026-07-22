@@ -140,6 +140,24 @@ class CypherVariableLengthAnchorSelectionTest {
   }
 
   @Test
+  void keepsBoundTargetReversalIndependentOfIndexedAnchor() {
+    final String query = """
+        MATCH (country:Area {id: 'country'})
+        OPTIONAL MATCH (place:Area)-[:PART_OF]->(country)
+        WHERE place.id = 'region'
+        WITH country, count(place) AS places
+        RETURN country.id AS id, places""";
+
+    try (ResultSet resultSet = database.query("opencypher", query)) {
+      assertThat(resultSet.hasNext()).isTrue();
+      final Result result = resultSet.next();
+      assertThat(result.<String>getProperty("id")).isEqualTo("country");
+      assertThat(result.<Long>getProperty("places")).isEqualTo(1L);
+      assertThat(resultSet.hasNext()).isFalse();
+    }
+  }
+
+  @Test
   void preservesRelationshipListInWrittenPathOrder() {
     final String query = """
         MATCH (place:Area)-[relationships:PART_OF*1..3]->(country:Area)
