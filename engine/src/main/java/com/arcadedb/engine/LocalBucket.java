@@ -888,6 +888,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               .log(this, Level.FINE, "Created record %s (%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage,
                       Thread.currentThread().threadId());
 
+      // DISJOINT-SLOT MERGE (#5381): a brand-new record inserted into a FREE slot of an EXISTING (reused) page
+      // commutes with concurrent writes to other slots of that page. Track it so a commit-time page-version
+      // conflict can be resolved by replaying this insert on the newer committed page (see TransactionContext).
+      // A record on a brand-new page (createNewPage) has no existing-page conflict to rebase; a multi-page or
+      // placeholder record is not a plain single-slot insert, so it poisons the page instead.
+      final TransactionContext slotTx = database.getTransactionIfExists();
+      if (slotTx != null && slotTx.isSlotMergeEnabled()) {
+        if (!isSlotMergeCandidate(record))
+          slotTx.poisonSlotRebasePage(rid);
+        else if (!createNewPage) {
+          if (isPlaceHolder || spaceNeeded > spaceAvailableInCurrentPage)
+            slotTx.poisonSlotRebasePage(rid);
+          else
+            slotTx.trackRebasableInsert(rid, availablePositionIndex,
+                    Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
+        }
+      }
+
       if (!discardRecordAfter)
         ((RecordInternal) record).setBuffer(buffer.getNotReusable());
 
@@ -896,6 +914,97 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot add a new record to the bucket '" + componentName + "'", e);
     }
+  }
+
+  /**
+   * A record is a disjoint-slot-merge candidate unless it is an edge-list segment (record type 3): edge-segment
+   * pages are owned by the commutative edge-append merge ({@link TransactionContext#trackEdgeAppend}), so they
+   * are deliberately kept out of the generic slot merge to avoid the two mechanisms rebasing the same page.
+   */
+  private static boolean isSlotMergeCandidate(final Record record) {
+    return record.getRecordType() != 3;
+  }
+
+  /**
+   * Commit-time primitive for the disjoint-slot page merge (#5381). Re-applies ONE record write this transaction
+   * made to a bucket page, on top of {@code page} freshly reloaded at its current committed version, keeping the
+   * record's RID (page+slot) fixed. Called only on the leader/embedded commit while the bucket file's commit
+   * lock is held, and only for a page whose every modification this transaction made was a tracked disjoint-slot
+   * insert or same-or-smaller in-place update (see {@link TransactionContext#rebaseSlots}).
+   *
+   * @param page           the reloaded committed page to re-apply the write onto.
+   * @param positionInPage the record slot (RID position modulo maxRecordsInPage).
+   * @param body           this transaction's final serialized record body (no size prefix).
+   * @param baseBody       for an in-place UPDATE, the record body this transaction started from - used to detect a
+   *                       concurrent modification of the SAME record (a TRUE conflict); {@code null} for an INSERT.
+   *
+   * @return true when the write was safely re-applied; false when a concurrent commit took/changed the slot or the
+   * page can no longer host the record - the caller then falls back to a full-transaction retry.
+   */
+  public boolean rebaseRecordOnPage(final MutablePage page, final int positionInPage, final byte[] body, final byte[] baseBody) {
+    try {
+      final int pageNumber = page.getPageId().getPageNumber();
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final int existingPos = positionInPage < recordCountInPage ? getRecordPositionInPage(page, positionInPage) : 0;
+
+      if (baseBody == null) {
+        // INSERT: the slot must still be free on the committed page (else a concurrent commit used it).
+        if (existingPos != 0)
+          return false;
+        return writeRecordAtSlot(page, pageNumber, positionInPage, recordCountInPage, body);
+      }
+
+      // IN-PLACE UPDATE: the slot must still hold the record this transaction started from, byte-for-byte, so we
+      // never overwrite (lose) a concurrent update of the SAME record.
+      if (existingPos == 0)
+        return false;
+      final long[] rs = page.readNumberAndSize(existingPos);
+      if (rs[0] <= 0)
+        // Deleted, placeholder, or multi-page marker: not a plain in-place record anymore.
+        return false;
+      final int committedSize = (int) rs[0];
+      if (committedSize != baseBody.length)
+        return false;
+      final byte[] committed = new byte[committedSize];
+      page.readByteArray((int) (existingPos + rs[1]), committed, 0, committedSize);
+      if (!Arrays.equals(committed, baseBody))
+        // The committed record differs from our base: a concurrent transaction changed THIS record -> real conflict.
+        return false;
+
+      if (body.length > committedSize)
+        // Defensive: a tracked in-place update is always same-or-smaller than its base (== committed here).
+        return false;
+
+      final int sizeLen = page.writeNumber(existingPos, body.length);
+      page.writeByteArray((int) (existingPos + sizeLen), body, 0, body.length);
+      return true;
+
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on slot rebase for page " + page.getPageId(), e);
+    }
+  }
+
+  private boolean writeRecordAtSlot(final MutablePage page, final int pageNumber, final int positionInPage,
+                                    final short recordCountInPage, final byte[] body) throws IOException {
+    final int spaceNeeded = Binary.getNumberSpace(body.length) + body.length;
+
+    // Find where free content begins on the CURRENT committed page (reuses the tested free-space walker).
+    final PageAnalysis analysis = getAvailableSpaceInPage(pageNumber, spaceNeeded, false);
+    if (analysis.createNewPage || analysis.newRecordPositionInPage < 0
+            || spaceNeeded > page.getMaxContentSize() - analysis.newRecordPositionInPage)
+      // The page filled up under concurrency: fall back to a full retry (which will pick a new page/slot).
+      return false;
+
+    final int contentPos = analysis.newRecordPositionInPage;
+
+    page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, contentPos);
+    if (positionInPage + 1 > recordCountInPage)
+      page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (positionInPage + 1));
+
+    final int sizeLen = page.writeNumber(contentPos, body.length);
+    page.writeByteArray(contentPos + sizeLen, body, 0, body.length);
+    updatePageStatistics(pageNumber, page.getMaxContentSize() - contentPos, -spaceNeeded);
+    return true;
   }
 
   /**
@@ -1001,6 +1110,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 //      LogManager.instance()
 //          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().threadId());
 
+      // DISJOINT-SLOT MERGE (#5381): only a same-or-smaller in-place overwrite (the branch far below) touches
+      // just this record's slot and thus commutes with concurrent writes to other slots on the page. Every other
+      // update shape here (placeholder pointer, multi-page chunk, record growth that shifts other slots or spills
+      // to a placeholder) changes more than this slot, so it poisons the page: the slot merge must never rebase it.
+      final TransactionContext slotTx = database.getTransactionIfExists();
+      final boolean slotCandidate = slotTx != null && slotTx.isSlotMergeEnabled() && isSlotMergeCandidate(record);
+
       boolean isPlaceHolder = false;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
 
@@ -1008,6 +1124,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
         if (updateRecordInternal(record, placeHolderContentRID, true, discardRecordAfter)) {
           // UPDATE PLACEHOLDER CONTENT, THE PLACEHOLDER POINTER STAY THE SAME
+          if (slotCandidate)
+            slotTx.poisonSlotRebasePage(rid);
           if (!discardRecordAfter)
             ((RecordInternal) record).setBuffer(buffer.getNotReusable());
           return true;
@@ -1019,6 +1137,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         recordSize[0] = LONG_SERIALIZED_SIZE;
         recordSize[1] = 1L;
       } else if (recordSize[0] == FIRST_CHUNK) {
+        if (slotCandidate)
+          slotTx.poisonSlotRebasePage(rid);
+
         updateMultiPageRecord(rid, buffer, page, (int) (recordPositionInPage + recordSize[1]));
 
         if (!discardRecordAfter)
@@ -1039,6 +1160,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int bufferSize = buffer.size();
       if (bufferSize > recordSize[0]) {
+        // GROWTH: shifts other records / spills to a placeholder or chunks. Not a single-slot change -> poison.
+        if (slotCandidate)
+          slotTx.poisonSlotRebasePage(rid);
+
         // UPDATED RECORD IS LARGER THAN THE PREVIOUS VERSION: MAKE ROOM IN THE PAGE IF POSSIBLE
         final int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
 
@@ -1135,6 +1260,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       } else {
         // UPDATED RECORD CONTENT IS NOT LARGER THAN PREVIOUS VERSION: OVERWRITE THE CONTENT
         // CREATE A HOLE (REMOVED LATER BY COMPRESS-PAGE)
+
+        // DISJOINT-SLOT MERGE (#5381): a plain in-place overwrite of a single record - the rebasable case (e.g.
+        // the vertex edge-list head-pointer flip on super-node insertion). Capture the pre-image BEFORE writing:
+        // at commit it lets the rebase tell a false page conflict (concurrent write to ANOTHER slot) from a true
+        // one (a concurrent write to THIS record). Placeholder content lives behind a pointer on another page, so
+        // rebasing this page in isolation would be unsound: poison it instead.
+        if (slotCandidate) {
+          if (isPlaceHolder)
+            slotTx.poisonSlotRebasePage(rid);
+          else {
+            final byte[] baseBody = new byte[(int) recordSize[0]];
+            page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
+            slotTx.trackRebasableUpdate(rid, baseBody,
+                    Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
+          }
+        }
+
         recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * bufferSize : bufferSize);
         final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
         page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
@@ -1157,6 +1299,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private void deleteRecordInternal(final RID rid, final boolean deletePlaceholderContent, final boolean deleteChunks) {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+
+    // DISJOINT-SLOT MERGE (#5381): a delete frees a slot and can relink placeholder/chunk records elsewhere, so
+    // it is never a pure single-slot change - keep the page out of the slot merge.
+    final TransactionContext slotTx = database.getTransactionIfExists();
+    if (slotTx != null && slotTx.isSlotMergeEnabled())
+      slotTx.poisonSlotRebasePage(rid);
 
     database.getTransaction().removeRecordFromCache(rid);
 

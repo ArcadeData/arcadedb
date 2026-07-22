@@ -97,6 +97,18 @@ public class TransactionContext implements Transaction {
   // check allocate nothing (no PageId objects).
   private       LongHashSet                          edgeAppendPoisonedPages;
   private       boolean                              edgeAppendMerge;
+  // TX_SLOT_MERGE (#5381): the general form of the edge-append merge. Two transactions writing DIFFERENT record
+  // slots on the same bucket page (logically-unrelated records that merely share a page) conflict at page
+  // granularity even though their changes commute. On such a commit-time conflict we re-apply THIS transaction's
+  // slot writes on top of the newer committed page instead of failing the whole transaction. Tracked per page
+  // (packed fileId+pageNumber key): for each written slot we keep the final serialized body, plus - for an
+  // in-place UPDATE - the pre-image, so the rebase can tell a false page conflict (a concurrent write to another
+  // slot) from a true one (a concurrent write to the SAME record). A page stays eligible only while every change
+  // this transaction made to it is a tracked disjoint-slot insert or same-or-smaller in-place update; the first
+  // non-rebasable write to it (delete, multi-page/placeholder record, record growth) poisons the page.
+  private       Map<Long, SlotRebaseBuffer>          slotRebaseByPage;
+  private       LongHashSet                          slotRebasePoisonedPages;
+  private       boolean                              slotMerge;
   private       boolean                              useWAL;
   // #5064: set by the HA layer AFTER the replication quorum durably committed this transaction and BEFORE
   // the local phase-2 apply. Shifts the durability boundary for the failure regimes in commit2ndPhase's
@@ -175,6 +187,7 @@ public class TransactionContext implements Transaction {
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
     edgeAppendMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE);
+    slotMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_SLOT_MERGE);
 
     // Optimized: initial capacity 32 for typical transaction page count
     modifiedPages = new HashMap<>(32);
@@ -747,6 +760,146 @@ public class TransactionContext implements Transaction {
     return rebased;
   }
 
+  /**
+   * Per-page record-slot writes this transaction made, retained for the disjoint-slot merge (#5381). Small maps
+   * keyed by the in-page slot index; only populated on pages that receive at least one rebasable write, and only
+   * while the feature is on. Released on {@link #reset()}.
+   */
+  private static final class SlotRebaseBuffer {
+    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins.
+    private final Map<Integer, byte[]> finalBody     = new HashMap<>();
+    // slot -> the record body this transaction started from (in-place UPDATES only; absent for inserts).
+    private final Map<Integer, byte[]> baseBody      = new HashMap<>();
+    // slots holding a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
+    // transaction stays an insert (base absent) rather than being mistaken for an in-place update.
+    private final Set<Integer>         insertedSlots = new HashSet<>();
+  }
+
+  /**
+   * Tells whether the disjoint-slot page merge is enabled for this transaction.
+   */
+  public boolean isSlotMergeEnabled() {
+    return slotMerge;
+  }
+
+  /**
+   * Records a brand-new record inserted into a FREE slot of an EXISTING page as rebasable: at commit, a
+   * page-version conflict caused only by concurrent writes to OTHER slots of that page can be resolved by
+   * replaying this insert on the newer committed page. No-op when the feature is off or the page is poisoned.
+   */
+  public void trackRebasableInsert(final RID rid, final int slot, final byte[] finalBody) {
+    if (!slotMerge)
+      return;
+    final long key = bucketPageKey(rid);
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return;
+    if (slotRebaseByPage == null)
+      slotRebaseByPage = new HashMap<>();
+    final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    buffer.finalBody.put(slot, finalBody);
+    buffer.insertedSlots.add(slot);
+  }
+
+  /**
+   * Records a same-or-smaller in-place record update as rebasable, keeping {@code baseBody} (the pre-image) so the
+   * rebase can distinguish a false page conflict (a concurrent write to another slot) from a true one (a
+   * concurrent write to THIS record). No-op when the feature is off or the page is poisoned.
+   */
+  public void trackRebasableUpdate(final RID rid, final byte[] baseBody, final byte[] finalBody) {
+    if (!slotMerge)
+      return;
+    final long key = bucketPageKey(rid);
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return;
+    if (slotRebaseByPage == null)
+      slotRebaseByPage = new HashMap<>();
+    final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    final int slot = slotInPage(rid);
+    buffer.finalBody.put(slot, finalBody);
+    // First-touch base wins: a second in-tx update must still diff against the COMMITTED pre-image, not the
+    // intermediate one. An insert-then-update keeps insert semantics (no base recorded).
+    if (!buffer.insertedSlots.contains(slot))
+      buffer.baseBody.putIfAbsent(slot, baseBody);
+  }
+
+  /**
+   * Marks the bucket page holding {@code rid} as NOT rebasable via the slot merge: this transaction changed it in
+   * a way that is not a single-slot insert/in-place-update (delete, multi-page/placeholder record, record growth
+   * that shifts other slots). Any tracked slots on it are dropped so a rebase can never silently re-derive the
+   * page from committed-state + our slot writes. No-op when the feature is off.
+   */
+  public void poisonSlotRebasePage(final RID rid) {
+    if (!slotMerge)
+      return;
+    final long key = bucketPageKey(rid);
+    if (slotRebasePoisonedPages == null)
+      slotRebasePoisonedPages = new LongHashSet();
+    slotRebasePoisonedPages.add(key);
+    if (slotRebaseByPage != null)
+      slotRebaseByPage.remove(key);
+  }
+
+  private boolean isRebasableSlotPage(final PageId pageId) {
+    if (!slotMerge || slotRebaseByPage == null)
+      return false;
+    final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return false;
+    return slotRebaseByPage.containsKey(key);
+  }
+
+  /** Packs the (fileId, pageNumber) of the page holding {@code rid} into a long key (no allocation). */
+  private long bucketPageKey(final RID rid) {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+    if (bucket == null)
+      throw new ConcurrentModificationException("Slot-merge: bucket " + rid.getBucketId()
+          + " for record " + rid + " not found. Please retry the operation");
+    final int pageNumber = (int) (rid.getPosition() / bucket.getMaxRecordsInPage());
+    return packPageKey(rid.getBucketId(), pageNumber);
+  }
+
+  private int slotInPage(final RID rid) {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+    return (int) (rid.getPosition() % bucket.getMaxRecordsInPage());
+  }
+
+  /**
+   * Replays this transaction's tracked slot writes for {@code pageId} on top of the current committed version of
+   * that page, resolving a version conflict caused solely by concurrent writes to OTHER slots on the same page.
+   * Runs only on the leader/embedded commit, while the bucket file's commit lock is held (so the current version
+   * is stable), and only for a page whose every modification this transaction made was a tracked disjoint-slot
+   * insert or same-or-smaller in-place update.
+   *
+   * @return the freshly rebased page, ready to be version-checked and committed.
+   *
+   * @throws ConcurrentModificationException if a slot was taken/changed by a concurrent commit (a true conflict)
+   *                                         or the page can no longer host a record: the caller falls back to a
+   *                                         normal full-transaction retry.
+   */
+  private MutablePage rebaseSlots(final PageId pageId) throws IOException {
+    final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
+    final SlotRebaseBuffer buffer = slotRebaseByPage.get(key);
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(pageId.getFileId());
+
+    // Drop the stale copies so the reload observes the current committed version of the page.
+    modifiedPages.remove(pageId);
+    immutablePages.remove(pageId);
+
+    final MutablePage committed = getPageToModify(pageId, bucket.getPageSize(), false);
+
+    for (final Map.Entry<Integer, byte[]> entry : buffer.finalBody.entrySet()) {
+      final int slot = entry.getKey();
+      final byte[] baseBody = buffer.insertedSlots.contains(slot) ? null : buffer.baseBody.get(slot);
+      if (!bucket.rebaseRecordOnPage(committed, slot, entry.getValue(), baseBody))
+        throw new ConcurrentModificationException(
+            "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
+    }
+
+    database.getPageManager().incrementSlotMerges();
+    return committed;
+  }
+
   @Override
   public boolean isActive() {
     return status != STATUS.INACTIVE;
@@ -807,6 +960,8 @@ public class TransactionContext implements Transaction {
     newPages = null;
     edgeAppendsBySegment = null;
     edgeAppendPoisonedPages = null;
+    slotRebaseByPage = null;
+    slotRebasePoisonedPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
@@ -1086,6 +1241,7 @@ public class TransactionContext implements Transaction {
       }
 
       List<PageId> pagesToRebase = null;
+      List<PageId> slotPagesToRebase = null;
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
         final MutablePage p = it.next();
 
@@ -1110,6 +1266,13 @@ public class TransactionContext implements Transaction {
               pagesToRebase = new ArrayList<>();
             pagesToRebase.add(p.getPageId());
             it.remove();
+          } else if (isLeader && isRebasableSlotPage(p.getPageId())) {
+            // Disjoint-slot merge (#5381): the conflict is only because a concurrent commit touched OTHER slots
+            // of this page; replay this transaction's slot writes on the newer committed page (after the loop).
+            if (slotPagesToRebase == null)
+              slotPagesToRebase = new ArrayList<>();
+            slotPagesToRebase.add(p.getPageId());
+            it.remove();
           } else
             throw e;
         }
@@ -1118,6 +1281,16 @@ public class TransactionContext implements Transaction {
       if (pagesToRebase != null)
         for (final PageId pageId : pagesToRebase) {
           final MutablePage rebased = rebaseEdgeAppends(pageId);
+          final LocalBucket bucket = localSchema.getBucketById(rebased.getPageId().getFileId(), false);
+          if (bucket != null)
+            bucket.compressPage(rebased, false);
+          pageManager.checkPageVersion(rebased, false);
+          pages.add(rebased);
+        }
+
+      if (slotPagesToRebase != null)
+        for (final PageId pageId : slotPagesToRebase) {
+          final MutablePage rebased = rebaseSlots(pageId);
           final LocalBucket bucket = localSchema.getBucketById(rebased.getPageId().getFileId(), false);
           if (bucket != null)
             bucket.compressPage(rebased, false);
@@ -1360,6 +1533,8 @@ public class TransactionContext implements Transaction {
     newPages = null;
     edgeAppendsBySegment = null;
     edgeAppendPoisonedPages = null;
+    slotRebaseByPage = null;
+    slotRebasePoisonedPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
