@@ -124,9 +124,10 @@ public class GraphDatabaseChecker {
    *   {@code _in_edges} bucket of every vertex bucket and every vertex type's super-node stripe pool - never by
    *   matching bucket names alone (see {@link #collectEdgeSegmentBucketIds()}); a user data bucket whose name
    *   merely collides with the naming scheme is therefore never scanned or deleted;</li>
-   *   <li>the reclaim FAILS CLOSED: if any vertex could not be walked in phase 1 its live segments are missing
-   *   from the reachable set, so the whole deletion phase is skipped (nothing is deleted) rather than risk
-   *   destroying them.</li>
+   *   <li>the reclaim FAILS CLOSED: if in phase 1 any vertex record could not be loaded OR its edge chain could
+   *   not be fully walked (a segment read failed ANYWHERE along a live chain - unreadable head, or a mid-chain
+   *   chunk lookup that threw), that chain's live tail is missing from the reachable set, so the whole deletion
+   *   phase is skipped (nothing is deleted) rather than risk destroying it.</li>
    * </ul>
    * <p>
    * Known limitation (matching the corrupted-records pattern in the vertex/edge checks): the whole reachable set
@@ -168,8 +169,17 @@ public class GraphDatabaseChecker {
           progressTick();
           try {
             final VertexInternal vertex = (VertexInternal) record.asVertex(true);
-            markReachableSegments(vertex.getOutEdgesHeadChunk(), reachable);
-            markReachableSegments(vertex.getInEdgesHeadChunk(), reachable);
+            // Walk BOTH directions (no short-circuit) so every readable segment is still marked, but a read
+            // failure on EITHER chain fails the whole reclaim closed - the chain is live, so an unmarked tail
+            // must not be deleted as an orphan.
+            final boolean outComplete = markReachableSegments(vertex.getOutEdgesHeadChunk(), reachable);
+            final boolean inComplete = markReachableSegments(vertex.getInEdgesHeadChunk(), reachable);
+            if (!outComplete || !inComplete) {
+              reachabilityComplete.set(false);
+              addWarning(warnings, totalWarnings, maxWarnings, "vertex " + record.getIdentity()
+                  + " edge chain could not be fully walked during the orphan reclaim (a segment read failed); "
+                  + "the reclaim will be skipped to avoid deleting live data");
+            }
           } catch (final Exception e) {
             reachabilityComplete.set(false);
             addWarning(warnings, totalWarnings, maxWarnings,
@@ -259,6 +269,10 @@ public class GraphDatabaseChecker {
       // Super-node stripe pool (per type). Pools are created contiguously from slot 0 (see
       // GraphEngine.dropVertexType): sweep until the first gap AT OR PAST the configured pool size, stepping over
       // gaps below it (a partially-created pool). No slot 0 means the type never promoted - skip the whole sweep.
+      // NOTE: the bound is the LIVE GRAPH_SUPERNODE_STRIPES, not the size persisted at promotion (same assumption
+      // as dropVertexType). If it was shrunk since promotion, buckets past the new size are simply not scanned -
+      // never deleted, and their live segments are still marked via the phase-1 directory walk - so orphans there
+      // just leak; not a data-loss path.
       for (int i = 0; ; i++) {
         final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
         if (!schema.existsBucket(stripeBucketName)) {
@@ -286,38 +300,56 @@ public class GraphDatabaseChecker {
     ids.add(b.getFileId());
   }
 
-  /** Marks every segment reachable from the given head: a classic chain, or a stripe directory + all its chains. */
-  private void markReachableSegments(final RID head, final Map<Integer, LongHashSet> reachable) {
+  /**
+   * Marks every segment reachable from the given head: a classic chain, or a stripe directory + all its chains.
+   *
+   * @return false when a segment read FAILED mid-walk (unreadable head, or a chunk lookup threw) so the chain
+   * could not be fully accounted for. The caller must then FAIL CLOSED (skip the deletion phase): the chain is
+   * currently referenced by a live vertex, so a read error here - unlike genuine corruption the earlier
+   * checkVertices rebuild already re-attached - may leave live tail segments unmarked, and deleting them would
+   * destroy live data. A healthy chain always returns true.
+   */
+  private boolean markReachableSegments(final RID head, final Map<Integer, LongHashSet> reachable) {
     if (head == null)
-      return;
+      return true;
     final Record headRecord;
     try {
       headRecord = database.lookupByRID(head, true);
     } catch (final Exception e) {
-      // UNREADABLE HEAD: the rebuild in checkVertices handles the chain itself; nothing reachable to mark.
-      return;
+      // UNREADABLE HEAD: cannot account for this vertex's segments - fail closed rather than risk deleting them.
+      return false;
     }
     if (headRecord instanceof StripeDirectory directory) {
       mark(reachable, head);
+      boolean complete = true;
       for (int g = 0; g < directory.getGenerationCount(); g++)
         for (int s = 0; s < directory.getStripes(g); s++)
-          markChain(directory.getHead(g, s), reachable);
-    } else
-      markChain(head, reachable);
+          // Do NOT short-circuit: keep marking the readable stripe chains, just remember the walk was incomplete.
+          if (!markChain(directory.getHead(g, s), reachable))
+            complete = false;
+      return complete;
+    }
+    return markChain(head, reachable);
   }
 
-  /** Walks a classic chunk chain marking every chunk; stops on cycles and unreadable chunks. */
-  private void markChain(final RID head, final Map<Integer, LongHashSet> reachable) {
+  /**
+   * Walks a classic chunk chain marking every chunk; stops on cycles and unreadable chunks.
+   *
+   * @return false when a chunk lookup THREW (a broken/unreadable tail), leaving the rest of the chain unmarked;
+   * true when the whole chain was walked (including a cyclic chain fully covered before the cycle guard fired).
+   */
+  private boolean markChain(final RID head, final Map<Integer, LongHashSet> reachable) {
     RID current = head;
     while (current != null) {
       if (!mark(reachable, current))
-        return; // ALREADY VISITED: guards against a corrupt cyclic chain looping forever
+        return true; // ALREADY VISITED: cyclic chain fully covered (not a read failure) - guards infinite loop
       try {
         current = ((EdgeSegment) database.lookupByRID(current, true)).getPreviousRID();
       } catch (final Exception e) {
-        return; // BROKEN TAIL: the rebuild in checkVertices handles the chain itself
+        return false; // BROKEN/UNREADABLE TAIL: cannot confirm the rest of the chain - fail closed
       }
     }
+    return true;
   }
 
   /** @return true when the RID was newly marked as reachable. */
