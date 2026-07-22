@@ -110,15 +110,33 @@ public class DatabaseChecker {
         documentTypes.add(type);
     }
 
+    // The orphaned-segment reclaim (issue #5375) requires walking EVERY vertex to build the reachable set, so
+    // it only runs on a full-scope fix: under a type/bucket filter the unwalked vertices' segments would be
+    // misclassified as orphans.
+    final boolean reclaimOrphanedSegments =
+        fix && (types == null || types.isEmpty()) && (buckets == null || buckets.isEmpty());
+
     currentStep = 0;
     totalSteps = edgeTypes.size() + vertexTypes.size() + documentTypes.size() // per-type checks
         + 3 // buckets + external properties + indexes
+        + (reclaimOrphanedSegments ? 1 : 0)
         + (fix ? 1 : 0) // rebuild affected indexes
         + (compress ? 1 : 0);
 
     checkEdges(edgeTypes);
 
     checkVertices(vertexTypes);
+
+    if (reclaimOrphanedSegments) {
+      // AFTER checkVertices: the chain rebuilds have already re-attached every recoverable segment, so what
+      // remains unreachable in the edge-list buckets is genuine garbage.
+      ++currentStep;
+      final Map<String, Object> stats = new GraphDatabaseChecker(database)
+          .setProgress(progressCallback, "Reclaiming orphaned edge segments", currentStep, totalSteps)
+          .reclaimOrphanedEdgeSegments(verboseLevel, maxWarnings);
+      updateStats(stats);
+      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+    }
 
     checkDocuments(documentTypes);
 

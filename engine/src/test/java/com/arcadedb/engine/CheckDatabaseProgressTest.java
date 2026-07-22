@@ -115,8 +115,9 @@ class CheckDatabaseProgressTest extends TestHelper {
             emissions.add(new Emission(stepName, stepIndex, totalSteps, done, total)))
         .check();
 
-    // FIX ADDS THE "Rebuilding indexes" STEP: 7 + 1.
-    assertThat(emissions.getFirst().totalSteps).isEqualTo(8);
+    // FULL-SCOPE FIX ADDS THE ORPHAN-RECLAIM (#5375) AND "Rebuilding indexes" STEPS: 7 + 2.
+    assertThat(emissions.getFirst().totalSteps).isEqualTo(9);
+    assertThat(emissions.stream().anyMatch(e -> e.stepName.startsWith("Reclaiming orphaned edge segments"))).isTrue();
     assertThat(emissions.stream().anyMatch(e -> e.stepName.startsWith("Rebuilding indexes"))).isTrue();
   }
 
