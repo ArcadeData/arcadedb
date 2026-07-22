@@ -476,6 +476,93 @@ class Issue5381FalseConflictTest extends TestHelper {
   }
 
   /**
+   * Regression for the multi-page corruption gap: a multi-page record's continuation chunks land on reused pages
+   * via inline record-table writes that bypass the tracking hooks. If such a page also carried a tracked small
+   * insert, an erroneous rebase would replay only the insert and drop the chunk, silently corrupting the large
+   * record. The fix poisons every page a multi-page write touches. Here each transaction inserts BOTH a small
+   * record and a large (multi-page) record into a single shared bucket under concurrency, so small inserts and
+   * chunk writes co-locate and pages conflict; every large record must still read back intact.
+   */
+  @Test
+  void multiPageRecordCoLocatedWithTrackedInsertStaysIntact() throws Exception {
+    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+
+    // Deterministic layout: a 16 KB page holds ~8 KB of usable content. Seed page 0 with a ~3 KB filler so it has
+    // ~5 KB free. One transaction then, on page 0: inserts a small record (a TRACKED rebasable insert) and a large
+    // record whose FIRST chunk fills a fresh page while its trailing chunk (~4 KB) reuses page 0's free space. A
+    // competitor bumps page 0's version, forcing this transaction to conflict on page 0. Without the fix, page 0 is
+    // still "rebasable" (only the small insert is tracked, the chunk write never poisoned it), so the rebase replays
+    // the insert and silently drops the chunk - corrupting the large record. The fix poisons page 0 on the chunk
+    // write, so the transaction cleanly retries and the large record stays intact.
+    final int pageSize = 16 * 1024;
+    final String bigPayload = "B".repeat(12_000);   // spans 2 pages; trailing chunk fits page 0's ~5 KB free
+    final String filler = "F".repeat(3_000);
+
+    final RID[] fillerRid = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("MP", 1, pageSize);
+      final var f = database.newDocument("MP").set("kind", "filler").set("s", filler);
+      f.save();
+      fillerRid[0] = f.getIdentity();
+    });
+
+    final CountDownLatch inserted = new CountDownLatch(1);
+    final CountDownLatch competitorDone = new CountDownLatch(1);
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final RID[] bigRid = new RID[1];
+
+    final Thread main = new Thread(() -> {
+      try {
+        for (int attempt = 0; attempt < 20; attempt++) {
+          database.begin();
+          database.newDocument("MP").set("kind", "small").set("s", "a").save(); // tracked insert on page 0
+          final var big = database.newDocument("MP").set("kind", "big").set("blob", bigPayload);
+          big.save(); // multi-page; the trailing chunk lands on page 0 alongside the tracked insert
+          if (attempt == 0) {
+            inserted.countDown();      // let the competitor bump page 0
+            competitorDone.await();    // ...and wait until it has committed, so our commit conflicts on page 0
+          }
+          try {
+            database.commit();
+            bigRid[0] = big.getIdentity();
+            break;
+          } catch (final ConcurrentModificationException e) {
+            database.rollback(); // expected WITH the fix on attempt 0: page 0 poisoned -> clean retry
+          }
+        }
+      } catch (final Throwable e) {
+        errors.add(e);
+      }
+    }, "main");
+
+    final Thread competitor = new Thread(() -> {
+      try {
+        inserted.await();
+        // Same-size in-place update of the filler on page 0 -> bumps page 0's committed version.
+        database.transaction(() -> fillerRid[0].asDocument(true).modify().set("s", filler).save(), true, 50);
+      } catch (final Throwable e) {
+        errors.add(e);
+      } finally {
+        competitorDone.countDown();
+      }
+    }, "competitor");
+
+    main.start();
+    competitor.start();
+    main.join();
+    competitor.join();
+
+    if (!errors.isEmpty())
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+
+    // The large record must read back byte-for-byte: a dropped chunk would truncate it (or fail to deserialize).
+    database.transaction(() -> {
+      assertThat(bigRid[0]).as("the big record must have committed").isNotNull();
+      assertThat(bigRid[0].asDocument(true).getString("blob")).isEqualTo(bigPayload);
+    });
+  }
+
+  /**
    * A merged in-place update must keep secondary indexes consistent. Each record's INDEXED property is updated by
    * its own thread (distinct co-located records sharing a page => false conflicts absorbed by the merge). Because
    * the rebase preserves the RID and re-applies the same bytes the transaction computed, the index delete/insert

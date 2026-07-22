@@ -1768,6 +1768,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private void writeMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition,
                                     final int availableSpaceForFirstChunk) throws IOException {
+    // DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table
+    // writes that bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED
+    // page that also holds a tracked single-slot write would let the rebase re-derive that page from the tracked
+    // slot alone and silently drop the chunk (corrupting the record). Poison every page this write touches so none
+    // of them can be rebased. Poisoning a brand-new page is harmless (new pages are never rebase-tracked).
+    final TransactionContext slotTx = database.getTransactionIfExists();
+    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+    if (poisonSlots)
+      slotTx.poisonSlotRebasePage(fileId, currentPage.pageId.getPageNumber());
+
     int bufferSize = buffer.size();
 
     // WRITE THE 1ST CHUNK
@@ -1844,6 +1854,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
       }
 
+      if (poisonSlots)
+        slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
+
       // WRITE IN THE PREVIOUS PAGE POINTER THE CURRENT POSITION OF THE NEXT CHUNK
       currentPage.writeLong(nextChunkPointerOffset,
               (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + recordIdInPage);
@@ -1885,6 +1898,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private void updateMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition)
           throws IOException {
+    // DISJOINT-SLOT MERGE (#5381): like writeMultiPageRecord, this rewrites/relocates/frees chunk records on
+    // existing pages through inline record-table writes that bypass the tracking hooks. Poison every page it
+    // touches so a page carrying both a tracked single-slot write and a chunk write can never be rebased.
+    final TransactionContext slotTx = database.getTransactionIfExists();
+    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+    if (poisonSlots)
+      slotTx.poisonSlotRebasePage(fileId, currentPage.pageId.getPageNumber());
+
     int chunkSize = currentPage.readInt(newPosition);
     int bufferSize = buffer.size();
 
@@ -2001,6 +2022,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         newPosition += byteWritten;
       }
 
+      if (poisonSlots)
+        slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
+
       // WRITE CHUNK SIZE
       final boolean lastChunk = bufferSize <= chunkSize;
       if (bufferSize < chunkSize) {
@@ -2037,6 +2061,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final MutablePage nextPage = database.getTransaction()
               .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
       final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
+
+      if (poisonSlots)
+        slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
 
       // DELETE THE CHUNK AS RECORD IN THE PAGE
       nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE, 0L);

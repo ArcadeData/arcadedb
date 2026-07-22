@@ -865,6 +865,9 @@ public class TransactionContext implements Transaction {
       slotMerge = false;
       if (slotRebaseByPage != null)
         slotRebaseByPage.clear();
+      // NOTE: slotRebasePoisonedPages is intentionally NOT cleared. Once slotMerge is off, isRebasableSlotPage
+      // short-circuits so the set is not consulted anyway; keeping it costs nothing and avoids any assumption
+      // that a poisoned page could become rebasable again after the feature disables mid-transaction.
     }
   }
 
