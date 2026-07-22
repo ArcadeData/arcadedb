@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -67,22 +69,27 @@ public class CompactIndexStatement extends DDLStatement {
     final List<String> compactedIndexes = new ArrayList<>();
     boolean compacted = false;
     String indexName = null;
+    // PUBLISH LIVE PROGRESS (issue #5376): one step per index, pollable via the progress HTTP endpoint,
+    // the console and Studio. Always retired in the finally.
+    final OperationProgress progress = OperationProgressRegistry.instance().register(database.getName(), "compact index");
     try {
+      final List<Index> targetIndexes = new ArrayList<>();
       if (all) {
-        for (final Index idx : database.getSchema().getIndexes()) {
-          // Skip the logical TypeIndex wrappers: their bucket sub-indexes are already visited as standalone
-          // automatic indexes, so compacting the wrapper too would merge the same files twice.
-          if (idx.isAutomatic() && !(idx instanceof TypeIndex)) {
-            indexName = idx.getName();
-            if (compactIndex((IndexInternal) idx))
-              compacted = true;
-            compactedIndexes.add(idx.getName());
-          }
-        }
-      } else {
-        final Index idx = database.getSchema().getIndexByName(name.getValue());
+        // Skip the logical TypeIndex wrappers: their bucket sub-indexes are already visited as standalone
+        // automatic indexes, so compacting the wrapper too would merge the same files twice.
+        for (final Index idx : database.getSchema().getIndexes())
+          if (idx.isAutomatic() && !(idx instanceof TypeIndex))
+            targetIndexes.add(idx);
+      } else
+        targetIndexes.add(database.getSchema().getIndexByName(name.getValue()));
+
+      int stepIndex = 0;
+      for (final Index idx : targetIndexes) {
         indexName = idx.getName();
-        compacted = compactIndex((IndexInternal) idx);
+        ++stepIndex;
+        progress.onProgress("Compacting index '" + idx.getName() + "'", stepIndex, targetIndexes.size(), 0, -1);
+        if (compactIndex((IndexInternal) idx))
+          compacted = true;
         compactedIndexes.add(idx.getName());
       }
     } catch (final Exception e) {
@@ -91,6 +98,8 @@ public class CompactIndexStatement extends DDLStatement {
       throw new IndexException(
           "Error on compacting index '" + (indexName != null ? indexName : (name != null ? name.getValue() : "*")) + "' (error="
               + e.getMessage() + ")", e);
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
 
     result.setProperty("indexes", compactedIndexes);

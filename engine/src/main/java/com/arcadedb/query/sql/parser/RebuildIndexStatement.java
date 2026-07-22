@@ -24,6 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.NeedRetryException;
@@ -133,21 +135,53 @@ public class RebuildIndexStatement extends DDLStatement {
     };
 
     String indexName = null;
+    // PUBLISH LIVE PROGRESS (issue #5376): one step per index, per-record progress inside each build, pollable
+    // via the progress HTTP endpoint, the console and Studio. Always retired in the finally.
+    final OperationProgress progress = OperationProgressRegistry.instance().register(database.getName(), "rebuild index");
     try {
       final List<String> indexList = new ArrayList<>();
 
+      final List<Index> targetIndexes = new ArrayList<>();
       if (all) {
-        for (final Index idx : database.getSchema().getIndexes()) {
-          if (idx.isAutomatic() && !(idx instanceof TypeIndex)) {
-            indexName = idx.getName();
-            buildIndex(maxAttempts, database, callback, idx, batchSize);
-            indexList.add(idx.getName());
-          }
-        }
-      } else {
-        final Index idx = database.getSchema().getIndexByName(name.getValue());
+        for (final Index idx : database.getSchema().getIndexes())
+          if (idx.isAutomatic() && !(idx instanceof TypeIndex))
+            targetIndexes.add(idx);
+      } else
+        targetIndexes.add(database.getSchema().getIndexByName(name.getValue()));
+
+      int stepIndex = 0;
+      for (final Index idx : targetIndexes) {
         indexName = idx.getName();
-        buildIndex(maxAttempts, database, callback, idx, batchSize);
+        ++stepIndex;
+        final int step = stepIndex;
+        final String stepName = "Rebuilding index '" + idx.getName() + "'";
+        // A per-bucket sub-index rebuild scans only its associated bucket, so its step total is that bucket's
+        // count; a named TypeIndex rebuild scans the whole type. Using countType for a sub-index would cap
+        // the step percentage at ~100/N% on a type spread over N buckets. countType is deliberately
+        // NON-polymorphic: a TypeIndex build scans only the declaring type's own buckets - subtypes inheriting
+        // the index carry their own sub-indexes, rebuilt as their own targets.
+        final int associatedBucketId = idx.getAssociatedBucketId();
+        final long recordsTotal = associatedBucketId > -1 && !(idx instanceof TypeIndex) ?
+            database.getSchema().getBucketById(associatedBucketId).count() :
+            idx.getTypeName() != null ? database.countType(idx.getTypeName(), false) : -1L;
+        progress.onProgress(stepName, step, targetIndexes.size(), 0, recordsTotal);
+
+        // Own per-step counter: the callback's totalIndexed argument RESETS at every bucket boundary inside a
+        // TypeIndex build (each sub-index allocates a fresh counter), so it cannot be published against the
+        // whole-type total without sawtoothing.
+        final AtomicLong stepDone = new AtomicLong();
+        final Index.BuildIndexCallback progressCallback = (document, totalIndexed) -> {
+          callback.onDocumentIndexed(document, totalIndexed);
+          final long done = stepDone.incrementAndGet();
+          if ((done & 1023) == 0) // THROTTLED: five volatile writes every 1024 records
+            progress.onProgress(stepName, step, targetIndexes.size(), done, recordsTotal);
+        };
+
+        buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
+        // COMPLETION EMISSION: small indexes (< 1024 records) never hit the throttle, and larger ones may end
+        // mid-window - land the step at 100% either way.
+        progress.onProgress(stepName, step, targetIndexes.size(), recordsTotal > 0 ? recordsTotal : stepDone.get(),
+            recordsTotal > 0 ? recordsTotal : stepDone.get());
         indexList.add(idx.getName());
       }
       result.setProperty("indexes", indexList);
@@ -175,6 +209,8 @@ public class RebuildIndexStatement extends DDLStatement {
       throw new IndexException(
           "Error on rebuilding index '" + (indexName != null ? indexName : name.getValue()) + "' (error=" + e.getMessage() + ")",
           e);
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
 
     // SUCCESS
