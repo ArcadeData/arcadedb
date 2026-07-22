@@ -156,7 +156,7 @@ public class RebuildIndexStatement extends DDLStatement {
         final int step = stepIndex;
         final String stepName = "Rebuilding index '" + idx.getName() + "'";
         // A per-bucket sub-index rebuild scans only its associated bucket, so its step total is that bucket's
-        // count; only a full TypeIndex rebuild scans the whole type. Using countType for a sub-index would cap
+        // count; a named TypeIndex rebuild scans the whole type. Using countType for a sub-index would cap
         // the step percentage at ~100/N% on a type spread over N buckets.
         final int associatedBucketId = idx.getAssociatedBucketId();
         final long recordsTotal = associatedBucketId > -1 && !(idx instanceof TypeIndex) ?
@@ -164,13 +164,22 @@ public class RebuildIndexStatement extends DDLStatement {
             idx.getTypeName() != null ? database.countType(idx.getTypeName(), false) : -1L;
         progress.onProgress(stepName, step, targetIndexes.size(), 0, recordsTotal);
 
+        // Own per-step counter: the callback's totalIndexed argument RESETS at every bucket boundary inside a
+        // TypeIndex build (each sub-index allocates a fresh counter), so it cannot be published against the
+        // whole-type total without sawtoothing.
+        final AtomicLong stepDone = new AtomicLong();
         final Index.BuildIndexCallback progressCallback = (document, totalIndexed) -> {
           callback.onDocumentIndexed(document, totalIndexed);
-          if ((totalIndexed & 1023) == 0) // THROTTLED: five volatile writes every 1024 records
-            progress.onProgress(stepName, step, targetIndexes.size(), totalIndexed, recordsTotal);
+          final long done = stepDone.incrementAndGet();
+          if ((done & 1023) == 0) // THROTTLED: five volatile writes every 1024 records
+            progress.onProgress(stepName, step, targetIndexes.size(), done, recordsTotal);
         };
 
         buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
+        // COMPLETION EMISSION: small indexes (< 1024 records) never hit the throttle, and larger ones may end
+        // mid-window - land the step at 100% either way.
+        progress.onProgress(stepName, step, targetIndexes.size(), recordsTotal > 0 ? recordsTotal : stepDone.get(),
+            recordsTotal > 0 ? recordsTotal : stepDone.get());
         indexList.add(idx.getName());
       }
       result.setProperty("indexes", indexList);

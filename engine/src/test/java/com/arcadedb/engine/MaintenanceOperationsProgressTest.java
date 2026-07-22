@@ -112,4 +112,22 @@ class MaintenanceOperationsProgressTest extends TestHelper {
 
     assertThat(OperationProgressRegistry.instance().getOperations(database.getName())).isEmpty();
   }
+
+  /**
+   * BACKUP/IMPORT DATABASE run behind the integration module's reflective boundary, absent from the engine
+   * test classpath: both commands register their progress and then fail, which is exactly what exercises the
+   * retire-in-finally contract for the two reflective paths.
+   */
+  @Test
+  void backupAndImportRetireProgressOnFailureToo() {
+    createIndexedType(10);
+
+    assertThatThrownBy(() -> database.command("sql", "BACKUP DATABASE").close())
+        .isInstanceOf(Exception.class);
+    assertThat(OperationProgressRegistry.instance().getOperations(database.getName())).isEmpty();
+
+    assertThatThrownBy(() -> database.command("sql", "IMPORT DATABASE file:///tmp/does-not-exist.jsonl").close())
+        .isInstanceOf(Exception.class);
+    assertThat(OperationProgressRegistry.instance().getOperations(database.getName())).isEmpty();
+  }
 }
