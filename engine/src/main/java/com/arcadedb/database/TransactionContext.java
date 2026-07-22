@@ -803,9 +803,11 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
-    buffer.finalBody.put(slot, finalBody);
+    final byte[] prev = buffer.finalBody.put(slot, finalBody);
     buffer.insertedSlots.add(slot);
-    accountTrackedBytes(finalBody.length);
+    // Account the NET change in retained bytes: a repeated write to the same slot replaces its image, it does not
+    // add one - so the running total tracks bytes actually held, matching the cap's retained-heap intent.
+    accountTrackedBytes(finalBody.length - (prev != null ? prev.length : 0));
   }
 
   /**
@@ -824,15 +826,14 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
-    buffer.finalBody.put(slot, finalBody);
+    final byte[] prevFinal = buffer.finalBody.put(slot, finalBody);
+    long delta = finalBody.length - (prevFinal != null ? prevFinal.length : 0);
     // First-touch base wins: a second in-tx update must still diff against the COMMITTED pre-image, not the
-    // intermediate one. An insert-then-update keeps insert semantics (no base recorded).
-    if (buffer.insertedSlots.contains(slot))
-      accountTrackedBytes(finalBody.length);
-    else if (buffer.baseBody.putIfAbsent(slot, baseBody) == null)
-      accountTrackedBytes((long) finalBody.length + baseBody.length);
-    else
-      accountTrackedBytes(finalBody.length);
+    // intermediate one. An insert-then-update keeps insert semantics (no base recorded). Only the FIRST base
+    // capture for a slot adds to the retained-byte total.
+    if (!buffer.insertedSlots.contains(slot) && buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+      delta += baseBody.length;
+    accountTrackedBytes(delta);
   }
 
   /**
@@ -865,6 +866,14 @@ public class TransactionContext implements Transaction {
       if (slotRebaseByPage != null)
         slotRebaseByPage.clear();
     }
+  }
+
+  /**
+   * True when a slot-merge write to page (fileId, pageNumber) has already been poisoned this transaction, so the
+   * caller can skip building the (allocation-heavy) record-image copy for a page that can no longer be rebased.
+   */
+  public boolean isSlotRebasePagePoisoned(final int fileId, final int pageNumber) {
+    return slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(packPageKey(fileId, pageNumber));
   }
 
   private boolean isRebasableSlotPage(final PageId pageId) {

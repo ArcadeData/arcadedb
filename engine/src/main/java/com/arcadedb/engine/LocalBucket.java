@@ -902,7 +902,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         else if (!createNewPage) {
           if (isPlaceHolder || spaceNeeded > spaceAvailableInCurrentPage)
             slotTx.poisonSlotRebasePage(fileId, slotPageNumber);
-          else
+          // Skip the record-image copy on a page that is already poisoned (it would be discarded anyway).
+          else if (!slotTx.isSlotRebasePagePoisoned(fileId, slotPageNumber))
             slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex,
                     Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
         }
@@ -1274,7 +1275,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (slotCandidate) {
           if (isPlaceHolder)
             slotTx.poisonSlotRebasePage(fileId, pageId);
-          else {
+          // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
+          else if (!slotTx.isSlotRebasePagePoisoned(fileId, pageId)) {
             final byte[] baseBody = new byte[(int) recordSize[0]];
             page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
             slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody,
