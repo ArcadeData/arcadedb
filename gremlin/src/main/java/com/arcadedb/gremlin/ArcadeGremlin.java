@@ -275,12 +275,16 @@ public class ArcadeGremlin extends ArcadeQuery {
       try {
         return executeStatement("java", analysis);
       } catch (ScriptException e) {
-        if ("java".equals(gremlinEngine) && (parameters == null || parameters.isEmpty()))
-          // STRICT JAVA MODE WITH NO PARAMETERS: DO NOT FALLBACK
+        if ("java".equals(gremlinEngine))
+          // STRICT JAVA MODE (THE SECURE DEFAULT): NEVER FALL BACK TO THE INSECURE GROOVY ENGINE, REGARDLESS OF
+          // PARAMETERS. THE GROOVY ENGINE IS VULNERABLE TO RCE (SEE GHSA-wcm5-4wjm-9wj3): A QUERY THE GREMLIN-LANG
+          // PARSER REJECTS (E.G. A GROOVY CLOSURE `filter { ... }`) MUST SURFACE AS A PARSING ERROR, NOT BE
+          // SILENTLY EXECUTED AS GROOVY. USE 'auto' (OR 'groovy') EXPLICITLY TO OPT IN TO THE GROOVY FALLBACK.
           throw e;
 
-        // FALLBACK TO GROOVY FOR QUERIES WITH PARAMETERS OR IN AUTO MODE
-        // (TinkerPop 3.8.0 restricted parameter placement in gremlin-lang grammar)
+        // AUTO MODE ONLY: FALL BACK TO GROOVY FOR COMPATIBILITY (E.G. QUERIES THE gremlin-lang GRAMMAR CANNOT
+        // PARSE AFTER TinkerPop 3.8.0 RESTRICTED PARAMETER PLACEMENT). 'auto' IS DOCUMENTED AS NOT RECOMMENDED
+        // FOR SECURITY-CRITICAL DEPLOYMENTS.
         LogManager.instance()
             .log(this, Level.FINE, "The gremlin query '%s' could not be parsed by the Java engine, falling back to the `groovy` engine", e, query);
       }
