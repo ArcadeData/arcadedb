@@ -817,7 +817,8 @@ public class Console {
   private Thread startProgressMonitor(final String line) {
     if (output != null || verboseLevel < 2)
       return null;
-    final String normalized = line.trim().toLowerCase(Locale.ENGLISH);
+    // Collapse whitespace runs so `REBUILD   INDEX` matches too, consistently with the Studio matcher.
+    final String normalized = line.trim().toLowerCase(Locale.ENGLISH).replaceAll("\\s+", " ");
     boolean monitored = false;
     for (final String command : PROGRESS_MONITORED_COMMANDS)
       if (normalized.startsWith(command)) {
