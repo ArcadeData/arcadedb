@@ -35,6 +35,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -895,13 +896,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // placeholder record is not a plain single-slot insert, so it poisons the page instead.
       final TransactionContext slotTx = database.getTransactionIfExists();
       if (slotTx != null && slotTx.isSlotMergeEnabled()) {
+        final int slotPageNumber = selectedPage.getPageId().getPageNumber();
         if (!isSlotMergeCandidate(record))
-          slotTx.poisonSlotRebasePage(rid);
+          slotTx.poisonSlotRebasePage(fileId, slotPageNumber);
         else if (!createNewPage) {
           if (isPlaceHolder || spaceNeeded > spaceAvailableInCurrentPage)
-            slotTx.poisonSlotRebasePage(rid);
+            slotTx.poisonSlotRebasePage(fileId, slotPageNumber);
           else
-            slotTx.trackRebasableInsert(rid, availablePositionIndex,
+            slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex,
                     Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
         }
       }
@@ -922,7 +924,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * are deliberately kept out of the generic slot merge to avoid the two mechanisms rebasing the same page.
    */
   private static boolean isSlotMergeCandidate(final Record record) {
-    return record.getRecordType() != 3;
+    return record.getRecordType() != EdgeSegment.RECORD_TYPE;
   }
 
   /**
@@ -980,6 +982,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return true;
 
     } catch (final IOException e) {
+      // Intentional asymmetry: a "cannot rebase this slot" outcome returns false (the caller raises a clean CME
+      // and the transaction retries), but a genuine I/O failure reading the page is not a retryable conflict - it
+      // aborts the transaction like any other storage error rather than masquerading as a version conflict.
       throw new DatabaseOperationException("Error on slot rebase for page " + page.getPageId(), e);
     }
   }
@@ -1125,7 +1130,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (updateRecordInternal(record, placeHolderContentRID, true, discardRecordAfter)) {
           // UPDATE PLACEHOLDER CONTENT, THE PLACEHOLDER POINTER STAY THE SAME
           if (slotCandidate)
-            slotTx.poisonSlotRebasePage(rid);
+            slotTx.poisonSlotRebasePage(fileId, pageId);
           if (!discardRecordAfter)
             ((RecordInternal) record).setBuffer(buffer.getNotReusable());
           return true;
@@ -1138,7 +1143,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         recordSize[1] = 1L;
       } else if (recordSize[0] == FIRST_CHUNK) {
         if (slotCandidate)
-          slotTx.poisonSlotRebasePage(rid);
+          slotTx.poisonSlotRebasePage(fileId, pageId);
 
         updateMultiPageRecord(rid, buffer, page, (int) (recordPositionInPage + recordSize[1]));
 
@@ -1162,7 +1167,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (bufferSize > recordSize[0]) {
         // GROWTH: shifts other records / spills to a placeholder or chunks. Not a single-slot change -> poison.
         if (slotCandidate)
-          slotTx.poisonSlotRebasePage(rid);
+          slotTx.poisonSlotRebasePage(fileId, pageId);
 
         // UPDATED RECORD IS LARGER THAN THE PREVIOUS VERSION: MAKE ROOM IN THE PAGE IF POSSIBLE
         final int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
@@ -1268,11 +1273,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // rebasing this page in isolation would be unsound: poison it instead.
         if (slotCandidate) {
           if (isPlaceHolder)
-            slotTx.poisonSlotRebasePage(rid);
+            slotTx.poisonSlotRebasePage(fileId, pageId);
           else {
             final byte[] baseBody = new byte[(int) recordSize[0]];
             page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
-            slotTx.trackRebasableUpdate(rid, baseBody,
+            slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody,
                     Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
           }
         }
@@ -1304,7 +1309,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // it is never a pure single-slot change - keep the page out of the slot merge.
     final TransactionContext slotTx = database.getTransactionIfExists();
     if (slotTx != null && slotTx.isSlotMergeEnabled())
-      slotTx.poisonSlotRebasePage(rid);
+      slotTx.poisonSlotRebasePage(fileId, pageId);
 
     database.getTransaction().removeRecordFromCache(rid);
 

@@ -109,6 +109,10 @@ public class TransactionContext implements Transaction {
   private       Map<Long, SlotRebaseBuffer>          slotRebaseByPage;
   private       LongHashSet                          slotRebasePoisonedPages;
   private       boolean                              slotMerge;
+  // Per-transaction soft cap on the bytes retained for the slot merge and the running total: once exceeded the
+  // merge is disabled for the rest of the transaction so heap stays bounded on a very large transaction.
+  private       long                                 slotMergeMaxBytes;
+  private       long                                 slotRebaseTrackedBytes;
   private       boolean                              useWAL;
   // #5064: set by the HA layer AFTER the replication quorum durably committed this transaction and BEFORE
   // the local phase-2 apply. Shifts the durability boundary for the failure regimes in commit2ndPhase's
@@ -188,6 +192,8 @@ public class TransactionContext implements Transaction {
     // to a plain field read instead of a configuration lookup.
     edgeAppendMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE);
     slotMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_SLOT_MERGE);
+    slotMergeMaxBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_SLOT_MERGE_MAX_BYTES);
+    slotRebaseTrackedBytes = 0;
 
     // Optimized: initial capacity 32 for typical transaction page count
     modifiedPages = new HashMap<>(32);
@@ -786,11 +792,12 @@ public class TransactionContext implements Transaction {
    * Records a brand-new record inserted into a FREE slot of an EXISTING page as rebasable: at commit, a
    * page-version conflict caused only by concurrent writes to OTHER slots of that page can be resolved by
    * replaying this insert on the newer committed page. No-op when the feature is off or the page is poisoned.
+   * The caller ({@link LocalBucket}) passes the already-computed page/slot so no schema lookup happens per write.
    */
-  public void trackRebasableInsert(final RID rid, final int slot, final byte[] finalBody) {
+  public void trackRebasableInsert(final int fileId, final int pageNumber, final int slot, final byte[] finalBody) {
     if (!slotMerge)
       return;
-    final long key = bucketPageKey(rid);
+    final long key = packPageKey(fileId, pageNumber);
     if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
       return;
     if (slotRebaseByPage == null)
@@ -798,45 +805,66 @@ public class TransactionContext implements Transaction {
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
     buffer.finalBody.put(slot, finalBody);
     buffer.insertedSlots.add(slot);
+    accountTrackedBytes(finalBody.length);
   }
 
   /**
    * Records a same-or-smaller in-place record update as rebasable, keeping {@code baseBody} (the pre-image) so the
    * rebase can distinguish a false page conflict (a concurrent write to another slot) from a true one (a
-   * concurrent write to THIS record). No-op when the feature is off or the page is poisoned.
+   * concurrent write to THIS record). No-op when the feature is off or the page is poisoned. The caller passes the
+   * already-computed page/slot so no schema lookup happens per write.
    */
-  public void trackRebasableUpdate(final RID rid, final byte[] baseBody, final byte[] finalBody) {
+  public void trackRebasableUpdate(final int fileId, final int pageNumber, final int slot, final byte[] baseBody,
+      final byte[] finalBody) {
     if (!slotMerge)
       return;
-    final long key = bucketPageKey(rid);
+    final long key = packPageKey(fileId, pageNumber);
     if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
       return;
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
-    final int slot = slotInPage(rid);
     buffer.finalBody.put(slot, finalBody);
     // First-touch base wins: a second in-tx update must still diff against the COMMITTED pre-image, not the
     // intermediate one. An insert-then-update keeps insert semantics (no base recorded).
-    if (!buffer.insertedSlots.contains(slot))
-      buffer.baseBody.putIfAbsent(slot, baseBody);
+    if (buffer.insertedSlots.contains(slot))
+      accountTrackedBytes(finalBody.length);
+    else if (buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+      accountTrackedBytes((long) finalBody.length + baseBody.length);
+    else
+      accountTrackedBytes(finalBody.length);
   }
 
   /**
-   * Marks the bucket page holding {@code rid} as NOT rebasable via the slot merge: this transaction changed it in
+   * Marks the bucket page (fileId, pageNumber) as NOT rebasable via the slot merge: this transaction changed it in
    * a way that is not a single-slot insert/in-place-update (delete, multi-page/placeholder record, record growth
    * that shifts other slots). Any tracked slots on it are dropped so a rebase can never silently re-derive the
    * page from committed-state + our slot writes. No-op when the feature is off.
    */
-  public void poisonSlotRebasePage(final RID rid) {
+  public void poisonSlotRebasePage(final int fileId, final int pageNumber) {
     if (!slotMerge)
       return;
-    final long key = bucketPageKey(rid);
+    final long key = packPageKey(fileId, pageNumber);
     if (slotRebasePoisonedPages == null)
       slotRebasePoisonedPages = new LongHashSet();
     slotRebasePoisonedPages.add(key);
     if (slotRebaseByPage != null)
       slotRebaseByPage.remove(key);
+  }
+
+  /**
+   * Bounds the heap the slot merge may retain within one transaction: once the running total of tracked images
+   * exceeds {@link GlobalConfiguration#TX_SLOT_MERGE_MAX_BYTES}, the merge is disabled for the remainder of the
+   * transaction. Already-tracked pages are dropped (freeing their images) so a conflict on any of them now falls
+   * back to a normal retry - a huge transaction degrades to plain MVCC instead of holding ~2x its touched records.
+   */
+  private void accountTrackedBytes(final long added) {
+    slotRebaseTrackedBytes += added;
+    if (slotRebaseTrackedBytes > slotMergeMaxBytes) {
+      slotMerge = false;
+      if (slotRebaseByPage != null)
+        slotRebaseByPage.clear();
+    }
   }
 
   private boolean isRebasableSlotPage(final PageId pageId) {
@@ -846,21 +874,6 @@ public class TransactionContext implements Transaction {
     if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
       return false;
     return slotRebaseByPage.containsKey(key);
-  }
-
-  /** Packs the (fileId, pageNumber) of the page holding {@code rid} into a long key (no allocation). */
-  private long bucketPageKey(final RID rid) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
-    if (bucket == null)
-      throw new ConcurrentModificationException("Slot-merge: bucket " + rid.getBucketId()
-          + " for record " + rid + " not found. Please retry the operation");
-    final int pageNumber = (int) (rid.getPosition() / bucket.getMaxRecordsInPage());
-    return packPageKey(rid.getBucketId(), pageNumber);
-  }
-
-  private int slotInPage(final RID rid) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
-    return (int) (rid.getPosition() % bucket.getMaxRecordsInPage());
   }
 
   /**
