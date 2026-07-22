@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -27,11 +28,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.ProgressCallback;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -114,9 +117,23 @@ public class GraphDatabaseChecker {
    * check (no type/bucket filter): a partial walk would classify the unwalked vertices' segments as orphans.
    * Like the rest of fix mode, assumes no concurrent writers - run it in a maintenance window.
    * <p>
-   * Known limitation (matching the corrupted-records pattern in the vertex/edge checks): the orphan RIDs are
-   * accumulated in memory and deleted inside one transaction, so a database with an extreme number of orphaned
-   * segments grows both unbounded. Batched commits are a possible follow-up if such corruption is ever seen.
+   * DATA-SAFETY GUARANTEES (both failure modes here delete live data, so they are guarded rather than left to
+   * the caller):
+   * <ul>
+   *   <li>the segment buckets are identified from the SCHEMA - the engine-created {@code _out_edges}/
+   *   {@code _in_edges} bucket of every vertex bucket and every vertex type's super-node stripe pool - never by
+   *   matching bucket names alone (see {@link #collectEdgeSegmentBucketIds()}); a user data bucket whose name
+   *   merely collides with the naming scheme is therefore never scanned or deleted;</li>
+   *   <li>the reclaim FAILS CLOSED: if any vertex could not be walked in phase 1 its live segments are missing
+   *   from the reachable set, so the whole deletion phase is skipped (nothing is deleted) rather than risk
+   *   destroying them.</li>
+   * </ul>
+   * <p>
+   * Known limitation (matching the corrupted-records pattern in the vertex/edge checks): the whole reachable set
+   * (a position entry for EVERY reachable segment across the database, which dominates memory on a large healthy
+   * graph) and the orphan RID list are held in memory and the delete runs inside one transaction, so an extreme
+   * database grows them unbounded. Batched commits + a segment-count-bounded reachable set are a possible
+   * follow-up if such scale is ever seen.
    */
   public Map<String, Object> reclaimOrphanedEdgeSegments(final int verboseLevel, final int maxWarnings) {
     final List<String> warnings = new ArrayList<>();
@@ -139,6 +156,9 @@ public class GraphDatabaseChecker {
     try {
       // PHASE 1: walk every vertex's chains and mark every reachable segment. LongHashSet keyed by position
       // per bucket keeps the footprint primitive-sized (same approach as the external-property orphan scan).
+      // FAIL CLOSED: a vertex we cannot walk leaves its live segments unmarked, so ANY walk failure disables
+      // the deletion phase entirely - deleting then would treat live data as garbage.
+      final AtomicBoolean reachabilityComplete = new AtomicBoolean(true);
       progressBegin("Reclaiming orphaned edge segments - collecting reachable segments", totalVertices);
       for (final DocumentType type : vertexTypes)
         database.scanType(type.getName(), false, record -> {
@@ -148,42 +168,53 @@ public class GraphDatabaseChecker {
             markReachableSegments(vertex.getOutEdgesHeadChunk(), reachable);
             markReachableSegments(vertex.getInEdgesHeadChunk(), reachable);
           } catch (final Exception e) {
+            reachabilityComplete.set(false);
             addWarning(warnings, totalWarnings, maxWarnings,
                 "vertex " + record.getIdentity() + " could not be walked during the orphan reclaim (error: " + describe(e)
                     + ")");
           }
           return true;
-        }, (rid, exception) -> true);
-
-      // PHASE 2: scan the dedicated edge-list buckets; anything not marked reachable is an orphan.
-      progressBegin("Reclaiming orphaned edge segments - scanning segment buckets", -1);
-      final List<RID> orphansToDelete = new ArrayList<>();
-      for (final Bucket b : database.getSchema().getBuckets()) {
-        final String name = b.getName();
-        if (!name.endsWith(GraphEngine.OUT_EDGES_SUFFIX) && !name.endsWith(GraphEngine.IN_EDGES_SUFFIX)
-            && !name.contains(StripedEdgeList.STRIPE_BUCKET_INFIX))
-          continue;
-
-        final LongHashSet reachableInBucket = reachable.get(b.getFileId());
-        b.scan((rid, view) -> {
-          progressTick();
-          if (reachableInBucket == null || !reachableInBucket.contains(rid.getPosition()))
-            orphansToDelete.add(rid);
-          return true;
-        }, null);
-      }
-      orphans = orphansToDelete.size();
-
-      for (final RID orphan : orphansToDelete) {
-        try {
-          database.getSchema().getBucketById(orphan.getBucketId()).deleteRecord(orphan);
-          ++reclaimed;
-        } catch (final RecordNotFoundException e) {
-          // ALREADY GONE
-        } catch (final Exception e) {
+        }, (rid, exception) -> {
+          // A vertex record that cannot even be loaded during the scan is the same fail-closed case: its
+          // segments were never marked, so the deletion phase must not run.
+          reachabilityComplete.set(false);
           addWarning(warnings, totalWarnings, maxWarnings,
-              "orphaned edge segment " + orphan + " could not be reclaimed (error: " + describe(e) + ")");
+              "vertex " + rid + " could not be loaded during the orphan reclaim (error: " + describe(exception) + ")");
+          return true;
+        });
+
+      if (reachabilityComplete.get()) {
+        // PHASE 2: scan ONLY the internal edge-list buckets the graph engine created for the vertices (derived
+        // from the schema, never matched by name), and delete anything not marked reachable.
+        progressBegin("Reclaiming orphaned edge segments - scanning segment buckets", -1);
+        final List<RID> orphansToDelete = new ArrayList<>();
+        for (final Integer bucketId : collectEdgeSegmentBucketIds()) {
+          final Bucket b = database.getSchema().getBucketById(bucketId);
+          final LongHashSet reachableInBucket = reachable.get(bucketId);
+          b.scan((rid, view) -> {
+            progressTick();
+            if (reachableInBucket == null || !reachableInBucket.contains(rid.getPosition()))
+              orphansToDelete.add(rid);
+            return true;
+          }, null);
         }
+        orphans = orphansToDelete.size();
+
+        for (final RID orphan : orphansToDelete) {
+          try {
+            database.getSchema().getBucketById(orphan.getBucketId()).deleteRecord(orphan);
+            ++reclaimed;
+          } catch (final RecordNotFoundException e) {
+            // ALREADY GONE
+          } catch (final Exception e) {
+            addWarning(warnings, totalWarnings, maxWarnings,
+                "orphaned edge segment " + orphan + " could not be reclaimed (error: " + describe(e) + ")");
+          }
+        }
+      } else {
+        addWarning(warnings, totalWarnings, maxWarnings,
+            "orphaned edge segment reclaim skipped: the reachability walk did not complete (one or more vertices "
+                + "could not be walked); no segments were deleted to avoid destroying live data");
       }
 
       if (verboseLevel > 0)
@@ -200,6 +231,56 @@ public class GraphDatabaseChecker {
       stats.put("totalWarnings", totalWarnings.get());
     }
     return stats;
+  }
+
+  /**
+   * The file-ids of the internal edge-list buckets the graph engine created for the registered vertex types: the
+   * {@code _out_edges}/{@code _in_edges} bucket of every vertex bucket, and every vertex type's super-node stripe
+   * pool. DERIVED FROM THE SCHEMA, never by matching bucket names blindly, so a user data bucket whose name
+   * collides with the edge-list naming scheme is never treated as reclaimable. A bucket that IS owned by a type
+   * is user data by definition and is excluded - the same collision guard {@link StripedEdgeList#ensureStripePool}
+   * uses, since the engine's edge-list buckets are created standalone ({@code schema.createBucket}) and belong to
+   * no type.
+   */
+  private Set<Integer> collectEdgeSegmentBucketIds() {
+    final Schema schema = database.getSchema();
+    final Set<Integer> ids = new HashSet<>();
+    final int configuredStripes = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES);
+    for (final DocumentType type : schema.getTypes()) {
+      if (!(type instanceof LocalVertexType))
+        continue;
+      for (final Bucket vb : type.getBuckets(false)) {
+        addSegmentBucketIfInternal(ids, vb.getName() + GraphEngine.OUT_EDGES_SUFFIX);
+        addSegmentBucketIfInternal(ids, vb.getName() + GraphEngine.IN_EDGES_SUFFIX);
+      }
+      // Super-node stripe pool (per type). Pools are created contiguously from slot 0 (see
+      // GraphEngine.dropVertexType): sweep until the first gap AT OR PAST the configured pool size, stepping over
+      // gaps below it (a partially-created pool). No slot 0 means the type never promoted - skip the whole sweep.
+      for (int i = 0; ; i++) {
+        final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
+        if (!schema.existsBucket(stripeBucketName)) {
+          if (i == 0 || i >= configuredStripes)
+            break;
+          continue;
+        }
+        addSegmentBucketIfInternal(ids, stripeBucketName);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Adds the named bucket's file-id to {@code ids} only when it exists AND is not owned by a type. A type-owned
+   * bucket is user data that merely collides with the edge-list naming scheme and must never be reclaimed.
+   */
+  private void addSegmentBucketIfInternal(final Set<Integer> ids, final String bucketName) {
+    final Schema schema = database.getSchema();
+    if (!schema.existsBucket(bucketName))
+      return;
+    final Bucket b = schema.getBucketByName(bucketName);
+    if (schema.getTypeByBucketId(b.getFileId()) != null)
+      return; // USER DATA BUCKET colliding with the naming scheme
+    ids.add(b.getFileId());
   }
 
   /** Marks every segment reachable from the given head: a classic chain, or a stripe directory + all its chains. */

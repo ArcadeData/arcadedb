@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.RecordNotFoundException;
 
@@ -267,6 +268,49 @@ class GraphDatabaseCheckerOrphanReclaimTest extends TestHelper {
 
     // REPAIR THE DELIBERATELY BROKEN CHAIN so the TestHelper post-test integrity check finds a clean database.
     runCheck(true);
+  }
+
+  /**
+   * Data-loss guard (PR #5379 review): the reclaim must identify the internal edge-list buckets from the SCHEMA,
+   * never by matching bucket names alone. A USER data bucket whose name collides with the edge-list naming scheme
+   * (ends with {@code _out_edges}/{@code _in_edges}, or contains the stripe infix {@code _sn_stripe_}) has no
+   * entry in the reachable set, so a name-only match would classify every record in it as an orphan and DELETE
+   * it. Here two such colliding user buckets are populated and a full CHECK DATABASE FIX must leave them intact.
+   */
+  @Test
+  void fullFixDoesNotDeleteUserBucketsCollidingWithSegmentNaming() {
+    createHub(500); // a healthy graph so the reclaim runs (full scope) but finds no real orphans
+
+    // A document type whose ONLY bucket is literally named "<x>_out_edges" (suffix collision), and a document
+    // type whose default bucket name CONTAINS the stripe infix "_sn_stripe_" (infix collision).
+    final String suffixBucketName = "Ledger" + GraphEngine.OUT_EDGES_SUFFIX;
+    final String infixTypeName    = "Audit" + StripedEdgeList.STRIPE_BUCKET_INFIX + "journal";
+    final int    suffixDocs       = 20;
+    final int    infixDocs        = 15;
+
+    database.transaction(() -> {
+      final Bucket ledgerBucket = database.getSchema().createBucket(suffixBucketName);
+      database.getSchema().createDocumentType("Ledger", List.of(ledgerBucket));
+      database.getSchema().createDocumentType(infixTypeName, 1);
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < suffixDocs; i++)
+        database.newDocument("Ledger").set("i", i).save();
+      for (int i = 0; i < infixDocs; i++)
+        database.newDocument(infixTypeName).set("i", i).save();
+    });
+
+    final Map<String, Object> stats = runCheck(true);
+
+    // NO real orphans in a healthy graph, and NONE of the colliding user records were touched.
+    assertThat(((Number) stats.get("orphanedEdgeSegmentsReclaimed")).longValue())
+        .as("a healthy database has no orphans to reclaim").isEqualTo(0L);
+    database.transaction(() -> {
+      assertThat(database.countType("Ledger", false)).as("the _out_edges-named user bucket must be untouched")
+          .isEqualTo((long) suffixDocs);
+      assertThat(database.countType(infixTypeName, false)).as("the _sn_stripe_-named user bucket must be untouched")
+          .isEqualTo((long) infixDocs);
+    });
   }
 
   /** A type-filtered check walks only part of the graph, so it must NOT reclaim (false orphans otherwise). */
