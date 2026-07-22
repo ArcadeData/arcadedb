@@ -133,7 +133,10 @@ public class GraphDatabaseChecker {
    * (a position entry for EVERY reachable segment across the database, which dominates memory on a large healthy
    * graph) and the orphan RID list are held in memory and the delete runs inside one transaction, so an extreme
    * database grows them unbounded. Batched commits + a segment-count-bounded reachable set are a possible
-   * follow-up if such scale is ever seen.
+   * follow-up if such scale is ever seen. Phase 1 is also a SECOND full vertex scan (the preceding
+   * {@code checkVertices} already scanned them all): the reachable set could instead be accumulated during that
+   * pass to halve the vertex-scan cost of a full fix - deferred, since keeping the reclaim self-contained is
+   * worth the extra pass on an already-damaged database run in a maintenance window.
    */
   public Map<String, Object> reclaimOrphanedEdgeSegments(final int verboseLevel, final int maxWarnings) {
     final List<String> warnings = new ArrayList<>();
