@@ -18,10 +18,14 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.WALFile;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -78,6 +82,38 @@ class GraphBatchWALRestoreTest extends TestHelper {
     } finally {
       database.commit();
     }
+  }
+
+  @Test
+  void buildsOnThreadWithoutTransactionContext() throws InterruptedException {
+    // Regression for the CI breakage introduced by the first #5378 fix: PostBatchHandler builds the
+    // batch on an HTTP worker thread that has never run a transaction, so no TransactionContext exists
+    // yet and the constructor must not require one. The saved policy falls back to the configured
+    // defaults (arcadedb.txWAL / arcadedb.txWalFlush), which is what a fresh context initializes from.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final boolean configuredUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
+    final WALFile.FlushType configuredWALFlush = WALFile.getWALFlushType(
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread worker = new Thread(() -> {
+      try {
+        runBatch();
+
+        // The batch's own transactions created the context: it must not keep the relaxed policy.
+        final TransactionContext tx = db.getTransactionIfExists();
+        assertThat(tx).as("TransactionContext created by the batch on the worker thread").isNotNull();
+        assertThat(tx.isUseWAL()).as("useWAL after GraphBatch.close() on a fresh thread").isEqualTo(configuredUseWAL);
+        assertThat(tx.getWALFlush()).as("WAL flush strategy after GraphBatch.close() on a fresh thread")
+            .isEqualTo(configuredWALFlush);
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    worker.start();
+    worker.join();
+
+    assertThat(failure.get()).as("GraphBatch on a thread without a TransactionContext").isNull();
   }
 
   private void runBatch() {
