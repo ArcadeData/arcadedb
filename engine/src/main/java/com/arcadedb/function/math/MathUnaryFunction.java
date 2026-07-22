@@ -25,7 +25,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.function.DoubleUnaryOperator;
 
 /**
- * Generic math unary function (ceil, floor, abs, sqrt, round).
+ * Generic math unary function (ceil, floor, sqrt, trigonometric and logarithmic functions).
+ * Always returns a Double: the Cypher signature of these functions declares a FLOAT return
+ * type, and the type is semantically observable in downstream arithmetic (issue #5382:
+ * collapsing ceil(2.5) to the Long 3 silently turned ceil(2.5)/2 into integer division).
  */
 public class MathUnaryFunction implements StatelessFunction {
   private final String name;
@@ -47,15 +50,8 @@ public class MathUnaryFunction implements StatelessFunction {
       throw new CommandExecutionException(name + "() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Number) {
-      final double result = op.applyAsDouble(((Number) args[0]).doubleValue());
-      // Return integer type only when the result is a whole number that fits in a long.
-      // Without the range guard, large doubles (e.g. 1e30) saturate to Long.MAX_VALUE on cast.
-      if (result >= Long.MIN_VALUE && result <= Long.MAX_VALUE
-          && result == Math.floor(result) && !Double.isInfinite(result))
-        return (long) result;
-      return result;
-    }
+    if (args[0] instanceof Number)
+      return op.applyAsDouble(((Number) args[0]).doubleValue());
     throw new CommandExecutionException(name + "() requires a numeric argument");
   }
 }

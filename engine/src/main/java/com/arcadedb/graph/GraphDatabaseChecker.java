@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -26,10 +27,14 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.ProgressCallback;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -102,6 +107,266 @@ public class GraphDatabaseChecker {
       progressDone = progressTotal;
     progress.onProgress(progressStepName, progressStepIndex, progressTotalSteps, progressDone,
         progressTotal > 0 ? progressTotal : progressDone);
+  }
+
+  /**
+   * Collects every edge-list segment reachable from any vertex's OUT/IN chains (classic chunks, stripe
+   * directories, stripe chains and generation-0 chains of promoted super-nodes) and deletes the segments in
+   * the dedicated edge-list buckets that are NOT reachable (issue #5375). Orphans are left behind when a
+   * broken chain is rebuilt from the surviving edge records, or by historical bugs. MUST only run on a FULL
+   * check (no type/bucket filter): a partial walk would classify the unwalked vertices' segments as orphans.
+   * Like the rest of fix mode, assumes no concurrent writers - run it in a maintenance window.
+   * <p>
+   * DATA-SAFETY GUARANTEES (both failure modes here delete live data, so they are guarded rather than left to
+   * the caller):
+   * <ul>
+   *   <li>the segment buckets are identified from the SCHEMA - the engine-created {@code _out_edges}/
+   *   {@code _in_edges} bucket of every vertex bucket and every vertex type's super-node stripe pool - never by
+   *   matching bucket names alone (see {@link #collectEdgeSegmentBucketIds()}); a user data bucket whose name
+   *   merely collides with the naming scheme is therefore never scanned or deleted;</li>
+   *   <li>the reclaim FAILS CLOSED: if in phase 1 any vertex record could not be loaded OR its edge chain could
+   *   not be fully walked (a segment read failed ANYWHERE along a live chain - unreadable head, or a mid-chain
+   *   chunk lookup that threw), that chain's live tail is missing from the reachable set, so the whole deletion
+   *   phase is skipped (nothing is deleted) rather than risk destroying it. The skip is DELIBERATELY
+   *   database-wide (one unwalkable vertex blocks reclaim everywhere), not scoped to the affected type: a
+   *   vertex's segments can land in any edge-list bucket, so a narrower scope cannot be proven safe. Scoping it
+   *   is a possible future refinement.</li>
+   * </ul>
+   * <p>
+   * Known limitation (matching the corrupted-records pattern in the vertex/edge checks): the whole reachable set
+   * (a position entry for EVERY reachable segment across the database, which dominates memory on a large healthy
+   * graph) and the orphan RID list are held in memory and the delete runs inside one transaction, so an extreme
+   * database grows them unbounded. Batched commits + a segment-count-bounded reachable set are the mitigation
+   * before this is safe on the very large deployments the feature targets. Phase 1 is also a SECOND full vertex
+   * scan (the preceding {@code checkVertices} already scanned them all): the reachable set could instead be
+   * accumulated during that pass to halve the vertex-scan cost of a full fix - deferred, since keeping the
+   * reclaim self-contained is worth the extra pass on an already-damaged database run in a maintenance window.
+   * <p>
+   * DELIBERATELY ALWAYS-ON: this runs on every full-scope fix, even a no-repair run that reclaims zero segments
+   * (a healthy large graph still pays the scans + reachable set). That is intentional - orphans also come from
+   * historical bugs, not only from a rebuild in THIS run, so gating on "did we rebuild a chain this run" would
+   * never sweep a database that is otherwise clean. An explicit opt-in (e.g. a {@code FIX RECLAIM} keyword) is
+   * the alternative if the always-on cost proves unwelcome; left always-on for now.
+   */
+  public Map<String, Object> reclaimOrphanedEdgeSegments(final int verboseLevel, final int maxWarnings) {
+    final List<String> warnings = new ArrayList<>();
+    final AtomicLong totalWarnings = new AtomicLong();
+    final Map<String, Object> stats = new HashMap<>();
+
+    final Map<Integer, LongHashSet> reachable = new HashMap<>();
+    long totalVertices = 0;
+    final List<DocumentType> vertexTypes = new ArrayList<>();
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof LocalVertexType) {
+        vertexTypes.add(type);
+        totalVertices += database.countType(type.getName(), false);
+      }
+
+    long orphans = 0;
+    long reclaimed = 0;
+
+    database.begin();
+    try {
+      // PHASE 1: walk every vertex's chains and mark every reachable segment. LongHashSet keyed by position
+      // per bucket keeps the footprint primitive-sized (same approach as the external-property orphan scan).
+      // FAIL CLOSED: a vertex we cannot walk leaves its live segments unmarked, so ANY walk failure disables
+      // the deletion phase entirely - deleting then would treat live data as garbage.
+      final AtomicBoolean reachabilityComplete = new AtomicBoolean(true);
+      progressBegin("Reclaiming orphaned edge segments - collecting reachable segments", totalVertices);
+      for (final DocumentType type : vertexTypes)
+        database.scanType(type.getName(), false, record -> {
+          progressTick();
+          try {
+            final VertexInternal vertex = (VertexInternal) record.asVertex(true);
+            // Walk BOTH directions (no short-circuit) so every readable segment is still marked, but a read
+            // failure on EITHER chain fails the whole reclaim closed - the chain is live, so an unmarked tail
+            // must not be deleted as an orphan.
+            final boolean outComplete = markReachableSegments(vertex.getOutEdgesHeadChunk(), reachable);
+            final boolean inComplete = markReachableSegments(vertex.getInEdgesHeadChunk(), reachable);
+            if (!outComplete || !inComplete) {
+              reachabilityComplete.set(false);
+              addWarning(warnings, totalWarnings, maxWarnings, "vertex " + record.getIdentity()
+                  + " edge chain could not be fully walked during the orphan reclaim (a segment read failed); "
+                  + "the reclaim will be skipped to avoid deleting live data");
+            }
+          } catch (final Exception e) {
+            // DEFENSIVE TWIN of the scan error callback below: a vertex's edge-pointer prefix is validated at
+            // record construction, so a truncated/corrupt vertex normally fails to load inside the scan and
+            // surfaces through that callback; this catches any residual failure of asVertex here. Same effect.
+            reachabilityComplete.set(false);
+            addWarning(warnings, totalWarnings, maxWarnings,
+                "vertex " + record.getIdentity() + " could not be walked during the orphan reclaim (error: " + describe(e)
+                    + ")");
+          }
+          return true;
+        }, (rid, exception) -> {
+          // A vertex record that cannot even be loaded during the scan is the same fail-closed case: its
+          // segments were never marked, so the deletion phase must not run.
+          reachabilityComplete.set(false);
+          addWarning(warnings, totalWarnings, maxWarnings,
+              "vertex " + rid + " could not be loaded during the orphan reclaim (error: " + describe(exception) + ")");
+          return true;
+        });
+
+      if (reachabilityComplete.get()) {
+        // PHASE 2: scan ONLY the internal edge-list buckets the graph engine created for the vertices (derived
+        // from the schema, never matched by name), and delete anything not marked reachable.
+        progressBegin("Reclaiming orphaned edge segments - scanning segment buckets", -1);
+        final List<RID> orphansToDelete = new ArrayList<>();
+        for (final Integer bucketId : collectEdgeSegmentBucketIds()) {
+          final Bucket b = database.getSchema().getBucketById(bucketId);
+          final LongHashSet reachableInBucket = reachable.get(bucketId);
+          b.scan((rid, view) -> {
+            progressTick();
+            if (reachableInBucket == null || !reachableInBucket.contains(rid.getPosition()))
+              orphansToDelete.add(rid);
+            return true;
+          }, null);
+        }
+        orphans = orphansToDelete.size();
+
+        for (final RID orphan : orphansToDelete) {
+          try {
+            database.getSchema().getBucketById(orphan.getBucketId()).deleteRecord(orphan);
+            ++reclaimed;
+          } catch (final RecordNotFoundException e) {
+            // ALREADY GONE
+          } catch (final Exception e) {
+            addWarning(warnings, totalWarnings, maxWarnings,
+                "orphaned edge segment " + orphan + " could not be reclaimed (error: " + describe(e) + ")");
+          }
+        }
+      } else {
+        addWarning(warnings, totalWarnings, maxWarnings,
+            "orphaned edge segment reclaim skipped: the reachability walk did not complete (one or more vertices "
+                + "could not be walked); no segments were deleted to avoid destroying live data");
+      }
+
+      if (verboseLevel > 0)
+        for (final String warning : warnings)
+          LogManager.instance().log(this, Level.WARNING, "- " + warning);
+
+      database.commit();
+      progressComplete();
+
+    } finally {
+      stats.put("orphanedEdgeSegments", orphans);
+      stats.put("orphanedEdgeSegmentsReclaimed", reclaimed);
+      stats.put("warnings", warnings);
+      stats.put("totalWarnings", totalWarnings.get());
+    }
+    return stats;
+  }
+
+  /**
+   * The file-ids of the internal edge-list buckets the graph engine created for the registered vertex types: the
+   * {@code _out_edges}/{@code _in_edges} bucket of every vertex bucket, and every vertex type's super-node stripe
+   * pool. DERIVED FROM THE SCHEMA, never by matching bucket names blindly, so a user data bucket whose name
+   * collides with the edge-list naming scheme is never treated as reclaimable. A bucket that IS owned by a type
+   * is user data by definition and is excluded - the same collision guard {@link StripedEdgeList#ensureStripePool}
+   * uses, since the engine's edge-list buckets are created standalone ({@code schema.createBucket}) and belong to
+   * no type.
+   */
+  private Set<Integer> collectEdgeSegmentBucketIds() {
+    final Schema schema = database.getSchema();
+    final Set<Integer> ids = new HashSet<>();
+    final int configuredStripes = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES);
+    for (final DocumentType type : schema.getTypes()) {
+      if (!(type instanceof LocalVertexType))
+        continue;
+      for (final Bucket vb : type.getBuckets(false)) {
+        addSegmentBucketIfInternal(ids, vb.getName() + GraphEngine.OUT_EDGES_SUFFIX);
+        addSegmentBucketIfInternal(ids, vb.getName() + GraphEngine.IN_EDGES_SUFFIX);
+      }
+      // Super-node stripe pool (per type). Pools are created contiguously from slot 0 (see
+      // GraphEngine.dropVertexType): sweep until the first gap AT OR PAST the configured pool size, stepping over
+      // gaps below it (a partially-created pool). No slot 0 means the type never promoted - skip the whole sweep.
+      // NOTE: the bound is the LIVE GRAPH_SUPERNODE_STRIPES, not the size persisted at promotion (same assumption
+      // as dropVertexType). If it was shrunk since promotion, buckets past the new size are simply not scanned -
+      // never deleted, and their live segments are still marked via the phase-1 directory walk - so orphans there
+      // just leak; not a data-loss path.
+      for (int i = 0; ; i++) {
+        final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
+        if (!schema.existsBucket(stripeBucketName)) {
+          if (i == 0 || i >= configuredStripes)
+            break;
+          continue;
+        }
+        addSegmentBucketIfInternal(ids, stripeBucketName);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Adds the named bucket's file-id to {@code ids} only when it exists AND is not owned by a type. A type-owned
+   * bucket is user data that merely collides with the edge-list naming scheme and must never be reclaimed.
+   */
+  private void addSegmentBucketIfInternal(final Set<Integer> ids, final String bucketName) {
+    final Schema schema = database.getSchema();
+    if (!schema.existsBucket(bucketName))
+      return;
+    final Bucket b = schema.getBucketByName(bucketName);
+    if (schema.getTypeByBucketId(b.getFileId()) != null)
+      return; // USER DATA BUCKET colliding with the naming scheme
+    ids.add(b.getFileId());
+  }
+
+  /**
+   * Marks every segment reachable from the given head: a classic chain, or a stripe directory + all its chains.
+   *
+   * @return false when a segment read FAILED mid-walk (unreadable head, or a chunk lookup threw) so the chain
+   * could not be fully accounted for. The caller must then FAIL CLOSED (skip the deletion phase): the chain is
+   * currently referenced by a live vertex, so a read error here - unlike genuine corruption the earlier
+   * checkVertices rebuild already re-attached - may leave live tail segments unmarked, and deleting them would
+   * destroy live data. A healthy chain always returns true.
+   */
+  private boolean markReachableSegments(final RID head, final Map<Integer, LongHashSet> reachable) {
+    if (head == null)
+      return true;
+    final Record headRecord;
+    try {
+      headRecord = database.lookupByRID(head, true);
+    } catch (final Exception e) {
+      // UNREADABLE HEAD: cannot account for this vertex's segments - fail closed rather than risk deleting them.
+      return false;
+    }
+    if (headRecord instanceof StripeDirectory directory) {
+      mark(reachable, head);
+      boolean complete = true;
+      for (int g = 0; g < directory.getGenerationCount(); g++)
+        for (int s = 0; s < directory.getStripes(g); s++)
+          // Do NOT short-circuit: keep marking the readable stripe chains, just remember the walk was incomplete.
+          if (!markChain(directory.getHead(g, s), reachable))
+            complete = false;
+      return complete;
+    }
+    return markChain(head, reachable);
+  }
+
+  /**
+   * Walks a classic chunk chain marking every chunk; stops on cycles and unreadable chunks.
+   *
+   * @return false when a chunk lookup THREW (a broken/unreadable tail), leaving the rest of the chain unmarked;
+   * true when the whole chain was walked (including a cyclic chain fully covered before the cycle guard fired).
+   */
+  private boolean markChain(final RID head, final Map<Integer, LongHashSet> reachable) {
+    RID current = head;
+    while (current != null) {
+      if (!mark(reachable, current))
+        return true; // ALREADY VISITED: cyclic chain fully covered (not a read failure) - guards infinite loop
+      try {
+        current = ((EdgeSegment) database.lookupByRID(current, true)).getPreviousRID();
+      } catch (final Exception e) {
+        return false; // BROKEN/UNREADABLE TAIL: cannot confirm the rest of the chain - fail closed
+      }
+    }
+    return true;
+  }
+
+  /** @return true when the RID was newly marked as reachable. */
+  private boolean mark(final Map<Integer, LongHashSet> reachable, final RID rid) {
+    return reachable.computeIfAbsent(rid.getBucketId(), k -> new LongHashSet()).add(rid.getPosition());
   }
 
   public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel) {
@@ -774,6 +1039,9 @@ public class GraphDatabaseChecker {
     final List<String> warnings = new ArrayList<>();
     final Map<RID, Long> missingReferences = new HashMap<>();
     final Map<RID, String> missingReferenceErrors = new HashMap<>();
+    // Vertices whose edge LIST failed to walk during the back-reference probe: warned once each (a broken
+    // super-node chain is referenced by millions of edges), never flagged corrupted - see the probe guards.
+    final Set<RID> unreadableListVertices = new HashSet<>();
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -821,14 +1089,9 @@ public class GraphDatabaseChecker {
             invalidLinks.incrementAndGet();
 
           } else {
+            Vertex inVertex = null;
             try {
-              final Vertex vertex = edge.getInVertex().asVertex(true);
-
-              final EdgeLinkedList inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
-              if (inEdges == null || !inEdges.containsEdge(edgeRID))
-                // UNI DIRECTIONAL EDGE
-                missingReferenceBack.incrementAndGet();
-
+              inVertex = edge.getInVertex().asVertex(true);
             } catch (final RecordNotFoundException e) {
               addWarning(warnings, totalWarnings, maxWarnings,
                   "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
@@ -846,14 +1109,26 @@ public class GraphDatabaseChecker {
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
             }
 
+            if (inVertex != null)
+              try {
+                final EdgeLinkedList inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) inVertex, Vertex.DIRECTION.IN);
+                if (inEdges == null || !inEdges.containsEdge(edgeRID))
+                  // UNI DIRECTIONAL EDGE
+                  missingReferenceBack.incrementAndGet();
+              } catch (final Exception e) {
+                // The vertex record is FINE but its edge LIST is unreadable: neither the edge nor the vertex is
+                // at fault, so NOTHING is flagged corrupted here (before this guard the vertex was deleted by
+                // fix mode over its broken chain). checkVertices runs after this phase and rebuilds the list
+                // from the surviving edge records.
+                if (unreadableListVertices.add(inVertex.getIdentity()))
+                  addWarning(warnings, totalWarnings, maxWarnings,
+                      "vertex " + inVertex.getIdentity() + " incoming edge list is unreadable (error: " + describe(e)
+                          + "), left to the vertex check to rebuild");
+              }
+
+            Vertex outVertex = null;
             try {
-              final Vertex vertex = edge.getOutVertex().asVertex(true);
-
-              final EdgeLinkedList outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
-              if (outEdges == null || !outEdges.containsEdge(edgeRID))
-                // UNI DIRECTIONAL EDGE
-                missingReferenceBack.incrementAndGet();
-
+              outVertex = edge.getOutVertex().asVertex(true);
             } catch (final RecordNotFoundException e) {
               addWarning(warnings, totalWarnings, maxWarnings,
                   "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
@@ -869,6 +1144,20 @@ public class GraphDatabaseChecker {
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
             }
+
+            if (outVertex != null)
+              try {
+                final EdgeLinkedList outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) outVertex, Vertex.DIRECTION.OUT);
+                if (outEdges == null || !outEdges.containsEdge(edgeRID))
+                  // UNI DIRECTIONAL EDGE
+                  missingReferenceBack.incrementAndGet();
+              } catch (final Exception e) {
+                // Same as the incoming side: an unreadable LIST is not a corrupted edge or vertex.
+                if (unreadableListVertices.add(outVertex.getIdentity()))
+                  addWarning(warnings, totalWarnings, maxWarnings,
+                      "vertex " + outVertex.getIdentity() + " outgoing edge list is unreadable (error: " + describe(e)
+                          + "), left to the vertex check to rebuild");
+              }
           }
 
         } catch (final Throwable e) {

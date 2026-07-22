@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
@@ -274,10 +275,17 @@ public class GraphBatch implements AutoCloseable {
     // policy applied during the import would otherwise stick forever and silently downgrade the durability
     // contract of every later transaction. Capture the values actually in effect (which the context
     // initialized from arcadedb.txWAL / arcadedb.txWalFlush, unless the application overrode them) and put
-    // exactly those back on close().
-    final TransactionContext tx = database.getTransaction();
-    savedUseWAL = tx.isUseWAL();
-    savedWALFlush = tx.getWALFlush();
+    // exactly those back on close(). The current thread may have never run a transaction (e.g. an HTTP
+    // worker thread in PostBatchHandler), in which case no context exists yet and the configured defaults
+    // are exactly what a fresh context would initialize from.
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      savedUseWAL = tx.isUseWAL();
+      savedWALFlush = tx.getWALFlush();
+    } else {
+      savedUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
+      savedWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+    }
 
     if (savedUseWAL != this.useWAL || savedWALFlush != this.walFlush)
       LogManager.instance().log(this, Level.INFO,
@@ -937,9 +945,12 @@ public class GraphBatch implements AutoCloseable {
   private void restoreDatabaseSettings() {
     database.setReadYourWrites(savedReadYourWrites);
 
-    final TransactionContext tx = database.getTransaction();
-    tx.setUseWAL(savedUseWAL);
-    tx.setWALFlush(savedWALFlush);
+    // If the thread still has no TransactionContext (the batch never began a transaction), nothing leaked.
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      tx.setUseWAL(savedUseWAL);
+      tx.setWALFlush(savedWALFlush);
+    }
 
     LogManager.instance().log(this, Level.FINE, "GraphBatch: restored WAL settings useWAL=%s walFlush=%s", savedUseWAL,
         savedWALFlush);

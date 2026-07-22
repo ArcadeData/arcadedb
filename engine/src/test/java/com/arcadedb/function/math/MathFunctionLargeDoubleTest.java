@@ -60,21 +60,21 @@ class MathFunctionLargeDoubleTest {
   }
 
   @Test
-  void floorSmallWholeNumberReturnsLong() {
-    // Values that fit in a long and are whole numbers should still be collapsed to Long
+  void floorSmallWholeNumberReturnsDouble() {
+    // Issue #5382: the Cypher return type of floor() is FLOAT, so whole-number results
+    // must stay Double and never collapse to Long (it silently changed division semantics)
     final MathUnaryFunction floor = new MathUnaryFunction("floor", Math::floor);
     final Object result = floor.execute(new Object[] { 42.7 }, null);
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat((Long) result).isEqualTo(42L);
+    assertThat(result).isInstanceOf(Double.class);
+    assertThat((Double) result).isEqualTo(42.0);
   }
 
   @Test
-  void floorValueJustBelowLongMaxReturnsLong() {
-    // 1.5e18 fits in a long (Long.MAX_VALUE ~ 9.2e18)
+  void floorValueJustBelowLongMaxReturnsDouble() {
     final MathUnaryFunction floor = new MathUnaryFunction("floor", Math::floor);
     final Object result = floor.execute(new Object[] { 1.5e18 }, null);
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat((Long) result).isEqualTo(1_500_000_000_000_000_000L);
+    assertThat(result).isInstanceOf(Double.class);
+    assertThat((Double) result).isEqualTo(1.5e18);
   }
 
   @Test
