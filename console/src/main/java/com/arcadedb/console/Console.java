@@ -805,6 +805,10 @@ public class Console {
     output(level, "\n" + text, args);
   }
 
+  /** The maintenance commands that publish live progress in the operation registry (issues #5372, #5376). */
+  private static final String[] PROGRESS_MONITORED_COMMANDS = { "check database", "rebuild index", "compact index",
+      "backup database", "import database" };
+
   /**
    * Starts the live progress line for long-running maintenance commands (issue #5372), or returns null when
    * not applicable (not a monitored command, or the output is redirected to an embedding application).
@@ -813,7 +817,15 @@ public class Console {
   private Thread startProgressMonitor(final String line) {
     if (output != null || verboseLevel < 2)
       return null;
-    if (!line.trim().toLowerCase(Locale.ENGLISH).startsWith("check database"))
+    // Collapse whitespace runs so `REBUILD   INDEX` matches too, consistently with the Studio matcher.
+    final String normalized = line.trim().toLowerCase(Locale.ENGLISH).replaceAll("\\s+", " ");
+    boolean monitored = false;
+    for (final String command : PROGRESS_MONITORED_COMMANDS)
+      if (normalized.startsWith(command)) {
+        monitored = true;
+        break;
+      }
+    if (!monitored)
       return null;
 
     progressMonitorStopped = false;

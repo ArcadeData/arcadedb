@@ -23,6 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -64,6 +66,12 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       context.getDatabase().rollback();
     }
 
+    // PUBLISH LIVE PROGRESS (issue #5376): the backup runs behind a reflective boundary (integration module),
+    // so only the coarse operation is published - visible in the progress endpoint, console and Studio while
+    // it runs. Always retired in the finally.
+    final OperationProgress progress = OperationProgressRegistry.instance()
+        .register(context.getDatabase().getName(), "backup database");
+    progress.onProgress("Backing up database", 1, 1, 0, -1);
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
       final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), targetUrl);
@@ -114,6 +122,8 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);
     } catch (final InvocationTargetException e) {
       throw new CommandExecutionException("Error on backing up database", e.getTargetException());
+    } finally {
+      OperationProgressRegistry.instance().unregister(progress);
     }
   }
 
