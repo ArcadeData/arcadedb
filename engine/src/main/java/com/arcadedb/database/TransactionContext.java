@@ -923,7 +923,7 @@ public class TransactionContext implements Transaction {
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
     }
 
-    database.getPageManager().incrementSlotMerges();
+    database.getPageManager().incrementTxPageSlotMerges();
     return committed;
   }
 

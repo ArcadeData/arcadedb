@@ -131,7 +131,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
 
     // Feature actually worked: the merge fired at least once (0 would mean every false conflict was thrown).
-    final long merges = ((DatabaseInternal) database).getPageManager().getStats().slotMerges;
+    final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
     assertThat(merges).as("disjoint-slot update merge must fire").isGreaterThan(0);
 
     // Correctness, flake-free regardless of contention: each record holds EXACTLY its own last committed value
@@ -168,7 +168,7 @@ class Issue5381FalseConflictTest extends TestHelper {
       }
     });
 
-    final long mergesBefore = ((DatabaseInternal) database).getPageManager().getStats().slotMerges;
+    final long mergesBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
     final List<Throwable> errors = new CopyOnWriteArrayList<>();
     final AtomicInteger insertCme = new AtomicInteger();
     final CountDownLatch start = new CountDownLatch(1);
@@ -227,7 +227,7 @@ class Issue5381FalseConflictTest extends TestHelper {
     if (!errors.isEmpty())
       throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
 
-    final long merges = ((DatabaseInternal) database).getPageManager().getStats().slotMerges - mergesBefore;
+    final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges - mergesBefore;
     assertThat(merges).as("insert/update slot merges must fire on the churned shared page").isGreaterThan(0);
 
     // Insert-rebase proof, robust to CI load: with attempts=1 into a page churned by other slots, WITHOUT the
@@ -465,7 +465,7 @@ class Issue5381FalseConflictTest extends TestHelper {
     if (!errors.isEmpty())
       throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
 
-    final long merges = ((DatabaseInternal) database).getPageManager().getStats().slotMerges;
+    final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
     assertThat(merges).as("head-flip false conflicts must be merged").isGreaterThan(0);
 
     database.transaction(() -> {
@@ -625,7 +625,7 @@ class Issue5381FalseConflictTest extends TestHelper {
     if (!errors.isEmpty())
       throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
 
-    final long merges = ((DatabaseInternal) database).getPageManager().getStats().slotMerges;
+    final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
     assertThat(merges).as("in-place update merge must fire").isGreaterThan(0);
 
     database.transaction(() -> {
