@@ -48,6 +48,10 @@ public class MCPConfiguration {
   private volatile boolean      allowSchemaChange = false;
   private volatile boolean      allowAdmin        = false;
   private volatile List<String> allowedUsers     = new CopyOnWriteArrayList<>(List.of("root"));
+  // Extra browser origins accepted by the HTTP transport, on top of the always-allowed loopback and
+  // same-host ones. Empty by default: a cross-origin browser page must be opted in explicitly, because
+  // accepting any origin would defeat the DNS-rebinding mitigation MCP requires.
+  private volatile List<String> allowedOrigins   = new CopyOnWriteArrayList<>();
 
   public MCPConfiguration(final String rootPath) {
     this.rootPath = rootPath;
@@ -78,6 +82,14 @@ public class MCPConfiguration {
         for (int i = 0; i < usersArray.length(); i++)
           users.add(usersArray.getString(i));
         allowedUsers = new CopyOnWriteArrayList<>(users);
+      }
+
+      final JSONArray originsArray = json.getJSONArray("allowedOrigins", null);
+      if (originsArray != null) {
+        final List<String> origins = new ArrayList<>();
+        for (int i = 0; i < originsArray.length(); i++)
+          origins.add(originsArray.getString(i));
+        allowedOrigins = new CopyOnWriteArrayList<>(origins);
       }
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error loading MCP configuration: %s", e.getMessage());
@@ -159,6 +171,31 @@ public class MCPConfiguration {
     this.allowedUsers = new CopyOnWriteArrayList<>(allowedUsers);
   }
 
+  public List<String> getAllowedOrigins() {
+    return Collections.unmodifiableList(allowedOrigins);
+  }
+
+  public void setAllowedOrigins(final List<String> allowedOrigins) {
+    this.allowedOrigins = new CopyOnWriteArrayList<>(allowedOrigins);
+  }
+
+  /**
+   * Checks whether a browser {@code Origin} header value is explicitly allowed. The special value "*" permits
+   * any origin and disables the DNS-rebinding mitigation, so it is only for a deployment that fronts the
+   * endpoint with its own origin control. The comparison is case-insensitive because the scheme and the host
+   * of an origin are.
+   */
+  public boolean isOriginAllowed(final String origin) {
+    if (origin == null)
+      return false;
+    if (allowedOrigins.contains("*"))
+      return true;
+    for (final String allowed : allowedOrigins)
+      if (allowed.equalsIgnoreCase(origin))
+        return true;
+    return false;
+  }
+
   /**
    * Checks if a user is allowed to access MCP endpoints.
    * The special value "*" in allowedUsers permits any authenticated user.
@@ -187,6 +224,7 @@ public class MCPConfiguration {
     json.put("allowSchemaChange", allowSchemaChange);
     json.put("allowAdmin", allowAdmin);
     json.put("allowedUsers", new JSONArray(allowedUsers));
+    json.put("allowedOrigins", new JSONArray(allowedOrigins));
     return json;
   }
 
@@ -213,6 +251,15 @@ public class MCPConfiguration {
         for (int i = 0; i < usersArray.length(); i++)
           users.add(usersArray.getString(i));
       allowedUsers = new CopyOnWriteArrayList<>(users);
+    }
+    if (json.has("allowedOrigins")) {
+      final JSONArray originsArray = json.getJSONArray("allowedOrigins", null);
+      // Treat explicit null as an empty list (client intent to clear all extra origins)
+      final List<String> origins = new ArrayList<>();
+      if (originsArray != null)
+        for (int i = 0; i < originsArray.length(); i++)
+          origins.add(originsArray.getString(i));
+      allowedOrigins = new CopyOnWriteArrayList<>(origins);
     }
   }
 
