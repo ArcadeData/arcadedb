@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.management.ManagementFactory;
 
 /**
- * Quantifies the steady-state, ZERO-CONTENTION write-path cost of the disjoint-slot merge (TX_SLOT_MERGE): a
+ * Quantifies the steady-state, ZERO-CONTENTION write-path cost of the disjoint-slot merge (TX_PAGE_SLOT_MERGE): a
  * single thread doing same-size in-place updates and inserts into a reused page, where the merge tracks every
  * write but never rebases. Reports ops/s and heap allocated per op with the feature off vs on, using the JVM's
  * per-thread allocation counter. Tagged benchmark so it is excluded from CI; run explicitly to reproduce the
@@ -44,7 +44,7 @@ class SlotMergeWriteOverheadBenchmark extends TestHelper {
 
   @Test
   void inPlaceUpdateOverhead() {
-    final boolean savedMerge = GlobalConfiguration.TX_SLOT_MERGE.getValueAsBoolean();
+    final boolean savedMerge = GlobalConfiguration.TX_PAGE_SLOT_MERGE.getValueAsBoolean();
     try {
       database.transaction(() -> database.getSchema().createDocumentType("Bench", 1).createProperty("tag", Type.STRING));
       final RID[] rid = new RID[1];
@@ -63,12 +63,12 @@ class SlotMergeWriteOverheadBenchmark extends TestHelper {
       runInsert(false);
       runInsert(true);
     } finally {
-      GlobalConfiguration.TX_SLOT_MERGE.setValue(savedMerge);
+      GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(savedMerge);
     }
   }
 
   private void runUpdate(final RID rid, final boolean merge) {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(merge);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(merge);
     for (int i = 0; i < WARMUP; i++) {
       final String v = String.format("%016d", i);
       database.transaction(() -> rid.asDocument(true).modify().set("tag", v).save(), true, 1);
@@ -87,7 +87,7 @@ class SlotMergeWriteOverheadBenchmark extends TestHelper {
   }
 
   private void runInsert(final boolean merge) {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(merge);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(merge);
     for (int i = 0; i < WARMUP; i++)
       database.transaction(() -> database.newDocument("Bench").set("tag", "x").save(), true, 1);
     final ThreadMXBean tb = (ThreadMXBean) ManagementFactory.getThreadMXBean();

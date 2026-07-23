@@ -399,12 +399,12 @@ public enum GlobalConfiguration {
       "At commit, when the only conflict on an edge-list page is concurrent in-chunk edge appends (which commute), re-apply the appends on top of the newer page version instead of failing the whole transaction with a ConcurrentModificationException. Removes the retry storm on super-node (hot vertex) edge insertion",
       Boolean.class, true),
 
-  TX_SLOT_MERGE("arcadedb.txSlotMerge", SCOPE.DATABASE,
+  TX_PAGE_SLOT_MERGE("arcadedb.txPageSlotMerge", SCOPE.DATABASE,
       "Generalization of GRAPH_EDGE_APPEND_MERGE to arbitrary records. At commit, when a bucket page conflicts only because concurrent transactions touched DIFFERENT record slots on it (logically-unrelated records sharing a page), re-apply this transaction's slot writes on top of the newer committed page instead of failing the whole transaction with a ConcurrentModificationException. Covers new-record inserts into free slots and same-or-smaller in-place updates (e.g. the vertex edge-list head-pointer flip on super-node insertion); a genuine same-record conflict, or any non-rebasable change (delete, multi-page/placeholder record, record growth), still raises the exception so it is retried",
       Boolean.class, true),
 
-  TX_SLOT_MERGE_MAX_BYTES("arcadedb.txSlotMergeMaxBytes", SCOPE.DATABASE,
-      "Per-transaction soft cap (in bytes) on the record pre-images/final images retained for the disjoint-slot merge (TX_SLOT_MERGE). When a transaction's tracked images exceed this, the merge is disabled for the rest of that transaction and its conflicting pages fall back to a normal retry - bounding heap on a very large transaction (e.g. a bulk in-place update) instead of retaining ~2x every touched record until commit",
+  TX_PAGE_SLOT_MERGE_MAX_BYTES("arcadedb.txPageSlotMergeMaxBytes", SCOPE.DATABASE,
+      "Per-transaction soft cap (in bytes) on the record pre-images/final images retained for the disjoint-slot merge (TX_PAGE_SLOT_MERGE). When a transaction's tracked images exceed this, the merge is disabled for the rest of that transaction and its conflicting pages fall back to a normal retry - bounding heap on a very large transaction (e.g. a bulk in-place update) instead of retaining ~2x every touched record until commit",
       Long.class, 16L * 1024 * 1024),
 
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,

@@ -63,7 +63,7 @@ class Issue5381SlotMergeRaftIT extends BaseRaftHATest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
   }
 
   @Test

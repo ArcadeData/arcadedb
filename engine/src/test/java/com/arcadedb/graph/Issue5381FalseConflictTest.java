@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reproduces and guards the fix for the "false conflict" reported in issue #5381 (reinforcing #5279): concurrent
  * transactions that each write DIFFERENT records which happen to be co-located on the SAME bucket page collide with
  * a page-level {@link ConcurrentModificationException} even though the records are logically unrelated. The
- * disjoint-slot merge (TX_SLOT_MERGE) replays each transaction's own slot writes on top of the newer committed page
+ * disjoint-slot merge (TX_PAGE_SLOT_MERGE) replays each transaction's own slot writes on top of the newer committed page
  * instead of failing the whole transaction, and only when the concurrent commit did not touch the same record.
  */
 @Tag("slow")
@@ -52,16 +52,16 @@ class Issue5381FalseConflictTest extends TestHelper {
 
   @BeforeEach
   void saveConfig() {
-    savedSlotMerge = GlobalConfiguration.TX_SLOT_MERGE.getValueAsBoolean();
+    savedSlotMerge = GlobalConfiguration.TX_PAGE_SLOT_MERGE.getValueAsBoolean();
     savedThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
-    savedMaxBytes = GlobalConfiguration.TX_SLOT_MERGE_MAX_BYTES.getValueAsLong();
+    savedMaxBytes = GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES.getValueAsLong();
   }
 
   @AfterEach
   void restoreConfig() {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(savedSlotMerge);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(savedSlotMerge);
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedThreshold);
-    GlobalConfiguration.TX_SLOT_MERGE_MAX_BYTES.setValue(savedMaxBytes);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES.setValue(savedMaxBytes);
   }
 
   /**
@@ -72,7 +72,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void concurrentInPlaceUpdatesOfDistinctCoLocatedRecords() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
 
     final int records = 12;
     final int updatesPerRecord = 500;
@@ -146,7 +146,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void concurrentInsertIntoPageChurnedByOtherSlots() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
 
     final int hubs = 8;          // pre-existing records that share page 0 and get churned in place
     final int inserts = 300;     // small records, all land on the reused shared page(s)
@@ -251,7 +251,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void growingUpdatesOnCoLocatedRecordsFallBackAndStayCorrect() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
 
     final int records = 6;
     final int steps = 250;
@@ -306,8 +306,8 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void tinyRetentionCapFallsBackWithoutCorruption() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
-    GlobalConfiguration.TX_SLOT_MERGE_MAX_BYTES.setValue(1L); // disable after the very first tracked image
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES.setValue(1L); // disable after the very first tracked image
 
     final int records = 8;
     final int updatesPerRecord = 200;
@@ -362,7 +362,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void concurrentUpdatesOfTheSameRecordStillConflict() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
 
     final RID[] rid = new RID[1];
     database.transaction(() -> {
@@ -409,7 +409,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void hotVertexEdgeAppendPreservesAllEdges() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(0); // classic layout, as in a 26.7.x deployment
 
     final int hubs = 6;
@@ -485,7 +485,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void multiPageRecordCoLocatedWithTrackedInsertStaysIntact() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
 
     // Deterministic layout: a 16 KB page holds ~8 KB of usable content. Seed page 0 with a ~3 KB filler so it has
     // ~5 KB free. One transaction then, on page 0: inserts a small record (a TRACKED rebasable insert) and a large
@@ -571,7 +571,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void mergedInPlaceUpdateKeepsIndexConsistent() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
 
     final int records = 10;
     final int updatesPerRecord = 300;
@@ -661,7 +661,7 @@ class Issue5381FalseConflictTest extends TestHelper {
    */
   @Test
   void deleteOnSharedPageFallsBackAndStaysCorrect() throws Exception {
-    GlobalConfiguration.TX_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
 
     final int pairs = 6;
     final int updates = 250;

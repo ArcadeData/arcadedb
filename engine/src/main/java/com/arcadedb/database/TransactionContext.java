@@ -97,7 +97,7 @@ public class TransactionContext implements Transaction {
   // check allocate nothing (no PageId objects).
   private       LongHashSet                          edgeAppendPoisonedPages;
   private       boolean                              edgeAppendMerge;
-  // TX_SLOT_MERGE (#5381): the general form of the edge-append merge. Two transactions writing DIFFERENT record
+  // TX_PAGE_SLOT_MERGE (#5381): the general form of the edge-append merge. Two transactions writing DIFFERENT record
   // slots on the same bucket page (logically-unrelated records that merely share a page) conflict at page
   // granularity even though their changes commute. On such a commit-time conflict we re-apply THIS transaction's
   // slot writes on top of the newer committed page instead of failing the whole transaction. Tracked per page
@@ -191,8 +191,8 @@ public class TransactionContext implements Transaction {
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
     edgeAppendMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE);
-    slotMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_SLOT_MERGE);
-    slotMergeMaxBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_SLOT_MERGE_MAX_BYTES);
+    slotMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_PAGE_SLOT_MERGE);
+    slotMergeMaxBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES);
     slotRebaseTrackedBytes = 0;
 
     // Optimized: initial capacity 32 for typical transaction page count
@@ -855,7 +855,7 @@ public class TransactionContext implements Transaction {
 
   /**
    * Bounds the heap the slot merge may retain within one transaction: once the running total of tracked images
-   * exceeds {@link GlobalConfiguration#TX_SLOT_MERGE_MAX_BYTES}, the merge is disabled for the remainder of the
+   * exceeds {@link GlobalConfiguration#TX_PAGE_SLOT_MERGE_MAX_BYTES}, the merge is disabled for the remainder of the
    * transaction. Already-tracked pages are dropped (freeing their images) so a conflict on any of them now falls
    * back to a normal retry - a huge transaction degrades to plain MVCC instead of holding ~2x its touched records.
    */
