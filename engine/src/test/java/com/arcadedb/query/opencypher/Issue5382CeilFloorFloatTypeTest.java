@@ -61,6 +61,20 @@ class Issue5382CeilFloorFloatTypeTest extends TestHelper {
     assertThat(single("RETURN floor(3.5)/2 AS v")).isEqualTo(1.5);
   }
 
+  /**
+   * Issue #5389 (duplicate of #5382, reported against a Docker image built before the fix
+   * landed) listed ceil/floor/cos/exp arithmetic witnesses. Keep them as explicit
+   * regressions so a future re-collapse of whole doubles to Long is caught on all four.
+   */
+  @Test
+  void floatContractHoldsInDivisionForAllReportedFunctions() {
+    assertThat(single("RETURN ceil(2.1)/2 AS v")).isEqualTo(1.5);
+    assertThat(single("RETURN floor(3.5)/2 AS v")).isEqualTo(1.5);
+    assertThat(single("RETURN cos(0)/2 AS v")).isEqualTo(0.5);
+    assertThat(single("RETURN exp(0)/2 AS v")).isEqualTo(0.5);
+    assertThat(single("RETURN ceil(2.1) AS v")).isEqualTo(3.0);
+  }
+
   @Test
   void compositeExpressionKeepsFloatType() {
     // abs(-5) is INTEGER 5, ceil(3.5) is FLOAT 4.0 → 9.0 / 2 = 4.5
