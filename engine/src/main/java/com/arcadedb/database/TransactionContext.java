@@ -36,7 +36,9 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
@@ -1538,6 +1540,10 @@ public class TransactionContext implements Transaction {
         left.add(fid);
     });
     if (!left.isEmpty()) {
+      if (allUncoveredAreLockedIndexSiblings(left, locked))
+        throw new ConcurrentModificationException(
+            "Error on commit transaction: an index component was migrated by a concurrent compaction, please retry the operation");
+
       // TreeSet: deterministic name ordering, so a multi-file violation always reads the same.
       final Set<String> resourceNames = left.stream().map(fileId -> database.getSchema().getFileById(fileId).getName())
           .collect(Collectors.toCollection(TreeSet::new));
@@ -1587,6 +1593,10 @@ public class TransactionContext implements Transaction {
       modifiedFiles.forEach(left::add);
       left.removeAll(explicitLockedFiles);
 
+      if (allUncoveredAreLockedIndexSiblings(left, new HashSet<>(explicitLockedFiles)))
+        throw new ConcurrentModificationException(
+            "Error on commit transaction: an index component was migrated by a concurrent compaction, please retry the operation");
+
       final Set<String> resourceNames = left.stream().map(fileId -> database.getSchema().getFileById(fileId).getName())
           .collect(Collectors.toSet());
 
@@ -1596,6 +1606,38 @@ public class TransactionContext implements Transaction {
 
     lockedFiles = explicitLockedFiles;
     explicitLockedFiles = null;
+  }
+
+  /**
+   * Distinguishes a benign compaction race from a genuine explicit-lock contract violation. A modified file
+   * left uncovered by the explicit locks is a retryable conflict - not a user error - when it is a current
+   * component of an index whose OTHER component this transaction already holds locked. A background
+   * compaction that migrated an index's mutable between the LOCK snapshot and the lock acquisition also
+   * creates a fresh compacted sub-index whose file id the snapshot could not have known; the mutable lock is
+   * held, so re-running the LOCK block (COMMIT RETRY) re-resolves the now-stable component set and commits.
+   * A file belonging to an index with NO locked component is a real "modified an unlocked resource"
+   * violation and stays a hard error.
+   */
+  private boolean allUncoveredAreLockedIndexSiblings(final Set<Integer> left, final Set<Integer> lockedFiles) {
+    for (final Integer uncovered : left)
+      if (!isLockedIndexSibling(uncovered, lockedFiles))
+        return false;
+    return true;
+  }
+
+  private boolean isLockedIndexSibling(final int fileId, final Set<Integer> lockedFiles) {
+    for (final Index typeIndex : database.getSchema().getIndexes()) {
+      if (!(typeIndex instanceof final TypeIndex ti))
+        continue;
+      for (final IndexInternal bucketIndex : ti.getIndexesOnBuckets()) {
+        final List<Integer> components = bucketIndex.getFileIds();
+        if (components.contains(fileId))
+          for (final Integer c : components)
+            if (c != fileId && lockedFiles.contains(c))
+              return true;
+      }
+    }
+    return false;
   }
 
   /**

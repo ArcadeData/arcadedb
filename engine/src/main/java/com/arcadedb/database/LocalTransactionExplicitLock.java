@@ -104,7 +104,7 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     if (associatedType != null)
       for (final var typeIndex : associatedType.getAllIndexes(true))
         for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
-          addNonNegative(idx.getFileId());
+          addIndexFileIds(idx);
   }
 
   private void collectTypeFileIds(final String typeName) {
@@ -113,7 +113,7 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     // Lock all indexes for this type
     for (final var typeIndex : type.getAllIndexes(true))
       for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
-        addNonNegative(idx.getFileId());
+        addIndexFileIds(idx);
 
     // Lock all currently involved buckets for this type
     for (final Bucket b : type.getInvolvedBuckets())
@@ -132,5 +132,18 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
   private void addNonNegative(final int fileId) {
     if (fileId >= 0)
       filesToLock.add(fileId);
+  }
+
+  /**
+   * Locks EVERY component file of an index (getFileIds, plural), not just the mutable one (getFileId). A
+   * multi-file index - an LSM-Tree with a compacted sub-index, or a vector index with its companion graph
+   * file - has its whole file set added to the commit-time lock-coverage check by
+   * {@code TransactionIndexContext.addFilesToLock}. Locking only the mutable component leaves the sibling
+   * files uncovered, so the coverage check rejects the transaction with a non-retryable
+   * "not all the modified resources were locked" error. Keep this symmetric with addFilesToLock.
+   */
+  private void addIndexFileIds(final IndexInternal idx) {
+    for (final int fileId : idx.getFileIds())
+      addNonNegative(fileId);
   }
 }
