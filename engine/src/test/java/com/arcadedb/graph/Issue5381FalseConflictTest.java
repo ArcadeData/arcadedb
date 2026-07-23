@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
@@ -48,12 +49,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue5381FalseConflictTest extends TestHelper {
   private boolean savedSlotMerge;
   private int     savedThreshold;
+  private int     savedStripes;
   private long    savedMaxBytes;
 
   @BeforeEach
   void saveConfig() {
     savedSlotMerge = GlobalConfiguration.TX_PAGE_SLOT_MERGE.getValueAsBoolean();
     savedThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
+    savedStripes = GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.getValueAsInteger();
     savedMaxBytes = GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES.getValueAsLong();
   }
 
@@ -61,6 +64,7 @@ class Issue5381FalseConflictTest extends TestHelper {
   void restoreConfig() {
     GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(savedSlotMerge);
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedThreshold);
+    GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(savedStripes);
     GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES.setValue(savedMaxBytes);
   }
 
@@ -737,5 +741,251 @@ class Issue5381FalseConflictTest extends TestHelper {
         assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
       }
     });
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Slot merge vs edge-append merge on the SAME page (#5156 striping): since super-node striping, a segments
+  // bucket file hosts TWO record kinds - edge-list segments (type 3, owned by the edge-append merge) and
+  // StripeDirectory records (type 7, a slot-merge candidate). The two mechanisms are keyed by PAGE, so each must
+  // decline any page carrying writes it cannot replay. These tests pin the two cross-mechanism collisions.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  private void createStripedSchema() {
+    database.transaction(() -> {
+      // One Hub bucket => all Hub IN edge lists (segments AND directories) share ONE in_edges segments file, so
+      // early records pack onto its first page. Distinct source/edge types per writer keep every OTHER file
+      // conflict-free: the only contended page in these tests must be the shared segments page.
+      database.getSchema().createVertexType("SHub", 1);
+      database.getSchema().createVertexType("SSrcA", 1);
+      database.getSchema().createVertexType("SSrcB", 1);
+      database.getSchema().createEdgeType("SLinkA", 1);
+      database.getSchema().createEdgeType("SLinkB", 1);
+    });
+  }
+
+  private RID newHub() {
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newVertex("SHub").save().getIdentity());
+    return rid[0];
+  }
+
+  /** Appends one edge srcType -> hub (giving the hub an IN edge) in its own transaction. */
+  private void appendInEdge(final RID hub, final String srcType, final String edgeType) {
+    database.transaction(() -> {
+      final MutableVertex src = database.newVertex(srcType).save();
+      src.newEdge(edgeType, hub);
+    });
+  }
+
+  private Object loadInHead(final RID hub) {
+    final Object[] head = new Object[1];
+    database.transaction(() -> {
+      final RID headRID = ((VertexInternal) hub.asVertex(true)).getInEdgesHeadChunk();
+      head[0] = headRID == null ? null : database.lookupByRID(headRID, true);
+    });
+    return head[0];
+  }
+
+  private long countIn(final RID hub, final String edgeType) {
+    final long[] count = new long[1];
+    database.transaction(() -> count[0] = hub.asVertex(true).countEdges(Vertex.DIRECTION.IN, edgeType));
+    return count[0];
+  }
+
+  /** Asserts the two RIDs live on the same page of the same segments file (the co-location the tests rely on). */
+  private void assertSamePage(final RID a, final RID b) {
+    assertThat(a.getBucketId()).as("same segments bucket").isEqualTo(b.getBucketId());
+    final int maxRecords = ((LocalBucket) database.getSchema().getBucketById(a.getBucketId())).getMaxRecordsInPage();
+    assertThat(a.getPosition() / maxRecords).as("same segments page").isEqualTo(b.getPosition() / maxRecords);
+  }
+
+  /**
+   * A {@link StripeDirectory} head flip (stripe chunk-full) is a tracked in-place slot update; a classic in-chunk
+   * append on the SAME page is a type-3 segment update owned by the edge-append merge and thus INVISIBLE to the
+   * slot map. When both happen in one transaction and the page conflicts, the slot merge must NOT re-derive the
+   * page from the directory write alone - that would silently drop this transaction's appends. The segment update
+   * must poison the slot map so the conflict falls back to a plain retry.
+   */
+  @Test
+  void stripedDirectoryUpdateCoLocatedWithSegmentAppendFallsBack() throws Exception {
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(1); // first chunk-full promotes
+    GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(2);
+    createStripedSchema();
+
+    // C and C2: classic low-degree hubs whose head chunks land on the first page of the shared segments file.
+    final RID c = newHub();
+    final RID c2 = newHub();
+    appendInEdge(c, "SSrcA", "SLinkA");
+    appendInEdge(c2, "SSrcB", "SLinkB");
+
+    // H: promoted in setup (threshold=1 -> the first chunk-full promotes). Its directory lands on the same page.
+    final RID h = newHub();
+    for (int i = 0; i < 40 && !(loadInHead(h) instanceof StripeDirectory); i++)
+      appendInEdge(h, "SSrcA", "SLinkA");
+    assertThat(loadInHead(h)).isInstanceOf(StripeDirectory.class);
+    final long hSetupEdges = countIn(h, "SLinkA");
+
+    final RID cHead = ((VertexInternal) c.asVertex(true)).getInEdgesHeadChunk();
+    final RID dirRID = ((VertexInternal) h.asVertex(true)).getInEdgesHeadChunk();
+    assertSamePage(cHead, dirRID);
+
+    // Concurrent committer: bumps the shared page's version (C2's in-chunk append) while the main tx is open.
+    final CountDownLatch mainTxWritesDone = new CountDownLatch(1);
+    final CountDownLatch bumpCommitted = new CountDownLatch(1);
+    final List<Throwable> bumpErrors = new CopyOnWriteArrayList<>();
+    final Thread bumper = new Thread(() -> {
+      try {
+        mainTxWritesDone.await();
+        database.transaction(() -> {
+          final MutableVertex src = database.newVertex("SSrcB").save();
+          src.newEdge("SLinkB", c2);
+        });
+      } catch (final Throwable e) {
+        bumpErrors.add(e);
+      } finally {
+        bumpCommitted.countDown();
+      }
+    }, "bumper");
+    bumper.start();
+
+    final int hMainEdges = 30; // enough appends to fill at least one 64-byte stripe first-chunk -> directory flip
+    database.transaction(() -> {
+      for (int i = 0; i < hMainEdges; i++) {
+        final MutableVertex src = database.newVertex("SSrcA").save();
+        src.newEdge("SLinkA", h);
+      }
+      // The co-located classic in-chunk append the slot merge must not drop.
+      final MutableVertex src = database.newVertex("SSrcA").save();
+      src.newEdge("SLinkA", c);
+      // Let the bumper commit on the shared page, then commit on top of it (idempotent across retries).
+      mainTxWritesDone.countDown();
+      try {
+        bumpCommitted.await();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException(e);
+      }
+    }, true, 3);
+    bumper.join();
+
+    if (!bumpErrors.isEmpty())
+      throw new AssertionError("bumper failed: " + bumpErrors.getFirst(), bumpErrors.getFirst());
+
+    // Content only (not the attempt count): however the conflict was resolved, no write may be lost.
+    assertThat(countIn(c, "SLinkA")).as("classic in-chunk append co-located with the directory").isEqualTo(2);
+    assertThat(countIn(h, "SLinkA")).as("striped hub keeps every appended edge").isEqualTo(hSetupEdges + hMainEdges);
+    assertThat(countIn(c2, "SLinkB")).as("concurrent committer's append").isEqualTo(2);
+  }
+
+  /**
+   * Same collision as above but at the PROMOTION moment: {@code EdgeLinkedList#tryPromoteToSuperNode} creates the
+   * {@link StripeDirectory} in the SAME segments bucket as the classic chains, and the create is slot-TRACKED (a
+   * rebasable insert). The directory create already poisons the EDGE-append merge for its page
+   * (LocalDatabase.createRecord), so on a conflict the edge branch declines and the SLOT branch decides: without
+   * the segment-update poison it would replay the directory insert alone, silently dropping this transaction's
+   * co-located in-chunk append.
+   * <p>
+   * The promotion must be the transaction's FIRST chunk-full (a classic head-flip would poison the slot map via
+   * its new-chunk create and mask the gap): the hub's first chunk is pre-filled EXACTLY to capacity in setup -
+   * capacity probed empirically on a throwaway hub - so the single main-transaction append promotes directly.
+   */
+  @Test
+  void promotionDirectoryCoLocatedWithTrackedAppendSurvivesConflict() throws Exception {
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
+    GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(2);
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(0); // no promotion during setup
+    createStripedSchema();
+
+    final RID c = newHub();
+    final RID c2 = newHub();
+    appendInEdge(c, "SSrcA", "SLinkA");
+    appendInEdge(c2, "SSrcB", "SLinkB");
+
+    // Probe the first-chunk capacity on a throwaway hub: the append on which the head RID changes is the first
+    // one that no longer fit, so capacity = flip position - 1. Runs with promotion off (threshold=0).
+    final RID probe = newHub();
+    final RID[] probeFirstHead = new RID[1];
+    int capacity = -1;
+    for (int i = 1; i <= 50; i++) {
+      appendInEdge(probe, "SSrcA", "SLinkA");
+      final RID head = ((VertexInternal) probe.asVertex(true)).getInEdgesHeadChunk();
+      if (i == 1)
+        probeFirstHead[0] = head;
+      else if (!head.equals(probeFirstHead[0])) {
+        capacity = i - 1;
+        break;
+      }
+    }
+    assertThat(capacity).as("probed first-chunk capacity").isGreaterThan(1);
+
+    // H: fill its first chunk EXACTLY to capacity - the head must never flip during the fill.
+    final RID h = newHub();
+    RID hFirstHead = null;
+    for (int i = 0; i < capacity; i++) {
+      appendInEdge(h, "SSrcA", "SLinkA");
+      final RID head = ((VertexInternal) h.asVertex(true)).getInEdgesHeadChunk();
+      if (hFirstHead == null)
+        hFirstHead = head;
+      else
+        assertThat(head).as("no head flip while filling exactly to capacity (layout drift otherwise)").isEqualTo(hFirstHead);
+    }
+    assertThat(loadInHead(h)).isNotInstanceOf(StripeDirectory.class);
+    final long hSetupEdges = countIn(h, "SLinkA");
+    assertThat(hSetupEdges).isEqualTo(capacity);
+
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(1); // now the next chunk-full promotes immediately
+
+    final CountDownLatch mainTxWritesDone = new CountDownLatch(1);
+    final CountDownLatch bumpCommitted = new CountDownLatch(1);
+    final List<Throwable> bumpErrors = new CopyOnWriteArrayList<>();
+    final Thread bumper = new Thread(() -> {
+      try {
+        mainTxWritesDone.await();
+        database.transaction(() -> {
+          final MutableVertex src = database.newVertex("SSrcB").save();
+          src.newEdge("SLinkB", c2);
+        });
+      } catch (final Throwable e) {
+        bumpErrors.add(e);
+      } finally {
+        bumpCommitted.countDown();
+      }
+    }, "bumper");
+    bumper.start();
+
+    database.transaction(() -> {
+      // The co-located classic in-chunk append: the ONLY tracked edge-append on the shared page, and it replays
+      // cleanly - so a pre-fix edge rebase of that page succeeds and silently drops the directory record.
+      final MutableVertex srcC = database.newVertex("SSrcA").save();
+      srcC.newEdge("SLinkA", c);
+      // Single append to the exactly-full hub: chunk-full -> immediate promotion (threshold=1), no head-flip, no
+      // tracked append on H's own chunk. The directory is created on the shared segments page.
+      final MutableVertex srcH = database.newVertex("SSrcA").save();
+      srcH.newEdge("SLinkA", h);
+      final RID headRID = ((VertexInternal) h.asVertex(true)).getInEdgesHeadChunk();
+      assertThat(database.lookupByRID(headRID, true))
+          .as("the single append must have promoted the exactly-full hub (layout drift otherwise)")
+          .isInstanceOf(StripeDirectory.class);
+      // Let the bumper commit on the shared page, then commit on top of it (idempotent across retries).
+      mainTxWritesDone.countDown();
+      try {
+        bumpCommitted.await();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException(e);
+      }
+    }, true, 3);
+    bumper.join();
+
+    if (!bumpErrors.isEmpty())
+      throw new AssertionError("bumper failed: " + bumpErrors.getFirst(), bumpErrors.getFirst());
+
+    // The vertex head must be a READABLE directory (a dropped directory record leaves a dangling head)...
+    assertThat(loadInHead(h)).isInstanceOf(StripeDirectory.class);
+    // ...and no write may be lost, on any of the three lists.
+    assertThat(countIn(h, "SLinkA")).as("promoted hub keeps every appended edge").isEqualTo(hSetupEdges + 1);
+    assertThat(countIn(c, "SLinkA")).as("classic in-chunk append co-located with the directory").isEqualTo(2);
+    assertThat(countIn(c2, "SLinkB")).as("concurrent committer's append").isEqualTo(2);
   }
 }

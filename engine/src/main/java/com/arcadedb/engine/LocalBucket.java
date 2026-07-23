@@ -1121,7 +1121,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // update shape here (placeholder pointer, multi-page chunk, record growth that shifts other slots or spills
       // to a placeholder) changes more than this slot, so it poisons the page: the slot merge must never rebase it.
       final TransactionContext slotTx = database.getTransactionIfExists();
-      final boolean slotCandidate = slotTx != null && slotTx.isSlotMergeEnabled() && isSlotMergeCandidate(record);
+      final boolean slotMergeOn = slotTx != null && slotTx.isSlotMergeEnabled();
+      final boolean slotCandidate = slotMergeOn && isSlotMergeCandidate(record);
+      // A NON-candidate update (an edge-list segment, owned by the edge-append merge) still modifies this page:
+      // it must POISON the slot map, not stay invisible to it. Since super-node striping (#5156) a segments page
+      // can also host a StripeDirectory - a slot-merge candidate - and a page carrying a tracked directory write
+      // plus an untracked segment change would otherwise be slot-rebased from the directory write alone, silently
+      // dropping this transaction's in-chunk appends. Mirrors the !isSlotMergeCandidate poison in createRecord.
+      if (slotMergeOn && !slotCandidate)
+        slotTx.poisonSlotRebasePage(fileId, pageId);
 
       boolean isPlaceHolder = false;
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
