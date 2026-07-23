@@ -138,6 +138,39 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * GHSA-8vr5-263f-x5r3 sibling gap: {@code DEFINE FUNCTION} only routes through the UPDATE_SCHEMA-guarded
+   * {@code Schema.registerFunctionLibrary} when it has to CREATE the target library. Adding a function to an
+   * <em>already-existing</em> library calls {@code fLib.registerFunction} directly, which is unguarded, so a read-only
+   * identity could inject a declarative SQL function into any pre-existing library. A read-only identity must now be
+   * denied (403) whether the library exists or not, while the administrator must still be able to define.
+   */
+  @Test
+  void readOnlyTokenCannotDefineFunctionIntoExistingLibrary() throws Exception {
+    testEachServer(serverIndex -> {
+      // ARRANGE (as admin): a function library that already exists, so the read-only DEFINE below hits the
+      // add-to-existing-library path instead of the (already guarded) create-library path
+      assertThat(adminCommand(serverIndex, "DEFINE FUNCTION deflib.seed \"SELECT 1 AS r\" LANGUAGE sql")).isEqualTo(200);
+
+      final String token = "Bearer " + createReadOnlyToken(serverIndex, "define-function-token");
+      try {
+        assertThat(command(serverIndex, token, "DEFINE FUNCTION deflib.injected \"SELECT 2 AS r\" LANGUAGE sql"))
+            .as("read-only token must not DEFINE a function into an existing library").isEqualTo(403);
+        assertThat(command(serverIndex, token, "DEFINE FUNCTION newlib.injected \"SELECT 2 AS r\" LANGUAGE sql"))
+            .as("read-only token must not DEFINE a function into a new library").isEqualTo(403);
+      } finally {
+        deleteToken(serverIndex, "define-function-token");
+      }
+
+      // Positive control: the administrator must still be able to define a function into the existing library
+      assertThat(adminCommand(serverIndex, "DEFINE FUNCTION deflib.adminfn \"SELECT 3 AS r\" LANGUAGE sql")).isEqualTo(200);
+
+      // Cleanup the functions created on the shared server database
+      assertThat(adminCommand(serverIndex, "DELETE FUNCTION deflib.adminfn")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "DELETE FUNCTION deflib.seed")).isEqualTo(200);
+    });
+  }
+
   private int adminCommand(final int serverIndex, final String sql) throws Exception {
     return command(serverIndex, basicAuth(), sql);
   }

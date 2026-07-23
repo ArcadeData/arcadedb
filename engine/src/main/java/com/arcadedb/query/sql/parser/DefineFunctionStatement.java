@@ -35,11 +35,18 @@ public class DefineFunctionStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     final DatabaseInternal database = context.getDatabase();
 
+    // Registering a function is a schema mutation and must always require UPDATE_SCHEMA, regardless of whether the
+    // target library already exists. The create-library branch below routes through Schema.registerFunctionLibrary
+    // (UPDATE_SCHEMA-guarded), but adding a function to an already-existing library calls fLib.registerFunction
+    // directly, which is unguarded - so without this check a plain-database-access identity could inject a function
+    // into any pre-existing library (sibling of the GHSA-vv82-qvpf-rjwv / GHSA-8vr5-263f-x5r3 function-authz gaps).
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     // Defining a function in a scripting language (polyglot, e.g. JavaScript) is arbitrary host code
-    // execution, so it requires security-admin privileges - not merely UPDATE_SCHEMA. Otherwise a user
+    // execution, so it additionally requires security-admin privileges - not merely UPDATE_SCHEMA. Otherwise a user
     // with schema (or lesser) access could DEFINE FUNCTION ... LANGUAGE js and then invoke it via SELECT,
     // bypassing the polyglot scripting gate that GHSA-48qw introduced (GHSA-vwjc-v7x7-cm6g). SQL/Cypher
-    // user functions are declarative, not host code, so they keep the standard schema-level protection.
+    // user functions are declarative, not host code, so the UPDATE_SCHEMA check above is sufficient for them.
     if (language != null && "js".equalsIgnoreCase(language.getStringValue()))
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
