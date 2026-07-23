@@ -37,6 +37,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -491,7 +492,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void query(final String language, final String query, final AsyncResultsetCallback callback,
                     final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback), true,
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback, captureCurrentUser()), true,
         backPressurePercentage);
   }
 
@@ -499,7 +500,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void query(final String language, final String query, final AsyncResultsetCallback callback,
                     final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback), true,
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, true, language, query, args, callback, captureCurrentUser()), true,
         backPressurePercentage);
   }
 
@@ -507,7 +508,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void command(final String language, final String query, final AsyncResultsetCallback callback,
                       final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback), true,
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback, captureCurrentUser()), true,
         backPressurePercentage);
   }
 
@@ -515,8 +516,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void command(final String language, final String query, final AsyncResultsetCallback callback,
                       final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback), true,
+    scheduleTask(slot, new DatabaseAsyncCommand(configuration, false, language, query, args, callback, captureCurrentUser()), true,
         backPressurePercentage);
+  }
+
+  /**
+   * Captures the principal bound to the calling thread's {@link DatabaseContext} so it can be re-bound on the worker
+   * thread before the command/query runs (GHSA-5j4x-3jfw-8xv3). Returns null in embedded/internal use where no user is
+   * bound; the engine permission gates are then a no-op, preserving the prior behaviour for non-HTTP callers.
+   */
+  private SecurityDatabaseUser captureCurrentUser() {
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return ctx != null ? ctx.getCurrentUser() : null;
   }
 
   @Override
