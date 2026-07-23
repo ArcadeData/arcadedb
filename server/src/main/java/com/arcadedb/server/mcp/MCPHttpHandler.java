@@ -40,7 +40,7 @@ import java.util.logging.Level;
  * Implements the envelope rules of the MCP 2025-03-26 Streamable HTTP transport: POST-only (no Server-Sent
  * Events stream is offered, so any other method is answered with {@code 405}), {@code Origin} validation
  * against DNS rebinding, JSON-RPC batches, and {@code 202 Accepted} with no body for a POST that carried
- * only notifications.
+ * only notifications and/or responses.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -85,7 +85,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
 
     final MCPResponse response = dispatcher.dispatch(payload, user);
 
-    // A null body is a JSON-RPC notification, which takes no response at all: 202 Accepted, no content.
+    // A null body is a one-way notification or response: 202 Accepted, no content.
     if (response.json() == null)
       return new ExecutionResponse(response.httpStatus(), "");
 
@@ -105,7 +105,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
 
     final JSONArray responses = dispatcher.dispatchBatch(batch, user);
 
-    // Nothing to correlate means the batch held only notifications: accepted, with no body.
+    // Nothing to correlate means the batch held only notifications and/or responses: accepted, with no body.
     if (responses.isEmpty())
       return new ExecutionResponse(202, "");
 
@@ -132,8 +132,8 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
    * <p>
    * A request with no {@code Origin} is accepted, because a non-browser MCP client sends none and it is the
    * browser that attaches the header a rebinding attack cannot forge. When present, the origin is accepted
-   * only if it is explicitly configured, is a loopback address, or matches the host the request was addressed
-   * to (a same-origin call).
+   * only if it is explicitly configured or is a loopback address. The request {@code Host} header is not a
+   * trust source: in a DNS-rebinding attack, the attacker-controlled Origin and Host names deliberately match.
    */
   private boolean isOriginAllowed(final HttpServerExchange exchange) {
     final String origin = exchange.getRequestHeaders().getFirst(Headers.ORIGIN);
@@ -152,11 +152,6 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     if (isLoopback(originHost))
       return true;
 
-    // Same-origin: the browser page was served by this very endpoint's host.
-    final String requestHost = exchange.getRequestHeaders().getFirst(Headers.HOST);
-    if (requestHost != null && originHost.equals(stripPort(requestHost).toLowerCase(Locale.ROOT)))
-      return true;
-
     LogManager.instance().log(this, Level.FINE, "MCP[http] rejected cross-origin request from '%s'", origin);
     return false;
   }
@@ -172,14 +167,5 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
 
   private static boolean isLoopback(final String host) {
     return "localhost".equals(host) || "127.0.0.1".equals(host) || "::1".equals(host) || "[::1]".equals(host);
-  }
-
-  private static String stripPort(final String hostHeader) {
-    // IPv6 literals are bracketed, so only a colon after the closing bracket separates the port.
-    final int bracket = hostHeader.lastIndexOf(']');
-    final int colon = hostHeader.lastIndexOf(':');
-    if (colon > bracket)
-      return hostHeader.substring(0, colon);
-    return hostHeader;
   }
 }
