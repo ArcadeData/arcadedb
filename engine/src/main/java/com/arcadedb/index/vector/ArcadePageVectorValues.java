@@ -195,12 +195,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           // Track fetch source for metrics
           lsmIndex.metrics.incrementVectorFetchFromQuantized();
 
-          // Cache the result if caching is enabled
-          if (vectorCache != null) {
-            synchronized (vectorCache) {
-              vectorCache.put(vectorId, result);
-            }
-          }
+          // Cache the result while under the cap (issue #3144: this path used to ignore maxCacheSize,
+          // so a large build cached every vector and defeated the bound).
+          if (vectorCache != null && vectorCache.size() < maxCacheSize)
+            vectorCache.put(vectorId, result);
 
           return result;
         }
@@ -279,7 +277,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * without needing their own database context for lookupByRID.
    */
   public void putInCache(final int vectorId, final VectorFloat<?> vector) {
-    if (vectorCache != null && vector != null)
+    // Respect the cap (issue #3144) so warming the cache from the validation phase cannot grow it
+    // past maxCacheSize and hold a full second copy of the vector set on heap.
+    if (vectorCache != null && vector != null && vectorCache.size() < maxCacheSize)
       vectorCache.put(vectorId, vector);
   }
 
