@@ -1553,6 +1553,7 @@ public class CypherExecutionPlan {
         NodePattern sourceNode = pathPattern.getFirstNode();
         String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
+        final String writtenSourceVar = sourceVar;
 
         final boolean reversedFromIndexedAnchor =
             shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
@@ -1681,8 +1682,7 @@ public class CypherExecutionPlan {
           final Direction directionOverride;
           if (reversed) {
             effectiveSourceVar = currentSourceVar; // already swapped to bound target
-            effectiveTargetVar = pathPattern.getFirstNode().getVariable() != null ?
-                pathPattern.getFirstNode().getVariable() : targetVar;
+            effectiveTargetVar = writtenSourceVar;
             targetVar = effectiveTargetVar;
             effectiveTargetNode = pathPattern.getFirstNode(); // original source becomes target for label filtering
             directionOverride = relPattern.getDirection().reverse();
@@ -1792,8 +1792,8 @@ public class CypherExecutionPlan {
 
   /**
    * The physical operators do not yet implement variable-length expansion, but their cost-based
-   * anchor selection is still useful to the traditional executor. Limit this bridge to a single,
-   * bounded relationship whose indexed target can be reached through stored incoming adjacency.
+   * anchor selection is still useful to the traditional executor. Limit this bridge to a single
+   * relationship whose indexed target can be reached through stored incoming adjacency.
    */
   private boolean shouldReverseVariableLengthPathFromIndexedAnchor(final MatchClause matchClause,
       final PathPattern pathPattern) {
@@ -1818,13 +1818,13 @@ public class CypherExecutionPlan {
     }
 
     final RelationshipPattern relationship = pathPattern.getRelationship(0);
-    if (!relationship.isVariableLength() || relationship.getMaxHops() == null || !relationship.hasTypes()
+    if (!relationship.isVariableLength() || !relationship.hasTypes()
         || isAnyEdgeTypeUnidirectional(relationship.getTypes()))
       return false;
 
     final String sourceVariable = pathPattern.getFirstNode().getVariable();
     final String targetVariable = pathPattern.getLastNode().getVariable();
-    return sourceVariable != null && targetVariable != null && !sourceVariable.equals(targetVariable)
+    return targetVariable != null && !targetVariable.equals(sourceVariable)
         && targetVariable.equals(physicalPlan.getAnchor().getVariable());
   }
 

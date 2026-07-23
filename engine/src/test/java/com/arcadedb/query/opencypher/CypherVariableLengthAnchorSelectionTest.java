@@ -117,6 +117,111 @@ class CypherVariableLengthAnchorSelectionTest {
   }
 
   @Test
+  void startsUnboundedVariableLengthTraversalFromIndexedTarget() {
+    final String query = """
+        MATCH (place:Area)-[:PART_OF*]->(country:Area)
+        WHERE country.id = $countryId
+        RETURN DISTINCT place.id AS id
+        ORDER BY id""";
+    final Map<String, Object> parameters = Map.of("countryId", "country");
+
+    assertThat(queryIds(query, parameters)).containsExactly("city", "region");
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
+          .contains("MATCH NODE (country:Area)")
+          .contains("[index: Area[id]]")
+          .contains("1 rows");
+    }
+  }
+
+  @Test
+  void startsOpenEndedTraversalWithMinimumHopsFromIndexedTarget() {
+    final String query = """
+        MATCH (place:Area)-[:PART_OF*2..]->(country:Area)
+        WHERE country.id = $countryId
+        RETURN DISTINCT place.id AS id
+        ORDER BY id""";
+    final Map<String, Object> parameters = Map.of("countryId", "country");
+
+    assertThat(queryIds(query, parameters)).containsExactly("city");
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
+          .contains("MATCH NODE (country:Area)")
+          .contains("[index: Area[id]]")
+          .contains("1 rows");
+    }
+  }
+
+  @Test
+  void startsAnonymousSourceTraversalFromIndexedTarget() {
+    final String query = """
+        MATCH (:Area)-[:PART_OF*0..3]->(country:Area)
+        WHERE country.id = $countryId
+        RETURN country.id AS id, count(*) AS places""";
+    final Map<String, Object> parameters = Map.of("countryId", "country");
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      assertThat(resultSet.hasNext()).isTrue();
+      final Result result = resultSet.next();
+      assertThat(result.<String>getProperty("id")).isEqualTo("country");
+      assertThat(result.<Long>getProperty("places")).isEqualTo(3L);
+      assertThat(resultSet.hasNext()).isFalse();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
+          .contains("MATCH NODE (country:Area)")
+          .contains("[index: Area[id]]")
+          .contains("1 rows");
+    }
+  }
+
+  @Test
+  void startsAnonymousUnboundedTraversalFromIndexedTarget() {
+    final String query = """
+        MATCH (:Area)-[:PART_OF*2..]->(country:Area)
+        WHERE country.id = $countryId
+        RETURN country.id AS id, count(*) AS places""";
+    final Map<String, Object> parameters = Map.of("countryId", "country");
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      assertThat(resultSet.hasNext()).isTrue();
+      final Result result = resultSet.next();
+      assertThat(result.<String>getProperty("id")).isEqualTo("country");
+      assertThat(result.<Long>getProperty("places")).isEqualTo(1L);
+      assertThat(resultSet.hasNext()).isFalse();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
+          .contains("MATCH NODE (country:Area)")
+          .contains("[index: Area[id]]")
+          .contains("1 rows");
+    }
+  }
+
+  @Test
+  void startsAnonymousUnboundedTraversalFromIndexedInListTargets() {
+    final String query = """
+        MATCH (:Area)-[:PART_OF*]->(country:Area)
+        WHERE country.id IN $countryIds
+        RETURN country.id AS country, count(*) AS places
+        ORDER BY country""";
+    final Map<String, Object> parameters = Map.of("countryIds", List.of("country", "region", "absent"));
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      assertThat(resultSet.stream()
+          .map(row -> row.<String>getProperty("country") + ":" + row.<Long>getProperty("places"))
+          .toList())
+          .containsExactly("country:2", "region:1");
+      assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
+          .contains("INDEX SEEK (country:Area)")
+          .contains("[index: Area[id]]")
+          .contains("2 rows");
+    }
+  }
+
+  @Test
   void startsBoundedVariableLengthTraversalFromIndexedInListTarget() {
     final String query = """
         MATCH (place:Area)-[:PART_OF*0..3]->(country:Area)
@@ -211,6 +316,35 @@ class CypherVariableLengthAnchorSelectionTest {
   void preservesRelationshipListInWrittenPathOrder() {
     final String query = """
         MATCH (place:Area)-[relationships:PART_OF*1..3]->(country:Area)
+        WHERE country.id = $countryId
+        RETURN place.id AS id, relationships AS relationships
+        ORDER BY id""";
+
+    final List<Result> rows;
+    final ExecutionPlan plan;
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, Map.of("countryId", "country"))) {
+      rows = resultSet.stream().toList();
+      plan = resultSet.getExecutionPlan().orElseThrow();
+    }
+
+    assertThat(plan.getSteps().get(0).getDescription())
+        .contains("MATCH NODE (country:Area)")
+        .contains("[index: Area[id]]");
+
+    final Result city = rows.stream()
+        .filter(row -> "city".equals(row.<String>getProperty("id")))
+        .findFirst()
+        .orElseThrow();
+    final List<Edge> relationships = city.getProperty("relationships");
+    assertThat(relationships)
+        .extracting(edge -> edge.<String>get("step"))
+        .containsExactly("city-region", "region-country");
+  }
+
+  @Test
+  void preservesUnboundedRelationshipListInWrittenPathOrder() {
+    final String query = """
+        MATCH (place:Area)-[relationships:PART_OF*1..]->(country:Area)
         WHERE country.id = $countryId
         RETURN place.id AS id, relationships AS relationships
         ORDER BY id""";
