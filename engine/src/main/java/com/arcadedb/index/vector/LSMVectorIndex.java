@@ -1310,7 +1310,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // When a document is deleted, getVector() returns null which breaks JVector index building
       final int expectedSize = vectorIds.length;
       final Map<Integer, VectorLocationIndex.VectorLocation> vectorLocationSnapshot = new HashMap<>(expectedSize * 4 / 3 + 1);
-      final Map<Integer, VectorFloat<?>> preloadedVectors = new HashMap<>(expectedSize * 4 / 3 + 1);
+
+      // Issue #3144: for inline-quantized indexes (INT8/BINARY) the graph builder reads vectors
+      // straight from index pages on any thread (getImmutablePage needs no DatabaseContext), so we
+      // only warm the bounded build cache instead of holding a full second on-heap copy of the whole
+      // vector set. Document-based indexes (NONE/PRODUCT) still need a full preload because JVector's
+      // worker threads cannot lookupByRID without a transaction context bound to the thread.
+      final boolean inlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8
+          || metadata.quantizationType == VectorQuantizationType.BINARY;
+      final int graphBuildCacheSize = getGraphBuildCacheSize();
+      final int preloadBudget = (inlineQuantization && graphBuildCacheSize > 0)
+          ? Math.min(expectedSize, graphBuildCacheSize)
+          : expectedSize;
+      final Map<Integer, VectorFloat<?>> preloadedVectors = new HashMap<>(preloadBudget * 4 / 3 + 1);
       final List<Integer> validVectorIds = new ArrayList<>(expectedSize);
       int skippedDeletedDocs = 0;
 
@@ -1335,9 +1347,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // NOTE: PRODUCT quantization does NOT store vectors in pages - it uses a separate PQ file built AFTER
           // graph construction
           // So for PRODUCT, we must read from documents just like NONE
-          final boolean hasInlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8 ||
-              metadata.quantizationType == VectorQuantizationType.BINARY;
-          if (hasInlineQuantization) {
+          if (inlineQuantization) {
             // With INT8/BINARY quantization: vectors are in index pages, document validation not needed
             // Just validate that we can read the quantized vector
             try {
@@ -1346,7 +1356,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 if (!VectorUtils.isZeroVector(vector)) {
                   vectorLocationSnapshot.put(vectorId, loc);
                   validVectorIds.add(vectorId);
-                  preloadedVectors.put(vectorId, vts.createFloatVector(vector));
+                  // Only warm the cache up to the budget; the rest are re-read from index pages
+                  // lazily during the build (issue #3144).
+                  if (preloadedVectors.size() < preloadBudget)
+                    preloadedVectors.put(vectorId, vts.createFloatVector(vector));
                   validationSuccesses++;
                 } else {
                   validationAllZeros++;
@@ -1425,7 +1438,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return;
       }
 
-      final int graphBuildCacheSize = getGraphBuildCacheSize();
       LogManager.instance().log(this, Level.INFO, "Building graph with %d vectors using property '%s' (cache enabled: size=%d)",
           filteredVectorIds.length, vectorProp, graphBuildCacheSize);
 
@@ -1890,13 +1902,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Create GrowableVectorValues with lazy disk fallback — vectors are loaded from
       // ArcadeDB pages/documents on first access and cached in the ConcurrentHashMap.
       // This avoids the O(n) pre-loading that was the bottleneck at 1M+ scale.
+      // Bound the on-heap cache (issue #3144). The vectors are already persisted to pages before
+      // being added here, and GrowableVectorValues re-reads evicted ordinals lazily from disk, so
+      // capping the cache removes a second full copy of the whole vector set during bulk ingest
+      // without affecting correctness. Reuse the graph-build cache knob for a single tunable.
+      final int liveCacheSize = getGraphBuildCacheSize();
       liveVectorValues = new GrowableVectorValues(
           metadata.dimensions,
-          Math.max(1024, vectorIndex.size()),
+          Math.max(1024, Math.min(vectorIndex.size(), liveCacheSize <= 0 ? vectorIndex.size() : liveCacheSize)),
           vectorIndex,
           this,
           getDatabase(),
-          vectorProp
+          vectorProp,
+          liveCacheSize
       );
 
       // Set the count to match existing vectors so size() reports correctly
@@ -4209,6 +4227,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Delta vectors cached in RAM for brute-force scan between rebuilds
     stats.put("deltaVectorsCount", (long) deltaVectors.size());
+
+    // On-heap cache size of the live incremental builder (bounded, issue #3144)
+    stats.put("liveVectorCacheSize", liveVectorValues != null ? (long) liveVectorValues.vectorCount() : 0L);
 
     // Populate metrics from LSMVectorIndexMetrics
     metrics.populateStats(stats);
