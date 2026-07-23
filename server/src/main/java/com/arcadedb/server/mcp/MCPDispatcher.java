@@ -82,6 +82,12 @@ public class MCPDispatcher {
   public record MCPResponse(int httpStatus, JSONObject json) {
   }
 
+  /**
+   * The single reply for any JSON-RPC notification: no body at all, and - for the HTTP transport - the
+   * {@code 202 Accepted} that MCP 2025-03-26 mandates for a POST that carried only notifications.
+   */
+  private static final MCPResponse NOTIFICATION_ACCEPTED = new MCPResponse(202, null);
+
   private final ArcadeDBServer   server;
   private final MCPConfiguration config;
   private final String           transport;
@@ -97,6 +103,15 @@ public class MCPDispatcher {
    * anything else, so that server state is not disclosed to unauthenticated callers.
    */
   public MCPResponse dispatch(final JSONObject request, final ServerSecurityUser user) {
+    // A JSON-RPC notification is a request object carrying a method and NO id member, and the receiver must
+    // not answer it at all (MCP 2025-03-26 base protocol). Detect it by the absent id rather than by method
+    // name: keying on the name only suppressed 'notifications/initialized' and let every other notification
+    // fall through to a response with a null id. Nothing is executed for a notification, so dropping it here
+    // - ahead of the authentication and authorization gates, which have no way to report a failure back -
+    // discloses nothing.
+    if (request != null && request.has("method") && !request.has("id"))
+      return NOTIFICATION_ACCEPTED;
+
     // Echo the JSON-RPC id on every error response when the request carries one, per JSON-RPC 2.0.
     final Object id = request != null ? request.opt("id") : null;
 
@@ -112,6 +127,12 @@ public class MCPDispatcher {
     if (!config.isUserAllowed(user.getName()))
       return error(id, -32600, "User not authorized for MCP access", 403);
 
+    // Anything that reaches this point expects a response, so it must be a well-formed request: MCP requires
+    // a string or integer id, explicitly excluding null. The id is echoed as null because an invalid one
+    // cannot be correlated by the client.
+    if (!isValidRequestId(id))
+      return error(null, -32600, "Invalid Request: 'id' must be a string or an integer", 200);
+
     final String method = request.getString("method", "");
     final JSONObject params = request.getJSONObject("params", new JSONObject());
 
@@ -120,7 +141,6 @@ public class MCPDispatcher {
     try {
       return switch (method) {
         case "initialize" -> result(id, initialize());
-        case "notifications/initialized" -> new MCPResponse(204, null);
         case "tools/list" -> result(id, new JSONObject().put("tools", TOOLS_LIST));
         case "tools/call" -> toolsCall(id, params, user);
         case "resources/list" -> resourcesList(id, user);
@@ -132,7 +152,8 @@ public class MCPDispatcher {
       // A tool or resource read binds the authenticated principal onto this thread's DatabaseContext (so the engine
       // permission gates enforce, see MCPToolUtils.bindCurrentUser / GHSA-6x73-v3rc-f57c). This transport runs on a
       // pooled worker thread, so the binding MUST be dropped here or it would leak onto the next request served by
-      // the same thread. A no-op when nothing was bound (initialize/ping/tools-list/notifications).
+      // the same thread. A no-op when nothing was bound (initialize/ping/tools-list). A notification returns
+      // before this block but binds nothing, so it has nothing to drop.
       DatabaseContext.INSTANCE.removeCurrentThreadContexts();
     }
   }
@@ -285,6 +306,16 @@ public class MCPDispatcher {
     return result(id, result);
   }
 
+  /**
+   * A JSON-RPC id that a response can be correlated by. MCP 2025-03-26 narrows JSON-RPC 2.0 to a string or an
+   * integer and forbids null, so fractional numbers, booleans and structured values are rejected too. Note
+   * that {@link JSONObject#opt} maps a JSON null to a Java null, which this correctly refuses.
+   */
+  private static boolean isValidRequestId(final Object id) {
+    return id instanceof String || id instanceof Integer || id instanceof Long || id instanceof Short
+        || id instanceof Byte || id instanceof java.math.BigInteger;
+  }
+
   private static MCPResponse result(final Object id, final JSONObject result) {
     final JSONObject response = new JSONObject();
     response.put("jsonrpc", "2.0");
@@ -294,10 +325,38 @@ public class MCPDispatcher {
   }
 
   private static MCPResponse error(final Object id, final int code, final String message, final int httpStatus) {
+    return new MCPResponse(httpStatus, errorObject(id, code, message));
+  }
+
+  /**
+   * Builds a bare JSON-RPC error object. Shared with the transports, which have to emit errors of their own
+   * (an unparseable payload, or a batch element that is not an object) outside of any dispatch.
+   */
+  public static JSONObject errorObject(final Object id, final int code, final String message) {
     final JSONObject response = new JSONObject();
     response.put("jsonrpc", "2.0");
     response.put("id", id);
     response.put("error", new JSONObject().put("code", code).put("message", message));
-    return new MCPResponse(httpStatus, response);
+    return response;
+  }
+
+  /**
+   * Routes a JSON-RPC batch, which MCP 2025-03-26 requires every receiver to support. Each element is
+   * dispatched independently and only the elements that are requests contribute a response, so a batch made
+   * only of notifications yields an empty array and the transport answers with no body at all.
+   */
+  public JSONArray dispatchBatch(final JSONArray batch, final ServerSecurityUser user) {
+    final JSONArray responses = new JSONArray();
+    for (int i = 0; i < batch.length(); i++) {
+      final Object element = batch.get(i);
+      if (element instanceof JSONObject request) {
+        final MCPResponse response = dispatch(request, user);
+        if (response.json() != null)
+          responses.put(response.json());
+      } else
+        // A non-object element cannot carry an id, so the error is reported with a null one, per JSON-RPC 2.0.
+        responses.put(errorObject(null, -32600, "Invalid Request: batch element is not a JSON object"));
+    }
+    return responses;
   }
 }
