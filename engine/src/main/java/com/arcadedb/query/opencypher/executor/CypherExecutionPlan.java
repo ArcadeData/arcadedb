@@ -1808,6 +1808,15 @@ public class CypherExecutionPlan {
         || matchClause.getPathPatterns().size() != 1 || pathPattern.getRelationshipCount() != 1)
       return false;
 
+    if (physicalPlan.getAnchor().getPropertyValue() instanceof InListValues) {
+      final NodePattern indexedTarget = pathPattern.getLastNode();
+      final String indexedType = physicalPlan.getAnchor().getIndex().getTypeName();
+      if (indexedTarget.hasProperties() || indexedTarget.hasDynamicLabels()
+          || indexedTarget.getLabels().size() != 1 || indexedType == null
+          || !indexedType.equals(indexedTarget.getLabels().getFirst()))
+        return false;
+    }
+
     final RelationshipPattern relationship = pathPattern.getRelationship(0);
     if (!relationship.isVariableLength() || relationship.getMaxHops() == null || !relationship.hasTypes()
         || isAnyEdgeTypeUnidirectional(relationship.getTypes()))
