@@ -39,6 +39,7 @@ import io.micrometer.observation.Observation;
 import io.micrometer.observation.transport.RequestReplyReceiverContext;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.AttachmentKey;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
@@ -62,6 +63,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
+  // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
+  // parsed from it: the request body is consumed once and cannot be read again from the exchange.
+  public static final AttachmentKey<String> RAW_PAYLOAD = AttachmentKey.create(String.class);
+
   private static final String AUTHORIZATION_BASIC  = "Basic";
   private static final String AUTHORIZATION_BEARER = "Bearer";
   // Cached once: tryFromString scans/validates the header name, wasteful to repeat on every request.
@@ -298,11 +303,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       String payloadAsString = null;
       if (mustExecuteOnWorkerThread()) {
         payloadAsString = parseRequestPayload(exchange);
+        // The body can only be read once from the exchange, so keep the raw text available to handlers whose
+        // payload is not a single JSON object (the MCP endpoint accepts a top-level JSON-RPC batch array).
+        if (payloadAsString != null)
+          exchange.putAttachment(RAW_PAYLOAD, payloadAsString);
         if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank())
           try {
             payload = new JSONObject(payloadAsString.trim());
           } catch (Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
+            // A top-level JSON array is not an error for every route: the MCP endpoint reads a JSON-RPC batch
+            // back from RAW_PAYLOAD. Warn only for a body that is not one, so a valid batch is not logged as
+            // a failure on every request.
+            if (payloadAsString.trim().charAt(0) != '[')
+              LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
           }
       }
 

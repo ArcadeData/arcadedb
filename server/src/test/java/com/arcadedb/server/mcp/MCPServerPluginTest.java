@@ -365,7 +365,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void notificationReturns204() throws Exception {
+  void notificationReturns202() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", getBasicAuth());
@@ -382,7 +382,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     connection.connect();
 
     try {
-      assertThat(connection.getResponseCode()).isEqualTo(204);
+      // MCP 2025-03-26 requires 202 Accepted (not 204) for a POST that carried only notifications.
+      assertThat(connection.getResponseCode()).isEqualTo(202);
     } finally {
       connection.disconnect();
     }
