@@ -135,7 +135,9 @@ class ThreeNodesTimeSeriesLoadTestIT extends ContainersTestTemplate {
               final long c1 = r1.countPoints();
               final long c2 = r2.countPoints();
               logger.info("Convergence check: {} / {} / {} (expected {})", c0, c1, c2, expectedTotal);
-              return c0 == expectedTotal && c1 == expectedTotal && c2 == expectedTotal;
+              return c0 == expectedTotal &&
+                  c1 == expectedTotal &&
+                  c2 == expectedTotal;
             } catch (final RemoteException e) {
               logger.debug("Convergence check transient failure: {}", e.getMessage());
               return false;
