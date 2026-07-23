@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.fail;
  * a single bucket page (BUCKETS 1), one owner thread per record hammering same-width in-place updates - the same
  * shape as #5381's fixed-width RID->RID head-pointer flip. Because owners are disjoint, every page-version conflict
  * is provably false, and with 3-phase commit's lock-free replication window those conflicts really do occur on the
- * leader. The merge must fire there (asserted via the leader's slotMerges counter). Afterwards every node must hold,
+ * leader. The merge must fire there (asserted via the leader's txPageSlotMerges counter). Afterwards every node must hold,
  * for every record, EXACTLY the last value written - checked per-replica by value and byte-for-byte by
  * {@link #assertClusterConsistency()}: a merged page that replayed wrong on a follower would break both.
  *
@@ -109,7 +109,7 @@ class Issue5381SlotMergeRaftIT extends BaseRaftHATest {
     assertThat(successCount.get()).isEqualTo(RECORDS * UPDATES_PER_RECORD);
 
     // The merge must actually have fired on the leader (0 would mean no false conflict ever hit the merge path).
-    final long merges = ((DatabaseInternal) getServerDatabase(leaderIndex, getDatabaseName())).getPageManager().getStats().slotMerges;
+    final long merges = ((DatabaseInternal) getServerDatabase(leaderIndex, getDatabaseName())).getPageManager().getStats().txPageSlotMerges;
     assertThat(merges).as("disjoint-slot merge must fire on the leader").isGreaterThan(0);
 
     // Byte-for-byte replica equality (the property the whole fix rests on).

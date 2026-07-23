@@ -63,7 +63,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        cacheMiss                             = new AtomicLong();
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
-  private final    AtomicLong                        totalSlotMerges                       = new AtomicLong();
+  private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
@@ -93,7 +93,7 @@ public class PageManager extends LockContext {
     public long cacheMiss;
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
-    public long slotMerges;
+    public long txPageSlotMerges;
     public long evictionRuns;
     public long pagesEvicted;
     public int  readCachePages;
@@ -323,8 +323,8 @@ public class PageManager extends LockContext {
    * transaction's slot writes (inserts / in-place updates of records the concurrent commit left untouched) on
    * the newer committed page instead of failing the whole transaction. Surfaced via {@link #getStats()}.
    */
-  public void incrementSlotMerges() {
-    totalSlotMerges.incrementAndGet();
+  public void incrementTxPageSlotMerges() {
+    totalTxPageSlotMerges.incrementAndGet();
   }
 
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
@@ -569,7 +569,7 @@ public class PageManager extends LockContext {
     stats.cacheMiss = cacheMiss.get();
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
-    stats.slotMerges = totalSlotMerges.get();
+    stats.txPageSlotMerges = totalTxPageSlotMerges.get();
     stats.evictionRuns = evictionRuns.get();
     stats.pagesEvicted = pagesEvicted.get();
     return stats;
