@@ -2,12 +2,13 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.Map;
 import java.util.Objects;
@@ -22,7 +23,13 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
-    final Database database = context.getDatabase();
+    final DatabaseInternal database = context.getDatabase();
+
+    // Removing a server-side function is a schema mutation and must be gated (GHSA-vv82-qvpf-rjwv). Without this check
+    // any identity with plain database access could permanently delete any registered function - including
+    // security-relevant logic - and persist the removal. This mirrors the UPDATE_SCHEMA guard already enforced by
+    // Schema.unregisterFunctionLibrary (GHSA-8vr5-263f-x5r3), the sibling operation that drops a whole function library.
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     database.getSchema().getFunctionLibrary(libraryName.getStringValue()).unregisterFunction(functionName.getStringValue());
 
