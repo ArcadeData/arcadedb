@@ -53,6 +53,9 @@ class CypherVariableLengthAnchorSelectionTest {
       final MutableVertex region = area("region");
       final MutableVertex city = area("city");
 
+      country.set("region", "EU").save();
+      region.set("region", "NA").save();
+
       city.newEdge("PART_OF", region, true, (Object[]) null).set("step", "city-region").save();
       region.newEdge("PART_OF", country, true, (Object[]) null).set("step", "region-country").save();
       city.newEdge("PART_OF_ONE_WAY", region).save();
@@ -110,6 +113,97 @@ class CypherVariableLengthAnchorSelectionTest {
       assertThat(resultSet.getExecutionPlan().orElseThrow().prettyPrint(0, 2))
           .contains("Using Traditional Execution (Non-Optimized)")
           .doesNotContain("Using Cost-Based Query Optimizer");
+    }
+  }
+
+  @Test
+  void startsBoundedVariableLengthTraversalFromIndexedInListTarget() {
+    final String query = """
+        MATCH (place:Area)-[:PART_OF*0..3]->(country:Area)
+        WHERE country.id IN $countryIds
+        RETURN country.id AS country, place.id AS place
+        ORDER BY country, place""";
+    final Map<String, Object> parameters = Map.of("countryIds", List.of("country", "region", "absent"));
+
+    try (ResultSet resultSet = database.query("opencypher", query, parameters)) {
+      assertThat(resultSet.stream()
+          .map(row -> row.<String>getProperty("country") + ":" + row.<String>getProperty("place"))
+          .toList())
+          .containsExactly("country:city", "country:country", "country:region", "region:city", "region:region");
+    }
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
+          .contains("INDEX SEEK (country:Area)")
+          .contains("[index: Area[id]]")
+          .contains("2 rows");
+    }
+  }
+
+  @Test
+  void preservesInlinePropertiesOnIndexedInListAnchor() {
+    final String query = """
+        MATCH (place:Area)-[:PART_OF*0..3]->(country:Area {region: 'EU'})
+        WHERE country.id IN $countryIds
+        RETURN country.id AS country, place.id AS place
+        ORDER BY country, place""";
+    final Map<String, Object> parameters = Map.of("countryIds", List.of("country", "region"));
+
+    try (ResultSet resultSet = database.query("opencypher", query, parameters)) {
+      assertThat(resultSet.stream()
+          .map(row -> row.<String>getProperty("country") + ":" + row.<String>getProperty("place"))
+          .toList())
+          .containsExactly("country:city", "country:country", "country:region");
+    }
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().prettyPrint(0, 2))
+          .contains("MATCH NODE (place:Area)")
+          .doesNotContain("INDEX SEEK (country:Area)");
+    }
+  }
+
+  @Test
+  void preservesAdditionalLabelsOnIndexedInListAnchor() {
+    final String query = """
+        MATCH (place:Area)-[:PART_OF*0..3]->(country:Area:Selected)
+        WHERE country.id IN $countryIds
+        RETURN country.id AS country, place.id AS place
+        ORDER BY country, place""";
+    final Map<String, Object> parameters = Map.of("countryIds", List.of("country", "region"));
+
+    try (ResultSet resultSet = database.query("opencypher", query, parameters)) {
+      assertThat(resultSet.stream()).isEmpty();
+    }
+
+    try (ResultSet resultSet = database.query("opencypher", "PROFILE " + query, parameters)) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      assertThat(resultSet.getExecutionPlan().orElseThrow().prettyPrint(0, 2))
+          .contains("MATCH NODE (place:Area)")
+          .doesNotContain("INDEX SEEK (country:Area)");
+    }
+  }
+
+  @Test
+  void keepsBoundTargetReversalIndependentOfIndexedAnchor() {
+    final String query = """
+        MATCH (country:Area {id: 'country'})
+        OPTIONAL MATCH (place:Area)-[:PART_OF]->(country)
+        WHERE place.id = 'region'
+        WITH country, count(place) AS places
+        RETURN country.id AS id, places""";
+
+    try (ResultSet resultSet = database.query("opencypher", query)) {
+      assertThat(resultSet.hasNext()).isTrue();
+      final Result result = resultSet.next();
+      assertThat(result.<String>getProperty("id")).isEqualTo("country");
+      assertThat(result.<Long>getProperty("places")).isEqualTo(1L);
+      assertThat(resultSet.hasNext()).isFalse();
     }
   }
 
