@@ -18,6 +18,7 @@
  */
 package com.arcadedb.e2e;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -214,10 +215,11 @@ class JdbcQueriesIT extends ArcadeContainerTemplate {
       try (final ResultSet rs = st.executeQuery("SELECT * FROM article ORDER BY id")) {
         assertThat(rs.next()).isTrue();
         assertThat(rs.getString("title")).isEqualTo("My first article");
-        //comments is an array of embedded docs on first row
-        ResultSet comments = rs.getArray("comment").getResultSet();
-        assertThat(comments.next()).isTrue();
-        assertThat(new JSONObject(comments.getString("value")).getString("content")).isEqualTo("This is a comment");
+        //comments is an array of embedded docs on first row, carried as a json array (issue #5366)
+        final JSONArray comments = new JSONArray(rs.getString("comment"));
+        assertThat(comments.length()).isEqualTo(2);
+        assertThat(comments.getJSONObject(0).getString("content")).isEqualTo("This is a comment");
+        assertThat(comments.getJSONObject(1).getString("content")).isEqualTo("This is a comment 2");
         //location is an embedded doc
         assertThat(rs.getString("location")).isNotNull();
         assertThat(new JSONObject(rs.getString("location")).getString("name")).contains("My location");
@@ -240,10 +242,12 @@ class JdbcQueriesIT extends ArcadeContainerTemplate {
 
       final ResultSet rs = st.executeQuery("{sql}select from schema:types");
       while (rs.next()) {
-        if (rs.getArray("properties").getResultSet().next()) {
-          ResultSet props = rs.getArray("properties").getResultSet();
-          assertThat(props.next()).isTrue();
-          assertThat(new JSONObject(props.getString("value")).getString("type")).isIn("INTEGER", "STRING");
+        // A list of documents travels as a json array (issue #5366).
+        final String properties = rs.getString("properties");
+        if (properties != null && properties.startsWith("[")) {
+          final JSONArray props = new JSONArray(properties);
+          if (!props.isEmpty())
+            assertThat(props.getJSONObject(0).getString("type")).isIn("INTEGER", "STRING");
         }
       }
 
