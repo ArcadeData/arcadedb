@@ -126,6 +126,17 @@ public final class BmwScorer {
         break;
 
       final RID pivotRid = live.get(pivot).cursor.currentRid();
+
+      // Block-Max WAND shallow advance: before touching the pivot doc, test the *tight* per-block
+      // maxima. If the sum of block maxima over every cursor that could contribute to pivotRid
+      // cannot beat the threshold, no document in the covered block range can enter the top-K, so
+      // skip the whole range without decoding a single posting. This is what turns the plain-WAND
+      // suffix-max pivot (which barely prunes on flat SPLADE weight distributions) into real BMW.
+      if (tryBlockMaxSkip(live, pivot, pivotRid, threshold)) {
+        removeExhausted(live);
+        continue;
+      }
+
       if (live.get(0).cursor.currentRid().equals(pivotRid)) {
         // Score the doc.
         boolean tombstoned = false;
@@ -259,6 +270,15 @@ public final class BmwScorer {
         break;
 
       final RID pivotRid = live.get(pivot).cursor.currentRid();
+
+      // Block-Max WAND shallow advance (see the note in {@link #topK}). Grouped top-K keeps the
+      // threshold at NEGATIVE_INFINITY until every group is full, so this gate stays inert until
+      // there is a real watermark to prune against - exactly like the non-grouped path.
+      if (tryBlockMaxSkip(live, pivot, pivotRid, threshold)) {
+        removeExhausted(live);
+        continue;
+      }
+
       if (live.get(0).cursor.currentRid().equals(pivotRid)) {
         if (filterActive && !allowedRIDs.contains(pivotRid)) {
           // Whitelist rejected. Skip the doc; advance every aligned cursor.
@@ -354,6 +374,71 @@ public final class BmwScorer {
   }
 
   // ---------- internals ----------
+
+  /**
+   * Block-Max WAND shallow advance. {@code live} is sorted by current RID ascending and
+   * {@code pivotRid == live.get(pivot).cursor.currentRid()}. Sums the <i>tight</i> per-block
+   * maxima of every cursor that could contribute to {@code pivotRid} - the pivot prefix
+   * {@code [0..pivot]} plus the run of cursors tied at {@code pivotRid} immediately after it - and
+   * compares against {@code threshold}:
+   * <ul>
+   *   <li>If the block-max sum exceeds the threshold, {@code pivotRid} might still be a candidate;
+   *       return {@code false} so the caller scores or aligns it normally.</li>
+   *   <li>Otherwise no document in {@code [pivotRid, minBlockEnd]} can beat the threshold (only
+   *       these cursors align at {@code pivotRid}, and WAND already proved every doc &lt; pivotRid
+   *       is a non-candidate). Skip: seek those cursors forward past the min block boundary,
+   *       bounded by the first cursor that sits strictly after {@code pivotRid} so the recomputed
+   *       pivot stays correct. Return {@code true}.</li>
+   * </ul>
+   * The skip is a strict advance (the new target is always &gt; {@code pivotRid}), so the outer
+   * loop cannot stall. Block maxima are read from in-memory headers only - no posting is decoded.
+   *
+   * @return {@code true} if a block was skipped (cursors advanced), {@code false} if the caller
+   *         must fall through to the score/align path.
+   */
+  private static boolean tryBlockMaxSkip(final List<DimEntry> live, final int pivot, final RID pivotRid, final float threshold)
+      throws IOException {
+    // Extend the prefix over the run of cursors tied at pivotRid: those beyond `pivot` also align
+    // at pivotRid and so must be included in the tight bound, otherwise the sum would under-count
+    // pivotRid's real ceiling. Cursors past this run sit strictly after pivotRid and cannot align.
+    int end = pivot;
+    while (end + 1 < live.size() && live.get(end + 1).cursor.currentRid().equals(pivotRid))
+      end++;
+
+    float blockMaxSum = 0.0f;
+    RID minBlockEnd = null;
+    for (int i = 0; i <= end; i++) {
+      final DimEntry e = live.get(i);
+      blockMaxSum += e.queryWeight * e.cursor.blockMaxAt(pivotRid);
+      if (blockMaxSum > threshold)
+        return false;  // pivotRid may still make the top-K; score/align it normally.
+      final RID be = e.cursor.blockEndAt(pivotRid);
+      if (be != null && (minBlockEnd == null || SparseSegmentBuilder.compareRid(be, minBlockEnd) < 0))
+        minBlockEnd = be;
+    }
+
+    // blockMaxSum <= threshold: pivotRid and its block range are all non-candidates.
+    if (minBlockEnd == null)
+      return false;  // no finite block boundary (only loose/memtable sources) - cannot block-skip.
+
+    // Next candidate = first RID strictly past the limiting block boundary, but never past the
+    // first cursor that sits after the tied run (that cursor could align a doc the recomputed
+    // pivot must see). RID successor is (bucket, position+1); seekTo lands on the first real
+    // posting >= that, i.e. the first strictly greater than minBlockEnd.
+    RID candidate = new RID(minBlockEnd.getBucketId(), minBlockEnd.getPosition() + 1);
+    if (end + 1 < live.size()) {
+      final RID nextRid = live.get(end + 1).cursor.currentRid();
+      if (SparseSegmentBuilder.compareRid(nextRid, candidate) < 0)
+        candidate = nextRid;
+    }
+
+    for (int i = 0; i <= end; i++) {
+      final DimEntry e = live.get(i);
+      if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), candidate) < 0)
+        e.cursor.seekTo(candidate);
+    }
+    return true;
+  }
 
   /** Returns the smallest index i such that the prefix sum of upperBound contributions exceeds threshold; -1 if none. */
   private static int findPivot(final List<DimEntry> live, final float threshold) {

@@ -57,6 +57,40 @@ public interface SourceCursor extends AutoCloseable {
   /** Upper bound on the contribution of any remaining posting in this source for this dim. */
   float upperBoundRemaining();
 
+  /**
+   * Tight Block-Max WAND upper bound on this source's contribution to the document identified by
+   * {@code rid}: the maximum weight of the block that would contain {@code rid} (i.e. the first
+   * block at or after the current position whose last RID is &gt;= {@code rid}). Unlike
+   * {@link #upperBoundRemaining()}, which is a suffix-max over every remaining block, this is a
+   * per-block bound and is what lets BMW skip whole blocks that cannot beat the top-K threshold.
+   * <p>
+   * The default returns {@link #upperBoundRemaining()} - correct (an over-estimate is always safe
+   * for an upper bound) but no tighter than plain WAND. Sources that maintain per-block maxima
+   * (sealed segments) override this to expose the real block bound. Reading a block-max never
+   * decodes a posting payload; only in-memory block headers are consulted.
+   *
+   * @return an upper bound on the contribution to {@code rid}, or {@code 0} if this source has no
+   *         block that could contain {@code rid} (all its remaining postings are strictly before
+   *         {@code rid}, or it is exhausted).
+   */
+  default float blockMaxAt(final RID rid) {
+    return upperBoundRemaining();
+  }
+
+  /**
+   * The last RID of the block that would contain {@code rid} (see {@link #blockMaxAt(RID)}). BMW
+   * uses this as the right edge of the range that {@link #blockMaxAt(RID)} bounds, so it can skip
+   * forward to just past it when the block cannot beat the threshold.
+   * <p>
+   * Returns {@code null} for sources that cannot bound a finite block boundary (e.g. an in-memory
+   * memtable whose {@link #blockMaxAt(RID)} is a whole-dim max valid for every remaining posting).
+   * A {@code null} boundary does not constrain the skip target: BMW only skips when at least one
+   * source in the pivot prefix reports a finite boundary.
+   */
+  default RID blockEndAt(final RID rid) {
+    return null;
+  }
+
   @Override
   void close();
 }
