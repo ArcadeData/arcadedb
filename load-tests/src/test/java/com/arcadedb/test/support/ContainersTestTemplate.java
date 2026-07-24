@@ -432,6 +432,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.server.readinessRequiresHA=true
             -Darcadedb.ha.raft.port=2434
             -Darcadedb.ha.serverList=%s
+            -Darcadedb.server.restoreImportAllowLocalUrls=true
             """, name, quorum, serverList))
         .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
@@ -476,6 +477,7 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.quorum=%s
             -Darcadedb.ha.raft.port=2434
             -Darcadedb.ha.serverList=%s
+            -Darcadedb.server.restoreImportAllowLocalUrls=true
             """, name, quorum, serverList))
         .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
