@@ -710,6 +710,28 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   /**
+   * Readers only see the pages page 0's series counter has published ({@link #newIterators} clamps to it):
+   * an in-flight compaction flushes its series pages BEFORE bumping the counter, and a failed round leaves
+   * orphans beyond it (#4946). The full key-order walk must apply the same clamp, or it inspects pages no
+   * reader would ever touch - half-written or orphaned - and reports a healthy index as corrupt.
+   */
+  @Override
+  protected int getCheckablePages() {
+    final int totalPages = getTotalPages();
+    if (totalPages < 1)
+      return totalPages;
+
+    try {
+      final BasePage mainPage = database.getPageManager()
+          .getImmutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, true);
+      return Math.min(getCompactedPageNumberOfSeries(mainPage), totalPages);
+    } catch (final IOException e) {
+      // let the walk itself surface the unreadable page 0
+      return totalPages;
+    }
+  }
+
+  /**
    * #4946: rolls the in-RAM page count back to the pre-compaction value after a failed compaction round.
    * The orphaned leaf pages flushed by the failed round stay on disk but become unreachable: page 0's series
    * counter never included them, and with the count rolled back {@link #setCompactedTotalPages} of a LATER

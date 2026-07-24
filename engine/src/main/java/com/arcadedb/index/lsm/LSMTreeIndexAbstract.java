@@ -673,7 +673,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    */
   public List<String> checkKeyOrder(final int maxProblems) {
     final List<String> problems = new ArrayList<>();
-    final int totalPages = getTotalPages();
+    final int totalPages = getCheckablePages();
 
     for (int pageNumber = 0; pageNumber < totalPages && problems.size() < maxProblems; ++pageNumber) {
       try {
@@ -686,6 +686,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     }
 
     return problems;
+  }
+
+  /**
+   * Number of pages {@link #checkKeyOrder(int)} may inspect. By default every physical page, but
+   * components whose readers see only a published subset (the compacted sub-index, whose in-flight
+   * compaction pages are flushed before page 0's counter announces them) narrow it to match reader
+   * visibility, so the check never mistakes a not-yet-published page for corruption.
+   */
+  protected int getCheckablePages() {
+    return getTotalPages();
   }
 
   public void setStoreTermFrequency(final boolean storeTermFrequency) {
