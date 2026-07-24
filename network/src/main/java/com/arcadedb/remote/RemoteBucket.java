@@ -74,6 +74,11 @@ public class RemoteBucket implements Bucket {
   }
 
   @Override
+  public void deleteRecord(RID rid, boolean force) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public void scan(RawRecordCallback callback, ErrorRecordCallback errorRecordCallback) {
     throw new UnsupportedOperationException();
   }
