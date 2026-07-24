@@ -1,16 +1,417 @@
 name: Native Image
 
-# Stub. This enables the `workflow_dispatch` event so the full Native Image workflow, which lives
-# on the `feat/native-image` branch, can be run manually against that branch: workflow_dispatch
-# only registers a workflow as dispatchable once a workflow of this name exists on the default
-# branch, and dispatching executes the version of the file present on the selected ref. This stub
-# is replaced by the real 5-target build/smoke/Docker workflow when the native-image feature merges.
 on:
   workflow_dispatch:
+  release:
+    types: [published]
+
+# Least privilege by default: only the build job's "Attach to release" step needs write, and it
+# scopes it below. The docker/manifest jobs authenticate to Docker Hub via secrets, not the
+# GITHUB_TOKEN, so they keep the read default.
+permissions:
+  contents: read
 
 jobs:
-  stub:
+  build:
+    name: ${{ matrix.os_name }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.required == false }}
+    # Scoped write: the "Attach to release" step uploads assets via `gh release upload`.
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Only linux/amd64, linux/arm64, and windows/amd64 are built in CI. macOS is not built here:
+        # there is no free hosted x64 macOS runner (GitHub retired macos-13; macos-15-intel is a paid
+        # "Larger Runners" label not enabled here that fails at setup), and the free macos-15 (arm64,
+        # ~7 GB RAM) cannot build this native image without thrashing swap for 40+ minutes -
+        # native-image wants ~80% of system RAM and this image's build heap is ~630 MB, which does not
+        # fit. macOS arm64 binaries are a fast local build instead (`mvn -Pnative ...`; see
+        # docs/native-image.md). There is likewise no free Windows-on-ARM runner. Native-image cannot
+        # cross-compile, so each target builds on its own runner.
+        # linkmode distinguishes the two Linux build modes (see the "Set up musl toolchain" and
+        # "Build native image" steps below, and native/pom.xml's native-static/native-mostly-static
+        # profiles):
+        #   musl-static    - linux/amd64: fully static, musl libc (-Dnative.static=true). Runs on
+        #                     `scratch` - see native/src/main/docker/Dockerfile.native.scratch.
+        #   mostly-static  - linux/arm64: static except glibc itself (-Dnative.mostlystatic=true).
+        #                     GraalVM CE ships no static musl JDK libs for aarch64
+        #                     (oracle/graal#4645), so the amd64 leg's fully-static musl mode
+        #                     cannot link here. Needs a glibc runtime - see
+        #                     native/src/main/docker/Dockerfile.native.distroless.
+        #   dynamic        - Windows: ordinary dynamically-linked build, unchanged.
+        include:
+          - { runner: ubuntu-latest,    os_name: linux,   arch: amd64, required: true,  linkmode: musl-static   }
+          - { runner: ubuntu-24.04-arm, os_name: linux,   arch: arm64, required: true,  linkmode: mostly-static }
+          - { runner: windows-latest,   os_name: windows, arch: amd64, required: false, linkmode: dynamic       }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # java-version is pinned to the EXACT patch release (not "25") to match
+      # native/pom.xml's native.graalvm.version, which pins the Truffle/polyglot artifacts to the
+      # same patch. A builder/Truffle version skew fails the native build at feature registration
+      # (NoSuchMethodError: OptimizedTruffleRuntime.getLoopNodeFactory()) - see docs/native-image.md
+      # "Prerequisites". If you bump native.graalvm.version in native/pom.xml, bump this
+      # java-version to match in the SAME change.
+      - name: Set up GraalVM (Community, JDK 25.0.2)
+        uses: graalvm/setup-graalvm@0def53c0fd8534bc13416c9469f5be45265824fd # v1.6.1
+        with:
+          java-version: "25.0.2"
+          distribution: "graalvm-community"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: "true"
+
+      - name: Cache local Maven repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-${{ matrix.arch }}-native-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-native-maven-
+
+      # Only the linux/amd64 leg (linkmode: musl-static) builds a fully static (--static
+      # --libc=musl, native/pom.xml's native-static profile) executable, and only that mode needs
+      # a musl toolchain. That needs more than the compiler:
+      #  1. musl-tools + musl-dev (apt) - musl-dev is what actually matters here: on Ubuntu it
+      #     installs the arch-prefixed compiler wrapper native-image's musl toolchain probe looks
+      #     for (x86_64-linux-musl-gcc - see oracle/graal#7103), plus musl's own static
+      #     libc.a/headers under /usr/{include,lib}/x86_64-linux-musl/. musl-tools additionally
+      #     provides the unprefixed `musl-gcc`/`musl-ldd` convenience wrapper.
+      #  2. A musl-linked static zlib (native-image links libz for the JDK's zip/net code under
+      #     --libc=musl), per GraalVM's "Static and Mostly-Static Images" guide
+      #     (https://www.graalvm.org/latest/reference-manual/native-image/guides/build-static-executables/).
+      #     musl-gcc's generated specs file (/usr/lib/x86_64-linux-musl/musl-gcc.specs) passes
+      #     -nostdinc/-nostdlib and restricts header/library search to that same
+      #     x86_64-linux-musl directory - it does NOT fall back to the generic /usr/include or
+      #     /usr/lib search path. zlib must therefore be installed with --includedir/--libdir
+      #     pointed AT that directory (confirmed via musl's own tools/musl-gcc.specs.sh:
+      #     "-nostdinc -isystem $incdir" / "-nostdlib" + "-L$libdir"), not a plain --prefix=/usr,
+      #     or native-image's `-lz` link step will not find it without extra
+      #     -H:CLibraryPath/-H:CIncludePath buildArgs (native/pom.xml intentionally adds only
+      #     --static --libc=musl, nothing path-related).
+      #
+      # linux/arm64 (linkmode: mostly-static) deliberately does NOT run this step: GraalVM CE
+      # ships no static musl JDK libraries for aarch64 (the graalvm-community-jdk-25.0.2
+      # linux-aarch64 release tarball has lib/static/linux-aarch64/glibc but not
+      # lib/static/linux-aarch64/musl - linux-amd64 ships both - see oracle/graal#4645, closed
+      # not-planned), so --static --libc=musl can never link on that architecture regardless of
+      # toolchain setup. Rather than run a toolchain step known to be useless there, the arm64 leg
+      # instead builds with -Dnative.mostlystatic=true (native/pom.xml's native-mostly-static
+      # profile: -H:+StaticExecutableWithDynamicLibC - static except glibc itself), which needs no
+      # musl/zlib toolchain at all. See docs/native-image.md and
+      # native/src/main/docker/Dockerfile.native.distroless for the Docker-side implications of
+      # that different build mode.
+      - name: Set up musl toolchain (static Linux builds)
+        if: ${{ matrix.linkmode == 'musl-static' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools musl-dev
+
+          TRIPLET="$(uname -m)-linux-musl"
+          MUSL_GCC="${TRIPLET}-gcc"
+          MUSL_INCDIR="/usr/include/${TRIPLET}"
+          MUSL_LIBDIR="/usr/lib/${TRIPLET}"
+          command -v "$MUSL_GCC" >/dev/null || { echo "::error::$MUSL_GCC not found after installing musl-dev"; exit 1; }
+
+          ZLIB_VERSION="1.3.2"
+          curl -fsSL "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" -o /tmp/zlib.tar.gz
+          tar xzf /tmp/zlib.tar.gz -C /tmp
+          (
+            cd "/tmp/zlib-${ZLIB_VERSION}"
+            CC="$MUSL_GCC" ./configure --static --prefix=/usr --includedir="$MUSL_INCDIR" --libdir="$MUSL_LIBDIR"
+            make -j"$(nproc)"
+            sudo make install
+          )
+
+          echo "CC=$MUSL_GCC" >> "$GITHUB_ENV"
+          "$MUSL_GCC" --version
+          "$MUSL_GCC" -print-file-name=libz.a
+
+      - name: Build native image
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARGS=""
+          case "${{ matrix.linkmode }}" in
+            musl-static)   ARGS="-Dnative.static=true" ;;
+            mostly-static) ARGS="-Dnative.mostlystatic=true" ;;
+            dynamic)       ARGS="" ;;
+            *)              echo "::error::unknown matrix.linkmode '${{ matrix.linkmode }}'"; exit 1 ;;
+          esac
+          mvn -B -ntp -Pnative -pl native -am -DskipTests $ARGS package
+
+      # native-maven-plugin names the executable via os-maven-plugin's os.detected.name/arch
+      # (e.g. osx-aarch_64, linux-x86_64, windows-x86_64), which does NOT match this matrix's
+      # os_name/arch labels (macos/arm64, linux/amd64, ...). Glob for the one file under
+      # native/target/ that IS the executable instead of constructing the name from matrix
+      # fields or excluding known non-binary extensions: the latter is brittle because
+      # native-image build-report artifacts (e.g. svm_err_*.md, other future report formats) can
+      # match 'arcadedb-*' without matching any of the excluded extensions and trip the `-ne 1`
+      # guard below. Select by the executable bit instead (Linux/macOS: `-perm -u+x`; Windows has
+      # no meaningful POSIX exec bit, so match the '.exe' suffix native-maven-plugin always adds
+      # there instead).
+      - name: Locate native binary
+        id: locate
+        shell: bash
+        run: |
+          cd native/target
+          if [ "${{ matrix.os_name }}" = "windows" ]; then
+            mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*.exe' -print | sed 's|^\./||')
+          else
+            mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*' -perm -u+x -print | sed 's|^\./||')
+          fi
+          if [ "${#CANDIDATES[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one native binary in native/target, found ${#CANDIDATES[@]}"
+            ls -la .
+            exit 1
+          fi
+          echo "bin_name=${CANDIDATES[0]}" >> "$GITHUB_OUTPUT"
+          echo "[locate] native binary: ${CANDIDATES[0]}"
+
+      # Wire-protocol client tools for exercise.sh's Postgres/gRPC checks, installed on BOTH Linux
+      # legs (amd64 AND arm64: the musl-toolchain step above runs only on amd64, so relying on it
+      # would leave arm64 without psql, which is exactly the gap the WIRE_STRICT hard-fail below
+      # would otherwise trip on). Both Linux legs pass the full wire-protocol plugin list to the
+      # Smoke test step below and now run it with WIRE_STRICT=1, so a missing client tool here
+      # would fail the build - these installs make that a non-issue instead of a false negative.
+      #   postgresql-client - psql, for the Postgres-wire check (apt package, both arches).
+      #   grpcurl            - for the gRPC reflection-list check. No apt package; installed from
+      #                        the upstream release tarball, matched to the runner's arch.
+      #   python3 (Mongo) and xxd (Bolt) are NOT installed here: both ship preinstalled on the
+      #   ubuntu-latest and ubuntu-24.04-arm runner images already (see actions/runner-images'
+      #   published Ubuntu 24.04 software manifests), so nothing to add for those two checks.
+      - name: Install wire-protocol client tools (Linux)
+        if: ${{ matrix.os_name == 'linux' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+          GRPCURL_VERSION="1.9.3"
+          case "${{ matrix.arch }}" in
+            amd64) GRPCURL_ARCH="x86_64" ;;
+            arm64) GRPCURL_ARCH="arm64" ;;
+            *)     echo "::error::unknown matrix.arch '${{ matrix.arch }}' for grpcurl install"; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" \
+            -o /tmp/grpcurl.tar.gz
+          sudo tar xzf /tmp/grpcurl.tar.gz -C /usr/local/bin grpcurl
+          rm -f /tmp/grpcurl.tar.gz
+          grpcurl --version
+          psql --version
+
+      # Windows smoke is best-effort (job-level continue-on-error already covers it); Git Bash on
+      # the windows-latest runner can execute smoke.sh directly. Only the two Linux jobs pass the
+      # full wire-protocol plugin list, matching trace.sh, so Postgres/Redis/Mongo/Bolt/gRPC are
+      # actually reachable for exercise.sh's checks - and, per the client-tools step above, both
+      # Linux legs now have every client tool those checks need. WIRE_STRICT=1 turns those checks
+      # from best-effort WARN-skips into hard assertions on those two legs, so a native-image
+      # regression that breaks e.g. Bolt or Redis fails the build instead of staying green;
+      # macOS/Windows deliberately leave WIRE_STRICT unset (client tools not guaranteed there).
+      - name: Smoke test
+        shell: bash
+        run: |
+          BIN="native/target/${{ steps.locate.outputs.bin_name }}"
+          chmod +x "$BIN" || true
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            PLUGINS="Postgres:com.arcadedb.postgres.PostgresProtocolPlugin"
+            PLUGINS="$PLUGINS,Redis:com.arcadedb.redis.RedisProtocolPlugin"
+            PLUGINS="$PLUGINS,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin"
+            PLUGINS="$PLUGINS,Bolt:com.arcadedb.bolt.BoltProtocolPlugin"
+            PLUGINS="$PLUGINS,Grpc:com.arcadedb.server.grpc.GrpcServerPlugin"
+            WIRE_STRICT=1 native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true "-Darcadedb.server.plugins=$PLUGINS"
+          else
+            native/src/test/scripts/smoke.sh "$BIN" -Dorg.jline.terminal.dumb=true
+          fi
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          cd native/target
+          BIN="${{ steps.locate.outputs.bin_name }}"
+          if [ "${{ matrix.os_name }}" = "windows" ]; then
+            ARCHIVE="${BIN%.exe}.zip"
+            7z a "$ARCHIVE" "$BIN"
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256" || shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            ARCHIVE="$BIN.tar.gz"
+            tar czf "$ARCHIVE" "$BIN"
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256" || sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            native/target/arcadedb-*.tar.gz
+            native/target/arcadedb-*.zip
+            native/target/*.sha256
+
+      - name: Attach to release
+        if: ${{ github.event_name == 'release' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            native/target/arcadedb-*.tar.gz native/target/arcadedb-*.zip native/target/*.sha256 \
+            --clobber
+
+  # Packages the two required Linux binaries (musl-static amd64, mostly-static-glibc arm64) built
+  # by the `build` job above into minimal Docker images, one per arch, each built natively on a
+  # runner of that architecture (no QEMU cross-emulation). See native/src/main/docker/
+  # Dockerfile.native.scratch (amd64, FROM scratch) and Dockerfile.native.distroless (arm64,
+  # FROM gcr.io/distroless/base-debian12:nonroot) for why the two arches need different bases.
+  #
+  # Push gating: this workflow has no `push:` trigger at all (only workflow_dispatch and
+  # release), so a plain branch push can never reach this job. Within that, a further gate keeps
+  # `workflow_dispatch` (a manual, human-triggered run - e.g. to validate this job from a feature
+  # branch during review) from publishing anything either: only github.event_name == 'release'
+  # logs into Docker Hub and passes --push to buildx. workflow_dispatch runs build with --load
+  # instead (loads the image into the runner's local Docker daemon, never touches the registry)
+  # and still runs the full smoke test against that locally-loaded image, so the Dockerfiles and
+  # build context are exercised end-to-end without publishing arcadedata/arcadedb:*-native-* to
+  # anyone. Only a published GitHub release pushes and feeds the `manifest` job below.
+  docker:
+    name: docker-${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    arch: amd64, dockerfile: native/src/main/docker/Dockerfile.native.scratch }
+          - { runner: ubuntu-24.04-arm, arch: arm64, dockerfile: native/src/main/docker/Dockerfile.native.distroless }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: arcadedb-native-linux-${{ matrix.arch }}
+          path: dl
+
+      # The downloaded artifact holds exactly one tarball (arcadedb-<version>-linux-<os-arch
+      # triplet>.tar.gz, e.g. ...-linux-x86_64.tar.gz - os-maven-plugin's os.detected.arch, NOT
+      # this workflow's amd64/arm64 matrix label) plus its .sha256, so `ls dl/arcadedb-*.tar.gz`
+      # unambiguously finds it without needing to match matrix.arch against a differently-spelled
+      # arch string. $VERSION is parsed back out of that same filename (greedy match up to the
+      # one "-linux-" separator handles a version string that itself contains dashes, e.g.
+      # "26.8.1-SNAPSHOT") instead of re-invoking Maven just to re-derive project.version.
+      - name: Stage build context
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ctx/config
+          TARBALL="$(ls dl/arcadedb-*.tar.gz)"
+          BIN_BASENAME="$(basename "$TARBALL" .tar.gz)"
+          VERSION="$(echo "$BIN_BASENAME" | sed -E 's/^arcadedb-(.*)-linux-[^-]+$/\1/')"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$BIN_BASENAME" ]; then
+            echo "::error::could not parse version out of tarball name '$BIN_BASENAME'"
+            exit 1
+          fi
+          tar xzf "$TARBALL" -C ctx
+          mv "ctx/$BIN_BASENAME" ctx/arcadedb
+          cp -r package/src/main/config/* ctx/config/
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            cp /etc/ssl/certs/ca-certificates.crt ctx/ca-certificates.crt
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to Docker Hub
+        if: ${{ github.event_name == 'release' }}
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build (and push on release) per-arch image
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="arcadedata/arcadedb:${{ steps.stage.outputs.version }}-native-${{ matrix.arch }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          MODE="--load"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            MODE="--push"
+          fi
+          docker buildx build --platform "linux/${{ matrix.arch }}" \
+            -f "${{ matrix.dockerfile }}" \
+            -t "$TAG" \
+            $MODE ctx
+
+      - name: Smoke the container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name native-smoke -p 2480:2480 \
+            "${{ steps.build.outputs.tag }}" \
+            -Darcadedb.server.rootPassword=PlayWithData123!
+          # Validate the PACKAGED IMAGE end-to-end, not just first readiness: run the same
+          # exercise.sh hard-asserts (HTTP/Studio/SQL/Cypher/JS) against the running container so
+          # image-packaging regressions (missing /tmp, bad config copy, volume permissions) that
+          # still let the process reach "ready" are caught. exercise.sh waits for HTTP readiness
+          # itself. Wire protocols warn-skip here (their ports are not published and the default
+          # entrypoint enables no wire plugin); the build-job smoke already asserts them with
+          # WIRE_STRICT=1 on the two Linux legs.
+          rc=0
+          native/src/test/scripts/exercise.sh || rc=$?
+          LOGS="$(docker logs native-smoke 2>&1)"
+          echo "$LOGS"
+          docker rm -f native-smoke
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::container exercise.sh failed (rc=$rc)"
+            exit 1
+          fi
+          # exercise.sh can stay green through a NON-FATAL startup failure - e.g. a class that JUL
+          # loads reflectively from arcadedb-log.properties (FileHandler) being absent from the
+          # native image throws ClassNotFoundException at boot but only degrades logging. Scan the
+          # container's own startup output and fail on those, so a missing-reflection-metadata
+          # regression can't slip through behind a passing functional smoke.
+          if grep -qiE "ClassNotFoundException|Can't load log handler" <<<"$LOGS"; then
+            echo "::error::container startup logged a ClassNotFoundException / log-handler load failure"
+            exit 1
+          fi
+
+  # Stitches the two per-arch tags pushed by the `docker` job above into one multi-arch manifest.
+  # Guarded the same way as the `docker` job's push: only a published release reaches here (the
+  # `docker` job only pushes per-arch tags to the registry on `release`, so a workflow_dispatch
+  # run has nothing in the registry for imagetools to stitch - deliberately, per the push-gating
+  # note on the `docker` job above).
+  manifest:
+    needs: docker
+    if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - run: echo "Stub. The full native-image workflow lives on feat/native-image; dispatch that branch to run it."
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # This repo's release tags are plain Maven version strings with no "v" prefix (see
+      # mvn-release.yml's `git tag ${{ github.event.inputs.releaseversion }}`, and
+      # `mvn versions:set -DnewVersion=...` run just before it against that same value), so
+      # github.event.release.tag_name already equals project.version - the same value the
+      # `docker` job parsed out of the artifact tarball name to build the per-arch tags below.
+      - name: Create multi-arch manifest
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.release.tag_name }}"
+          docker buildx imagetools create -t "arcadedata/arcadedb:${VERSION}-native" \
+            "arcadedata/arcadedb:${VERSION}-native-amd64" \
+            "arcadedata/arcadedb:${VERSION}-native-arm64"

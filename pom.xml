@@ -732,6 +732,12 @@
                 <exclude.tests>**/gremlin/**/*.java</exclude.tests>
             </properties>
         </profile>
+        <profile>
+            <id>native</id>
+            <modules>
+                <module>native</module>
+            </modules>
+        </profile>
 
     </profiles>
 </project>
