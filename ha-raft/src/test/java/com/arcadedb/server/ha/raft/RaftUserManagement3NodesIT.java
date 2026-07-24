@@ -166,7 +166,7 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
       pool.submit(() -> {
         start.await();
         final JSONObject user = new JSONObject()
-            .put("name", "u" + userIndex)
+            .put("name", "user" + userIndex)
             .put("password", "pw12345678")
             .put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
         postServerCommandRetryOn503(0, "create user " + user.toString());
@@ -182,7 +182,7 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
         .until(() -> {
           for (int i = 0; i < getServerCount(); i++)
             for (int n = 0; n < 5; n++)
-              if (getServer(i).getSecurity().getUser("u" + n) == null)
+              if (getServer(i).getSecurity().getUser("user" + n) == null)
                 return false;
           return true;
         });
