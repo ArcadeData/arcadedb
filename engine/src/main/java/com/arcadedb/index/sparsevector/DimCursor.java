@@ -44,8 +44,11 @@ public final class DimCursor implements AutoCloseable {
   private final SourceCursor[]  sources;     // sorted oldest -> newest
   private final boolean[]       sourceLive;  // false once a source is exhausted
   private RID                   currentRid;
-  private float                 currentWeight;
-  private boolean               currentTombstone;
+  // Index of the newest live source aligned at currentRid; -1 when exhausted. The weight and
+  // tombstone are resolved lazily from this source only when a caller actually asks for them, so a
+  // Block-Max WAND skip that walks currentRid across block boundaries never forces the underlying
+  // segment cursor to decode a payload it will not score (issue #5388).
+  private int                   newestSourceIdx = -1;
   private boolean               started;
   private boolean               exhausted;
 
@@ -68,11 +71,18 @@ public final class DimCursor implements AutoCloseable {
   }
 
   public float currentWeight() {
-    return currentWeight;
+    if (exhausted || newestSourceIdx < 0)
+      return 0.0f;
+    final SourceCursor s = sources[newestSourceIdx];
+    // Resolving the weight forces a lazily-parked segment cursor to decode its block - the single
+    // point where a scored document actually pays for a page read.
+    return s.isTombstone() ? 0.0f : s.currentWeight();
   }
 
   public boolean isTombstone() {
-    return currentTombstone;
+    if (exhausted || newestSourceIdx < 0)
+      return false;
+    return sources[newestSourceIdx].isTombstone();
   }
 
   public boolean isExhausted() {
@@ -95,6 +105,48 @@ public final class DimCursor implements AutoCloseable {
         m = ub;
     }
     return m;
+  }
+
+  /**
+   * Merged Block-Max WAND upper bound on this dim's contribution to {@code rid}: the max over
+   * live sources of their {@link SourceCursor#blockMaxAt(RID) blockMaxAt}. Taking the max is
+   * correct because on a conflict the newest source wins and its weight is bounded by its own
+   * block max, while every older source's block max independently bounds its own posting.
+   */
+  public float blockMaxAt(final RID rid) {
+    if (exhausted)
+      return 0.0f;
+    float m = 0.0f;
+    for (int i = 0; i < sources.length; i++) {
+      if (!sourceLive[i])
+        continue;
+      final float bm = sources[i].blockMaxAt(rid);
+      if (bm > m)
+        m = bm;
+    }
+    return m;
+  }
+
+  /**
+   * Right edge of the range that {@link #blockMaxAt(RID)} bounds: the min over live sources of
+   * their {@link SourceCursor#blockEndAt(RID) blockEndAt}, ignoring sources that report no finite
+   * boundary. Taking the min keeps the merged block-max valid over {@code [rid, blockEnd]} - the
+   * tighter (smaller) block boundary of any source is where at least one source's per-block bound
+   * stops holding. Returns {@code null} if no live source bounds a finite boundary (e.g. only an
+   * in-memory memtable covers {@code rid}), which tells the scorer it cannot block-skip here.
+   */
+  public RID blockEndAt(final RID rid) {
+    if (exhausted)
+      return null;
+    RID min = null;
+    for (int i = 0; i < sources.length; i++) {
+      if (!sourceLive[i])
+        continue;
+      final RID be = sources[i].blockEndAt(rid);
+      if (be != null && (min == null || SparseSegmentBuilder.compareRid(be, min) < 0))
+        min = be;
+    }
+    return min;
   }
 
   public void start() throws IOException {
@@ -164,13 +216,17 @@ public final class DimCursor implements AutoCloseable {
       c.close();
     exhausted = true;
     currentRid = null;
+    newestSourceIdx = -1;
   }
 
   // ---------- internals ----------
 
   /**
-   * Compute {@code currentRid} as the min over live sources and resolve {@code currentWeight} /
-   * {@code currentTombstone} as the newest source's value at that RID, in a single pass.
+   * Compute {@code currentRid} as the min over live sources and record which source ({@code
+   * newestSourceIdx}) supplies its weight/tombstone, in a single pass. The weight and tombstone
+   * are NOT read here - they are resolved lazily by {@link #currentWeight()} / {@link
+   * #isTombstone()} so a BMW skip that only ever reads {@code currentRid} never forces the winning
+   * segment cursor to decode its block (issue #5388).
    * <p>
    * Sources are passed oldest-first, so a higher index means newer. We track the min RID and,
    * for any source that ties the running min, prefer the newest. Two pieces of state suffice:
@@ -206,14 +262,11 @@ public final class DimCursor implements AutoCloseable {
     if (minRid == null) {
       exhausted = true;
       currentRid = null;
-      currentTombstone = false;
-      currentWeight = 0.0f;
+      newestSourceIdx = -1;
       return;
     }
-    final SourceCursor newest = sources[newestAtMinIdx];
     currentRid = minRid;
-    currentTombstone = newest.isTombstone();
-    currentWeight = currentTombstone ? 0.0f : newest.currentWeight();
+    newestSourceIdx = newestAtMinIdx;
   }
 
 }
