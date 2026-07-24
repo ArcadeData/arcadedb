@@ -29,6 +29,7 @@ import java.io.File;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MCPConfigurationTest {
   private static final String TEST_ROOT = "./target/mcp-config-test";
@@ -64,6 +65,11 @@ class MCPConfigurationTest {
     config.setAllowInsert(true);
     config.setAllowUpdate(true);
     config.setAllowedUsers(List.of("root", "admin"));
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant", new JSONObject()
+                .put("allowUpdate", false)
+                .put("allowedUsers", new JSONArray().put("admin")))));
     config.save();
 
     final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
@@ -74,6 +80,10 @@ class MCPConfigurationTest {
     assertThat(loaded.isAllowUpdate()).isTrue();
     assertThat(loaded.isAllowDelete()).isFalse();
     assertThat(loaded.getAllowedUsers()).containsExactly("root", "admin");
+    assertThat(loaded.getPermissionsForDatabase("tenant").isAllowInsert()).isTrue();
+    assertThat(loaded.getPermissionsForDatabase("tenant").isAllowUpdate()).isFalse();
+    assertThat(loaded.getPermissionsForDatabase("tenant").isUserAllowed("admin")).isTrue();
+    assertThat(loaded.getPermissionsForDatabase("tenant").isUserAllowed("root")).isFalse();
   }
 
   @Test
@@ -128,6 +138,107 @@ class MCPConfigurationTest {
     assertThat(json.getBoolean("allowInsert")).isFalse();
     assertThat(json.getJSONArray("allowedUsers").length()).isEqualTo(1);
     assertThat(json.getJSONArray("allowedUsers").getString(0)).isEqualTo("root");
+    assertThat(json.getJSONObject("databases").length()).isZero();
+  }
+
+  @Test
+  void databaseOverrideInheritsUnspecifiedGlobalValues() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.setAllowInsert(true);
+    config.setAllowUpdate(true);
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant", new JSONObject().put("allowUpdate", false))));
+
+    final MCPPermissions tenant = config.getPermissionsForDatabase("tenant");
+    assertThat(tenant.isAllowReads()).isTrue();
+    assertThat(tenant.isAllowInsert()).isTrue();
+    assertThat(tenant.isAllowUpdate()).isFalse();
+
+    final MCPPermissions inherited = config.getPermissionsForDatabase("unconfigured");
+    assertThat(inherited.isAllowReads()).isTrue();
+    assertThat(inherited.isAllowInsert()).isTrue();
+    assertThat(inherited.isAllowUpdate()).isTrue();
+  }
+
+  @Test
+  void databaseOverrideCannotGrantPermissionsDeniedGlobally() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.setAllowReads(true);
+    config.setAllowInsert(false);
+    config.setAllowUpdate(false);
+    config.setAllowDelete(false);
+    config.setAllowSchemaChange(false);
+    config.setAllowAdmin(false);
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant", new JSONObject()
+                .put("allowReads", false)
+                .put("allowInsert", true)
+                .put("allowUpdate", true)
+                .put("allowDelete", true)
+                .put("allowSchemaChange", true)
+                .put("allowAdmin", true))));
+
+    final MCPPermissions tenant = config.getPermissionsForDatabase("tenant");
+    assertThat(tenant.isAllowReads()).isFalse();
+    assertThat(tenant.isAllowInsert()).isFalse();
+    assertThat(tenant.isAllowUpdate()).isFalse();
+    assertThat(tenant.isAllowDelete()).isFalse();
+    assertThat(tenant.isAllowSchemaChange()).isFalse();
+    assertThat(tenant.isAllowAdmin()).isFalse();
+  }
+
+  @Test
+  void databaseAllowedUsersAreAnAdditionalRestriction() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.setAllowedUsers(List.of("root", "tenant-token"));
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant", new JSONObject()
+                .put("allowedUsers", new JSONArray().put("tenant-token")))));
+
+    final MCPPermissions tenant = config.getPermissionsForDatabase("tenant");
+    assertThat(tenant.isUserAllowed("root")).isFalse();
+    assertThat(tenant.isUserAllowed("apitoken:tenant-token")).isTrue();
+
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant", new JSONObject()
+                .put("allowedUsers", new JSONArray().put("*")))));
+    assertThat(config.getPermissionsForDatabase("tenant").isUserAllowed("root")).isTrue();
+    assertThat(config.getPermissionsForDatabase("tenant").isUserAllowed("unknown")).isFalse();
+  }
+
+  @Test
+  void explicitNullClearsDatabaseOverrides() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant", new JSONObject().put("allowReads", false))));
+    assertThat(config.getPermissionsForDatabase("tenant").isAllowReads()).isFalse();
+
+    final JSONObject update = new JSONObject();
+    update.put("databases", (Object) null);
+    config.updateFrom(update);
+
+    assertThat(config.getPermissionsForDatabase("tenant").isAllowReads()).isTrue();
+    assertThat(config.toJSON().getJSONObject("databases").length()).isZero();
+  }
+
+  @Test
+  void unknownDatabaseOverrideSettingIsRejectedWithoutPartialUpdate() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("allowInsert", true)
+        .put("databases", new JSONObject()
+            .put("tenant", new JSONObject().put("allowRead", false)))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("allowRead");
+
+    assertThat(config.isAllowInsert()).isFalse();
+    assertThat(config.getPermissionsForDatabase("tenant").isAllowReads()).isTrue();
   }
 
   @Test

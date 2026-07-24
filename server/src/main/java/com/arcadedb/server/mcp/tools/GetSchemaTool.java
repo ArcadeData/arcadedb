@@ -52,14 +52,11 @@ public class GetSchemaTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    if (!config.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
-
     final String databaseName = args.getString("database");
 
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveReadableDatabase(server, user, databaseName, config);
 
-    return buildSchema(database, databaseName);
+    return buildSchema(access.database(), databaseName);
   }
 
   /**
