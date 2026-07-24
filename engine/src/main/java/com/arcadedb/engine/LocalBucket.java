@@ -325,7 +325,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   @Override
   public void deleteRecord(final RID rid) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
-    deleteRecordInternal(rid, false, false);
+    deleteRecordInternal(rid, false, false, false);
+  }
+
+  /**
+   * Force-deletes a record even when its multi-page chunk chain is structurally broken. A normal delete walks the
+   * chain to free every chunk and, on a broken link, throws {@link ConcurrentModificationException} as a retry
+   * signal (#4932) so it never orphans chunks. That guard makes a genuinely-corrupt record undeletable by every
+   * path. With {@code force=true} a broken link stops the chain walk instead of aborting: the head slot is still
+   * freed so the record finally disappears, and any chunks past the break are orphaned (a bounded space leak) to be
+   * reclaimed by compaction or a database check. Intended for admin repair (CHECK DATABASE FIX), not the hot path.
+   */
+  public void deleteRecord(final RID rid, final boolean force) {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+    deleteRecordInternal(rid, false, false, force);
   }
 
   @Override
@@ -591,7 +604,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             ++totalErrors;
             warning = "invalid record offset %d in page for record %s".formatted(recordPositionInPage, rid);
             if (fix) {
-              deleteRecordInternal(rid, true, true);
+              deleteRecordInternal(rid, true, true, true);
               deletedRecordsAfterFix.add(rid);
               ++totalDeletedRecords;
             }
@@ -613,7 +626,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 pageActiveRecords++;
                 pageMultiPageRecords++;
                 totalMultiPageRecords++;
-                recordSize[0] = page.readInt((int) (recordPositionInPage + recordSize[1]));
+
+                // Walk the continuation chain to detect a structurally broken multi-page record (a dangling or
+                // overwritten chunk pointer). check() otherwise validates only the first chunk's on-page size and
+                // would never notice a broken chain, leaving the record undeletable by every normal path because
+                // deleteRecordInternal throws the #4932 retry signal on it. On fix, force-delete it: the head slot is
+                // freed so the record finally disappears and any unreachable chunks are reclaimed later by compaction.
+                final String chainProblem = findBrokenChunkChain(rid, page, recordPositionInPage);
+                if (chainProblem != null) {
+                  ++totalErrors;
+                  warning = "broken multi-page chunk chain for record %s: %s".formatted(rid, chainProblem);
+                  if (fix) {
+                    deleteRecordInternal(rid, true, true, true);
+                    deletedRecordsAfterFix.add(rid);
+                    ++totalDeletedRecords;
+                    recordSize[0] = 0;
+                  }
+                }
+
+                if (recordSize[0] == FIRST_CHUNK)
+                  recordSize[0] = page.readInt((int) (recordPositionInPage + recordSize[1]));
               } else if (recordSize[0] == NEXT_CHUNK) {
                 totalChunks++;
                 pageChunks++;
@@ -632,7 +664,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 ++totalErrors;
                 warning = "wrong record size %d found for record %s".formatted(recordSize[1] + recordSize[0], rid);
                 if (fix) {
-                  deleteRecordInternal(rid, true, true);
+                  deleteRecordInternal(rid, true, true, true);
                   deletedRecordsAfterFix.add(rid);
                   ++totalDeletedRecords;
                 }
@@ -646,7 +678,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               warning = "unknown error on loading record %s: %s".formatted(rid, e.getMessage());
 
               if (fix && !(e instanceof RecordNotFoundException)) {
-                deleteRecordInternal(rid, true, true);
+                deleteRecordInternal(rid, true, true, true);
                 deletedRecordsAfterFix.add(rid);
                 ++totalDeletedRecords;
               }
@@ -1146,7 +1178,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
         // DELETE OLD PLACEHOLDER, A NEW PLACEHOLDER WILL BE CREATED WITH ENOUGH SPACE
-        deleteRecordInternal(placeHolderContentRID, true, false);
+        deleteRecordInternal(placeHolderContentRID, true, false, false);
 
         recordSize[0] = LONG_SERIALIZED_SIZE;
         recordSize[1] = 1L;
@@ -1311,7 +1343,92 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
-  private void deleteRecordInternal(final RID rid, final boolean deletePlaceholderContent, final boolean deleteChunks) {
+  /**
+   * Structurally walks the chunk chain of a multi-page record WITHOUT MVCC version validation to detect a broken
+   * chain: a continuation pointer to an out-of-range page, a slot that was cleaned, or a marker that is no longer
+   * {@link #NEXT_CHUNK}. Used by {@link #check(int, boolean)}, which otherwise validates only the first chunk's
+   * on-page size and would never notice a broken chain. Returns {@code null} when the chain is intact, or a short
+   * human-readable reason when it is broken. Never throws.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private String findBrokenChunkChain(final RID rid, final BasePage firstPage, final int firstRecordPositionInPage) {
+    try {
+      BasePage chunkPage = firstPage;
+      int chunkPositionInPage = firstRecordPositionInPage;
+      long[] chunkHeader = firstPage.readNumberAndSize(firstRecordPositionInPage); // [FIRST_CHUNK, headerBytes]
+      final int totalPages = getTotalPages();
+
+      // Exact loop detection: a chain can legitimately hold more chunks than the bucket has pages (chunk slots can
+      // share pages after chain reuse/fragmentation), so any count-based heuristic risks a false positive - fatal
+      // here, because check(fix) DELETES the record it flags. Revisiting a continuation pointer is the only certain
+      // loop signal.
+      final Set<Long> visitedPointers = new HashSet<>();
+
+      for (int chunkId = 0; ; ++chunkId) {
+        final long nextChunkPointer = chunkPage.readLong(
+                (int) (chunkPositionInPage + chunkHeader[1] + INT_SERIALIZED_SIZE));
+        if (nextChunkPointer == 0)
+          // REACHED THE LAST CHUNK CLEANLY
+          return null;
+
+        if (!visitedPointers.add(nextChunkPointer))
+          return "chain loop detected at chunk " + chunkId;
+
+        final int nextPageId = (int) (nextChunkPointer / maxRecordsInPage);
+        final int nextPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
+        if (nextPageId >= totalPages)
+          return "next chunk pointer out of range at chunk " + chunkId;
+
+        chunkPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), nextPageId), pageSize);
+        chunkPositionInPage = getRecordPositionInPage(chunkPage, nextPositionInPage);
+        if (chunkPositionInPage == 0)
+          return "chunk slot cleaned at chunk " + chunkId;
+
+        chunkHeader = chunkPage.readNumberAndSize(chunkPositionInPage);
+        if (chunkHeader[0] != NEXT_CHUNK)
+          return "unexpected marker at chunk " + chunkId;
+      }
+    } catch (final Exception e) {
+      return "error walking chain: " + e.getMessage();
+    }
+  }
+
+  /**
+   * Structural probe for the tolerant delete path: tells whether the record at {@code rid} is a multi-page record
+   * whose chunk chain is structurally broken. Unlike {@link #loadMultiPageRecord} this walk ignores page versions,
+   * so a transient concurrent modification never reports {@code true} - only a genuinely broken chain does. Any
+   * failure to probe (including a record that is not multi-page, or is already gone) conservatively returns
+   * {@code false}, keeping the caller on the strict retry behaviour.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  public boolean isChunkChainBroken(final RID rid) {
+    try {
+      final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
+      final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+      if (pageId >= getTotalPages())
+        return false;
+
+      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        // DELETED
+        return false;
+
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] != FIRST_CHUNK)
+        // NOT A MULTI-PAGE RECORD: A CME ON IT CANNOT COME FROM A BROKEN CHAIN
+        return false;
+
+      return findBrokenChunkChain(rid, page, recordPositionInPage) != null;
+    } catch (final Exception e) {
+      return false;
+    }
+  }
+
+  private void deleteRecordInternal(final RID rid, final boolean deletePlaceholderContent, final boolean deleteChunks,
+      final boolean force) {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
@@ -1353,7 +1470,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // FOUND PLACEHOLDER POINTER: DELETE THE PLACEHOLDER CONTENT FIRST
           final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
           try {
-            deleteRecordInternal(placeHolderContentRID, true, false);
+            deleteRecordInternal(placeHolderContentRID, true, false, force);
           } catch (RecordNotFoundException e) {
             // PARTIAL RECORD NOT FOUND
           }
@@ -1374,23 +1491,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
             final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
-            chunkPage = database.getTransaction()
-                    .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
-            chunkRecordPositionInPage = getRecordPositionInPage(chunkPage, chunkPositionInPage);
-            if (chunkRecordPositionInPage == 0)
-              // Chunk was deleted by a concurrent update — signal retry
-              throw new ConcurrentModificationException(
-                      "Multi-page record " + rid + " chunk " + chunkId + " was modified concurrently. Please retry");
+            // Resolve the next chunk. A broken link (out-of-range pointer, a slot that was cleaned, or a marker that
+            // is no longer NEXT_CHUNK) means the chain cannot be walked. Without force this is treated as a concurrent
+            // modification and rethrown as the #4932 retry signal, so a half-freed chain is never left behind. With
+            // force (admin repair) the walk stops here instead: the head slot is still freed below, and the chunks
+            // past this break are orphaned - a bounded space leak reclaimed by compaction or a later database check.
+            String chainProblem = null;
+            try {
+              if (chunkPageId >= getTotalPages())
+                chainProblem = "next chunk pointer out of range";
+              else {
+                chunkPage = database.getTransaction()
+                        .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
+                chunkRecordPositionInPage = getRecordPositionInPage(chunkPage, chunkPositionInPage);
+                if (chunkRecordPositionInPage == 0)
+                  chainProblem = "chunk slot was cleaned";
+                else {
+                  recordSize = chunkPage.readNumberAndSize(chunkRecordPositionInPage);
+                  if (recordSize[0] != NEXT_CHUNK)
+                    chainProblem = "chunk marker is not NEXT_CHUNK";
+                }
+              }
+            } catch (final IOException e) {
+              if (!force)
+                throw e;
+              chainProblem = "error reading chunk: " + e.getMessage();
+            }
 
-            recordSize = chunkPage.readNumberAndSize(chunkRecordPositionInPage);
+            if (chainProblem != null) {
+              if (!force)
+                // Chunk was modified/removed by a concurrent operation — signal retry (#4932)
+                throw new ConcurrentModificationException(
+                        "Multi-page record " + rid + " chunk " + chunkId + " was modified concurrently. Please retry");
 
-            if (recordSize[0] != NEXT_CHUNK)
-              // Chunk was overwritten by a concurrent operation — signal retry
-              throw new ConcurrentModificationException(
-                      "Multi-page record " + rid + " chunk " + chunkId + " was modified concurrently. Please retry");
+              LogManager.instance().log(this, Level.WARNING,
+                      "Force-deleting multi-page record %s with a broken chunk chain at chunk %d (%s); orphaned chunks (if "
+                              + "any) will be reclaimed by compaction or a database check.", rid, chunkId, chainProblem);
+              break;
+            }
 
             try {
-              deleteRecordInternal(new RID(fileId, nextChunkPointer), false, true);
+              deleteRecordInternal(new RID(fileId, nextChunkPointer), false, true, force);
             } catch (RecordNotFoundException e) {
               // PARTIAL RECORD NOT FOUND
             }
