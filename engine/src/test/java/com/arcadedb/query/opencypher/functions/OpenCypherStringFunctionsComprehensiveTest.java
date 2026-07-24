@@ -433,6 +433,29 @@ class OpenCypherStringFunctionsComprehensiveTest extends TestHelper {
   }
 
   @Test
+  void splitEmptyDelimiter() {
+    // Issue #5390: an empty delimiter must split into individual characters with no spurious trailing empty string.
+    ResultSet result = database.command("opencypher", "RETURN split('hello', '') AS result");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    List<String> parts = (List<String>) result.next().getProperty("result");
+    assertThat(parts).containsExactly("h", "e", "l", "l", "o");
+
+    result = database.command("opencypher", "RETURN split('a', '') AS result");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<String> single = (List<String>) result.next().getProperty("result");
+    assertThat(single).containsExactly("a");
+
+    // Empty input string still yields a single empty element (consistent with split('', ',')).
+    result = database.command("opencypher", "RETURN split('', '') AS result");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    @SuppressWarnings("unchecked")
+    final List<String> empty = (List<String>) result.next().getProperty("result");
+    assertThat(empty).containsExactly("");
+  }
+
+  @Test
   void splitNullHandling() {
     ResultSet result = database.command("opencypher", "RETURN split(null, ',') AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
