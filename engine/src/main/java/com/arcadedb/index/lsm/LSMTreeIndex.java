@@ -363,13 +363,40 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     final JSONObject json = new JSONObject();
     json.put("type", getType());
 
-    json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
+    json.put("bucket", resolveBucketNameForJSON());
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
     if (metadata.hasAnyCaseInsensitive())
       json.put("collations", metadata.collations);
     return json;
+  }
+
+  /**
+   * Best-effort bucket name for schema serialization. A healthy sub-index resolves by its associated bucket id;
+   * an orphan whose association was lost (associatedBucketId == -1, e.g. a bucket file deleted before its index,
+   * or a failed reload) is recovered from the {@code <bucketName>_<uniqueId>} naming convention so the schema
+   * still serializes - never crashing on {@code getBucketById(-1)} - and the loader can relink it. Falls back to
+   * the empty string when nothing resolves; the loader then treats the index as an orphan (bucket not found),
+   * which is exactly what it is.
+   */
+  private String resolveBucketNameForJSON() {
+    final Schema schema = getDatabase().getSchema();
+    final int bucketId = getAssociatedBucketId();
+    if (bucketId >= 0) {
+      try {
+        return schema.getBucketById(bucketId).getName();
+      } catch (final SchemaException e) {
+        // recorded id no longer exists; fall through to name-based recovery
+      }
+    }
+    final int pos = name.lastIndexOf('_');
+    if (pos > 0) {
+      final String candidate = name.substring(0, pos);
+      if (schema.existsBucket(candidate))
+        return candidate;
+    }
+    return "";
   }
 
   @Override

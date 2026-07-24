@@ -1314,6 +1314,18 @@ public class LocalSchema implements Schema {
                     + "'. Remove the association first");
         }
 
+        // Drop the dependent sub-indexes BEFORE deleting the bucket file. This ordering matters for crash
+        // consistency: these steps are not atomic, so if the process dies mid-drop the surviving on-disk state
+        // must be recoverable. Deleting the bucket file first would leave an index file whose bucket is gone -
+        // on reload that index cannot be relinked to any bucket, stays an orphan in indexMap with
+        // associatedBucketId=-1, and breaks REBUILD INDEX * (getBucketById(-1)) as well as its own toJSON().
+        // Dropping the indexes first leaves at worst a bucket with no index, which is fully recoverable with a
+        // plain REBUILD/CREATE INDEX. Both directions still need schema.json saved (finally) to be complete.
+        for (final Index idx : new ArrayList<>(indexMap.values())) {
+          if (idx.getAssociatedBucketId() == bucket.getFileId())
+            dropIndex(idx.getName());
+        }
+
         database.getPageManager().deleteFile(database, bucket.getFileId());
         try {
           database.getFileManager().dropFile(bucket.getFileId());
@@ -1323,11 +1335,6 @@ public class LocalSchema implements Schema {
         removeFile(bucket.getFileId());
 
         bucketMap.remove(bucketName);
-
-        for (final Index idx : new ArrayList<>(indexMap.values())) {
-          if (idx.getAssociatedBucketId() == bucket.getFileId())
-            dropIndex(idx.getName());
-        }
 
         return null;
 

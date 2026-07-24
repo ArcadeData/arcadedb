@@ -24,11 +24,13 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -149,6 +151,11 @@ public class RebuildIndexStatement extends DDLStatement {
       } else
         targetIndexes.add(database.getSchema().getIndexByName(name.getValue()));
 
+      // REBUILD INDEX * is a bulk repair tool: a single broken index (e.g. an orphaned sub-index whose bucket is
+      // gone) must not abort the whole sweep and leave every healthy index un-rebuilt. Record each failure, keep
+      // going, and surface the list. A named single-index rebuild keeps failing loudly (rethrown below).
+      final List<String> failedIndexes = new ArrayList<>();
+
       int stepIndex = 0;
       for (final Index idx : targetIndexes) {
         indexName = idx.getName();
@@ -177,7 +184,18 @@ public class RebuildIndexStatement extends DDLStatement {
             progress.onProgress(stepName, step, targetIndexes.size(), done, recordsTotal);
         };
 
-        buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
+        try {
+          buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
+        } catch (final Exception e) {
+          // A named single-index rebuild must still fail loudly; only the '*' sweep tolerates a broken index.
+          if (!all)
+            throw e;
+          failedIndexes.add(idx.getName());
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error on rebuilding index '%s': %s. Skipping it and continuing with the remaining indexes", e, idx.getName(),
+              e.getMessage());
+          continue;
+        }
         // COMPLETION EMISSION: small indexes (< 1024 records) never hit the throttle, and larger ones may end
         // mid-window - land the step at 100% either way.
         progress.onProgress(stepName, step, targetIndexes.size(), recordsTotal > 0 ? recordsTotal : stepDone.get(),
@@ -185,6 +203,8 @@ public class RebuildIndexStatement extends DDLStatement {
         indexList.add(idx.getName());
       }
       result.setProperty("indexes", indexList);
+      if (!failedIndexes.isEmpty())
+        result.setProperty("failedIndexes", failedIndexes);
       result.setProperty("totalIndexed", total.get());
       result.setProperty("recordsMisplaced", misplaced.get());
 
@@ -309,10 +329,46 @@ public class RebuildIndexStatement extends DDLStatement {
         }
         final IndexMetadata rebuildMetadata = indexMetadata;
 
+        final boolean typeIndexRebuild = typeName != null && idx instanceof TypeIndex;
+
+        // For a bucket sub-index, resolve its target bucket BEFORE the destructive drop below, so a truly orphaned
+        // index (its bucket gone) is reported without first being deleted. Self-heal a lost association
+        // (associatedBucketId == -1, e.g. an orphan that stayed registered in indexMap after a failed reload) from
+        // the <bucketName>_<uniqueId> naming convention - the same prefix match the schema loader uses to relink
+        // orphans - otherwise buildBucketIndex would die on getBucketById(-1) ("Bucket with id '-1' was not found").
+        final String bucketName;
+        if (typeIndexRebuild)
+          bucketName = null;
+        else {
+          final int associatedBucketId = idx.getAssociatedBucketId();
+          Bucket bucket = null;
+          if (associatedBucketId >= 0) {
+            try {
+              bucket = database.getSchema().getBucketById(associatedBucketId);
+            } catch (final SchemaException e) {
+              // recorded bucket id no longer exists; fall through to name-based recovery
+            }
+          }
+          if (bucket == null) {
+            final String idxName = idx.getName();
+            final int pos = idxName.lastIndexOf('_');
+            if (pos > 0) {
+              final String candidate = idxName.substring(0, pos);
+              if (database.getSchema().existsBucket(candidate))
+                bucket = database.getSchema().getBucketByName(candidate);
+            }
+          }
+          if (bucket == null)
+            throw new CommandExecutionException(
+                "Cannot rebuild index '" + idx.getName() + "' because its associated bucket (id=" + associatedBucketId
+                    + ") does not exist. The index is orphaned: drop it with `DROP INDEX `" + idx.getName() + "``");
+          bucketName = bucket.getName();
+        }
+
         ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
           database.getSchema().dropIndex(idx.getName());
 
-          if (typeName != null && idx instanceof TypeIndex) {
+          if (typeIndexRebuild) {
             database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
                 .withUnique(unique).withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize)
                 .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)
@@ -321,7 +377,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
           } else {
             database.getSchema()
-                .buildBucketIndex(typeName, database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
+                .buildBucketIndex(typeName, bucketName,
                     propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
                 .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
                 .withNullStrategy(nullStrategy)
