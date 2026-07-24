@@ -54,6 +54,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class GremlinTest {
   @Test
   void gremlin() {
+    // This Cypher-compiled traversal places the `p1` parameter inside choose(constant(p1)), a position the
+    // gremlin-lang (java) grammar cannot parse (TinkerPop 3.8.0 restricted parameter placement). Since
+    // GHSA-wcm5-4wjm-9wj3 the secure `java` engine no longer silently falls back to Groovy for such queries;
+    // exercising this feature requires explicitly opting into the `auto` engine (which permits the fallback).
+    GlobalConfiguration.GREMLIN_ENGINE.setValue("auto");
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
@@ -87,6 +92,7 @@ class GremlinTest {
 
     } finally {
       graph.drop();
+      GlobalConfiguration.GREMLIN_ENGINE.reset();
     }
   }
 
@@ -237,6 +243,9 @@ class GremlinTest {
 
   @Test
   void gremlinFromDatabase() {
+    // See gremlin(): the parameterized choose(constant(p1)) form is unparseable by gremlin-lang and, since
+    // GHSA-wcm5-4wjm-9wj3, requires the explicit `auto` engine instead of the silent Groovy fallback.
+    GlobalConfiguration.GREMLIN_ENGINE.setValue("auto");
     final Database database = new DatabaseFactory("./target/testgremlin").create();
     try {
 
@@ -269,6 +278,7 @@ class GremlinTest {
       if (database.isTransactionActive())
         database.rollback();
       database.drop();
+      GlobalConfiguration.GREMLIN_ENGINE.reset();
     }
   }
 

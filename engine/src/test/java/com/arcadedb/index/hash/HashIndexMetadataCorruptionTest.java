@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Diagnostics regression for the customer issue behind PR #4637 (Locstat): a corrupted hash index metadata
+ * Diagnostics regression for the customer issue behind PR #4637: a corrupted hash index metadata
  * page surfaced only as the cryptic {@code IndexException: Unsupported key type for hash index: -108} deep in
  * a search, with no indication of which index was affected or how to recover, and the corruption was never
  * detected at open time.

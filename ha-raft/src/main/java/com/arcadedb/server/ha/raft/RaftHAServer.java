@@ -35,12 +35,14 @@ import org.apache.ratis.metrics.MetricRegistryInfo;
 import org.apache.ratis.metrics.RatisMetricRegistry;
 import org.apache.ratis.metrics.impl.RatisMetricRegistryImpl;
 import org.apache.ratis.proto.RaftProtos;
+import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.SnapshotManagementRequest;
 import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.DivisionInfo;
@@ -60,8 +62,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -75,10 +79,12 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -112,6 +118,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // instead of re-inlining the "root" literal.
   static final String FORWARDED_ROOT_USER = "root";
 
+  // Timeout carried by the node-local snapshot-management requests the log compaction scheduler issues.
+  // Generous: the request is served on the state-machine updater thread, which may be busy applying a
+  // backlog, and a timeout here only skips one compaction tick.
+  private static final long SNAPSHOT_REQUEST_TIMEOUT_MS = 30_000L;
+
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
   private volatile ArcadeStateMachine      stateMachine;
@@ -136,7 +147,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
   private final    String                  clusterName;
 
-  private          RaftServer                raftServer;
+  // volatile: reassigned by the recovery path (restartRatis) and cleared by stop(), while background
+  // threads - the health monitor and, since #5345, the log compaction scheduler - read it. Every reader
+  // still copies it to a local before use so a concurrent reassignment cannot null it mid-method.
+  private volatile RaftServer                raftServer;
   private          RaftClient                raftClient;
   private          RaftProperties            raftProperties;
   private volatile RaftTransactionBroker     transactionBroker;
@@ -146,6 +160,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
   // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
   private final    ThreadPoolExecutor        stalledResyncExecutor = createStalledResyncExecutor();
+  // Runs replication-channel resets and their leadership-transfer escalation off the lag-monitor thread
+  // (issue #5346). Deliberately NOT the resync executor: a resync task blocks on HTTP to an unhealthy
+  // follower for as long as the connect timeout, and channel recovery queued behind it would be delayed by
+  // exactly the outage it exists to repair. Its rejection policy discards instead of running on the caller,
+  // so a saturated queue can never stall replica classification - the invariant the off-thread move buys.
+  private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
+  // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
+  // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
+  // is not going to.
+  private static final long                  ESCALATION_TRANSFER_TIMEOUT_MS = 10_000L;
+  // Minimum interval between two leadership-transfer escalations raised by THIS node for the SAME follower
+  // (issue #5346). ClusterMonitor's per-streak latch is wiped by clusterMonitor.reset() on every leadership
+  // acquisition, so without a node-local cooldown a follower that is permanently unreachable for a
+  // node-independent reason would bounce leadership around the healthy peers forever: each new leader would
+  // build its own appender, fail, and escalate onward. The cooldown bounds that to one transfer per healthy
+  // peer per window, after which the cluster settles on the log-and-stop path.
+  private static final long                  ESCALATION_COOLDOWN_MS = 30 * 60_000L;
+  // Last escalation timestamp per follower id, for the cooldown above. Node-local and intentionally NOT
+  // cleared on leadership change - that is precisely what makes it bound cross-node flapping.
+  private final    Map<String, Long>         lastChannelEscalationAtMs = new ConcurrentHashMap<>();
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
@@ -158,6 +192,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
   private          HealthMonitor             healthMonitor;
+  // Periodic Raft snapshot/log-purge trigger (issue #5345). Runs on every node, leader and follower
+  // alike, because each Ratis server purges its own log against its own snapshot index.
+  private          RaftLogCompactionScheduler logCompactionScheduler;
+  // Client identity and call-id sequence for the local snapshot-management requests the compaction
+  // scheduler issues. A stable ClientId keeps the requests distinguishable in Ratis's logs.
+  private final    ClientId                  snapshotClientId      = ClientId.randomId();
+  private final    AtomicLong                snapshotCallId        = new AtomicLong();
+  // Resolved Raft storage directory, cached for the free-space probes the compaction scheduler runs on
+  // every tick. Config-derived and constant for this server's lifetime.
+  private volatile File                      cachedRaftStorageDir  = null;
   // Follower-side Raft log catch-up narrative. Driven by the health-monitor tick; only active on a
   // follower with a non-trivial apply backlog (committed-but-not-yet-applied entries) and not installing
   // a snapshot.
@@ -281,9 +325,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final boolean resyncNarrative = configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING);
     final long peerUnreachableThresholdMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_UNREACHABLE_THRESHOLD);
     final long peerChannelResetDurationMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_CHANNEL_RESET_DURATION);
+    final boolean peerChannelResetEscalation = configuration.getValueAsBoolean(
+        GlobalConfiguration.HA_PEER_CHANNEL_RESET_ESCALATION);
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
         this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs, peerChannelResetDurationMs,
-        this::resetPeerReplicationChannel);
+        this::resetPeerReplicationChannel, peerChannelResetEscalation ? this::escalateWedgedPeerChannel : null);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -418,7 +464,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * touched and leadership is unchanged, so there is no flapping risk (unlike a leadership transfer).
    * <p>
    * This is the automatic, less-disruptive alternative to the manual {@code transferLeadership} lever
-   * that Gap 1 was previously left to.
+   * that Gap 1 was previously left to; when its bounded retry budget is exhausted the monitor escalates
+   * to {@link #escalateWedgedPeerChannel} (issue #5346).
+   * <p>
+   * The reset runs on {@link #stalledResyncExecutor} rather than inline: closing a channel and resolving
+   * the peer's address are both blocking operations, and the caller is the single lag-monitor thread that
+   * classifies every replica.
    */
   void resetPeerReplicationChannel(final String peerId) {
     final RaftServer server = raftServer;
@@ -429,17 +480,206 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (targetId.equals(localPeerId))
       return; // the leader keeps no appender channel to itself
 
-    // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
-    // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
-    // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
-    if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
-      LogManager.instance().log(this, Level.FINE,
-          "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and reconnect (issue #4696).",
-          peerId);
-    else
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        // Issue #5346: log what the peer name resolves to on both sides of the reset. When the channel is
+        // wedged despite healthy DNS (the reported incident), this is the evidence that distinguishes "the
+        // reset re-resolved to a new IP" from "re-resolution was never the problem".
+        final String before = resolvePeerAddresses(targetId);
+
+        // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
+        // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
+        // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
+        if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
+          LogManager.instance().log(this, Level.FINE,
+              "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and "
+                  + "reconnect (issue #4696). Resolved before=%s, after=%s.",
+              peerId, before, resolvePeerAddresses(targetId));
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Requested a replication-channel reset for follower '%s' (resolved to %s) but the Raft server RPC is not "
+                  + "proxy-based; cannot reset the channel.",
+              peerId, before);
+      });
+    } catch (final RejectedExecutionException e) {
+      // Not free: ClusterMonitor incremented channelResetCount before invoking this handler, so the dropped
+      // task still consumed one of CHANNEL_RESET_MAX_ATTEMPTS. The monitor retries on its next interval, but
+      // a run of drops can reach the escalation cap without five resets ever executing. Only reachable when
+      // several followers wedge at once (the single worker is otherwise idle and a reset is fast), which is
+      // why it is reported rather than compensated for.
       LogManager.instance().log(this, Level.WARNING,
-          "Requested a replication-channel reset for follower '%s' but the Raft server RPC is not proxy-based; cannot reset the channel.",
+          "Replication-channel recovery queue is saturated; the reset for follower '%s' was dropped and its attempt "
+              + "still counted against the retry budget.",
           peerId);
+    }
+  }
+
+  /**
+   * Resolves the peer's Raft host to its current IP addresses for diagnostics, as a single printable
+   * string. Never throws: an unresolvable or unknown peer yields a descriptive placeholder, because this
+   * is logging support and must not break the recovery path it annotates.
+   */
+  private String resolvePeerAddresses(final RaftPeerId peerId) {
+    final String rpcAddress = peerRaftAddress(peerId);
+    if (rpcAddress == null)
+      return "<unknown peer address>";
+    final String host = extractHost(rpcAddress);
+    if (host == null)
+      return "<unknown peer address>";
+    try {
+      final InetAddress[] resolved = InetAddress.getAllByName(host);
+      final StringBuilder buffer = new StringBuilder(host).append("=[");
+      for (int i = 0; i < resolved.length; i++) {
+        if (i > 0)
+          buffer.append(',');
+        buffer.append(resolved[i].getHostAddress());
+      }
+      return buffer.append(']').toString();
+    } catch (final UnknownHostException e) {
+      return host + "=<unresolvable: " + e.getMessage() + ">";
+    }
+  }
+
+  /**
+   * Terminal leader-side recovery for a follower whose replication channel is still dead after the bounded
+   * {@link GlobalConfiguration#HA_PEER_CHANNEL_RESET_DURATION} reset budget has been exhausted (issue #5346).
+   * <p>
+   * Resetting the cached proxy is only half a fix: Ratis rebuilds the channel lazily, on the appender's next
+   * send, so when the peer's {@code GrpcLogAppender} is itself wedged no send is ever attempted and the reset
+   * is a silent no-op. In the reported incident all five attempts ran with healthy DNS and open TCP, the
+   * follower stayed at {@code matchIndex = -1} for 5.5 minutes, and only restarting the leader recovered it -
+   * because a new leader builds a brand-new appender. This method performs that appender rebuild without the
+   * restart, by transferring leadership to a healthy peer.
+   * <p>
+   * The transfer target is chosen with the same rules as a manual step-down and is never the wedged follower
+   * itself. When no healthy target exists (e.g. a two-node cluster whose only follower is the wedged one, or
+   * every remaining peer is lagging) the previous behaviour is kept: log for operator intervention rather
+   * than flap leadership onto a peer that cannot serve. Runs on {@link #channelRecoveryExecutor} because the
+   * transfer blocks on network I/O and the caller is the lag-monitor thread.
+   * <p>
+   * Thread-safety: the task reads {@link ClusterMonitor} state (via {@code selectChannelEscalationTarget} ->
+   * {@code isReplicaLagging}) and the Raft configuration from the recovery thread while the lag-monitor
+   * thread mutates that state. This is the same tolerated-staleness contract the existing
+   * {@code stepDown()} path relies on - {@code replicaStates} is a {@link ConcurrentHashMap} and
+   * {@code leaderCommitIndex} is volatile - and a target chosen from a tick-old snapshot is still valid,
+   * because Ratis rejects a transfer to a peer that has since become unsuitable.
+   */
+  void escalateWedgedPeerChannel(final String peerId) {
+    if (peerId == null || raftServer == null || shutdownRequested || !isLeader())
+      return;
+
+    if (RaftPeerId.valueOf(peerId).equals(localPeerId))
+      return;
+
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        // Leadership may have moved while this task sat in the queue; a transfer from a non-leader is
+        // rejected by Ratis and would only log noise. Re-check before choosing a target so the choice is
+        // made against the configuration this node is actually leading.
+        if (shutdownRequested || !isLeader())
+          return;
+
+        final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor);
+        if (target == null) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Follower '%s' has a permanently dead replication channel and no healthy peer is eligible to take over "
+                  + "leadership; giving up automatic recovery - operator intervention is required.",
+              peerId);
+          return;
+        }
+
+        // Cooldown gate (see ESCALATION_COOLDOWN_MS): refuse to bounce leadership for the same follower again
+        // so soon. Deliberately the LAST gate, immediately before the transfer, so the window is consumed only
+        // when a transfer is actually attempted - a task dropped earlier (not leader, no eligible target) must
+        // not burn it, or a genuinely recoverable escalation would be suppressed for 30 minutes once a healthy
+        // peer rejoins.
+        if (!admitChannelEscalation(lastChannelEscalationAtMs, peerId, System.currentTimeMillis())) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Follower '%s' still has a dead replication channel, but this node already attempted a leadership transfer "
+                  + "for it within the last %dms; not escalating again - the follower is unreachable for a reason a fresh "
+                  + "appender does not fix, so operator intervention is required.",
+              peerId, ESCALATION_COOLDOWN_MS);
+          return;
+        }
+
+        final String targetId = target.getId().toString();
+        LogManager.instance().log(this, Level.WARNING,
+            "Transferring leadership to '%s' to rebuild the replication appender for wedged follower '%s' (issue #5346).",
+            targetId, peerId);
+        try {
+          // A failure below leaves the cooldown consumed, deliberately: the transfer was attempted, and a
+          // node that cannot hand off leadership would otherwise re-attempt every reset cycle. The next
+          // escalation for this follower waits out the window, or comes from another peer.
+          transferLeadership(targetId, ESCALATION_TRANSFER_TIMEOUT_MS);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Leadership transfer to '%s' to recover wedged follower '%s' failed: %s; operator intervention is required.",
+              targetId, peerId, e.getMessage());
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Unlike a reset, this is a ONE-SHOT: ClusterMonitor latches the give-up flag before invoking this
+      // handler and fires it once per unreachable streak, so a dropped escalation never re-fires for that
+      // streak. Surface it at SEVERE rather than letting the follower fall silently onto the
+      // operator-intervention path with only a generic queue-full warning.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Follower '%s' has a permanently dead replication channel but the recovery queue is saturated, so the "
+              + "leadership-transfer escalation was dropped and will not be retried for this outage; operator "
+              + "intervention is required.",
+          peerId);
+    }
+  }
+
+  /**
+   * Admits or refuses a leadership-transfer escalation for {@code peerId} at {@code now}, recording the
+   * timestamp when it admits (issue #5346). Returns {@code true} at most once per
+   * {@link #ESCALATION_COOLDOWN_MS} per follower.
+   * <p>
+   * This is what bounds cross-node leadership flapping. {@link ClusterMonitor}'s per-streak latch cannot do
+   * it: {@code clusterMonitor.reset()} wipes every replica's channel state on each leadership acquisition
+   * (issue #4841), so each new leader would otherwise arrive with a fresh escalation budget and hand the
+   * problem on to the next peer indefinitely. Because this map is node-local and survives leadership
+   * changes, a permanently unreachable follower costs at most one transfer per healthy peer per window and
+   * then settles on the operator-intervention path.
+   * <p>
+   * Package-private so the cooldown can be unit-tested without a live cluster.
+   */
+  static boolean admitChannelEscalation(final Map<String, Long> lastEscalationAtMs, final String peerId,
+      final long now) {
+    // Compare-and-set rather than get-then-put: today the only caller is the single-worker
+    // channelRecoveryExecutor, but relying on that invariant would silently allow a double transfer if a
+    // future caller escalates from another thread.
+    while (true) {
+      final Long last = lastEscalationAtMs.putIfAbsent(peerId, now);
+      if (last == null)
+        return true; // first escalation for this follower
+      if (now - last < ESCALATION_COOLDOWN_MS)
+        return false; // inside the window
+      if (lastEscalationAtMs.replace(peerId, last, now))
+        return true;
+      // Lost the race against a concurrent escalation for the same follower: re-read and re-decide.
+    }
+  }
+
+  /**
+   * Picks the peer that should receive leadership when {@code wedgedPeerId}'s replication channel is
+   * unrecoverable (issue #5346), or {@code null} when none is eligible.
+   * <p>
+   * Delegates the eligibility rules to {@link #selectStepDownTargets} (excludes this node, priority-0
+   * witnesses while real voters exist, and lagging followers; ordered strongest-first) and additionally
+   * excludes the wedged follower. That exclusion is the point of the escalation: the wedged peer is
+   * exactly the node that cannot be reached, so promoting it would trade a dead replication channel for a
+   * dead cluster. It is normally filtered as lagging already, but a follower wedged at a high water mark
+   * can present a small lag, so the exclusion is explicit rather than incidental.
+   * <p>
+   * Package-private and static so the selection can be unit-tested without a live cluster.
+   */
+  static RaftPeer selectChannelEscalationTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final String wedgedPeerId, final ClusterMonitor clusterMonitor) {
+    for (final RaftPeer candidate : selectStepDownTargets(livePeers, localPeerId, clusterMonitor))
+      if (!candidate.getId().toString().equals(wedgedPeerId))
+        return candidate;
+    return null;
   }
 
   /**
@@ -458,6 +698,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
     }
     return false;
+  }
+
+  /**
+   * Single-worker pool for replication-channel recovery (issue #5346). Unlike the resync executor it must
+   * never run a task on the caller, which is the lag-monitor thread that classifies every replica: a
+   * blocking DNS lookup or a 10 s leadership transfer there would defeat the point of moving the work
+   * off-thread. It therefore keeps the default abort policy and each submitter decides what a rejection
+   * means for it - see {@link #resetPeerReplicationChannel} (free to drop, retried next interval) and
+   * {@link #escalateWedgedPeerChannel} (a one-shot, so a drop must be surfaced to the operator).
+   */
+  private static ThreadPoolExecutor createChannelRecoveryExecutor() {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(32), r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-channel-recovery");
+      t.setDaemon(true);
+      return t;
+    });
+    executor.allowCoreThreadTimeOut(true);
+    return executor;
   }
 
   private static ThreadPoolExecutor createStalledResyncExecutor() {
@@ -633,6 +892,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
         divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold);
     this.healthMonitor.start();
+
+    // Periodic snapshot/log-purge trigger (issue #5345). Started on every node, not only the leader:
+    // Ratis purges each server's own log against that server's own snapshot index, so a follower whose
+    // snapshot index never advances fills its volume even while the leader stays healthy.
+    final long snapshotInterval = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INTERVAL);
+    final long snapshotMinEntries = configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_MIN_ENTRIES);
+    final int raftStorageMinFreeSpacePerc = configuration.getValueAsInteger(
+        GlobalConfiguration.HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC);
+    this.logCompactionScheduler = new RaftLogCompactionScheduler(new RaftLogCompactionTarget(), snapshotInterval,
+        snapshotMinEntries, raftStorageMinFreeSpacePerc);
+    this.logCompactionScheduler.start();
+
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING))
       this.resyncProgressTracker = new FollowerResyncProgressTracker(
           configuration.getValueAsLong(GlobalConfiguration.HA_RESYNC_PROGRESS_INTERVAL),
@@ -1043,8 +1314,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       healthMonitor.stop();
       healthMonitor = null;
     }
+    if (logCompactionScheduler != null) {
+      logCompactionScheduler.stop();
+      logCompactionScheduler = null;
+    }
     stopLagMonitor();
     stalledResyncExecutor.shutdownNow();
+    channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
       transactionBroker.stop();
       transactionBroker = null;
@@ -2384,6 +2660,105 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean isExplicitlyConfigured(final ContextConfiguration configuration, final GlobalConfiguration key) {
     return configuration.hasValue(key.getKey()) || System.getProperty(key.getKey()) != null;
+  }
+
+  /**
+   * Binds {@link RaftLogCompactionScheduler} to this server's Ratis instance and Raft storage volume
+   * (issue #5345). Kept as an inner class so the scheduler itself stays free of Ratis and filesystem
+   * details and can be unit-tested against a fake.
+   */
+  private final class RaftLogCompactionTarget implements RaftLogCompactionScheduler.CompactionTarget {
+
+    @Override
+    public boolean isShutdownRequested() {
+      return shutdownRequested;
+    }
+
+    @Override
+    public long triggerSnapshot(final long creationGap) {
+      return takeLocalSnapshot(creationGap);
+    }
+
+    @Override
+    public long getRaftStorageUsableSpaceBytes() {
+      final File dir = raftStorageVolume();
+      return dir != null ? dir.getUsableSpace() : -1L;
+    }
+
+    @Override
+    public long getRaftStorageTotalSpaceBytes() {
+      final File dir = raftStorageVolume();
+      return dir != null ? dir.getTotalSpace() : -1L;
+    }
+
+    @Override
+    public String getRaftStorageDescription() {
+      final File dir = raftStorageVolume();
+      return dir != null ? dir.getAbsolutePath() : "<unknown>";
+    }
+
+    /**
+     * The Raft storage directory, or its nearest existing ancestor. {@code File.getUsableSpace()}
+     * returns 0 for a path that does not exist, which would otherwise read as "disk full" during the
+     * window between server start and Ratis creating the directory.
+     * <p>
+     * The configured directory itself is resolved once and cached: {@code resolveRaftStorageDir} is
+     * config-derived and constant for the server's lifetime, and re-running its {@code exists()} probes
+     * on every tick is pointless I/O. The ancestor walk stays per-call because its result legitimately
+     * changes once Ratis creates the directory.
+     */
+    private File raftStorageVolume() {
+      File dir = cachedRaftStorageDir;
+      if (dir == null) {
+        dir = getRaftStorageDir();
+        cachedRaftStorageDir = dir;
+      }
+      while (dir != null && !dir.exists())
+        dir = dir.getParentFile();
+      return dir;
+    }
+  }
+
+  /**
+   * Package-private test hook: a compaction target bound to this server, so an integration test can
+   * assert the free-space probe resolves a real volume without reaching into the scheduler's thread.
+   */
+  RaftLogCompactionScheduler.CompactionTarget newCompactionTargetForTesting() {
+    return new RaftLogCompactionTarget();
+  }
+
+  /**
+   * Asks the local Ratis server to create a snapshot, which is what authorises it to purge log
+   * segments up to the new snapshot index ({@code arcadedb.ha.logPurgeUptoSnapshot}). This is a
+   * node-local admin operation - it is valid on the leader and on followers alike, and does not
+   * replicate.
+   * <p>
+   * Ratis completes the request as a no-op when fewer than {@code creationGap} entries have been
+   * applied since the last snapshot, and rejects it while a snapshot install is in progress.
+   *
+   * @return the resulting snapshot index, or -1 when no snapshot was taken
+   */
+  long takeLocalSnapshot(final long creationGap) {
+    final RaftServer server = raftServer;
+    if (server == null || shutdownRequested)
+      return -1L;
+    if (server.getLifeCycleState() != LifeCycle.State.RUNNING)
+      return -1L;
+
+    try {
+      final RaftClientReply reply = server.snapshotManagement(
+          SnapshotManagementRequest.newCreate(snapshotClientId, localPeerId, raftGroup.getGroupId(),
+              snapshotCallId.incrementAndGet(), SNAPSHOT_REQUEST_TIMEOUT_MS, creationGap));
+      if (reply == null || !reply.isSuccess()) {
+        LogManager.instance().log(this, Level.FINE, "Local Raft snapshot request was not successful: %s", reply);
+        return -1L;
+      }
+      return reply.getLogIndex();
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not take a local Raft snapshot to compact the log: %s", e.getMessage());
+      return -1L;
+    }
   }
 
   /**

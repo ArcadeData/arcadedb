@@ -41,6 +41,12 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -100,6 +106,7 @@ public class PostgresNetworkExecutor extends Thread {
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
   private final boolean                     DEBUG                 = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
+  private final boolean                     QUOTED_IDENTIFIERS    = GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS.getValueAsBoolean();
   private final Map<String, Object>         connectionProperties  = new HashMap<>();
   private final Set<String>                 ignoreQueriesAppNames = new HashSet<>(//
       List.of("dbvis", "Database Navigator - Pool"));
@@ -841,7 +848,13 @@ public class PostgresNetworkExecutor extends Thread {
       return null;
     }
 
-    // Try to extract the type name from the query
+    // Prefer the parsed statement: it resolves the FROM target reliably, including the subquery
+    // wrapper Spark uses for its schema probe (issue #5368)
+    final SelectStatement select = parseSelectStatement(query);
+    if (select != null)
+      return getColumnsFromSelect(select);
+
+    // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
     // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
     final String upperQuery = query.toUpperCase();
     final int fromIndex = upperQuery.indexOf(" FROM ");
@@ -866,6 +879,40 @@ public class PostgresNetworkExecutor extends Thread {
       return null; // Schema queries have different structure
     }
 
+    return getColumnsFromType(typeName);
+  }
+
+  /**
+   * Resolves the columns announced by a parsed SELECT. The FROM target is either a type, whose columns are
+   * discovered from a sample row or from the declared schema, or a nested subquery, resolved recursively so
+   * that a probe like {@code SELECT * FROM (SELECT name FROM Character) SPARK_GEN_SUBQ_0 WHERE 1=0} (the
+   * shape Spark generates, issue #5368) exposes what the innermost query really projects. Each level then
+   * narrows the columns with its own projection list.
+   */
+  private Map<String, PostgresType> getColumnsFromSelect(final SelectStatement select) {
+    final FromClause target = select.getTarget();
+    final FromItem item = target != null ? target.getItem() : null;
+    if (item == null)
+      return null;
+
+    Map<String, PostgresType> columns = null;
+    if (item.getStatement() instanceof SelectStatement subQuery)
+      columns = getColumnsFromSelect(subQuery);
+    else if (item.getIdentifier() != null)
+      columns = getColumnsFromType(item.getIdentifier().getStringValue());
+
+    if (columns == null || columns.isEmpty())
+      return columns;
+
+    return applyProjection(select.getProjection(), columns);
+  }
+
+  /**
+   * Discovers the columns of a type from a sample row (ArcadeDB is schema-less, so actual data may carry
+   * dynamically-added properties) or, when the type is empty, from the declared properties plus the system
+   * columns. Returns null when the name does not identify a type.
+   */
+  private Map<String, PostgresType> getColumnsFromType(final String typeName) {
     try {
       // First verify the type exists
       final DocumentType docType = database.getSchema().getType(typeName);
@@ -877,7 +924,7 @@ public class PostgresNetworkExecutor extends Thread {
       // Use LIMIT 1 to minimize overhead
       // Use sendSuspendedOnLimit=false because this is an internal query for schema discovery,
       // not a client-initiated query that should send protocol messages
-      final String sampleQuery = "SELECT FROM " + typeName + " LIMIT 1";
+      final String sampleQuery = "SELECT FROM `" + typeName + "` LIMIT 1";
       final ResultSet resultSet = database.query("sql", sampleQuery, server.getConfiguration());
       final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1, false);
 
@@ -886,8 +933,8 @@ public class PostgresNetworkExecutor extends Thread {
         final Map<String, PostgresType> cols = getColumns(sampleRows);
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO,
-              "PSQL: getColumnsFromQuerySchema('%s') -> type=%s, sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
-              query, typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().threadId());
+              "PSQL: getColumnsFromType('%s') -> sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
+              typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().threadId());
         return cols;
       }
 
@@ -913,8 +960,68 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (Exception e) {
       if (DEBUG)
-        LogManager.instance().log(this, Level.WARNING, "PSQL: failed to get columns from schema for query '%s': %s",
-            query, e.getMessage());
+        LogManager.instance().log(this, Level.WARNING, "PSQL: failed to get columns from schema for type '%s': %s",
+            typeName, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Narrows the columns discovered for the queried target down to what the query really projects. The
+   * discovery always looks at the whole target (a sample row or the declared properties), so without this
+   * step a probe like {@code SELECT name FROM Character WHERE 1=0} would advertise every property plus the
+   * system columns (issue #5367). The projection comes from the parsed statement instead of the raw text so
+   * aliases, functions and expressions are handled the same way the executor handles them. When the query has
+   * no projection ({@code SELECT FROM Type}), the full column set is returned unchanged.
+   */
+  private Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
+    if (columns == null || columns.isEmpty())
+      return columns;
+
+    if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
+      return columns;
+
+    final Map<String, PostgresType> projected = new LinkedHashMap<>();
+    for (final ProjectionItem item : projection.getItems()) {
+      if (item.isAll()) {
+        // "*" expands to every column discovered for the type
+        projected.putAll(columns);
+        continue;
+      }
+
+      final String alias = item.getProjectionAliasAsString();
+      if (alias == null)
+        // cannot tell what this item produces: rather than announce a wrong set, keep the full one
+        return columns;
+
+      if (item.exclude) {
+        projected.remove(alias);
+        continue;
+      }
+
+      // resolve the type from the projected expression when it is a plain property, else from the alias itself
+      final String source = item.getExpression() != null ? item.getExpression().toString() : null;
+      PostgresType type = source != null ? columns.get(source) : null;
+      if (type == null)
+        type = columns.getOrDefault(alias, PostgresType.VARCHAR);
+
+      projected.put(alias, type);
+    }
+
+    return projected.isEmpty() ? columns : projected;
+  }
+
+  /**
+   * Parses the query with the ArcadeDB SQL parser, returning null when it is not a parsable SELECT.
+   */
+  private SelectStatement parseSelectStatement(final String query) {
+    try {
+      final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+      final Statement statement = sqlEngine.parse(query, (DatabaseInternal) database);
+      return statement instanceof SelectStatement select ? select : null;
+    } catch (final Exception e) {
+      if (DEBUG)
+        LogManager.instance().log(this, Level.WARNING, "PSQL: cannot parse query '%s': %s", query, e.getMessage());
       return null;
     }
   }
@@ -1892,7 +1999,19 @@ public class PostgresNetworkExecutor extends Thread {
       queryText = query.substring(matcher.end()).trim();
     }
 
+    if (QUOTED_IDENTIFIERS && ("sql".equals(language) || "sqlscript".equals(language)) && !isSessionCommand(queryText))
+      // POSTGRES CLIENTS QUOTE IDENTIFIERS WITH DOUBLE QUOTES, WHILE ARCADEDB SQL USES BACK-TICKS (ISSUE #5369)
+      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText);
+
     return new Query(language, queryText);
+  }
+
+  /**
+   * Session commands such as {@code SET search_path TO "$user", public} are handled by the protocol itself and never
+   * reach the SQL engine, so their double quotes must be left alone.
+   */
+  private static boolean isSessionCommand(final String queryText) {
+    return queryText.regionMatches(true, 0, "SET ", 0, 4) || queryText.regionMatches(true, 0, "SHOW ", 0, 5);
   }
 
   private void emptyQueryResponse() {

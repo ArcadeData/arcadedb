@@ -140,8 +140,8 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
     logger.info("Total time: {} minutes", Duration.between(startedAt, finishedAt).toMinutes());
 
     Awaitility.await()
-        .atMost(1, TimeUnit.MINUTES)
-        .pollInterval(5, TimeUnit.SECONDS)
+        .atMost(2, TimeUnit.MINUTES)
+        .pollInterval(10, TimeUnit.SECONDS)
         .until(() -> {
           try {
             final long users1 = db1.countUsers();
@@ -152,7 +152,10 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
             final long photos3 = db3.countPhotos();
             logger.info("Final check - Users: {} / {} / {} | Photos: {} / {} / {}", users1, users2, users3, photos1, photos2,
                 photos3);
-            return users1 == users2 && users1 == users3 && photos1 == photos2 && photos1 == photos3;
+            return users1 == users2 &&
+                users1 == users3 &&
+                photos1 == photos2 &&
+                photos1 == photos3;
           } catch (final RemoteException e) {
             // Transient: a node has not caught up or a connection blip - keep polling.
             logger.debug("Quorum recovery check transient failure: {}", e.getMessage());
@@ -166,7 +169,7 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
         });
 
     Metrics.globalRegistry.getMeters().forEach(meter ->
-      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure()));
+        logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure()));
 
     db1.assertThatUserCountIs(expectedUsersCount);
     db1.assertThatPhotoCountIs(expectedPhotoCount);

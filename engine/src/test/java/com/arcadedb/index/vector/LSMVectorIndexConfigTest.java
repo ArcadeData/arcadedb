@@ -133,4 +133,54 @@ class LSMVectorIndexConfigTest extends TestHelper {
       assertThat(lsm.getMetadata().idPropertyName).isEqualTo("docId");
     });
   }
+
+  /**
+   * Issue #5352: {@code maxConnections} is JVector's Vamana per-layer degree (applied verbatim to the base
+   * layer, not doubled like hnswlib's {@code M}). The default was raised from 16 to 32 so out-of-the-box
+   * density matches hnswlib {@code M=16} (2*16) and recall no longer silently lands at half the intended
+   * graph density. This test pins the new default across the builder path so a future regression is caught.
+   */
+  @Test
+  void defaultMaxConnectionsIsThirtyTwoIssue5352() {
+    database.transaction(() -> {
+      final DocumentType docType = database.getSchema().createDocumentType("DocDefault");
+      docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+      database.getSchema()
+          .buildTypeIndex("DocDefault", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(DIMENSIONS)
+          .withSimilarity("COSINE")
+          .create();
+
+      final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName("DocDefault[embedding]");
+      final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
+      assertThat(lsm.getMetadata().maxConnections).isEqualTo(32);
+      assertThat(lsm.getMaxConnections()).isEqualTo(32);
+    });
+  }
+
+  /**
+   * Issue #5352: the same default (32) must apply through the SQL {@code CREATE INDEX ... METADATA} path when
+   * {@code maxConnections} is omitted, and an explicit value must still win.
+   */
+  @Test
+  void defaultMaxConnectionsIsThirtyTwoViaSqlIssue5352() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("DocSqlDefault").createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.command("sql",
+          "CREATE INDEX ON DocSqlDefault (embedding) LSM_VECTOR METADATA {dimensions: " + DIMENSIONS + ", similarity: 'COSINE'}");
+
+      final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName("DocSqlDefault[embedding]");
+      assertThat(((LSMVectorIndex) idx.getIndexesOnBuckets()[0]).getMetadata().maxConnections).isEqualTo(32);
+
+      database.getSchema().createDocumentType("DocSqlExplicit").createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.command("sql",
+          "CREATE INDEX ON DocSqlExplicit (embedding) LSM_VECTOR METADATA {dimensions: " + DIMENSIONS
+              + ", similarity: 'COSINE', maxConnections: 48}");
+
+      final TypeIndex explicit = (TypeIndex) database.getSchema().getIndexByName("DocSqlExplicit[embedding]");
+      assertThat(((LSMVectorIndex) explicit.getIndexesOnBuckets()[0]).getMetadata().maxConnections).isEqualTo(48);
+    });
+  }
 }

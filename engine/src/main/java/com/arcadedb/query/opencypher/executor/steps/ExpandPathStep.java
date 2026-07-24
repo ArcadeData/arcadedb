@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -59,6 +60,8 @@ public class ExpandPathStep extends AbstractExecutionStep {
   private final boolean useBFS;
   private final PathMode pathMode;
   private final Set<String> previousStepVariables;
+  private final Direction directionOverride;
+  private final boolean reverseResultPath;
 
   /**
    * Creates an expand path step.
@@ -104,6 +107,14 @@ public class ExpandPathStep extends AbstractExecutionStep {
       final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
       final NodePattern targetNodePattern, final PathMode pathMode, final Set<String> previousStepVariables,
       final CommandContext context) {
+    this(sourceVariable, pathVariable, relationshipVariable, targetVariable, pattern, useBFS,
+        targetNodePattern, pathMode, previousStepVariables, null, false, context);
+  }
+
+  public ExpandPathStep(final String sourceVariable, final String pathVariable, final String relationshipVariable,
+      final String targetVariable, final RelationshipPattern pattern, final boolean useBFS,
+      final NodePattern targetNodePattern, final PathMode pathMode, final Set<String> previousStepVariables,
+      final Direction directionOverride, final boolean reverseResultPath, final CommandContext context) {
     super(context);
 
     if (!pattern.isVariableLength())
@@ -118,6 +129,8 @@ public class ExpandPathStep extends AbstractExecutionStep {
     this.useBFS = useBFS;
     this.pathMode = pathMode;
     this.previousStepVariables = previousStepVariables;
+    this.directionOverride = directionOverride;
+    this.reverseResultPath = reverseResultPath;
   }
 
   /**
@@ -186,8 +199,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
               if (context.isProfiling())
                 rowCount++;
 
-              final TraversalPath path = currentPaths.next();
-              final Vertex targetVertex = path.getEndVertex();
+              final TraversalPath traversedPath = currentPaths.next();
+              final Vertex targetVertex = traversedPath.getEndVertex();
+              final TraversalPath path = reverseResultPath ? traversedPath.reversed() : traversedPath;
 
               // Filter by target node label if specified
               if (targetNodePattern != null && targetNodePattern.hasLabels()) {
@@ -286,14 +300,16 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
     final Map<String, Object> props = pattern.hasProperties() ? pattern.getProperties() : null;
 
+    final Direction direction = directionOverride != null ? directionOverride : pattern.getDirection();
+
     if (pathMode != null)
       return new VariableLengthPathTraverser(
-          pattern.getDirection(), types, props,
+          direction, types, props,
           pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
           true, useBFS, pathMode);
 
     return new VariableLengthPathTraverser(
-        pattern.getDirection(), types, props,
+        direction, types, props,
         pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
         true, useBFS);
   }

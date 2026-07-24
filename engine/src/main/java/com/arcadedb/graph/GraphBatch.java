@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
@@ -25,6 +26,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
@@ -268,9 +270,27 @@ public class GraphBatch implements AutoCloseable {
     savedReadYourWrites = database.isReadYourWrites();
     database.setReadYourWrites(false);
 
-    // Save WAL settings (per-transaction, so we apply them in beginTx())
-    savedUseWAL = true; // default
-    savedWALFlush = WALFile.FlushType.YES_NOMETADATA; // default
+    // Save WAL settings (per-transaction, so we apply them in beginTx()).
+    // Issue #5378: the TransactionContext is reused across transactions on the same thread, so the relaxed
+    // policy applied during the import would otherwise stick forever and silently downgrade the durability
+    // contract of every later transaction. Capture the values actually in effect (which the context
+    // initialized from arcadedb.txWAL / arcadedb.txWalFlush, unless the application overrode them) and put
+    // exactly those back on close(). The current thread may have never run a transaction (e.g. an HTTP
+    // worker thread in PostBatchHandler), in which case no context exists yet and the configured defaults
+    // are exactly what a fresh context would initialize from.
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      savedUseWAL = tx.isUseWAL();
+      savedWALFlush = tx.getWALFlush();
+    } else {
+      savedUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
+      savedWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+    }
+
+    if (savedUseWAL != this.useWAL || savedWALFlush != this.walFlush)
+      LogManager.instance().log(this, Level.INFO,
+          "GraphBatch: relaxing durability for the bulk load (useWAL %s->%s, walFlush %s->%s); the previous settings are "
+              + "restored on close()", savedUseWAL, this.useWAL, savedWALFlush, this.walFlush);
   }
 
   /**
@@ -895,16 +915,18 @@ public class GraphBatch implements AutoCloseable {
       flushFailure = e;
     }
 
-    // Connect all deferred incoming edges in one sorted pass
-    if (bidirectional && inEdgeCount > 0)
-      connectDeferredIncomingEdges();
+    try {
+      // Connect all deferred incoming edges in one sorted pass
+      if (bidirectional && inEdgeCount > 0)
+        connectDeferredIncomingEdges();
 
-    // Batch-update all vertex head chunk pointers in one pass
-    if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
-      batchUpdateVertexHeadChunks();
-
-    // Restore database settings
-    database.setReadYourWrites(savedReadYourWrites);
+      // Batch-update all vertex head chunk pointers in one pass
+      if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
+        batchUpdateVertexHeadChunks();
+    } finally {
+      // Restore database settings, even on an exceptional exit (issue #5378)
+      restoreDatabaseSettings();
+    }
 
     LogManager.instance().log(this, Level.INFO,
         "GraphBatch closed: vertices=%d edges=%d flushes=%d avgFlushMs=%.1f",
@@ -913,6 +935,25 @@ public class GraphBatch implements AutoCloseable {
 
     if (flushFailure != null)
       throw flushFailure;
+  }
+
+  /**
+   * Puts back the database/transaction settings relaxed for the bulk load. The WAL policy is per-transaction
+   * but the {@code TransactionContext} is reused across transactions on the same thread, so failing to restore
+   * it here would silently downgrade the durability of every later transaction on this thread (issue #5378).
+   */
+  private void restoreDatabaseSettings() {
+    database.setReadYourWrites(savedReadYourWrites);
+
+    // If the thread still has no TransactionContext (the batch never began a transaction), nothing leaked.
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      tx.setUseWAL(savedUseWAL);
+      tx.setWALFlush(savedWALFlush);
+    }
+
+    LogManager.instance().log(this, Level.FINE, "GraphBatch: restored WAL settings useWAL=%s walFlush=%s", savedUseWAL,
+        savedWALFlush);
   }
 
   /**

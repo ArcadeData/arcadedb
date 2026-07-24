@@ -31,7 +31,7 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression coverage for issue #579 (Locstat targeted-recovery Step 1).
+ * Regression coverage for issue #579 (targeted-recovery Step 1).
  * <p>
  * The recovery plan sent to the client assumed that stopping two of three cluster nodes and
  * starting the third ("arcadesplit-0") <em>alone</em> would let it self-promote to leader, because

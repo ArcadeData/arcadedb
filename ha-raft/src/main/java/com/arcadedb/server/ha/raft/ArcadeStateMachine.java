@@ -376,6 +376,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
         });
       }
       lastAppliedIndex.set(snapshotIndex);
+      // If the on-disk marker carries an inflated term (issues #575, #593), this seed records it as-is
+      // (the previous applied TermIndex is null here, so no violation is possible) and the first
+      // re-applied entry realigns it via the tolerant updateLastAppliedTermIndex override. The stale
+      // snapshot.<inflatedTerm>_<index> filename persists across restarts until the next snapshot
+      // rolls it over: cosmetic, expected.
       updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
     } else
       lastAppliedIndex.set(-1);
@@ -393,6 +398,89 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public StateMachineStorage getStateMachineStorage() {
     return storage;
+  }
+
+  /**
+   * Ratis's {@link BaseStateMachine} enforces a strict, term-first monotonic invariant on
+   * {@code lastAppliedTermIndex}: every update must be {@code >=} the previous one, comparing TERM
+   * before INDEX. When the invariant is violated it halts the {@code StateMachineUpdater} thread,
+   * which on ArcadeDB crash-loops the whole node and wedges leader election for the entire cluster.
+   * <p>
+   * One violation is <b>benign and must be tolerated</b>: a follower-installed snapshot can seed an
+   * inflated applied TERM. {@link #notifyInstallSnapshotFromLeader} records the term of the first log
+   * entry AFTER the snapshot as the snapshot's term, but that entry is not yet in the follower's log
+   * at install time and a later leadership-change reconciliation can settle it on a LOWER term. When
+   * Ratis then applies the real next committed entry, its {@code index} advances (genuine forward
+   * progress) while its {@code term} is lower than the over-recorded snapshot term - tripping the
+   * invariant even though nothing is actually wrong (issues #575, #593: a production cluster stuck with
+   * all nodes {@code VOTING_FOR_ME} after {@code snapshot.11_39707283} vs a term-10 entry at
+   * 39707284).
+   * <p>
+   * A committed Raft log never has a strictly lower term at a strictly higher index, so this exact
+   * shape - index up, term down - cannot represent a genuine log inconsistency; it only arises from an
+   * over-recorded snapshot term. We therefore realign the recorded term downward (via Ratis's own
+   * unchecked {@link #setLastAppliedTermIndex}) and continue, logging a WARNING so operators still see
+   * it. Every other ordering (index not advancing, or term not regressing) is delegated to
+   * {@code super} unchanged, so real invariant violations still fail loudly.
+   * <p>
+   * This also makes recovery from an already-inflated on-disk marker automatic: on restart,
+   * {@link #reinitialize()} seeds the inflated term while the previous applied TermIndex is still
+   * {@code null} (no violation possible), and the first re-applied entry then takes the tolerant
+   * branch above - the node self-heals without any manual marker rename. The stale marker filename
+   * is cosmetic and is replaced by the next snapshot.
+   */
+  @Override
+  protected boolean updateLastAppliedTermIndex(final TermIndex newTI) {
+    final TermIndex oldTI = getLastAppliedTermIndex();
+    if (isBenignSnapshotTermRegression(oldTI, newTI)) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Tolerating applied-term realignment %s -> %s: the index advances (real progress) but the term "
+              + "regressed from an over-recorded snapshot term; accepting the correction instead of halting "
+              + "the state machine (issues #575, #593)", oldTI, newTI);
+      // Mirrors BaseStateMachine's advancing-update path (store + return true) but without the strict
+      // term-first assertion. Verified against the Ratis 3.2.2 source, which reads:
+      //
+      //   final TermIndex oldTI = lastAppliedTermIndex.getAndSet(newTI);
+      //   if (!newTI.equals(oldTI)) {
+      //     ... Preconditions.assertTrue(newTI.compareTo(oldTI) >= 0, ...);
+      //     return true;                                    // advancing path: NO future completion
+      //   }
+      //   synchronized (transactionFutures) { ... complete(null) ... }  // ONLY the equal/no-op path
+      //
+      // i.e. super completes pending queryStale() futures only on the no-op path (newTI equals oldTI),
+      // never on an advancing update, so this branch has no bookkeeping to replicate: the pending
+      // futures complete on the next duplicate update, which is not a benign regression and therefore
+      // delegates to super (pinned by the pendingStaleQueryFuture... regression test).
+      // RE-VERIFY THIS on any Ratis upgrade.
+      //
+      // The read-then-set is not atomic (super uses a single getAndSet) but cannot interleave: of the
+      // three call sites, applyTransaction runs on the single StateMachineUpdater thread, and both
+      // snapshot seeds run while that thread is not applying entries - reinitialize() is invoked by
+      // the updater itself (startup or reload() while PAUSED) and notifyInstallSnapshotFromLeader
+      // pauses the state machine for the install.
+      setLastAppliedTermIndex(newTI);
+      return true;
+    }
+    return super.updateLastAppliedTermIndex(newTI);
+  }
+
+  /**
+   * Returns {@code true} for the one applied-term-index transition ArcadeDB tolerates over Ratis's
+   * strict monotonic check: the {@code index} strictly advances while the {@code term} strictly
+   * regresses - the fingerprint of an over-recorded (inflated) snapshot term being corrected by the
+   * real next committed entry (issues #575, #593). All other transitions return {@code false} and stay
+   * subject to Ratis's invariant enforcement. Package-private and static for direct unit testing.
+   * <p>
+   * SAFETY PRECONDITION: this shape is provably benign only because every caller feeds either COMMITTED
+   * log entries (a committed Raft log never carries a strictly lower term at a strictly higher index) or
+   * the lifecycle-serialized snapshot seed. Never route synthetic or uncommitted TermIndex values
+   * through {@code updateLastAppliedTermIndex}: a genuine bug with this exact shape would be silently
+   * tolerated (WARNING only) instead of failing loudly.
+   */
+  static boolean isBenignSnapshotTermRegression(final TermIndex oldTI, final TermIndex newTI) {
+    return oldTI != null && newTI != null
+        && newTI.getIndex() > oldTI.getIndex()
+        && newTI.getTerm() < oldTI.getTerm();
   }
 
   /**

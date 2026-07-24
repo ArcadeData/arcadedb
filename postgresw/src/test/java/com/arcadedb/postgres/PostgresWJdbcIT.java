@@ -39,6 +39,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -140,10 +141,12 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
         var rs = st.executeQuery("{sql}select from schema:types");
         while (rs.next()) {
-          if (rs.getArray("properties").getResultSet().next()) {
-            ResultSet props = rs.getArray("properties").getResultSet();
-            assertThat(props.next()).isTrue();
-            assertThat(new JSONObject(props.getString("value")).getString("type")).isEqualTo("LONG");
+          // A list of documents travels as a json array, a map as a json object (issue #5366).
+          final String properties = rs.getString("properties");
+          if (properties.startsWith("[")) {
+            final JSONArray props = new JSONArray(properties);
+            if (!props.isEmpty())
+              assertThat(props.getJSONObject(0).getString("type")).isEqualTo("LONG");
           }
         }
 
@@ -576,10 +579,11 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         try (var rs = st.executeQuery("SELECT * FROM article ORDER BY id")) {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getString("title")).isEqualTo("My first article");
-          //comments is an array of embedded docs on first row
-          ResultSet comments = rs.getArray("comment").getResultSet();
-          assertThat(comments.next()).isTrue();
-          assertThat(new JSONObject(comments.getString("value")).getString("content")).isEqualTo("This is a comment");
+          //comments is an array of embedded docs on first row, carried as a json array (issue #5366)
+          final JSONArray comments = new JSONArray(rs.getString("comment"));
+          assertThat(comments.length()).isEqualTo(2);
+          assertThat(comments.getJSONObject(0).getString("content")).isEqualTo("This is a comment");
+          assertThat(comments.getJSONObject(1).getString("content")).isEqualTo("This is a comment 2");
           //location is an embedded doc
           assertThat(rs.getString("location")).isNotNull();
           assertThat(new JSONObject(rs.getString("location")).getString("name")).contains("My location");
@@ -640,9 +644,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   }
 
   /**
-   * Issue #5289: a LIST of EMBEDDED documents must be advertised over the Postgres wire protocol as
-   * json[] (OID 199) rather than text[] (OID 1009). When advertised as text[] the client treats each
-   * element as an opaque string and re-escapes the nested JSON.
+   * Issue #5289/#5366: a LIST of EMBEDDED documents must be advertised over the Postgres wire protocol as a
+   * json document (OID 114) holding a JSON array, rather than text[] (OID 1009) or json[] (OID 199). Both
+   * array forms make the client treat every element as an opaque string and re-escape the nested JSON.
    */
   @Test
   void embeddedListPropertyReportedAsJsonArray() throws Exception {
@@ -668,17 +672,17 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.next()).isTrue();
 
           final int listCol = rs.findColumn("embedded_list");
-          // Before the fix this reported "_text"; a list of embedded documents must be json[].
-          assertThat(rs.getMetaData().getColumnTypeName(listCol)).isEqualToIgnoringCase("_json");
+          // Before the fix this reported "_text", then "_json"; a list of embedded documents must be json.
+          assertThat(rs.getMetaData().getColumnTypeName(listCol)).isEqualToIgnoringCase("json");
 
           // A plain LIST of strings must keep reporting text[].
           assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("certifications"))).isEqualToIgnoringCase("_text");
 
-          // Each element must be valid, un-escaped JSON.
-          final Object[] elements = (Object[]) rs.getArray("embedded_list").getArray();
-          assertThat(elements).hasSize(1);
+          // The value must be a plain, un-escaped JSON array of documents.
+          final JSONArray elements = new JSONArray(rs.getString("embedded_list"));
+          assertThat(elements.length()).isEqualTo(1);
 
-          final JSONObject embedded = new JSONObject(elements[0].toString());
+          final JSONObject embedded = elements.getJSONObject(0);
           assertThat(embedded.getString("sku")).isEqualTo("1234");
           assertThat(embedded.getString("name")).isEqualTo("CPU");
 
@@ -690,9 +694,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
 
   /**
-   * Issue #5289: the RowDescription for a "LIST OF &lt;DocumentType&gt;" property must be json[] even when the
-   * declared element type cannot be inferred from the data: an empty result set (schema fallback) or a row
-   * whose list is empty. Otherwise the advertised OID flaps between text[] and json[] across result sets.
+   * Issue #5289/#5366: the RowDescription for a "LIST OF &lt;DocumentType&gt;" property must be json even when
+   * the declared element type cannot be inferred from the data: an empty result set (schema fallback) or a row
+   * whose list is empty. Otherwise the advertised OID flaps between text[] and json across result sets.
    */
   @Test
   void embeddedListReportedAsJsonArrayWithoutSampleElement() throws Exception {
@@ -715,7 +719,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         try (var rs = st.executeQuery("SELECT FROM Supplier WHERE 1=0")) {
           final var meta = rs.getMetaData();
           // Before the fix the schema path collapsed every LIST to text[], ignoring the "OF Product".
-          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("_json");
+          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("json");
           // A LIST without an "OF" clause, and a LIST OF a scalar, must stay text[].
           assertThat(meta.getColumnTypeName(rs.findColumn("certifications"))).isEqualToIgnoringCase("_text");
           assertThat(meta.getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
@@ -731,9 +735,168 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.next()).isTrue();
           final var meta = rs.getMetaData();
           // Before the fix an empty list fell back to text[], so the same column changed OID per result set.
-          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("_json");
+          assertThat(meta.getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("json");
           assertThat(meta.getColumnTypeName(rs.findColumn("certifications"))).isEqualToIgnoringCase("_text");
-          assertThat((Object[]) rs.getArray("embedded_list").getArray()).isEmpty();
+          assertThat(rs.getString("embedded_list")).isEqualTo("[]");
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5365/#5366: a LIST whose elements are themselves collections must be advertised as json and carried
+   * as a JSON array. Before the fix the column was announced as text[] while the payload carried a nested
+   * "{{1,2},{3,4}}" literal, so the announced OID and the DataRow bytes disagreed.
+   */
+  @Test
+  void nestedListPropertyReportedAsJsonArray() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Sensor IF NOT EXISTS;
+            CREATE PROPERTY Sensor.matrix IF NOT EXISTS LIST;
+            CREATE PROPERTY Sensor.tags IF NOT EXISTS LIST;
+
+            INSERT INTO Sensor SET matrix = [[1,2],[3,4]], tags = ['a','b'];
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Sensor")) {
+          assertThat(rs.next()).isTrue();
+
+          // Before the fix this reported "_text" while the value was a nested array literal.
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("json");
+          // A flat list of strings must keep reporting text[].
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
+
+          final JSONArray matrix = new JSONArray(rs.getString("matrix"));
+          assertThat(matrix.length()).isEqualTo(2);
+          assertThat(matrix.getJSONArray(0).toList()).containsExactly(1, 2);
+          assertThat(matrix.getJSONArray(1).toList()).containsExactly(3, 4);
+
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5365/#5366: a "LIST OF LIST" property must be advertised as json on the schema path too, so the
+   * column keeps the same OID whether or not the result set carries a sample element.
+   */
+  @Test
+  void nestedListPropertyReportedAsJsonArrayWithoutSampleElement() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Sensor IF NOT EXISTS;
+            CREATE PROPERTY Sensor.matrix IF NOT EXISTS LIST OF LIST;
+            CREATE PROPERTY Sensor.tags IF NOT EXISTS LIST OF STRING;
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Sensor WHERE 1=0")) {
+          final var meta = rs.getMetaData();
+          assertThat(meta.getColumnTypeName(rs.findColumn("matrix"))).isEqualToIgnoringCase("json");
+          assertThat(meta.getColumnTypeName(rs.findColumn("tags"))).isEqualToIgnoringCase("_text");
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5366: an embedded document carrying its own list must reach the client as plain JSON. Carried inside
+   * a json[] literal every element was quoted and escaped, so JDBC clients (DataGrip/PhpStorm, DbVisualizer)
+   * displayed the escaped text instead of the documents.
+   */
+  @Test
+  void embeddedListWithNestedListIsParseable() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Product IF NOT EXISTS;
+            CREATE PROPERTY Product.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Product.embedded_list IF NOT EXISTS LIST OF Product;
+
+            CREATE VERTEX TYPE Supplier IF NOT EXISTS;
+            CREATE PROPERTY Supplier.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Supplier.certifications IF NOT EXISTS LIST;
+            CREATE PROPERTY Supplier.embedded IF NOT EXISTS EMBEDDED OF Product;
+            CREATE PROPERTY Supplier.embedded_list IF NOT EXISTS LIST OF Product;
+
+            INSERT INTO Supplier (name, certifications, embedded, embedded_list) VALUES ('Berlin Sensors GmbH', ['ISO-9001,RoHS'], { "@type": "Product", "name": "CPU"}, [{ "@type": "Product", "name": "CPU", "embedded_list": [{ "@type": "Product", "name": "transistor"}]}]);
+            """);
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Supplier")) {
+          assertThat(rs.next()).isTrue();
+
+          assertThat(rs.getMetaData().getColumnTypeName(rs.findColumn("embedded_list"))).isEqualToIgnoringCase("json");
+
+          // The raw value the client displays: a JSON array of documents, with no escaping at all.
+          final String raw = rs.getString("embedded_list");
+          assertThat(raw).doesNotContain("\\");
+          assertThat(raw).startsWith("[").endsWith("]");
+
+          final JSONArray elements = new JSONArray(raw);
+          assertThat(elements.length()).isEqualTo(1);
+
+          final JSONObject product = elements.getJSONObject(0);
+          assertThat(product.getString("name")).isEqualTo("CPU");
+
+          // The list nested inside the embedded document must still be a JSON array of objects.
+          final JSONArray nested = product.getJSONArray("embedded_list");
+          assertThat(nested.length()).isEqualTo(1);
+          assertThat(nested.getJSONObject(0).getString("name")).isEqualTo("transistor");
+
+          assertThat(rs.next()).isFalse();
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #5366: quotes and backslashes inside array elements must be escaped with the array-literal rules.
+   * Escaping only the quote left a dangling backslash that truncated the element.
+   */
+  @Test
+  void arrayElementsWithQuotesAndBackslashesRoundTrip() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE DOCUMENT TYPE Note IF NOT EXISTS;
+            CREATE PROPERTY Note.name IF NOT EXISTS STRING;
+
+            CREATE DOCUMENT TYPE Doc IF NOT EXISTS;
+            CREATE PROPERTY Doc.tags IF NOT EXISTS LIST OF STRING;
+            CREATE PROPERTY Doc.notes IF NOT EXISTS LIST OF Note;
+            """);
+      }
+
+      try (var st = conn.prepareStatement("INSERT INTO Doc SET tags = ?, notes = [{ \"@type\": \"Note\", \"name\": ? }]")) {
+        st.setString(1, "say \"hi\" C:\\temp");
+        st.setString(2, "say \"hi\" C:\\temp");
+        st.execute();
+      }
+
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT FROM Doc")) {
+          assertThat(rs.next()).isTrue();
+
+          assertThat((Object[]) rs.getArray("tags").getArray()).containsExactly("say \"hi\" C:\\temp");
+
+          final JSONArray notes = new JSONArray(rs.getString("notes"));
+          assertThat(notes.length()).isEqualTo(1);
+          assertThat(notes.getJSONObject(0).getString("name")).isEqualTo("say \"hi\" C:\\temp");
+
+          assertThat(rs.next()).isFalse();
         }
       }
     }
@@ -828,6 +991,118 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Issue #5367: the schema-discovery fallback used for empty result sets (the "WHERE 1=0" probe issued by
+   * Spark/PySpark and other JDBC clients) ignored the projection list and always announced every property of
+   * the type plus the system columns. The RowDescription must instead mirror what the query really projects.
+   */
+  @Test
+  void schemaProbeHonoursTheProjectionList() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE VERTEX TYPE Hero5367 IF NOT EXISTS;
+            CREATE PROPERTY Hero5367.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Hero5367.age IF NOT EXISTS INTEGER;
+            CREATE PROPERTY Hero5367.city IF NOT EXISTS STRING;
+            """);
+      }
+
+      // No rows at all: RowDescription comes from the schema-discovery fallback.
+      assertProbedColumns(conn, "SELECT name FROM Hero5367 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT age, name FROM Hero5367 WHERE 1=0", "age", "name");
+      assertProbedColumns(conn, "SELECT name AS hero FROM Hero5367 WHERE 1=0", "hero");
+      // A star projection, and the ArcadeDB "SELECT FROM" form, keep announcing every column.
+      assertProbedColumns(conn, "SELECT * FROM Hero5367 WHERE 1=0", RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY, "name", "age",
+          "city");
+      assertProbedColumns(conn, "SELECT FROM Hero5367 WHERE 1=0", RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY, "name", "age",
+          "city");
+
+      try (var st = conn.createStatement()) {
+        st.execute("INSERT INTO Hero5367 SET name = 'Valjean', age = 40, city = 'Paris'");
+      }
+
+      // Rows present: the sample-row path must apply the very same projection.
+      assertProbedColumns(conn, "SELECT name FROM Hero5367 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT name, city FROM Hero5367 WHERE 1=0", "name", "city");
+
+      // Sanity check: a projection on a non-empty result set is unaffected.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT name FROM Hero5367")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getMetaData().getColumnCount()).isEqualTo(1);
+          assertThat(rs.getString("name")).isEqualTo("Valjean");
+        }
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("DROP TYPE Hero5367 UNSAFE");
+      }
+    }
+  }
+
+  /**
+   * Issue #5368: Spark wraps the pushed-down query in a subquery before probing the schema, producing
+   * {@code SELECT * FROM (SELECT name FROM Character) SPARK_GEN_SUBQ_0 WHERE 1=0}. The schema-discovery
+   * fallback only handled a plain type as FROM target, so the probe came back with no RowDescription at all.
+   * The discovery must recurse into the subquery and expose what the subquery projects.
+   */
+  @Test
+  void schemaProbeWrappingASubqueryReturnsTheDescription() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE VERTEX TYPE Hero5368 IF NOT EXISTS;
+            CREATE PROPERTY Hero5368.name IF NOT EXISTS STRING;
+            CREATE PROPERTY Hero5368.age IF NOT EXISTS INTEGER;
+            """);
+      }
+
+      // No rows at all: the description must come from the schema, through the subquery projection.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT name FROM (SELECT name, age FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name AS hero FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "hero");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT * FROM (SELECT age FROM Hero5368) INNER1) OUTER1 WHERE 1=0", "age");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", RID_PROPERTY, TYPE_PROPERTY,
+          CAT_PROPERTY, "name", "age");
+
+      try (var st = conn.createStatement()) {
+        st.execute("INSERT INTO Hero5368 SET name = 'Valjean', age = 40");
+      }
+
+      // Rows present: the sample-row path must resolve the subquery target the same way.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "name");
+      assertProbedColumns(conn, "SELECT age FROM (SELECT name, age FROM Hero5368) SPARK_GEN_SUBQ_0 WHERE 1=0", "age");
+
+      // Sanity check: the same subquery without the probe filter still returns data.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT * FROM (SELECT name FROM Hero5368) SPARK_GEN_SUBQ_0")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("name")).isEqualTo("Valjean");
+        }
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("DROP TYPE Hero5368 UNSAFE");
+      }
+    }
+  }
+
+  private void assertProbedColumns(final Connection conn, final String query, final String... expectedColumns)
+      throws SQLException {
+    try (var st = conn.createStatement()) {
+      try (var rs = st.executeQuery(query)) {
+        final var meta = rs.getMetaData();
+        final List<String> columns = new ArrayList<>();
+        for (int i = 1; i <= meta.getColumnCount(); i++)
+          columns.add(meta.getColumnName(i));
+        assertThat(columns).as("query: %s", query).containsExactlyInAnyOrder(expectedColumns);
+      }
+    }
+  }
+
   private static final int    DEFAULT_SIZE = 64;
   private static final Random RANDOM       = ThreadLocalRandom.current();
 
@@ -886,12 +1161,12 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         JSONArray jsonArray = new JSONArray(randomData);
 
         try (ResultSet rs = st.executeQuery(
-            "INSERT INTO `" + arcadeName + "` SET str = \"meow\", data = " +
+            "INSERT INTO `" + arcadeName + "` SET str = 'meow', data = " +
                 jsonArray + " RETURN data")) {
         }
 
         try (ResultSet rs = st.executeQuery(
-            "SELECT data FROM `" + arcadeName + "` WHERE str = \"meow\"")) {
+            "SELECT data FROM `" + arcadeName + "` WHERE str = 'meow'")) {
           assertThat(rs.next()).isTrue();
 
           Array dataArray = rs.getArray("data");
@@ -1125,8 +1400,8 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         st.execute("create property TEXT_EMBEDDING.embedding if not exists LIST;");
 
         // Use explicit float casting to ensure values are stored as floats, not doubles
-        st.execute("INSERT INTO `TEXT_EMBEDDING` SET str = \"meow\", embedding = [0.1f, 0.2f, 0.3f]");
-        ResultSet resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING` WHERE str = \"meow\"");
+        st.execute("INSERT INTO `TEXT_EMBEDDING` SET str = 'meow', embedding = [0.1f, 0.2f, 0.3f]");
+        ResultSet resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING` WHERE str = 'meow'");
 
         assertThat(resultSet.next()).isTrue();
         Array embeddingArray = resultSet.getArray("embedding");
@@ -1232,7 +1507,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
         // Test INSERT with RETURN - this matches the Python e2e test scenario
         ResultSet resultSet = st.executeQuery(
-            "INSERT INTO `TEXT_EMBEDDING_2` SET str = \"meow\", embedding = [0.1,0.2,0.3] RETURN embedding");
+            "INSERT INTO `TEXT_EMBEDDING_2` SET str = 'meow', embedding = [0.1,0.2,0.3] RETURN embedding");
 
         assertThat(resultSet.next()).isTrue();
         Array embeddingArray = resultSet.getArray("embedding");
@@ -1253,7 +1528,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         assertThat((Float) embeddings[2]).isEqualTo(0.3f, offset(0.0001f));
 
         // Also test regular SELECT query
-        resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING_2` WHERE str = \"meow\"");
+        resultSet = st.executeQuery("SELECT embedding FROM `TEXT_EMBEDDING_2` WHERE str = 'meow'");
         assertThat(resultSet.next()).isTrue();
         embeddingArray = resultSet.getArray("embedding");
         assertThat(embeddingArray).isNotNull();
@@ -1261,6 +1536,51 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         embeddings = (Object[]) embeddingArray.getArray();
         assertThat(embeddings).hasSize(3);
         assertThat((Float) embeddings[0]).isEqualTo(0.1f, offset(0.0001f));
+      }
+    }
+  }
+
+  /**
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/5369">#5369</a>
+   * The Postgres wire protocol must treat a double-quoted token as an identifier (as PostgreSQL and the SQL standard do)
+   * and not as a string literal. Spark and most BI tools always quote column and table names.
+   */
+  @Test
+  void quotedIdentifiersAreNotStringLiterals() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE Character5369");
+        st.execute("INSERT INTO Character5369 SET name = 'Valjean', pos = 1");
+        st.execute("INSERT INTO Character5369 SET name = 'Javert', pos = 2");
+      }
+
+      // QUOTED PROJECTION + QUOTED TYPE: THE VALUE OF THE PROPERTY, NOT THE CONSTANT STRING 'name'
+      try (var st = conn.createStatement()) {
+        final ResultSet rs = st.executeQuery("SELECT \"name\" FROM \"Character5369\" ORDER BY \"pos\"");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isEqualTo("Valjean");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isEqualTo("Javert");
+        assertThat(rs.next()).isFalse();
+      }
+
+      // QUOTED IDENTIFIER IN THE WHERE CLAUSE, SINGLE-QUOTED STRING LITERAL AS THE VALUE
+      try (var st = conn.createStatement()) {
+        final ResultSet rs = st.executeQuery("SELECT \"name\" FROM \"Character5369\" WHERE \"name\" = 'Javert'");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("name")).isEqualTo("Javert");
+        assertThat(rs.next()).isFalse();
+      }
+
+      // A DOUBLE QUOTE INSIDE A STRING LITERAL IS NOT AN IDENTIFIER
+      try (var st = conn.createStatement()) {
+        final ResultSet rs = st.executeQuery("SELECT 'the \"name\"' AS label FROM \"Character5369\" LIMIT 1");
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("label")).isEqualTo("the \"name\"");
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("DROP TYPE Character5369");
       }
     }
   }

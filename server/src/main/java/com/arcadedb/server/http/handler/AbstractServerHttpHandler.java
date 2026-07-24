@@ -454,9 +454,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         reported.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
       } else {
+        // UNEXPECTED INTERNAL ERROR (not a client/validation error handled above): log the FULL stack trace so
+        // an internal fault - e.g. a BufferUnderflowException from a truncated/corrupted record read - is
+        // diagnosable. Passing the throwable is what makes the logger emit the trace; without it no stack trace
+        // is ever printed, at any log level. Use realException (the actual cause) for a useful trace.
         LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        e.getMessage());
+                .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", realException,
+                        getClass().getSimpleName());
         sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
       }
     } catch (final HttpSessionException e) {
@@ -532,9 +536,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
       } else {
+        // UNEXPECTED INTERNAL ERROR wrapped by the auto-commit transaction wrapper (the client sees the generic
+        // "Error on transaction commit"). Log the FULL stack trace of the real cause: without passing the
+        // throwable the logger never prints a trace, at any level, which is why a BufferUnderflowException on a
+        // read-only command surfaced with no diagnosable trace even at DEBUG.
         LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),
-                        e.getMessage());
+                .log(this, getInternalErrorLogLevel(), "Error on transaction execution (%s)", realException,
+                        getClass().getSimpleName());
         sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
       }
     } catch (final Throwable e) {
@@ -549,8 +557,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         }
         cause = cause.getCause();
       }
+      // UNEXPECTED RAW THROWABLE (typical for non-database handlers): same treatment as the other
+      // unexpected-internal-error arms - full stack trace, visible in production mode (issue #5374).
       LogManager.instance()
-              .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
+              .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
       // If execution threw after this request reserved the idempotency key, clear the PENDING marker so a
@@ -871,10 +881,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return par == null || par.isEmpty() ? defaultValue : par.getFirst();
   }
 
-  private Level getErrorLogLevel() {
+  /**
+   * Log level for UNEXPECTED INTERNAL faults (potential data corruption, engine bugs): SEVERE in development
+   * mode, WARNING in production. Unlike user-triggered errors (see {@link #getUserSevereErrorLogLevel()}),
+   * these must stay visible with default logging in production - demoting them to FINE is how a
+   * BufferUnderflowException on a read-only command went undiagnosable (issue #5374).
+   */
+  private Level getInternalErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.SEVERE :
-            Level.FINE;
+            Level.WARNING;
   }
 
   private Level getUserSevereErrorLogLevel() {

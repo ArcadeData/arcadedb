@@ -35,7 +35,21 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
    * {@link VectorEncoding}.
    */
   public VectorEncoding           encoding                 = VectorEncoding.FLOAT32;
-  public int                      maxConnections           = 16;
+  /**
+   * Maximum number of graph connections (edges) kept per node, <b>per layer</b>. This is JVector's
+   * Vamana {@code M} degree and is applied verbatim to every layer, including the base layer: it is
+   * <b>not</b> doubled at layer 0 the way hnswlib (Chroma and most HNSW tools) treats its own {@code M}.
+   * <p>
+   * Consequence for anyone porting a configuration from an hnswlib-based system: hnswlib allocates
+   * {@code 2*M} links at the base layer, so to reproduce hnswlib {@code M} density here set
+   * {@code maxConnections = 2 * M} (e.g. hnswlib {@code M=16} → {@code maxConnections=32}). Leaving this
+   * at half the intended value silently halves base-layer graph density and measurably lowers recall.
+   * <p>
+   * Default {@code 32} (raised from the historical 16 in issue #5352) matches hnswlib {@code M=16} density
+   * and gives better out-of-the-box recall and query latency; the cost is higher build-time heap
+   * (roughly proportional to the degree). Typical range: 16-64.
+   */
+  public int                      maxConnections           = 32;
   public int                      beamWidth                = 100;
   public int                      efSearch                 = 100;  // Search beam width (higher = better recall but slower)
   public float                    neighborOverflowFactor   = 1.2f;

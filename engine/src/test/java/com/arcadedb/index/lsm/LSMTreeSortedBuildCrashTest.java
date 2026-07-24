@@ -57,11 +57,18 @@ class LSMTreeSortedBuildCrashTest {
     final ChildResult crashed = runChild("crash", databasePath);
     assertThat(crashed.exitCode()).as(crashed.output()).isEqualTo(CRASH_EXIT_CODE);
 
+    // A crashed build leaves BOTH the database.lck file and the sorted-build marker. Since #5351 moved
+    // prepareRecovery() ahead of the schema load (loading a crashed database writes to it), the read-only
+    // rejection fires on the lock file first; the marker-specific message is only reachable without a pending
+    // recovery. Either failure is the correct "cannot open read-only, reopen read-write" outcome.
     assertThatThrownBy(() -> {
       try (DatabaseFactory factory = new DatabaseFactory(databasePath.toString())) {
         factory.open(ComponentFile.MODE.READ_ONLY);
       }
-    }).hasRootCauseMessage("Database contains an interrupted sorted index build; reopen it read-write to perform cleanup");
+    }).satisfiesAnyOf(
+        t -> assertThat(t).hasRootCauseMessage(
+            "Database contains an interrupted sorted index build; reopen it read-write to perform cleanup"),
+        t -> assertThat(t).hasMessageContaining("Database needs recovery but has been open in read only mode"));
 
     try (DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); Database database = factory.open()) {
       assertThat(database.getSchema().getType("CrashBuild").getIndexByProperties("lookupKey")).isNull();

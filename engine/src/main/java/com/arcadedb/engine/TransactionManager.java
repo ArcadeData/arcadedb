@@ -487,6 +487,12 @@ public class TransactionManager {
       }
 
       try {
+        // The asynchronous flush pipeline may still hold an older copy of this page. It must reach the disk BEFORE
+        // the replicated write below: while it is pending, every read resolves the page from the flush queue instead
+        // of from the file (so the replicated write stays invisible), and its eventual flush overwrites the
+        // replicated page and rolls the version backwards - the version-gap cascade this replay exists to close.
+        database.getPageManager().materializePendingFlushOfPage(database, pageId);
+
         final ImmutablePage page = database.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);
 
         LogManager.instance()
@@ -613,6 +619,11 @@ public class TransactionManager {
 
       } catch (final ClosedByInterruptException e) {
         // NORMAL EXCEPTION IN CASE THE CONNECTION/THREAD IS CLOSED (=INTERRUPTED)
+        Thread.currentThread().interrupt();
+        throw new WALException("Cannot apply changes to page " + pageId, e);
+      } catch (final InterruptedException e) {
+        // Interrupted while draining the pending flush of this page: the page was NOT applied, so fail loud with the
+        // interrupt flag restored instead of leaving a silent version gap behind.
         Thread.currentThread().interrupt();
         throw new WALException("Cannot apply changes to page " + pageId, e);
       } catch (final IOException e) {

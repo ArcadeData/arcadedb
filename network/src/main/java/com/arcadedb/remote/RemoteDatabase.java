@@ -662,6 +662,34 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         callback);
   }
 
+  /**
+   * Returns the long-running maintenance operations (CHECK DATABASE, ...) currently in progress on the
+   * connected server for this database (issue #5372), one JSON object per operation carrying
+   * {@code operation}, {@code stepName}, {@code stepIndex}, {@code totalSteps}, {@code done}, {@code total}
+   * and {@code percentage} (-1 when the step total is unknown). Safe to poll at any frequency: the server side
+   * answers from a lock-free in-memory snapshot without touching the database.
+   */
+  public List<JSONObject> getProgress() {
+    checkDatabaseIsOpen();
+    try {
+      final HttpRequest request = createRequestBuilder("GET", getUrl("progress", databaseName)).GET().build();
+      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+      if (response.statusCode() != 200)
+        throw new RemoteException("Error on requesting operation progress", manageException(response, "progress"));
+
+      final JSONArray result = new JSONObject(response.body()).getJSONArray("result");
+      final List<JSONObject> operations = new ArrayList<>(result.length());
+      for (int i = 0; i < result.length(); i++)
+        operations.add(result.getJSONObject(i));
+      return operations;
+    } catch (final RemoteException | SecurityException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new RemoteException("Error on requesting operation progress", e);
+    }
+  }
+
   String getSessionId() {
     return sessionId;
   }

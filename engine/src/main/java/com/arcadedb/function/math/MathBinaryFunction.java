@@ -25,7 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.function.DoubleBinaryOperator;
 
 /**
- * Generic math binary function (e.g. atan2).
+ * Generic math binary function (e.g. atan2). Always returns a Double, matching the
+ * FLOAT return type declared by the Cypher signature of these functions (issue #5382).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -49,15 +50,8 @@ public class MathBinaryFunction implements StatelessFunction {
       throw new CommandExecutionException(name + "() requires exactly two arguments");
     if (args[0] == null || args[1] == null)
       return null;
-    if (args[0] instanceof Number && args[1] instanceof Number) {
-      final double result = op.applyAsDouble(((Number) args[0]).doubleValue(), ((Number) args[1]).doubleValue());
-      // Return integer type only when the result is a whole number that fits in a long.
-      // Without the range guard, large doubles (e.g. 1e30) saturate to Long.MAX_VALUE on cast.
-      if (result >= Long.MIN_VALUE && result <= Long.MAX_VALUE
-          && result == Math.floor(result) && !Double.isInfinite(result))
-        return (long) result;
-      return result;
-    }
+    if (args[0] instanceof Number && args[1] instanceof Number)
+      return op.applyAsDouble(((Number) args[0]).doubleValue(), ((Number) args[1]).doubleValue());
     throw new CommandExecutionException(name + "() requires numeric arguments");
   }
 }

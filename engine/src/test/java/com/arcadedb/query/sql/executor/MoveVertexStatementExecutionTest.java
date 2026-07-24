@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -325,6 +327,27 @@ class MoveVertexStatementExecutionTest extends TestHelper {
       final Result moved = rs.next();
       assertThat(moved.<Integer>getProperty("newfield")).isEqualTo(7);
       assertThat(moved.hasProperty("somefield")).isFalse();
+    }
+  }
+
+  /**
+   * MERGE with a parameterized payload must be resolved at execution time instead of throwing a NullPointerException.
+   */
+  @Test
+  void moveVertexWithParameterizedMerge() {
+    final String typeA = "testMoveMergeParamA";
+    final String typeB = "testMoveMergeParamB";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+    database.setAutoTransaction(true);
+
+    final String rid = database.command("sql", "create vertex " + typeA + " set somefield = 0").next().getIdentity().get().toString();
+
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " MERGE :payload",
+        Map.of("payload", Map.of("somefield", 9, "added", "yes")))) {
+      final Result moved = rs.next();
+      assertThat(moved.<Integer>getProperty("somefield")).isEqualTo(9);
+      assertThat(moved.<String>getProperty("added")).isEqualTo("yes");
     }
   }
 }

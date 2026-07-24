@@ -2278,7 +2278,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return pageManagerReferenceReleased.get();
   }
 
-  private void checkForRecovery() throws IOException {
+  /**
+   * Takes ownership of the database before any of its content is touched: acquires the exclusive lock on
+   * {@code database.lck} and settles the read-only rejection. Runs BEFORE the schema is loaded, because loading a
+   * database that needs recovery writes to it - the sorted-index-build marker cleanup drops component files, and a
+   * dictionary whose page never reached disk has its header page written and committed. Doing that ahead of the lock
+   * let an open mutate a database another process owns.
+   *
+   * @return {@code true} when the marker file was present, so the WAL still has to be replayed by
+   * {@link #performRecovery()} once the schema is loaded.
+   */
+  private boolean prepareRecovery() throws IOException {
     lockFile = new File(databasePath + "/database.lck");
 
     if (lockFile.exists()) {
@@ -2291,24 +2301,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       lockDatabase();
-
-      // RECOVERY
-      LogManager.instance().log(this, Level.WARNING, "Database '%s' was not closed properly last time", null, name);
-
-      // RESET THE COUNT OF RECORD IN CASE THE DATABASE WAS NOT CLOSED PROPERLY
-      for (Bucket b : schema.getBuckets())
-        ((LocalBucket) b).setCachedRecordCount(-1);
-
-      executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
-
-      transactionManager.checkIntegrity();
-    } else {
-      if (mode == ComponentFile.MODE.READ_WRITE) {
-        lockFile.createNewFile();
-        lockDatabase();
-      } else
-        lockFile = null;
+      return true;
     }
+
+    if (mode == ComponentFile.MODE.READ_WRITE) {
+      lockFile.createNewFile();
+      lockDatabase();
+    } else
+      lockFile = null;
+
+    return false;
+  }
+
+  /**
+   * Replays the WAL of a database that was not closed properly. Runs after the schema is loaded, because the replay
+   * resolves file ids and the dictionary through the registered components.
+   */
+  private void performRecovery() throws IOException {
+    LogManager.instance().log(this, Level.WARNING, "Database '%s' was not closed properly last time", null, name);
+
+    // RESET THE COUNT OF RECORD IN CASE THE DATABASE WAS NOT CLOSED PROPERLY
+    for (Bucket b : schema.getBuckets())
+      ((LocalBucket) b).setCachedRecordCount(-1);
+
+    executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
+
+    transactionManager.checkIntegrity();
   }
 
   private void openInternal() {
@@ -2324,6 +2342,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         schema = new LocalSchema(wrappedDatabaseInstance, databasePath, security);
 
+        // OWN THE DATABASE BEFORE READING IT: LOADING THE SCHEMA OF A CRASHED DATABASE WRITES TO IT.
+        final boolean recoveryPending = prepareRecovery();
+
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
         else
@@ -2332,7 +2353,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
         serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
-        checkForRecovery();
+        if (recoveryPending)
+          performRecovery();
 
         if (security != null)
           security.updateSchema(this);

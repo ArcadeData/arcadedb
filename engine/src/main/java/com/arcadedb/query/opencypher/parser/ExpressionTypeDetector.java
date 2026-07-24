@@ -241,6 +241,18 @@ class ExpressionTypeDetector {
    * Returns null if not a primary expression.
    */
   Expression tryParsePrimary(final Cypher25Parser.ExpressionContext ctx) {
+    // A parenthesized expression that spans the ENTIRE expression must be unwrapped and re-parsed
+    // BEFORE the recursive function-invocation finder below. Otherwise an expression such as
+    // (toString(null) IS NULL OR toString(null) = '') has its inner function call grabbed by
+    // findFunctionInvocationRecursive, silently dropping the surrounding IS NULL / OR / comparison
+    // and collapsing the whole expression to just the function result (issue #5383). The span guard
+    // (same start and stop tokens) ensures we only unwrap a full-span wrapper, so cases like
+    // (a) + (b) or (a) IS NULL - already handled by the arithmetic/comparison detectors above - are
+    // left untouched.
+    final Cypher25Parser.ParenthesizedExpressionContext fullParenCtx = builder.findParenthesizedExpressionRecursive(ctx);
+    if (fullParenCtx != null && fullParenCtx.getStart() == ctx.getStart() && fullParenCtx.getStop() == ctx.getStop())
+      return builder.parseExpression(fullParenCtx.expression());
+
     // Check for vector functions BEFORE list literals, because vector functions
     // contain list literals as arguments (e.g., vector([1.0, 2.0], 2, FLOAT32))
     // and the recursive list finder would incorrectly match the inner list.

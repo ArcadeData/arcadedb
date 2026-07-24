@@ -24,6 +24,7 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.BigDecimal;
@@ -62,7 +63,7 @@ public enum PostgresType {
   VARCHAR(1043, String.class, -1, value -> value),
   TEXT(25, String.class, -1, value -> value),
   BPCHAR(1042, String.class, -1, value -> value),
-  JSON(114, JSONObject.class, -1, JSONObject::new),
+  JSON(114, JSONObject.class, -1, PostgresType::parseJsonText),
   // Adding array types with PostgreSQL array type codes
   ARRAY_INT(1007, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
   ARRAY_CHAR(1003, Collection.class, -1, value -> parseArrayFromString(value, s -> s.charAt(0))),
@@ -84,6 +85,19 @@ public enum PostgresType {
   // PostgreSQL's epoch for DATE/TIMESTAMP binary formats is 2000-01-01T00:00:00 UTC.
   private static final long              POSTGRES_EPOCH_SECONDS      = 946684800L;
   private static final long              POSTGRES_EPOCH_DAYS         = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
+
+  /**
+   * Parses an inbound json value. A list of documents is sent to the client as a json array (issue #5366), so
+   * the same payload must be accepted back: an array yields a List, anything else a {@link JSONObject}.
+   */
+  private static Object parseJsonText(final String value) {
+    if (value == null)
+      return null;
+    final String trimmed = value.trim();
+    if (!trimmed.isEmpty() && trimmed.charAt(0) == '[')
+      return new JSONArray(trimmed).toList();
+    return new JSONObject(value);
+  }
 
   private static Boolean parseBooleanText(final String value) {
     if (value == null)
@@ -186,7 +200,12 @@ public enum PostgresType {
     boolean inQuotes = false;
     for (int i = 0; i < content.length(); i++) {
       char c = content.charAt(i);
-      if (c == '"') {
+      if (c == '\\' && i + 1 < content.length()) {
+        // Inside an array literal a backslash escapes the next character, typically a quote or another
+        // backslash (issue #5366). Without this the escaped quote was read as the end of the element.
+        currentElement.append(content.charAt(++i));
+        continue;
+      } else if (c == '"') {
         inQuotes = !inQuotes;
         // Skip the quote character itself for parsing
         continue;
@@ -315,8 +334,9 @@ public enum PostgresType {
 
   /**
    * Resolves the array type of a "LIST OF &lt;ofType&gt;" property. An ofType that does not name a scalar
-   * {@link Type} refers to an embedded document type, so the list is advertised as json[]; this mirrors the
-   * convention used by Type.coerceCollectionOfType. An undeclared ofType stays text[].
+   * {@link Type} refers to an embedded document type, so the list is advertised as a single json document
+   * holding a JSON array; this mirrors the convention used by Type.coerceCollectionOfType. An undeclared
+   * ofType stays text[].
    */
   private static PostgresType getArrayTypeForOfType(final String ofType) {
     if (ofType == null || ofType.isBlank())
@@ -325,7 +345,7 @@ public enum PostgresType {
     final Type elementType = Type.getTypeByName(ofType);
     if (elementType == null)
       // Not a scalar: the list holds embedded documents of a schema type.
-      return ARRAY_JSON;
+      return JSON;
 
     // Every branch must agree with getArrayTypeForElementType, which types a populated list from its first
     // element: a mismatch would make a column's OID depend on whether the list is empty. DECIMAL therefore
@@ -336,7 +356,9 @@ public enum PostgresType {
       case LONG -> ARRAY_LONG;
       case FLOAT -> ARRAY_REAL;
       case DOUBLE -> ARRAY_DOUBLE;
-      case MAP, EMBEDDED -> ARRAY_JSON;
+      // Nested collections (issue #5365) join maps and embedded documents in being carried as a JSON document:
+      // a Postgres array is rectangular and homogeneous, an ArcadeDB nested list is neither.
+      case MAP, EMBEDDED, LIST, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> JSON;
       default -> ARRAY_TEXT;
     };
   }
@@ -391,6 +413,11 @@ public enum PostgresType {
     String serializedValue = null;
     if (value == null && pgType.code == BOOLEAN.code) {
       serializedValue = "0";
+    } else if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
+      // The column was announced as a json document holding an array (issue #5366): emit a real JSON array
+      // instead of a Postgres array literal, so the payload matches the announced OID.
+      serializedValue = serializeCollectionAsJson(
+          value instanceof Collection<?> collection ? collection : convertPrimitiveArrayToCollection(value));
     } else if (value instanceof Collection<?> collection) {
       // Handle array serialization
       serializedValue = serializeArrayToString(collection, pgType);
@@ -522,29 +549,80 @@ public enum PostgresType {
         // Format LocalDateTime as PostgreSQL-compatible timestamp in arrays
         sb.append("\"").append(ldt.format(POSTGRES_DATETIME_FORMATTER)).append("\"");
       } else if (element instanceof Binary binary) {
-        sb.append(binary.getString());
-      } else if (element instanceof byte[] bytes) {
-        sb.append(Arrays.toString(bytes));
+        appendQuoted(sb, binary.getString());
       } else if (element instanceof Collection<?> subCollection) {
-        sb.append(serializeArrayToString(subCollection, pgType));
+        // A nested list is carried as a JSON document (issue #5365): the column is advertised as json[], so the
+        // element must be a quoted JSON array. Emitting a nested "{...}" literal instead made the announced OID
+        // and the payload disagree, and clients re-parsed the inner braces as a second array dimension.
+        appendQuoted(sb, new JSONArray(subCollection).toString());
+      } else if (element.getClass().isArray()) {
+        appendQuoted(sb, new JSONArray(convertPrimitiveArrayToCollection(element)).toString());
       } else if (element instanceof Result result) {
-        sb.append("\"").append(result.toJSON().toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, result.toJSON().toString());
       } else if (element instanceof JSONObject json) {
-        sb.append("\"").append(json.toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, json.toString());
       } else if (element instanceof Map<?, ?> map) {
-        sb.append("\"").append(new JSONObject((Map<String, ?>) map).toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, new JSONObject((Map<String, ?>) map).toString());
       } else if (element instanceof Record record) {
-        sb.append("\"").append(record.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, record.toJSON(true).toString());
       } else if (element instanceof EmbeddedDocument embeddedDocument) {
-        sb.append("\"").append(embeddedDocument.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, embeddedDocument.toJSON(true).toString());
       } else if (element instanceof String str) {
-        sb.append("\"").append(str.replace("\"", "\\\"")).append("\"");
+        appendQuoted(sb, str);
       } else {
         sb.append(element == null ? "NULL" : element.toString());
       }
     }
     sb.append("}");
     return sb.toString();
+  }
+
+  /**
+   * Appends a value as a double-quoted element of a Postgres array literal. Inside the quotes both the
+   * backslash and the double quote must be escaped, in that order (issue #5366): escaping only the quote left a
+   * backslash in the data acting as an escape character, so "C:\temp" reached the client as "C:temp" and a
+   * nested JSON document could be truncated in the middle.
+   */
+  private static void appendQuoted(final StringBuilder sb, final String value) {
+    sb.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+  }
+
+  /**
+   * Serializes a collection of documents, maps or nested collections as a single JSON array (issue #5366).
+   * The column is advertised as json, so the value is plain JSON: no Postgres array literal, no quoting and no
+   * escaping of the elements, which is what made JDBC clients display the documents as escaped text.
+   */
+  private String serializeCollectionAsJson(final Collection<?> collection) {
+    return serializeNestedAsJsonArray(collection).toString();
+  }
+
+  /**
+   * Converts a single collection element into a value the JSON serializer renders natively. Documents keep
+   * their "@type" attribute, temporal values use the Postgres text format, and nested collections recurse.
+   */
+  @SuppressWarnings("unchecked")
+  private Object toJsonElement(final Object element) {
+    return switch (element) {
+      case null -> null;
+      case JSONObject json -> json;
+      case JSONArray json -> json;
+      case Result result -> result.toJSON();
+      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true);
+      case Record record -> record.toJSON(true);
+      case Map<?, ?> map -> new JSONObject((Map<String, ?>) map);
+      case Collection<?> nested -> serializeNestedAsJsonArray(nested);
+      case Binary binary -> binary.getString();
+      case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
+      case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
+      default -> element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)) : element;
+    };
+  }
+
+  private JSONArray serializeNestedAsJsonArray(final Collection<?> collection) {
+    final JSONArray array = new JSONArray();
+    for (final Object element : collection)
+      array.put(toJsonElement(element));
+    return array;
   }
 
   /**
@@ -630,12 +708,21 @@ public enum PostgresType {
       return ARRAY_BOOLEAN;
     if (element instanceof String)
       return ARRAY_TEXT;
+    // A list of documents is advertised as a single json value holding a JSON array, not as json[] (issue
+    // #5366). A json[] forces every element to travel as a quoted string inside a Postgres array literal, and
+    // JDBC-based clients (DBeaver, DataGrip/PhpStorm, DbVisualizer) then show the escaped text instead of the
+    // documents. One json document renders as the plain [{...},{...}] the data actually is, everywhere.
     if (element instanceof JSONObject ||
         element instanceof Map ||
         element instanceof Result ||
         element instanceof EmbeddedDocument ||
         element instanceof Record)
-      return ARRAY_JSON;
+      return JSON;
+    // A nested collection or array (issue #5365) cannot be announced as a flat array of scalars either: a
+    // Postgres array is rectangular and homogeneous while an ArcadeDB nested list can be ragged and mixed.
+    if (element instanceof Iterable ||
+        element.getClass().isArray())
+      return JSON;
     // Default to text array for all other types
     return ARRAY_TEXT;
   }
@@ -719,7 +806,7 @@ public enum PostgresType {
         int length = buffer.getInt();
         byte[] bytes = new byte[length];
         buffer.get(bytes);
-        yield new JSONObject(new String(bytes));
+        yield parseJsonText(new String(bytes));
       }
       case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON ->
           deserializeBinaryArray(buffer);

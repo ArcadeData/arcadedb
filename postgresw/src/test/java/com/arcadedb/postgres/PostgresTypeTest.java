@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -176,13 +177,13 @@ class PostgresTypeTest {
   @Test
   void getTypeForValueCollectionOfJSONObjects() {
     List<JSONObject> list = Arrays.asList(new JSONObject(), new JSONObject());
-    assertThat(PostgresType.getTypeForValue(list)).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getTypeForValue(list)).isEqualTo(PostgresType.JSON);
   }
 
   @Test
   void getTypeForValueCollectionOfMaps() {
     List<Map<String, Object>> list = Arrays.asList(new HashMap<>(), new HashMap<>());
-    assertThat(PostgresType.getTypeForValue(list)).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getTypeForValue(list)).isEqualTo(PostgresType.JSON);
   }
 
   @Test
@@ -379,9 +380,9 @@ class PostgresTypeTest {
   @Test
   void getTypeFromArcadeListOfEmbeddedDocumentType() {
     // An ofType that names no scalar Type refers to an embedded document type: issue #5289.
-    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "Product")).isEqualTo(PostgresType.ARRAY_JSON);
-    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "EMBEDDED")).isEqualTo(PostgresType.ARRAY_JSON);
-    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "MAP")).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "Product")).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "EMBEDDED")).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "MAP")).isEqualTo(PostgresType.JSON);
   }
 
   @Test
@@ -1498,27 +1499,26 @@ class PostgresTypeTest {
     Map<String, Object> map = new HashMap<>();
     map.put("key", "value");
     list.add(map);
-    PostgresType.ARRAY_JSON.serializeAsText(PostgresType.ARRAY_JSON, buffer, list);
+    PostgresType.JSON.serializeAsText(PostgresType.JSON, buffer, list);
     buffer.flip();
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     String result = new String(data);
-    assertThat(result).startsWith("{").endsWith("}");
-    assertThat(result).contains("key");
+    assertThat(result).isEqualTo("[{\"key\":\"value\"}]");
   }
 
   @Test
   void serializeAsTextCollectionOfJSONObjects() {
     Binary buffer = new Binary();
     List<JSONObject> list = Arrays.asList(new JSONObject("{\"a\":1}"));
-    PostgresType.ARRAY_JSON.serializeAsText(PostgresType.ARRAY_JSON, buffer, list);
+    PostgresType.JSON.serializeAsText(PostgresType.JSON, buffer, list);
     buffer.flip();
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     String result = new String(data);
-    assertThat(result).contains("a");
+    assertThat(result).isEqualTo("[{\"a\":1}]");
   }
 
   @Test
@@ -1547,17 +1547,114 @@ class PostgresTypeTest {
     assertThat(result).contains("2024-05-19");
   }
 
+  /**
+   * Issue #5365/#5366: a list of nested collections is announced as a json document, so it travels as a plain
+   * JSON array. The nested "{{1,2},{3,4}}" literal announced one dimension and carried two, and the later
+   * json[] form forced every element through a quoted, escaped string.
+   */
   @Test
   void serializeAsTextNestedCollections() {
     Binary buffer = new Binary();
     List<List<Integer>> list = Arrays.asList(Arrays.asList(1, 2), Arrays.asList(3, 4));
-    PostgresType.ARRAY_TEXT.serializeAsText(PostgresType.ARRAY_TEXT, buffer, list);
+    PostgresType.JSON.serializeAsText(PostgresType.JSON, buffer, list);
     buffer.flip();
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     String result = new String(data);
-    assertThat(result).isEqualTo("{{1,2},{3,4}}");
+    assertThat(result).isEqualTo("[[1,2],[3,4]]");
+  }
+
+  /**
+   * Issue #5365/#5366: a nested Java array is serialized like a nested collection.
+   */
+  @Test
+  void serializeAsTextNestedArrays() {
+    Binary buffer = new Binary();
+    List<int[]> list = Arrays.asList(new int[] { 1, 2 }, new int[] { 3, 4 });
+    PostgresType.JSON.serializeAsText(PostgresType.JSON, buffer, list);
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    String result = new String(data);
+    assertThat(result).isEqualTo("[[1,2],[3,4]]");
+  }
+
+  /**
+   * Issue #5366: a list of documents is a json array, not a json[] whose elements are escaped strings. JDBC
+   * clients (DataGrip/PhpStorm, DbVisualizer) showed the escaped text of the array literal instead of the
+   * documents.
+   */
+  @Test
+  void serializeAsTextListOfDocumentsIsPlainJsonArray() {
+    Binary buffer = new Binary();
+    final JSONObject inner = new JSONObject().put("@type", "Product").put("name", "transistor");
+    final JSONObject outer = new JSONObject().put("embedded_list", new JSONArray().put(inner)).put("@type", "Product")
+        .put("name", "CPU");
+    PostgresType.JSON.serializeAsText(PostgresType.JSON, buffer, List.of(outer));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    final String result = new String(data);
+    assertThat(result).doesNotContain("\\");
+    assertThat(new JSONArray(result).getJSONObject(0).getJSONArray("embedded_list").getJSONObject(0).getString("name"))
+        .isEqualTo("transistor");
+  }
+
+  /**
+   * Issue #5366: the json array sent to the client must be accepted back as a parameter, as a List.
+   */
+  @Test
+  void deserializeJsonArrayText() {
+    final Object result = PostgresType.deserialize(PostgresType.JSON.code, 0, "[{\"name\":\"CPU\"}]".getBytes());
+    assertThat(result).isInstanceOf(List.class);
+    assertThat(((List<?>) result)).hasSize(1);
+    assertThat(PostgresType.deserialize(PostgresType.JSON.code, 0, "{\"name\":\"CPU\"}".getBytes()))
+        .isInstanceOf(JSONObject.class);
+  }
+
+  /**
+   * Issue #5366: inside a quoted array element the backslash is itself an escape character, so it must be
+   * doubled. Escaping only the quote made "C:\temp" arrive as "C:temp".
+   */
+  @Test
+  void serializeAsTextEscapesBackslashesAndQuotes() {
+    Binary buffer = new Binary();
+    PostgresType.ARRAY_TEXT.serializeAsText(PostgresType.ARRAY_TEXT, buffer, List.of("say \"hi\" C:\\temp"));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("{\"say \\\"hi\\\" C:\\\\temp\"}");
+  }
+
+  /**
+   * Issue #5366: a JSON document nested in an array element is quoted twice, once by JSON and once by the array
+   * literal. Without doubling the backslash the JSON was truncated at its first escaped quote.
+   */
+  @Test
+  void serializeAsTextEscapesNestedJsonQuotes() {
+    Binary buffer = new Binary();
+    final JSONObject json = new JSONObject().put("name", "say \"hi\"");
+    PostgresType.ARRAY_JSON.serializeAsText(PostgresType.ARRAY_JSON, buffer, List.of(json));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("{\"{\\\"name\\\":\\\"say \\\\\\\"hi\\\\\\\"\\\"}\"}");
+  }
+
+  /**
+   * Issue #5366: the inbound parser must undo the array-literal escaping, otherwise a client sending a value
+   * with a quote or a backslash got a truncated or mangled element back.
+   */
+  @Test
+  void parseArrayTextUnescapesQuotesAndBackslashes() {
+    final Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 0,
+        "{\"say \\\"hi\\\" C:\\\\temp\",\"plain\"}".getBytes());
+    assertThat((List<Object>) result).containsExactly("say \"hi\" C:\\temp", "plain");
   }
 
   // ==================== isArrayType Tests ====================
@@ -1640,12 +1737,36 @@ class PostgresTypeTest {
 
   @Test
   void getArrayTypeForElementTypeJSONObject() {
-    assertThat(PostgresType.getArrayTypeForElementType(new JSONObject())).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new JSONObject())).isEqualTo(PostgresType.JSON);
   }
 
   @Test
   void getArrayTypeForElementTypeMap() {
-    assertThat(PostgresType.getArrayTypeForElementType(new HashMap<>())).isEqualTo(PostgresType.ARRAY_JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new HashMap<>())).isEqualTo(PostgresType.JSON);
+  }
+
+  /**
+   * Issue #5365: a nested collection or array is an opaque document for Postgres, which has no ragged or mixed
+   * arrays, so the enclosing list must be advertised as json[].
+   */
+  @Test
+  void getArrayTypeForElementTypeNestedCollection() {
+    assertThat(PostgresType.getArrayTypeForElementType(List.of(1, 2))).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new ArrayList<>())).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new int[] { 1, 2 })).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(new String[] { "a" })).isEqualTo(PostgresType.JSON);
+  }
+
+  /**
+   * Issue #5365: the schema path must agree with the value path, otherwise the OID of a "LIST OF LIST" column
+   * would depend on whether the result set happens to carry a sample element.
+   */
+  @Test
+  void getTypeFromArcadeListOfListIsJsonArray() {
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "List")).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "Float[]")).isEqualTo(PostgresType.JSON);
+    // A list of scalars is unaffected.
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "String")).isEqualTo(PostgresType.ARRAY_TEXT);
   }
 
   @Test

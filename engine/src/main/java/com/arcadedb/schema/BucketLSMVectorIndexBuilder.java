@@ -35,7 +35,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
   public VectorQuantizationType   quantizationType         = VectorQuantizationType.NONE;
   public VectorEncoding           encoding                 = VectorEncoding.FLOAT32;
-  public int                      maxConnections           = 16;
+  /** Vamana per-layer graph degree (JVector {@code M}); see {@link LSMVectorIndexMetadata#maxConnections}. Default 32 (issue #5352). */
+  public int                      maxConnections           = 32;
   public int                      beamWidth                = 100;
   public float                    neighborOverflowFactor   = 1.2f;
   public float                    alphaDiversityRelaxation = 1.2f;
@@ -98,11 +99,13 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   }
 
   /**
-   * Sets the maximum number of connections per node in the HNSW graph.
-   * Higher values improve recall but increase memory usage and build time.
-   * Typical range: 8-64, default: 16
+   * Sets the Vamana per-layer graph degree (JVector {@code M}): the maximum number of connections kept
+   * per node on every layer, base layer included. Unlike hnswlib, this value is <b>not</b> doubled at
+   * the base layer, so to match an hnswlib {@code M} set {@code maxConnections = 2 * M}. Higher values
+   * improve recall but increase memory usage and build time. Typical range: 16-64, default: 32.
    *
-   * @param maxConnections the maximum number of connections
+   * @param maxConnections the per-layer graph degree
+   * @see LSMVectorIndexMetadata#maxConnections
    */
   public BucketLSMVectorIndexBuilder withMaxConnections(final int maxConnections) {
     if (maxConnections < 1)

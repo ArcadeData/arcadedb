@@ -58,8 +58,11 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1001,46 +1004,52 @@ public class BoltProtocolIT extends BaseGraphServerTest {
 
   @Test
   void concurrentSessions() throws Exception {
-    // Test that multiple concurrent sessions can work independently
+    // Concurrent sessions on one driver must not observe each other's data. The threads are released
+    // together by a latch so the sessions genuinely overlap rather than running back to back.
+    final int threadCount = 5;
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch finished = new CountDownLatch(threadCount);
+    final Queue<Throwable> errors = new ConcurrentLinkedQueue<>();
     final List<Thread> threads = new ArrayList<>();
-    final List<Throwable> errors = new ArrayList<>();
 
-    for (int i = 0; i < 5; i++) {
-      final int threadId = i;
-      final Thread thread = new Thread(() -> {
-        try (Driver driver = getDriver()) {
+    try (Driver driver = getDriver()) {
+      for (int i = 0; i < threadCount; i++) {
+        final int threadId = i;
+        final Thread thread = new Thread(() -> {
           try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+            start.await();
+
             // Each thread creates its own data
-            session.run("CREATE (n:ConcurrentTest {threadId: $id})", Map.of("id", threadId));
+            session.run("CREATE (n:ConcurrentTest {threadId: $id})", Map.of("id", threadId)).consume();
 
-            // Verify it can read it back
-            Result result = session.run("MATCH (n:ConcurrentTest {threadId: $id}) RETURN n.threadId AS id", Map.of("id", threadId));
-            if (result.hasNext()) {
-              long readId = result.next().get("id").asLong();
-              if (readId != threadId) {
-                throw new AssertionError("Expected " + threadId + " but got " + readId);
-              }
-            }
-          }
-        } catch (Throwable t) {
-          synchronized (errors) {
+            // Verify it can read back exactly its own node, and nobody else's
+            final Result result = session.run("MATCH (n:ConcurrentTest {threadId: $id}) RETURN n.threadId AS id",
+                Map.of("id", threadId));
+            final List<Record> records = result.list();
+            assertThat(records).as("thread %d reads back exactly one node", threadId).hasSize(1);
+            assertThat(records.getFirst().get("id").asLong()).isEqualTo(threadId);
+          } catch (final Throwable t) {
             errors.add(t);
+          } finally {
+            finished.countDown();
           }
-        }
-      });
-      threads.add(thread);
-      thread.start();
-    }
+        }, "concurrentSessions-" + threadId);
+        threads.add(thread);
+        thread.start();
+      }
 
-    // Wait for all threads to complete
-    for (Thread thread : threads) {
-      thread.join(10000); // 10 second timeout per thread
-    }
+      start.countDown();
+      assertThat(finished.await(30, TimeUnit.SECONDS)).as("all concurrent sessions completed").isTrue();
+      for (final Thread thread : threads)
+        thread.join();
 
-    // Check for errors
-    if (!errors.isEmpty()) {
-      throw new AssertionError("Concurrent test failed with " + errors.size() + " errors: " + errors.get(0).getMessage(),
-          errors.get(0));
+      assertThat(errors).as("no concurrent session failed").isEmpty();
+
+      // Every thread's write is visible once all sessions are done
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final Result total = session.run("MATCH (n:ConcurrentTest) RETURN count(n) AS total");
+        assertThat(total.next().get("total").asLong()).isEqualTo(threadCount);
+      }
     }
   }
 

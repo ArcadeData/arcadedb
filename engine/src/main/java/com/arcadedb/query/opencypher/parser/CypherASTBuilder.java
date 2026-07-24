@@ -73,6 +73,7 @@ import com.arcadedb.query.opencypher.rewriter.ComparisonNormalizer;
 import com.arcadedb.query.opencypher.rewriter.CompositeRewriter;
 import com.arcadedb.query.opencypher.rewriter.ConstantFolder;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.query.opencypher.rewriter.LabelPredicateHoister;
 import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -552,7 +553,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       whereClause = visitWhereClause(ctx.whereClause());
     }
 
-    return new MatchClause(pathPatterns, optional, whereClause);
+    // Move a "WHERE n:Label" conjunct into the node pattern so that the planner can resolve the node
+    // with a label scan instead of iterating every vertex type in the database (issue #5363)
+    return LabelPredicateHoister.hoist(new MatchClause(pathPatterns, optional, whereClause));
   }
 
   @Override
@@ -1254,11 +1257,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   private BooleanExpression parseBooleanFromExpression9(final Cypher25Parser.Expression9Context ctx) {
     // expression9: NOT* expression8
-    // Check for NOT
-    final boolean hasNot = ctx.NOT() != null && !ctx.NOT().isEmpty();
-    final BooleanExpression inner = parseBooleanFromExpression8(ctx.expression8());
+    BooleanExpression result = parseBooleanFromExpression8(ctx.expression8());
 
-    return hasNot ? new LogicalExpression(LogicalExpression.Operator.NOT, inner) : inner;
+    // Apply one NOT per matched token: a bare chain such as `NOT NOT p` must keep both negations
+    // (issue #5360), exactly like the parenthesized form `NOT (NOT p)`.
+    final int notCount = ctx.NOT() == null ? 0 : ctx.NOT().size();
+    for (int i = 0; i < notCount; i++)
+      result = new LogicalExpression(LogicalExpression.Operator.NOT, result);
+
+    return result;
   }
 
   private BooleanExpression parseBooleanFromExpression8(final Cypher25Parser.Expression8Context ctx) {

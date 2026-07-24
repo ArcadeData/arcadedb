@@ -83,11 +83,13 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
-   * Sets the maximum number of connections per node in the HNSW graph.
-   * Higher values improve recall but increase memory usage and build time.
-   * Typical range: 8-64, default: 16
+   * Sets the Vamana per-layer graph degree (JVector {@code M}): the maximum number of connections kept
+   * per node on every layer, base layer included. Unlike hnswlib, this value is <b>not</b> doubled at
+   * the base layer, so to match an hnswlib {@code M} set {@code maxConnections = 2 * M}. Higher values
+   * improve recall but increase memory usage and build time. Typical range: 16-64, default: 32.
    *
-   * @param maxConnections the maximum number of connections
+   * @param maxConnections the per-layer graph degree
+   * @see LSMVectorIndexMetadata#maxConnections
    */
   public TypeLSMVectorIndexBuilder withMaxConnections(final int maxConnections) {
     if (maxConnections < 1)

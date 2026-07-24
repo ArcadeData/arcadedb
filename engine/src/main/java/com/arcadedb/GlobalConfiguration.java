@@ -940,6 +940,35 @@ public enum GlobalConfiguration {
       Lower values cause more frequent snapshots and earlier log compaction.""",
       Long.class, 100_000L),
 
+  HA_SNAPSHOT_INTERVAL("arcadedb.ha.snapshotInterval", SCOPE.SERVER,
+      """
+      Interval in milliseconds between periodic Raft snapshot checkpoints on every node. \
+      HA_SNAPSHOT_THRESHOLD alone counts entries, so a low-write cluster can run for weeks without ever \
+      reaching it: the snapshot index stays frozen, no log segment is ever purged, and the Raft log grows \
+      until the volume is full. This time-based trigger bounds the retained log by wall-clock age instead. \
+      An ArcadeDB snapshot is a zero-byte marker (the database files on disk are the durable state), so a \
+      tick is cheap; it is additionally a no-op when fewer than HA_SNAPSHOT_MIN_ENTRIES entries were \
+      applied since the last snapshot. Set to 0 to disable and rely on HA_SNAPSHOT_THRESHOLD only. \
+      Note this interval also bounds the reaction time to disk pressure, not just steady-state log \
+      retention: the free-space escalation described in HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC fires on the \
+      next tick, so a volume that fills faster than one interval needs a shorter interval.""",
+      Long.class, 300_000L),
+
+  HA_SNAPSHOT_MIN_ENTRIES("arcadedb.ha.snapshotMinEntries", SCOPE.SERVER,
+      """
+      Minimum number of Raft log entries applied since the last snapshot before a periodic \
+      HA_SNAPSHOT_INTERVAL tick actually takes one. Keeps an idle cluster from rewriting a snapshot marker \
+      that would not advance the purge point. Values below 1 are clamped to 1.""",
+      Long.class, 64L),
+
+  HA_RAFT_STORAGE_MIN_FREE_SPACE_PERC("arcadedb.ha.raftStorageMinFreeSpacePerc", SCOPE.SERVER,
+      """
+      Percentage of free space on the volume hosting HA_RAFT_STORAGE_DIRECTORY below which the periodic \
+      snapshot tick escalates: it forces a snapshot and log purge regardless of HA_SNAPSHOT_MIN_ENTRIES and \
+      logs a throttled WARNING. Guards against the Raft log filling the volume, after which Ratis marks the \
+      log permanently failed and the node rejects every append until restarted. Set to 0 to disable the check.""",
+      Integer.class, 20),
+
   HA_LOG_VERBOSE("arcadedb.ha.logVerbose", SCOPE.SERVER,
       "HA verbose logging level: 0=off, 1=basic (elections, leader changes), 2=detailed (replication, forwarding), 3=trace (every state machine apply)",
       Integer.class, 0),
@@ -1016,6 +1045,10 @@ public enum GlobalConfiguration {
   HA_PEER_CHANNEL_RESET_DURATION("arcadedb.ha.peerChannelResetDuration", SCOPE.SERVER,
       "Time in milliseconds a follower must stay continuously unreachable (no successful RPC, beyond HA_PEER_UNREACHABLE_THRESHOLD) before the leader resets that one follower's replication gRPC channel, closing the wedged channel so the next send re-resolves DNS and reconnects. Recovers a leader appender channel stuck on a stale DNS result after a follower restarts with a new address (e.g. a Kubernetes pod-IP change, issue #4696) without a leadership transfer, so there is no flapping risk. Only the unreachable peer's channel is touched. While the follower stays unreachable the reset is retried once per interval, up to a small bounded number of attempts, after which the leader gives up and logs for operator intervention; the counter re-arms when the follower reconnects. Requires HA_PEER_UNREACHABLE_THRESHOLD > 0 (its 'unreachable' signal). Set to 0 to disable the automatic channel reset (the manual leadership transfer remains available).",
       Long.class, 60000L),
+
+  HA_PEER_CHANNEL_RESET_ESCALATION("arcadedb.ha.peerChannelResetEscalation", SCOPE.SERVER,
+      "When the bounded HA_PEER_CHANNEL_RESET_DURATION retry budget is exhausted and a follower's replication channel is still dead, transfer leadership to a healthy peer so the new leader builds a fresh appender to that follower (issue #5346). Without it the leader stays wedged until an operator restarts the process, because the reset streak only re-arms when the follower becomes reachable again. The target is chosen with the same rules as a manual step-down and is never the wedged follower itself; when no healthy target exists the leader keeps the previous behaviour and logs for operator intervention. When the follower is unreachable for a reason a fresh appender cannot fix, each healthy peer escalates it at most once per 30-minute cooldown before the cluster settles on the operator-intervention path, so the leadership churn is bounded rather than perpetual. Set to false to only log.",
+      Boolean.class, true),
 
   HA_RESYNC_CATCHUP_LAG_THRESHOLD("arcadedb.ha.resyncCatchupLagThreshold", SCOPE.SERVER,
       "Minimum apply backlog (Raft log entries a follower has committed/received but not yet applied to its state machine) before the catch-up resync narrative is logged. This is a locally observable signal, not the distance from the leader's commit index. Keeps the small steady-state apply backlog under write load from being narrated; only a genuine post-restart burst crosses this threshold. The narrative finishes once the backlog drains to within a tenth of it.",
@@ -1277,6 +1310,11 @@ public enum GlobalConfiguration {
 
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
+
+  POSTGRES_QUOTED_IDENTIFIERS("arcadedb.postgres.quotedIdentifiers", SCOPE.SERVER, """
+      Interprets double-quoted tokens in SQL statements received through the Postgres wire protocol as identifiers, as \
+      PostgreSQL and the SQL standard mandate, instead of as string literals. Set to false to restore the legacy \
+      behaviour where a double-quoted token is a string literal. Default is true""", Boolean.class, true),
 
   // BOLT (Neo4j)
   BOLT_PORT("arcadedb.bolt.port", SCOPE.SERVER,

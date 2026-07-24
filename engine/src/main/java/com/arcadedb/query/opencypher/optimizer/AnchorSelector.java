@@ -324,68 +324,67 @@ public class AnchorSelector {
       return predicates;
     }
 
-    for (final WhereClause whereClause : plan.getWhereFilters()) {
-      final BooleanExpression condition = whereClause.getConditionExpression();
-      if (condition == null) {
-        continue;
-      }
-
-      // Check if it's a comparison expression
-      if (condition instanceof ComparisonExpression) {
-        final ComparisonExpression comparison =
-            (ComparisonExpression) condition;
-
-        // Only handle EQUALS comparisons
-        if (comparison.getOperator() != ComparisonExpression.Operator.EQUALS) {
-          continue;
-        }
-
-        // Check if left side is a property access on our variable
-        final Expression left = comparison.getLeft();
-        final Expression right = comparison.getRight();
-
-        if (left instanceof PropertyAccessExpression) {
-          final PropertyAccessExpression propAccess =
-              (PropertyAccessExpression) left;
-
-          if (propAccess.getVariableName().equals(variable)) {
-            // Extract the property name and value
-            final String propertyName = propAccess.getPropertyName();
-
-            // Try to extract constant value from right side
-            if (right instanceof LiteralExpression) {
-              final Object value = ((LiteralExpression) right).getValue();
-              predicates.put(propertyName, value);
-            } else if (right instanceof ParameterExpression) {
-              // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
-              predicates.put(propertyName, right);
-            }
-          }
-        }
-
-        // Also check reverse: value = property (e.g., 500 = p.id)
-        if (right instanceof PropertyAccessExpression) {
-          final PropertyAccessExpression propAccess =
-              (PropertyAccessExpression) right;
-
-          if (propAccess.getVariableName().equals(variable)) {
-            final String propertyName = propAccess.getPropertyName();
-
-            if (left instanceof LiteralExpression) {
-              final Object value = ((LiteralExpression) left).getValue();
-              predicates.put(propertyName, value);
-            } else if (left instanceof ParameterExpression) {
-              // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
-              predicates.put(propertyName, left);
-            }
-          }
-        }
-      }
-
-      // TODO: Handle logical expressions (AND/OR) to extract more predicates
-    }
+    for (final WhereClause whereClause : plan.getWhereFilters())
+      extractEqualityPredicatesFromExpression(variable, whereClause.getConditionExpression(), predicates);
 
     return predicates;
+  }
+
+  /**
+   * Recursively extracts equality predicates from a boolean expression (issue #5362). Parentheses and
+   * AND branches are traversed, so {@code WHERE (n.id = 1) AND (n.id = 1)} - or any equality merely
+   * ANDed with other conditions - still seeds an index seek instead of degrading to a label scan.
+   * <p>
+   * Only AND is traversed: an OR/XOR/NOT branch is not guaranteed to hold for every returned row, so
+   * its equality cannot drive the anchor. The whole WHERE clause is still evaluated by the Filter
+   * operator above the anchor, so keeping the first binding for a property is always safe (a
+   * contradictory {@code n.id = 1 AND n.id = 2} simply seeks 1 and is then filtered out).
+   */
+  private void extractEqualityPredicatesFromExpression(final String variable, final BooleanExpression expression,
+      final Map<String, Object> predicates) {
+    if (expression == null)
+      return;
+
+    if (expression instanceof BooleanWrapperExpression wrapper) {
+      extractEqualityPredicatesFromExpression(variable, wrapper.getBooleanExpression(), predicates);
+      return;
+    }
+
+    if (expression instanceof LogicalExpression logical) {
+      if (logical.getOperator() == LogicalExpression.Operator.AND) {
+        extractEqualityPredicatesFromExpression(variable, logical.getLeft(), predicates);
+        extractEqualityPredicatesFromExpression(variable, logical.getRight(), predicates);
+      }
+      return;
+    }
+
+    if (!(expression instanceof ComparisonExpression comparison))
+      return;
+
+    // Only handle EQUALS comparisons
+    if (comparison.getOperator() != ComparisonExpression.Operator.EQUALS)
+      return;
+
+    final Expression left = comparison.getLeft();
+    final Expression right = comparison.getRight();
+
+    // Check if left side is a property access on our variable
+    if (left instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable)) {
+      // Try to extract constant value from right side
+      if (right instanceof LiteralExpression literal)
+        predicates.putIfAbsent(propAccess.getPropertyName(), literal.getValue());
+      else if (right instanceof ParameterExpression)
+        // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
+        predicates.putIfAbsent(propAccess.getPropertyName(), right);
+    }
+
+    // Also check reverse: value = property (e.g., 500 = p.id)
+    if (right instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable)) {
+      if (left instanceof LiteralExpression literal)
+        predicates.putIfAbsent(propAccess.getPropertyName(), literal.getValue());
+      else if (left instanceof ParameterExpression)
+        predicates.putIfAbsent(propAccess.getPropertyName(), left);
+    }
   }
 
   /**
