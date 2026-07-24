@@ -330,6 +330,9 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     // Low threshold of 5 so we can easily trigger async rebuild
     final int lowThreshold = 5;
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, lowThreshold);
+    // This test pins the absolute trigger threshold, so disable the graph-size scaling added for issue #5391
+    // (which would otherwise raise the effective threshold to 20% of the 1100-vector graph).
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
 
     // Create schema with vector index
     database.transaction(() -> {
@@ -453,6 +456,8 @@ class LSMVectorIndexRebuildTest extends TestHelper {
   void asyncRebuildShouldBeRetriggeredForMutationsDuringBuild() throws Exception {
     final int threshold = 5;
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, threshold);
+    // This test pins the absolute trigger threshold, so disable the graph-size scaling added for issue #5391.
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
     // Disable the inactivity timer so only the threshold-triggered async rebuild under test can flush the
     // counter; otherwise the timer could fire mid-test and reset the counter, masking the behavior asserted.
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
@@ -516,43 +521,34 @@ class LSMVectorIndexRebuildTest extends TestHelper {
         database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
     });
 
-    // Wait (bounded) for the async rebuild to finish.
-    Awaitility.await("async rebuild finished")
-        .atMost(Duration.ofSeconds(30))
-        .pollInterval(Duration.ofMillis(100))
-        .until(() -> lsmIndex.getStats().get("asyncRebuildInProgress") == 0L);
+    // The vectors inserted during the build must not be swallowed by that build's own bookkeeping: they stay
+    // pending until a follow-up rebuild picks them up, and none of them may be lost. The follow-up is driven
+    // here by a search: this test disables the inactivity timer, and whether the chained rebuild added in issue
+    // #5391 catches this batch depends on whether it landed before or after the first rebuild's completion
+    // check - that chain is covered on its own by
+    // LSMVectorIndexIncrementalIngestScalingTest.graphShouldKeepAbsorbingPendingVectorsWithoutFurtherSearches.
+    final long totalInserted = LARGE_INDEX_VECTORS + threshold + vectorsDuringBuild;
+    Awaitility.await("every vector inserted during the previous rebuild reaches the graph")
+        .atMost(Duration.ofSeconds(60))
+        .pollInterval(Duration.ofMillis(200))
+        .untilAsserted(() -> {
+          if (lsmIndex.getStats().get("mutationsSinceRebuild") > 0)
+            lsmIndex.findNeighborsFromVector(queryVector, 10);
 
-    // After the async rebuild completes, the mutations added DURING the build must be preserved.
-    stats = lsmIndex.getStats();
-    final long mutationsAfterRebuild = stats.get("mutationsSinceRebuild");
-    assertThat(mutationsAfterRebuild)
-        .as("Mutations added during async rebuild should be preserved in the counter")
-        .isGreaterThan(0L);
+          final Map<String, Long> s = lsmIndex.getStats();
+          assertThat(s.get("mutationsSinceRebuild"))
+              .as("Once rebuilds settle, no mutation should be left pending")
+              .isEqualTo(0L);
+          assertThat(s.get("graphState"))
+              .as("Graph state should be IMMUTABLE (1) once rebuilds settle")
+              .isEqualTo(1L); // GraphState.IMMUTABLE ordinal
+          assertThat(s.get("graphNodeCount"))
+              .as("Every vector inserted during the previous rebuild must end up in the graph")
+              .isEqualTo(totalInserted);
+        });
 
-    // Graph state: MUTABLE (2) if delta vectors exist, or IMMUTABLE (1) if live builder
-    // handled them directly via addGraphNode()
-    assertThat(stats.get("graphState"))
-        .as("Graph state should be MUTABLE (2) or IMMUTABLE (1) after rebuild with concurrent mutations")
-        .isIn(1L, 2L);
-
-    // A follow-up search with no concurrent inserts starts a clean rebuild that drains the counter to 0.
-    if (mutationsAfterRebuild >= threshold) {
-      results = lsmIndex.findNeighborsFromVector(queryVector, 10);
-      assertThat(results).isNotEmpty();
-
-      Awaitility.await("clean async rebuild drains the mutation counter and settles the graph")
-          .atMost(Duration.ofSeconds(30))
-          .pollInterval(Duration.ofMillis(100))
-          .untilAsserted(() -> {
-            final Map<String, Long> s = lsmIndex.getStats();
-            assertThat(s.get("mutationsSinceRebuild"))
-                .as("After a clean rebuild with no concurrent inserts, the counter should drain to 0")
-                .isEqualTo(0L);
-            assertThat(s.get("graphState"))
-                .as("Graph state should be IMMUTABLE (1) after a clean rebuild")
-                .isEqualTo(1L); // GraphState.IMMUTABLE ordinal
-          });
-    }
+    results = lsmIndex.findNeighborsFromVector(queryVector, 10);
+    assertThat(results).isNotEmpty();
   }
 
   // Issue #3737: buffered vectors below the rebuild threshold are flushed and the graph rebuilt after the inactivity timeout fires.
@@ -722,6 +718,8 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     final int oomEmbeddingDim = 16;
     final int vectorsPerIndex = 1100; // > ASYNC_REBUILD_MIN_GRAPH_SIZE (1000)
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, threshold);
+    // This test pins the absolute trigger threshold, so disable the graph-size scaling added for issue #5391.
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
     // Disable inactivity rebuild to control timing precisely
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
 

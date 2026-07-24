@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
@@ -98,6 +99,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -108,6 +110,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -176,6 +179,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile PQVectors            pqVectors;
   private volatile ProductQuantization  productQuantization;
 
+  // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
+  private final ReentrantLock graphBuildLock = new ReentrantLock();
+
   // Async graph rebuild support (issue #3679): when mutations reach the configured threshold,
   // the graph is rebuilt in a background daemon thread and hot-swapped when ready.
   // This prevents vectorNeighbors queries from blocking for minutes on large indexes.
@@ -199,11 +205,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Delta vectors inserted since last graph build, cached in RAM for brute-force scan during search.
   // Writers (put/remove/rebuild) hold write lock; readers (search) take a volatile snapshot.
   private static final class DeltaVectorEntry {
-    final int     vectorId;
-    final RID     rid;
-    final float[] vector;
+    final int             vectorId;
+    final RID             rid;
+    // Stored already converted to the JVector representation: the delta buffer is scanned in full on every
+    // search, so converting once at insert time (instead of once per entry per query) removes a per-query
+    // allocation of the entire delta buffer - the dominant source of GC pressure at scale (issue #5391).
+    final VectorFloat<?> vector;
 
-    DeltaVectorEntry(final int vectorId, final RID rid, final float[] vector) {
+    DeltaVectorEntry(final int vectorId, final RID rid, final VectorFloat<?> vector) {
       this.vectorId = vectorId;
       this.rid = rid;
       this.vector = vector;
@@ -1092,6 +1101,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param graphCallback Optional callback for graph build progress
    */
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
+    // Serialize graph builds for this index. The index write lock used to do this implicitly by covering the
+    // whole preparation phase; now that the O(index size) validation runs unlocked (issue #5391), two builds
+    // could interleave their vectorIndex re-sync and their ordinal-map publication and leave a searcher with an
+    // ordinal map pointing at locations another build had just cleared. Builders wait on this mutex; searches
+    // and inserts never touch it, so it does not reintroduce the stall.
+    graphBuildLock.lock();
+    try {
+      buildGraphFromScratchExclusively(graphCallback);
+    } finally {
+      graphBuildLock.unlock();
+    }
+  }
+
+  private void buildGraphFromScratchExclusively(final GraphBuildCallback graphCallback) {
     // Reset live builder — full rebuild creates a new graph with different ordinal mapping
     if (liveBuilder != null) {
       try {
@@ -1271,14 +1294,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
         .mapToInt(v -> v.vectorId).sorted().toArray();
 
-    // Acquire write lock for updating vectorIndex and preparing build
+    // Acquire the write lock only to re-sync vectorIndex with what the pages actually hold. The
+    // validation/preload phase that follows is O(active vectors) - one document read plus one vector copy each -
+    // and used to run under this same lock, freezing every insert and every search on the index for the whole
+    // rebuild. On a 200K-vector index that is minutes of blocked commits, surfacing as commit lock timeouts and
+    // multi-minute query stalls (issue #5391). It only touches thread-confined structures plus the internally
+    // synchronized vectorIndex, so it now runs unlocked.
     lock.writeLock().lock();
-    final RandomAccessVectorValues vectors;
-    final int[] finalActiveVectorIds;
+    final int[] vectorIds;
     try {
       // CRITICAL: If we couldn't read any entries from pages (e.g., during database close),
       // DON'T clear vectorIndex - use what's already in memory!
-      final int[] vectorIds;
       if (!ridToLatestVector.isEmpty()) {
         // Update vectorIndex to match what we found on pages (sync it with disk state)
         // This ensures vectorIndex is consistent with the graph we're about to build
@@ -1300,7 +1326,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
             .log(this, Level.SEVERE, "FALLBACK: Built %d active vector IDs from in-memory vectorIndex",
                 vectorIds.length);
       }
+    } finally {
+      lock.writeLock().unlock();
+    }
 
+    final RandomAccessVectorValues vectors;
+    final int[] finalActiveVectorIds;
+    {
       // Create a SNAPSHOT of vectorIndex for JVector to use safely
       final String vectorProp =
           metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
@@ -1325,6 +1357,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final Map<Integer, VectorFloat<?>> preloadedVectors = new HashMap<>(preloadBudget * 4 / 3 + 1);
       final List<Integer> validVectorIds = new ArrayList<>(expectedSize);
       int skippedDeletedDocs = 0;
+
+      // Index the delta buffer by vector id so the document-based validation below can reuse the vectors it
+      // already holds in RAM (issue #5391). Only references are stored, so this costs a few tens of bytes per
+      // pending vector and saves a record read plus a full vector copy for each of them.
+      final Map<Integer, VectorFloat<?>> deltaSnapshotById;
+      if (inlineQuantization)
+        deltaSnapshotById = Collections.emptyMap();
+      else {
+        final List<DeltaVectorEntry> deltaSnapshot = deltaVectors;
+        deltaSnapshotById = new HashMap<>(deltaSnapshot.size() * 4 / 3 + 1);
+        for (final DeltaVectorEntry e : deltaSnapshot)
+          deltaSnapshotById.put(e.vectorId, e.vector);
+      }
 
       // Progress tracking for validation phase
       final int totalVectorsToValidate = vectorIds.length;
@@ -1379,29 +1424,44 @@ public class LSMVectorIndex implements Index, IndexInternal {
               skippedDeletedDocs++;
             }
           } else {
-            // Without quantization: validate by reading from document.
-            try {
-              final Record record = database.lookupByRID(loc.rid, false);
-
-              final Document doc = (Document) record;
-              final Object vectorObj = doc.get(vectorProp);
-
-              if (vectorObj != null) {
-                final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
-
-                if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
-                  vectorLocationSnapshot.put(vectorId, loc);
-                  validVectorIds.add(vectorId);
-                  preloadedVectors.put(vectorId, vts.createFloatVector(vector));
-                }
+            // Without quantization the vector only lives in the document, so every vector costs one record
+            // read plus one on-heap copy. The delta buffer already holds the converted vector for everything
+            // ingested since the last rebuild - which under sustained ingestion is most of what this rebuild is
+            // absorbing - so reuse those instances instead of re-reading and re-copying them (issue #5391).
+            // Delta entries are keyed by the same monotonic vector id the pages carry, and an update removes
+            // the old entry and adds a new id, so a hit here can never be a stale version of the vector.
+            final VectorFloat<?> fromDelta = deltaSnapshotById.get(vectorId);
+            if (fromDelta != null) {
+              if (fromDelta.length() == metadata.dimensions && !VectorUtils.isZeroVector(fromDelta)) {
+                vectorLocationSnapshot.put(vectorId, loc);
+                validVectorIds.add(vectorId);
+                preloadedVectors.put(vectorId, fromDelta);
               }
+            } else {
+              // Without quantization: validate by reading from document.
+              try {
+                final Record record = database.lookupByRID(loc.rid, false);
 
-            } catch (final RecordNotFoundException e) {
-              // Document was deleted - skip this vector
-              skippedDeletedDocs++;
-            } catch (final Exception e) {
-              // Other errors - skip this vector
-              skippedDeletedDocs++;
+                final Document doc = (Document) record;
+                final Object vectorObj = doc.get(vectorProp);
+
+                if (vectorObj != null) {
+                  final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
+
+                  if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
+                    vectorLocationSnapshot.put(vectorId, loc);
+                    validVectorIds.add(vectorId);
+                    preloadedVectors.put(vectorId, vts.createFloatVector(vector));
+                  }
+                }
+
+              } catch (final RecordNotFoundException e) {
+                // Document was deleted - skip this vector
+                skippedDeletedDocs++;
+              } catch (final Exception e) {
+                // Other errors - skip this vector
+                skippedDeletedDocs++;
+              }
             }
           }
         }
@@ -1427,13 +1487,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Use validated vector IDs instead of unfiltered ones
       // IMPORTANT: Must be sorted to match the ordinal order used when loading from disk
       final int[] filteredVectorIds = validVectorIds.stream().sorted().mapToInt(Integer::intValue).toArray();
-      this.ordinalToVectorId = filteredVectorIds;
       finalActiveVectorIds = filteredVectorIds;
 
       if (filteredVectorIds.length == 0) {
-        this.graphIndex = null;
-        mutationsSinceSerialize.addAndGet(-mutationsAtBuildStart);
-        this.graphState = deltaVectors.isEmpty() ? GraphState.IMMUTABLE : GraphState.MUTABLE;
+        // Re-acquire the write lock only to publish index state (issue #5391).
+        lock.writeLock().lock();
+        try {
+          this.ordinalToVectorId = filteredVectorIds;
+          this.graphIndex = null;
+          mutationsSinceSerialize.addAndGet(-mutationsAtBuildStart);
+          this.graphState = deltaVectors.isEmpty() ? GraphState.IMMUTABLE : GraphState.MUTABLE;
+        } finally {
+          lock.writeLock().unlock();
+        }
         LogManager.instance().log(this, Level.INFO, "No vectors to index, graph is null for index: " + indexName);
         return;
       }
@@ -1457,10 +1523,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       vectors = pageVectors;
 
-      // Mark that graph building is in progress to prevent new inserts
-      this.graphState = GraphState.MUTABLE;
-    } finally {
-      lock.writeLock().unlock();
+      // Publish the ordinal mapping and the build state under the write lock so searches never observe an
+      // ordinal map that disagrees with the vectors snapshot they captured (issue #4581).
+      lock.writeLock().lock();
+      try {
+        this.ordinalToVectorId = filteredVectorIds;
+        this.graphState = GraphState.MUTABLE;
+      } finally {
+        lock.writeLock().unlock();
+      }
     }
 
     try {
@@ -1570,9 +1641,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           builtGraph = builder.build(vectors);
         } finally {
-          // Stop progress monitoring
+          // Stop progress monitoring. Interrupt as well as flagging: the monitor sleeps 100ms between polls,
+          // so flag-only shutdown made every rebuild pay up to an extra 100ms of pure wait (issue #5391).
           buildComplete.set(true);
           if (progressMonitor != null) {
+            progressMonitor.interrupt();
             try {
               progressMonitor.join(1000); // Wait up to 1 second for clean shutdown
             } catch (final InterruptedException e) {
@@ -1963,11 +2036,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (graphState != GraphState.MUTABLE)
       return;
 
-    if (mutationsSinceSerialize.get() < getMutationsBeforeRebuild())
+    if (mutationsSinceSerialize.get() < getEffectiveMutationsBeforeRebuild())
       return; // Not enough mutations yet
 
     LogManager.instance().log(this, Level.INFO,
-        "Rebuilding graph after " + mutationsSinceSerialize.get() + " mutations (threshold: " + getMutationsBeforeRebuild()
+        "Rebuilding graph after " + mutationsSinceSerialize.get() + " mutations (threshold: " + getEffectiveMutationsBeforeRebuild()
             + ", index: " + indexName + ")");
 
     try {
@@ -2003,7 +2076,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return;
 
     final int mutations = mutationsSinceSerialize.get();
-    final int threshold = getMutationsBeforeRebuild();
+    final int threshold = getEffectiveMutationsBeforeRebuild();
     final boolean isSmallGraph = graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE;
 
     if (isSmallGraph) {
@@ -2037,7 +2110,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     LogManager.instance().log(this, Level.INFO,
         "Starting async graph rebuild (accumulated %d mutations, threshold: %d, index: %s)",
-        mutations, getMutationsBeforeRebuild(), indexName);
+        mutations, getEffectiveMutationsBeforeRebuild(), indexName);
 
     asyncRebuildThread = new Thread(() -> {
       try {
@@ -2051,14 +2124,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
         asyncRebuildThread = null;
         return;
       }
+      boolean completed = false;
       try {
         LogManager.instance().log(this, Level.INFO,
             "Acquired rebuild permit for index: %s (available permits: %d)",
             indexName, REBUILD_SEMAPHORE.availablePermits());
         buildGraphFromScratch();
+        completed = true;
         LogManager.instance().log(this, Level.INFO,
             "Async graph rebuild completed for index: %s", indexName);
-      } catch (final Exception e) {
+      } catch (final Exception | AssertionError e) {
+        // AssertionError too: JVector validates with `assert`, and an escaping one would kill this daemon
+        // thread past the point where the in-progress flag is cleared.
         if (Thread.currentThread().isInterrupted()) {
           LogManager.instance().log(this, Level.INFO,
               "Async graph rebuild cancelled for index: %s", indexName);
@@ -2071,6 +2148,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         asyncRebuildInProgress = false;
         asyncRebuildThread = null;
       }
+
+      // A rebuild only absorbs the vectors that were already persisted when it started; anything ingested
+      // while it ran stays in the RAM-resident delta buffer. Waiting for the next search to notice leaves the
+      // graph frozen under sustained ingestion - every new vector then piles up in the delta buffer and every
+      // query degrades into a full brute-force scan over it (issue #5391). Chain straight into another rebuild
+      // instead. Only a rebuild that ran to completion chains, so a failing one cannot spin, and each chained
+      // rebuild subtracts the mutations it snapshotted, so the counter cannot be re-served indefinitely without
+      // new writes actually arriving.
+      if (completed && !Thread.currentThread().isInterrupted() && isValid()
+          && mutationsSinceSerialize.get() >= getEffectiveMutationsBeforeRebuild())
+        startAsyncGraphRebuild();
     }, "VectorIndex-AsyncRebuild-" + indexName);
     asyncRebuildThread.setDaemon(true);
     asyncRebuildThread.start();
@@ -2739,18 +2827,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * Brute-force scan of delta vectors (inserted since last graph rebuild) and merge with graph search results.
-   * Cost is negligible for small delta buffers (microseconds for ≤100 vectors).
+   * <p>
+   * The delta buffer holds every vector ingested since the last graph rebuild, so under sustained ingestion it
+   * can grow to hundreds of thousands of entries. The scan therefore keeps a bounded top-k heap and prunes on
+   * the current k-th distance instead of appending every candidate and sorting the whole list: allocation is
+   * O(k) per query rather than O(delta), and the sort is O(delta log k) rather than O(delta log delta)
+   * (issue #5391). Entries are already stored as {@link VectorFloat}, so scoring allocates nothing at all.
    */
   private void mergeWithDeltaScan(final VectorFloat<?> queryVectorFloat, final int k,
       final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results) {
     final List<DeltaVectorEntry> currentDelta = deltaVectors; // volatile snapshot
-    if (currentDelta.isEmpty())
+    if (currentDelta.isEmpty() || k <= 0)
       return;
 
     // Collect already-seen RIDs from graph results to avoid duplicates
     final RidHashSet seenRIDs = new RidHashSet(results.size());
     for (final Pair<RID, Float> r : results)
       seenRIDs.add(r.getFirst());
+
+    // Max-heap on distance: the head is the current worst kept candidate, so the k-th best distance is O(1)
+    // to read and the worst entry is O(log k) to evict.
+    final PriorityQueue<Pair<RID, Float>> best = new PriorityQueue<>(Math.max(1, k),
+        (a, b) -> Float.compare(b.getSecond(), a.getSecond()));
+    best.addAll(results);
+    while (best.size() > k)
+      best.poll();
 
     boolean added = false;
     for (final DeltaVectorEntry delta : currentDelta) {
@@ -2763,16 +2864,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (loc != null && loc.deleted)
         continue;
 
-      final VectorFloat<?> deltaVf = vts.createFloatVector(delta.vector);
-      final float score = metadata.similarityFunction.compare(queryVectorFloat, deltaVf);
-      results.add(new Pair<>(bindRid(delta.rid), scoreToDistance(metadata.similarityFunction, score)));
+      final float score = metadata.similarityFunction.compare(queryVectorFloat, delta.vector);
+      final float distance = scoreToDistance(metadata.similarityFunction, score);
+
+      // Prune before allocating: a candidate no better than the current k-th best cannot make the result set.
+      if (best.size() >= k && distance >= best.peek().getSecond())
+        continue;
+
+      best.add(new Pair<>(bindRid(delta.rid), distance));
+      if (best.size() > k)
+        best.poll();
       added = true;
     }
 
     if (added) {
+      results.clear();
+      results.addAll(best);
       results.sort((a, b) -> Float.compare(a.getSecond(), b.getSecond()));
-      if (results.size() > k)
-        results.subList(k, results.size()).clear();
     }
   }
 
@@ -2982,7 +3090,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         LogManager.instance()
-            .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
+            .log(this, Level.FINE, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
                 searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalMap.length);
 
         // Extract RIDs and scores from search results using ordinal mapping
@@ -3027,7 +3135,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         LogManager.instance()
-            .log(this, Level.INFO, "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)",
+            .log(this, Level.FINE, "Vector search returned %d results (skipped: %d out of bounds, %d deleted/null)",
                 results.size(),
                 skippedOutOfBounds, skippedDeletedOrNull);
         return results;
@@ -3546,7 +3654,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Add to delta buffer so the vector is visible in search via mergeWithDeltaScan.
           // Skipping expensive O(log n) HNSW graph inserts during commit replay (issue #3864):
           // the inactivity rebuild timer will incorporate delta vectors into the graph.
-          deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
+          // The already-converted VectorFloat is reused so the search path never re-converts (issue #5391).
+          deltaVectors.add(new DeltaVectorEntry(id, rid, vf));
 
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
             this.graphState = GraphState.MUTABLE;
@@ -3634,8 +3743,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (liveVectorValues != null)
           liveVectorValues.addVector(id, vf);
 
-        // Add to delta buffer for search visibility via mergeWithDeltaScan
-        deltaVectors.add(new DeltaVectorEntry(id, rid, vector));
+        // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
+        // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
+        deltaVectors.add(new DeltaVectorEntry(id, rid, vf));
 
         mutationsSinceSerialize.incrementAndGet();
       }
@@ -4224,6 +4334,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD);
     stats.put("mutationsThreshold", metadata.mutationsBeforeRebuild > 0 ?
         (long) metadata.mutationsBeforeRebuild : (long) defaultMutationsThreshold);
+    // The threshold actually used: the absolute one above, raised to a fraction of the graph size so a large
+    // index is not fully rebuilt for a trickle of inserts (issue #5391).
+    stats.put("effectiveMutationsThreshold", (long) getEffectiveMutationsBeforeRebuild());
 
     // Delta vectors cached in RAM for brute-force scan between rebuilds
     stats.put("deltaVectorsCount", (long) deltaVectors.size());
@@ -4831,6 +4944,35 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Threshold actually used to decide whether the graph should be rebuilt.
+   * <p>
+   * A rebuild always re-indexes the whole graph, so triggering one every fixed number of mutations means
+   * spending O(index size) to absorb a handful of vectors: at 200K vectors the engine rebuilds a 200K-node graph
+   * for every 100 inserts, which is the escalating GC and CPU load reported in issue #5391 and makes bulk
+   * ingestion quadratic. Scaling the threshold with the current graph size amortizes rebuilds geometrically
+   * (a constant number of full rebuilds per doubling), while pending vectors stay exactly searchable through the
+   * delta buffer in the meantime. The result is capped so the delta buffer's RAM stays bounded.
+   *
+   * @return Number of pending mutations that trigger a graph rebuild
+   */
+  private int getEffectiveMutationsBeforeRebuild() {
+    final int absolute = getMutationsBeforeRebuild();
+    final ImmutableGraphIndex graph = this.graphIndex;
+    if (graph == null)
+      return absolute;
+
+    final ContextConfiguration configuration = mutable.getDatabase().getConfiguration();
+    final float ratio = configuration.getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO);
+    if (ratio <= 0f)
+      return absolute;
+
+    final long scaled = (long) (graph.size() * (double) ratio);
+    final int maxPending = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MAX_PENDING_MUTATIONS);
+    final long capped = maxPending > 0 ? Math.min(scaled, maxPending) : scaled;
+    return (int) Math.max(absolute, capped);
+  }
+
+  /**
    * Get the inactivity rebuild timeout from configuration (per-index metadata or global default).
    *
    * @return Inactivity timeout in milliseconds, or 0 if disabled
@@ -4902,7 +5044,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
               scheduleInactivityRebuild();
             }
           }
-        } catch (final Exception e) {
+        } catch (final Exception | AssertionError e) {
+          // AssertionError too: JVector validates with `assert`, so a build over an index whose vectors can no
+          // longer be read (a closing database, say) throws one straight through. Letting it escape kills the
+          // shared TimerThread, and the failure then surfaces on whatever unrelated work runs next.
           LogManager.instance().log(this, Level.WARNING,
               "Error during inactivity rebuild for index %s: %s", indexName, e.getMessage());
         }

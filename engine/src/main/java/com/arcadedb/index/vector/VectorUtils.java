@@ -63,6 +63,17 @@ public final class VectorUtils {
   }
 
   /**
+   * Checks if a JVector vector is all zeros, for callers that already hold the converted representation and
+   * would otherwise have to materialize a {@code float[]} copy just to run the check.
+   */
+  public static boolean isZeroVector(final VectorFloat<?> vector) {
+    for (int i = 0; i < vector.length(); i++)
+      if (vector.get(i) != 0.0f)
+        return false;
+    return true;
+  }
+
+  /**
    * Dequantizes a signed int8 byte array into float values using the Cohere/OpenAI calibration
    * convention: {@code value / 127.0f}. Used on the read path when an HNSW index is built over a
    * {@link VectorEncoding#INT8}-encoded property; JVector 4.0.0-rc.8 still requires
