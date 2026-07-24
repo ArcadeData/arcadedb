@@ -33,6 +33,7 @@ import com.arcadedb.server.mcp.tools.ProfilerStartTool;
 import com.arcadedb.server.mcp.tools.ProfilerStatusTool;
 import com.arcadedb.server.mcp.tools.ProfilerStopTool;
 import com.arcadedb.server.mcp.tools.QueryTool;
+import com.arcadedb.server.mcp.tools.SampleRecordsTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.mcp.tools.SetServerSettingTool;
 import com.arcadedb.server.mcp.tools.UpsertEntityTool;
@@ -64,6 +65,7 @@ public class MCPDispatcher {
     TOOLS_LIST.put(GetSchemaTool.getDefinition());
     TOOLS_LIST.put(QueryTool.getDefinition());
     TOOLS_LIST.put(ExecuteCommandTool.getDefinition());
+    TOOLS_LIST.put(SampleRecordsTool.getDefinition());
     TOOLS_LIST.put(FullTextSearchTool.getDefinition());
     TOOLS_LIST.put(UpsertEntityTool.getDefinition());
     TOOLS_LIST.put(UpsertRelationshipTool.getDefinition());
@@ -223,6 +225,7 @@ public class MCPDispatcher {
         case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
         case "query" -> QueryTool.execute(server, user, args, config);
         case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
+        case "sample_records" -> SampleRecordsTool.execute(server, user, args, config);
         case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
         case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
         case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);
@@ -289,6 +292,7 @@ public class MCPDispatcher {
       case "list_databases" -> result.getJSONArray("databases", new JSONArray()).length() + " database(s)";
       case "get_schema" -> result.getJSONArray("types", new JSONArray()).length() + " type(s)";
       case "query", "execute_command" -> result.getInt("count", 0) + " record(s)";
+      case "sample_records" -> result.getJSONObject("samples", new JSONObject()).length() + " type(s)";
       case "full_text_search" -> result.getInt("count", 0) + " hit(s)";
       case "upsert_entity", "upsert_relationship" -> result.getInt("count", 0) + " record(s)";
       case "server_status" -> "ok";
