@@ -62,6 +62,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -79,6 +80,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private final        String                        name;
   private final        RWLockContext                 lock         = new RWLockContext();
   protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+  /**
+   * Compacted files replaced by a FULL compaction, awaiting their physical drop. The swap (under the write
+   * lock) guarantees no NEW cursor can reach them, but live series cursors load pages lazily and may still
+   * read them: each file is dropped only once its active-cursor count drains to zero (checked at every
+   * subsequent compaction round and at close/drop time).
+   */
+  private final        List<LSMTreeIndexCompacted>   retiredCompactedIndexes = new CopyOnWriteArrayList<>();
   private              TypeIndex                     typeIndex;
   private              boolean                       valid        = true;
   private              IndexMetadata                 metadata;
@@ -148,6 +156,49 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     this.name = name;
     this.metadata = new IndexMetadata(null, null, -1);
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, id, mode, pageSize, version);
+  }
+
+  /**
+   * Registers a compacted file replaced by a full compaction and immediately attempts the physical drop
+   * (it succeeds right away when no scan holds a series cursor over it).
+   */
+  void retireCompactedIndex(final LSMTreeIndexCompacted retired) {
+    retiredCompactedIndexes.add(retired);
+    dropRetiredCompactedIndexes();
+  }
+
+  /**
+   * Physically drops every retired compacted file whose active-cursor count drained to zero. The count can
+   * only decrease: the swap that retired the file happened under the write lock, so all cursor construction
+   * since then targets the replacement file. Each drop also takes the file's transaction lock (same protocol
+   * as splitIndex for the old mutable file), so a transaction mid-commit that locked the old file id never
+   * has it dropped underneath it; transactions that resolved the old id but have not locked yet converge via
+   * the migrated-file mapping. Synchronized so concurrent callers (a compaction round and a close) cannot
+   * double-drop the same file.
+   */
+  synchronized void dropRetiredCompactedIndexes() {
+    for (final LSMTreeIndexCompacted retired : retiredCompactedIndexes) {
+      if (retired.getActiveCursors() != 0)
+        continue;
+
+      final int fileId = retired.getFileId();
+      final LockManager.LOCK_STATUS locked = getDatabase().getTransactionManager().tryLockFile(fileId, 0,
+          Thread.currentThread());
+      if (locked == LockManager.LOCK_STATUS.NO)
+        // a committing transaction still holds the file lock: retry at the next round
+        continue;
+
+      try {
+        retired.drop();
+        retiredCompactedIndexes.remove(retired);
+      } catch (final IOException e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on dropping retired compacted index file '%s'", e, retired.getName());
+      } finally {
+        if (locked == LockManager.LOCK_STATUS.YES)
+          getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
+      }
+    }
   }
 
   public boolean scheduleCompaction() {
@@ -340,6 +391,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public void close() {
     checkIsValid();
+    // last chance to reclaim files retired by a full compaction before the database closes
+    dropRetiredCompactedIndexes();
     // #4960: a compaction that is merely SCHEDULED has not started yet, so it is safely cancelled here
     // (its own CAS COMPACTION_SCHEDULED -> COMPACTION_IN_PROGRESS will fail) and the close proceeds.
     // Before this fix the AVAILABLE-only CAS made close() a silent no-op in that state, leaving the
@@ -368,6 +421,17 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     lock.executeInWriteLock(() -> {
       try {
+        // the whole index is going away: any reader still on a retired file is invalidated anyway
+        for (final LSMTreeIndexCompacted retired : retiredCompactedIndexes) {
+          try {
+            retired.drop();
+          } catch (final IOException e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Error on dropping retired compacted index file '%s'", e, retired.getName());
+          }
+        }
+        retiredCompactedIndexes.clear();
+
         final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
         if (subIndex != null)
           subIndex.drop();

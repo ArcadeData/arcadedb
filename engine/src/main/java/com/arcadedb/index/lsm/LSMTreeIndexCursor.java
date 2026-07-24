@@ -119,8 +119,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (pageCursor.hasNext()) {
           pageCursor.next();
           cursorKeys[totalPages + i] = pageCursor.getKeys();
-        } else
+        } else {
+          pageCursor.close(); // release the file registration of an empty series cursor
           pageCursor = null;
+        }
         pageCursors[totalPages + i] = pageCursor;
       }
     }
@@ -194,6 +196,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
             advanceCursor(i); // keeps the cursorKeys cache in sync with the advanced cursor
             continue;
           }
+          pageCursor.close();
           pageCursors[i] = null;
           break;
         }
@@ -208,6 +211,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
               continue;
             }
             // INVALID
+            pageCursor.close();
             pageCursors[i] = null;
             break;
           }
@@ -222,6 +226,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
             ;
           else {
             // INVALID
+            pageCursor.close();
             pageCursors[i] = null;
             pageCursor = null;
           }
@@ -257,6 +262,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
               advanceCursor(i); // keeps the cursorKeys cache in sync with the advanced cursor
               continue;
             }
+            pageCursor.close();
             pageCursors[i] = null;
             cursorKeys[i] = null;
             break;

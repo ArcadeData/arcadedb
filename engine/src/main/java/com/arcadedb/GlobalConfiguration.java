@@ -559,6 +559,10 @@ public enum GlobalConfiguration {
   INDEX_COMPACTION_MIN_PAGES_SCHEDULE("arcadedb.indexCompactionMinPagesSchedule", SCOPE.DATABASE,
       "Minimum number of mutable pages for an index to be schedule for automatic compaction. 0 = disabled", Integer.class, 10),
 
+  INDEX_COMPACTION_FULL_SERIES("arcadedb.indexCompactionFullSeriesThreshold", SCOPE.DATABASE,
+      "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. 0 = disabled",
+      Integer.class, 10),
+
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
       Maximum number of vector locations to cache in memory per vector index. \

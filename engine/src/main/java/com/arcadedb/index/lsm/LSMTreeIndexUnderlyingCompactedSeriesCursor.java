@@ -29,12 +29,17 @@ import java.io.IOException;
 public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnderlyingAbstractCursor {
   private final int                              lastPageNumber;
   private       LSMTreeIndexUnderlyingPageCursor pageCursor;
+  private       boolean                          closed = false;
 
   public LSMTreeIndexUnderlyingCompactedSeriesCursor(final LSMTreeIndexCompacted index, final int firstPageNumber,
       final int lastPageNumber,
       final byte[] keyTypes, final boolean ascendingOrder, final int posInPage) {
     super(index, keyTypes, keyTypes.length, ascendingOrder);
     this.lastPageNumber = lastPageNumber;
+
+    // Series pages are loaded LAZILY as the scan advances: register with the file so a full
+    // compaction cannot physically drop it while this cursor may still need to read from it.
+    index.onCursorOpened();
 
     loadNextNonEmptyPage(firstPageNumber, posInPage);
   }
@@ -103,5 +108,14 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
   @Override
   public int getCurrentPositionInPage() {
     return pageCursor.currentEntryIndex;
+  }
+
+  @Override
+  public void close() {
+    // idempotent: exhaustion paths and explicit close() may both fire
+    if (!closed) {
+      closed = true;
+      ((LSMTreeIndexCompacted) index).onCursorClosed();
+    }
   }
 }

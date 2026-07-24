@@ -182,6 +182,23 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
   }
 
+  @Override
+  public void close() {
+    // Release the index cursors even when the scan did not run to exhaustion (e.g. a LIMIT was
+    // reached or the result set was closed early): compacted-series cursors register with their
+    // file so a full compaction defers dropping it, and an unclosed cursor would keep the retired
+    // file alive until the next database restart.
+    if (cursor != null) {
+      cursor.close();
+      cursor = null;
+    }
+    for (final IndexCursor c : nextCursors)
+      c.close();
+    nextCursors.clear();
+
+    super.close();
+  }
+
   private void updateIndexStats() {
     //stats
     final QueryStats stats = QueryStats.get(context.getDatabase());
