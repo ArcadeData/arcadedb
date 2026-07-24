@@ -129,7 +129,12 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
         private boolean isConcurrentModification(Throwable e) {
           while (e != null) {
             final String msg = e.getMessage();
-            if (msg != null && (msg.contains("Concurrent modification") || msg.contains("ConcurrentModificationException")))
+            // "Please retry the operation" is the canonical marker the engine appends to every retriable
+            // concurrency conflict, including the slot-rebase variant added by the adaptive slot merge (issue
+            // #5381): "Slot rebase not possible on page ... Please retry the operation". Matching only the older
+            // "Concurrent modification" substring misclassified that variant as fatal.
+            if (msg != null && (msg.contains("Please retry the operation") || msg.contains("Concurrent modification")
+                || msg.contains("ConcurrentModificationException")))
               return true;
             e = e.getCause();
           }
