@@ -119,6 +119,14 @@
         </dependencies>
     </dependencyManagement>
     <dependencies>
+        <!-- SLF4J facade only. ArcadeDB logs through slf4j-api and pins NO binding, so an embedding
+             application routes the engine's logs through whatever backend it already uses (Logback,
+             Log4j2, reload4j, or java.util.logging via slf4j-jdk14) with no dependency exclusions. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.conversantmedia</groupId>
             <artifactId>disruptor</artifactId>
