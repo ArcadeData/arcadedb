@@ -279,6 +279,23 @@ public class LSMTreeIndexCursor implements IndexCursor {
     getClosestEntryInTx(fromKeys, beginKeysInclusive);
   }
 
+  /**
+   * Human-readable description of the logical index this cursor belongs to, so an operator reading the
+   * "infinite loop" error can tell which type/properties to rebuild instead of having only the internal
+   * bucket-level sub-index name (e.g. {@code MyType_0_1234567890}). Best-effort: never throws, since it runs
+   * while surfacing another error.
+   */
+  private String describeIndexForRebuild() {
+    try {
+      final LSMTreeIndex mainIndex = index.getMainIndex();
+      if (mainIndex != null)
+        return "type=" + mainIndex.getTypeName() + ", properties=" + mainIndex.getPropertyNames();
+    } catch (final Exception e) {
+      // IGNORE: fall back to the sub-index name already present in the message
+    }
+    return "type=?, properties=?";
+  }
+
   @Override
   public String dumpStats() {
     final StringBuilder buffer = new StringBuilder(1024);
@@ -529,9 +546,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
     if (!advanced)
       throw new IllegalStateException(
-          "Detected infinite loop while iterating index '" + index.getName() + "' (DESC=" + (!ascendingOrder) + ", pageNumber="
-              + pageNumber + ", positionInPage=" + position
-              + "): the cursor did not advance. The index may be corrupted, please rebuild it.");
+          "Detected infinite loop while iterating index '" + index.getName() + "' (" + describeIndexForRebuild() + ", DESC=" + (
+              !ascendingOrder) + ", pageNumber=" + pageNumber + ", positionInPage=" + position
+              + "): the cursor did not advance. The index may be corrupted, please rebuild it with: REBUILD INDEX `"
+              + index.getName() + "`");
 
     lastConsumedPageNumber[cursorIndex] = pageNumber;
     lastConsumedPosition[cursorIndex] = position;
