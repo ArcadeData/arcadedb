@@ -25,10 +25,13 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.net.HttpURLConnection;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -41,9 +44,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Transport-envelope conformance for the Model Context Protocol version advertised by
- * {@link MCPDispatcher#MCP_PROTOCOL_VERSION} (issue #5394): JSON-RPC batches, notification
- * suppression, request-id validation, the HTTP status for an accepted notification, GET handling
- * and Origin validation.
+ * {@link MCPDispatcher#MCP_PROTOCOL_VERSION} (issue #5394): JSON-RPC batches, one-way notification
+ * and response handling, request-id validation, accepted-message HTTP status, GET handling and
+ * Origin validation.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,6 +62,7 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     config.setEnabled(true);
     config.setAllowReads(true);
     config.setAllowedUsers(List.of("root"));
+    config.setAllowedOrigins(List.of());
   }
 
   // ---------------------------------------------------------------- notifications
@@ -189,6 +193,30 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32600);
   }
 
+  @Test
+  void batchOfOnlyResponsesReturns202WithoutBody() throws Exception {
+    final JSONArray batch = new JSONArray()
+        .put(new JSONObject().put("jsonrpc", "2.0").put("id", 1).put("result", new JSONObject()))
+        .put(new JSONObject().put("jsonrpc", "2.0").put("id", 2)
+            .put("error", new JSONObject().put("code", -32601).put("message", "Method not found")));
+
+    final Response response = post(batch.toString(), null);
+
+    assertThat(response.status).isEqualTo(202);
+    assertThat(response.body).isEmpty();
+  }
+
+  @Test
+  void singleResponseMessageReturns202WithoutBody() throws Exception {
+    final Response response = post(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 8)
+        .put("result", new JSONObject()).toString(), null);
+
+    assertThat(response.status).isEqualTo(202);
+    assertThat(response.body).isEmpty();
+  }
+
   // ---------------------------------------------------------------- HTTP method handling
 
   @Test
@@ -256,6 +284,19 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     assertThat(response.status).isEqualTo(200);
   }
 
+  @Test
+  void matchingAttackerOriginAndHostAreRejected() throws Exception {
+    final String payload = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 1)
+        .put("method", "ping").toString();
+    final int port = getServer(0).getHttpServer().getPort();
+
+    final int status = postWithAuthority(payload, "http://rebind.example", "rebind.example:" + port);
+
+    assertThat(status).isEqualTo(403);
+  }
+
   // ---------------------------------------------------------------- stdio transport
 
   @Test
@@ -279,6 +320,25 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
   void stdioWritesNothingForSingleNotification() throws Exception {
     final String input = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\"}\n";
     assertThat(runStdio(input).trim()).isEmpty();
+  }
+
+  @Test
+  void stdioWritesNothingForResponseOnlyBatch() throws Exception {
+    final String input = "[{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}},"
+        + "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}]\n";
+    assertThat(runStdio(input).trim()).isEmpty();
+  }
+
+  @Test
+  void stdioWritesNothingForSingleResponse() throws Exception {
+    final String input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n";
+    assertThat(runStdio(input).trim()).isEmpty();
+  }
+
+  @Test
+  void stdioRejectsEmptyBatch() throws Exception {
+    final JSONObject response = new JSONObject(runStdio("[]\n").trim());
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32600);
   }
 
   private String runStdio(final String input) throws Exception {
@@ -312,6 +372,29 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
         .send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 
     return new Response(response.statusCode(), response.body());
+  }
+
+  private int postWithAuthority(final String payload, final String origin, final String authority) throws Exception {
+    final byte[] body = payload.getBytes(StandardCharsets.UTF_8);
+    final String headers = "POST /api/v1/mcp HTTP/1.1\r\n"
+        + "Host: " + authority + "\r\n"
+        + "Origin: " + origin + "\r\n"
+        + "Authorization: " + getBasicAuth() + "\r\n"
+        + "Content-Type: application/json\r\n"
+        + "Content-Length: " + body.length + "\r\n"
+        + "Connection: close\r\n\r\n";
+
+    try (final Socket socket = new Socket("127.0.0.1", getServer(0).getHttpServer().getPort())) {
+      socket.getOutputStream().write(headers.getBytes(StandardCharsets.UTF_8));
+      socket.getOutputStream().write(body);
+      socket.getOutputStream().flush();
+
+      final BufferedReader reader = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      final String statusLine = reader.readLine();
+      assertThat(statusLine).isNotNull();
+      return Integer.parseInt(statusLine.split(" ")[1]);
+    }
   }
 
   private static String getBasicAuth() {

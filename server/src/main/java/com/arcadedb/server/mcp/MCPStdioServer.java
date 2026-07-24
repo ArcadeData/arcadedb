@@ -115,14 +115,18 @@ public class MCPStdioServer {
    */
   private String dispatch(final String line) {
     if (line.charAt(0) == '[') {
-      final JSONArray responses = dispatcher.dispatchBatch(new JSONArray(line), user);
-      // A batch of notifications only produces no output at all.
+      final JSONArray batch = new JSONArray(line);
+      if (batch.isEmpty())
+        return jsonRpcError(null, -32600, "Invalid Request: empty batch");
+
+      final JSONArray responses = dispatcher.dispatchBatch(batch, user);
+      // A batch containing only notifications and/or responses produces no output.
       return responses.isEmpty() ? null : responses.toString();
     }
 
     final MCPResponse response = dispatcher.dispatch(new JSONObject(line), user);
 
-    // A null body is a JSON-RPC notification, which is written back as nothing at all.
+    // A null body is a one-way notification or response, which is written back as nothing at all.
     return response.json() == null ? null : response.json().toString();
   }
 

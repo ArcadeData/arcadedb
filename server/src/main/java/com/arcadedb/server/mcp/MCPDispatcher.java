@@ -76,17 +76,17 @@ public class MCPDispatcher {
   }
 
   /**
-   * A transport-neutral reply. A null json means a JSON-RPC notification, for which no reply is sent at all;
-   * the httpStatus is meaningful only to the HTTP transport and is ignored by stdio.
+   * A transport-neutral reply. A null json means a one-way JSON-RPC notification or response, for which no
+   * reply is sent at all; the httpStatus is meaningful only to the HTTP transport and is ignored by stdio.
    */
   public record MCPResponse(int httpStatus, JSONObject json) {
   }
 
   /**
-   * The single reply for any JSON-RPC notification: no body at all, and - for the HTTP transport - the
-   * {@code 202 Accepted} that MCP 2025-03-26 mandates for a POST that carried only notifications.
+   * The transport result for any one-way JSON-RPC message: no body at all, and - for the HTTP transport -
+   * the {@code 202 Accepted} mandated for a POST that carried only notifications or responses.
    */
-  private static final MCPResponse NOTIFICATION_ACCEPTED = new MCPResponse(202, null);
+  private static final MCPResponse NO_RESPONSE = new MCPResponse(202, null);
 
   private final ArcadeDBServer   server;
   private final MCPConfiguration config;
@@ -99,10 +99,16 @@ public class MCPDispatcher {
   }
 
   /**
-   * Routes one parsed JSON-RPC request. A null request means an empty body. Authentication is checked before
-   * anything else, so that server state is not disclosed to unauthenticated callers.
+   * Routes one parsed JSON-RPC message. A null message means an empty body. One-way notifications and responses
+   * are discarded without consulting server state; messages that require a reply are authenticated before any
+   * server state is disclosed.
    */
   public MCPResponse dispatch(final JSONObject request, final ServerSecurityUser user) {
+    // A response acknowledges a server-to-client request and must never receive another response. ArcadeDB
+    // does not currently issue such requests, so valid responses are accepted and discarded.
+    if (isResponse(request))
+      return NO_RESPONSE;
+
     // A JSON-RPC notification is a request object carrying a method and NO id member, and the receiver must
     // not answer it at all (MCP 2025-03-26 base protocol). Detect it by the absent id rather than by method
     // name: keying on the name only suppressed 'notifications/initialized' and let every other notification
@@ -110,7 +116,7 @@ public class MCPDispatcher {
     // - ahead of the authentication and authorization gates, which have no way to report a failure back -
     // discloses nothing.
     if (request != null && request.has("method") && !request.has("id"))
-      return NOTIFICATION_ACCEPTED;
+      return NO_RESPONSE;
 
     // Echo the JSON-RPC id on every error response when the request carries one, per JSON-RPC 2.0.
     final Object id = request != null ? request.opt("id") : null;
@@ -152,7 +158,7 @@ public class MCPDispatcher {
       // A tool or resource read binds the authenticated principal onto this thread's DatabaseContext (so the engine
       // permission gates enforce, see MCPToolUtils.bindCurrentUser / GHSA-6x73-v3rc-f57c). This transport runs on a
       // pooled worker thread, so the binding MUST be dropped here or it would leak onto the next request served by
-      // the same thread. A no-op when nothing was bound (initialize/ping/tools-list). A notification returns
+      // the same thread. A no-op when nothing was bound (initialize/ping/tools-list). A one-way message returns
       // before this block but binds nothing, so it has nothing to drop.
       DatabaseContext.INSTANCE.removeCurrentThreadContexts();
     }
@@ -316,6 +322,14 @@ public class MCPDispatcher {
         || id instanceof Byte || id instanceof java.math.BigInteger;
   }
 
+  private static boolean isResponse(final JSONObject message) {
+    if (message == null || message.has("method") || !message.has("id") || !isValidRequestId(message.opt("id")))
+      return false;
+
+    return "2.0".equals(message.getString("jsonrpc", null))
+        && message.has("result") != message.has("error");
+  }
+
   private static MCPResponse result(final Object id, final JSONObject result) {
     final JSONObject response = new JSONObject();
     response.put("jsonrpc", "2.0");
@@ -343,7 +357,7 @@ public class MCPDispatcher {
   /**
    * Routes a JSON-RPC batch, which MCP 2025-03-26 requires every receiver to support. Each element is
    * dispatched independently and only the elements that are requests contribute a response, so a batch made
-   * only of notifications yields an empty array and the transport answers with no body at all.
+   * only of notifications and/or responses yields an empty array and the transport answers with no body.
    */
   public JSONArray dispatchBatch(final JSONArray batch, final ServerSecurityUser user) {
     final JSONArray responses = new JSONArray();

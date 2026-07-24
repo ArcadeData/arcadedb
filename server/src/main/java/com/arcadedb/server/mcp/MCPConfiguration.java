@@ -48,9 +48,9 @@ public class MCPConfiguration {
   private volatile boolean      allowSchemaChange = false;
   private volatile boolean      allowAdmin        = false;
   private volatile List<String> allowedUsers     = new CopyOnWriteArrayList<>(List.of("root"));
-  // Extra browser origins accepted by the HTTP transport, on top of the always-allowed loopback and
-  // same-host ones. Empty by default: a cross-origin browser page must be opted in explicitly, because
-  // accepting any origin would defeat the DNS-rebinding mitigation MCP requires.
+  // Extra browser origins accepted by the HTTP transport, on top of always-allowed loopback origins.
+  // Empty by default: a non-loopback browser page must be opted in explicitly, because deriving trust
+  // from its Host header would not prevent DNS rebinding.
   private volatile List<String> allowedOrigins   = new CopyOnWriteArrayList<>();
 
   public MCPConfiguration(final String rootPath) {
