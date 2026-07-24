@@ -56,6 +56,15 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   private volatile boolean keyOrderCheckedOnLoad = false;
 
   /**
+   * Number of live {@link LSMTreeIndexUnderlyingCompactedSeriesCursor}s over this file. Series cursors load
+   * their pages LAZILY (page by page as the scan advances), so unlike the mutable-page cursors - which grab
+   * every page buffer eagerly at construction - they cannot survive their file being dropped. A full
+   * compaction that replaces this file must therefore defer the physical drop until this count drains to
+   * zero (see LSMTreeIndex's retired-file handling).
+   */
+  private final AtomicInteger activeCursors = new AtomicInteger();
+
+  /**
    * Called at cloning time.
    */
   public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
@@ -707,6 +716,56 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
 
     return problems;
+  }
+
+  void onCursorOpened() {
+    activeCursors.incrementAndGet();
+  }
+
+  void onCursorClosed() {
+    activeCursors.decrementAndGet();
+  }
+
+  /** Live series cursors over this file; the file cannot be physically dropped while > 0. */
+  public int getActiveCursors() {
+    return activeCursors.get();
+  }
+
+  /**
+   * Number of compacted series currently published (page 0's counter), walking the same root-page chain the
+   * readers walk. Grows by at least one per incremental compaction round - more when the round is RAM-bound -
+   * and collapses back to one after a full compaction.
+   */
+  public int getSeriesCount() {
+    final int totalPages = getTotalPages();
+    if (totalPages < 1)
+      return 0;
+
+    try {
+      final BasePage mainPage = database.getPageManager()
+          .getImmutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, true);
+      final int effectivePageCount = Math.min(getCompactedPageNumberOfSeries(mainPage), totalPages);
+
+      int series = 0;
+      for (int pageNumber = effectivePageCount - 1; pageNumber > 0; ) {
+        final BasePage lastPage = database.getPageManager()
+            .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
+
+        final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
+        if (rootPageCount == 0 || rootPageCount > pageNumber) {
+          // EMPTY OR INVALID SERIES MARKER: SKIP THE PAGE (same tolerance as newIterators)
+          --pageNumber;
+          continue;
+        }
+
+        pageNumber -= rootPageCount;
+        ++series;
+        --pageNumber;
+      }
+      return series;
+    } catch (final IOException e) {
+      throw new IndexException("Error on counting the series of compacted index '" + getName() + "'", e);
+    }
   }
 
   /**
