@@ -62,9 +62,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       return;
 
     db.transaction(() -> {
-      // A single bucket keeps BM25 statistics (document frequency, average document length) computed over one
-      // consistent corpus; the index scores per bucket, so a multi-bucket type could otherwise let term frequency
-      // lose to a per-bucket IDF difference and make the ranking assertions flaky.
+      // Keep this MCP fixture on one bucket; the engine's explicit multi-bucket BM25 regression covers global score comparability.
       db.command("sql", "CREATE DOCUMENT TYPE Article BUCKETS 1");
       db.command("sql", "CREATE PROPERTY Article.title STRING");
       db.command("sql", "CREATE PROPERTY Article.content STRING");

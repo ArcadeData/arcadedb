@@ -24,6 +24,8 @@ import com.arcadedb.database.IndexCursorCollection;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.index.fulltext.FullTextSearch;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
@@ -105,6 +107,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
+      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+        return FullTextSearch.searchSimple(this, keys, -1);
+
       // For full-text indexes, collect entries with scores
       final List<IndexCursorEntry> entries = new ArrayList<>();
 
@@ -154,6 +159,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
+      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+        return FullTextSearch.searchSimple(this, keys, limit);
+
       // For full-text indexes, collect entries with scores
       final List<IndexCursorEntry> entries = new ArrayList<>();
 

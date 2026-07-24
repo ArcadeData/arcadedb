@@ -130,6 +130,14 @@ public class FullTextQueryExecutor {
   private static final AtomicLong lastPureNegativeWarnMs     = new AtomicLong(0L);
 
   /**
+   * Bucket-local documents that satisfy a parsed query, plus the positive terms that contribute to BM25 scoring. The match set
+   * preserves all Lucene boolean/phrase/wildcard semantics; {@link FullTextSearch} combines these bucket-local matches and
+   * re-scores them with type-wide corpus statistics.
+   */
+  record BM25QueryMatch(Set<RID> candidates, Map<String, Float> scoringTokens) {
+  }
+
+  /**
    * Creates a new FullTextQueryExecutor for the given index.
    *
    * @param index the full-text index to search
@@ -167,14 +175,7 @@ public class FullTextQueryExecutor {
    */
   public IndexCursor search(final String queryString, final int limit) {
     resetState();
-    try {
-      // Create parser per invocation for thread safety
-      final QueryParser parser = createQueryParser();
-      final Query query = parser.parse(queryString);
-      return executeQuery(query, limit);
-    } catch (final ParseException e) {
-      throw new IndexException("Invalid search query: " + queryString, e);
-    }
+    return executeQuery(parseQuery(queryString), limit);
   }
 
   /**
@@ -195,33 +196,50 @@ public class FullTextQueryExecutor {
    * @param queryString the query string in Lucene syntax
    */
   public JSONObject explainScoring(final String queryString) {
+    return index.explainScoring(collectScoringTokens(queryString));
+  }
+
+  /**
+   * Parses a query and discovers its positive scoring terms without materializing matching documents. Package-private so the
+   * type-wide coordinator can union wildcard/fuzzy expansions from every bucket before computing global document frequencies.
+   */
+  Map<String, Float> collectScoringTokens(final String queryString) {
     resetState();
+    final Query query = parseQuery(queryString);
+    tokensOnly = true;
     try {
-      final QueryParser parser = createQueryParser();
-      final Query query = parser.parse(queryString);
-      tokensOnly = true;
-      try {
-        // The score map stays empty in tokens-only mode; we only need the captured scoringTokens.
-        collectMatches(query, new HashMap<>(), new HashSet<>());
-      } finally {
-        tokensOnly = false;
-      }
-      return index.explainScoring(scoringTokens);
+      // The score map stays empty in tokens-only mode; we only need the captured scoringTokens.
+      collectMatches(query, new HashMap<>(), new HashSet<>());
+    } finally {
+      tokensOnly = false;
+    }
+    return Map.copyOf(scoringTokens);
+  }
+
+  /**
+   * Returns the bucket-local candidate set without applying bucket-local BM25 statistics. Used by type-wide search so matching
+   * remains bucket-local while scoring uses one comparable corpus scope across every bucket.
+   */
+  BM25QueryMatch collectBM25Matches(final String queryString) {
+    if (!index.isBM25())
+      throw new IllegalStateException("BM25 matching requires a BM25 full-text index");
+
+    resetState();
+    final Map<RID, AtomicInteger> matches = collectQueryMatches(parseQuery(queryString));
+    return new BM25QueryMatch(Set.copyOf(matches.keySet()), Map.copyOf(scoringTokens));
+  }
+
+  private Query parseQuery(final String queryString) {
+    try {
+      // QueryParser is not thread-safe, so create one per invocation.
+      return createQueryParser().parse(queryString);
     } catch (final ParseException e) {
       throw new IndexException("Invalid search query: " + queryString, e);
     }
   }
 
   private IndexCursor executeQuery(final Query query, final int limit) {
-    final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
-    final Set<RID> excluded = new HashSet<>();
-
-    collectMatches(query, scoreMap, excluded);
-
-    // Remove excluded RIDs
-    for (final RID rid : excluded) {
-      scoreMap.remove(rid);
-    }
+    final Map<RID, AtomicInteger> scoreMap = collectQueryMatches(query);
 
     // BM25 path: collectMatches above determined WHICH documents match (boolean/phrase/wildcard semantics). Re-rank that
     // candidate set with BM25 using the scoring tokens captured during matching.
@@ -250,6 +268,19 @@ public class FullTextQueryExecutor {
       return new TempIndexCursor(list.subList(0, limit));
     }
     return new TempIndexCursor(list);
+  }
+
+  private Map<RID, AtomicInteger> collectQueryMatches(final Query query) {
+    final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
+    final Set<RID> excluded = new HashSet<>();
+
+    collectMatches(query, scoreMap, excluded);
+
+    // Remove excluded RIDs
+    for (final RID rid : excluded) {
+      scoreMap.remove(rid);
+    }
+    return scoreMap;
   }
 
   private void collectMatches(final Query query, final Map<RID, AtomicInteger> scoreMap,
