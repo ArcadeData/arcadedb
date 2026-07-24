@@ -552,6 +552,16 @@ public class GraphEngine {
   }
 
   public void deleteVertex(final VertexInternal vertex) {
+    deleteVertex(vertex, false);
+  }
+
+  /**
+   * Deletes a vertex, optionally forcing removal of its record even when the underlying multi-page chunk chain is
+   * structurally broken. With {@code force=true} the final record removal uses {@link Bucket#deleteRecord(RID, boolean)}
+   * so a vertex whose body cannot be assembled can still be deleted; edge disconnection is already best-effort (its
+   * chunk-walk failures are caught and logged), so it needs no change. See LocalBucket's force delete path.
+   */
+  public void deleteVertex(final VertexInternal vertex, final boolean force) {
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
     final List<Identifiable> edgesToDelete = new ArrayList<>();
 
@@ -642,7 +652,8 @@ public class GraphEngine {
     }
 
     // DELETE VERTEX RECORD
-    vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
+    vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId())
+        .deleteRecord(vertex.getIdentity(), force);
   }
 
   public IterableGraph<Edge> getEdges(final VertexInternal vertex) {
