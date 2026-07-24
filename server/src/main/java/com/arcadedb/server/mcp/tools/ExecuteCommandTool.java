@@ -21,13 +21,14 @@ package com.arcadedb.server.mcp.tools;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.mcp.MCPConfiguration;
+import com.arcadedb.server.mcp.MCPPermissions;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.Collections;
@@ -73,12 +74,13 @@ public class ExecuteCommandTool {
     final String command = args.getString("command");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(server, user, databaseName, config);
+    final Database database = access.database();
 
     // Analyze once for both permission checking and execution (avoids double parsing)
     final QueryEngine engine = database.getQueryEngine(language);
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(command);
-    checkPermission(analyzed.getOperationTypes(), config);
+    checkPermission(analyzed.getOperationTypes(), access.permissions());
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
@@ -111,45 +113,45 @@ public class ExecuteCommandTool {
    * Uses the query engine's analyze() method to determine the actual operation types
    * from the parsed AST, avoiding text-based pattern matching vulnerabilities.
    *
-   * @param database the database to use for query analysis
-   * @param command  the command text
-   * @param language the query language
-   * @param config   MCP configuration with permission settings
+   * @param database    the database to use for query analysis
+   * @param command     the command text
+   * @param language    the query language
+   * @param permissions MCP permission settings
    */
   public static void checkPermission(final Database database, final String command, final String language,
-      final MCPConfiguration config) {
+      final MCPPermissions permissions) {
     final Set<OperationType> operationTypes = getOperationTypes(database, command, language);
-    checkPermission(operationTypes, config);
+    checkPermission(operationTypes, permissions);
   }
 
   /**
    * Checks MCP permissions against a set of operation types.
    */
-  public static void checkPermission(final Set<OperationType> operationTypes, final MCPConfiguration config) {
+  public static void checkPermission(final Set<OperationType> operationTypes, final MCPPermissions permissions) {
     for (final OperationType op : operationTypes) {
       switch (op) {
       case CREATE:
-        if (!config.isAllowInsert())
+        if (!permissions.isAllowInsert())
           throw new SecurityException("Insert operations are not allowed by MCP configuration");
         break;
       case UPDATE:
-        if (!config.isAllowUpdate())
+        if (!permissions.isAllowUpdate())
           throw new SecurityException("Update operations are not allowed by MCP configuration");
         break;
       case DELETE:
-        if (!config.isAllowDelete())
+        if (!permissions.isAllowDelete())
           throw new SecurityException("Delete operations are not allowed by MCP configuration");
         break;
       case SCHEMA:
-        if (!config.isAllowSchemaChange())
+        if (!permissions.isAllowSchemaChange())
           throw new SecurityException("Schema change operations are not allowed by MCP configuration");
         break;
       case ADMIN:
-        if (!config.isAllowAdmin())
+        if (!permissions.isAllowAdmin())
           throw new SecurityException("Admin operations are not allowed by MCP configuration");
         break;
       case READ:
-        if (!config.isAllowReads())
+        if (!permissions.isAllowReads())
           throw new SecurityException("Read operations are not allowed by MCP configuration");
         break;
       }

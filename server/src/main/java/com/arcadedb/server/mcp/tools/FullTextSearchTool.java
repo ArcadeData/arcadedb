@@ -85,9 +85,6 @@ public class FullTextSearchTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    if (!config.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
-
     final String databaseName = args.getString("database");
     final String queryText = args.getString("queryText");
     // A blank query reaches the Lucene parser as an empty clause set and surfaces as IndexException("Invalid search
@@ -100,7 +97,8 @@ public class FullTextSearchTool {
     if (limit < 1)
       throw new IllegalArgumentException("'limit' must be at least 1, got " + limit);
 
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveReadableDatabase(server, user, databaseName, config);
+    final Database database = access.database();
 
     final TypeIndex typeIndex = resolveIndex(database, args);
     final String indexName = typeIndex.getName();

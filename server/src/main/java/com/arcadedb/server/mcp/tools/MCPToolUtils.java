@@ -33,9 +33,13 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.mcp.MCPConfiguration;
+import com.arcadedb.server.mcp.MCPPermissions;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 public class MCPToolUtils {
+
+  public record DatabaseAccess(ServerDatabase database, MCPPermissions permissions) {
+  }
 
   private MCPToolUtils() {
   }
@@ -45,11 +49,30 @@ public class MCPToolUtils {
    * accessible to the user when the requested database does not exist — so the LLM can self-correct
    * without a separate list_databases round-trip.
    */
-  public static ServerDatabase resolveDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
-      final String databaseName) {
+  public static DatabaseAccess resolveDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
+      final String databaseName, final MCPConfiguration config) {
+    return resolveDatabase(server, user, databaseName, config, false);
+  }
+
+  public static DatabaseAccess resolveReadableDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
+      final String databaseName, final MCPConfiguration config) {
+    return resolveDatabase(server, user, databaseName, config, true);
+  }
+
+  private static DatabaseAccess resolveDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
+      final String databaseName, final MCPConfiguration config, final boolean requireRead) {
+    final MCPPermissions permissions = config.getPermissionsForDatabase(databaseName);
+    if (!permissions.isUserAllowed(user.getName()))
+      throw new SecurityException(
+          "User '" + user.getName() + "' is not authorized for MCP access to database '" + databaseName + "'");
+    if (requireRead && !permissions.isAllowReads())
+      throw new SecurityException("Read operations are not allowed by MCP configuration");
+
     if (!server.existsDatabase(databaseName)) {
       final Set<String> installed = new TreeSet<>(server.getDatabaseNames());
-      installed.removeIf(db -> !user.canAccessToDatabase(db));
+      installed.removeIf(db -> requireRead
+          ? !canReadDatabase(user, config, db)
+          : !canAccessDatabase(user, config, db));
       throw new IllegalArgumentException(
           "Database '" + databaseName + "' does not exist. Available databases: " + installed
               + ". Use one of these names or call list_databases to refresh the list.");
@@ -59,7 +82,21 @@ public class MCPToolUtils {
 
     final ServerDatabase database = server.getDatabase(databaseName);
     bindCurrentUser(database, user);
-    return database;
+    return new DatabaseAccess(database, permissions);
+  }
+
+  public static boolean canAccessDatabase(final ServerSecurityUser user, final MCPConfiguration config,
+      final String databaseName) {
+    return user.canAccessToDatabase(databaseName)
+        && config.getPermissionsForDatabase(databaseName).isUserAllowed(user.getName());
+  }
+
+  public static boolean canReadDatabase(final ServerSecurityUser user, final MCPConfiguration config,
+      final String databaseName) {
+    final MCPPermissions permissions = config.getPermissionsForDatabase(databaseName);
+    return user.canAccessToDatabase(databaseName)
+        && permissions.isUserAllowed(user.getName())
+        && permissions.isAllowReads();
   }
 
   /**
@@ -174,10 +211,10 @@ public class MCPToolUtils {
    * write/read tools use.
    */
   public static JSONObject executeParameterizedWrite(final Database database, final String cypher,
-      final Map<String, Object> params, final MCPConfiguration config) {
+      final Map<String, Object> params, final MCPPermissions permissions) {
     final QueryEngine engine = database.getQueryEngine("cypher");
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(cypher);
-    ExecuteCommandTool.checkPermission(analyzed.getOperationTypes(), config);
+    ExecuteCommandTool.checkPermission(analyzed.getOperationTypes(), permissions);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)

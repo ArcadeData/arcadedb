@@ -24,8 +24,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.HashSet;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -47,11 +47,8 @@ public class ListDatabasesTool {
     if (!config.isAllowReads())
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
-    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
-    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
-
-    if (!allowedDatabases.contains("*"))
-      installedDatabases.retainAll(allowedDatabases);
+    final Set<String> installedDatabases = new TreeSet<>(server.getDatabaseNames());
+    installedDatabases.removeIf(databaseName -> !MCPToolUtils.canReadDatabase(user, config, databaseName));
 
     final JSONObject result = new JSONObject();
     result.put("databases", new JSONArray(installedDatabases));
