@@ -93,6 +93,7 @@ import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
+import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
@@ -1553,7 +1554,9 @@ public class CypherExecutionPlan {
         String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
 
-        boolean reversed = shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
+        final boolean reversedFromIndexedAnchor =
+            shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
+        boolean reversed = reversedFromIndexedAnchor;
         if (reversed) {
           sourceNode = pathPattern.getLastNode();
           sourceVar = sourceNode.getVariable();
@@ -1600,8 +1603,14 @@ public class CypherExecutionPlan {
         final String sourceIdFilter = sourceAlreadyBound ? null : extractIdFilter(whereClause, sourceVar);
         final BooleanExpression sourcePushdown = sourceAlreadyBound ? null :
             extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables);
-        final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
-            sourcePushdown);
+        final AbstractExecutionStep sourceStep;
+        if (reversedFromIndexedAnchor && physicalPlan.getAnchor().getPropertyValue() instanceof InListValues) {
+          final var anchor = physicalPlan.getAnchor();
+          sourceStep = new IndexSeekStep(anchor.getVariable(), anchor.getIndex().getTypeName(),
+              anchor.getPropertyName(), anchor.getPropertyValue(), anchor.getIndex().getIndexName(),
+              anchor.getEstimatedCost(), anchor.getEstimatedCardinality(), context);
+        } else
+          sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter, sourcePushdown);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -1790,7 +1799,6 @@ public class CypherExecutionPlan {
       final PathPattern pathPattern) {
     if (physicalPlan == null || physicalPlan.getAnchor() == null || !physicalPlan.getAnchor().useIndex()
         || physicalPlan.getAnchor().isRangeScan() || physicalPlan.getAnchor().getIndex() == null
-        || physicalPlan.getAnchor().getPropertyValue() instanceof InListValues
         || physicalPlan.getAnchor().getIndex().getPropertyNames() == null
         || physicalPlan.getAnchor().getIndex().getPropertyNames().size() != 1)
       return false;
@@ -1799,6 +1807,15 @@ public class CypherExecutionPlan {
         || statement.getMatchClauses().size() != 1 || matchClause.isOptional()
         || matchClause.getPathPatterns().size() != 1 || pathPattern.getRelationshipCount() != 1)
       return false;
+
+    if (physicalPlan.getAnchor().getPropertyValue() instanceof InListValues) {
+      final NodePattern indexedTarget = pathPattern.getLastNode();
+      final String indexedType = physicalPlan.getAnchor().getIndex().getTypeName();
+      if (indexedTarget.hasProperties() || indexedTarget.hasDynamicLabels()
+          || indexedTarget.getLabels().size() != 1 || indexedType == null
+          || !indexedType.equals(indexedTarget.getLabels().getFirst()))
+        return false;
+    }
 
     final RelationshipPattern relationship = pathPattern.getRelationship(0);
     if (!relationship.isVariableLength() || relationship.getMaxHops() == null || !relationship.hasTypes()
