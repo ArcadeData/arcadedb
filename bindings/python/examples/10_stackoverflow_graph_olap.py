@@ -362,7 +362,7 @@ def get_arcadedb_module():
 
 def get_ladybug_module():
     try:
-        import real_ladybug as lb
+        import ladybug as lb
     except ImportError:
         return None
     return lb
@@ -4336,7 +4336,7 @@ def run_olap_ladybug(
 ) -> dict:
     lb = get_ladybug_module()
     if lb is None:
-        raise RuntimeError("real_ladybug is not installed")
+        raise RuntimeError("ladybug is not installed")
 
     if db_path.exists():
         shutil.rmtree(db_path)
@@ -6566,7 +6566,7 @@ def run_in_docker(args) -> bool:
     else:
         packages = ["lxml"]
         if args.db in ("ladybug", "ladybugdb"):
-            packages.append("real_ladybug")
+            packages.append("ladybug")
         if args.db == "graphqlite":
             packages.append("graphqlite")
         if args.db == "duckdb":
