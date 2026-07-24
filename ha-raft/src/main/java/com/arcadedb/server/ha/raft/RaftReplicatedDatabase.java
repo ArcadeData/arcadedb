@@ -553,17 +553,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Records (in the state machine) that this leader abandoned phase 2 for a locally-originated
-   * transaction whose replication returned an indeterminate result (issue #4790). If the entry
-   * later reaches quorum and is applied here, {@link ArcadeStateMachine#applyTxEntry} will apply it
-   * locally instead of origin-skipping it, preventing a silent lost write on the leader.
-   * <p>
-   * The WAL txId is the correlation key: it is embedded in the same WAL bytes that were replicated,
-   * so the state machine sees the identical value when the entry commits. Best-effort: if anything
-   * goes wrong while extracting the txId we log and continue (the caller still rolls back and throws
-   * a retryable error), rather than masking the original replication failure.
-   */
-  /**
    * Stops protecting the Raft replay window for one commit (issue #5407). A no-op when no ticket was
    * taken (replica commit, or the Raft server was not wired yet).
    */
@@ -578,6 +567,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     return raft != null ? raft.getStateMachine() : null;
   }
 
+  /**
+   * Records (in the state machine) that this leader abandoned phase 2 for a locally-originated
+   * transaction whose replication returned an indeterminate result (issue #4790). If the entry
+   * later reaches quorum and is applied here, {@link ArcadeStateMachine#applyTxEntry} will apply it
+   * locally instead of origin-skipping it, preventing a silent lost write on the leader.
+   * <p>
+   * The WAL txId is the correlation key: it is embedded in the same WAL bytes that were replicated,
+   * so the state machine sees the identical value when the entry commits. Best-effort: if anything
+   * goes wrong while extracting the txId we log and continue (the caller still rolls back and throws
+   * a retryable error), rather than masking the original replication failure.
+   */
   private void markTransactionAbandonedForLocalApply(final ReplicationPayload payload) {
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
     if (stateMachine == null)

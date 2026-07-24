@@ -122,12 +122,44 @@ Not applied: a Micrometer gauge for `pendingLocalPhase2` size. This class has no
 today, so adding it is genuine follow-up scope rather than part of this fix; the WARNING covers the
 operator-visibility gap in the meantime.
 
+## Review cycle 2 (head `1dd6ea54e`)
+
+`claude[bot]` re-reviewed and independently confirmed the crux ordering (register the floor before
+replication, release only after pages settle) and the idempotent double-release. Applied:
+
+- **Orphaned Javadoc fixed.** Inserting `releasePhase2Ticket`/`stateMachineOrNull` had split
+  `markTransactionAbandonedForLocalApply`'s Javadoc from its method, leaving two stacked comments on
+  one method and none on the other. A real defect introduced by this PR; the block is back where it
+  belongs.
+- **`Issue5407Phase2TicketLifecycleTest` extended to 7 cases**, closing the branch matrix with the
+  `MajorityCommittedAllFailedException` (ALL-quorum recovery) exit: release when the recovery apply
+  settles the pages, retain when neither it nor reconciliation does.
+
+Considered and **not** changed, with reasons:
+
+- **Drop the `// @VisibleForTesting` marker.** Declined: it is an established convention in this
+  codebase (12 occurrences, 5 of them in `ArcadeStateMachine` in this same package). Removing it here
+  would make the new code inconsistent with its immediate neighbours, against the project's
+  "adhere to the existing code" rule.
+- **Per-commit allocation** (boxed `Long` key + `PendingPhase2` record on each leader commit). The
+  reviewer flagged this for awareness rather than as a request. Kept: the same commit path already
+  allocates the payload, a copy of the bucket-delta map, and the WAL byte array, then makes a gRPC
+  round trip - two small short-lived objects are noise against that, and the map churns back to empty
+  in steady state.
+
 ## Notes for follow-up
 
 - The `ReplicationDispatchedTimeoutException` path (#4790) now also retains its ticket, which makes
   that indeterminate window crash-safe as a side effect. The in-memory
   `abandonedLocalTransactions` marker it relies on is still lost on a real crash; the retained
   ticket means replay covers the entry instead.
+  - **Known rough edge, worth its own issue.** When such an entry *does* later reach quorum and is
+    applied by `applyTxEntry` (the usual resolution of a #4790 timeout), its pages become durable but
+    nothing releases the ticket, so compaction stays pinned until the node restarts. Since #4790
+    timeouts are transient, that is arguably heavier than the crash window it protects. Releasing the
+    ticket when `applyTxEntry` consumes an abandoned-tx marker would fix it, but needs a
+    ticket-to-walTxId correlation that does not exist today, so it is deliberately left out of this
+    PR rather than bolted on to a delicate path. The 5-minute WARNING makes it visible meanwhile.
 - The persisted `.raft/applied-index` file is intentionally left unclamped. It never feeds the
   replay position (only the snapshot-gap check, the per-database bootstrap replay-skip, and the
   "never applied anything" bootstrap signal), so clamping it would change bootstrap behaviour

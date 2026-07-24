@@ -162,6 +162,46 @@ class Issue5407Phase2TicketLifecycleTest {
         .isZero();
   }
 
+  /**
+   * ALL-quorum recovery: MAJORITY committed the entry, so this path applies phase 2 locally. When
+   * that succeeds the pages are on disk and the ticket goes.
+   */
+  @Test
+  void majorityCommittedRecoveryReleasesTheTicketWhenPagesSettle() {
+    final RaftReplicatedDatabase database = newDatabase();
+    final long ticket = stateMachine.beginLocalPhase2();
+
+    doThrow(new MajorityCommittedAllFailedException("simulated ALL-quorum watch failure"))
+        .when(broker).replicateTransaction(anyString(), any(), any());
+
+    assertThatThrownBy(() -> database.replicateAndCommitLocally(payload(), true, stateMachine, ticket))
+        .isInstanceOf(MajorityCommittedAllFailedException.class);
+
+    assertThat(stateMachine.pendingLocalPhase2Count())
+        .as("ALL-quorum recovery wrote the pages, so the checkpoint may cover the entry")
+        .isZero();
+  }
+
+  /** ...but if that recovery apply fails and reconciliation cannot settle the pages either, it stays. */
+  @Test
+  void majorityCommittedRecoveryRetainsTheTicketWhenPagesNeverSettle() {
+    final RaftReplicatedDatabase database = newDatabase();
+    final long ticket = stateMachine.beginLocalPhase2();
+
+    doThrow(new MajorityCommittedAllFailedException("simulated ALL-quorum watch failure"))
+        .when(broker).replicateTransaction(anyString(), any(), any());
+    doThrow(new IllegalStateException("simulated recovery apply failure")).when(tx).commit2ndPhase(any());
+    doThrow(new IllegalStateException("simulated reconcile failure"))
+        .when(txManager).applyChanges(any(), any(), anyBoolean());
+
+    assertThatThrownBy(() -> database.replicateAndCommitLocally(payload(), true, stateMachine, ticket))
+        .isInstanceOf(MajorityCommittedAllFailedException.class);
+
+    assertThat(stateMachine.pendingLocalPhase2Count())
+        .as("the entry is committed cluster-wide but absent here, so it must stay replayable")
+        .isEqualTo(1);
+  }
+
   /** A replica runs no phase 2 - the state machine applies the entry normally - so it holds nothing. */
   @Test
   void replicaCommitReleasesTheTicket() {
