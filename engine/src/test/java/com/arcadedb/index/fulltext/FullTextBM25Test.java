@@ -157,25 +157,82 @@ class FullTextBM25Test extends TestHelper {
   @Test
   void bm25RankingHoldsAcrossMultipleBuckets() {
     database.transaction(() -> {
-      // Multiple buckets: BM25 is scored per bucket, so N (doc count) and df must both be per-bucket to keep IDF unbiased.
-      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 4");
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
       database.command("sql", "CREATE PROPERTY Doc.name STRING");
       database.command("sql", "CREATE PROPERTY Doc.content STRING");
       database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
 
-      database.command("sql", "INSERT INTO Doc SET name = 'rare', content = 'quantum data analysis'");
-      for (int i = 0; i < 40; i++)
-        database.command("sql", "INSERT INTO Doc SET name = 'common" + i + "', content = 'data record number " + i + "'");
+      // Inserts alternate between the two buckets. Bucket 0 receives ten documents matching both query terms, while bucket 1
+      // receives one document matching only "alpha" plus nine non-matches. With bucket-local statistics, the one-term match gets
+      // a very high local IDF for alpha and incorrectly outranks every two-term match from bucket 0. Type-wide statistics make
+      // alpha common across the corpus and restore the expected two-term > one-term ordering.
+      for (int i = 0; i < 20; i++) {
+        final String name;
+        final String content;
+        if (i == 0) {
+          name = "twoTerms";
+          content = "alpha beta apple";
+        } else if (i == 1) {
+          name = "oneTerm";
+          content = "alpha filler apricot";
+        } else if (i % 2 == 0) {
+          name = "twoTerms" + i;
+          content = "alpha beta apple";
+        } else {
+          name = "noise" + i;
+          content = "noise filler filler";
+        }
+        database.command("sql", "INSERT INTO Doc SET name = ?, content = ?", name, content);
+      }
     });
 
     database.transaction(() -> {
-      final Map<String, Float> scores = searchScores("Doc[content]", "quantum data");
-      assertThat(scores.get("rare")).isNotNull();
-      // The document with the rare, discriminative term must rank above every common-only document, regardless of which bucket
-      // each landed in.
-      for (final Map.Entry<String, Float> e : scores.entrySet())
-        if (!"rare".equals(e.getKey()))
-          assertThat(scores.get("rare")).isGreaterThan(e.getValue());
+      final ResultSet records = database.query("sql", "SELECT FROM Doc WHERE name IN ['twoTerms', 'oneTerm']");
+      final Map<String, Integer> buckets = new HashMap<>();
+      while (records.hasNext()) {
+        final Result record = records.next();
+        buckets.put(record.getProperty("name"), record.getIdentity().orElseThrow().getBucketId());
+      }
+      assertThat(buckets.get("twoTerms")).isNotEqualTo(buckets.get("oneTerm"));
+
+      final Map<String, Float> scores = searchScores("Doc[content]", "alpha beta");
+      assertThat(scores).containsKeys("twoTerms", "oneTerm");
+      assertThat(scores.get("twoTerms")).isGreaterThan(scores.get("oneTerm"));
+
+      // Wildcard terms differ by bucket ("apple" vs "apricot"). Both must be included in the global scoring-token union, while
+      // Boolean matching remains document-local rather than combining terms found in different buckets.
+      final Map<String, Float> wildcardScores = searchScores("Doc[content]", "ap*");
+      assertThat(wildcardScores.get("twoTerms")).isPositive();
+      assertThat(wildcardScores.get("oneTerm")).isPositive();
+      assertThat(searchScores("Doc[content]", "+apple +apricot")).isEmpty();
+
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      final Map<String, Float> directScores = new HashMap<>();
+      final IndexCursor direct = typeIndex.get(new Object[] { "alpha beta" });
+      while (direct.hasNext()) {
+        final Document document = (Document) direct.next().getRecord();
+        directScores.put(document.getString("name"), direct.getFloatScore());
+      }
+      assertThat(directScores.get("twoTerms")).isGreaterThan(directScores.get("oneTerm"));
+
+      final Map<String, Float> fieldScores = new HashMap<>();
+      final ResultSet fields = database.query("sql",
+          "SELECT name, $score FROM Doc WHERE SEARCH_FIELDS(['content'], 'alpha beta') = true");
+      while (fields.hasNext()) {
+        final Result result = fields.next();
+        fieldScores.put(result.getProperty("name"), ((Number) result.getProperty("$score")).floatValue());
+      }
+      assertThat(fieldScores.get("twoTerms")).isGreaterThan(fieldScores.get("oneTerm"));
+
+      final ResultSet explain = database.query("sql",
+          "EXPLAIN SELECT name FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha beta') = true");
+      final String plan = explain.next().getProperty("executionPlanAsString");
+      assertThat(plan)
+          .contains("\"corpusScope\":\"type\"")
+          .contains("\"bucketCount\":2")
+          .contains("\"totalDocs\":20")
+          .contains("\"df\":11")
+          .doesNotContain("scored per bucket");
     });
   }
 

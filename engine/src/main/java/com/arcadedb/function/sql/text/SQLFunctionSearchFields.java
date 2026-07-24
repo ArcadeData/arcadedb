@@ -22,13 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.fulltext.FullTextQueryExecutor;
-import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
@@ -104,7 +101,7 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
 
     // Try to get cached results
     @SuppressWarnings("unchecked")
-    Map<RID, Integer> allResults = (Map<RID, Integer>) iContext.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) iContext.getVariable(cacheKey);
 
     if (allResults == null) {
       allResults = new HashMap<>();
@@ -126,19 +123,9 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
       if (matchingIndex == null)
         throw new CommandExecutionException("No full-text index found for fields: " + fieldNames);
 
-      // Execute search using the found index
-      for (final Index bucketIndex : matchingIndex.getIndexesOnBuckets()) {
-        if (bucketIndex instanceof LSMTreeFullTextIndex) {
-          final FullTextQueryExecutor executor = new FullTextQueryExecutor((LSMTreeFullTextIndex) bucketIndex);
-          final IndexCursor cursor = executor.search(queryString, -1);
-
-          while (cursor.hasNext()) {
-            final Identifiable match = cursor.next();
-            final int score = cursor.getScore();
-            allResults.merge(match.getIdentity(), score, Integer::sum);
-          }
-        }
-      }
+      // Route through the same type-wide scorer as SEARCH_INDEX so BM25 floats retain their precision and remain comparable
+      // when the logical index spans several buckets.
+      allResults.putAll(FullTextSearch.search(matchingIndex, queryString, -1));
 
       // Cache the results
       iContext.setVariable(cacheKey, allResults);
@@ -152,8 +139,7 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
       if (matches) {
         // Store the score for this record in the context variable $score
         // This allows $score projection to work in SELECT
-        final int recordScore = allResults.get(rid);
-        iContext.setVariable("$score", (float) recordScore);
+        iContext.setVariable("$score", allResults.get(rid));
       } else {
         // Clear the score for non-matching records
         iContext.setVariable("$score", 0f);
@@ -164,10 +150,10 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
 
     // Return cursor with all results
     final List<IndexCursorEntry> entries = new ArrayList<>();
-    for (final Map.Entry<RID, Integer> entry : allResults.entrySet()) {
+    for (final Map.Entry<RID, Float> entry : allResults.entrySet()) {
       entries.add(new IndexCursorEntry(new Object[] { queryString }, entry.getKey(), entry.getValue()));
     }
-    entries.sort((a, b) -> Integer.compare(b.score, a.score));
+    entries.sort((a, b) -> Float.compare(b.floatScore, a.floatScore));
 
     return new TempIndexCursor(entries);
   }
