@@ -587,6 +587,24 @@ public enum GlobalConfiguration {
       Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.""",
       Integer.class, 100),
 
+  VECTOR_INDEX_REBUILD_GRAPH_RATIO("arcadedb.vectorIndex.rebuildGraphRatio", SCOPE.DATABASE,
+      """
+      Fraction of the current graph size that must accumulate as pending mutations before the HNSW graph is \
+      rebuilt, on top of the absolute mutationsBeforeRebuild floor. A rebuild always re-indexes the whole graph, \
+      so a fixed absolute threshold makes it cost O(index size) for every few new vectors and turns bulk \
+      ingestion quadratic. Scaling the threshold with the graph amortizes rebuilds geometrically. \
+      Pending vectors stay exactly searchable through the in-memory delta buffer meanwhile, so a higher ratio \
+      trades a slightly longer per-query delta scan for far less rebuild CPU. Set to 0 to disable scaling and \
+      use only the absolute threshold.""",
+      Float.class, 0.2f),
+
+  VECTOR_INDEX_MAX_PENDING_MUTATIONS("arcadedb.vectorIndex.maxPendingMutations", SCOPE.DATABASE,
+      """
+      Hard ceiling on the rebuild threshold computed from rebuildGraphRatio. Pending vectors are held in an \
+      in-memory delta buffer until the next rebuild, so this bounds that buffer's footprint \
+      (RAM = pendingMutations * dimensions * 4 bytes). Set to 0 for no ceiling.""",
+      Integer.class, 50_000),
+
   VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
       """
       Inactivity timeout in milliseconds before flushing buffered vectors and rebuilding the HNSW graph. \

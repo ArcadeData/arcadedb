@@ -107,6 +107,63 @@ class LSMVectorIndexBoundedBuildMemoryTest extends TestHelper {
     }
   }
 
+  // Issue #5391: the same cache cap also applies to document-backed (non-quantized) indexes, where an uncached
+  // ordinal has to be resolved by a RID lookup from JVector's build threads rather than from index pages.
+  // If that fallback ever stopped working, getVector() would quietly return the deleted sentinel and the build
+  // would produce a graph of placeholder vectors instead of failing, so pin the behaviour with a recall check.
+  @Test
+  void float32GraphBuildsCorrectlyWithCacheSmallerThanVectorSet() {
+    final int previousCacheSize = GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.getValueAsInteger();
+    GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(TINY_CACHE);
+    try {
+      final float[][] vectors = new float[NUM_VECTORS][];
+      final Random rng = new Random(11);
+
+      database.transaction(() -> {
+        final DocumentType docType = database.getSchema().createDocumentType("PlainDoc");
+        docType.createProperty("id", Type.INTEGER);
+        docType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+        database.getSchema()
+            .buildTypeIndex("PlainDoc", new String[] { "embedding" })
+            .withLSMVectorType()
+            .withDimensions(DIMENSIONS)
+            .withSimilarity("COSINE")
+            .create();
+
+        for (int i = 0; i < NUM_VECTORS; i++) {
+          final float[] v = randomNormalized(rng);
+          vectors[i] = v;
+          database.newDocument("PlainDoc").set("id", i).set("embedding", v).save();
+        }
+      });
+
+      database.command("sql", "REBUILD INDEX `PlainDoc[embedding]`");
+
+      final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName("PlainDoc[embedding]");
+      final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
+
+      database.transaction(() -> {
+        int selfIsTop = 0;
+        for (int i = 0; i < NUM_VECTORS; i++) {
+          final List<Pair<RID, Float>> neighbors = lsm.findNeighborsFromVector(vectors[i], 5);
+          assertThat(neighbors).as("query %d returns results", i).isNotEmpty();
+
+          final RID topRid = neighbors.get(0).getFirst();
+          final int topId = database.lookupByRID(topRid, true).asDocument().getInteger("id");
+          if (topId == i)
+            selfIsTop++;
+        }
+        // Nothing here is lossy: an exact float32 graph must find every vector as its own nearest neighbour.
+        assertThat(selfIsTop)
+            .as("self-recall of the float32 graph built with a cache smaller than the vector set")
+            .isEqualTo(NUM_VECTORS);
+      });
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(previousCacheSize);
+    }
+  }
+
   private static float[] randomNormalized(final Random rng) {
     final float[] v = new float[DIMENSIONS];
     double norm = 0;
