@@ -211,6 +211,15 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return rid.getBucketId() < 0;
   }
 
+  /**
+   * The LSMTreeIndex this component belongs to. For a compacted sub-index loaded from disk it is null until
+   * the owning mutable index claims it while reading its header (SUB-INDEX FILE ID): a compacted component
+   * still unclaimed AFTER the schema load is an orphan left behind by an interrupted compaction.
+   */
+  public LSMTreeIndex getMainIndex() {
+    return mainIndex;
+  }
+
   public void drop() throws IOException {
     if (database.isOpen()) {
       database.getPageManager().deleteFile(database, file.getFileId());

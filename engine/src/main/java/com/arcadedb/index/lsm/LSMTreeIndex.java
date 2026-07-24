@@ -87,6 +87,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * subsequent compaction round and at close/drop time).
    */
   private final        List<LSMTreeIndexCompacted>   retiredCompactedIndexes = new CopyOnWriteArrayList<>();
+  /** Cumulative dead (tombstone-resolved) keys skipped by scans since this index was loaded. */
+  private final        AtomicLong                    statsDeadEntriesSkipped = new AtomicLong();
   private              TypeIndex                     typeIndex;
   private              boolean                       valid        = true;
   private              IndexMetadata                 metadata;
@@ -635,7 +637,19 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public Map<String, Long> getStats() {
-    return mutable.getStats();
+    final Map<String, Long> stats = mutable.getStats();
+    stats.put("deadEntriesSkipped", statsDeadEntriesSkipped.get());
+    return stats;
+  }
+
+  /**
+   * Accumulates the dead (tombstone-resolved) keys a finished scan had to skip. A steadily growing value
+   * signals tombstone build-up on a delete-heavy index: every range scan pays for the dead run until a full
+   * compaction (see {@link com.arcadedb.GlobalConfiguration#INDEX_COMPACTION_FULL_SERIES}) purges it.
+   * Surfaced as {@code deadEntriesSkipped} in {@link #getStats()}.
+   */
+  void addDeadEntriesSkipped(final long skipped) {
+    statsDeadEntriesSkipped.addAndGet(skipped);
   }
 
   /**

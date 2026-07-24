@@ -242,7 +242,38 @@ public class LocalSchema implements Schema {
       if (f != null)
         f.onAfterSchemaLoad();
 
+    if (mode == ComponentFile.MODE.READ_WRITE)
+      sweepOrphanCompactedIndexFiles(snapshot);
+
     updateSecurity();
+  }
+
+  /**
+   * Drops compacted index files that no mutable index claimed during the load. A crash between a
+   * compaction's publication (schema saved, the mutable header already pointing at its CURRENT compacted
+   * file) and the physical drop of a replaced or aborted compacted file leaves the stale file on disk; the
+   * directory scan re-registers it at the next open, but nothing references it anymore, leaking its space
+   * forever. Every legitimate compacted component gets its mainIndex set by the owning mutable index while
+   * reading its header (SUB-INDEX FILE ID), so a compacted component still unclaimed after the whole schema
+   * load is provably an orphan.
+   */
+  private void sweepOrphanCompactedIndexFiles(final List<Component> snapshot) {
+    for (final Component component : snapshot) {
+      if (!(component instanceof LSMTreeIndexCompacted compacted) || compacted.getMainIndex() != null)
+        continue;
+
+      LogManager.instance().log(this, Level.INFO,
+          "Dropping orphan compacted index file '%s' (fileId=%d) left behind by an interrupted compaction", null,
+          compacted.getName(), compacted.getFileId());
+      try {
+        database.getPageManager().deleteFile(database, compacted.getFileId());
+        database.getFileManager().dropFile(compacted.getFileId());
+        removeFile(compacted.getFileId());
+      } catch (final Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on dropping orphan compacted index file '%s'", e, compacted.getName());
+      }
+    }
   }
 
   @Override
