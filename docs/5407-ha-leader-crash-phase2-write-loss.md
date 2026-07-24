@@ -93,6 +93,35 @@ mvn -pl ha-raft verify -DskipTests -Pintegration \
 mvn -pl ha-raft test -Dtest=ArcadeStateMachinePendingPhase2SnapshotTest
 ```
 
+## Review cycle 1 (PR #5408, head `198274bd9`)
+
+`claude[bot]` reviewed and confirmed the correctness of the clamp direction, the no-regression guard,
+and the idempotent ticket release. `gemini-code-assist` did not respond within the polling window.
+Applied:
+
+- **Stalled-compaction observability** (the reviewer's only pre-merge ask). A retained ticket pins the
+  checkpoint until restart, previously signalled only by a `HALog.BASIC` line. `pendingLocalPhase2`
+  now records each ticket's start time and `takeSnapshot()` emits a throttled `WARNING` once a held
+  ticket exceeds 5 minutes, naming the pinned index and pointing at Raft-storage disk usage.
+  Implemented rather than left as a TODO: it is a hazard this change introduces.
+  - One detail in the review was slightly off: a stuck ticket does *not* make every `takeSnapshot()`
+    return `INVALID_LOG_INDEX`. It keeps returning the stalled floor and re-registering the marker
+    there; only a clamp that would regress below an existing marker returns `INVALID_LOG_INDEX`. The
+    operational consequence (log not purged past that index) is the same.
+- **Term/index comment** in `takeSnapshot()` explaining that after a clamp the marker term may not
+  match the clamped index, why that is already tolerated (#575/#593), and why it must not be
+  "corrected" by looking up the term at the clamped index (that entry may be purged).
+- **`Issue5407Phase2TicketLifecycleTest`** (5 cases) pinning which exit releases the ticket -
+  phase-2 success releases, a fault between replication and phase 2 retains, an unreconciled phase-2
+  failure retains, replication failure releases, replica commit releases. `replicateAndCommitLocally`
+  was made package-private for this (existing convention in the module). This is the part of the fix
+  most exposed to a future refactor, and the retain case fails if the guard is moved back into a
+  blanket `finally`.
+
+Not applied: a Micrometer gauge for `pendingLocalPhase2` size. This class has no metrics wiring
+today, so adding it is genuine follow-up scope rather than part of this fix; the WARNING covers the
+operator-visibility gap in the meantime.
+
 ## Notes for follow-up
 
 - The `ReplicationDispatchedTimeoutException` path (#4790) now also retains its ticket, which makes
@@ -103,3 +132,6 @@ mvn -pl ha-raft test -Dtest=ArcadeStateMachinePendingPhase2SnapshotTest
   replay position (only the snapshot-gap check, the per-database bootstrap replay-skip, and the
   "never applied anything" bootstrap signal), so clamping it would change bootstrap behaviour
   without improving durability.
+- Worth a follow-up issue: expose `pendingLocalPhase2Count()` (and the oldest held floor) as a
+  Micrometer gauge so a node whose compaction is pinned is visible on a dashboard, not only in the
+  log.

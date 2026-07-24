@@ -406,8 +406,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * position and lose the write for good. Holding the ticket costs a stalled log-compaction
    * checkpoint until the node restarts, at which point replay applies the entry and the hold is gone
    * with the process.
+   * <p>
+   * Package-private for direct unit testing: which exit releases the ticket is the load-bearing part
+   * of the fix, and driving every branch through {@link #commit()} would need the whole phase-1
+   * capture stubbed out.
    */
-  private void replicateAndCommitLocally(final ReplicationPayload payload, final boolean leader,
+  // @VisibleForTesting
+  void replicateAndCommitLocally(final ReplicationPayload payload, final boolean leader,
       final ArcadeStateMachine stateMachine, final long phase2Ticket) {
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     try {
