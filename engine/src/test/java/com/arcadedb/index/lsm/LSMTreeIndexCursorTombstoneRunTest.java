@@ -73,6 +73,18 @@ class LSMTreeIndexCursorTombstoneRunTest extends TestHelper {
   }
 
   @Test
+  void deadEntriesSkippedStatAccountsTheTombstoneRun() {
+    final TypeIndex index = createTypeWithTombstoneRun();
+    final LSMTreeIndex lsm = (LSMTreeIndex) index.getIndexesOnBuckets()[0];
+
+    final long before = lsm.getStats().get("deadEntriesSkipped");
+    assertScanFindsOnlySurvivors(index);
+    assertThat(lsm.getStats().get("deadEntriesSkipped"))
+        .as("each scan must account the dead keys it had to skip")
+        .isGreaterThanOrEqualTo(before + DELETED);
+  }
+
+  @Test
   void scanOverLongTombstoneRunAfterCompaction() throws Exception {
     final TypeIndex index = createTypeWithTombstoneRun();
     assertThat(index.scheduleCompaction()).isTrue();

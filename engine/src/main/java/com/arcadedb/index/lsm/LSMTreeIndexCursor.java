@@ -58,6 +58,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       int                                    validIterators;
   private       TempIndexCursor                        txCursor;
   private       Object[]                               txCursorKeys;
+  /** Dead (tombstone-resolved) keys skipped by this scan; flushed to the main index stats at scan end. */
+  private       long                                   deadEntriesSkipped = 0;
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -388,6 +390,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       if (minorKey == null) {
         validIterators = 0;
+        flushScanStats();
         return null;//throw new NoSuchElementException();
       }
 
@@ -475,6 +478,11 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (includeTx)
         while (txCursor.hasNext())
           mergedRIDs.add((RID) txCursor.next());
+
+      // a consumed key with no surviving RID is pure skip work caused by tombstone build-up:
+      // account it so operators can see when a delete-heavy index needs a full compaction
+      if (mergedRIDs.isEmpty())
+        ++deadEntriesSkipped;
 
       currentValues = mergedRIDs.isEmpty() ? null : mergedRIDs.toArray(new RID[0]);
 
@@ -630,6 +638,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (it != null)
         it.close();
     Arrays.fill(pageCursors, null);
+    flushScanStats();
+  }
+
+  /** Flush-and-reset so exhaustion followed by an explicit close() cannot double-count. */
+  private void flushScanStats() {
+    if (deadEntriesSkipped > 0 && index.mainIndex != null) {
+      index.mainIndex.addDeadEntriesSkipped(deadEntriesSkipped);
+      deadEntriesSkipped = 0;
+    }
   }
 
   @Override

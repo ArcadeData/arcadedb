@@ -250,6 +250,36 @@ class LSMTreeIndexFullCompactionTest extends TestHelper {
     assertThat(countRange(0, 11_000)).isEqualTo(4_000);
   }
 
+  @Test
+  void orphanCompactedFileIsSweptAtReopen() throws Exception {
+    final LSMTreeIndex index = createTypeAndIndex();
+
+    insert(0, 5_000);
+    compact(index);
+    deleteRange(0, 2_000);
+
+    // pin the current compacted file with a scan that is never closed, then run a full compaction:
+    // the old file is retired but cannot be dropped
+    database.begin();
+    final IndexCursor abandoned = index.range(true, new Object[] { 0 }, true, new Object[] { 5_000 }, true);
+    assertThat(abandoned.hasNext()).isTrue();
+    abandoned.next();
+    database.commit();
+
+    compact(index); // full: retires the old compacted file, still pinned by the abandoned cursor
+
+    final long filesWithLeak = registeredFiles();
+
+    // closing the database is the crash-equivalent: the retired file survives on disk, unclaimed
+    reopenDatabase();
+
+    // the reopen sweep must have dropped the orphan: one mutable + one compacted file per index
+    assertThat(registeredFiles()).isLessThan(filesWithLeak);
+    assertThat(countRange(0, 5_000)).isEqualTo(3_000);
+    final LSMTreeIndex reloaded = index();
+    assertThat(reloaded.getMutableIndex().getSubIndex().getSeriesCount()).isEqualTo(1);
+  }
+
   // ---------------------------------------------------------------------------------------------
 
   private LSMTreeIndex createTypeAndIndex() {
