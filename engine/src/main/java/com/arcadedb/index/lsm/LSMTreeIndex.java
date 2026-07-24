@@ -582,18 +582,26 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    */
   @Override
   public List<String> checkIntegrity() {
-    final int maxProblems = 20;
+    // The walk must run under the same read lock as every other reader (get(), range(), iterator()):
+    // splitIndex() publishes a compaction under the write lock by swapping in a new mutable file and
+    // then DROPPING the old one (deleteFile also purges its pages from the page cache). An unlocked
+    // walk that captured the old mutable index would fail every remaining page read with "File with
+    // id N was not found" and report a healthy index as corrupt. Holding the read lock does not block
+    // other readers nor the compaction merge itself - only the final publication waits for the walk.
+    return lock.executeInReadLock(() -> {
+      final int maxProblems = 20;
 
-    final List<String> problems = new ArrayList<>(mutable.checkKeyOrder(maxProblems));
+      final List<String> problems = new ArrayList<>(mutable.checkKeyOrder(maxProblems));
 
-    final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
-    if (subIndex != null && problems.size() < maxProblems)
-      problems.addAll(subIndex.checkKeyOrder(maxProblems - problems.size()));
+      final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
+      if (subIndex != null && problems.size() < maxProblems)
+        problems.addAll(subIndex.checkKeyOrder(maxProblems - problems.size()));
 
-    if (!problems.isEmpty())
-      problems.add(0, "the physical key order does not match the current comparator, the index must be rebuilt");
+      if (!problems.isEmpty())
+        problems.add(0, "the physical key order does not match the current comparator, the index must be rebuilt");
 
-    return problems;
+      return problems;
+    });
   }
 
   @Override
