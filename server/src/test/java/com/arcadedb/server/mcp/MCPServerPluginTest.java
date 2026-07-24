@@ -96,6 +96,59 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     });
   }
 
+  private void seedVectorIndexes() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpVectorRecord"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE DOCUMENT TYPE McpVectorRecord BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpVectorRecord.name STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorRecord.category STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorRecord.embedding ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpVectorRecord (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }
+          """);
+
+      db.newDocument("McpVectorRecord")
+          .set("name", "dense-a")
+          .set("category", "keep")
+          .set("embedding", new float[] { 1.0f, 0.0f, 0.0f })
+          .save();
+      db.newDocument("McpVectorRecord")
+          .set("name", "dense-b")
+          .set("category", "drop")
+          .set("embedding", new float[] { 0.9f, 0.1f, 0.0f })
+          .save();
+      db.newDocument("McpVectorRecord")
+          .set("name", "dense-c")
+          .set("category", "keep")
+          .set("embedding", new float[] { 0.0f, 1.0f, 0.0f })
+          .save();
+
+      db.command("sql", "CREATE DOCUMENT TYPE McpSparseVectorRecord BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpSparseVectorRecord.name STRING");
+      db.command("sql", "CREATE PROPERTY McpSparseVectorRecord.tokens ARRAY_OF_INTEGERS");
+      db.command("sql", "CREATE PROPERTY McpSparseVectorRecord.weights ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpSparseVectorRecord (tokens, weights) LSM_SPARSE_VECTOR
+          METADATA { dimensions: 8, weightQuantization: 'FP32' }
+          """);
+
+      db.newDocument("McpSparseVectorRecord")
+          .set("name", "sparse-low")
+          .set("tokens", new int[] { 1, 5 })
+          .set("weights", new float[] { 0.1f, 0.3f })
+          .save();
+      db.newDocument("McpSparseVectorRecord")
+          .set("name", "sparse-high")
+          .set("tokens", new int[] { 2, 5 })
+          .set("weights", new float[] { 0.2f, 0.6f })
+          .save();
+    });
+  }
+
   @Test
   void initialize() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
@@ -121,7 +174,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(13);
+    assertThat(tools.length()).isEqualTo(14);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -134,6 +187,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasProfilerStatus = false;
     boolean hasGetServerSettings = false;
     boolean hasSetServerSetting = false;
+    boolean hasVectorSearch = false;
     boolean hasFullTextSearch = false;
     boolean hasUpsertEntity = false;
     boolean hasUpsertRelationship = false;
@@ -151,6 +205,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "profiler_status" -> hasProfilerStatus = true;
       case "get_server_settings" -> hasGetServerSettings = true;
       case "set_server_setting" -> hasSetServerSetting = true;
+      case "vector_search" -> hasVectorSearch = true;
       case "full_text_search" -> hasFullTextSearch = true;
       case "upsert_entity" -> hasUpsertEntity = true;
       case "upsert_relationship" -> hasUpsertRelationship = true;
@@ -166,6 +221,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasProfilerStatus).isTrue();
     assertThat(hasGetServerSettings).isTrue();
     assertThat(hasSetServerSetting).isTrue();
+    assertThat(hasVectorSearch).isTrue();
     assertThat(hasFullTextSearch).isTrue();
     assertThat(hasUpsertEntity).isTrue();
     assertThat(hasUpsertRelationship).isTrue();
@@ -882,6 +938,337 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(errorText).contains("nonexistent_db");
     assertThat(errorText).containsIgnoringCase("available databases");
     assertThat(errorText).contains("graph");
+  }
+
+  @Test
+  void vectorSearchDenseReturnsDistanceAndProperties() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getString("indexName")).isEqualTo("McpVectorRecord[embedding]");
+    assertThat(payload.getBoolean("sparse")).isFalse();
+    assertThat(payload.getString("scoring")).startsWith("distance_lower_is_better");
+    assertThat(payload.getInt("count")).isEqualTo(2);
+
+    final JSONObject first = payload.getJSONArray("results").getJSONObject(0);
+    assertThat(first.getString("rid")).startsWith("#");
+    assertThat(first.getDouble("score")).isEqualTo(first.getDouble("distance"));
+    assertThat(first.getJSONObject("properties").getString("name")).isEqualTo("dense-a");
+  }
+
+  @Test
+  void vectorSearchAppliesReadOnlyFilterToBoundedCandidates() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'keep'")
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    for (int i = 0; i < payload.getJSONArray("results").length(); i++)
+      assertThat(payload.getJSONArray("results").getJSONObject(i)
+          .getJSONObject("properties").getString("category")).isEqualTo("keep");
+  }
+
+  @Test
+  void vectorSearchSparseAcceptsCompactIndicesAndWeights() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getBoolean("sparse")).isTrue();
+    assertThat(payload.getString("scoring")).contains("score_higher_is_better");
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    final JSONArray results = payload.getJSONArray("results");
+    assertThat(results.getJSONObject(0).getJSONObject("properties").getString("name")).isEqualTo("sparse-high");
+    assertThat(results.getJSONObject(0).getDouble("score"))
+        .isGreaterThan(results.getJSONObject(1).getDouble("score"));
+  }
+
+  @Test
+  void vectorSearchSupportsDenseOptionsAndFullSparseVectors() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject dense = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("efSearch", 20)
+        .put("filter", "   ")
+        .put("k", 1));
+    assertThat(dense.getBoolean("isError", true)).isFalse();
+
+    final JSONObject sparse = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector",
+            new JSONArray().put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(1.0).put(0.0).put(0.0))
+        .put("sparse", true)
+        .put("k", 2));
+    assertThat(sparse.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        sparse.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    assertThat(payload.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("name")).isEqualTo("sparse-high");
+  }
+
+  @Test
+  void vectorSearchValidatesIndexModeAndDimensions() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject wrongMode = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("k", 1));
+    assertThat(wrongMode.getBoolean("isError", false)).isTrue();
+    assertThat(wrongMode.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("LSM_SPARSE_VECTOR").contains("sparse=true");
+
+    final JSONObject wrongDimensions = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0))
+        .put("k", 1));
+    assertThat(wrongDimensions.getBoolean("isError", false)).isTrue();
+    assertThat(wrongDimensions.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("2 dimensions").contains("requires 3");
+  }
+
+  @Test
+  void vectorSearchRejectsInvalidOptionsAndIndexSelection() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject invalidEfSearch = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("efSearch", 0)
+        .put("k", 1));
+    assertThat(invalidEfSearch.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'efSearch' must be at least 1");
+
+    final JSONObject sparseEfSearch = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("efSearch", 20)
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(sparseEfSearch.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'efSearch' applies only to dense");
+
+    final JSONObject denseIndices = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryIndices", new JSONArray().put(0))
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(denseIndices.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'queryIndices' requires sparse=true");
+
+    final JSONObject oversizedFilter = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "x".repeat(4_097))
+        .put("k", 1));
+    assertThat(oversizedFilter.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'filter' must not exceed 4096");
+
+    final JSONObject unknownIndex = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Missing[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(unknownIndex.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("does not exist").contains("McpVectorRecord[embedding]");
+
+    final JSONObject denseAsSparse = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryIndices", new JSONArray().put(0))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(denseAsSparse.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("LSM_VECTOR").contains("sparse=false");
+
+    final JSONObject nonVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[title]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(nonVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("LSM_TREE").contains("not LSM_VECTOR");
+  }
+
+  @Test
+  void vectorSearchRejectsMalformedSparseVectors() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(1).put(5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("same length");
+  }
+
+  @Test
+  void vectorSearchRejectsInvalidVectorValuesAndSparseDimensions() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject empty = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray())
+        .put("k", 1));
+    assertThat(empty.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("must not be empty");
+
+    final JSONObject nonNumeric = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put("bad").put(0.0))
+        .put("k", 1));
+    assertThat(nonNumeric.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("must contain only numbers");
+
+    final JSONObject wrongFullDimensions = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector", new JSONArray().put(0.0).put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(wrongFullDimensions.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("index requires 8").contains("Pass queryIndices");
+
+    final JSONObject zeroFullVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector",
+            new JSONArray().put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(0.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(zeroFullVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("at least one non-zero weight");
+
+    final JSONObject fractionalIndex = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(1.5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(fractionalIndex.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("non-negative integers");
+
+    final JSONObject duplicateIndex = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5).put(5))
+        .put("queryVector", new JSONArray().put(1.0).put(0.5))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(duplicateIndex.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("duplicate dimension 5");
+
+    final JSONObject outOfRange = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(8))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(outOfRange.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("outside index dimensions 0-7");
+
+    final JSONObject zeroCompactVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5))
+        .put("queryVector", new JSONArray().put(0.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(zeroCompactVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("at least one non-zero weight");
+  }
+
+  @Test
+  void vectorSearchRejectsMalformedFilterWithoutExecutingWrites() throws Exception {
+    seedVectorIndexes();
+    final Database db = getServerDatabase(0, getDatabaseName());
+    final long before = db.countType("McpVectorRecord", false);
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'keep'); DELETE FROM McpVectorRecord")
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("Invalid vector search");
+    assertThat(db.countType("McpVectorRecord", false)).isEqualTo(before);
+  }
+
+  @Test
+  void vectorSearchEnforcesBoundsAndReadPermission() throws Exception {
+    for (final int invalidK : new int[] { 0, 1_001 }) {
+      final JSONObject response = callTool("vector_search", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("indexName", "McpVectorRecord[embedding]")
+          .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+          .put("k", invalidK));
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      assertThat(response.getJSONArray("content").getJSONObject(0).getString("text")).contains("'k'");
+    }
+
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+    final JSONObject denied = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(denied.getBoolean("isError", false)).isTrue();
+    assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text")).contains("not allowed");
   }
 
   @Test
