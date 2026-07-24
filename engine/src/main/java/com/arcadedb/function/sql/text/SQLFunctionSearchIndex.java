@@ -29,9 +29,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.fulltext.FullTextQueryExecutor;
 import com.arcadedb.index.fulltext.FullTextSearch;
-import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
@@ -39,7 +37,6 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -220,29 +217,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (!(index instanceof final TypeIndex typeIndex))
       return null;
 
-    // BM25 is scored per bucket (per-shard), so document frequency / IDF differ across buckets. EXPLAIN/PROFILE reports a single
-    // representative bucket's statistics (the first full-text bucket index) rather than a global view - enough to understand the
-    // similarity, parameters and relative term weights, but not a type-wide IDF.
-    final Index[] buckets = typeIndex.getIndexesOnBuckets();
-    LSMTreeFullTextIndex firstFt = null;
-    int ftBucketCount = 0; // all full-text bucket indexes of a type share one similarity, so they are all BM25 or all CLASSIC
-    for (final Index bucketIndex : buckets)
-      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
-        if (firstFt == null)
-          firstFt = ftIndex;
-        ++ftBucketCount;
-      }
-    // Only BM25 indexes carry a scoring explanation; CLASSIC has none.
-    if (firstFt == null || !firstFt.isBM25())
-      return null;
-
-    final JSONObject explain = new FullTextQueryExecutor(firstFt).explainScoring(queryString);
-    // Make it explicit that, on a multi-bucket type, these are the FIRST bucket's statistics so a reader is not misled into
-    // treating the df/IDF as type-wide.
-    if (ftBucketCount > 1)
-      explain.put("note", "statistics shown are for the FIRST of " + ftBucketCount
-          + " buckets; BM25 is scored per bucket, so df/IDF differ across buckets");
-    return explain;
+    return FullTextSearch.explainScoring(typeIndex, queryString);
   }
 
   @Override

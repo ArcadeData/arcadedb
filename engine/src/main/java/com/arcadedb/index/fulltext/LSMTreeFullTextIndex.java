@@ -311,9 +311,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * @param candidates  documents to score, or {@code null} to score every matching document
    */
   private Map<RID, double[]> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates) {
+    return computeBM25Scores(tokenBoosts, candidates, null);
+  }
+
+  /**
+   * Scores this bucket's candidates with either bucket-local statistics ({@code scoringContext == null}) or one type-wide
+   * context supplied by {@link FullTextSearch}. The latter keeps scores comparable when a logical type spans several buckets.
+   */
+  private Map<RID, double[]> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates,
+      final BM25ScoringContext scoringContext) {
     ensureCounters();
-    final long totalDocs = resolveTotalDocs();
-    final double avgdl = resolveAvgDocLength();
+    final long totalDocs = scoringContext != null ? scoringContext.totalDocs() : resolveTotalDocs();
+    final double avgdl = scoringContext != null ? scoringContext.avgDocLength() : resolveAvgDocLength();
     final double k1 = ftMetadata.getBm25K1();
     final double b = ftMetadata.getBm25B();
 
@@ -337,8 +346,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final float boost = e.getValue();
 
       if (candidates != null) {
-        // Single pass: count df while collecting only the candidate postings (bounded by the candidate set).
-        long df = 0L;
+        // Single pass over this bucket: collect only candidate postings. For a leaf-index query, count df locally; for a
+        // type-wide query, FullTextSearch already counted df across every bucket and supplied it in the scoring context.
+        long df = scoringContext != null ? scoringContext.documentFrequency(e.getKey()) : 0L;
         hits.clear();
         final IndexCursor cursor = underlyingIndex.get(storedKey);
         while (cursor.hasNext()) {
@@ -346,7 +356,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           // Skip deletion markers (negative bucket id): they are not live documents and must not inflate the document frequency.
           if (id.getIdentity().getBucketId() < 0)
             continue;
-          ++df;
+          if (scoringContext == null)
+            ++df;
           if (id instanceof FullTextPostingRID s && scoreMap.containsKey(s.getIdentity()))
             hits.add(s);
         }
@@ -356,12 +367,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         for (final FullTextPostingRID s : hits)
           scoreMap.get(s.getIdentity())[0] += BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
       } else {
-        // No candidate filter: count df first (streaming, no retention), then accumulate every matching document.
-        long df = 0L;
-        final IndexCursor dfCursor = underlyingIndex.get(storedKey);
-        while (dfCursor.hasNext()) {
-          if (dfCursor.next().getIdentity().getBucketId() >= 0) // skip deletion markers
-            ++df;
+        // No candidate filter: a leaf-index query counts df locally with a streaming first pass. A type-wide coordinator has
+        // already counted global df, so it goes straight to the scoring pass over this bucket.
+        long df = scoringContext != null ? scoringContext.documentFrequency(e.getKey()) : 0L;
+        if (scoringContext == null) {
+          final IndexCursor dfCursor = underlyingIndex.get(storedKey);
+          while (dfCursor.hasNext()) {
+            if (dfCursor.next().getIdentity().getBucketId() >= 0) // skip deletion markers
+              ++df;
+          }
         }
         if (df == 0L)
           continue;
@@ -400,6 +414,23 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * {@code SEARCH_INDEX} path is single-pass; prefer it for large or many-term queries.
    */
   private IndexCursor getBM25(final Object[] keys, final int limit) {
+    final Map<String, Float> tokenBoosts = getSimpleQueryTokenBoosts(keys);
+
+    // The no-candidate path streams each token's postings twice (df + accumulate). Log at FINE for a multi-term query so an
+    // operator debugging a slow direct get() can see it doing 2*T scans and switch to SEARCH_INDEX. FINE keeps normal runs quiet.
+    if (tokenBoosts.size() > 1)
+      LogManager.instance().log(this, Level.FINE,
+          "Full-text get() scoring %d terms on index '%s' with two posting scans each; use SEARCH_INDEX(...) for a single-pass scan.",
+          null, tokenBoosts.size(), getName());
+
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, null), keys, limit);
+  }
+
+  /**
+   * Analyzes the direct {@link #get} query into stored-key tokens without applying Lucene query syntax. Package-private so the
+   * logical {@link TypeIndex} can score the same literal query with type-wide statistics across all bucket indexes.
+   */
+  Map<String, Float> getSimpleQueryTokenBoosts(final Object[] keys) {
     final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
     // The direct path does not parse Lucene syntax; a caret boost here is silently treated as part of the token and matches
     // nothing. Log at FINE so this surfaces when debugging an unexpected empty result, without spamming normal queries.
@@ -419,15 +450,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         tokenBoosts.merge(storedKey, boost, Math::max);
       }
     }
-
-    // The no-candidate path streams each token's postings twice (df + accumulate). Log at FINE for a multi-term query so an
-    // operator debugging a slow direct get() can see it doing 2*T scans and switch to SEARCH_INDEX. FINE keeps normal runs quiet.
-    if (tokenBoosts.size() > 1)
-      LogManager.instance().log(this, Level.FINE,
-          "Full-text get() scoring %d terms on index '%s' with two posting scans each; use SEARCH_INDEX(...) for a single-pass scan.",
-          null, tokenBoosts.size(), getName());
-
-    return buildScoredCursor(computeBM25Scores(tokenBoosts, null), keys, limit);
+    return tokenBoosts;
   }
 
   /**
@@ -505,6 +528,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * Scores this bucket with corpus statistics already aggregated by {@link FullTextSearch}. A null candidate set means every
+   * posting matching the scoring tokens is eligible, which is the direct TypeIndex.get() path.
+   */
+  IndexCursor scoreBM25WithContext(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
+      final int limit, final BM25ScoringContext scoringContext) {
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, candidates, scoringContext), keys, limit);
+  }
+
+  /**
    * Returns the raw postings for an already-resolved stored key (RID-only, no BM25 scoring and no re-analysis), used by
    * {@link FullTextQueryExecutor} to collect candidate documents cheaply before scoring them once via
    * {@link #scoreCandidatesBM25}. Going through {@link #get} here would run the full scoring pipeline only to discard the scores.
@@ -514,6 +546,21 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   IndexCursor getPostings(final String storedKey) {
     return underlyingIndex.get(new String[] { storedKey });
+  }
+
+  /**
+   * Makes the shared type-wide counters trustworthy before a coordinator reads them.
+   */
+  void ensureTypeWideBM25Counters() {
+    ensureCounters();
+  }
+
+  long getTypeWideDocumentCount() {
+    return ftMetadata != null ? ftMetadata.getTotalDocs() : 0L;
+  }
+
+  double getTypeWideAverageDocumentLength() {
+    return resolveAvgDocLength();
   }
 
   /**
@@ -539,12 +586,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     json.put("b", ftMetadata.getBm25B());
     json.put("totalDocs", totalDocs);
     json.put("avgDocLength", avgdl);
-    // BM25 is scored per bucket (per-shard): these statistics are this bucket's, so a multi-bucket type's other buckets may have
-    // different df/IDF. Report the bucket and make the per-bucket nature explicit so the explained IDF is not mistaken for global.
+    // This leaf-index explanation is bucket-local. SQL EXPLAIN/PROFILE routes through FullTextSearch and reports type-wide
+    // statistics; retain the local scope here for callers deliberately addressing a bucket index directly.
     final Bucket bucket = associatedBucket();
     if (bucket != null)
       json.put("bucket", bucket.getName());
-    json.put("note", "statistics are per bucket (BM25 is scored per bucket); totalDocs is this bucket's document count");
+    json.put("note", "bucket-level index statistics; use the logical TypeIndex for globally comparable BM25 scores");
 
     // One posting scan per scoring token to derive df. EXPLAIN/PROFILE is an interactive diagnostic, not a hot path, but cap the
     // number of explained terms so a pathological wildcard/fuzzy expansion (which can explode into thousands of tokens) cannot
@@ -575,11 +622,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * BM25 is scored per bucket (per-shard, like Elasticsearch/Lucene): each bucket-level full-text index ranks its own documents
-   * using the document frequency read from its own postings. To keep the IDF unbiased, N must be measured at the same scope as
-   * df, i.e. this bucket - so N is the bucket's live record count. (The corpus counters in {@link FullTextIndexMetadata} are
-   * SHARED type-wide across all of the type's bucket indexes - the same metadata object is passed to each - so they are used only
-   * for the average document length, a length normalizer for which a type-wide value is an appropriate estimate.)
+   * Returns N for a bucket-level lookup. The logical {@link TypeIndex}/{@link FullTextSearch} path supplies type-wide N and df
+   * through {@link BM25ScoringContext}; a caller deliberately addressing this leaf index instead keeps both values scoped to this
+   * bucket. The shared type-wide counters still provide the average document length.
    */
   private long resolveTotalDocs() {
     final long count = associatedBucketCount();
@@ -644,9 +689,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final String typeName = getTypeName();
       if (typeName != null) {
         // Both sides are TYPE-WIDE: getTotalDocs() is the shared counter accumulated across every bucket index (they share this
-        // metadata instance), and countType() is the type's live record count - so this comparison is scope-consistent and does
-        // NOT spuriously rescan multi-bucket types. (This counter feeds avgdl only; IDF's N is the per-bucket count from
-        // resolveTotalDocs(), a deliberately different scope - see that method.)
+        // metadata instance), and countType() is the type's live record count. The logical TypeIndex search uses this count for
+        // global IDF as well as avgdl; a direct bucket-level lookup uses resolveTotalDocs() instead.
         final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
         final long persisted = ftMetadata.getTotalDocs();
         if (liveCount != persisted) {
@@ -684,10 +728,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * Scans the whole type and rebuilds the shared corpus counters used for the average document length. The counters are type-wide
-   * because the {@link FullTextIndexMetadata} instance is shared by all of the type's bucket indexes; scanning a single bucket
-   * would corrupt them. When {@code persist} is true the schema is saved so the counters survive a restart; the lazy read-path
-   * caller passes false to avoid saving the schema during a query.
+   * Scans the whole type and rebuilds the shared corpus counters used for global N and average document length. The counters are
+   * type-wide because the {@link FullTextIndexMetadata} instance is shared by all bucket indexes; scanning a single bucket would
+   * corrupt them. When {@code persist} is true the schema is saved so the counters survive a restart; the lazy read-path caller
+   * passes false to avoid saving the schema during a query.
    */
   private void computeCorpusCounters(final boolean persist) {
     if (ftMetadata == null)
