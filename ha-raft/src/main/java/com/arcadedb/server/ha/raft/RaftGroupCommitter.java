@@ -208,6 +208,20 @@ class RaftGroupCommitter {
       throw new ReplicationQueueFullException("Interrupted while waiting for replication queue space");
     }
 
+    // Close the strand-after-stop window: a concurrent stop()/transferPendingTo() may have halted the
+    // flusher and drained the queue AFTER we reserved bytes but BEFORE our offer landed (a caller can
+    // still hold the old volatile broker reference across a leader refresh). Such an entry would sit in
+    // a queue nothing polls, blocking this caller for the whole 2*quorumTimeout grace window. Re-check
+    // running now that the entry is enqueued: if the committer has stopped and the entry is still ours
+    // to reclaim, fail fast with a retryable error so the caller re-submits against the fresh broker.
+    // The queue lock orders offer/drain, so if the drain already finished this read observes running=
+    // false and remove() succeeds; if remove() fails a concurrent flusher/transfer already took the
+    // entry and will complete its future, so we fall through to the normal wait.
+    if (!running && queue.remove(pending)) {
+      queuedBytes.addAndGet(-entrySize); // release the reservation: we reclaimed the un-dispatched entry
+      throw new QuorumNotReachedException("Group committer stopped before dispatch; retry");
+    }
+
     // Test-only: simulate "entry dispatched, then quorum wait timed out" deterministically. The
     // entry stays on the queue (PENDING), so the flusher still dispatches and commits it for real;
     // we just abandon the wait here with the same exception the production grace-expiry path uses.
