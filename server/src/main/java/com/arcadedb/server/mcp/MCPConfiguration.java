@@ -30,14 +30,20 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class MCPConfiguration {
+public class MCPConfiguration implements MCPPermissions {
+  private static final Set<String> DATABASE_OVERRIDE_KEYS = Set.of(
+      "allowReads", "allowInsert", "allowUpdate", "allowDelete", "allowSchemaChange", "allowAdmin", "allowedUsers");
+
   private final String rootPath;
 
   private volatile boolean      enabled          = false;
@@ -48,6 +54,7 @@ public class MCPConfiguration {
   private volatile boolean      allowSchemaChange = false;
   private volatile boolean      allowAdmin        = false;
   private volatile List<String> allowedUsers     = new CopyOnWriteArrayList<>(List.of("root"));
+  private volatile Map<String, DatabaseOverride> databaseOverrides = Map.of();
   // Extra browser origins accepted by the HTTP transport, on top of always-allowed loopback origins.
   // Empty by default: a non-loopback browser page must be opted in explicitly, because deriving trust
   // from its Host header would not prevent DNS rebinding.
@@ -67,6 +74,8 @@ public class MCPConfiguration {
     try {
       final String content = new String(Files.readAllBytes(configFile.toPath()), StandardCharsets.UTF_8);
       final JSONObject json = new JSONObject(content);
+      final Map<String, DatabaseOverride> loadedDatabaseOverrides =
+          parseDatabaseOverrides(json.getJSONObject("databases", null));
 
       enabled = json.getBoolean("enabled", false);
       allowReads = json.getBoolean("allowReads", true);
@@ -75,6 +84,7 @@ public class MCPConfiguration {
       allowDelete = json.getBoolean("allowDelete", false);
       allowSchemaChange = json.getBoolean("allowSchemaChange", false);
       allowAdmin = json.getBoolean("allowAdmin", false);
+      databaseOverrides = loadedDatabaseOverrides;
 
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
       if (usersArray != null) {
@@ -203,15 +213,25 @@ public class MCPConfiguration {
    * also matches the bare token name against the allowed list.
    */
   public boolean isUserAllowed(final String username) {
-    if (username == null)
-      return false;
-    if (allowedUsers.contains("*") || allowedUsers.contains(username))
-      return true;
-    // API token users have synthetic names like "apitoken:<tokenName>".
-    // Allow matching by the bare token name so users don't need to know the internal prefix.
-    if (username.startsWith("apitoken:"))
-      return allowedUsers.contains(username.substring("apitoken:".length()));
-    return false;
+    return matchesUser(allowedUsers, username);
+  }
+
+  /**
+   * Returns an immutable permission snapshot for one database. Database values are restrictions on the global
+   * configuration: a local {@code true} cannot enable an operation denied globally, and local users must also pass
+   * the global user allowlist. An absent override inherits every global setting.
+   */
+  public synchronized MCPPermissions getPermissionsForDatabase(final String databaseName) {
+    final DatabaseOverride override = databaseOverrides.get(databaseName);
+    return new EffectivePermissions(
+        allowReads && valueOrTrue(override != null ? override.allowReads : null),
+        allowInsert && valueOrTrue(override != null ? override.allowInsert : null),
+        allowUpdate && valueOrTrue(override != null ? override.allowUpdate : null),
+        allowDelete && valueOrTrue(override != null ? override.allowDelete : null),
+        allowSchemaChange && valueOrTrue(override != null ? override.allowSchemaChange : null),
+        allowAdmin && valueOrTrue(override != null ? override.allowAdmin : null),
+        List.copyOf(allowedUsers),
+        override != null && override.allowedUsers != null ? List.copyOf(override.allowedUsers) : null);
   }
 
   public synchronized JSONObject toJSON() {
@@ -225,10 +245,18 @@ public class MCPConfiguration {
     json.put("allowAdmin", allowAdmin);
     json.put("allowedUsers", new JSONArray(allowedUsers));
     json.put("allowedOrigins", new JSONArray(allowedOrigins));
+    final JSONObject databases = new JSONObject();
+    for (final Map.Entry<String, DatabaseOverride> entry : databaseOverrides.entrySet())
+      databases.put(entry.getKey(), entry.getValue().toJSON());
+    json.put("databases", databases);
     return json;
   }
 
   public synchronized void updateFrom(final JSONObject json) {
+    final Map<String, DatabaseOverride> updatedDatabaseOverrides = json.has("databases")
+        ? parseDatabaseOverrides(json.getJSONObject("databases", null))
+        : databaseOverrides;
+
     if (json.has("enabled"))
       enabled = json.getBoolean("enabled");
     if (json.has("allowReads"))
@@ -243,6 +271,7 @@ public class MCPConfiguration {
       allowSchemaChange = json.getBoolean("allowSchemaChange");
     if (json.has("allowAdmin"))
       allowAdmin = json.getBoolean("allowAdmin");
+    databaseOverrides = updatedDatabaseOverrides;
     if (json.has("allowedUsers")) {
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
       // Treat explicit null as an empty list (client intent to clear all users)
@@ -265,5 +294,141 @@ public class MCPConfiguration {
 
   private File getConfigFile() {
     return Paths.get(rootPath, "config", "mcp-config.json").toFile();
+  }
+
+  private static Map<String, DatabaseOverride> parseDatabaseOverrides(final JSONObject databases) {
+    if (databases == null)
+      return Map.of();
+
+    final Map<String, DatabaseOverride> result = new LinkedHashMap<>();
+    for (final String databaseName : databases.keySet()) {
+      if (databaseName.isBlank())
+        throw new IllegalArgumentException("MCP database override names must not be blank");
+      result.put(databaseName, DatabaseOverride.fromJSON(databases.getJSONObject(databaseName)));
+    }
+    return Collections.unmodifiableMap(result);
+  }
+
+  private static boolean valueOrTrue(final Boolean value) {
+    return value == null || value;
+  }
+
+  private static boolean matchesUser(final List<String> users, final String username) {
+    if (username == null)
+      return false;
+    if (users.contains("*") || users.contains(username))
+      return true;
+    // API token users have synthetic names like "apitoken:<tokenName>".
+    // Allow matching by the bare token name so users don't need to know the internal prefix.
+    return username.startsWith("apitoken:")
+        && users.contains(username.substring("apitoken:".length()));
+  }
+
+  private record DatabaseOverride(
+      Boolean allowReads,
+      Boolean allowInsert,
+      Boolean allowUpdate,
+      Boolean allowDelete,
+      Boolean allowSchemaChange,
+      Boolean allowAdmin,
+      List<String> allowedUsers) {
+
+    private static DatabaseOverride fromJSON(final JSONObject json) {
+      for (final String name : json.keySet())
+        if (!DATABASE_OVERRIDE_KEYS.contains(name))
+          throw new IllegalArgumentException("Unknown MCP database override setting '" + name + "'");
+
+      return new DatabaseOverride(
+          optionalBoolean(json, "allowReads"),
+          optionalBoolean(json, "allowInsert"),
+          optionalBoolean(json, "allowUpdate"),
+          optionalBoolean(json, "allowDelete"),
+          optionalBoolean(json, "allowSchemaChange"),
+          optionalBoolean(json, "allowAdmin"),
+          optionalUsers(json));
+    }
+
+    private JSONObject toJSON() {
+      final JSONObject json = new JSONObject();
+      putIfNotNull(json, "allowReads", allowReads);
+      putIfNotNull(json, "allowInsert", allowInsert);
+      putIfNotNull(json, "allowUpdate", allowUpdate);
+      putIfNotNull(json, "allowDelete", allowDelete);
+      putIfNotNull(json, "allowSchemaChange", allowSchemaChange);
+      putIfNotNull(json, "allowAdmin", allowAdmin);
+      if (allowedUsers != null)
+        json.put("allowedUsers", new JSONArray(allowedUsers));
+      return json;
+    }
+
+    private static Boolean optionalBoolean(final JSONObject json, final String name) {
+      return json.has(name) && !json.isNull(name) ? json.getBoolean(name) : null;
+    }
+
+    private static List<String> optionalUsers(final JSONObject json) {
+      if (!json.has("allowedUsers"))
+        return null;
+
+      final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
+      if (usersArray == null)
+        return List.of();
+
+      final List<String> users = new ArrayList<>();
+      for (int i = 0; i < usersArray.length(); i++)
+        users.add(usersArray.getString(i));
+      return List.copyOf(users);
+    }
+
+    private static void putIfNotNull(final JSONObject json, final String name, final Boolean value) {
+      if (value != null)
+        json.put(name, value);
+    }
+  }
+
+  private record EffectivePermissions(
+      boolean allowReads,
+      boolean allowInsert,
+      boolean allowUpdate,
+      boolean allowDelete,
+      boolean allowSchemaChange,
+      boolean allowAdmin,
+      List<String> globalUsers,
+      List<String> databaseUsers) implements MCPPermissions {
+
+    @Override
+    public boolean isAllowReads() {
+      return allowReads;
+    }
+
+    @Override
+    public boolean isAllowInsert() {
+      return allowInsert;
+    }
+
+    @Override
+    public boolean isAllowUpdate() {
+      return allowUpdate;
+    }
+
+    @Override
+    public boolean isAllowDelete() {
+      return allowDelete;
+    }
+
+    @Override
+    public boolean isAllowSchemaChange() {
+      return allowSchemaChange;
+    }
+
+    @Override
+    public boolean isAllowAdmin() {
+      return allowAdmin;
+    }
+
+    @Override
+    public boolean isUserAllowed(final String username) {
+      return matchesUser(globalUsers, username)
+          && (databaseUsers == null || matchesUser(databaseUsers, username));
+    }
   }
 }

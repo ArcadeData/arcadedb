@@ -66,7 +66,8 @@ public class UpsertEntityTool {
     final JSONObject matchKeys = MCPToolUtils.requireNonEmptyObject(args, "matchKeys");
     final JSONObject setProperties = args.getJSONObject("setProperties", null);
 
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(server, user, databaseName, config);
+    final Database database = access.database();
 
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder cypher = new StringBuilder();
@@ -76,6 +77,6 @@ public class UpsertEntityTool {
       MCPToolUtils.appendSetClause(cypher, params, "n", setProperties, "s");
     cypher.append(" RETURN n");
 
-    return MCPToolUtils.executeParameterizedWrite(database, cypher.toString(), params, config);
+    return MCPToolUtils.executeParameterizedWrite(database, cypher.toString(), params, access.permissions());
   }
 }

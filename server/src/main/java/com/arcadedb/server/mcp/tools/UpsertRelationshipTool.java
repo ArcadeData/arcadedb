@@ -82,7 +82,8 @@ public class UpsertRelationshipTool {
     final JSONObject toMatchKeys = MCPToolUtils.requireNonEmptyObject(args, "toMatchKeys");
     final JSONObject relProperties = args.getJSONObject("relProperties", null);
 
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(server, user, databaseName, config);
+    final Database database = access.database();
 
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder cypher = new StringBuilder();
@@ -99,7 +100,7 @@ public class UpsertRelationshipTool {
       MCPToolUtils.appendSetClause(cypher, params, "r", relProperties, "r");
     cypher.append(" RETURN r");
 
-    return MCPToolUtils.executeParameterizedWrite(database, cypher.toString(), params, config);
+    return MCPToolUtils.executeParameterizedWrite(database, cypher.toString(), params, access.permissions());
   }
 
 }

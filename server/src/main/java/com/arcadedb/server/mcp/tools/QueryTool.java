@@ -66,15 +66,13 @@ public class QueryTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    if (!config.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
-
     final String databaseName = args.getString("database");
     final String language = args.getString("language", "cypher");
     final String query = args.getString("query");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveReadableDatabase(server, user, databaseName, config);
+    final Database database = access.database();
 
     // Verify the query is actually read-only using semantic analysis
     final QueryEngine engine = database.getQueryEngine(language);
