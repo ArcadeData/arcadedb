@@ -28,6 +28,7 @@ import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
@@ -126,12 +127,39 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
     assertThat(database.countType(TYPE, false)).isEqualTo(2L);
   }
 
+  @Test
+  void directSqlDeleteRemovesBrokenMultiPageRecordNoIndex() {
+    // No index on the type: index cleanup reads nothing, so the broken chain is only discovered by the PHYSICAL
+    // delete. The physical-delete force fallback (gated by the structural probe) must still remove the record.
+    final RID broken = createBrokenMultiPageVertex(false);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM " + broken));
+
+    assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken)).isFalse();
+  }
+
+  @Test
+  void directSqlDeleteRemovesBrokenMultiPageRecordWithIndex() {
+    // With an index the broken chain surfaces during index-key extraction (loadMultiPageRecord -> CME); the tolerant
+    // catch must confirm the break with the structural probe and force both the index-cleanup skip and the physical
+    // removal. Mirrors the client's Chat[sourceRID] scenario.
+    final RID broken = createBrokenMultiPageVertex(true);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM " + broken));
+
+    assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken)).isFalse();
+  }
+
   /**
    * Creates a genuine multi-page vertex at position 0, then corrupts the FIRST_CHUNK's continuation pointer so the
    * chunk chain is broken at chunk 0 (points to a page well beyond the file). Reopens so the record is re-read from the
    * corrupted page, not the in-memory cache. Returns the RID of the broken record.
    */
   private RID createBrokenMultiPageVertex() {
+    return createBrokenMultiPageVertex(false);
+  }
+
+  private RID createBrokenMultiPageVertex(final boolean withIndex) {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     final int[] bucketIdHolder = new int[1];
@@ -139,6 +167,8 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
       final VertexType type = db.getSchema().createVertexType(TYPE, 1);
       type.createProperty("id", Type.INTEGER);
       type.createProperty("data", Type.STRING);
+      if (withIndex)
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
       bucketIdHolder[0] = type.getBuckets(false).get(0).getFileId();
     });
 

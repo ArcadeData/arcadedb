@@ -41,6 +41,13 @@ public interface Bucket {
 
   void deleteRecord(RID rid);
 
+  /**
+   * Deletes a record, optionally forcing removal even when a multi-page chunk chain is structurally broken (see
+   * {@link com.arcadedb.engine.LocalBucket#deleteRecord(RID, boolean)}). With {@code force=false} this is identical to
+   * {@link #deleteRecord(RID)}.
+   */
+  void deleteRecord(RID rid, boolean force);
+
   void scan(RawRecordCallback callback, ErrorRecordCallback errorRecordCallback);
 
   Iterator<Record> iterator();
