@@ -31,6 +31,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
@@ -38,6 +39,25 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MCPConfiguration {
+  public enum ToolProfile {
+    ALL, RAG, ADMIN;
+
+    static ToolProfile parse(final String value) {
+      if (value == null)
+        return ALL;
+      try {
+        return valueOf(value.trim().toUpperCase(Locale.ROOT));
+      } catch (final IllegalArgumentException e) {
+        throw new IllegalArgumentException(
+            "Unknown MCP tool profile '" + value + "'. Expected one of: all, rag, admin", e);
+      }
+    }
+
+    String configName() {
+      return name().toLowerCase(Locale.ROOT);
+    }
+  }
+
   private final String rootPath;
 
   private volatile boolean      enabled          = false;
@@ -48,6 +68,7 @@ public class MCPConfiguration {
   private volatile boolean      allowSchemaChange = false;
   private volatile boolean      allowAdmin        = false;
   private volatile List<String> allowedUsers     = new CopyOnWriteArrayList<>(List.of("root"));
+  private volatile ToolProfile  toolProfile      = ToolProfile.ALL;
   // Extra browser origins accepted by the HTTP transport, on top of always-allowed loopback origins.
   // Empty by default: a non-loopback browser page must be opted in explicitly, because deriving trust
   // from its Host header would not prevent DNS rebinding.
@@ -67,6 +88,7 @@ public class MCPConfiguration {
     try {
       final String content = new String(Files.readAllBytes(configFile.toPath()), StandardCharsets.UTF_8);
       final JSONObject json = new JSONObject(content);
+      final ToolProfile loadedProfile = ToolProfile.parse(json.getString("profile", "all"));
 
       enabled = json.getBoolean("enabled", false);
       allowReads = json.getBoolean("allowReads", true);
@@ -75,6 +97,7 @@ public class MCPConfiguration {
       allowDelete = json.getBoolean("allowDelete", false);
       allowSchemaChange = json.getBoolean("allowSchemaChange", false);
       allowAdmin = json.getBoolean("allowAdmin", false);
+      toolProfile = loadedProfile;
 
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
       if (usersArray != null) {
@@ -171,6 +194,20 @@ public class MCPConfiguration {
     this.allowedUsers = new CopyOnWriteArrayList<>(allowedUsers);
   }
 
+  public ToolProfile getToolProfile() {
+    return toolProfile;
+  }
+
+  public void setToolProfile(final ToolProfile toolProfile) {
+    if (toolProfile == null)
+      throw new IllegalArgumentException("MCP tool profile must not be null");
+    this.toolProfile = toolProfile;
+  }
+
+  public void setToolProfile(final String toolProfile) {
+    this.toolProfile = ToolProfile.parse(toolProfile);
+  }
+
   public List<String> getAllowedOrigins() {
     return Collections.unmodifiableList(allowedOrigins);
   }
@@ -223,12 +260,17 @@ public class MCPConfiguration {
     json.put("allowDelete", allowDelete);
     json.put("allowSchemaChange", allowSchemaChange);
     json.put("allowAdmin", allowAdmin);
+    json.put("profile", toolProfile.configName());
     json.put("allowedUsers", new JSONArray(allowedUsers));
     json.put("allowedOrigins", new JSONArray(allowedOrigins));
     return json;
   }
 
   public synchronized void updateFrom(final JSONObject json) {
+    final ToolProfile updatedProfile = json.has("profile")
+        ? ToolProfile.parse(json.getString("profile", null))
+        : toolProfile;
+
     if (json.has("enabled"))
       enabled = json.getBoolean("enabled");
     if (json.has("allowReads"))
@@ -243,6 +285,7 @@ public class MCPConfiguration {
       allowSchemaChange = json.getBoolean("allowSchemaChange");
     if (json.has("allowAdmin"))
       allowAdmin = json.getBoolean("allowAdmin");
+    toolProfile = updatedProfile;
     if (json.has("allowedUsers")) {
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
       // Treat explicit null as an empty list (client intent to clear all users)

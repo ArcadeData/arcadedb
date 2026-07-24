@@ -180,4 +180,20 @@ class MCPPermissionsTest {
 
     assertThat(config.isUserAllowed(null)).isFalse();
   }
+
+  @Test
+  void toolProfilesAreAllowlists() {
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ALL, "full_text_search")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ALL, "execute_command")).isTrue();
+
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "full_text_search")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "query")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "execute_command")).isFalse();
+
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ADMIN, "execute_command")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ADMIN, "server_status")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ADMIN, "full_text_search")).isFalse();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ALL, "hybrid_search")).isFalse();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ALL, "unknown")).isFalse();
+  }
 }
