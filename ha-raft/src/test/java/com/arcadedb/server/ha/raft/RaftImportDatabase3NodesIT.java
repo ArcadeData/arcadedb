@@ -84,6 +84,9 @@ class RaftImportDatabase3NodesIT extends BaseRaftHATest {
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
+    // The test fixture is served from a local file:// URL. Since #5090, the restore/import
+    // SSRF guard rejects non-HTTP URLs (-> HTTP 403) unless this flag is explicitly enabled.
+    config.setValue(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS, true);
   }
 
   @Override
