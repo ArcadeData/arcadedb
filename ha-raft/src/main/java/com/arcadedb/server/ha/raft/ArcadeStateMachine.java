@@ -252,6 +252,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // entry can take a long time to either commit or be overwritten by a new leader.
   private static final long              ABANDONED_TX_TTL_MS           = 10 * 60 * 1000L;
 
+  // In-flight leader-side phase 2 applies, ticket -> the applied index observed when the commit
+  // started (its "replay floor"). A locally-originated entry is origin-skipped by applyTxEntry
+  // because RaftReplicatedDatabase.commit's phase 2 writes the pages instead - but phase 2 runs
+  // AFTER Raft commits the entry, so between the two this node has advanced lastAppliedIndex past
+  // an entry whose pages are not on disk yet. takeSnapshot() must not hand that index to Ratis as a
+  // durability checkpoint: the marker it writes is the only thing reinitialize() consults on
+  // restart, so a checkpoint covering an unapplied entry makes the write unreplayable and lost
+  // forever on this node (issue #5407). Registering the floor BEFORE replication and clamping
+  // takeSnapshot() to it keeps the entry inside the replay window until phase 2 confirms.
+  private final Map<Long, PendingPhase2> pendingLocalPhase2       = new ConcurrentHashMap<>();
+  private final AtomicLong               pendingLocalPhase2Ticket = new AtomicLong();
+  // A ticket is only released once its pages are settled, so one that is never released pins the
+  // checkpoint - and therefore Raft log purge - until the node restarts. That is the intended
+  // durability trade, but it must not be silent: without a signal an operator meets it as disk
+  // pressure. Warn (throttled) once a held ticket outlives the threshold.
+  private static final long STALLED_PHASE2_WARN_AFTER_MS = 5 * 60 * 1000L;
+  private static final long STALLED_PHASE2_WARN_EVERY_MS = 60 * 1000L;
+  private final AtomicLong  lastStalledPhase2WarnMs      = new AtomicLong();
+
+  /** One in-flight leader-side phase 2: the replay floor to protect, and when it started. */
+  private record PendingPhase2(long replayFloor, long startedAtMs) {
+  }
+
 
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
@@ -798,10 +821,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public long takeSnapshot() {
-    final long currentIndex = lastAppliedIndex.get();
+    long currentIndex = lastAppliedIndex.get();
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
 
+    // Never checkpoint past an entry whose leader-side phase 2 has not confirmed (issue #5407): the
+    // entry is Raft-committed and lastAppliedIndex has moved past it, but its pages reach disk only
+    // when commit2ndPhase runs. Clamping to the oldest in-flight commit's floor keeps such an entry
+    // above the checkpoint, so a restart replays it (with originatedLocally=false) instead of
+    // treating it as durable and dropping it permanently.
+    final long pendingFloor = lowestPendingLocalPhase2Floor();
+    if (pendingFloor < currentIndex) {
+      currentIndex = pendingFloor;
+      final long oldestStartedAtMs = oldestPendingLocalPhase2StartMs();
+      if (oldestStartedAtMs != Long.MAX_VALUE)
+        warnIfPhase2StallingCompaction(oldestStartedAtMs, currentIndex);
+    }
+    if (currentIndex < 0)
+      return RaftLog.INVALID_LOG_INDEX;
+
+    // Regressing the marker below an existing one would let Ratis replay from an index whose log
+    // entries a previous checkpoint already authorised for purging. Skip this round instead; the
+    // next snapshot after phase 2 drains advances it normally.
+    final var latest = storage.getLatestSnapshot();
+    if (latest != null && currentIndex < latest.getIndex()) {
+      HALog.log(this, HALog.BASIC,
+          "Skipping snapshot checkpoint at index %d: a phase-2 apply is still in flight and the existing marker is at %d",
+          currentIndex, latest.getIndex());
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+
+    // NOTE: after a clamp, term is the CURRENT applied term while currentIndex is an older index, so
+    // the marker name can pair a term with an index that predates it. That is deliberate and already
+    // tolerated: reinitialize() seeds an inflated marker term as-is and the tolerant
+    // updateLastAppliedTermIndex override realigns it on the first replayed entry (issues #575/#593),
+    // and notifyInstallSnapshotFromLeader writes an upper-bound term for the same reason. Do not
+    // "correct" it by looking up the term at currentIndex - that entry may already be purged.
     final TermIndex applied = getLastAppliedTermIndex();
     final long term = applied != null && applied.getTerm() > 0 ? applied.getTerm() : 0L;
     if (!registerSnapshotMarker(term, currentIndex)) {
@@ -1146,6 +1201,90 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private static String abandonedKey(final String databaseName, final long walTxId) {
     return databaseName + "/" + walTxId;
+  }
+
+  /**
+   * Registers a leader-side phase 2 that is about to start replicating, and returns the ticket that
+   * {@link #endLocalPhase2(long)} must release. The recorded floor is the applied index observed
+   * now, i.e. BEFORE this transaction's entry exists in the Raft log, so the entry is guaranteed to
+   * land above it and stay inside the replay window that {@link #takeSnapshot()} preserves.
+   * <p>
+   * Reading a floor that is lower than the eventual entry index is always safe: it only widens the
+   * replay window, and replay is idempotent (page-version guards in {@code applyChanges} skip pages
+   * that are already at or beyond the WAL version).
+   */
+  long beginLocalPhase2() {
+    final long ticket = pendingLocalPhase2Ticket.incrementAndGet();
+    pendingLocalPhase2.put(ticket, new PendingPhase2(lastAppliedIndex.get(), System.currentTimeMillis()));
+    return ticket;
+  }
+
+  /**
+   * Releases a ticket returned by {@link #beginLocalPhase2()}. Call it only once the entry's local
+   * pages are settled - or once the entry provably never committed. A ticket left held keeps the
+   * snapshot checkpoint pinned until the node restarts, which is the intended outcome when this node
+   * is holding a committed entry it never applied.
+   */
+  void endLocalPhase2(final long ticket) {
+    pendingLocalPhase2.remove(ticket);
+  }
+
+  /** Number of leader-side phase 2 applies still holding the snapshot checkpoint back. */
+  int pendingLocalPhase2Count() {
+    return pendingLocalPhase2.size();
+  }
+
+  /**
+   * The lowest replay floor among the currently in-flight leader-side phase 2 applies, or
+   * {@link Long#MAX_VALUE} when none is in flight. Scanned on demand rather than maintained
+   * incrementally: {@link #takeSnapshot()} is the only reader and runs rarely (periodic compaction
+   * or shutdown), while the map is sized by concurrent commits.
+   */
+  private long lowestPendingLocalPhase2Floor() {
+    long lowest = Long.MAX_VALUE;
+    for (final PendingPhase2 pending : pendingLocalPhase2.values())
+      if (pending.replayFloor() < lowest)
+        lowest = pending.replayFloor();
+    return lowest;
+  }
+
+  /**
+   * When the oldest in-flight phase 2 started, or {@link Long#MAX_VALUE} when none is in flight.
+   * Kept separate from {@link #lowestPendingLocalPhase2Floor()} so both stay pure queries; the extra
+   * pass costs nothing on the rare {@link #takeSnapshot()} path.
+   */
+  private long oldestPendingLocalPhase2StartMs() {
+    long oldest = Long.MAX_VALUE;
+    for (final PendingPhase2 pending : pendingLocalPhase2.values())
+      if (pending.startedAtMs() < oldest)
+        oldest = pending.startedAtMs();
+    return oldest;
+  }
+
+  /**
+   * Surfaces the one failure mode of the #5407 guard: a ticket held long enough to be stuck (its
+   * commit neither settled its pages nor proved the entry absent) pins the checkpoint, so the Raft
+   * log stops being purged until this node restarts. Throttled so a checkpoint attempt during a
+   * genuinely long-running commit does not spam the log.
+   * <p>
+   * Evaluated on a snapshot attempt, not on a timer: the condition is only interesting when a
+   * checkpoint is actually being held back, but it does mean the warning can lag a stuck ticket by
+   * up to one compaction interval ({@code arcadedb.ha.snapshotInterval}, 5 min by default).
+   */
+  private void warnIfPhase2StallingCompaction(final long oldestStartedAtMs, final long lowestFloor) {
+    final long heldForMs = System.currentTimeMillis() - oldestStartedAtMs;
+    if (heldForMs < STALLED_PHASE2_WARN_AFTER_MS)
+      return;
+    final long now = System.currentTimeMillis();
+    final long lastWarn = lastStalledPhase2WarnMs.get();
+    if (now - lastWarn < STALLED_PHASE2_WARN_EVERY_MS || !lastStalledPhase2WarnMs.compareAndSet(lastWarn, now))
+      return;
+    LogManager.instance().log(this, Level.WARNING,
+        """
+        A local phase-2 apply has been unconfirmed for %d s (%d in flight): holding the Raft snapshot \
+        checkpoint at index %d so the entry stays replayable. The Raft log will not be purged past that \
+        index until this node restarts and replays it - watch disk usage on the Raft storage volume.""",
+        heldForMs / 1000, pendingLocalPhase2.size(), lowestFloor);
   }
 
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
