@@ -35,6 +35,7 @@ import org.graalvm.polyglot.Value;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class PolyglotQueryEngine implements QueryEngine {
   private       GraalPolyglotEngine          polyglotEngine;
@@ -44,6 +45,9 @@ public class PolyglotQueryEngine implements QueryEngine {
   private       List<String>                 allowedPackages = null;
   private final ExecutorService              userCodeExecutor;
   private final ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
+
+  /** #5418: names the user-code workers and marks them DAEMON (see the constructor). */
+  private static final AtomicLong USER_CODE_THREAD_SEQ = new AtomicLong();
 
   private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
     @Override
@@ -92,8 +96,13 @@ public class PolyglotQueryEngine implements QueryEngine {
     this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
         .setLanguage(language).setAllowedPackages(allowedPackages).build();
     this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
-    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue,
-        new ThreadPoolExecutor.CallerRunsPolicy());
+    // #5418: named DAEMON workers. With the JDK default factory these were non-daemon core threads that never
+    // time out, so a single scripted query on a Database the embedder later leaks pinned its JVM alive.
+    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, r -> {
+      final Thread t = new Thread(r, "ArcadeDB-PolyglotUserCode-" + USER_CODE_THREAD_SEQ.incrementAndGet());
+      t.setDaemon(true);
+      return t;
+    }, new ThreadPoolExecutor.CallerRunsPolicy());
     this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);
   }
 

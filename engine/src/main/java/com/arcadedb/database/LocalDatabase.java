@@ -338,6 +338,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // ROLLBACK ANY PENDING OPERATION
       getTransaction().kill();
 
+    // #5418: a real crash takes the index background threads down with the process, so the simulation must too -
+    // otherwise a vector index inactivity timer survives the "crash" and later fires against a dead database.
+    for (final Index idx : schema.getIndexes()) {
+      try {
+        ((IndexInternal) idx).releaseBackgroundResources();
+      } catch (final Exception e) {
+        // IGNORE IT: THIS IS A CRASH SIMULATION
+      }
+    }
+
     try {
       schema.close();
       PageManager.INSTANCE.simulateKillOfDatabase(this);
@@ -2147,15 +2157,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
 
-    if (!drop) {
-      // FLUSH ALL INDEXES WHILE THE DATABASE IS STILL OPEN
-      for (Index idx : schema.getIndexes()) {
+    for (final Index idx : schema.getIndexes()) {
+      final IndexInternal index = (IndexInternal) idx;
+
+      if (!drop) {
+        // FLUSH ALL INDEXES WHILE THE DATABASE IS STILL OPEN
         try {
-          ((IndexInternal) idx).flush();
-        } catch (Exception e) {
+          index.flush();
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on flushing index %s: %s", e, idx.getName(),
               e.getMessage());
         }
+      }
+
+      // #5418: then stop whatever this index keeps running in the BACKGROUND. Nothing did before, so the vector
+      // index inactivity rebuild timer outlived Database.close() and fired minutes later against a closed - or
+      // by then already deleted - database: DatabaseIsClosedException, page-parse errors on dropped files, and
+      // a race with JVM shutdown. Deliberately AFTER the flush above (an index whose graceful shutdown is a
+      // graph build needs its build pool alive for it) and deliberately NOT index.close(), which also closes
+      // the index files: those must stay open until the page flush in the write-lock section below has run,
+      // and it is fileManager.close() that closes them, once, at the right point.
+      try {
+        index.releaseBackgroundResources();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on releasing the background resources of index %s: %s", e,
+            idx.getName(), e.getMessage());
       }
     }
 
