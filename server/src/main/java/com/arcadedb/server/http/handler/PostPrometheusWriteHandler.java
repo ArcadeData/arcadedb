@@ -101,10 +101,21 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         final TimeSeriesEngine engine = tsType.getEngine();
         final List<ColumnDefinition> columns = tsType.getTsColumns();
 
-        // Insert each sample
-        for (final Sample sample : ts.getSamples()) {
-          final long[] timestamps = new long[] { sample.timestampMs() };
-          final Object[][] columnValues = new Object[columns.size() - 1][1];
+        // Append this series' samples as ONE batch. All samples of a remote-write TimeSeries share the
+        // same type and labels, so they can go in a single shard transaction. Appending one at a time
+        // would cost a transaction per sample - and on a Raft HA leader, a replicated quorum round trip
+        // per sample, serialized behind the per-shard append lock.
+        final List<Sample> tsSamples = ts.getSamples();
+        final int count = tsSamples.size();
+        if (count == 0)
+          continue;
+
+        final long[] timestamps = new long[count];
+        final Object[][] columnValues = new Object[columns.size() - 1][count];
+
+        for (int s = 0; s < count; s++) {
+          final Sample sample = tsSamples.get(s);
+          timestamps[s] = sample.timestampMs();
 
           int colIdx = 0;
           for (int i = 0; i < columns.size(); i++) {
@@ -117,12 +128,12 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
               value = findLabelValue(ts.getLabels(), col.getName());
             else
               value = sample.value(); // the "value" field
-            columnValues[colIdx][0] = value;
+            columnValues[colIdx][s] = value;
             colIdx++;
           }
-
-          engine.appendSamples(timestamps, columnValues);
         }
+
+        engine.appendBatch(timestamps, columnValues);
       }
       database.commit();
     } catch (final Exception e) {
