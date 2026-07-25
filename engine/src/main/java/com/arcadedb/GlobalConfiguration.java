@@ -597,6 +597,16 @@ public enum GlobalConfiguration {
       cache may use (see arcadedb.vectorIndex.searchCacheSize). Ignored when the cache size is set explicitly.""",
       Integer.class, 25),
 
+  VECTOR_INDEX_SEARCHER_POOL_SIZE("arcadedb.vectorIndex.searcherPoolSize", SCOPE.DATABASE,
+      """
+      Maximum number of JVector graph searchers kept alive per vector index for reuse across queries. Each \
+      searcher owns the beam-search scratch state (candidate heap, result heaps, visited set) plus a graph view; \
+      allocating one per query made that scratch state the largest single source of garbage on a dense-search \
+      workload, and the resulting young-GC frequency dominated the query tail latency. \
+      0 (default) sizes the pool automatically as 2x the available cores. -1 disables pooling and allocates a \
+      searcher per query.""",
+      Integer.class, 0),
+
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
       """
       Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. \
