@@ -83,7 +83,11 @@ public class TransactionManager {
     if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
 
-      task = new Timer("ArcadeDB TransactionManager " + database.getName());
+      // #5418: DAEMON timer. A leaked (never closed) Database used to keep this non-daemon thread alive and
+      // with it the whole JVM. The WAL housekeeping it drives is best-effort background work; the durable
+      // part of the shutdown runs in TransactionManager.close(), reached through the JVM shutdown hook
+      // installed by DatabaseFactory, which completes before daemon threads are stopped.
+      task = new Timer("ArcadeDB TransactionManager " + database.getName(), true);
       task.schedule(new TimerTask() {
         @Override
         public void run() {

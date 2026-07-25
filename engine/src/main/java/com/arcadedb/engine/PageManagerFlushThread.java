@@ -124,7 +124,15 @@ public class PageManagerFlushThread extends Thread {
 
   public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration) {
     super("ArcadeDB AsyncFlush");
-    setDaemon(false);
+    // #5418: DAEMON. A non-daemon flush thread made an embedder that leaks a Database handle unable to exit
+    // at all: DestroyJavaVM waits for every non-daemon thread, and this one only stops on Database.close(),
+    // so the JVM hung forever (or crashed inside shutdownJVM on Windows) instead of shutting down. Durability
+    // does NOT rest on the thread being non-daemon: DatabaseFactory installs a JVM shutdown hook that closes
+    // every still-open database, and shutdown hooks run to completion BEFORE the JVM stops daemon threads, so
+    // the pending pages are flushed exactly as they were by an explicit close. On a path where no hook runs at
+    // all (Runtime.halt, SIGKILL) the pages were never guaranteed to reach the disk anyway, and the WAL replays
+    // them on the next open.
+    setDaemon(true);
     this.pageManager = pageManager;
     this.logContext = LogManager.instance().getContext();
     this.queue = new ArrayBlockingQueue<>(configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
