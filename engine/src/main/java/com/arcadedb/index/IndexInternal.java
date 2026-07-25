@@ -131,4 +131,27 @@ public interface IndexInternal extends Index {
   default void removeReplay(final Object[] keys, final Identifiable rid) {
     remove(keys, rid);
   }
+
+  /**
+   * Whether the per-transaction changes of this index must be held in {@code TransactionIndexContext}'s
+   * key-ordered map (the default) or can ride an append-only lane replayed in insertion order.
+   * <p>
+   * The ordered map exists to serve three needs of a classic LSM-Tree index: in-transaction cursor
+   * navigation over uncommitted keys, immediate duplicated-key detection on unique indexes, and
+   * collapsing repeated operations on the same key so commit replays each key once. Its cost is one
+   * {@code O(log n)} comparison chain plus a per-key {@code HashMap} for every queued entry.
+   * <p>
+   * That trade is wrong for an index whose single record produces many entries. A sparse vector
+   * queues one posting per non-zero dimension - hundreds per record on learned-sparse corpora
+   * (issue #5411) - none of which is unique, cursor-navigable, or worth deduplicating, since the
+   * receiving structure is itself last-write-wins. Returning {@code false} routes those entries to
+   * an append-only list that replays in the exact order they were queued, which preserves
+   * "the last operation on a posting wins" without any key bookkeeping.
+   * <p>
+   * An index may only return {@code false} when it is non-unique <b>and</b> exposes no
+   * in-transaction read path, since both features read the ordered map back.
+   */
+  default boolean isTransactionKeyOrderRequired() {
+    return true;
+  }
 }
