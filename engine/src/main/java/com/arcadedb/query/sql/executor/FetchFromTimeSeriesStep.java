@@ -44,6 +44,17 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
   private final long                fromTs;
   private final long                toTs;
   private final TagFilter           tagFilter;
+  /**
+   * Issue #5414: when true the engine is scanned newest-first, so a last-point query
+   * ({@code ORDER BY <ts> DESC LIMIT n}, {@code ts.last()}) stops after the newest blocks instead of
+   * walking the whole series.
+   */
+  private final boolean             descending;
+  /**
+   * Row cap pushed into the descending scan; {@code <= 0} means unlimited. Only set when the planner
+   * proved that every WHERE condition is consumed by the push-down, so no row can be discarded later.
+   */
+  private final int                 descendingLimit;
   private       Iterator<Object[]>  resultIterator;
   private       boolean             fetched = false;
 
@@ -54,11 +65,18 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
   public FetchFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final TagFilter tagFilter, final CommandContext context) {
+    this(tsType, fromTs, toTs, tagFilter, false, 0, context);
+  }
+
+  public FetchFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final TagFilter tagFilter, final boolean descending, final int descendingLimit, final CommandContext context) {
     super(context);
     this.tsType = tsType;
     this.fromTs = fromTs;
     this.toTs = toTs;
     this.tagFilter = tagFilter;
+    this.descending = descending;
+    this.descendingLimit = descendingLimit;
   }
 
   @Override
@@ -71,7 +89,9 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
           if (engine == null)
             throw new CommandExecutionException(
                 "TimeSeries engine for type '" + tsType.getName() + "' is not initialized");
-          resultIterator = engine.iterateQuery(fromTs, toTs, null, tagFilter);
+          resultIterator = descending
+              ? engine.queryDescending(fromTs, toTs, null, tagFilter, descendingLimit, null).iterator()
+              : engine.iterateQuery(fromTs, toTs, null, tagFilter);
           fetched = true;
         } catch (final CommandExecutionException e) {
           throw e;
@@ -145,8 +165,13 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder sb = new StringBuilder();
-    sb.append(spaces).append("+ FETCH FROM TIMESERIES ").append(tsType.getName());
+    sb.append(spaces).append("+ FETCH FROM TIMESERIES ");
+    if (descending)
+      sb.append("DESC ");
+    sb.append(tsType.getName());
     sb.append(" [").append(fromTs).append(" - ").append(toTs).append("]");
+    if (descending && descendingLimit > 0)
+      sb.append(" TOP ").append(descendingLimit);
     if (context.isProfiling())
       sb.append(" (").append(getCostFormatted()).append(", ").append(getRowCountFormatted()).append(")");
     return sb.toString();
@@ -154,6 +179,6 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, context);
+    return new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, descending, descendingLimit, context);
   }
 }
