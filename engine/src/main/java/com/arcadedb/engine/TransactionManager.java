@@ -421,6 +421,26 @@ public class TransactionManager {
     }
   }
 
+  /**
+   * Point-in-time view of every commit-lock currently HELD on this database: the file, its owner, when
+   * it was acquired, how long it has been held and how many transactions are queued behind it.
+   * <p>
+   * Exposed because the lock table is otherwise unreachable from outside this class — {@code toString()}
+   * renders it, but only as a debug string a caller would have to parse. Locks have no lease: a resource
+   * is released by its owner or not at all, and the abandoned-lock sweep reclaims one only after the
+   * owning thread has DIED, so a lock leaked by a live-but-stuck thread is held until the process
+   * restarts. This is what lets an operator see that happening instead of inferring it from a wave of
+   * {@link com.arcadedb.exception.LockTimeoutException}s and restarting blind.
+   * <p>
+   * Returns a snapshot of rendered values, deliberately NOT the {@link LockManager}: diagnostics must be
+   * able to read the lock table without being able to unlock anything.
+   *
+   * @return one entry per held file, empty when nothing is locked (the normal, healthy state)
+   */
+  public List<LockManager.LockStats> getLockStats() {
+    return fileIdsLockManager.statsSnapshot();
+  }
+
   public Map<String, Object> getStats() {
     final Map<String, Object> map = new HashMap<>();
     map.put("logFiles", logFileCounter.get());
