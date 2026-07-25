@@ -737,4 +737,16 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       return Integer.compare(b1, b2);
     return Long.compare(a.getPosition(), b.getPosition());
   }
+
+  /**
+   * Same ordering as {@link #compareRid(RID, RID)} with the left-hand side supplied as raw
+   * components. Lets the cursor hot path compare against decoded postings held in primitive arrays
+   * without materialising a {@link RID} per comparison.
+   */
+  public static int compareRid(final int bucketId, final long position, final RID b) {
+    final int b2 = b.getBucketId();
+    if (bucketId != b2)
+      return Integer.compare(bucketId, b2);
+    return Long.compare(position, b.getPosition());
+  }
 }

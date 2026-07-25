@@ -108,6 +108,18 @@ public final class DimCursor implements AutoCloseable {
   }
 
   /**
+   * Merged posting count across every source for this dim: how expensive this term is to traverse.
+   * {@link BmwScorer} uses it to rank which terms are worth dropping out of the traversal first, so
+   * an approximation is fine (sources that cannot answer in O(1) report 0).
+   */
+  public long documentFrequency() {
+    long total = 0L;
+    for (final SourceCursor s : sources)
+      total += s.documentFrequency();
+    return total;
+  }
+
+  /**
    * Merged Block-Max WAND upper bound on this dim's contribution to {@code rid}: the max over
    * live sources of their {@link SourceCursor#blockMaxAt(RID) blockMaxAt}. Taking the max is
    * correct because on a conflict the newest source wins and its weight is bounded by its own
