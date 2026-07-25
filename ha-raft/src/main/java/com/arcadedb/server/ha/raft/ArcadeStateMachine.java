@@ -831,8 +831,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // above the checkpoint, so a restart replays it (with originatedLocally=false) instead of
     // treating it as durable and dropping it permanently.
     final long pendingFloor = lowestPendingLocalPhase2Floor();
-    if (pendingFloor < currentIndex)
+    if (pendingFloor < currentIndex) {
       currentIndex = pendingFloor;
+      final long oldestStartedAtMs = oldestPendingLocalPhase2StartMs();
+      if (oldestStartedAtMs != Long.MAX_VALUE)
+        warnIfPhase2StallingCompaction(oldestStartedAtMs, currentIndex);
+    }
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
 
@@ -1238,16 +1242,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private long lowestPendingLocalPhase2Floor() {
     long lowest = Long.MAX_VALUE;
-    long oldestStartedAt = Long.MAX_VALUE;
-    for (final PendingPhase2 pending : pendingLocalPhase2.values()) {
+    for (final PendingPhase2 pending : pendingLocalPhase2.values())
       if (pending.replayFloor() < lowest)
         lowest = pending.replayFloor();
-      if (pending.startedAtMs() < oldestStartedAt)
-        oldestStartedAt = pending.startedAtMs();
-    }
-    if (oldestStartedAt != Long.MAX_VALUE)
-      warnIfPhase2StallingCompaction(oldestStartedAt, lowest);
     return lowest;
+  }
+
+  /**
+   * When the oldest in-flight phase 2 started, or {@link Long#MAX_VALUE} when none is in flight.
+   * Kept separate from {@link #lowestPendingLocalPhase2Floor()} so both stay pure queries; the extra
+   * pass costs nothing on the rare {@link #takeSnapshot()} path.
+   */
+  private long oldestPendingLocalPhase2StartMs() {
+    long oldest = Long.MAX_VALUE;
+    for (final PendingPhase2 pending : pendingLocalPhase2.values())
+      if (pending.startedAtMs() < oldest)
+        oldest = pending.startedAtMs();
+    return oldest;
   }
 
   /**
@@ -1255,6 +1266,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * commit neither settled its pages nor proved the entry absent) pins the checkpoint, so the Raft
    * log stops being purged until this node restarts. Throttled so a checkpoint attempt during a
    * genuinely long-running commit does not spam the log.
+   * <p>
+   * Evaluated on a snapshot attempt, not on a timer: the condition is only interesting when a
+   * checkpoint is actually being held back, but it does mean the warning can lag a stuck ticket by
+   * up to one compaction interval ({@code arcadedb.ha.snapshotInterval}, 5 min by default).
    */
   private void warnIfPhase2StallingCompaction(final long oldestStartedAtMs, final long lowestFloor) {
     final long heldForMs = System.currentTimeMillis() - oldestStartedAtMs;

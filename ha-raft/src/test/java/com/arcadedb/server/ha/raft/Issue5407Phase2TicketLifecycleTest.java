@@ -30,6 +30,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,7 +58,9 @@ import static org.mockito.Mockito.when;
  */
 class Issue5407Phase2TicketLifecycleTest {
 
-  private static final String DB_PATH = "/tmp/issue5407-phase2-ticket-test";
+  // Only ever used as the DatabaseContext key (proxied is a mock, nothing touches the filesystem).
+  // Made unique per test so parallel runs cannot share a context, and so it carries no POSIX-only path.
+  private final String dbPath = "issue5407-phase2-ticket-" + UUID.randomUUID();
 
   private LocalDatabase         proxied;
   private RaftHAServer          raftServer;
@@ -70,7 +73,7 @@ class Issue5407Phase2TicketLifecycleTest {
   void setUp() {
     txManager = mock(TransactionManager.class);
     proxied = mock(LocalDatabase.class);
-    when(proxied.getDatabasePath()).thenReturn(DB_PATH);
+    when(proxied.getDatabasePath()).thenReturn(dbPath);
     when(proxied.getName()).thenReturn("issue5407");
     when(proxied.getTransactionManager()).thenReturn(txManager);
     when(proxied.getSchema()).thenReturn(mock(Schema.class, RETURNS_DEEP_STUBS));
@@ -88,7 +91,7 @@ class Issue5407Phase2TicketLifecycleTest {
   @AfterEach
   void tearDown() {
     RaftReplicatedDatabase.TEST_POST_REPLICATION_HOOK = null;
-    DatabaseContext.INSTANCE.removeContext(DB_PATH);
+    DatabaseContext.INSTANCE.removeContext(dbPath);
   }
 
   /** The whole point: phase 2 wrote the pages, so the entry is durable here and may be checkpointed. */
