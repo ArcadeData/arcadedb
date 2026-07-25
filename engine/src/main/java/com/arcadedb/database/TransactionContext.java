@@ -1099,7 +1099,12 @@ public class TransactionContext implements Transaction {
 
         if (isNew) {
           newPages.put(pageId, page);
-          newPageCounters.put(pageId.getFileId(), pageId.getPageNumber() + 1);
+          // Same max-semantics as addPage: the WAL pages of one file arrive in no particular order, so a plain put
+          // could leave the counter BELOW the highest new page of this file, and getTotalPages() (which prefers
+          // this counter) would then under-report the size of the file for the rest of the transaction.
+          final Integer indexCounter = newPageCounters.get(pageId.getFileId());
+          if (indexCounter == null || indexCounter < pageId.getPageNumber() + 1)
+            newPageCounters.put(pageId.getFileId(), pageId.getPageNumber() + 1);
         } else
           modifiedPages.put(pageId, page);
 
