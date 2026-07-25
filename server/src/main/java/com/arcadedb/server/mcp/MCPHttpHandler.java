@@ -64,6 +64,15 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     return true;
   }
 
+  /**
+   * A JSON-RPC batch is a top-level JSON array, so this endpoint opts in to the array-body support of the base
+   * handler (issue #5415) instead of re-parsing the raw body itself.
+   */
+  @Override
+  protected boolean acceptsArrayPayload() {
+    return true;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     // This endpoint carries JSON-RPC over POST only. MCP allows a GET to open an SSE stream instead, which
@@ -77,11 +86,19 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     if (!isOriginAllowed(exchange))
       return new ExecutionResponse(403, MCPDispatcher.errorObject(null, -32600, "Origin not allowed").toString());
 
-    // A top-level array is a JSON-RPC batch. The shared payload parsing produces a single JSONObject and
-    // leaves 'payload' null for an array, so the batch is read back from the raw body.
-    final String raw = exchange.getAttachment(RAW_PAYLOAD);
-    if (raw != null && isBatch(raw))
-      return executeBatch(raw, user);
+    // A top-level array is a JSON-RPC batch, parsed once by the shared request pipeline (issue #5415).
+    final JSONArray batch = getPayloadAsArray(exchange);
+    if (batch != null)
+      return executeBatch(batch, user);
+
+    // Neither an object nor an array came back from the shared parsing while the client did send a body: the
+    // body is not valid JSON. JSON-RPC answers that with -32700 over HTTP 200, never with a transport error.
+    if (payload == null) {
+      final String raw = exchange.getAttachment(RAW_PAYLOAD);
+      if (raw != null && !raw.isBlank())
+        return new ExecutionResponse(200,
+            MCPDispatcher.errorObject(null, -32700, "Parse error: the request body is not valid JSON").toString());
+    }
 
     final MCPResponse response = dispatcher.dispatch(payload, user);
 
@@ -92,14 +109,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(response.httpStatus(), response.json().toString());
   }
 
-  private ExecutionResponse executeBatch(final String raw, final ServerSecurityUser user) {
-    final JSONArray batch;
-    try {
-      batch = new JSONArray(raw.trim());
-    } catch (final Exception e) {
-      return new ExecutionResponse(200, MCPDispatcher.errorObject(null, -32700, "Parse error: " + e.getMessage()).toString());
-    }
-
+  private ExecutionResponse executeBatch(final JSONArray batch, final ServerSecurityUser user) {
     if (batch.isEmpty())
       return new ExecutionResponse(200, MCPDispatcher.errorObject(null, -32600, "Invalid Request: empty batch").toString());
 
@@ -110,19 +120,6 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(202, "");
 
     return new ExecutionResponse(200, responses.toString());
-  }
-
-  /**
-   * Cheap check for a top-level JSON array without paying for a full parse of a body that is usually a single
-   * request object.
-   */
-  private static boolean isBatch(final String raw) {
-    for (int i = 0; i < raw.length(); i++) {
-      final char c = raw.charAt(i);
-      if (!Character.isWhitespace(c))
-        return c == '[';
-    }
-    return false;
   }
 
   /**
