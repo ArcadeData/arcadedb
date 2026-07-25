@@ -139,10 +139,10 @@ in isolation and the full batch re-ran clean: cross-test startup contention, not
   releases the ticket, so compaction stays pinned until the node restarts. Since those timeouts are
   transient, this can happen without any crash. Releasing on `applyTxEntry` needs a
   ticket-to-`walTxId` correlation that does not exist today; adding one to that path was judged worse
-  than the documented gap for a change whose purpose is durability. **Worth a tracking issue.**
+  than the documented gap for a change whose purpose is durability. Tracked in **#5410**.
 - **No metric for a pinned checkpoint.** `pendingLocalPhase2Count()` exists but this class has no
   Micrometer wiring; exposing it (plus the oldest held floor) as a gauge would make a stalled node
-  visible on a dashboard rather than only in the log.
+  visible on a dashboard rather than only in the log. Also tracked in **#5410**.
 
 ## Design notes
 
