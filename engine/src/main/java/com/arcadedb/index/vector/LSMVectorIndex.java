@@ -193,6 +193,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile VectorCache searchVectorCache;
   private final    Object      searchVectorCacheLock = new Object();
 
+  // Index-scoped pool of JVector graph searchers, reused across queries (issue #5413). Allocating a searcher per
+  // query made its scratch state (the growable candidate heap above all) the largest single source of garbage on
+  // a dense-search workload, and the young-GC frequency that produced was what set the query tail latency.
+  private volatile GraphSearcherPool searcherPool;
+  private final    Object            searcherPoolLock = new Object();
+
   // Async graph rebuild support (issue #3679): when mutations reach the configured threshold,
   // the graph is rebuilt in a background daemon thread and hot-swapped when ready.
   // This prevents vectorNeighbors queries from blocking for minutes on large indexes.
@@ -3055,9 +3061,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
             new RIDBitsFilter(allowedRIDs, ordinalMap, vectorIndex) :
             Bits.ALL;
 
-        // Use instance GraphSearcher with SearchScoreProvider for efSearch control
+        // Use instance GraphSearcher with SearchScoreProvider for efSearch control. The searcher is borrowed from
+        // the index-scoped pool so its scratch state survives across queries (issue #5413).
         final SearchResult searchResult;
-        try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
+        final GraphSearcherPool pool = getSearcherPool();
+        final long poolEpoch = searcherPoolEpoch();
+        // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
+        // agree on which graph the searcher belongs to.
+        final ImmutableGraphIndex pooledGraph = graphIndex;
+        final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+        try {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = node ->
               metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
 
@@ -3098,6 +3111,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
               searchResult = firstPass;
             }
           }
+        } finally {
+          pool.release(searcher, pooledGraph, poolEpoch);
         }
 
         LogManager.instance()
@@ -3252,7 +3267,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
             groupKeyResolver, limit, groupSize);
 
         final SearchResult searchResult;
-        try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
+        final GraphSearcherPool pool = getSearcherPool();
+        final long poolEpoch = searcherPoolEpoch();
+        // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
+        // agree on which graph the searcher belongs to.
+        final ImmutableGraphIndex pooledGraph = graphIndex;
+        final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+        try {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = node ->
               metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
@@ -3274,6 +3295,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
             effectiveEfSearch = graphSize < 10_000 ? Math.max(searchK, 100) : Math.max(searchK * 2, 20);
           }
           searchResult = searcher.search(ssp, searchK, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+        } finally {
+          pool.release(searcher, pooledGraph, poolEpoch);
         }
 
         LogManager.instance()
@@ -3427,8 +3450,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // The graph structure is typically small enough to stay in OS page cache
         // Note: JVector 4.0's search method uses (scoreProvider, topK, Bits) signature
         final SearchResult searchResult;
-        try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
+        final GraphSearcherPool pool = getSearcherPool();
+        final long poolEpoch = searcherPoolEpoch();
+        // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
+        // agree on which graph the searcher belongs to.
+        final ImmutableGraphIndex pooledGraph = graphIndex;
+        final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+        try {
           searchResult = searcher.search(ssp, k, bitsFilter);
+        } finally {
+          pool.release(searcher, pooledGraph, poolEpoch);
         }
 
         // Extract RIDs and scores from search results
@@ -4251,6 +4282,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       asyncRebuildThread = null;
       asyncRebuildInProgress = false;
     }
+
+    // Release the pooled graph searchers (and the graph views they hold) - issue #5413.
+    final GraphSearcherPool searchers = searcherPool;
+    if (searchers != null)
+      searchers.clear();
+
     flush();
   }
 
@@ -4261,6 +4298,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Clear all vector locations
       vectorIndex.clear();
       searchVectorCache = null; // Release the shared search cache (issue #5412)
+      final GraphSearcherPool searchers = searcherPool;
+      if (searchers != null)
+        searchers.clear(); // Release the pooled graph searchers (issue #5413)
       ordinalToVectorId = new int[0];
       currentInsertPageNum = -1;
 
@@ -4368,6 +4408,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the working set does not fit: raise arcadedb.vectorIndex.searchCacheSize.
     final VectorCache searchCache = searchVectorCache;
     stats.put("searchVectorCacheCapacity", searchCache != null ? (long) searchCache.capacity() : 0L);
+    final GraphSearcherPool searchers = searcherPool;
+    stats.put("pooledGraphSearchers", searchers != null ? (long) searchers.size() : 0L);
     stats.put("vectorCacheHits", searchCache != null ? searchCache.getHits() : 0L);
     stats.put("vectorCacheMisses", searchCache != null ? searchCache.getMisses() : 0L);
 
@@ -4980,6 +5022,39 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       return cache;
     }
+  }
+
+  /**
+   * Returns the pool of JVector graph searchers shared by every search on this index (issue #5413), creating it
+   * on first use.
+   */
+  GraphSearcherPool getSearcherPool() {
+    GraphSearcherPool pool = searcherPool;
+    if (pool != null)
+      return pool;
+
+    synchronized (searcherPoolLock) {
+      pool = searcherPool;
+      if (pool == null) {
+        final int configured = mutable.getDatabase().getConfiguration()
+            .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE);
+        // 0 = auto: two searchers per core, so every core can keep one checked out while another request is
+        // between borrow and release, without retaining one per (potentially 500) HTTP worker thread.
+        final int maxIdle = configured == 0 ? Math.max(4, Runtime.getRuntime().availableProcessors() * 2) : configured;
+        pool = new GraphSearcherPool(maxIdle);
+        searcherPool = pool;
+      }
+      return pool;
+    }
+  }
+
+  /**
+   * Epoch used to decide whether a pooled searcher (and the graph view it holds) is still valid. It must change on
+   * anything that can alter what a search would see: a graph rebuild swaps {@link #graphIndex}, and every
+   * insert/update/delete bumps {@link #mutationsSinceSerialize}.
+   */
+  private long searcherPoolEpoch() {
+    return mutationsSinceSerialize.get();
   }
 
   /**
