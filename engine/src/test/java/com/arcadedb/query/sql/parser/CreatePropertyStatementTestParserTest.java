@@ -46,4 +46,23 @@ class CreatePropertyStatementTestParserTest extends AbstractParserTest {
     checkWrongSyntax("CREATE PROPERTY Foo.bar if exists STRING");
     checkWrongSyntax("CREATE PROPERTY Foo.bar if not exists");
   }
+
+  /**
+   * Issue #5409: inline CUSTOM metadata on CREATE PROPERTY.
+   */
+  @Test
+  void customMetadata() {
+    checkRightSyntax("CREATE PROPERTY Foo.bar STRING CUSTOM oflines = 1");
+    checkRightSyntax("create property Foo.bar STRING custom oflines = 1");
+    checkRightSyntax("CREATE PROPERTY Foo.bar INTEGER (READONLY true) CUSTOM oflines = 2");
+    checkRightSyntax("CREATE PROPERTY Foo.bar INTEGER (READONLY true) CUSTOM x = 'width', y = 'height'");
+    checkRightSyntax("CREATE PROPERTY Foo.bar if not exists STRING CUSTOM a = 1");
+    checkRightSyntax("CREATE PROPERTY Foo.bar LIST OF INTEGER CUSTOM a = 1");
+    // `custom` is a valid identifier, so a property literally named "custom" must still parse.
+    checkRightSyntax("CREATE PROPERTY Foo.custom STRING");
+
+    checkWrongSyntax("CREATE PROPERTY Foo.bar STRING CUSTOM");
+    checkWrongSyntax("CREATE PROPERTY Foo.bar STRING CUSTOM a");
+    checkWrongSyntax("CREATE PROPERTY Foo.bar STRING CUSTOM a =");
+  }
 }

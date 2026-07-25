@@ -4962,6 +4962,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
+
     return stmt;
   }
 
@@ -5039,6 +5041,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
     }
+
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
 
     return stmt;
   }
@@ -5121,7 +5125,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
+
     return stmt;
+  }
+
+  /**
+   * Collect the inline {@code CUSTOM key = value (, key = value)*} clause shared by
+   * {@code CREATE ... TYPE} and {@code CREATE PROPERTY} (issue #5409) into the target map,
+   * preserving declaration order so the statement round-trips through {@code toString()}.
+   */
+  private void collectCustomMetadata(final List<SQLParser.CustomMetadataItemContext> items,
+      final Map<Identifier, Expression> target) {
+    if (items == null)
+      return;
+
+    for (final SQLParser.CustomMetadataItemContext itemCtx : items)
+      target.put((Identifier) visit(itemCtx.identifier()), (Expression) visit(itemCtx.expression()));
   }
 
   /**
@@ -5490,6 +5510,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.attributes.add(attr);
       }
     }
+
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
 
     return stmt;
   }
