@@ -384,6 +384,36 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (payload == null)
       return;
 
+    // The state machine origin-skips this node's own entry because phase 2 below writes the pages -
+    // but phase 2 runs only after Raft has committed, so in between lastAppliedIndex covers an entry
+    // whose pages are not on disk yet. Hold a phase-2 ticket across that window so a snapshot
+    // checkpoint cannot cover the entry: the checkpoint is the only position a restart trusts, and
+    // one taken here would make the write unreplayable and lost on this node forever (issue #5407).
+    // Only the leader runs phase 2 (see the !leader early return below), so only it needs the ticket.
+    final ArcadeStateMachine stateMachine = leader ? stateMachineOrNull() : null;
+    final long phase2Ticket = stateMachine != null ? stateMachine.beginLocalPhase2() : -1L;
+    replicateAndCommitLocally(payload, leader, stateMachine, phase2Ticket);
+  }
+
+  /**
+   * Replicates the captured payload through Raft and, on the leader, applies phase 2 locally.
+   * <p>
+   * <b>Phase-2 ticket lifecycle (issue #5407):</b> the ticket is released ONLY where the local pages
+   * are known to be settled - phase 2 wrote them, a failed phase 2 reconciled them, or the entry
+   * provably never committed. Every other exit keeps it held, deliberately: if replication succeeded
+   * but phase 2 did not run, this node holds a committed entry it never applied, and a snapshot
+   * checkpoint taken afterwards (Ratis takes one on shutdown) would bury the entry below the replay
+   * position and lose the write for good. Holding the ticket costs a stalled log-compaction
+   * checkpoint until the node restarts, at which point replay applies the entry and the hold is gone
+   * with the process.
+   * <p>
+   * Package-private for direct unit testing: which exit releases the ticket is the load-bearing part
+   * of the fix, and driving every branch through {@link #commit()} would need the whole phase-1
+   * capture stubbed out.
+   */
+  // @VisibleForTesting
+  void replicateAndCommitLocally(final ReplicationPayload payload, final boolean leader,
+      final ArcadeStateMachine stateMachine, final long phase2Ticket) {
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     try {
       final RaftHAServer raft = requireRaftServer();
@@ -393,7 +423,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // but ALL-quorum watch failed. We MUST apply locally to prevent permanent divergence.
       HALog.log(this, HALog.BASIC,
           "ALL quorum watch failed after MAJORITY commit; applying locally to prevent leader divergence: db=%s", getName());
-      applyLocallyAfterMajorityCommit(payload);
+      if (applyLocallyAfterMajorityCommit(payload))
+        releasePhase2Ticket(stateMachine, phase2Ticket);
       throw e;
     } catch (final ReplicationDispatchedTimeoutException e) {
       // INDETERMINATE outcome (issue #4790): the entry was dispatched to Ratis but the quorum wait
@@ -406,9 +437,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       rollback();
       throw e;
     } catch (final ArcadeDBException e) {
+      // Replication failed outright: the entry never reached the log, so there is nothing this node
+      // could be missing and the replay window does not need protecting.
+      releasePhase2Ticket(stateMachine, phase2Ticket);
       rollback();
       throw e;
     } catch (final Exception e) {
+      releasePhase2Ticket(stateMachine, phase2Ticket);
       rollback();
       throw new TransactionException("Error on commit distributed transaction (replication)", e);
     }
@@ -420,6 +455,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // --- PHASE 2 (read lock on leader): quorum reached, apply locally ---
     if (!leader) {
+      releasePhase2Ticket(stateMachine, phase2Ticket);
       payload.tx().reset();
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       ctx.popIfNotLastTransaction();
@@ -443,6 +479,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         payload.tx().commit2ndPhase(payload.phase1());
 
+        // The pages are on disk: the entry is now genuinely durable here, so a snapshot checkpoint
+        // may cover it. Released before saveConfiguration so a failure there (which the catch below
+        // reconciles anyway) does not needlessly keep the checkpoint pinned.
+        releasePhase2Ticket(stateMachine, phase2Ticket);
+
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
@@ -452,6 +493,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
         // the same absolute bytes (idempotent), a lower-version one is skipped.
         final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
+        // Only a successful reconcile puts the replicated pages on disk. If it failed, the entry
+        // stays unapplied here and must remain replayable, so the ticket is deliberately kept.
+        if (reconciled)
+          releasePhase2Ticket(stateMachine, phase2Ticket);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
         // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
         // The generic rethrow here told applications the commit FAILED while the data was durably committed
@@ -474,9 +519,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * so we must write the local pages to prevent permanent divergence.
    * Package-private for direct unit testing (the real trigger needs an ALL-quorum cluster whose
    * watch fails after MAJORITY commit, which depends on Ratis watch timeouts).
+   *
+   * @return {@code true} if the local pages ended up written (by phase 2 or by reconciliation), so the
+   * caller may stop protecting this entry's Raft replay window (issue #5407)
    */
-  void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
-    proxied.executeInReadLock(() -> {
+  boolean applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
+    return proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
         // #5064: MAJORITY already committed - same durability-boundary shift as the main phase-2 path.
@@ -488,19 +536,35 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         payload.tx().commit2ndPhase(payload.phase1());
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
+        return true;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
             """
             Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). \
             Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s""",
             getName(), payload.tx(), e.getMessage());
-        reconcileLeaderPagesAfterPhase2Failure(payload);
+        final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
+        return reconciled;
       } finally {
         current.popIfNotLastTransaction();
       }
-      return null;
     });
+  }
+
+  /**
+   * Stops protecting the Raft replay window for one commit (issue #5407). A no-op when no ticket was
+   * taken (replica commit, or the Raft server was not wired yet).
+   */
+  private static void releasePhase2Ticket(final ArcadeStateMachine stateMachine, final long phase2Ticket) {
+    if (stateMachine != null)
+      stateMachine.endLocalPhase2(phase2Ticket);
+  }
+
+  /** The local state machine, or {@code null} when the Raft server is not wired yet (e.g. during startup). */
+  private ArcadeStateMachine stateMachineOrNull() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getStateMachine() : null;
   }
 
   /**
@@ -515,10 +579,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * a retryable error), rather than masking the original replication failure.
    */
   private void markTransactionAbandonedForLocalApply(final ReplicationPayload payload) {
-    final RaftHAServer raft = raftHAServer;
-    if (raft == null)
-      return;
-    final ArcadeStateMachine stateMachine = raft.getStateMachine();
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
     if (stateMachine == null)
       return;
     try {
