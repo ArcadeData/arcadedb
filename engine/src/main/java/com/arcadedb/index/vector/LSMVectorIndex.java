@@ -1564,27 +1564,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       PQVectors earlyPqVectors = null;
       ProductQuantization earlyPq = null;
 
-      if (metadata.quantizationType == VectorQuantizationType.PRODUCT) {
+      if (metadata.quantizationType == VectorQuantizationType.PRODUCT && isPQTrainable(vectors.size())) {
         LogManager.instance().log(this, Level.INFO,
             "PQ-accelerated graph build: computing PQ codebooks before graph construction for index: %s", indexName);
         final long pqStart = System.currentTimeMillis();
 
         // Compute PQ subspaces
-        int pqSubspaces = metadata.pqSubspaces;
-        if (pqSubspaces <= 0) {
-          pqSubspaces = Math.min(metadata.dimensions / 4, 512);
-          pqSubspaces = Math.max(1, pqSubspaces);
-          while (metadata.dimensions % pqSubspaces != 0 && pqSubspaces > 1)
-            pqSubspaces--;
-        }
-        if (metadata.dimensions % pqSubspaces != 0) {
-          for (int m = pqSubspaces; m >= 1; m--) {
-            if (metadata.dimensions % m == 0) {
-              pqSubspaces = m;
-              break;
-            }
-          }
-        }
+        final int pqSubspaces = resolvePQSubspaces();
 
         // Train PQ codebooks from pre-loaded vectors (all in cache, no disk I/O)
         earlyPq = ProductQuantization.compute(vectors, pqSubspaces, metadata.pqClusters, metadata.pqCenterGlobally);
@@ -1604,6 +1590,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         scoreProvider = BuildScoreProvider.pqBuildScoreProvider(metadata.similarityFunction, earlyPqVectors);
       } else {
+        if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+          LogManager.instance().log(this, Level.INFO,
+              "Index %s holds %d vectors, fewer than the %d configured PQ clusters: building the graph with exact scores and "
+                  + "without PQ. A later rebuild will enable PQ once the index is large enough (issue #5417)",
+              indexName, vectors.size(), metadata.pqClusters);
+
         scoreProvider = BuildScoreProvider.randomAccessScoreProvider(vectors, metadata.similarityFunction);
       }
 
@@ -1847,6 +1839,70 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Product Quantization can only be trained when the training set holds at least as many vectors as clusters per subspace:
+   * JVector's k-means++ rejects a cluster count larger than the number of points. A freshly created index, a test fixture or
+   * the first seconds of an ingest therefore cannot train a codebook at all (issue #5417).
+   * <p>
+   * Instead of clamping K down to the vector count, the index simply runs without PQ while it is that small. Clamping would
+   * persist a degenerate codebook (one centroid per vector), lose the FusedPQ inline optimization (which requires exactly 256
+   * clusters) and pin the index to that codebook until the next rebuild, all to compress a data set that is trivially small.
+   * Running without PQ costs nothing at this size: graph construction uses exact scores and searches fall back to an exact
+   * scan. The next rebuild from scratch upgrades the index to full PQ as soon as enough vectors are present.
+   *
+   * @param vectorCount number of vectors available for training
+   *
+   * @return true when the training set is large enough to compute the configured codebook
+   */
+  private boolean isPQTrainable(final int vectorCount) {
+    return vectorCount >= metadata.pqClusters;
+  }
+
+  /**
+   * Forget any Product Quantization data currently associated with this index, both in memory and on disk.
+   */
+  private void discardProductQuantization() {
+    this.productQuantization = null;
+    this.pqVectors = null;
+    if (pqFile != null)
+      pqFile.deletePQFile();
+  }
+
+  /**
+   * Resolve the number of PQ subspaces (M), auto-calculating it when not configured and always making sure it divides the
+   * vector dimensions evenly, as required by {@link ProductQuantization}.
+   *
+   * @return the number of subspaces to use
+   */
+  private int resolvePQSubspaces() {
+    int pqSubspaces = metadata.pqSubspaces;
+    if (pqSubspaces <= 0) {
+      // Auto-calculate: dimensions/4, capped at 512 subspaces
+      pqSubspaces = Math.min(metadata.dimensions / 4, 512);
+      // Ensure at least 1 subspace and dimensions are divisible
+      pqSubspaces = Math.max(1, pqSubspaces);
+      // Ensure dimensions are divisible by subspaces
+      while (metadata.dimensions % pqSubspaces != 0 && pqSubspaces > 1)
+        pqSubspaces--;
+    }
+
+    if (metadata.dimensions % pqSubspaces != 0) {
+      LogManager.instance().log(this, Level.WARNING,
+          "PQ subspaces (%d) does not divide dimensions (%d) evenly for index %s. Adjusting...",
+          pqSubspaces, metadata.dimensions, indexName);
+
+      // Find the largest divisor <= pqSubspaces
+      for (int m = pqSubspaces; m >= 1; m--) {
+        if (metadata.dimensions % m == 0) {
+          pqSubspaces = m;
+          break;
+        }
+      }
+    }
+
+    return pqSubspaces;
+  }
+
+  /**
    * Build and persist Product Quantization (PQ) data for zero-disk-I/O search.
    * <p>
    * PQ compresses vectors by dividing them into M subspaces and quantizing each
@@ -1863,6 +1919,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return;
       }
 
+      if (!isPQTrainable(vectorCount)) {
+        // Drop any codebook left over from a previous, larger build: its ordinals no longer match the graph that was
+        // just rebuilt, so keeping it would make approximate search score the wrong vectors (issue #5417).
+        discardProductQuantization();
+        LogManager.instance().log(this, Level.INFO,
+            "Skipping PQ build for index %s: %d vectors are fewer than the %d configured PQ clusters. Searches use exact "
+                + "scoring until the index grows and is rebuilt (issue #5417)",
+            indexName, vectorCount, metadata.pqClusters);
+        return;
+      }
+
       LogManager.instance().log(this, Level.INFO,
           "Building Product Quantization for index %s: %d vectors, %d dimensions",
           indexName, vectorCount, metadata.dimensions);
@@ -1870,31 +1937,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final long startTime = System.currentTimeMillis();
 
       // Compute PQ subspaces (M) - auto-calculate if not specified
-      int pqSubspaces = metadata.pqSubspaces;
-      if (pqSubspaces <= 0) {
-        // Auto-calculate: dimensions/4, capped at 512 subspaces
-        pqSubspaces = Math.min(metadata.dimensions / 4, 512);
-        // Ensure at least 1 subspace and dimensions are divisible
-        pqSubspaces = Math.max(1, pqSubspaces);
-        // Ensure dimensions are divisible by subspaces
-        while (metadata.dimensions % pqSubspaces != 0 && pqSubspaces > 1) {
-          pqSubspaces--;
-        }
-      }
-
-      // Validate subspaces configuration
-      if (metadata.dimensions % pqSubspaces != 0) {
-        LogManager.instance().log(this, Level.WARNING,
-            "PQ subspaces (%d) does not divide dimensions (%d) evenly for index %s. Adjusting...",
-            pqSubspaces, metadata.dimensions, indexName);
-        // Find the largest divisor <= pqSubspaces
-        for (int m = pqSubspaces; m >= 1; m--) {
-          if (metadata.dimensions % m == 0) {
-            pqSubspaces = m;
-            break;
-          }
-        }
-      }
+      final int pqSubspaces = resolvePQSubspaces();
 
       final int pqClusters = metadata.pqClusters;
       final boolean centerGlobally = metadata.pqCenterGlobally;
