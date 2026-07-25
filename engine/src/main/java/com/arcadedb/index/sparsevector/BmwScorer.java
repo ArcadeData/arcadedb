@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -30,29 +31,65 @@ import java.util.Set;
 import java.util.function.Function;
 
 /**
- * Top-K scoring with BlockMax-WAND DAAT (document-at-a-time) over merged dim cursors.
+ * Top-K scoring with Block-Max MaxScore DAAT (document-at-a-time) over merged dim cursors.
  * <p>
- * Algorithm overview (see {@code docs/sparse-vector-storage-design.md} for the contract):
+ * <b>Why MaxScore and not WAND.</b> The first implementation used pivot-based (Block-Max) WAND.
+ * WAND keeps every query term in the traversal and advances a pivot document; on learned-sparse
+ * vectors (SPLADE and friends) that degenerates. Such queries carry 30-120 active terms with
+ * relatively flat weights, and a handful of very high document-frequency expansion terms carry
+ * almost all of the posting mass. Those dense terms stay inside the pivot prefix forever and get
+ * skip-seeked a few documents at a time; because their lists are dense, each seek lands in the next
+ * block, so effectively every block of every term is decoded. That is the "latency is a near-pure
+ * function of the summed posting length" behaviour reported in issue #5388 (Spearman 0.95), and
+ * per-block maxima cannot rescue it: real SPLADE weights are near-uniform <i>within</i> a block, so
+ * a block bound is no tighter than the term's global bound and the block-skip never fires.
+ * <p>
+ * MaxScore (Turtle &amp; Flynn) attacks the same problem from the term side instead of the document
+ * side, which is the dimension that actually discriminates here.
+ * <p>
+ * Measured on a 200k-document corpus with this shape (48 query terms, flat query weights, Zipf-like
+ * document frequencies, top-10): 26.3 ms/query and 3006 of 3007 blocks decoded before, 7.6 ms/query
+ * and 1538 of 3007 blocks decoded after, with byte-identical results. See
+ * {@code MaxScorePruningTest#spladeShapedQueryCost} to reproduce.
+ * <p>
+ * Algorithm overview:
  * <ol>
- *   <li>Open one {@link DimCursor} per query dim. Each cursor merges across all sources.</li>
- *   <li>Sort cursors by current RID ascending. The smallest RID is the next candidate.</li>
- *   <li>Compute the pivot: the smallest prefix index whose accumulated upper bound exceeds
- *       the current threshold. A cursor whose RID is strictly less than the pivot's RID can
- *       only be skipped past, never scored, because no remaining contribution from dims
- *       1..pivot can drag its score over the threshold.</li>
- *   <li>If the head cursor matches the pivot RID, score the doc and advance every aligned
- *       cursor. Otherwise skip head cursors forward to the pivot RID (block-skip when possible).</li>
- *   <li>Repeat until no live cursor remains, or the prefix-sum can no longer beat the threshold.</li>
+ *   <li>Open one {@link DimCursor} per query dim. Each cursor merges across all sources. Compute
+ *       each term's maximum possible contribution {@code sigma = queryWeight * globalMaxWeight} and
+ *       order the terms by how much traversal work each would remove per unit of pruning budget it
+ *       consumes (see {@link DimEntry#BY_PRUNING_VALUE}).</li>
+ *   <li>Split the terms into a <b>non-essential</b> prefix {@code [0, split)} and an
+ *       <b>essential</b> suffix {@code [split, n)}, where {@code split} is the largest index whose
+ *       prefix-sum of {@code sigma} still fits under the current top-K threshold. A document that
+ *       matches non-essential terms only cannot possibly reach the threshold, so non-essential
+ *       terms stop generating candidates entirely - their posting lists are never traversed, only
+ *       point-probed. This is where the posting mass of the head terms disappears.</li>
+ *   <li>The next candidate is the smallest current RID across the essential cursors only.</li>
+ *   <li><b>Block-max shallow advance:</b> sum the <i>tight</i> per-block maxima of the essential
+ *       cursors aligned at the candidate plus the non-essential ceiling. If that cannot beat the
+ *       threshold, no document up to the limiting block boundary can, so skip the whole range
+ *       reading in-memory block headers alone - no payload is decoded. (This is the Block-Max half
+ *       of Block-Max MaxScore; it is what keeps the tail-spike corpora of the first round pruned.)</li>
+ *   <li>Otherwise score the essential terms aligned at the candidate, then walk the non-essential
+ *       terms back towards the head of the order, point-probing each with a forward seek, and
+ *       <b>abandon the document</b> as soon as the partial score plus the remaining non-essential
+ *       ceiling drops to the threshold. On a flat-weight query this abandons after one or two
+ *       probes, so the head terms are touched for a negligible number of documents.</li>
+ *   <li>Advance the essential cursors aligned at the candidate and repeat. The split is recomputed
+ *       whenever the threshold rises; it moves in one direction only, so a term never re-enters the
+ *       traversal.</li>
  * </ol>
  * <p>
- * <b>Tombstone semantics.</b> A tombstone observed on any one of the aligned cursors at the
+ * <b>Tombstone semantics.</b> A tombstone observed on any one of the cursors visited at the
  * candidate RID skips the whole document - the loop drops the candidate from this query without
  * scoring even the dims that have live postings under the same RID. This is the
  * whole-document-delete contract documented on
  * {@link PaginatedSparseVectorEngine#put(int, com.arcadedb.database.RID, float)} and
  * {@link PaginatedSparseVectorEngine#remove(int, com.arcadedb.database.RID)}: the engine treats
  * a tombstone as "this RID is gone", not "this one dim of this RID is gone". Partial-dim updates
- * are not supported; rewrite the document's full posting set instead.
+ * are not supported; rewrite the document's full posting set instead. A tombstone that sits on a
+ * term the traversal abandoned early is immaterial: the abandon already proved the document cannot
+ * enter the result set.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -63,9 +100,9 @@ public final class BmwScorer {
   }
 
   /**
-   * Top-K BMW DAAT over the merged sources for each query dim. Sources for each dim are passed
-   * implicitly via {@link DimCursor}: the caller assembles those (typically once per query) by
-   * constructing a {@link DimCursor} with the per-dim {@link SourceCursor} list.
+   * Top-K Block-Max MaxScore DAAT over the merged sources for each query dim. Sources for each dim
+   * are passed implicitly via {@link DimCursor}: the caller assembles those (typically once per
+   * query) by constructing a {@link DimCursor} with the per-dim {@link SourceCursor} list.
    * <p>
    * The caller passes parallel arrays {@code queryDims}, {@code queryWeights} of identical length;
    * each dim must be unique. The {@code cursors} array is parallel to those (one cursor per dim),
@@ -73,140 +110,53 @@ public final class BmwScorer {
    *
    * @return list of up to {@code k} (RID, score) pairs sorted by score descending.
    * @throws IllegalArgumentException if the three input arrays have mismatched lengths, or any
-   *                                  query weight is NaN, infinite, or negative. BMW pruning
+   *                                  query weight is NaN, infinite, or negative. Dynamic pruning
    *                                  requires the per-dim contribution upper bound to be
-   *                                  monotonically non-decreasing in the prefix sum, which a
-   *                                  negative weight would break (pivot search would never
-   *                                  converge and the result set would silently be wrong).
+   *                                  monotonically non-decreasing in the accumulated sum, which a
+   *                                  negative weight would break (the essential/non-essential split
+   *                                  would no longer be a valid bound and the result set would
+   *                                  silently be wrong).
    * @throws IOException              if a {@link DimCursor#start} / {@link DimCursor#advance} /
    *                                  {@link DimCursor#seekTo} fails to read its underlying source.
    */
   public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors, final int k)
       throws IOException {
-    if (queryDims.length != queryWeights.length || queryWeights.length != cursors.length)
-      throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
-    // BMW pruning relies on the prefix-sum of {@code queryWeight * upperBoundRemaining} being
-    // monotonically non-decreasing per added dim, so a negative query weight would let the
-    // running sum drop, the pivot search would never converge, and the result set would
-    // silently be wrong. Match the non-negativity contract enforced by
-    // {@link com.arcadedb.index.sparsevector.LSMSparseVectorIndex#put} on the document side.
-    for (final float w : queryWeights) {
-      if (Float.isNaN(w) || Float.isInfinite(w))
-        throw new IllegalArgumentException("query weights must be finite numbers; got " + w);
-      if (w < 0.0f)
-        throw new IllegalArgumentException("query weights must be non-negative; got " + w);
-    }
+    validate(queryDims, queryWeights, cursors);
     if (k <= 0)
       return List.of();
 
-    // Filter out null/exhausted cursors. Each surviving entry holds (cursor, queryWeight).
-    final List<DimEntry> live = new ArrayList<>(cursors.length);
-    for (int i = 0; i < cursors.length; i++) {
-      if (cursors[i] == null)
-        continue;
-      cursors[i].start();
-      if (cursors[i].isExhausted())
-        continue;
-      live.add(new DimEntry(cursors[i], queryWeights[i]));
-    }
-    if (live.isEmpty())
+    final DimEntry[] terms = openTerms(queryWeights, cursors);
+    if (terms.length == 0)
       return List.of();
 
-    // Min-heap of the current top-K. Peek == K-th best score so far == threshold candidate.
-    final PriorityQueue<RidScore> heap = new PriorityQueue<>(k, Comparator.comparing(RidScore::score));
-    float threshold = Float.NEGATIVE_INFINITY;
-
-    while (!live.isEmpty()) {
-      // Insertion-sort live by currentRid ascending. Inputs are mostly already sorted from the previous iteration.
-      sortByCurrentRid(live);
-
-      // Pivot search.
-      final int pivot = findPivot(live, threshold);
-      if (pivot < 0)
-        break;
-
-      final RID pivotRid = live.get(pivot).cursor.currentRid();
-
-      // Block-Max WAND shallow advance: before touching the pivot doc, test the *tight* per-block
-      // maxima. If the sum of block maxima over every cursor that could contribute to pivotRid
-      // cannot beat the threshold, no document in the covered block range can enter the top-K, so
-      // skip the whole range without decoding a single posting. This is what turns the plain-WAND
-      // suffix-max pivot (which barely prunes on flat SPLADE weight distributions) into real BMW.
-      if (tryBlockMaxSkip(live, pivot, pivotRid, threshold)) {
-        removeExhausted(live);
-        continue;
-      }
-
-      if (live.get(0).cursor.currentRid().equals(pivotRid)) {
-        // Score the doc.
-        boolean tombstoned = false;
-        float score = 0.0f;
-        for (final DimEntry e : live) {
-          if (!pivotRid.equals(e.cursor.currentRid()))
-            break;  // sorted so the run of matching cursors is a prefix
-          if (e.cursor.isTombstone()) {
-            tombstoned = true;
-            break;
-          }
-          score += e.queryWeight * e.cursor.currentWeight();
-        }
-        if (!tombstoned) {
-          if (heap.size() < k) {
-            heap.add(new RidScore(pivotRid, score));
-            if (heap.size() == k)
-              threshold = heap.peek().score();
-          } else if (score > threshold) {
-            heap.poll();
-            heap.add(new RidScore(pivotRid, score));
-            threshold = heap.peek().score();
-          }
-        }
-        // Advance every aligned cursor.
-        for (final DimEntry e : live) {
-          if (pivotRid.equals(e.cursor.currentRid()))
-            e.cursor.advance();
-        }
-      } else {
-        // Skip the prefix [0..pivot] forward to pivotRid. Cursors past `pivot` are already at >= pivotRid (sorted).
-        for (int i = 0; i <= pivot; i++) {
-          final DimEntry e = live.get(i);
-          if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), pivotRid) < 0)
-            e.cursor.seekTo(pivotRid);
-        }
-      }
-
-      removeExhausted(live);
-    }
-
-    // Convert min-heap to sorted-descending list.
-    final List<RidScore> out = new ArrayList<>(heap);
-    out.sort((a, b) -> Float.compare(b.score(), a.score()));
-    return out;
+    final TopKCollector collector = new TopKCollector(k);
+    scan(terms, collector);
+    return collector.drain();
   }
 
   /**
-   * Top-K BMW DAAT with traversal-integrated {@code groupBy} / {@code groupSize} (issue #4071).
-   * Replaces the global K-heap with a per-group min-heap so the post-traversal filter that the
-   * MVP applied on top of {@link #topK} no longer needs an over-fetched candidate pool. The
-   * {@code groupKeyResolver} is consulted once per scored document; the resolver typically reads
-   * the group field off the materialised record, so callers should keep it cheap.
+   * Top-K with traversal-integrated {@code groupBy} / {@code groupSize} (issue #4071). Replaces the
+   * global K-heap with a per-group min-heap so the post-traversal filter that the MVP applied on top
+   * of {@link #topK} no longer needs an over-fetched candidate pool. The {@code groupKeyResolver} is
+   * consulted once per scored document; the resolver typically reads the group field off the
+   * materialised record, so callers should keep it cheap.
    * <p>
-   * <b>Threshold semantics with per-group state.</b> The BMW pruning threshold is a lower bound on
-   * any score that could still enter the result set. For non-grouped top-K that is the K-th best
-   * score so far; for grouped top-K the analogue is "the lowest score that could replace any
-   * group's worst member". Until {@code limit} groups have all reached {@code groupSize} (so any
-   * candidate could open a new group or fill an empty slot), the threshold stays at
-   * {@link Float#NEGATIVE_INFINITY} and the loop accepts every candidate that survives BMW's other
-   * gates. Once globally full, the threshold is the minimum across per-group worst scores - any
-   * score below it cannot beat any group's worst, so the BMW prefix-sum pivot can prune it
-   * straight away. The threshold is conservative (a candidate above it may still be rejected
-   * because its specific group has a higher worst), which is fine: pruning is correct, just
-   * slightly less aggressive than non-grouped top-K.
+   * <b>Threshold semantics with per-group state.</b> The pruning threshold is a lower bound on any
+   * score that could still enter the result set. For non-grouped top-K that is the K-th best score
+   * so far; for grouped top-K the analogue is "the lowest score that could replace any group's
+   * worst member". Until {@code limit} groups have all reached {@code groupSize} (so any candidate
+   * could open a new group or fill an empty slot), the threshold stays at
+   * {@link Float#NEGATIVE_INFINITY}, which keeps every term essential and the traversal exhaustive -
+   * exactly the behaviour correctness requires. Once globally full, the threshold is the minimum
+   * across per-group worst scores - any score below it cannot beat any group's worst, so the
+   * essential/non-essential split and the block-max skip can prune against it. The threshold is
+   * conservative (a candidate above it may still be rejected because its specific group has a higher
+   * worst), which is fine: pruning is correct, just slightly less aggressive than non-grouped top-K.
    * <p>
-   * <b>{@code allowedRIDs} filter.</b> Applied inline in the scoring branch: a pivot RID outside
-   * the whitelist is dropped without scoring (cursors still advance so the loop progresses). This
-   * removes the over-fetch + post-filter pattern that {@link LSMSparseVectorIndex#topK} used to
-   * compensate for highly selective filters.
+   * <b>{@code allowedRIDs} filter.</b> Applied inline in the scoring branch: a candidate RID outside
+   * the whitelist is dropped before the non-essential probe walk even starts (cursors still advance
+   * so the loop progresses). This removes the over-fetch + post-filter pattern that
+   * {@link LSMSparseVectorIndex#topK} used to compensate for highly selective filters.
    *
    * @param queryDims        query dim ids
    * @param queryWeights     query weights, parallel to {@code queryDims}; must be non-negative
@@ -230,19 +180,290 @@ public final class BmwScorer {
   public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors,
       final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs)
       throws IOException {
+    validate(queryDims, queryWeights, cursors);
+    if (groupKeyResolver == null)
+      throw new IllegalArgumentException("groupKeyResolver must not be null");
+    if (limit <= 0 || groupSize <= 0)
+      return List.of();
+
+    final DimEntry[] terms = openTerms(queryWeights, cursors);
+    if (terms.length == 0)
+      return List.of();
+
+    final GroupedCollector collector = new GroupedCollector(limit, groupSize, groupKeyResolver, allowedRIDs);
+    scan(terms, collector);
+    return collector.drain();
+  }
+
+  // ---------- traversal ----------
+
+  /**
+   * Block-Max MaxScore traversal. {@code terms} is in promotion order (see
+   * {@link DimEntry#BY_PRUNING_VALUE}); the collector owns the result set and publishes the current
+   * pruning threshold.
+   * <p>
+   * The essential terms are kept in a binary min-heap keyed by current RID rather than rescanned
+   * linearly for every candidate. On a learned-sparse query the essential set still holds dozens of
+   * terms while only one or two of them align on any given document, so a linear rescan costs
+   * O(terms) per document three times over (find the minimum, score the aligned run, advance it) and
+   * dominates everything else once the posting mass has been pruned away. The heap turns that into
+   * O(aligned * log terms).
+   */
+  private static void scan(final DimEntry[] terms, final Collector collector) throws IOException {
+    final int n = terms.length;
+    // prefix[i] == sum of sigma over terms [0, i). prefix[n] is the whole query's ceiling.
+    final float[] prefix = new float[n + 1];
+    recomputePrefix(terms, prefix);
+
+    final int[] heap = new int[n];     // essential term indices, min-heap by current RID
+    final int[] aligned = new int[n];  // scratch: the term indices sitting on the current candidate
+    int heapSize = 0;
+    int split = 0;
+    float lastThreshold = Float.NEGATIVE_INFINITY;
+    boolean splitDirty = true;
+    boolean heapDirty = true;
+
+    while (true) {
+      final float threshold = collector.threshold();
+      if (splitDirty || threshold > lastThreshold) {
+        lastThreshold = threshold;
+        splitDirty = false;
+        // The threshold only ever rises and the prefix bounds only ever shrink, so the split only
+        // ever moves right: a term that left the traversal never re-enters it.
+        final int before = split;
+        while (split < n && prefix[split + 1] <= threshold)
+          split++;
+        if (split >= n)
+          return;  // even every term at its maximum cannot beat the threshold: nothing left to find.
+        if (split != before)
+          heapDirty = true;
+      }
+      if (heapDirty) {
+        heapSize = buildHeap(terms, split, n, heap);
+        heapDirty = false;
+      }
+      if (heapSize == 0)
+        return;  // every essential term is exhausted.
+
+      // Next candidate: the smallest current RID across the essential terms. Non-essential terms do
+      // not generate candidates - a document they alone match is bounded by prefix[split], which is
+      // at or below the threshold by construction of the split.
+      final RID candidate = terms[heap[0]].cursor.currentRid();
+
+      // Detach the whole aligned run so the cursors can be moved without corrupting the heap order.
+      int alignedCount = 0;
+      while (heapSize > 0 && candidate.equals(terms[heap[0]].cursor.currentRid())) {
+        aligned[alignedCount++] = heap[0];
+        heapSize = popHeap(terms, heap, heapSize);
+      }
+      final RID nextEssential = heapSize > 0 ? terms[heap[0]].cursor.currentRid() : null;
+
+      if (!tryBlockMaxSkip(terms, aligned, alignedCount, prefix[split], candidate, threshold, nextEssential))
+        scoreCandidate(terms, aligned, alignedCount, split, prefix, candidate, threshold, collector);
+
+      // Re-attach whatever is still live. An exhausted term contributes nothing from here on:
+      // dropping its ceiling tightens every prefix bound, which can only push the split further
+      // right on the next pass.
+      boolean exhaustedAny = false;
+      for (int j = 0; j < alignedCount; j++) {
+        final int idx = aligned[j];
+        if (terms[idx].cursor.isExhausted())
+          exhaustedAny |= terms[idx].clearSigma();
+        else
+          heapSize = pushHeap(terms, heap, heapSize, idx);
+      }
+      if (exhaustedAny) {
+        recomputePrefix(terms, prefix);
+        splitDirty = true;
+      }
+    }
+  }
+
+  /**
+   * Score {@code candidate}: sum the essential terms aligned on it, then probe the non-essential
+   * terms from the highest {@code sigma} down, abandoning the document as soon as the partial score
+   * plus the remaining non-essential ceiling can no longer beat {@code threshold}. Finally advance
+   * every aligned cursor so the traversal makes progress.
+   */
+  private static void scoreCandidate(final DimEntry[] terms, final int[] aligned, final int alignedCount, final int split,
+      final float[] prefix, final RID candidate, final float threshold, final Collector collector) throws IOException {
+    boolean alive = true;
+    float score = 0.0f;
+    for (int j = 0; j < alignedCount; j++) {
+      final DimEntry t = terms[aligned[j]];
+      if (t.cursor.isTombstone()) {
+        alive = false;
+        break;
+      }
+      score += t.queryWeight * t.cursor.currentWeight();
+    }
+
+    if (alive && collector.accepts(candidate)) {
+      for (int i = split - 1; i >= 0; i--) {
+        // Early abandon: even taking the maximum of every non-essential term still on the walk, the
+        // document cannot reach the threshold. Nothing below i needs to be touched - which is what
+        // keeps the fat posting lists out of the query on flat weight distributions.
+        if (score + prefix[i + 1] <= threshold) {
+          alive = false;
+          break;
+        }
+        final DimCursor c = terms[i].cursor;
+        if (c.isExhausted())
+          continue;
+        c.seekTo(candidate);
+        if (c.isExhausted() || !candidate.equals(c.currentRid()))
+          continue;
+        if (c.isTombstone()) {
+          alive = false;
+          break;
+        }
+        score += terms[i].queryWeight * c.currentWeight();
+      }
+      if (alive)
+        collector.collect(candidate, score);
+    }
+
+    for (int j = 0; j < alignedCount; j++)
+      terms[aligned[j]].cursor.advance();
+  }
+
+  /**
+   * Block-max shallow advance, the Block-Max half of Block-Max MaxScore. Sums the <i>tight</i>
+   * per-block maxima of the essential cursors aligned at {@code candidate} on top of
+   * {@code nonEssentialCeiling} (the maximum the whole non-essential prefix could ever add) and
+   * compares against {@code threshold}:
+   * <ul>
+   *   <li>If the bound exceeds the threshold, {@code candidate} might still make the result set;
+   *       return {@code false} so the caller scores it normally.</li>
+   *   <li>Otherwise no document in {@code [candidate, minBlockEnd]} can beat the threshold, so seek
+   *       the aligned cursors past the limiting block boundary - bounded by {@code nextEssential},
+   *       the first essential cursor sitting strictly after {@code candidate}, since that one could
+   *       align a document inside the range. Return {@code true}.</li>
+   * </ul>
+   * The skip target is always strictly greater than {@code candidate}, so the traversal cannot
+   * stall. Block maxima are read from in-memory headers only - no posting payload is decoded.
+   * <p>
+   * This is the step that carries corpora whose weights <i>do</i> vary within a block. On real
+   * learned-sparse data they barely do, which is why the term-level split above has to do the work.
+   *
+   * @return {@code true} if a block range was skipped, {@code false} if the caller must score.
+   */
+  private static boolean tryBlockMaxSkip(final DimEntry[] terms, final int[] aligned, final int alignedCount,
+      final float nonEssentialCeiling, final RID candidate, final float threshold, final RID nextEssential)
+      throws IOException {
+    float bound = nonEssentialCeiling;
+    if (bound > threshold)
+      return false;  // no headroom at all (threshold still NEGATIVE_INFINITY, or an all-essential query).
+
+    RID minBlockEnd = null;
+    for (int j = 0; j < alignedCount; j++) {
+      final DimEntry t = terms[aligned[j]];
+      bound += t.queryWeight * t.cursor.blockMaxAt(candidate);
+      if (bound > threshold)
+        return false;
+      final RID be = t.cursor.blockEndAt(candidate);
+      if (be != null && (minBlockEnd == null || SparseSegmentBuilder.compareRid(be, minBlockEnd) < 0))
+        minBlockEnd = be;
+    }
+
+    if (minBlockEnd == null)
+      return false;  // no finite block boundary (only loose/memtable sources) - cannot block-skip.
+
+    // RID successor is (bucket, position + 1); seekTo lands on the first real posting >= that, i.e.
+    // the first strictly greater than minBlockEnd.
+    RID target = new RID(minBlockEnd.getBucketId(), minBlockEnd.getPosition() + 1);
+    if (nextEssential != null && SparseSegmentBuilder.compareRid(nextEssential, target) < 0)
+      target = nextEssential;
+
+    for (int j = 0; j < alignedCount; j++)
+      terms[aligned[j]].cursor.seekTo(target);
+    return true;
+  }
+
+  // ---------- essential-term min-heap (indices into {@code terms}, ordered by current RID) ----------
+
+  private static int buildHeap(final DimEntry[] terms, final int split, final int n, final int[] heap) {
+    int size = 0;
+    for (int i = split; i < n; i++)
+      if (!terms[i].cursor.isExhausted())
+        heap[size++] = i;
+    for (int i = (size >> 1) - 1; i >= 0; i--)
+      siftDown(terms, heap, size, i);
+    return size;
+  }
+
+  /** Removes the minimum. Returns the new size. */
+  private static int popHeap(final DimEntry[] terms, final int[] heap, final int size) {
+    final int newSize = size - 1;
+    heap[0] = heap[newSize];
+    if (newSize > 1)
+      siftDown(terms, heap, newSize, 0);
+    return newSize;
+  }
+
+  /** Inserts a term index. Returns the new size. */
+  private static int pushHeap(final DimEntry[] terms, final int[] heap, final int size, final int termIdx) {
+    int i = size;
+    heap[i] = termIdx;
+    while (i > 0) {
+      final int parent = (i - 1) >>> 1;
+      if (compareByRid(terms, heap[i], heap[parent]) >= 0)
+        break;
+      final int tmp = heap[i];
+      heap[i] = heap[parent];
+      heap[parent] = tmp;
+      i = parent;
+    }
+    return size + 1;
+  }
+
+  private static void siftDown(final DimEntry[] terms, final int[] heap, final int size, final int from) {
+    int i = from;
+    while (true) {
+      final int left = (i << 1) + 1;
+      if (left >= size)
+        return;
+      int smallest = left;
+      final int right = left + 1;
+      if (right < size && compareByRid(terms, heap[right], heap[left]) < 0)
+        smallest = right;
+      if (compareByRid(terms, heap[i], heap[smallest]) <= 0)
+        return;
+      final int tmp = heap[i];
+      heap[i] = heap[smallest];
+      heap[smallest] = tmp;
+      i = smallest;
+    }
+  }
+
+  private static int compareByRid(final DimEntry[] terms, final int a, final int b) {
+    return SparseSegmentBuilder.compareRid(terms[a].cursor.currentRid(), terms[b].cursor.currentRid());
+  }
+
+  // ---------- setup ----------
+
+  private static void validate(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors) {
     if (queryDims.length != queryWeights.length || queryWeights.length != cursors.length)
       throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
+    // Dynamic pruning relies on the accumulated {@code queryWeight * upperBound} being monotonically
+    // non-decreasing per added dim, so a negative query weight would let the running sum drop, the
+    // essential/non-essential split would stop being a valid bound, and the result set would
+    // silently be wrong. Match the non-negativity contract enforced by
+    // {@link com.arcadedb.index.sparsevector.LSMSparseVectorIndex#put} on the document side.
     for (final float w : queryWeights) {
       if (Float.isNaN(w) || Float.isInfinite(w))
         throw new IllegalArgumentException("query weights must be finite numbers; got " + w);
       if (w < 0.0f)
         throw new IllegalArgumentException("query weights must be non-negative; got " + w);
     }
-    if (groupKeyResolver == null)
-      throw new IllegalArgumentException("groupKeyResolver must not be null");
-    if (limit <= 0 || groupSize <= 0)
-      return List.of();
+  }
 
+  /**
+   * Start every non-null cursor, drop the ones with nothing to iterate, and order the survivors by
+   * {@link DimEntry#BY_PRUNING_VALUE promotion order}, i.e. by how much traversal work each term
+   * would remove per unit of pruning budget it consumes.
+   */
+  private static DimEntry[] openTerms(final float[] queryWeights, final DimCursor[] cursors) throws IOException {
     final List<DimEntry> live = new ArrayList<>(cursors.length);
     for (int i = 0; i < cursors.length; i++) {
       if (cursors[i] == null)
@@ -252,248 +473,216 @@ public final class BmwScorer {
         continue;
       live.add(new DimEntry(cursors[i], queryWeights[i]));
     }
-    if (live.isEmpty())
-      return List.of();
-
-    final boolean filterActive = allowedRIDs != null && !allowedRIDs.isEmpty();
-
-    // Per-group state. Each min-heap holds at most groupSize entries; peek == that group's worst.
-    final HashMap<Object, PriorityQueue<RidScore>> groups = new HashMap<>(limit);
-    int filledGroups = 0;
-    float threshold = Float.NEGATIVE_INFINITY;
-
-    while (!live.isEmpty()) {
-      sortByCurrentRid(live);
-
-      final int pivot = findPivot(live, threshold);
-      if (pivot < 0)
-        break;
-
-      final RID pivotRid = live.get(pivot).cursor.currentRid();
-
-      // Block-Max WAND shallow advance (see the note in {@link #topK}). Grouped top-K keeps the
-      // threshold at NEGATIVE_INFINITY until every group is full, so this gate stays inert until
-      // there is a real watermark to prune against - exactly like the non-grouped path.
-      if (tryBlockMaxSkip(live, pivot, pivotRid, threshold)) {
-        removeExhausted(live);
-        continue;
-      }
-
-      if (live.get(0).cursor.currentRid().equals(pivotRid)) {
-        if (filterActive && !allowedRIDs.contains(pivotRid)) {
-          // Whitelist rejected. Skip the doc; advance every aligned cursor.
-          for (final DimEntry e : live) {
-            if (pivotRid.equals(e.cursor.currentRid()))
-              e.cursor.advance();
-          }
-        } else {
-          boolean tombstoned = false;
-          float score = 0.0f;
-          for (final DimEntry e : live) {
-            if (!pivotRid.equals(e.cursor.currentRid()))
-              break;
-            if (e.cursor.isTombstone()) {
-              tombstoned = true;
-              break;
-            }
-            score += e.queryWeight * e.cursor.currentWeight();
-          }
-          if (!tombstoned) {
-            // Resolve the candidate's group and apply per-group admission.
-            final Object groupKey = groupKeyResolver.apply(pivotRid);
-            final PriorityQueue<RidScore> group = groups.get(groupKey);
-            boolean stateChanged = false;
-            if (group == null) {
-              if (groups.size() < limit) {
-                final PriorityQueue<RidScore> opened = new PriorityQueue<>(groupSize, Comparator.comparing(RidScore::score));
-                opened.add(new RidScore(pivotRid, score));
-                groups.put(groupKey, opened);
-                if (groupSize == 1)
-                  filledGroups++;
-                stateChanged = true;
-              }
-              // else: limit groups already open and this one is a new key - reject.
-            } else if (group.size() < groupSize) {
-              group.add(new RidScore(pivotRid, score));
-              if (group.size() == groupSize)
-                filledGroups++;
-              stateChanged = true;
-            } else if (score > group.peek().score()) {
-              group.poll();
-              group.add(new RidScore(pivotRid, score));
-              stateChanged = true;
-            }
-            // Recompute the global threshold once every group has reached capacity. Until then
-            // stays at NEGATIVE_INFINITY: a candidate could still open a new group or fill an
-            // empty slot inside an existing one, so BMW pruning would be incorrect.
-            if (stateChanged && filledGroups == limit && groups.size() == limit)
-              threshold = computeGlobalMinWorst(groups);
-          }
-          // Advance every aligned cursor.
-          for (final DimEntry e : live) {
-            if (pivotRid.equals(e.cursor.currentRid()))
-              e.cursor.advance();
-          }
-        }
-      } else {
-        // Skip the prefix [0..pivot] forward to pivotRid. Cursors past pivot already at >= pivotRid.
-        for (int i = 0; i <= pivot; i++) {
-          final DimEntry e = live.get(i);
-          if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), pivotRid) < 0)
-            e.cursor.seekTo(pivotRid);
-        }
-      }
-
-      removeExhausted(live);
-    }
-
-    int total = 0;
-    for (final PriorityQueue<RidScore> pq : groups.values())
-      total += pq.size();
-    final List<RidScore> out = new ArrayList<>(total);
-    for (final PriorityQueue<RidScore> pq : groups.values())
-      out.addAll(pq);
-    out.sort((a, b) -> Float.compare(b.score(), a.score()));
-    return out;
+    final DimEntry[] terms = live.toArray(new DimEntry[0]);
+    Arrays.sort(terms, DimEntry.BY_PRUNING_VALUE);
+    return terms;
   }
 
+  private static void recomputePrefix(final DimEntry[] terms, final float[] prefix) {
+    prefix[0] = 0.0f;
+    for (int i = 0; i < terms.length; i++)
+      prefix[i + 1] = prefix[i] + terms[i].sigma;
+  }
+
+  // ---------- collectors ----------
+
   /**
-   * Minimum score across per-group worst-score watermarks. Used as the BMW pruning threshold once
-   * every group has reached capacity; any candidate score at or below this value cannot beat any
-   * group's worst member and so cannot enter the result set, so BMW's prefix-sum pivot can prune
-   * the rest of the loop without scoring it.
+   * Result accumulator, and the owner of the pruning threshold the traversal prunes against. The
+   * threshold must be monotonically non-decreasing: the split point that drops terms out of the
+   * traversal is derived from it and is never walked back.
    */
-  private static float computeGlobalMinWorst(final HashMap<Object, PriorityQueue<RidScore>> groups) {
-    float min = Float.POSITIVE_INFINITY;
-    for (final PriorityQueue<RidScore> pq : groups.values()) {
-      final RidScore worst = pq.peek();
-      if (worst != null && worst.score() < min)
-        min = worst.score();
-    }
-    return min == Float.POSITIVE_INFINITY ? Float.NEGATIVE_INFINITY : min;
+  private interface Collector {
+    /** Lower bound on any score that can still enter the result set. Never decreases. */
+    float threshold();
+
+    /** Pre-scoring admission test (RID whitelist); a rejected candidate skips the probe walk. */
+    boolean accepts(RID rid);
+
+    void collect(RID rid, float score);
   }
 
-  // ---------- internals ----------
+  /** Plain top-K: a K-sized min-heap whose head is the threshold once full. */
+  private static final class TopKCollector implements Collector {
+    private final int                     k;
+    private final PriorityQueue<RidScore> heap;
+    private float                         threshold = Float.NEGATIVE_INFINITY;
 
-  /**
-   * Block-Max WAND shallow advance. {@code live} is sorted by current RID ascending and
-   * {@code pivotRid == live.get(pivot).cursor.currentRid()}. Sums the <i>tight</i> per-block
-   * maxima of every cursor that could contribute to {@code pivotRid} - the pivot prefix
-   * {@code [0..pivot]} plus the run of cursors tied at {@code pivotRid} immediately after it - and
-   * compares against {@code threshold}:
-   * <ul>
-   *   <li>If the block-max sum exceeds the threshold, {@code pivotRid} might still be a candidate;
-   *       return {@code false} so the caller scores or aligns it normally.</li>
-   *   <li>Otherwise no document in {@code [pivotRid, minBlockEnd]} can beat the threshold (only
-   *       these cursors align at {@code pivotRid}, and WAND already proved every doc &lt; pivotRid
-   *       is a non-candidate). Skip: seek those cursors forward past the min block boundary,
-   *       bounded by the first cursor that sits strictly after {@code pivotRid} so the recomputed
-   *       pivot stays correct. Return {@code true}.</li>
-   * </ul>
-   * The skip is a strict advance (the new target is always &gt; {@code pivotRid}), so the outer
-   * loop cannot stall. Block maxima are read from in-memory headers only - no posting is decoded.
-   *
-   * @return {@code true} if a block was skipped (cursors advanced), {@code false} if the caller
-   *         must fall through to the score/align path.
-   */
-  private static boolean tryBlockMaxSkip(final List<DimEntry> live, final int pivot, final RID pivotRid, final float threshold)
-      throws IOException {
-    // Extend the prefix over the run of cursors tied at pivotRid: those beyond `pivot` also align
-    // at pivotRid and so must be included in the tight bound, otherwise the sum would under-count
-    // pivotRid's real ceiling. Cursors past this run sit strictly after pivotRid and cannot align.
-    int end = pivot;
-    while (end + 1 < live.size() && live.get(end + 1).cursor.currentRid().equals(pivotRid))
-      end++;
-
-    float blockMaxSum = 0.0f;
-    RID minBlockEnd = null;
-    for (int i = 0; i <= end; i++) {
-      final DimEntry e = live.get(i);
-      blockMaxSum += e.queryWeight * e.cursor.blockMaxAt(pivotRid);
-      if (blockMaxSum > threshold)
-        return false;  // pivotRid may still make the top-K; score/align it normally.
-      final RID be = e.cursor.blockEndAt(pivotRid);
-      if (be != null && (minBlockEnd == null || SparseSegmentBuilder.compareRid(be, minBlockEnd) < 0))
-        minBlockEnd = be;
+    TopKCollector(final int k) {
+      this.k = k;
+      this.heap = new PriorityQueue<>(k, Comparator.comparing(RidScore::score));
     }
 
-    // blockMaxSum <= threshold: pivotRid and its block range are all non-candidates.
-    if (minBlockEnd == null)
-      return false;  // no finite block boundary (only loose/memtable sources) - cannot block-skip.
-
-    // Next candidate = first RID strictly past the limiting block boundary, but never past the
-    // first cursor that sits after the tied run (that cursor could align a doc the recomputed
-    // pivot must see). RID successor is (bucket, position+1); seekTo lands on the first real
-    // posting >= that, i.e. the first strictly greater than minBlockEnd.
-    RID candidate = new RID(minBlockEnd.getBucketId(), minBlockEnd.getPosition() + 1);
-    if (end + 1 < live.size()) {
-      final RID nextRid = live.get(end + 1).cursor.currentRid();
-      if (SparseSegmentBuilder.compareRid(nextRid, candidate) < 0)
-        candidate = nextRid;
+    @Override
+    public float threshold() {
+      return threshold;
     }
 
-    for (int i = 0; i <= end; i++) {
-      final DimEntry e = live.get(i);
-      if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), candidate) < 0)
-        e.cursor.seekTo(candidate);
+    @Override
+    public boolean accepts(final RID rid) {
+      return true;
     }
-    return true;
-  }
 
-  /** Returns the smallest index i such that the prefix sum of upperBound contributions exceeds threshold; -1 if none. */
-  private static int findPivot(final List<DimEntry> live, final float threshold) {
-    float prefix = 0.0f;
-    for (int i = 0; i < live.size(); i++) {
-      final DimEntry e = live.get(i);
-      prefix += e.queryWeight * e.cursor.upperBoundRemaining();
-      if (prefix > threshold)
-        return i;
-    }
-    return -1;
-  }
-
-  /** In-place insertion sort (stable) by current RID ascending. Cursors past their current must be advanced first. */
-  private static void sortByCurrentRid(final List<DimEntry> live) {
-    for (int i = 1; i < live.size(); i++) {
-      final DimEntry curr = live.get(i);
-      final RID currRid = curr.cursor.currentRid();
-      int j = i - 1;
-      while (j >= 0 && SparseSegmentBuilder.compareRid(live.get(j).cursor.currentRid(), currRid) > 0) {
-        live.set(j + 1, live.get(j));
-        j--;
+    @Override
+    public void collect(final RID rid, final float score) {
+      if (heap.size() < k) {
+        heap.add(new RidScore(rid, score));
+        if (heap.size() == k)
+          threshold = heap.peek().score();
+      } else if (score > threshold) {
+        heap.poll();
+        heap.add(new RidScore(rid, score));
+        threshold = heap.peek().score();
       }
-      live.set(j + 1, curr);
+    }
+
+    List<RidScore> drain() {
+      final List<RidScore> out = new ArrayList<>(heap);
+      out.sort((a, b) -> Float.compare(b.score(), a.score()));
+      return out;
     }
   }
 
-  private static void removeExhausted(final List<DimEntry> live) {
-    int w = 0;
-    for (int r = 0; r < live.size(); r++) {
-      final DimEntry e = live.get(r);
-      if (e.cursor.isExhausted())
-        continue;
-      if (r != w)
-        live.set(w, e);
-      w++;
+  /** Grouped top-K: one min-heap per group key, threshold = min across per-group worst scores. */
+  private static final class GroupedCollector implements Collector {
+    private final int                                        limit;
+    private final int                                        groupSize;
+    private final Function<RID, Object>                      groupKeyResolver;
+    private final Set<RID>                                   allowedRIDs;
+    private final boolean                                    filterActive;
+    private final HashMap<Object, PriorityQueue<RidScore>>   groups;
+    private int                                              filledGroups;
+    private float                                            threshold = Float.NEGATIVE_INFINITY;
+
+    GroupedCollector(final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver,
+        final Set<RID> allowedRIDs) {
+      this.limit = limit;
+      this.groupSize = groupSize;
+      this.groupKeyResolver = groupKeyResolver;
+      this.allowedRIDs = allowedRIDs;
+      this.filterActive = allowedRIDs != null && !allowedRIDs.isEmpty();
+      this.groups = new HashMap<>(limit);
     }
-    while (live.size() > w)
-      live.remove(live.size() - 1);
+
+    @Override
+    public float threshold() {
+      return threshold;
+    }
+
+    @Override
+    public boolean accepts(final RID rid) {
+      return !filterActive || allowedRIDs.contains(rid);
+    }
+
+    @Override
+    public void collect(final RID rid, final float score) {
+      final Object groupKey = groupKeyResolver.apply(rid);
+      final PriorityQueue<RidScore> group = groups.get(groupKey);
+      boolean stateChanged = false;
+      if (group == null) {
+        if (groups.size() < limit) {
+          final PriorityQueue<RidScore> opened = new PriorityQueue<>(groupSize, Comparator.comparing(RidScore::score));
+          opened.add(new RidScore(rid, score));
+          groups.put(groupKey, opened);
+          if (groupSize == 1)
+            filledGroups++;
+          stateChanged = true;
+        }
+        // else: limit groups already open and this one is a new key - reject.
+      } else if (group.size() < groupSize) {
+        group.add(new RidScore(rid, score));
+        if (group.size() == groupSize)
+          filledGroups++;
+        stateChanged = true;
+      } else if (score > group.peek().score()) {
+        group.poll();
+        group.add(new RidScore(rid, score));
+        stateChanged = true;
+      }
+      // Recompute the global threshold once every group has reached capacity. Until then it stays
+      // at NEGATIVE_INFINITY: a candidate could still open a new group or fill an empty slot inside
+      // an existing one, so pruning against a per-group watermark would be incorrect.
+      if (stateChanged && filledGroups == limit && groups.size() == limit) {
+        float min = Float.POSITIVE_INFINITY;
+        for (final PriorityQueue<RidScore> pq : groups.values()) {
+          final RidScore worst = pq.peek();
+          if (worst != null && worst.score() < min)
+            min = worst.score();
+        }
+        if (min != Float.POSITIVE_INFINITY && min > threshold)
+          threshold = min;
+      }
+    }
+
+    List<RidScore> drain() {
+      int total = 0;
+      for (final PriorityQueue<RidScore> pq : groups.values())
+        total += pq.size();
+      final List<RidScore> out = new ArrayList<>(total);
+      for (final PriorityQueue<RidScore> pq : groups.values())
+        out.addAll(pq);
+      out.sort((a, b) -> Float.compare(b.score(), a.score()));
+      return out;
+    }
   }
 
   /**
-   * Per-cursor entry. The cursor's own {@link DimCursor#isExhausted} is the source of truth on
-   * exhaustion; we do not duplicate that flag here. {@link DimCursor#advance} and
-   * {@link DimCursor#seekTo} return {@code false} only after they have already set the cursor's
-   * internal {@code exhausted} flag, so {@link #removeExhausted} consults
-   * {@code cursor.isExhausted()} alone.
+   * Per-term entry. {@code sigma} is the term's maximum possible contribution to any document's
+   * score, captured once at traversal start from {@link DimCursor#upperBoundRemaining()} (which at
+   * that point is the dim's global maximum across every source). The cursor's own
+   * {@link DimCursor#isExhausted} stays the source of truth on exhaustion; we do not duplicate that
+   * flag here.
    */
   private static final class DimEntry {
+    /**
+     * Promotion order: the order in which terms are allowed to leave the traversal. Correctness
+     * only constrains the <i>sum</i> of the non-essential ceilings, never which terms make up the
+     * set, so the order is free to be chosen for cost.
+     * <p>
+     * Textbook MaxScore sorts by {@code sigma} ascending, on the reasoning that the terms that
+     * contribute least should be the first to go. On learned-sparse data that ordering is actively
+     * counter-productive, and measurably so: the maximum weight of a term is the maximum over its
+     * whole posting list, so the terms with millions of postings almost always hold the highest
+     * maximum too. Sorting by {@code sigma} ascending therefore keeps exactly the fattest posting
+     * lists inside the traversal and drops the cheap ones - the traversal cost barely moves, which
+     * is what issue #5388 measured.
+     * <p>
+     * This orders by <i>skipped postings per unit of ceiling spent</i> instead - the classic greedy
+     * for "maximise the work removed under a budget". A term with no measurable ceiling
+     * ({@code sigma == 0}, e.g. a zero query weight) sorts first: it can leave the traversal for
+     * free. Ties fall back to the textbook {@code sigma} ascending.
+     */
+    static final Comparator<DimEntry> BY_PRUNING_VALUE = Comparator.<DimEntry>comparingDouble(e -> -e.pruningValue())
+        .thenComparingDouble(e -> e.sigma);
+
     final DimCursor cursor;
     final float     queryWeight;
+    final long      df;
+    float           sigma;
 
     DimEntry(final DimCursor cursor, final float queryWeight) {
       this.cursor = cursor;
       this.queryWeight = queryWeight;
+      this.sigma = queryWeight * cursor.upperBoundRemaining();
+      this.df = cursor.documentFrequency();
+    }
+
+    /**
+     * Postings this term would stop traversing per unit of pruning budget it consumes. Sources that
+     * cannot report a posting count in O(1) (the memtable) report 0, which floors the estimate at
+     * one posting so such a term is promoted last rather than first - conservative, and memtables
+     * are small by construction.
+     */
+    private double pruningValue() {
+      final long cost = Math.max(df, 1L);
+      return sigma <= 0.0f ? Double.POSITIVE_INFINITY : cost / (double) sigma;
+    }
+
+    /** Zeroes an exhausted term's ceiling. Returns true if this changed anything. */
+    boolean clearSigma() {
+      if (sigma == 0.0f)
+        return false;
+      sigma = 0.0f;
+      return true;
     }
   }
 }

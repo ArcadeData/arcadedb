@@ -57,8 +57,10 @@ import java.util.logging.Level;
  * the memtable first; once it crosses a flush threshold (or the database is closed), the
  * memtable is serialized as a new sealed segment. Background compaction merges small segments
  * into larger ones via N-way merge with newest-source-wins precedence. Top-K retrieval is
- * BlockMax-WAND DAAT (see {@link BmwScorer}); per-segment block-max metadata + skip lists
- * make selective queries skip whole posting-list regions without decompressing them.
+ * Block-Max MaxScore DAAT (see {@link BmwScorer}): terms whose combined maximum contribution
+ * cannot reach the top-K watermark leave the traversal entirely and are only point-probed, and
+ * per-segment block-max metadata + skip lists make selective queries skip whole posting-list
+ * regions without decompressing them.
  * <p>
  * The wrapper requires two parallel array properties on the indexed type:
  * <ul>
