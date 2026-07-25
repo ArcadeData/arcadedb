@@ -246,6 +246,70 @@ public class LockManager<RESOURCE, REQUESTER> {
     }
   }
 
+  /**
+   * Immutable diagnostic view of one held resource. {@code owner} is rendered rather than exposed so a
+   * snapshot never retains a reference to a live requester (a Thread, a session).
+   *
+   * @param resource    the locked resource
+   * @param owner       the current owner, rendered; never null in a snapshot entry
+   * @param sinceMillis wall-clock time the lock was acquired
+   * @param heldForMs   how long it has been held at snapshot time
+   * @param waiters     number of requesters queued behind it
+   */
+  public record LockStats(String resource, String owner, long sinceMillis, long heldForMs, int waiters) {
+  }
+
+  /**
+   * Point-in-time view of every currently held resource, newest information first computed per entry.
+   * Intended for operator diagnostics: a lock held far longer than any transaction should be is the
+   * signature of a leaked lock, and this is the only way to see it without a debugger. Entries in a
+   * transitional state (owner cleared concurrently) are skipped rather than rendered as free.
+   */
+  public List<LockStats> statsSnapshot() {
+    final long now = System.currentTimeMillis();
+    final List<LockStats> result = new ArrayList<>();
+    for (final Map.Entry<RESOURCE, ResourceLock<REQUESTER>> entry : lockManager.entrySet()) {
+      final ResourceLock<REQUESTER> rl = entry.getValue();
+      synchronized (rl) {
+        if (rl.removed || rl.owner == null)
+          continue;
+        result.add(new LockStats(String.valueOf(entry.getKey()), String.valueOf(rl.owner), rl.when, now - rl.when,
+            rl.queue.size()));
+      }
+    }
+    return result;
+  }
+
+  /**
+   * One-line description of who currently holds {@code resource}, or {@code null} when it is free.
+   * <p>
+   * Exists for the timeout path: a {@code LockTimeoutException} that says only WHICH file could not be
+   * locked leaves an operator with no way to identify the culprit, because the holder is knowable only
+   * while the lock is still held — by the time anyone reads the log it is gone, and a leaked lock
+   * survives until the process is restarted. Called only when an acquisition has already failed, so the
+   * cost does not matter.
+   */
+  public String describeOwner(final RESOURCE resource) {
+    final ResourceLock<REQUESTER> rl = lockManager.get(resource);
+    if (rl == null)
+      return null;
+
+    final REQUESTER owner;
+    final long when;
+    final int waiters;
+    synchronized (rl) {
+      if (rl.removed || rl.owner == null)
+        return null;
+      owner = rl.owner;
+      when = rl.when;
+      waiters = rl.queue.size();
+    }
+
+    return "heldBy='" + owner + "' for " + (System.currentTimeMillis() - when) + "ms (since " //
+        + DateTimeFormatter.ofPattern("HH:mm:ss.SSS").format(DateUtils.millisToLocalDateTime(when, null)) //
+        + ", " + waiters + " waiters)";
+  }
+
   public String toString() {
     final StringBuilder sb = new StringBuilder();
     for (final Map.Entry<RESOURCE, ResourceLock<REQUESTER>> entry : lockManager.entrySet()) {

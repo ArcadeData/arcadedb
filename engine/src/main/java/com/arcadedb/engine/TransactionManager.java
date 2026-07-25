@@ -785,7 +785,8 @@ public class TransactionManager {
         if (attemptFileId != null)
           throw new LockTimeoutException(
               "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName()
-                  + ") during commit (fileIds=" + orderedFilesIds + ", timeout=" + timeout + "ms");
+                  + ") during commit (fileIds=" + orderedFilesIds + ", timeout=" + timeout + "ms" + describeHolder(attemptFileId)
+                  + ")");
 
         throw new LockTimeoutException("Timeout on locking files during commit (fileIds=" + orderedFilesIds + ")");
       }
@@ -822,7 +823,8 @@ public class TransactionManager {
 
         throw new LockTimeoutException(
             "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName()
-                + ") during commit (fileIds=" + Arrays.toString(fileIds) + ", timeout=" + timeout + "ms");
+                + ") during commit (fileIds=" + Arrays.toString(fileIds) + ", timeout=" + timeout + "ms"
+                + describeHolder(attemptFileId) + ")");
       }
     }
 
@@ -831,6 +833,26 @@ public class TransactionManager {
       LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, Arrays.toString(fileIds),
           Thread.currentThread().getId());
     return lockedFiles;
+  }
+
+  /**
+   * Renders who holds {@code fileId} right now, as a suffix for a {@link LockTimeoutException} message,
+   * or an empty string when the lock was released in the meantime.
+   * <p>
+   * Without this the exception names only the file that could not be locked, which is the one thing an
+   * operator can already guess. The holder is knowable ONLY while the lock is still held: a lock leaked
+   * by a live thread is never reclaimed (the abandoned-lock sweep requires the owner to have died), so
+   * by the time the log is read the evidence is gone and the usual remedy is a blind restart. Building
+   * the string is safe here because the acquisition has already failed.
+   */
+  private String describeHolder(final int fileId) {
+    try {
+      final String holder = fileIdsLockManager.describeOwner(fileId);
+      return holder != null ? ", " + holder : "";
+    } catch (final Exception e) {
+      // Diagnostics must never replace the real failure with one of their own.
+      return "";
+    }
   }
 
   public void unlockFilesInOrder(final List<Integer> lockedFileIds, final Object requester) {
