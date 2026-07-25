@@ -343,10 +343,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * Scans both layers newest-first and returns at most {@code limit} rows in descending timestamp
    * order (issue #5414).
    * <p>
-   * The mutable layer is the small hot tail, so it is materialised and sorted; the sealed layer is
-   * walked backwards block by block and stops as soon as the limit is satisfied. When the mutable
-   * layer alone already supplies {@code limit} rows that are all newer than the sealed store's
-   * newest timestamp, the sealed store is not touched at all.
+   * Both layers are walked backwards and stop as soon as the limit is satisfied: the mutable layer
+   * page by page (issue #5416), the sealed layer block by block. When the mutable layer alone
+   * already supplies {@code limit} rows that are all newer than the sealed store's newest
+   * timestamp, the sealed store is not touched at all.
    *
    * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
    * @param metrics optional block-level counters, may be {@code null}
@@ -358,17 +358,22 @@ public class TimeSeriesShard implements AutoCloseable {
 
     compactionLock.readLock().lock();
     try {
-      final List<Object[]> mutableRows = new ArrayList<>();
-      addFiltered(mutableRows, mutableBucket.scanRange(fromTs, toTs, columnIndices), tagFilter, columnIndices);
-      TimeSeriesSealedStore.trimToDescendingLimit(mutableRows, need);
+      final List<Object[]> mutableRows = mutableBucket.scanRangeDescending(fromTs, toTs, columnIndices, tagFilter,
+          limit, metrics);
 
       // The mutable tail alone can answer the query when it is complete and strictly newer than
       // anything already sealed: no block has to be decompressed.
       if (mutableRows.size() >= need && (long) mutableRows.getLast()[0] > sealedStore.getGlobalMaxTimestamp())
         return mutableRows;
 
-      final List<Object[]> results = sealedStore.scanRangeDescending(fromTs, toTs, columnIndices, tagFilter, limit,
-          metrics);
+      // The mutable rows already found bound the sealed walk from below: no sealed block older than
+      // the oldest row held can contribute (issue #5416). Inclusive, so ties stay eligible.
+      final long sealedFromTs = mutableRows.size() >= need ?
+          Math.max(fromTs, (long) mutableRows.getLast()[0]) :
+          fromTs;
+
+      final List<Object[]> results = sealedStore.scanRangeDescending(sealedFromTs, toTs, columnIndices, tagFilter,
+          limit, metrics);
       if (mutableRows.isEmpty())
         return results;
 

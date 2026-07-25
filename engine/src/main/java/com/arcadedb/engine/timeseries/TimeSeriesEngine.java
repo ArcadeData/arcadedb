@@ -275,6 +275,11 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Every shard is asked for its own newest {@code limit} rows and the per-shard results are merged;
    * because each shard stops walking blocks as soon as its own limit is satisfied, an unbounded
    * last-point query costs O(shards x blocks touched) instead of O(series).
+   * <p>
+   * The lower bound is tightened to the oldest row held so far as soon as {@code limit} rows are
+   * collected (issue #5416). Samples are routed to shards round-robin, so a tag can be absent from a
+   * shard entirely; without the running bound such a shard has nothing to build its own cut-off from
+   * and would look at every page and block it owns.
    *
    * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
    * @param metrics optional block-level counters, may be {@code null}. Shards are visited
@@ -287,13 +292,18 @@ public class TimeSeriesEngine implements AutoCloseable {
     final int need = limit > 0 ? limit : Integer.MAX_VALUE;
 
     final List<Object[]> merged = new ArrayList<>();
+    long lowerBound = fromTs;
     for (final TimeSeriesShard shard : shards) {
-      final List<Object[]> shardRows = shard.scanRangeDescending(fromTs, toTs, columnIndices, tagFilter, limit, metrics);
+      final List<Object[]> shardRows = shard.scanRangeDescending(lowerBound, toTs, columnIndices, tagFilter, limit,
+          metrics);
       if (shardRows.isEmpty())
         continue;
       merged.addAll(shardRows);
-      if (merged.size() >= need)
+      if (merged.size() >= need) {
         TimeSeriesSealedStore.trimToDescendingLimit(merged, need);
+        // Inclusive: rows sharing the cut-off timestamp are still eligible, ties are broken by the merge.
+        lowerBound = Math.max(lowerBound, (long) merged.getLast()[0]);
+      }
     }
 
     TimeSeriesSealedStore.trimToDescendingLimit(merged, need);

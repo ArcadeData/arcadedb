@@ -514,22 +514,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             metrics.addFastPathBlock();
         }
 
-        final Object[][] decompCols = decompressColumns(entry, columnIndices, tsColIdx);
-        final int resultCols = decompCols.length + 1;
+        // Columns stay unboxed: only the rows that survive the tag filter and make the top-N are
+        // materialised, instead of boxing every value of the block (issue #5416).
+        final RawColumn[] rawCols = decompressColumnsRaw(entry, columnIndices, tsColIdx);
+        final int resultCols = rawCols.length + 1;
 
         // Rows inside a block are ascending, so walking backwards yields descending order and the
         // first `need` matches found are the newest ones in this block.
         int taken = 0;
         for (int i = end - 1; i >= start && taken < need; i--) {
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !matchesRawColumns(rawCols, i, tagFilter, columnIndices))
+            continue;
           final Object[] row = new Object[resultCols];
           row[0] = ts[i];
-          for (int c = 0; c < decompCols.length; c++)
-            row[c + 1] = decompCols[c][i];
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, columnIndices))
-            continue;
+          for (int c = 0; c < rawCols.length; c++)
+            row[c + 1] = rawCols[c].valueAt(i);
           results.add(row);
           taken++;
         }
+        if (metrics != null)
+          metrics.addMaterializedRows(taken);
 
         if (results.size() >= need) {
           trimToDescendingLimit(results, need);
@@ -2099,6 +2103,103 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     throw new IllegalArgumentException(
         "decompressDoubleColumn: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
+  }
+
+  /**
+   * A decoded block column kept in its primitive form.
+   * <p>
+   * The codecs already hand back {@code double[]} / {@code long[]} / {@code String[]}, so keeping
+   * them unboxed lets a top-N scan pay one boxing per value actually returned instead of one per
+   * value stored in the block (issue #5416).
+   */
+  private static final class RawColumn {
+    private final double[] doubles;
+    private final long[]   longs;
+    private final String[] strings;
+    private final boolean  integerType;
+
+    private RawColumn(final double[] doubles, final long[] longs, final String[] strings, final boolean integerType) {
+      this.doubles = doubles;
+      this.longs = longs;
+      this.strings = strings;
+      this.integerType = integerType;
+    }
+
+    Object valueAt(final int i) {
+      if (doubles != null)
+        return doubles[i];
+      if (longs != null)
+        return integerType ? (Object) (int) longs[i] : (Object) longs[i];
+      if (strings != null)
+        return strings[i];
+      return null;
+    }
+  }
+
+  /**
+   * Same column selection as {@link #decompressColumns} but without boxing the values.
+   */
+  private RawColumn[] decompressColumnsRaw(final BlockEntry entry, final int[] columnIndices, final int tsColIdx)
+      throws IOException {
+    final List<RawColumn> result = new ArrayList<>();
+
+    final BitSet colIndexSet;
+    if (columnIndices != null) {
+      colIndexSet = new BitSet();
+      for (final int idx : columnIndices)
+        colIndexSet.set(idx);
+    } else {
+      colIndexSet = null;
+    }
+
+    int nonTsIdx = 0;
+    for (int c = 0; c < columns.size(); c++) {
+      if (c == tsColIdx)
+        continue;
+
+      if (colIndexSet != null && !colIndexSet.get(nonTsIdx)) {
+        nonTsIdx++;
+        continue;
+      }
+
+      final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+      final ColumnDefinition col = columns.get(c);
+
+      final RawColumn decoded = switch (col.getCompressionHint()) {
+        case GORILLA_XOR -> new RawColumn(GorillaXORCodec.decode(compressed), null, null, false);
+        case SIMPLE8B -> new RawColumn(null, Simple8bCodec.decode(compressed), null, col.getDataType() == Type.INTEGER);
+        case DICTIONARY -> new RawColumn(null, null, DictionaryCodec.decode(compressed), false);
+        default -> new RawColumn(null, null, null, false);
+      };
+
+      result.add(decoded);
+      nonTsIdx++;
+    }
+    return result.toArray(new RawColumn[0]);
+  }
+
+  /**
+   * Mirrors {@link TagFilter#matchesMapped(Object[], int[])} against the raw, still unboxed columns.
+   */
+  private static boolean matchesRawColumns(final RawColumn[] rawColumns, final int rowIdx, final TagFilter tagFilter,
+      final int[] columnIndices) {
+    for (final TagFilter.Condition cond : tagFilter.getConditions()) {
+      int outPos = -1;
+      if (columnIndices == null)
+        outPos = cond.columnIndex();
+      else
+        for (int i = 0; i < columnIndices.length; i++)
+          if (columnIndices[i] == cond.columnIndex()) {
+            outPos = i;
+            break;
+          }
+
+      if (outPos < 0 || outPos >= rawColumns.length)
+        return false;
+      if (!cond.values().contains(rawColumns[outPos].valueAt(rowIdx)))
+        return false;
+    }
+    return true;
   }
 
   private Object[][] decompressColumns(final BlockEntry entry, final int[] columnIndices, final int tsColIdx) throws IOException {
