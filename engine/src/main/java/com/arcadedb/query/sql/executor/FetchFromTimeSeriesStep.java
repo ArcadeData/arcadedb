@@ -29,6 +29,7 @@ import com.arcadedb.utility.DateUtils;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
@@ -170,11 +171,29 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
       sb.append("DESC ");
     sb.append(tsType.getName());
     sb.append(" [").append(fromTs).append(" - ").append(toTs).append("]");
+    // Issue #5416: the tag filter is pushed into the fetch, so the plan has to show it. Without this
+    // the only visible tag predicate is the redundant FILTER step above and the plan reads as if no
+    // push-down happened.
+    if (tagFilter != null)
+      sb.append(" TAGS ").append(tagFilter.describe(nonTsColumnNames()));
     if (descending && descendingLimit > 0)
       sb.append(" TOP ").append(descendingLimit);
     if (context.isProfiling())
       sb.append(" (").append(getCostFormatted()).append(", ").append(getRowCountFormatted()).append(")");
     return sb.toString();
+  }
+
+  /**
+   * Names of the non-timestamp columns in schema order, i.e. the indexing a {@link TagFilter} uses.
+   */
+  private String[] nonTsColumnNames() {
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+    final String[] names = new String[columns.size()];
+    int nonTsIdx = 0;
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        names[nonTsIdx++] = col.getName();
+    return Arrays.copyOf(names, nonTsIdx);
   }
 
   @Override

@@ -157,6 +157,43 @@ public final class TagFilter {
     return true;
   }
 
+  /**
+   * Renders the filter the way an execution plan should show it, e.g.
+   * {@code host = 'web_1' AND rack IN ['a', 'b']} (issue #5416).
+   *
+   * @param nonTsColumnNames names of the non-timestamp columns in schema order; when {@code null} or
+   *                         too short the positional {@code col<n>} form is used instead
+   */
+  public String describe(final String[] nonTsColumnNames) {
+    final StringBuilder sb = new StringBuilder();
+    for (final Condition cond : conditions) {
+      if (!sb.isEmpty())
+        sb.append(" AND ");
+
+      if (nonTsColumnNames != null && cond.columnIndex >= 0 && cond.columnIndex < nonTsColumnNames.length)
+        sb.append(nonTsColumnNames[cond.columnIndex]);
+      else
+        sb.append("col").append(cond.columnIndex);
+
+      if (cond.values.size() == 1) {
+        sb.append(" = ").append(formatValue(cond.values.iterator().next()));
+        continue;
+      }
+
+      // Conditions hold a Set, so sort to keep the plan stable across runs.
+      final List<String> rendered = new ArrayList<>(cond.values.size());
+      for (final Object value : cond.values)
+        rendered.add(formatValue(value));
+      rendered.sort(null);
+      sb.append(" IN [").append(String.join(", ", rendered)).append(']');
+    }
+    return sb.toString();
+  }
+
+  private static String formatValue(final Object value) {
+    return value instanceof String ? "'" + value + "'" : String.valueOf(value);
+  }
+
   record Condition(int columnIndex, Set<Object> values) {
   }
 
