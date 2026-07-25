@@ -449,6 +449,16 @@ createTypeBody
       (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
       (PAGESIZE INTEGER_LITERAL)?
+      (CUSTOM customMetadataItem (COMMA customMetadataItem)*)?
+    ;
+
+/**
+ * Inline CUSTOM metadata pair, e.g. `CUSTOM coolness = 10, unit = 'meters'` (issue #5409). Same
+ * key/value shape as `ALTER TYPE ... CUSTOM key = value`, so a type or property can carry its
+ * metadata straight from the CREATE statement instead of needing a follow-up ALTER.
+ */
+customMetadataItem
+    : identifier EQ expression
     ;
 
 /**
@@ -523,6 +533,7 @@ createEdgeTypeBody
       (BUCKET bucketIdentifier (COMMA bucketIdentifier)*)?
       (BUCKETS INTEGER_LITERAL)?
       (PAGESIZE INTEGER_LITERAL)?
+      (CUSTOM customMetadataItem (COMMA customMetadataItem)*)?
     ;
 
 /**
@@ -540,10 +551,11 @@ bucketIdentifier
 
 /**
  * CREATE PROPERTY statement
- * CREATE PROPERTY Type.property [IF NOT EXISTS] propertyType [OF ofType] [(attributes)]
+ * CREATE PROPERTY Type.property [IF NOT EXISTS] propertyType [OF ofType] [(attributes)] [CUSTOM key = value, ...]
  */
 createPropertyBody
     : identifier DOT propertyName (IF NOT EXISTS)? propertyType (LPAREN propertyAttributes RPAREN)?
+      (CUSTOM customMetadataItem (COMMA customMetadataItem)*)?
     ;
 
 propertyAttributes
