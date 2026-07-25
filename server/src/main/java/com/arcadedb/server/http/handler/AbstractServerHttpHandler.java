@@ -24,6 +24,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
@@ -66,6 +67,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
   public static final AttachmentKey<String> RAW_PAYLOAD = AttachmentKey.create(String.class);
+  // Request body parsed as a top-level JSON array (issue #5415). A JSON array is a legitimate request body,
+  // but it is not a JSONObject, so it cannot travel in the `payload` argument of execute(). It is parsed
+  // once by the shared request pipeline and attached here, where a handler reads it back with
+  // getPayloadAsArray(exchange) - keeping the single execute() entry point, and with it every wrapper the
+  // handler hierarchy layers on top of it (database resolution, authorization, session and transaction
+  // handling in DatabaseAbstractHandler).
+  public static final AttachmentKey<JSONArray> ARRAY_PAYLOAD = AttachmentKey.create(JSONArray.class);
 
   private static final String AUTHORIZATION_BASIC  = "Basic";
   private static final String AUTHORIZATION_BEARER = "Bearer";
@@ -300,23 +308,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       }
 
       JSONObject payload = null;
+      JSONArray payloadAsArray = null;
       String payloadAsString = null;
       if (mustExecuteOnWorkerThread()) {
         payloadAsString = parseRequestPayload(exchange);
         // The body can only be read once from the exchange, so keep the raw text available to handlers whose
-        // payload is not a single JSON object (the MCP endpoint accepts a top-level JSON-RPC batch array).
+        // payload is neither a JSON object nor a JSON array (e.g. a line-protocol or CSV body).
         if (payloadAsString != null)
           exchange.putAttachment(RAW_PAYLOAD, payloadAsString);
-        if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank())
+        if (requiresJsonPayload() && payloadAsString != null && !payloadAsString.isBlank()) {
+          final String trimmedPayload = payloadAsString.trim();
           try {
-            payload = new JSONObject(payloadAsString.trim());
+            // The body of a JSON request is legitimately either an object or a top-level array (issue #5415).
+            // The kind is decided from the first character so the body is parsed exactly once: the previous
+            // code always attempted a JSONObject parse, paying for a thrown exception on every array body and
+            // leaving the array unreachable to the handler.
+            if (trimmedPayload.charAt(0) == '[') {
+              payloadAsArray = new JSONArray(trimmedPayload);
+              exchange.putAttachment(ARRAY_PAYLOAD, payloadAsArray);
+            } else
+              payload = new JSONObject(trimmedPayload);
           } catch (Exception e) {
-            // A top-level JSON array is not an error for every route: the MCP endpoint reads a JSON-RPC batch
-            // back from RAW_PAYLOAD. Warn only for a body that is not one, so a valid batch is not logged as
-            // a failure on every request.
-            if (payloadAsString.trim().charAt(0) != '[')
-              LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
+            LogManager.instance().log(this, Level.WARNING, "Error parsing request payload: %s", e.getMessage());
           }
+        }
       }
 
       // Idempotency applies only to POST requests that carry a non-blank X-Request-Id and are NOT part of
@@ -350,7 +365,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           idempotencyReservation = reservation;
       }
 
-      final ExecutionResponse response = execute(exchange, user, payload);
+      final ExecutionResponse response;
+      if (payloadAsArray != null && !acceptsArrayPayload())
+        // A top-level JSON array reached a route that only understands a JSON object: answer with an explicit
+        // client error instead of running the handler with a null payload, which surfaced as a misleading
+        // "field is null" message (or worse as a silent no-op) with no hint that the body shape was wrong.
+        response = new ExecutionResponse(400, error2json("The request payload must be a JSON object",
+                "This endpoint does not accept a top-level JSON array", null, null, null));
+      else
+        response = execute(exchange, user, payload);
+
       if (response != null) {
         response.send(exchange);
         if (idempotencyReservation != null) {
@@ -870,6 +894,34 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   protected boolean requiresJsonPayload() {
     return true;
+  }
+
+  /**
+   * Returns true if the handler understands a request body that is a top-level JSON array. Default false: the
+   * shared pipeline then answers HTTP 400 for an array body, instead of invoking
+   * {@link #execute(HttpServerExchange, ServerSecurityUser, JSONObject)} with a null payload - a JSON array is
+   * not a JSONObject, and every route in the server (except the MCP JSON-RPC endpoint) expects an object.
+   * <p>
+   * A handler that accepts arrays overrides this to true and reads the parsed array with
+   * {@link #getPayloadAsArray(HttpServerExchange)}. The array is intentionally NOT delivered through a second
+   * {@code execute()} overload: {@link DatabaseAbstractHandler} implements the single
+   * {@code execute(exchange, user, payload)} entry point to resolve the database, enforce database-level
+   * authorization and open the session/transaction around the handler body, so a parallel array entry point
+   * would either duplicate that pipeline or silently bypass it. See issue #5415.
+   */
+  protected boolean acceptsArrayPayload() {
+    return false;
+  }
+
+  /**
+   * Returns the request body parsed as a top-level JSON array, or {@code null} when the body was not an array
+   * (it was a JSON object, was empty, or failed to parse). Only meaningful for a handler that returns true from
+   * both {@link #mustExecuteOnWorkerThread()} and {@link #requiresJsonPayload()}, and that accepts an array body
+   * ({@link #acceptsArrayPayload()}). The body is parsed once by the shared request pipeline, so calling this
+   * costs nothing beyond an exchange attachment lookup. See issue #5415.
+   */
+  protected JSONArray getPayloadAsArray(final HttpServerExchange exchange) {
+    return exchange.getAttachment(ARRAY_PAYLOAD);
   }
 
   protected String encodeError(final String message) {
