@@ -65,6 +65,31 @@ class LockTimeoutHolderDiagnosticsTest extends TestHelper {
   }
 
   @Test
+  void lockStatsAreReadableFromTheTransactionManager() {
+    final DocumentType type = database.getSchema().createDocumentType("Observed");
+    final int fileId = type.getBuckets(false).getFirst().getFileId();
+
+    final TransactionManager txManager = ((DatabaseInternal) database).getTransactionManager();
+
+    // Nothing held: the normal state, and the answer that rules a database out during an incident.
+    assertThat(txManager.getLockStats()).isEmpty();
+
+    final List<Integer> held = txManager.tryLockFiles(List.of(fileId), 1_000, "holder-tx-A");
+    try {
+      assertThat(txManager.getLockStats()).singleElement().satisfies(stats -> {
+        assertThat(stats.resource()).isEqualTo(String.valueOf(fileId));
+        assertThat(stats.owner()).isEqualTo("holder-tx-A");
+        assertThat(stats.heldForMs()).isNotNegative();
+        assertThat(stats.waiters()).isZero();
+      });
+    } finally {
+      txManager.unlockFilesInOrder(held, "holder-tx-A");
+    }
+
+    assertThat(txManager.getLockStats()).isEmpty();
+  }
+
+  @Test
   void diagnosticsDoNotChangeTheOutcomeWhenTheLockIsFree() {
     final DocumentType type = database.getSchema().createDocumentType("Free");
     final int fileId = type.getBuckets(false).getFirst().getFileId();
