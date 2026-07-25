@@ -75,6 +75,19 @@ public interface IndexInternal extends Index {
     return Collections.emptyList();
   }
 
+  /**
+   * Stops everything this index keeps running in the background - timers, thread pools, pooled per-query state -
+   * WITHOUT touching its files or its durability state (issue #5418). Most indexes run nothing of the sort and
+   * this is a no-op; the LSM vector index is the notable exception, with an inactivity rebuild timer, a graph
+   * build pool and a pool of graph searchers.
+   * <p>
+   * Invoked by {@code LocalDatabase} on close and on drop, right after the index has been flushed. It is
+   * deliberately NOT {@link #close()}: that one also closes the index files, which on the database close path
+   * must stay open until the pending pages have been flushed and {@code FileManager.close()} closes them.
+   */
+  default void releaseBackgroundResources() {
+  }
+
   void close();
 
   void drop();

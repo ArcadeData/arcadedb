@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityManager;
 
@@ -32,6 +33,7 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 public class DatabaseFactory implements AutoCloseable {
   private              SecurityManager                                            security;
@@ -41,6 +43,27 @@ public class DatabaseFactory implements AutoCloseable {
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
+
+  /**
+   * Milliseconds the JVM shutdown hook waits for the graceful close of the databases still open. On expiry the
+   * hook returns anyway so the JVM can complete its shutdown: the close it abandons is exactly a crash, which the
+   * WAL replay of the next open repairs. Only pathological states can reach it - the flush itself is already
+   * bounded by {@code arcadedb.flushAllPagesTimeout} and the only unbounded step is acquiring the database lock
+   * from a daemon thread that never releases it.
+   */
+  private static final long SHUTDOWN_CLOSE_TIMEOUT_MS = 30_000;
+
+  /**
+   * #5418: the engine's background threads are daemons, so a leaked (never closed) {@link Database} no longer
+   * keeps the embedder's JVM alive. This hook is the other half of that contract: it runs to completion before
+   * the JVM stops the daemon threads, closing every database still registered so its dirty pages reach the disk
+   * exactly as they would on an explicit close. Registered from a static initializer: the class is loaded by
+   * anything that can open a database, and an unstarted {@link Thread} costs nothing when no database ever is.
+   */
+  static {
+    Runtime.getRuntime().addShutdownHook(new Thread(DatabaseFactory::closeActiveDatabaseInstancesOnShutdown,
+        "ArcadeDB-DatabaseShutdownHook"));
+  }
 
   public DatabaseFactory(final String path) {
     if (path == null || path.trim().isEmpty())
@@ -174,6 +197,54 @@ public class DatabaseFactory implements AutoCloseable {
 
   public static Collection<Database> getActiveDatabaseInstances() {
     return Collections.unmodifiableCollection(ACTIVE_INSTANCES.values());
+  }
+
+  /**
+   * Closes every database instance that is still open, ignoring any error (issue #5418). Exposed as a public API
+   * for embedders (language bindings, application containers) that want the same graceful teardown at an earlier,
+   * controlled point of their own lifecycle than the JVM shutdown hook.
+   * <p>
+   * A closing database removes itself from the registry, so the iteration runs over a snapshot: the map is
+   * modified while the loop advances. Errors are swallowed on purpose - a database that cannot be closed must
+   * not stop the remaining ones from being closed, least of all during a JVM shutdown. Closing a database that
+   * another component is closing concurrently (the ArcadeDB server's own shutdown hook, say) is a no-op: the
+   * second close finds it already closed.
+   */
+  public static void closeActiveDatabaseInstances() {
+    for (final Database database : new ArrayList<>(ACTIVE_INSTANCES.values())) {
+      try {
+        if (database.isOpen())
+          database.close();
+      } catch (final Throwable e) {
+        // IGNORE: BEST EFFORT, KEEP CLOSING THE OTHERS
+      }
+    }
+  }
+
+  /**
+   * {@link #closeActiveDatabaseInstances()} under a deadline, run from the JVM shutdown hook. The close happens on
+   * a separate DAEMON thread the hook joins for at most {@link #SHUTDOWN_CLOSE_TIMEOUT_MS}: a shutdown hook that
+   * never returns blocks the JVM exit forever, which is the very failure this whole change removes, so it must not
+   * be reintroduced here by a database whose lock some other daemon thread never releases.
+   */
+  private static void closeActiveDatabaseInstancesOnShutdown() {
+    if (ACTIVE_INSTANCES.isEmpty())
+      return;
+
+    final Thread closer = new Thread(DatabaseFactory::closeActiveDatabaseInstances, "ArcadeDB-DatabaseShutdownCloser");
+    closer.setDaemon(true);
+    closer.start();
+    try {
+      closer.join(SHUTDOWN_CLOSE_TIMEOUT_MS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+
+    if (closer.isAlive())
+      LogManager.instance().log(DatabaseFactory.class, Level.WARNING, """
+          Could not close %d database(s) within %d ms during the JVM shutdown: giving up so the shutdown can \
+          complete. The unflushed pages are replayed from the WAL on the next open""", null, ACTIVE_INSTANCES.size(),
+          SHUTDOWN_CLOSE_TIMEOUT_MS);
   }
 
   private static void checkForActiveInstance(final String databasePath) {

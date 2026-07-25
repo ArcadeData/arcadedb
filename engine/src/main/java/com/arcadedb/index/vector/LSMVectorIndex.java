@@ -4251,6 +4251,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void close() {
+    releaseBackgroundResources();
+    flush();
+  }
+
+  /**
+   * Stops the inactivity rebuild timer, the graph build pool and the pooled graph searchers (issue #5418). Split
+   * out of {@link #close()} because {@code LocalDatabase} must be able to stop them on every database close and
+   * drop WITHOUT closing the index files, which stay open until the pending pages have been flushed.
+   */
+  @Override
+  public void releaseBackgroundResources() {
     // Invalidate first so a concurrent timer thread that wins the monitor after
     // cancelInactivityRebuildTimer() nulls inactivityTimer cannot bypass the isValid()
     // guard and resurrect a fresh Timer.
@@ -4287,8 +4298,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final GraphSearcherPool searchers = searcherPool;
     if (searchers != null)
       searchers.clear();
-
-    flush();
   }
 
   @Override
