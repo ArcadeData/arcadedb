@@ -429,6 +429,131 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Scans sealed blocks <em>newest-first</em> and returns at most {@code limit} rows in descending
+   * timestamp order (issue #5414).
+   * <p>
+   * This is the read path behind last-point queries ({@code ORDER BY <ts> DESC LIMIT n},
+   * {@code ts.last()}). Because blocks are stored in ascending timestamp order, walking the block
+   * directory backwards lets the scan stop as soon as {@code limit} rows have been produced and no
+   * older block can still hold a newer row. An unbounded last-point query therefore costs
+   * O(blocks touched) instead of O(series), without any extra persisted state.
+   * <p>
+   * Early termination is guarded by the timestamp of the oldest row currently retained, so it stays
+   * correct even if two adjacent blocks happen to overlap in time.
+   *
+   * @param fromTs        start timestamp (inclusive)
+   * @param toTs          end timestamp (inclusive)
+   * @param columnIndices which columns to return (null = all)
+   * @param tagFilter     optional tag filter, applied at block level when possible
+   * @param limit         maximum number of rows to return; {@code <= 0} means unlimited
+   * @param metrics       optional block-level counters, may be {@code null}
+   *
+   * @return rows sorted by descending timestamp, at most {@code limit} of them
+   */
+  public List<Object[]> scanRangeDescending(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final int limit, final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+
+    directoryLock.readLock().lock();
+    try {
+      final List<Object[]> results = new ArrayList<>();
+      final int tsColIdx = findTimestampColumnIndex();
+      final int dirSize = blockDirectory.size();
+      if (dirSize == 0)
+        return results;
+
+      // Binary search: find the last block whose minTimestamp <= toTs. Everything after it starts
+      // beyond the requested upper bound.
+      int lo = 0, hi = dirSize - 1;
+      while (lo < hi) {
+        final int mid = (lo + hi + 1) >>> 1;
+        if (blockDirectory.get(mid).minTimestamp > toTs)
+          hi = mid - 1;
+        else
+          lo = mid;
+      }
+      final int startBlockIdx = lo;
+
+      // Timestamp of the oldest row retained so far: once `need` rows are held, any block whose
+      // maxTimestamp is older than this cannot contribute and the walk stops.
+      long cutoffTs = Long.MIN_VALUE;
+
+      for (int blockIdx = startBlockIdx; blockIdx >= 0; blockIdx--) {
+        final BlockEntry entry = blockDirectory.get(blockIdx);
+
+        // Early termination: blocks are ordered by ascending timestamp, so once a block ends before
+        // the requested lower bound no older block can be in range either.
+        if (entry.maxTimestamp < fromTs)
+          break;
+
+        if (results.size() >= need && entry.maxTimestamp < cutoffTs)
+          break;
+
+        if (entry.minTimestamp > toTs)
+          continue;
+
+        final BlockMatchResult tagMatch = tagFilter != null
+            ? blockMatchesTagFilter(entry, tagFilter)
+            : BlockMatchResult.FAST_PATH;
+        if (tagMatch == BlockMatchResult.SKIP) {
+          if (metrics != null)
+            metrics.addSkippedBlock();
+          continue;
+        }
+
+        final long[] ts = decompressTimestamps(entry, tsColIdx);
+        final int start = lowerBound(ts, fromTs);
+        final int end = upperBound(ts, toTs);
+        if (start >= end)
+          continue;
+
+        if (metrics != null) {
+          if (tagMatch == BlockMatchResult.SLOW_PATH)
+            metrics.addSlowPathBlock();
+          else
+            metrics.addFastPathBlock();
+        }
+
+        final Object[][] decompCols = decompressColumns(entry, columnIndices, tsColIdx);
+        final int resultCols = decompCols.length + 1;
+
+        // Rows inside a block are ascending, so walking backwards yields descending order and the
+        // first `need` matches found are the newest ones in this block.
+        int taken = 0;
+        for (int i = end - 1; i >= start && taken < need; i--) {
+          final Object[] row = new Object[resultCols];
+          row[0] = ts[i];
+          for (int c = 0; c < decompCols.length; c++)
+            row[c + 1] = decompCols[c][i];
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, columnIndices))
+            continue;
+          results.add(row);
+          taken++;
+        }
+
+        if (results.size() >= need) {
+          trimToDescendingLimit(results, need);
+          cutoffTs = (long) results.getLast()[0];
+        }
+      }
+
+      trimToDescendingLimit(results, need);
+      return results;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Sorts the rows by descending timestamp and drops everything past {@code need}.
+   */
+  static void trimToDescendingLimit(final List<Object[]> rows, final int need) {
+    rows.sort((a, b) -> Long.compare((long) b[0], (long) a[0]));
+    while (rows.size() > need)
+      rows.removeLast();
+  }
+
+  /**
    * Finds the first index where ts[i] >= target (lower bound).
    */
   private static int lowerBound(final long[] ts, final long target) {

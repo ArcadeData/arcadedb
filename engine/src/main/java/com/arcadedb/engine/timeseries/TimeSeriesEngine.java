@@ -269,6 +269,38 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * Queries all shards newest-first and returns at most {@code limit} rows in descending timestamp
+   * order (issue #5414).
+   * <p>
+   * Every shard is asked for its own newest {@code limit} rows and the per-shard results are merged;
+   * because each shard stops walking blocks as soon as its own limit is satisfied, an unbounded
+   * last-point query costs O(shards x blocks touched) instead of O(series).
+   *
+   * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
+   * @param metrics optional block-level counters, may be {@code null}. Shards are visited
+   *                sequentially on the calling thread, so a single instance is safe here.
+   *
+   * @return rows sorted by descending timestamp, at most {@code limit} of them
+   */
+  public List<Object[]> queryDescending(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final int limit, final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+
+    final List<Object[]> merged = new ArrayList<>();
+    for (final TimeSeriesShard shard : shards) {
+      final List<Object[]> shardRows = shard.scanRangeDescending(fromTs, toTs, columnIndices, tagFilter, limit, metrics);
+      if (shardRows.isEmpty())
+        continue;
+      merged.addAll(shardRows);
+      if (merged.size() >= need)
+        TimeSeriesSealedStore.trimToDescendingLimit(merged, need);
+    }
+
+    TimeSeriesSealedStore.trimToDescendingLimit(merged, need);
+    return merged;
+  }
+
+  /**
    * Aggregates across all shards.
    *
    * @param columnIndex 0-based index among non-timestamp columns (i.e. column 0 = first non-ts column).
