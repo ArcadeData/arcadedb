@@ -141,6 +141,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public static final int OFFSET_MUTABLE      = 8;       // 1 byte
   public static final int HEADER_BASE_SIZE    = 9;     // offsetFreeContent(4) + numberOfEntries(4) + mutable(1)
 
+  // Floor for the automatically sized search cache (issue #5412). At 768 dimensions this is ~25MB, small
+  // enough to never matter and large enough that a small index is fully resident from the first query.
+  private static final int MIN_SEARCH_CACHE_SIZE = 8_192;
+
   private final String                 indexName;
   protected     LSMVectorIndexMutable  mutable;
   private final ReentrantReadWriteLock lock;
@@ -181,6 +185,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
   private final ReentrantLock graphBuildLock = new ReentrantLock();
+
+  // Index-scoped cache of materialized vectors, shared by every search on this index (issue #5412).
+  // Beam search resolves one vector per distance evaluation; before this cache lived at index scope, each
+  // query built its own 1024-entry map and discarded it on completion, so every query paid a full record
+  // read (or quantized page read) per hop even when repeating the very same query.
+  private volatile VectorCache searchVectorCache;
+  private final    Object      searchVectorCacheLock = new Object();
 
   // Async graph rebuild support (issue #3679): when mutations reach the configured threshold,
   // the graph is rebuilt in a background daemon thread and hot-swapped when ready.
@@ -3036,7 +3047,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         } else {
           vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
               vectorProp,
-              vectorIndex, ordinalMap, this);
+              vectorIndex, ordinalMap, this, getSearchVectorCache());
         }
 
         // Perform search with optional RID filtering
@@ -3230,7 +3241,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           vectors = liveVectorValues;
         } else {
           vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
-              vectorIndex, ordinalToVectorId, this);
+              vectorIndex, ordinalToVectorId, this, getSearchVectorCache());
         }
 
         // Group-aware Bits filter. Wraps the same RID validity + allowedRIDs gating that
@@ -3798,6 +3809,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (loc != null && loc.rid.equals(rid) && !loc.deleted) {
             vectorIndex.markDeleted(vectorId);
             deletedIds.add(vectorId);
+            // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
+            final VectorCache cache = searchVectorCache;
+            if (cache != null)
+              cache.remove(vectorId);
           }
         }
 
@@ -4245,6 +4260,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       // Clear all vector locations
       vectorIndex.clear();
+      searchVectorCache = null; // Release the shared search cache (issue #5412)
       ordinalToVectorId = new int[0];
       currentInsertPageNum = -1;
 
@@ -4346,6 +4362,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Populate metrics from LSMVectorIndexMetrics
     metrics.populateStats(stats);
+
+    // Index-scoped search cache shared by every query (issue #5412). It is the authority on the vector cache
+    // counters, so it overwrites the placeholders above. A hit ratio well below 1 on a steady workload means
+    // the working set does not fit: raise arcadedb.vectorIndex.searchCacheSize.
+    final VectorCache searchCache = searchVectorCache;
+    stats.put("searchVectorCacheCapacity", searchCache != null ? (long) searchCache.capacity() : 0L);
+    stats.put("vectorCacheHits", searchCache != null ? searchCache.getHits() : 0L);
+    stats.put("vectorCacheMisses", searchCache != null ? searchCache.getMisses() : 0L);
 
     // NEW: Memory estimates
     stats.put("estimatedLocationIndexBytes", (long) vectorIndex.size() * 24L);
@@ -4593,9 +4617,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final String vectorProp =
           metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
               "vector";
+      // Serialization walks every ordinal exactly once, so feed the shared search cache while doing it: the
+      // index comes out of a rebuild with its working set already resident instead of cold (issue #5412).
       final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
           vectorProp,
-          vectorIndex, ordinalToVectorId, this);
+          vectorIndex, ordinalToVectorId, this, getSearchVectorCache());
 
       graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
@@ -4928,6 +4954,67 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
     return mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE);
+  }
+
+  /**
+   * Returns the cache of materialized vectors shared by every search on this index (issue #5412), growing it
+   * when the corpus has outgrown the current capacity. Capacity only ever moves in powers of two, so a growing
+   * index reallocates O(log n) times over its whole lifetime.
+   *
+   * @return the shared cache, or {@code null} when caching is disabled by configuration
+   */
+  VectorCache getSearchVectorCache() {
+    final int wanted = computeSearchCacheCapacity();
+    if (wanted <= 0)
+      return null;
+
+    VectorCache cache = searchVectorCache;
+    if (cache != null && cache.capacity() >= wanted)
+      return cache;
+
+    synchronized (searchVectorCacheLock) {
+      cache = searchVectorCache;
+      if (cache == null || cache.capacity() < wanted) {
+        cache = new VectorCache(wanted);
+        searchVectorCache = cache;
+      }
+      return cache;
+    }
+  }
+
+  /**
+   * Computes how many vectors the shared search cache should hold.
+   * <p>
+   * An explicit {@code arcadedb.vectorIndex.searchCacheSize} wins. Otherwise the cache is sized to hold the
+   * whole corpus - which is the point: a working set that fits never touches disk again - but capped at the
+   * configured share of the heap so a corpus larger than RAM degrades to eviction instead of OOM.
+   *
+   * @return the number of vectors to hold, or 0 when caching is disabled
+   */
+  private int computeSearchCacheCapacity() {
+    final int configured = mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
+    if (configured < 0)
+      return 0;
+    if (configured > 0)
+      return configured;
+
+    // Per-entry cost: the float payload plus the VectorFloat wrapper, the cache entry and the array slot
+    final long bytesPerVector = (long) metadata.dimensions * Float.BYTES + 64;
+
+    int heapPercent = mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT);
+    if (heapPercent <= 0)
+      return 0;
+    if (heapPercent > 90)
+      heapPercent = 90;
+
+    final long heapBudget = Runtime.getRuntime().maxMemory() / 100 * heapPercent;
+    final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE, heapBudget / bytesPerVector);
+
+    final long corpus = Math.max(MIN_SEARCH_CACHE_SIZE, vectorIndex.size());
+
+    return (int) Math.min(Math.min(affordable, corpus), Integer.MAX_VALUE / 2);
   }
 
   /**
