@@ -231,6 +231,17 @@ public class RemoteHttpComponent extends RWLockContext {
     if (maxRetry < 1)
       maxRetry = 1;
 
+    // The election/503 budget is independent of maxRetry: maxRetry bounds IO failures and server
+    // failover, while these bound how long the client waits out a transient server-side condition
+    // (election in progress, snapshot install) on the SAME server. Keeping them separate matters
+    // because maxRetry collapses to 1 for the FIXED strategy - NETWORK_SAME_SERVER_ERROR_RETRIES
+    // defaults to 0 - which would otherwise consume the whole election budget before it is ever used.
+    final int maxElectionRetries = this instanceof RemoteDatabase db ? db.getElectionRetryCount() :
+        configuration.getValueAsInteger(GlobalConfiguration.HA_CLIENT_ELECTION_RETRY_COUNT);
+    final long electionRetryDelayMs = this instanceof RemoteDatabase db ? db.getElectionRetryDelayMs() :
+        configuration.getValueAsLong(GlobalConfiguration.HA_CLIENT_ELECTION_RETRY_DELAY_MS);
+    final int maxAttempts = Math.max(maxRetry, maxElectionRetries + 1);
+
     Pair<String, Integer> connectToServer;
     if (connectionStrategy == CONNECTION_STRATEGY.FIXED)
       connectToServer = new Pair<>(originalServer, originalPort);
@@ -241,7 +252,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
     String server = null;
 
-    for (int retry = 0; retry < maxRetry && connectToServer != null; ++retry) {
+    for (int retry = 0; retry < maxAttempts && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
       String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
 
@@ -379,21 +390,22 @@ public class RemoteHttpComponent extends RWLockContext {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
       } catch (final NeedRetryException e) {
-        // Election in progress - retry with delay.
-        final int maxElectionRetries = this instanceof RemoteDatabase db ? db.getElectionRetryCount() : 3;
-        final long delayMs = this instanceof RemoteDatabase db ? db.getElectionRetryDelayMs() : 2000L;
-        if (retry + 1 >= maxRetry || retry >= maxElectionRetries) {
+        // Transient server-side condition (election in progress, snapshot install) - retry the SAME
+        // server after a delay. Bounded by the election budget only, never by maxRetry, so the FIXED
+        // strategy's maxRetry of 1 does not reduce this to a single attempt.
+        if (retry >= maxElectionRetries) {
           lastException = e;
           break;
         }
         try {
-          Thread.sleep(delayMs);
+          Thread.sleep(electionRetryDelayMs);
         } catch (final InterruptedException ie) {
           Thread.currentThread().interrupt();
           throw new RemoteException("Request interrupted during election retry", ie);
         }
         LogManager.instance().log(this, Level.WARNING,
-            "Election in progress, retrying after %dms (retry=%d/%d)...", null, delayMs, retry, maxRetry);
+            "Server asked to retry, retrying after %dms (retry=%d/%d)...", null, electionRetryDelayMs, retry,
+            maxElectionRetries);
       } catch (final RuntimeException e) {
         // Propagate any RuntimeException unchanged (issue #4580): a callback-side bug (e.g. NPE), a
         // malformed-response RemoteException, or a typed ArcadeDB exception (DuplicatedKeyException,
@@ -687,10 +699,28 @@ public class RemoteHttpComponent extends RWLockContext {
         return new NeedRetryException(detail);
       } else if (exception.equals(NeedRetryException.class.getName())) {
         return new NeedRetryException(detail);
+      } else if (response.statusCode() == 503) {
+        // An unrecognised exception type (e.g. added by a newer server) delivered with 503 is still
+        // retry-worthy by the status-code contract below.
+        return new NeedRetryException(detail);
       } else
         // ELSE
         return new RemoteException(
             "Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
+    }
+
+    // No typed exception in the payload. The server reserves 503 for deflections it wants the client to
+    // come back from - a snapshot being installed, a node that has not caught up - and those are emitted
+    // before any handler runs, so the status code is the only signal available. Classify on it so they
+    // stay retryable instead of surfacing as a hard failure. Retrying is safe because the request is
+    // refused before execution and nothing was committed; responses that must NOT be retried use 409
+    // (TransactionCommittedRemotely, DuplicatedKey) precisely so 503 can carry this meaning.
+    // Typed 503s are deliberately NOT handled here: they are dispatched above so a caller still sees the
+    // specific type (QuorumNotReachedException in particular, which the server sends with 503).
+    if (response.statusCode() == 503) {
+      final String message = detail != null && !detail.isEmpty() ? detail :
+          reason != null ? reason : "Server temporarily unavailable, please retry";
+      return new NeedRetryException(message);
     }
 
     final String httpErrorDescription = response.statusCode() == 400 ? "Bad Request" :

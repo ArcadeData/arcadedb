@@ -52,7 +52,7 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
   @ParameterizedTest(name = "Three-node Raft HA Load test with {0} protocol")
   @EnumSource(DatabaseWrapper.Protocol.class)
   @DisplayName("Three-node Raft HA: replication across all nodes with consistency check")
-  void threeNodeReplication(DatabaseWrapper.Protocol protocol) {
+  void threeNodeReplication(DatabaseWrapper.Protocol protocol) throws InterruptedException {
     createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
     createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
     createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
@@ -64,10 +64,15 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
-    logger.info("Creating database and schema");
-    db1.createDatabase();
-    db1.createSchema();
+    waitForRaftLeader(servers, 10);
+    logger.info("Creating database and schema on leader");
+    ServerWrapper leaderServer = servers.get(findLeaderIndex(servers));
+    final DatabaseWrapper leaderDb = new DatabaseWrapper(leaderServer, idSupplier, wordSupplier);
+    leaderDb.createDatabase();
+    leaderDb.createSchema();
+    leaderDb.close();
 
+    TimeUnit.SECONDS.sleep(5); // Wait for schema to be replicated to all nodes
     logger.info("Checking schema replicated to all nodes");
     db1.checkSchema();
     db2.checkSchema();
@@ -94,20 +99,20 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier, protocol);
+        DatabaseWrapper db = new DatabaseWrapper(leaderServer, idSupplier, wordSupplier, protocol);
         db.addUserAndPhotos(numOfUsers, numOfPhotos);
         db.close();
       });
     }
     // Each thread will create friendships
     executor.submit(() -> {
-      DatabaseWrapper db = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier, protocol);
+      DatabaseWrapper db = new DatabaseWrapper(leaderServer, idSupplier, wordSupplier, protocol);
       db.createFriendships(numOfFriendship);
       db.close();
     });
     // Each thread will create friendships
     executor.submit(() -> {
-      DatabaseWrapper db = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier, protocol);
+      DatabaseWrapper db = new DatabaseWrapper(leaderServer, idSupplier, wordSupplier, protocol);
       db.createLike(numOfLike);
       db.close();
     });
