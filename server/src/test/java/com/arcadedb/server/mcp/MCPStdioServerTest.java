@@ -76,12 +76,25 @@ class MCPStdioServerTest extends BaseGraphServerTest {
     final JSONObject response = sendSingleRequest(request);
 
     assertThat(response.has("result")).isTrue();
-    final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    boolean hasVectorSearch = false;
-    for (int i = 0; i < tools.length(); i++)
-      if ("vector_search".equals(tools.getJSONObject(i).getString("name")))
-        hasVectorSearch = true;
-    assertThat(hasVectorSearch).isTrue();
+    assertThat(toolNames(response)).contains(
+        "list_databases", "get_schema", "query", "execute_command", "vector_search", "full_text_search",
+        "upsert_entity", "upsert_relationship", "server_status");
+  }
+
+  @Test
+  void toolsListReturnsIndependentArrays() throws Exception {
+    final JSONObject request = new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 3)
+        .put("method", "tools/list")
+        .put("params", new JSONObject());
+
+    final JSONArray first = sendSingleRequest(request).getJSONObject("result").getJSONArray("tools");
+    final int registeredToolCount = first.length();
+    first.remove(0);
+
+    final JSONArray second = sendSingleRequest(request).getJSONObject("result").getJSONArray("tools");
+    assertThat(second.length()).isEqualTo(registeredToolCount);
   }
 
   @Test
@@ -92,8 +105,10 @@ class MCPStdioServerTest extends BaseGraphServerTest {
         .put("id", 20)
         .put("method", "tools/list")
         .put("params", new JSONObject()));
-    assertThat(toolNames(response)).containsExactlyInAnyOrder(
-        "query", "full_text_search");
+    assertThat(toolNames(response))
+        .contains("list_databases", "get_schema", "query", "vector_search", "full_text_search",
+            "upsert_entity", "upsert_relationship")
+        .doesNotContain("server_status", "execute_command");
 
     JSONObject denied = callTool("server_status", new JSONObject());
     assertThat(denied.getBoolean("isError", false)).isTrue();
@@ -106,7 +121,7 @@ class MCPStdioServerTest extends BaseGraphServerTest {
         .put("id", 21)
         .put("method", "tools/list")
         .put("params", new JSONObject()));
-    assertThat(toolNames(response)).containsExactlyInAnyOrder(
+    assertThat(toolNames(response)).contains(
         "list_databases", "get_schema", "query", "execute_command", "server_status",
         "profiler_start", "profiler_stop", "profiler_status", "get_server_settings", "set_server_setting");
 

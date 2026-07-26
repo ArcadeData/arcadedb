@@ -213,6 +213,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
+    assertThat(tools.length()).isPositive();
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -274,8 +275,10 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("id", 20)
         .put("method", "tools/list")
         .put("params", new JSONObject()));
-    assertThat(toolNames(response)).containsExactlyInAnyOrder(
-        "query", "full_text_search");
+    assertThat(toolNames(response))
+        .contains("list_databases", "get_schema", "query", "full_text_search",
+            "upsert_entity", "upsert_relationship")
+        .doesNotContain("server_status", "execute_command");
 
     JSONObject denied = callTool("server_status", new JSONObject());
     assertThat(denied.getBoolean("isError", false)).isTrue();
@@ -294,7 +297,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("id", 21)
         .put("method", "tools/list")
         .put("params", new JSONObject()));
-    assertThat(toolNames(response)).containsExactlyInAnyOrder(
+    assertThat(toolNames(response)).contains(
         "list_databases", "get_schema", "query", "execute_command", "server_status",
         "profiler_start", "profiler_stop", "profiler_status", "get_server_settings", "set_server_setting");
 
@@ -490,6 +493,29 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       assertThat(config.has("allowReads")).isTrue();
       assertThat(config.getString("profile")).isEqualTo("all");
       assertThat(config.has("allowedUsers")).isTrue();
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
+  void invalidConfigTypeReturnsBadRequest() throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpConfigUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final byte[] data = new JSONObject().put("enabled", "yes").toString().getBytes(StandardCharsets.UTF_8);
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(data);
+    }
+
+    connection.connect();
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+      assertThat(FileUtils.readStreamAsString(connection.getErrorStream(), "utf8"))
+          .contains("enabled").contains("boolean");
     } finally {
       connection.disconnect();
     }

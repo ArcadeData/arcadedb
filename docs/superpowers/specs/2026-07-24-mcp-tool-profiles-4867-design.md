@@ -10,7 +10,7 @@
 The Model Context Protocol (MCP) configuration supports three named tool profiles:
 
 - `all`: every registered tool; this is the default and preserves existing behavior.
-- `rag`: retrieval-focused tools only.
+- `rag`: retrieval and agent-memory tools.
 - `admin`: the existing operator and database-administration surface.
 
 Profiles are allowlists. They filter `tools/list` and are enforced again by `tools/call`, so a
@@ -38,11 +38,15 @@ same update is applied.
 
 The `rag` profile permits these registered tool names:
 
+- `list_databases`
+- `get_schema`
 - `query`
 - `full_text_search`
 - `sample_records`
 - `vector_search`
 - `hybrid_search`
+- `upsert_entity`
+- `upsert_relationship`
 
 Only tools actually registered by the running server are advertised. This lets retrieval tools
 join the profile as they are installed without exposing an unavailable tool.
@@ -60,9 +64,11 @@ The `admin` profile contains:
 - `get_server_settings`
 - `set_server_setting`
 
-Schema resources remain available through the MCP Resources capability and are not tool-profile
-entries. Existing read, write, schema, administrative, user, and origin permissions remain
-independent mandatory checks; a profile never grants an operation.
+Schema resources remain available through the MCP Resources capability, while `get_schema`
+supports clients that expose only tools. Existing read, write, schema, administrative, user,
+and origin permissions remain independent mandatory checks; a profile never grants an
+operation. In particular, the two upsert tools remain unusable unless their existing write
+permissions are enabled.
 
 ## Transport behavior
 
@@ -75,3 +81,11 @@ Changing a profile through the configuration endpoint takes effect on subsequent
 Tests cover default compatibility, persistence, case-insensitive parsing, invalid-update
 atomicity, HTTP and standard input/output discovery filtering, execution denial for hidden
 tools, and successful execution of allowed tools.
+
+## Out of scope
+
+The profile setting remains server-global in this implementation. It cannot yet present a
+retrieval agent and an administrative agent with different tool lists when they share one MCP
+endpoint, so it does not by itself satisfy the per-agent part of #4859. Per-principal profile
+selection and enforcement is tracked in
+[#5445](https://github.com/ArcadeData/arcadedb/issues/5445).

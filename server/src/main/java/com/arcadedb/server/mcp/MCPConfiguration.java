@@ -20,6 +20,7 @@ package com.arcadedb.server.mcp;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
@@ -272,19 +273,19 @@ public class MCPConfiguration {
         : toolProfile;
 
     if (json.has("enabled"))
-      enabled = json.getBoolean("enabled");
+      enabled = booleanValue(json, "enabled");
     if (json.has("allowReads"))
-      allowReads = json.getBoolean("allowReads");
+      allowReads = booleanValue(json, "allowReads");
     if (json.has("allowInsert"))
-      allowInsert = json.getBoolean("allowInsert");
+      allowInsert = booleanValue(json, "allowInsert");
     if (json.has("allowUpdate"))
-      allowUpdate = json.getBoolean("allowUpdate");
+      allowUpdate = booleanValue(json, "allowUpdate");
     if (json.has("allowDelete"))
-      allowDelete = json.getBoolean("allowDelete");
+      allowDelete = booleanValue(json, "allowDelete");
     if (json.has("allowSchemaChange"))
-      allowSchemaChange = json.getBoolean("allowSchemaChange");
+      allowSchemaChange = booleanValue(json, "allowSchemaChange");
     if (json.has("allowAdmin"))
-      allowAdmin = json.getBoolean("allowAdmin");
+      allowAdmin = booleanValue(json, "allowAdmin");
     toolProfile = updatedProfile;
     if (json.has("allowedUsers")) {
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
@@ -308,5 +309,12 @@ public class MCPConfiguration {
 
   private File getConfigFile() {
     return Paths.get(rootPath, "config", "mcp-config.json").toFile();
+  }
+
+  private static boolean booleanValue(final JSONObject json, final String name) {
+    final Object value = json.opt(name);
+    if (value instanceof Boolean bool)
+      return bool;
+    throw new JSONException("MCP configuration field '" + name + "' must be a boolean");
   }
 }

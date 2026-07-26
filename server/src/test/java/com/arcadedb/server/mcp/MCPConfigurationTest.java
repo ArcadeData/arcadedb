@@ -173,6 +173,18 @@ class MCPConfigurationTest {
   }
 
   @Test
+  void invalidBooleanTypeIsRejected() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.load();
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject().put("enabled", "yes")))
+        .isInstanceOf(com.arcadedb.serializer.json.JSONException.class)
+        .hasMessageContaining("enabled").hasMessageContaining("boolean");
+
+    assertThat(config.isEnabled()).isFalse();
+  }
+
+  @Test
   void profileNamesAreCaseInsensitive() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
 

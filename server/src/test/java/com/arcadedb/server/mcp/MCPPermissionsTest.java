@@ -187,7 +187,11 @@ class MCPPermissionsTest {
     assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ALL, "execute_command")).isTrue();
 
     assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "full_text_search")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "list_databases")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "get_schema")).isTrue();
     assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "query")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "upsert_entity")).isTrue();
+    assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "upsert_relationship")).isTrue();
     assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, "execute_command")).isFalse();
 
     assertThat(MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ADMIN, "execute_command")).isTrue();

@@ -64,18 +64,24 @@ public class MCPDispatcher {
 
   private static final String RAG_INSTRUCTIONS =
       """
-      You are connected to an ArcadeDB multi-model database server for retrieval. Follow these rules:
-      1. Read the arcadedb://{database}/schema Resource before searching an unfamiliar database.
-      2. Use query for custom read-only SQL or Cypher retrieval.
-      3. Prefer the dedicated vector, hybrid, full-text, or sampling tools shown by tools/list when they match the task.
-      4. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.""";
+      You are connected to an ArcadeDB multi-model database server for retrieval and agent memory. Follow these rules:
+      1. Call list_databases when you do not know the target database name.
+      2. Call get_schema before searching an unfamiliar database. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead.
+      3. Use query for custom read-only SQL or Cypher retrieval.
+      4. Prefer the dedicated vector, hybrid, full-text, or sampling tools shown by tools/list when they match the task.
+      5. Use upsert_entity and upsert_relationship to maintain agent memory when the corresponding write permissions are enabled.
+      6. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.""";
 
   private static final Set<String> RAG_TOOL_NAMES = Set.of(
+      "list_databases",
+      "get_schema",
       "query",
       "sample_records",
       "vector_search",
       "hybrid_search",
-      "full_text_search");
+      "full_text_search",
+      "upsert_entity",
+      "upsert_relationship");
 
   private static final Set<String> ADMIN_TOOL_NAMES = Set.of(
       "list_databases",
@@ -304,9 +310,6 @@ public class MCPDispatcher {
   }
 
   private static JSONArray toolsForProfile(final MCPConfiguration.ToolProfile profile) {
-    if (profile == MCPConfiguration.ToolProfile.ALL)
-      return TOOLS_LIST;
-
     final JSONArray filtered = new JSONArray();
     for (int i = 0; i < TOOLS_LIST.length(); i++) {
       final JSONObject definition = TOOLS_LIST.getJSONObject(i);
