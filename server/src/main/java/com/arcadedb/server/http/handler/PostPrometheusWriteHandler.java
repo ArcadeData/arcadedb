@@ -36,6 +36,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 import org.xerial.snappy.Snappy;
 
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
 
@@ -86,6 +87,10 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
+    // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
+    // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
+    // shard writes by the time it returns. If a later series throws, the rollback here cannot undo the
+    // series already written and the caller sees an error with part of the payload persisted.
     database.begin();
     try {
       for (final TimeSeries ts : writeRequest.getTimeSeries()) {
@@ -111,26 +116,27 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
           continue;
 
         final long[] timestamps = new long[count];
+        for (int s = 0; s < count; s++)
+          timestamps[s] = tsSamples.get(s).timestampMs();
+
+        // Fill the value grid column by column, matching its column-major layout. A TAG value comes from
+        // the series labels, which are per-series and not per-sample, so it is resolved ONCE and broadcast
+        // down the column: findLabelValue is a linear scan that re-sanitizes every label name it visits,
+        // so resolving it per sample would repeat identical work for every sample of every tag column.
         final Object[][] columnValues = new Object[columns.size() - 1][count];
 
-        for (int s = 0; s < count; s++) {
-          final Sample sample = tsSamples.get(s);
-          timestamps[s] = sample.timestampMs();
+        int colIdx = 0;
+        for (final ColumnDefinition col : columns) {
+          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+            continue;
 
-          int colIdx = 0;
-          for (int i = 0; i < columns.size(); i++) {
-            final ColumnDefinition col = columns.get(i);
-            if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-              continue;
+          if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+            Arrays.fill(columnValues[colIdx], findLabelValue(ts.getLabels(), col.getName()));
+          else
+            for (int s = 0; s < count; s++)
+              columnValues[colIdx][s] = tsSamples.get(s).value(); // the "value" field
 
-            Object value;
-            if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-              value = findLabelValue(ts.getLabels(), col.getName());
-            else
-              value = sample.value(); // the "value" field
-            columnValues[colIdx][s] = value;
-            colIdx++;
-          }
+          colIdx++;
         }
 
         engine.appendBatch(timestamps, columnValues);

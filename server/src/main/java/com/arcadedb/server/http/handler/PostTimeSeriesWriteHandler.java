@@ -182,6 +182,11 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
     }
 
     int inserted = 0;
+    // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
+    // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
+    // shard writes by the time it returns. If a later measurement throws, the rollback here cannot undo
+    // the measurements already written - the same partial-write shape the 400 response below reports,
+    // now at measurement rather than sample granularity.
     database.begin();
     try {
       for (final MeasurementBatch batch : byMeasurement.values()) {
