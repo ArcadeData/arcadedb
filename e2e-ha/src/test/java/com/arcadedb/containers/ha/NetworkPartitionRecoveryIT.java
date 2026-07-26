@@ -52,32 +52,6 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
-  private int findLeaderIndex(final List<ServerWrapper> servers) {
-    for (int i = 0; i < servers.size(); i++) {
-      try {
-        final URL url = URI.create(
-            "http://" + servers.get(i).host() + ":" + servers.get(i).httpPort() + "/api/v1/cluster").toURL();
-        final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestProperty("Authorization",
-            "Basic " + Base64.getEncoder().encodeToString("root:playwithdata".getBytes()));
-        conn.setConnectTimeout(3000);
-        conn.setReadTimeout(3000);
-        try {
-          if (conn.getResponseCode() == 200) {
-            final String body = new String(conn.getInputStream().readAllBytes());
-            final JSONObject json = new JSONObject(body);
-            if (json.getBoolean("isLeader"))
-              return i;
-          }
-        } finally {
-          conn.disconnect();
-        }
-      } catch (final Exception e) {
-        logger.warn("Failed to check leader status on node {}: {}", i, e.getMessage());
-      }
-    }
-    return -1;
-  }
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
