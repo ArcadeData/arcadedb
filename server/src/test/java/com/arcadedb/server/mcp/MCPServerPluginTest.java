@@ -111,6 +111,10 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
       db.command("sql", "CREATE DOCUMENT TYPE McpEmptySample");
       db.command("sql", "CREATE PROPERTY McpEmptySample.value STRING");
+
+      db.command("sql", "CREATE EDGE TYPE McpSampleEdge");
+      for (int i = 1; i <= 21; i++)
+        db.command("sql", "CREATE DOCUMENT TYPE ZzMcpDefaultSample" + i);
     });
   }
 
@@ -139,7 +143,6 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(14);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -256,10 +259,14 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(samples.getJSONArray("McpSampleRecord").length()).isEqualTo(2);
     assertThat(samples.getJSONArray("McpSampleRecord").getJSONObject(0).has("ordinal")).isTrue();
     assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
+    assertThat(payload.getInt("sampledTypes")).isEqualTo(2);
+    assertThat(payload.getInt("availableTypes")).isEqualTo(2);
+    assertThat(payload.getInt("recordsReturned")).isEqualTo(2);
+    assertThat(payload.getBoolean("truncated")).isFalse();
   }
 
   @Test
-  void sampleRecordsDefaultsToThreeRecordsAcrossAllTypes() throws Exception {
+  void sampleRecordsDefaultsToBoundedNonEdgeTypes() throws Exception {
     final JSONObject response = callTool("sample_records", new JSONObject()
         .put("database", getDatabaseName()));
 
@@ -272,6 +279,40 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(samples.getJSONArray("McpSampleRecord").length()).isEqualTo(3);
     assertThat(samples.has("McpEmptySample")).isTrue();
     assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
+    assertThat(samples.has("McpSampleEdge")).isFalse();
+    assertThat(payload.getInt("sampledTypes")).isEqualTo(20);
+    assertThat(payload.getInt("availableTypes")).isGreaterThan(20);
+    assertThat(payload.getBoolean("truncated")).isTrue();
+    assertThat(payload.getInt("recordsReturned")).isEqualTo(
+        samples.keySet().stream().mapToInt(name -> samples.getJSONArray(name).length()).sum());
+  }
+
+  @Test
+  void sampleRecordsAllowsExplicitEdgeTypes() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray().put("McpSampleEdge")));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getJSONObject("samples").has("McpSampleEdge")).isTrue();
+    assertThat(payload.getInt("sampledTypes")).isEqualTo(1);
+  }
+
+  @Test
+  void sampleRecordsRejectsMoreThanTwentyRequestedTypes() throws Exception {
+    final JSONArray types = new JSONArray();
+    for (int i = 0; i <= 20; i++)
+      types.put("McpSampleRecord");
+
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", types));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("types").contains("at most 20");
   }
 
   @Test

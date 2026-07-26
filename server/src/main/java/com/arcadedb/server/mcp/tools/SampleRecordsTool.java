@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -40,12 +41,15 @@ import java.util.List;
 public class SampleRecordsTool {
   private static final int DEFAULT_LIMIT = 3;
   private static final int MAX_LIMIT     = 20;
+  private static final int MAX_TYPES     = 20;
 
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "sample_records")
         .put("description",
-            "Return a small sample of records from selected database types so an agent can inspect actual value shapes.")
+            "Return the first records in storage order from at most 20 selected database types so an agent can inspect "
+                + "actual value shapes. This is not a random or representative sample. When types is omitted, edge types "
+                + "are excluded and truncated reports whether more eligible types existed.")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
             .put("properties", new JSONObject()
@@ -55,7 +59,10 @@ public class SampleRecordsTool {
                 .put("types", new JSONObject()
                     .put("type", "array")
                     .put("items", new JSONObject().put("type", "string"))
-                    .put("description", "Type names to sample; omit to sample every type"))
+                    .put("maxItems", MAX_TYPES)
+                    .put("description",
+                        "Type names to sample, including edge types when explicitly requested; omit to sample up to "
+                            + MAX_TYPES + " vertex and document types"))
                 .put("limit", new JSONObject()
                     .put("type", "integer")
                     .put("minimum", 1)
@@ -76,7 +83,7 @@ public class SampleRecordsTool {
       throw new IllegalArgumentException("'limit' must be between 1 and " + MAX_LIMIT);
 
     final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
-    final List<String> typeNames = resolveTypeNames(database, databaseName, args);
+    final ResolvedTypes resolvedTypes = resolveTypeNames(database, databaseName, args);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
@@ -84,20 +91,37 @@ public class SampleRecordsTool {
         .setUseCollectionSizeForEdges(false);
 
     final JSONObject samples = new JSONObject();
-    for (final String typeName : typeNames)
-      samples.put(typeName, sampleType(database, typeName, limit, serializer));
+    int recordsReturned = 0;
+    for (final String typeName : resolvedTypes.names()) {
+      final JSONArray records = sampleType(database, typeName, limit, serializer);
+      samples.put(typeName, records);
+      recordsReturned += records.length();
+    }
 
-    return new JSONObject().put("samples", samples);
+    return new JSONObject()
+        .put("samples", samples)
+        .put("sampledTypes", samples.length())
+        .put("availableTypes", resolvedTypes.availableTypeCount())
+        .put("recordsReturned", recordsReturned)
+        .put("truncated", resolvedTypes.truncated());
   }
 
-  private static List<String> resolveTypeNames(final Database database, final String databaseName,
+  private static ResolvedTypes resolveTypeNames(final Database database, final String databaseName,
       final JSONObject args) {
     final JSONArray requestedTypes = args.getJSONArray("types", null);
-    if (requestedTypes == null)
-      return database.getSchema().getTypes().stream()
+    if (requestedTypes == null) {
+      final List<String> eligibleTypes = database.getSchema().getTypes().stream()
+          .filter(type -> !(type instanceof EdgeType))
           .map(DocumentType::getName)
           .sorted()
           .toList();
+      return new ResolvedTypes(
+          eligibleTypes.stream().limit(MAX_TYPES).toList(),
+          eligibleTypes.size(),
+          eligibleTypes.size() > MAX_TYPES);
+    }
+    if (requestedTypes.length() > MAX_TYPES)
+      throw new IllegalArgumentException("'types' must contain at most " + MAX_TYPES + " entries");
 
     final LinkedHashSet<String> typeNames = new LinkedHashSet<>();
     for (int i = 0; i < requestedTypes.length(); i++) {
@@ -109,7 +133,8 @@ public class SampleRecordsTool {
             "Type '" + typeName + "' does not exist in database '" + databaseName + "'");
       typeNames.add(typeName);
     }
-    return new ArrayList<>(typeNames);
+    final List<String> names = new ArrayList<>(typeNames);
+    return new ResolvedTypes(names, names.size(), false);
   }
 
   private static JSONArray sampleType(final Database database, final String typeName, final int limit,
@@ -119,6 +144,8 @@ public class SampleRecordsTool {
     if (!analyzed.isIdempotent())
       throw new SecurityException("Generated sample query is not read-only");
 
+    // Reuse the already-parsed statement when possible (SQL). For other engines analyzed.execute()
+    // returns null and the query is re-parsed by database.query().
     final JSONArray records = new JSONArray();
     final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
     try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.query("sql", query)) {
@@ -126,5 +153,8 @@ public class SampleRecordsTool {
         records.put(serializer.serializeResult(database, resultSet.next()));
     }
     return records;
+  }
+
+  private record ResolvedTypes(List<String> names, int availableTypeCount, boolean truncated) {
   }
 }

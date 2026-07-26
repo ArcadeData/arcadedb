@@ -292,7 +292,8 @@ public class MCPDispatcher {
       case "list_databases" -> result.getJSONArray("databases", new JSONArray()).length() + " database(s)";
       case "get_schema" -> result.getJSONArray("types", new JSONArray()).length() + " type(s)";
       case "query", "execute_command" -> result.getInt("count", 0) + " record(s)";
-      case "sample_records" -> result.getJSONObject("samples", new JSONObject()).length() + " type(s)";
+      case "sample_records" -> result.getInt("recordsReturned", 0) + " record(s) across "
+          + result.getInt("sampledTypes", 0) + " type(s)";
       case "full_text_search" -> result.getInt("count", 0) + " hit(s)";
       case "upsert_entity", "upsert_relationship" -> result.getInt("count", 0) + " record(s)";
       case "server_status" -> "ok";
