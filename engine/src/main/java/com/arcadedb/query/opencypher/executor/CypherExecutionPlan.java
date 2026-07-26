@@ -1675,7 +1675,11 @@ public class CypherExecutionPlan {
           String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
               ("  tgt" + anonymousVarCounter++);
 
-          // When reversed, swap source/target variables and use the original source as target
+          // When reversed, swap source/target variables and use the original source as target.
+          // This mapping only holds for a single-relationship pattern: the written source is the
+          // end of the one reversed hop. Both entry points into `reversed` enforce that (the
+          // bound-target reversal below and shouldReverseVariableLengthPathFromIndexedAnchor);
+          // reversing a longer pattern requires rebuilding the whole pattern back to front.
           final String effectiveSourceVar;
           final String effectiveTargetVar;
           final NodePattern effectiveTargetNode;
@@ -1794,6 +1798,17 @@ public class CypherExecutionPlan {
    * The physical operators do not yet implement variable-length expansion, but their cost-based
    * anchor selection is still useful to the traditional executor. Limit this bridge to a single
    * relationship whose indexed target can be reached through stored incoming adjacency.
+   * <p>
+   * Two of the conditions below are load-bearing rather than merely conservative:
+   * <ul>
+   *   <li>a single relationship, because the reversal in {@code buildMatchStep} maps the one hop
+   *   back onto the written source node and cannot express a longer reversed pattern;</li>
+   *   <li>a single-property index, because {@code NodeIndexSeek} and {@link IndexSeekStep} seek
+   *   with a one-element key, which a composite index rejects.</li>
+   * </ul>
+   * The remaining conditions bound the shapes this bridge has been proven against; see issue #5358
+   * for the tracked relaxations and for the native variable-length expansion operator that makes
+   * this bridge unnecessary.
    */
   private boolean shouldReverseVariableLengthPathFromIndexedAnchor(final MatchClause matchClause,
       final PathPattern pathPattern) {
