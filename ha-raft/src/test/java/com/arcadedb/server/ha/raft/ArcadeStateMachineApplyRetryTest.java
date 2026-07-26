@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -145,6 +146,26 @@ class ArcadeStateMachineApplyRetryTest {
       throw boom;
     })).isSameAs(boom);
     assertThat(calls.get()).isEqualTo(1);
+  }
+
+  @Test
+  void doesNotRetryNotTheLeaderError() {
+    // Regression guard for issue #4743: an apply that tries to WRITE the schema throws
+    // ServerIsNotTheLeaderException on a replica. That is deterministic - every retry re-runs the same
+    // illegal write - yet the old code caught it as a generic NeedRetryException, burned every attempt
+    // and only then escalated, filling the log with "Retryable error ..." lines that pointed nowhere.
+    // It must be handled on the first attempt, and reported as a resync condition for that database.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final AtomicInteger calls = new AtomicInteger();
+    assertThatThrownBy(() -> sm.applyWithRetry(20L, "db", () -> {
+      calls.incrementAndGet();
+      throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server", "");
+    }))
+        .isInstanceOf(ReplicationException.class)
+        .hasCauseInstanceOf(ServerIsNotTheLeaderException.class);
+    assertThat(calls.get()).as("a deterministic error must not be retried").isEqualTo(1);
+    assertThat(sm.isDatabaseDiverged("db")).isTrue();
+    assertThat(sm.isHaltedAfterCriticalError()).isFalse();
   }
 
   @Test

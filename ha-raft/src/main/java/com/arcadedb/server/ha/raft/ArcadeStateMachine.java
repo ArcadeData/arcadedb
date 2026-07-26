@@ -28,6 +28,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
@@ -712,11 +713,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
       try {
         applyAction.run();
         return;
-        // Catch the whole NeedRetryException hierarchy on purpose: on the follower apply path the only
-        // subclass actually reachable is the engine's MVCC ConcurrentModificationException (page-version
-        // race), which a retry can win. The network subclasses (ServerIsNotTheLeader, QuorumNotReached,
-        // ReplicationQueueFull) are leader/client-side and never thrown while applying WAL pages locally,
-        // so the broad type costs nothing here and stays forward-compatible with future retryable errors.
+        // Catch the whole NeedRetryException hierarchy on purpose: the subclass normally reachable here
+        // is the engine's MVCC ConcurrentModificationException (page-version race), which a retry can
+        // win, and the broad type stays forward-compatible with future retryable errors.
+        //
+        // ServerIsNotTheLeaderException is the one exception (issue #4743): it means the apply tried to
+        // WRITE the schema, which this node is not allowed to do while replaying someone else's entry.
+        // That is deterministic - retrying re-runs the identical illegal write - so the old bounded
+        // retry burned four attempts and then escalated a healthy database to a full snapshot resync
+        // over a condition a resync cannot fix. Report it as a plain apply failure so the per-database
+        // quarantine below decides, once, with the real error in the log.
+      } catch (final ServerIsNotTheLeaderException e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Raft apply at index %d attempted a schema write, which is only legal on the leader. This is deterministic, "
+                + "so it is NOT retried: %s",
+            index, e.getMessage());
+        handleUnexpectedApplyError(index, databaseName, e);
       } catch (final NeedRetryException e) {
         lastRetry = e;
         LogManager.instance().log(this, Level.WARNING,
@@ -745,50 +757,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // recoverable resync condition - leaving them uncaught lets them propagate unchanged to
         // applyTransaction's fatal halt path so the node stops loudly rather than masking a corrupt
         // runtime.
-        //
-        // Per-database quarantine (issue #4797): a single ArcadeStateMachine multiplexes every
-        // database on the node, so tripping the node-wide critical halt for one entry would freeze
-        // the apply pipeline for ALL co-located databases. When the failing entry targets a single
-        // database (databaseName non-null and non-empty) the failure is isolable: quarantine that
-        // database (mark it diverged and trigger a targeted snapshot resync) and report the error as
-        // a recoverable ReplicationException instead of the fatal catch (Throwable) path that would
-        // halt the server. The node stays up, healthy databases keep replicating, and only the
-        // affected database is reinstalled from the leader. This subsumes the earlier issue #4740
-        // behaviour (an unexpected error on an already-diverged database is a resync condition): the
-        // only change is that the FIRST unexpected error on a healthy database now quarantines it
-        // rather than halting the node.
-        //
-        // Entries with no single target database (databaseName null or empty, e.g. a
-        // SECURITY_USERS_ENTRY) are NOT isolable to one database's state, so their failure still
-        // propagates to the node-wide fatal halt.
-        if (databaseName != null && !databaseName.isEmpty()) {
-          // Mark the database diverged on the first error so subsequent errors for it route here too.
-          // add() returns true only the first time, which is when we kick off the targeted resync.
-          if (divergedDatabases.add(databaseName)) {
-            LogManager.instance().log(this, Level.SEVERE,
-                "Unexpected error applying Raft entry for database '%s' at index %d; quarantining the database and "
-                    + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
-                databaseName, index, t.getMessage());
-            triggerDatabaseResync(databaseName);
-          } else {
-            LogManager.instance().log(this, Level.SEVERE,
-                "Unexpected error at index %d while database '%s' is quarantined (snapshot resync in progress); "
-                    + "treating as resync condition: %s",
-                index, databaseName, t.getMessage());
-          }
-          // Bounded escalation: a node that can never resync (no stable leader) must not swallow
-          // errors forever and degrade silently. Once the swallow count exceeds the threshold, let
-          // the error propagate to the fatal halt path so a truly stuck node surfaces loudly.
-          if (divergedSwallowedErrors.incrementAndGet() > MAX_DIVERGED_SWALLOWED_ERRORS) {
-            LogManager.instance().log(this, Level.SEVERE,
-                "Quarantined database '%s' swallowed over %d unexpected errors without resyncing (index %d); escalating to fatal halt: %s",
-                databaseName, MAX_DIVERGED_SWALLOWED_ERRORS, index, t.getMessage());
-            throw t;
-          }
-          throw new ReplicationException(
-              "Apply error on database '" + databaseName + "' at index " + index + "; per-database snapshot resync in progress", t);
-        }
-        throw t;
+        handleUnexpectedApplyError(index, databaseName, t);
       }
     }
 
@@ -797,6 +766,55 @@ public class ArcadeStateMachine extends BaseStateMachine {
     throw new ReplicationException(
         "Retryable error persisted at index " + index + " after " + (maxRetries + 1)
             + " attempts; escalating to snapshot resync", lastRetry);
+  }
+
+  /**
+   * Terminal handling for an apply error that no retry can fix. Always throws.
+   * <p>
+   * Per-database quarantine (issue #4797): a single {@link ArcadeStateMachine} multiplexes every
+   * database on the node, so tripping the node-wide critical halt for one entry would freeze the apply
+   * pipeline for ALL co-located databases. When the failing entry targets a single database
+   * ({@code databaseName} non-null and non-empty) the failure is isolable: quarantine that database
+   * (mark it diverged and trigger a targeted snapshot resync) and report the error as a recoverable
+   * {@link ReplicationException} instead of the fatal {@code catch (Throwable)} path that would halt
+   * the server. The node stays up, healthy databases keep replicating, and only the affected database
+   * is reinstalled from the leader. This subsumes the earlier issue #4740 behaviour (an unexpected
+   * error on an already-diverged database is a resync condition): the only change is that the FIRST
+   * unexpected error on a healthy database now quarantines it rather than halting the node.
+   * <p>
+   * Entries with no single target database ({@code databaseName} null or empty, e.g. a
+   * {@code SECURITY_USERS_ENTRY}) are NOT isolable to one database's state, so their failure still
+   * propagates to the node-wide fatal halt.
+   */
+  private void handleUnexpectedApplyError(final long index, final String databaseName, final RuntimeException t) {
+    if (databaseName != null && !databaseName.isEmpty()) {
+      // Mark the database diverged on the first error so subsequent errors for it route here too.
+      // add() returns true only the first time, which is when we kick off the targeted resync.
+      if (divergedDatabases.add(databaseName)) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Unexpected error applying Raft entry for database '%s' at index %d; quarantining the database and "
+                + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
+            databaseName, index, t.getMessage());
+        triggerDatabaseResync(databaseName);
+      } else {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Unexpected error at index %d while database '%s' is quarantined (snapshot resync in progress); "
+                + "treating as resync condition: %s",
+            index, databaseName, t.getMessage());
+      }
+      // Bounded escalation: a node that can never resync (no stable leader) must not swallow
+      // errors forever and degrade silently. Once the swallow count exceeds the threshold, let
+      // the error propagate to the fatal halt path so a truly stuck node surfaces loudly.
+      if (divergedSwallowedErrors.incrementAndGet() > MAX_DIVERGED_SWALLOWED_ERRORS) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Quarantined database '%s' swallowed over %d unexpected errors without resyncing (index %d); escalating to fatal halt: %s",
+            databaseName, MAX_DIVERGED_SWALLOWED_ERRORS, index, t.getMessage());
+        throw t;
+      }
+      throw new ReplicationException(
+          "Apply error on database '" + databaseName + "' at index " + index + "; per-database snapshot resync in progress", t);
+    }
+    throw t;
   }
 
   /**
@@ -960,21 +978,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
         LogManager.instance().log(this, Level.FINE,
             "Leader re-notified: %s (term=%d, no term change)", leaderName, currentTerm);
       } else {
-        // A real re-election kept the same leader: the previous leader could not keep heartbeats
-        // flowing long enough, another node started an election with a higher term, and the original
-        // leader won the next round (it has the most up-to-date log). The cause is whatever stalled
-        // the leader's heartbeat: CPU/GC pause, disk stall, network blip, or appender threads busy
-        // under bulk-load replication. Confirm with the arcadedb.ha.follower.* heartbeat-lag metrics
-        // before tuning. Mitigations: raise arcadedb.ha.electionTimeoutMin/Max, reduce per-batch size,
-        // or give the node more CPU/IO headroom.
+        // A real re-election kept the same leader: the previous leader stopped being leader, another
+        // node started an election with a higher term, and the original leader won the next round (it
+        // has the most up-to-date log). Two distinct causes look identical from here, so name both
+        // (issue #4743): a heartbeat stall (CPU/GC pause, disk stall, network blip, appender threads
+        // busy under bulk-load replication), or a state-machine step-down, which is what Ratis does
+        // when a single log entry is rejected - notably an entry above arcadedb.ha.appendBufferSize.
+        // The second cause shows no resource pressure at all and repeats on a fixed cadence as the
+        // same oversized entry is retried, so blaming CPU/GC alone sends operators tuning the wrong
+        // knob. Confirm with the arcadedb.ha.follower.* heartbeat-lag metrics before tuning.
         final long sinceLast = previousElectionTime > 0 ? now - previousElectionTime : -1;
         LogManager.instance().log(this, Level.WARNING,
             """
             Leader churn: %s re-elected (term=%d, %d ms since last leader change). \
-            A heartbeat stall triggered an election; likely causes include CPU/GC pauses, disk stalls, \
-            network blips, or appender threads saturated by bulk-load replication. Check the \
-            arcadedb.ha.follower.* metrics, then raise arcadedb.ha.electionTimeoutMin/Max, reduce batch \
-            size, or add CPU/IO headroom.""",
+            Either a heartbeat stall triggered an election (CPU/GC pauses, disk stalls, network blips, or \
+            appender threads saturated by bulk-load replication - check the arcadedb.ha.follower.* metrics, \
+            then raise arcadedb.ha.electionTimeoutMin/Max, reduce batch size, or add CPU/IO headroom), or \
+            Ratis made the leader step down because it rejected a log entry - look for a preceding \
+            'exceeds the max buffer limit' / 'too large' error and raise arcadedb.ha.appendBufferSize or \
+            shrink the transaction.""",
             leaderName, currentTerm, sinceLast);
       }
     } else {
@@ -1410,6 +1432,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
         && decoded.sealedFileBlobs() != null && !decoded.sealedFileBlobs().isEmpty();
 
+    // #4743: an intermediate chunk of a split schema change (see
+    // RaftTransactionBroker.replicateSchemaInChunks) carries WAL pages only - no files, no schema JSON,
+    // no sealed blobs. The change is published by the LAST chunk, so reloading the schema here would
+    // re-instantiate every component from the still-unchanged schema.json for nothing, on the single
+    // Raft apply thread, once per chunk. Apply the pages and move on.
+    final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
+        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty())
+        && (decoded.sealedFileBlobs() == null || decoded.sealedFileBlobs().isEmpty())
+        && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
+
     try {
       if (decoded.filesToAdd() != null)
         createNewFiles(db, decoded.filesToAdd());
@@ -1418,13 +1450,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // below carries the mutable-bucket clear; installing the sealed file first guarantees a query
       // never observes "cleared mutable + stale sealed" (the data-loss window).
       applySealedBlobs(db, decoded.sealedFileBlobs());
-
-      if (decoded.filesToRemove() != null)
-        for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
-          db.getPageManager().deleteFile(db, fileEntry.getKey());
-          db.getFileManager().dropFile(fileEntry.getKey());
-          db.getSchema().getEmbedded().removeFile(fileEntry.getKey());
-        }
 
       if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
@@ -1452,10 +1477,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
             walEntries.size(), decoded.databaseName());
       }
 
+      // Retire the superseded files only AFTER the WAL (issue #4743). This used to run first, before the
+      // schema update - and the schema update re-instantiates the affected components, so an LSM index
+      // whose page 0 still named the file just deleted (the WAL that repoints it at the new compacted
+      // file is applied above, i.e. later) resolved a file id that no longer existed. The follower logged
+      // "Invalid sub-index for index '...' (error=File with id 'NNN' was not found)" over a state that was
+      // purely transient, and the old self-repair in LSMTreeIndexMutable.onAfterLoad then tried to DROP
+      // the index - a schema write a replica may not perform - which failed the apply and escalated the
+      // whole database to a snapshot resync. Retiring last closes that window: by then page 0 already
+      // names the new file.
+      if (decoded.filesToRemove() != null)
+        for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
+          db.getPageManager().deleteFile(db, fileEntry.getKey());
+          db.getFileManager().dropFile(fileEntry.getKey());
+          db.getSchema().getEmbedded().removeFile(fileEntry.getKey());
+        }
+
       // Reload schema after WAL pages are on disk so new index files have valid content
       // and are correctly registered (page counts, type links, in-memory structures).
-      // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above).
-      if (!sealedOnlyEntry)
+      // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above) and for
+      // intermediate chunks of a split schema change (see walOnlyEntry above).
+      if (!sealedOnlyEntry && !walOnlyEntry)
         db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
     } catch (final IOException e) {

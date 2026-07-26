@@ -18,12 +18,16 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Centralized broker for all Raft entry submission. Owns the {@link RaftGroupCommitter}
@@ -107,7 +111,138 @@ public class RaftTransactionBroker {
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson,
         filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs);
-    groupCommitter.submitAndWait(entry.toByteArray());
+
+    final long cap = groupCommitter.maxEntrySize();
+    if (entry.size() <= cap) {
+      groupCommitter.submitAndWait(entry.toByteArray());
+      return;
+    }
+
+    for (final ByteString chunk : splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries,
+        bucketDeltas, sealedFileBlobs, cap, entry.size()))
+      groupCommitter.submitAndWait(chunk.toByteArray());
+  }
+
+  /**
+   * Splits a schema change that does not fit one Raft entry into an ordered sequence of
+   * {@code SCHEMA_ENTRY} entries (issue #4743).
+   * <p>
+   * Splitting is required because the embedded WAL of an index compaction grows with the index: past
+   * a few hundred thousand keys the single entry exceeds {@code arcadedb.ha.appendBufferSize}, Ratis
+   * throws a {@code StateMachineException} whose {@code leaderShouldStepDown()} is true, and the
+   * leader steps down. The caller retries, topples the next leader too, and the cluster churns
+   * elections forever without the write ever landing.
+   * <p>
+   * Ordering makes every prefix of the sequence self-consistent, so a leader failure part-way through
+   * leaves no follower in a broken state (it is not atomic, but it is monotonic):
+   * <ul>
+   *   <li>the FIRST entry carries {@code filesToAdd}, so the files exist before any page lands in
+   *       them;</li>
+   *   <li>intermediate entries carry WAL only - the follower's schema still describes the
+   *       pre-change state, so the partially written new files are simply unreferenced bytes;</li>
+   *   <li>the LAST entry carries the remaining WAL plus {@code schemaJson}, {@code filesToRemove} and
+   *       the sealed blobs, which is what publishes the change.</li>
+   * </ul>
+   * Raft applies entries in index order on every node, so followers see exactly that sequence.
+   *
+   * @return the chunks, in the order they must be submitted
+   *
+   * @throws ReplicatedEntryTooLargeException when the payload cannot be split small enough
+   */
+  // @VisibleForTesting
+  static List<ByteString> splitSchemaEntry(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs, final long cap, final int singleEntrySize) {
+
+    // Worst-case non-WAL payload: the first entry carries filesToAdd, the last one the schema JSON,
+    // filesToRemove and the sealed blobs. Measured by encoding both headers with no WAL at all.
+    final int firstHeaderSize = RaftLogEntryCodec.encodeSchemaEntry(dbName, "", filesToAdd,
+        Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList()).size();
+    final int lastHeaderSize = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson, Collections.emptyMap(),
+        filesToRemove, Collections.emptyList(), Collections.emptyList(), sealedFileBlobs).size();
+    final long walBudget = cap - Math.max(firstHeaderSize, lastHeaderSize);
+
+    if (walEntries == null || walEntries.isEmpty() || walBudget <= 0)
+      // Nothing splittable: the schema JSON, the file maps or the sealed blobs alone blow the cap.
+      throw new ReplicatedEntryTooLargeException(String.format(
+          """
+          Schema change for database '%s' needs a %d bytes Raft entry, above the maximum replicated entry \
+          size of %d bytes, and cannot be split (schema JSON %d bytes, %d file(s) to add, %d file(s) to \
+          remove, %d WAL entry/entries, %d sealed blob(s)). Raise arcadedb.ha.appendBufferSize - and with it \
+          arcadedb.ha.writeBufferSize, which must stay >= appendBufferSize + 8 bytes.""",
+          dbName, singleEntrySize, cap, schemaJson != null ? schemaJson.length() : 0,
+          filesToAdd != null ? filesToAdd.size() : 0, filesToRemove != null ? filesToRemove.size() : 0,
+          walEntries != null ? walEntries.size() : 0,
+          sealedFileBlobs != null ? sealedFileBlobs.size() : 0));
+
+    // Group the WAL entries by their RAW size: the codec compresses them, so a group that fits the
+    // budget uncompressed always fits it encoded. Each group keeps its index-aligned bucket delta.
+    final List<List<byte[]>> walGroups = new ArrayList<>();
+    final List<List<Map<Integer, Integer>>> deltaGroups = new ArrayList<>();
+    List<byte[]> currentWal = new ArrayList<>();
+    List<Map<Integer, Integer>> currentDeltas = new ArrayList<>();
+    long currentBytes = 0;
+    for (int i = 0; i < walEntries.size(); i++) {
+      final byte[] wal = walEntries.get(i);
+      final Map<Integer, Integer> delta = bucketDeltas != null && i < bucketDeltas.size()
+          ? bucketDeltas.get(i)
+          : Collections.emptyMap();
+      // Per-WAL framing in the codec: uncompressed length(4) + compressed length(4) + delta count(4)
+      // + 8 bytes per delta pair.
+      final long cost = wal.length + 3L * Integer.BYTES + 2L * Integer.BYTES * delta.size();
+      if (!currentWal.isEmpty() && currentBytes + cost > walBudget) {
+        walGroups.add(currentWal);
+        deltaGroups.add(currentDeltas);
+        currentWal = new ArrayList<>();
+        currentDeltas = new ArrayList<>();
+        currentBytes = 0;
+      }
+      currentWal.add(wal);
+      currentDeltas.add(delta);
+      currentBytes += cost;
+    }
+    walGroups.add(currentWal);
+    deltaGroups.add(currentDeltas);
+
+    final int groups = walGroups.size();
+    LogManager.instance().log(RaftTransactionBroker.class, Level.INFO,
+        "Schema change for database '%s' does not fit one Raft entry (%d bytes > %d): shipping it as %d ordered entries",
+        dbName, singleEntrySize, cap, groups);
+
+    final List<ByteString> chunks = new ArrayList<>(groups);
+
+    for (int g = 0; g < groups; g++) {
+      final boolean first = g == 0;
+      final boolean last = g == groups - 1;
+      final ByteString chunk = RaftLogEntryCodec.encodeSchemaEntry(dbName,
+          last ? schemaJson : "",
+          first ? filesToAdd : Collections.emptyMap(),
+          last ? filesToRemove : Collections.emptyMap(),
+          walGroups.get(g), deltaGroups.get(g),
+          last ? sealedFileBlobs : Collections.emptyList());
+
+      if (chunk.size() > cap)
+        // A single WAL entry (or the header plus one WAL entry) still does not fit. Fail loudly rather
+        // than dispatching an entry that would topple the leader.
+        throw new ReplicatedEntryTooLargeException(String.format(
+            """
+            Schema change chunk %d/%d for database '%s' is %d bytes, above the maximum replicated entry size \
+            of %d bytes, and contains a single indivisible WAL entry. Raise arcadedb.ha.appendBufferSize - and \
+            with it arcadedb.ha.writeBufferSize, which must stay >= appendBufferSize + 8 bytes.""",
+            g + 1, groups, dbName, chunk.size(), cap));
+
+      chunks.add(chunk);
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Maximum size of a single replicated Raft entry, for producers that can split their payload.
+   */
+  long maxEntrySize() {
+    return groupCommitter.maxEntrySize();
   }
 
   /**
