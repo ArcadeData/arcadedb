@@ -1553,6 +1553,7 @@ public class CypherExecutionPlan {
         NodePattern sourceNode = pathPattern.getFirstNode();
         String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
+        final String writtenSourceVar = sourceVar;
 
         final boolean reversedFromIndexedAnchor =
             shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
@@ -1674,15 +1675,18 @@ public class CypherExecutionPlan {
           String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
               ("  tgt" + anonymousVarCounter++);
 
-          // When reversed, swap source/target variables and use the original source as target
+          // When reversed, swap source/target variables and use the original source as target.
+          // This mapping only holds for a single-relationship pattern: the written source is the
+          // end of the one reversed hop. Both entry points into `reversed` enforce that (the
+          // bound-target reversal below and shouldReverseVariableLengthPathFromIndexedAnchor);
+          // reversing a longer pattern requires rebuilding the whole pattern back to front.
           final String effectiveSourceVar;
           final String effectiveTargetVar;
           final NodePattern effectiveTargetNode;
           final Direction directionOverride;
           if (reversed) {
             effectiveSourceVar = currentSourceVar; // already swapped to bound target
-            effectiveTargetVar = pathPattern.getFirstNode().getVariable() != null ?
-                pathPattern.getFirstNode().getVariable() : targetVar;
+            effectiveTargetVar = writtenSourceVar;
             targetVar = effectiveTargetVar;
             effectiveTargetNode = pathPattern.getFirstNode(); // original source becomes target for label filtering
             directionOverride = relPattern.getDirection().reverse();
@@ -1792,8 +1796,19 @@ public class CypherExecutionPlan {
 
   /**
    * The physical operators do not yet implement variable-length expansion, but their cost-based
-   * anchor selection is still useful to the traditional executor. Limit this bridge to a single,
-   * bounded relationship whose indexed target can be reached through stored incoming adjacency.
+   * anchor selection is still useful to the traditional executor. Limit this bridge to a single
+   * relationship whose indexed target can be reached through stored incoming adjacency.
+   * <p>
+   * Two of the conditions below are load-bearing rather than merely conservative:
+   * <ul>
+   *   <li>a single relationship, because the reversal in {@code buildMatchStep} maps the one hop
+   *   back onto the written source node and cannot express a longer reversed pattern;</li>
+   *   <li>a single-property index, because {@code NodeIndexSeek} and {@link IndexSeekStep} seek
+   *   with a one-element key, which a composite index rejects.</li>
+   * </ul>
+   * The remaining conditions bound the shapes this bridge has been proven against; see issue #5358
+   * for the tracked relaxations and for the native variable-length expansion operator that makes
+   * this bridge unnecessary.
    */
   private boolean shouldReverseVariableLengthPathFromIndexedAnchor(final MatchClause matchClause,
       final PathPattern pathPattern) {
@@ -1818,13 +1833,13 @@ public class CypherExecutionPlan {
     }
 
     final RelationshipPattern relationship = pathPattern.getRelationship(0);
-    if (!relationship.isVariableLength() || relationship.getMaxHops() == null || !relationship.hasTypes()
+    if (!relationship.isVariableLength() || !relationship.hasTypes()
         || isAnyEdgeTypeUnidirectional(relationship.getTypes()))
       return false;
 
     final String sourceVariable = pathPattern.getFirstNode().getVariable();
     final String targetVariable = pathPattern.getLastNode().getVariable();
-    return sourceVariable != null && targetVariable != null && !sourceVariable.equals(targetVariable)
+    return targetVariable != null && !targetVariable.equals(sourceVariable)
         && targetVariable.equals(physicalPlan.getAnchor().getVariable());
   }
 
