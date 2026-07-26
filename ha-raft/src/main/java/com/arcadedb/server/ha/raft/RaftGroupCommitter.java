@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.proto.RaftProtos;
@@ -100,11 +101,13 @@ class RaftGroupCommitter {
   }
 
   /**
-   * @param messageSizeMax matches the Ratis {@code raft.grpc.message.size.max} cap. Entries above this
-   *                       size are rejected synchronously in {@link #submitAndWait(byte[])} with a
-   *                       clear, retryable exception, instead of being dispatched and rejected deep
-   *                       inside the Ratis {@code SlidingWindow} client (which leaves it CLOSED for
-   *                       the lifetime of the {@link RaftClient}).
+   * @param messageSizeMax maximum size of a single replicated entry: the smaller of
+   *                       {@code arcadedb.ha.grpcMessageSizeMax} and {@code arcadedb.ha.appendBufferSize}
+   *                       (see {@code RaftPropertiesBuilder.maxReplicatedEntrySize}). Entries above it are
+   *                       rejected synchronously in {@link #submitAndWait(byte[])} with a clear,
+   *                       non-retryable {@link ReplicatedEntryTooLargeException}, instead of being
+   *                       dispatched and either leaving the Ratis {@code SlidingWindow} CLOSED for the
+   *                       lifetime of the {@link RaftClient} or making the leader step down (issue #4743).
    * @param onClientClosed invoked once when {@link #flushBatch} observes that the underlying Ratis
    *                       client has entered a permanent {@code CLOSED} state. The caller is expected
    *                       to rebuild the {@link RaftClient} (and this committer) so subsequent batches
@@ -118,11 +121,13 @@ class RaftGroupCommitter {
   }
 
   /**
-   * @param messageSizeMax matches the Ratis {@code raft.grpc.message.size.max} cap. Entries above this
-   *                       size are rejected synchronously in {@link #submitAndWait(byte[])} with a
-   *                       clear, retryable exception, instead of being dispatched and rejected deep
-   *                       inside the Ratis {@code SlidingWindow} client (which leaves it CLOSED for
-   *                       the lifetime of the {@link RaftClient}).
+   * @param messageSizeMax maximum size of a single replicated entry: the smaller of
+   *                       {@code arcadedb.ha.grpcMessageSizeMax} and {@code arcadedb.ha.appendBufferSize}
+   *                       (see {@code RaftPropertiesBuilder.maxReplicatedEntrySize}). Entries above it are
+   *                       rejected synchronously in {@link #submitAndWait(byte[])} with a clear,
+   *                       non-retryable {@link ReplicatedEntryTooLargeException}, instead of being
+   *                       dispatched and either leaving the Ratis {@code SlidingWindow} CLOSED for the
+   *                       lifetime of the {@link RaftClient} or making the leader step down (issue #4743).
    * @param maxQueuedBytes total-bytes backpressure budget for pending (not-yet-dispatched) entries.
    *                       Complements {@code maxQueueSize} (an entry-count bound): since a single
    *                       entry can be up to {@code messageSizeMax}, a count-only bound would let a
@@ -152,19 +157,36 @@ class RaftGroupCommitter {
     this.flusher.start();
   }
 
+  /**
+   * Maximum size of a single replicated entry. Producers that can split their payload (index
+   * compaction replication, DDL schema entries) chunk against this value so they never hand
+   * {@link #submitAndWait(byte[])} an entry it must reject.
+   */
+  long maxEntrySize() {
+    return messageSizeMax;
+  }
+
   void submitAndWait(final byte[] entry) {
-    // Pre-check entry size against the configured gRPC message cap. If the entry is bigger than
-    // the cap, dispatching it would cause Ratis to reject the request inside the gRPC client and
-    // leave the SlidingWindow CLOSED for the lifetime of this RaftClient (every subsequent flush
-    // logs "is closed" and never lands a write). We fail fast with a clear, retryable exception so
-    // the caller can split the work into smaller batches.
+    // Pre-check the entry against the maximum size the cluster can actually replicate - the SMALLER
+    // of arcadedb.ha.grpcMessageSizeMax and arcadedb.ha.appendBufferSize (see
+    // RaftPropertiesBuilder.maxReplicatedEntrySize). Dispatching an oversized entry is far worse than
+    // a rejected request:
+    //   - above the gRPC frame cap, Ratis leaves the client SlidingWindow CLOSED for the lifetime of
+    //     this RaftClient (every subsequent flush logs "is closed" and never lands a write);
+    //   - above the appender byte limit, RaftLogBase.append throws a StateMachineException whose
+    //     leaderShouldStepDown() is true, so the LEADER STEPS DOWN. The caller retries the same
+    //     oversized entry against the next leader and topples it too: unbounded election churn while
+    //     the write never lands (issue #4743).
+    // So fail fast, non-retryably, naming the knob that actually binds.
     final int entrySize = entry.length;
     if (entrySize > messageSizeMax) {
-      throw new ReplicationQueueFullException(String.format(
+      throw new ReplicatedEntryTooLargeException(String.format(
           """
-          Replicated entry size %d bytes exceeds raft.grpc.message.size.max=%d bytes. \
-          Reduce the batch size (e.g. fewer rows per GraphBatch / SQL transaction) or raise \
-          arcadedb.ha.grpcMessageSizeMax. Bigger batches also raise leader heartbeat latency and risk \
+          Replicated entry size %d bytes exceeds the maximum replicated Raft entry size of %d bytes \
+          (the smaller of arcadedb.ha.appendBufferSize and arcadedb.ha.grpcMessageSizeMax). \
+          Reduce the batch size (e.g. fewer rows per GraphBatch / SQL transaction, or smaller records), \
+          or raise arcadedb.ha.appendBufferSize - and with it arcadedb.ha.writeBufferSize, which must stay \
+          >= appendBufferSize + 8 bytes. Bigger entries also raise leader heartbeat latency and risk \
           election churn under load.""",
           entrySize, messageSizeMax));
     }
@@ -177,9 +199,10 @@ class RaftGroupCommitter {
       if (now - last >= WARN_THROTTLE_MS && lastApproachingCapWarnAt.compareAndSet(last, now)) {
         LogManager.instance().log(this, Level.WARNING,
             """
-            Replicated entry size %d bytes is approaching raft.grpc.message.size.max=%d bytes (>%d%%). \
-            Consider reducing the batch size, or raise arcadedb.ha.grpcMessageSizeMax. \
-            Large batches also raise leader heartbeat latency and risk election churn under load.""",
+            Replicated entry size %d bytes is approaching the maximum replicated Raft entry size of %d bytes \
+            (>%d%%). Consider reducing the batch size, or raise arcadedb.ha.appendBufferSize (and \
+            arcadedb.ha.writeBufferSize with it). Large entries also raise leader heartbeat latency and risk \
+            election churn under load.""",
             entrySize, messageSizeMax, (int) (entrySize * 100L / messageSizeMax));
       }
     }

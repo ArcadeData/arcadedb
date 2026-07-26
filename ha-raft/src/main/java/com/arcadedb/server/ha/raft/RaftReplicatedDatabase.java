@@ -1522,13 +1522,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // Synthetic WAL for genuinely new paginated files (e.g. LSM index compaction output).
       // txId=-1 on followers signals forceApply to bypass version-gap checks. The TimeSeries sealed
       // store is not a paginated file, so it contributes none here - it ships as a blob instead.
-      for (final int fileId : addFiles.keySet()) {
-        final byte[] wal = serializeFilePagesAsWal(fileId);
-        if (wal != null) {
-          walEntries.add(wal);
-          bucketDeltas.add(Collections.<Integer, Integer>emptyMap());
-        }
-      }
+      // #4743: chunked against the maximum replicated entry size so a big compacted index does not
+      // produce one oversized Raft entry (which would make the leader step down, over and over).
+      final RaftTransactionBroker broker = requireRaftServer().getTransactionBroker();
+      final long walChunkBudget = Math.max(1024L, broker.maxEntrySize() / 2);
+      for (final int fileId : addFiles.keySet())
+        appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas);
 
       final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(compactionSealedBuffer.get());
 
@@ -1536,8 +1535,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         return result;
 
       final String serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
-      requireRaftServer().getTransactionBroker()
-          .replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas, sealedBlobs);
+      broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas, sealedBlobs);
 
       HALog.log(this, HALog.DETAILED,
           "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d, sealedBlobs=%d",
@@ -1653,48 +1651,83 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
   }
 
-  private byte[] serializeFilePagesAsWal(final int fileId) throws IOException {
+  /**
+   * Serializes every page of a newly created paginated file (e.g. an LSM index compaction output) as
+   * synthetic WAL, split into as many self-contained WAL transactions as needed to keep each one
+   * within {@code maxChunkBytes}.
+   * <p>
+   * Issue #4743: this used to produce ONE WAL entry covering the whole file. Because the whole file
+   * then rode a single {@code SCHEMA_ENTRY}, the Raft entry size grew with the index: a 517k-key
+   * index produced a 21.5MB entry, and Ratis rejects a single log entry above
+   * {@code arcadedb.ha.appendBufferSize} (4MB by default) with a {@code StateMachineException} that
+   * makes the LEADER STEP DOWN - so a big-enough index made compaction topple every elected leader
+   * in turn and the cluster never recovered. It also allocated the entire file on the heap at once.
+   * <p>
+   * Each chunk covers a contiguous page range and carries {@code txId=-1}, which makes followers
+   * {@code forceApply} it without a version-gap check, so the chunks are order-independent among
+   * themselves and individually idempotent on replay.
+   *
+   * @param maxChunkBytes soft cap for one chunk; always at least one page per chunk, so a single
+   *                      page bigger than the cap still ships (and is caught by the group committer's
+   *                      hard pre-check with an actionable error)
+   *
+   * @return number of chunks appended to {@code walOut}
+   */
+  private int appendFilePagesAsWal(final int fileId, final long maxChunkBytes, final List<byte[]> walOut,
+      final List<Map<Integer, Integer>> bucketDeltasOut) throws IOException {
     final PaginatedComponentFile file = (PaginatedComponentFile) proxied.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
     final int totalPages = (int) file.getTotalPages();
 
     if (totalPages == 0)
-      return null;
+      return 0;
 
     final int deltaSize = pageSize - BasePage.PAGE_HEADER_SIZE;
     // Per-page WAL record: fileId(4) + pageNum(4) + changesFrom(4) + changesTo(4) + version(4) + contentSize(4) + delta
     final int perPageWalSize = 6 * Integer.BYTES + deltaSize;
-    final int segmentSize = totalPages * perPageWalSize;
-    // Full buffer: txId(8) + timestamp(8) + pageCount(4) + segmentSize(4) + pages + segmentSize(4) + MAGIC(8)
-    final int totalSize = 2 * Long.BYTES + 2 * Integer.BYTES + segmentSize + Integer.BYTES + Long.BYTES;
+    // Per-chunk framing: txId(8) + timestamp(8) + pageCount(4) + segmentSize(4) + pages + segmentSize(4) + MAGIC(8)
+    final int chunkFramingSize = 2 * Long.BYTES + 3 * Integer.BYTES + Long.BYTES;
 
-    final ByteBuffer walBuf = ByteBuffer.allocate(totalSize);
-    walBuf.putLong(-1L); // txId=-1 → forceApply on followers
-    walBuf.putLong(System.currentTimeMillis());
-    walBuf.putInt(totalPages);
-    walBuf.putInt(segmentSize);
+    final long budget = maxChunkBytes - chunkFramingSize;
+    final int pagesPerChunk = budget >= perPageWalSize ? (int) Math.min(totalPages, budget / perPageWalSize) : 1;
 
     final ByteBuffer pageBuf = ByteBuffer.allocate(pageSize);
-    for (int pageNum = 0; pageNum < totalPages; pageNum++) {
-      file.readPage(pageNum, pageBuf);
+    int chunks = 0;
+    for (int firstPage = 0; firstPage < totalPages; firstPage += pagesPerChunk) {
+      final int pagesInChunk = Math.min(pagesPerChunk, totalPages - firstPage);
+      final int segmentSize = pagesInChunk * perPageWalSize;
 
-      final int version = pageBuf.getInt(0);                 // PAGE_VERSION_OFFSET
-      final int rawContentSize = pageBuf.getInt(Integer.BYTES); // PAGE_CONTENTSIZE_OFFSET (stored as full size)
+      final ByteBuffer walBuf = ByteBuffer.allocate(chunkFramingSize + segmentSize);
+      walBuf.putLong(-1L); // txId=-1 → forceApply on followers
+      walBuf.putLong(System.currentTimeMillis());
+      walBuf.putInt(pagesInChunk);
+      walBuf.putInt(segmentSize);
 
-      walBuf.putInt(fileId);
-      walBuf.putInt(pageNum);
-      walBuf.putInt(BasePage.PAGE_HEADER_SIZE);  // changesFrom = 8
-      walBuf.putInt(pageSize - 1);               // changesTo
-      walBuf.putInt(version);
-      walBuf.putInt(rawContentSize - BasePage.PAGE_HEADER_SIZE); // contentSize in WAL = stored minus header
+      for (int pageNum = firstPage; pageNum < firstPage + pagesInChunk; pageNum++) {
+        file.readPage(pageNum, pageBuf);
 
-      walBuf.put(pageBuf.array(), BasePage.PAGE_HEADER_SIZE, deltaSize);
+        final int version = pageBuf.getInt(0);                 // PAGE_VERSION_OFFSET
+        final int rawContentSize = pageBuf.getInt(Integer.BYTES); // PAGE_CONTENTSIZE_OFFSET (stored as full size)
+
+        walBuf.putInt(fileId);
+        walBuf.putInt(pageNum);
+        walBuf.putInt(BasePage.PAGE_HEADER_SIZE);  // changesFrom = 8
+        walBuf.putInt(pageSize - 1);               // changesTo
+        walBuf.putInt(version);
+        walBuf.putInt(rawContentSize - BasePage.PAGE_HEADER_SIZE); // contentSize in WAL = stored minus header
+
+        walBuf.put(pageBuf.array(), BasePage.PAGE_HEADER_SIZE, deltaSize);
+      }
+
+      walBuf.putInt(segmentSize);
+      walBuf.putLong(WALFile.MAGIC_NUMBER);
+
+      walOut.add(walBuf.array());
+      bucketDeltasOut.add(Collections.emptyMap());
+      chunks++;
     }
 
-    walBuf.putInt(segmentSize);
-    walBuf.putLong(WALFile.MAGIC_NUMBER);
-
-    return walBuf.array();
+    return chunks;
   }
 
   @Override

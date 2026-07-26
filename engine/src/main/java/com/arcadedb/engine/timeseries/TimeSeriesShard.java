@@ -482,7 +482,13 @@ public class TimeSeriesShard implements AutoCloseable {
           // HA safety valve (issue #4382): if the rewritten sealed store would be too large to ship
           // inline in a single Raft entry, skip compaction entirely this cycle.
           if (db.isReplicated()) {
-            final long cap = database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE);
+            // #4743: never trust the configured cap on its own - it defaults to 48MB on the assumption
+            // that a Raft entry may be up to 64MB, but the real per-entry ceiling is
+            // min(grpcMessageSizeMax, appendBufferSize) and the latter defaults to 4MB. Shipping a blob
+            // above it makes Ratis reject the entry and the leader step down, over and over.
+            final long cap = Math.min(
+                database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE),
+                GlobalConfiguration.maxReplicatedRaftEntrySize(database.getConfiguration()));
             final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
             if (projected > cap) {
               db.rollback();
