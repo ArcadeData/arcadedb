@@ -89,6 +89,47 @@ class OpenCypherOptionalMatchTest {
     result.close();
   }
 
+  /**
+   * An unbound source with a bound target is executed by following the target's incoming edges
+   * instead of scanning the source type. When the source is written anonymously, the reversed hop
+   * must bind its result to the internal variable generated for it: binding it to the target
+   * variable instead collapsed every incoming edge of a vertex into a single row.
+   */
+  @Test
+  void optionalMatchWithAnonymousReversedSourceKeepsEveryIncomingEdge() {
+    database.transaction(() -> database.command("opencypher", """
+        MATCH (c:Person {name: 'Charlie'}), (b:Person {name: 'Bob'}) \
+        CREATE (c)-[:KNOWS]->(b)"""));
+
+    // Bob is now known by both Alice and Charlie
+    try (final ResultSet result = database.query("opencypher", """
+        MATCH (p:Person) \
+        OPTIONAL MATCH (:Person)-[:KNOWS]->(p) \
+        RETURN p.name AS person, count(*) AS rows \
+        ORDER BY person""")) {
+      final List<String> rows = new ArrayList<>();
+      while (result.hasNext()) {
+        final Result row = result.next();
+        rows.add(row.<String>getProperty("person") + "=" + row.<Long>getProperty("rows"));
+      }
+      assertThat(rows).containsExactly("Alice=1", "Bob=2", "Charlie=1");
+    }
+
+    // the named equivalent must agree, counting only the vertices that actually matched
+    try (final ResultSet result = database.query("opencypher", """
+        MATCH (p:Person) \
+        OPTIONAL MATCH (k:Person)-[:KNOWS]->(p) \
+        RETURN p.name AS person, count(k) AS known \
+        ORDER BY person""")) {
+      final List<String> rows = new ArrayList<>();
+      while (result.hasNext()) {
+        final Result row = result.next();
+        rows.add(row.<String>getProperty("person") + "=" + row.<Long>getProperty("known"));
+      }
+      assertThat(rows).containsExactly("Alice=0", "Bob=2", "Charlie=0");
+    }
+  }
+
   @Test
   void matchCharlieAlone() {
     // First test that basic MATCH with property filter works
