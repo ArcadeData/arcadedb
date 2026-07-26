@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -199,9 +200,20 @@ class MaxScorePruningTest extends TestHelper {
   }
 
   /**
-   * Wall-clock and decoded-block cost of one learned-sparse query, on the same corpus shape as the
-   * regression tests but big enough for the numbers to mean something. Reproduces the measurement
-   * quoted on issue #5388; run with {@code -Dgroups=benchmark}.
+   * Wall-clock, decoded-block and copied-byte cost of one learned-sparse query, on the same corpus
+   * shape as the regression tests but big enough for the numbers to mean something. Reproduces the
+   * measurement quoted on issue #5388; run with {@code -Dgroups=benchmark}.
+   * <p>
+   * Measured on an M-series laptop, 200k documents, 48 flat-weight terms, top-10, paired arms in one
+   * JVM (400 reps each, first 20% discarded) before and after the block-payload copy was bounded to
+   * the block instead of the rest of the page:
+   * <pre>
+   * INT8 (production default)  7.27 ms -> 6.48 ms median (-10.8%), 33,479 -> 421 bytes/block (79x)
+   * FP32                       7.22 ms -> 6.41 ms median (-11.2%), 33,320 -> 803 bytes/block (42x)
+   * </pre>
+   * Blocks decoded were identical in both arms (1538 of 3007), so the delta is copy cost alone. That
+   * matches the 10.6% of query CPU the reporter's async-profiler run attributed to
+   * {@code jbyte_disjoint_arraycopy}.
    */
   @Tag("benchmark")
   @Test
@@ -210,7 +222,11 @@ class MaxScorePruningTest extends TestHelper {
     final Map<RID, Map<Integer, Float>> corpus = buildCorpus(docs);
 
     final List<PaginatedSegmentReader> readers = new ArrayList<>();
-    inTx(() -> readers.add(buildSegment("seg-5388-bench", 1L, corpus)));
+    inTx(() -> {
+      readers.add(buildSegment("seg-5388-bench-int8", 1L, corpus,
+          SegmentParameters.builder().weightQuantization(WeightQuantization.INT8).build()));
+      readers.add(buildSegment("seg-5388-bench-fp32", 2L, corpus, EXACT_PARAMS));
+    });
 
     final int[] queryDims = new int[DIMS];
     final float[] queryWeights = new float[DIMS];
@@ -219,15 +235,26 @@ class MaxScorePruningTest extends TestHelper {
       queryWeights[d] = 1.0f;
     }
 
-    inTx(() -> {
-      final PaginatedSegmentReader reader = readers.getFirst();
+    for (int r = 0; r < readers.size(); r++) {
+      final String label = r == 0 ? "INT8 (production default)" : "FP32";
+      final PaginatedSegmentReader reader = readers.get(r);
+      inTx(() -> benchmarkQuery(reader, label, docs, queryDims, queryWeights));
+    }
+  }
+
+  private void benchmarkQuery(final PaginatedSegmentReader reader, final String label, final int docs, final int[] queryDims,
+      final float[] queryWeights) {
+    try {
       long totalBlocks = 0;
       for (int i = 0; i < DIMS; i++)
         totalBlocks += reader.openCursor(queryDims[i]).metadata().blockCount();
 
-      double bestMs = Double.MAX_VALUE;
+      final int reps = 400;
+      final double[] samples = new double[reps];
       long decoded = 0;
-      for (int rep = 0; rep < 25; rep++) {
+      long payloadBytes = 0;
+
+      for (int rep = 0; rep < reps; rep++) {
         final PaginatedSegmentDimCursor[] sources = new PaginatedSegmentDimCursor[DIMS];
         final DimCursor[] cursors = new DimCursor[DIMS];
         for (int i = 0; i < DIMS; i++) {
@@ -236,19 +263,27 @@ class MaxScorePruningTest extends TestHelper {
         }
         final long start = System.nanoTime();
         BmwScorer.topK(queryDims, queryWeights, cursors, K);
-        final double ms = (System.nanoTime() - start) / 1_000_000.0;
-        if (ms < bestMs) {
-          bestMs = ms;
-          decoded = 0;
-          for (final PaginatedSegmentDimCursor c : sources)
-            decoded += c.decodedBlockCount();
+        samples[rep] = (System.nanoTime() - start) / 1_000_000.0;
+        decoded = 0;
+        payloadBytes = 0;
+        for (final PaginatedSegmentDimCursor c : sources) {
+          decoded += c.decodedBlockCount();
+          payloadBytes += c.decodedPayloadBytes();
         }
         for (final DimCursor c : cursors)
           c.close();
       }
-      System.out.printf("%ndocs=%,d dims=%d k=%d -> %.2f ms/query, %d of %d blocks decoded%n",
-          docs, DIMS, K, bestMs, decoded, totalBlocks);
-    });
+
+      // Discard the first 20% as warm-up before taking the statistics.
+      final double[] tail = Arrays.copyOfRange(samples, reps / 5, reps);
+      Arrays.sort(tail);
+      System.out.printf("%n%s: docs=%,d dims=%d k=%d reps=%d (measured %d)%n", label, docs, DIMS, K, reps, tail.length);
+      System.out.printf("  median %.2f ms  min %.2f ms  p90 %.2f ms | %d of %d blocks decoded, %,d bytes copied (%,d/block)%n",
+          tail[tail.length / 2], tail[0], tail[(int) (tail.length * 0.9)], decoded, totalBlocks, payloadBytes,
+          decoded == 0 ? 0 : payloadBytes / decoded);
+    } catch (final IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   private void assertTopKMatchesBruteForce(final List<RidScore> got, final int[] queryDims, final float[] queryWeights,
@@ -333,13 +368,18 @@ class MaxScorePruningTest extends TestHelper {
 
   private PaginatedSegmentReader buildSegment(final String name, final long segmentId,
       final Map<RID, Map<Integer, Float>> docs) throws IOException {
+    return buildSegment(name, segmentId, docs, EXACT_PARAMS);
+  }
+
+  private PaginatedSegmentReader buildSegment(final String name, final long segmentId,
+      final Map<RID, Map<Integer, Float>> docs, final SegmentParameters params) throws IOException {
     final TreeMap<Integer, TreeMap<RID, Float>> byDim = new TreeMap<>();
     for (final var doc : docs.entrySet()) {
       for (final var dw : doc.getValue().entrySet())
         byDim.computeIfAbsent(dw.getKey(), k -> new TreeMap<>()).put(doc.getKey(), dw.getValue());
     }
     final SparseSegmentComponent c = newComponent(name);
-    try (final SparseSegmentBuilder b = new SparseSegmentBuilder(c, EXACT_PARAMS)) {
+    try (final SparseSegmentBuilder b = new SparseSegmentBuilder(c, params)) {
       b.setSegmentId(segmentId);
       for (final var dim : byDim.entrySet()) {
         b.startDim(dim.getKey());

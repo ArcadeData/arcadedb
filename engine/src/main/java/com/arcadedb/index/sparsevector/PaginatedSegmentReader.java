@@ -415,20 +415,27 @@ public final class PaginatedSegmentReader implements AutoCloseable {
    * {@code reusableView} (which must wrap {@code dest}) positioned at the first compressed RID
    * byte and limited to the bytes-read window, so the caller can decode without allocating.
    * <p>
-   * The caller knows the logical block length via the block header's posting count, so we read
-   * up to the page's content end and let the cursor stop decoding once it has the right number
-   * of postings; the limit is set conservatively to the bytes that were actually read.
+   * The block's byte length is not stored in the format, so the caller supplies
+   * {@code maxPayloadLength}: an upper bound derived from the block's posting count (see
+   * {@link SegmentFormat#maxBlockPayloadSize}) and, when the next block of the same dim sits on the
+   * same page, from the gap to it. This method reads the smaller of that bound and the bytes left on
+   * the page; the cursor stops decoding once it has the header's posting count either way. Before
+   * issue #5388 the bound did not exist and the reader copied everything from the payload to the end
+   * of the page - a ~32 KiB copy for a ~1 KiB block at the 64 KiB page default, which the reporter's
+   * CPU profile saw as ~10% of query time sitting in {@code jbyte_disjoint_arraycopy}.
    *
-   * @param dest         scratch byte array sized at {@code &gt;= component.pageContentSize()}; the
-   *                     reader fills it in place starting at offset 0
-   * @param reusableView a {@link ByteBuffer} that wraps {@code dest}; the reader rewinds it,
-   *                     applies the limit, and returns it
+   * @param maxPayloadLength upper bound on the block's payload bytes; clamped to what is left on the
+   *                         page
+   * @param dest             scratch byte array sized at {@code &gt;= component.pageContentSize()};
+   *                         the reader fills it in place starting at offset 0
+   * @param reusableView     a {@link ByteBuffer} that wraps {@code dest}; the reader rewinds it,
+   *                         applies the limit, and returns it
    */
-  ByteBuffer readBlockPayloadInto(final int pageNum, final int offsetInPage, final byte[] dest,
-      final ByteBuffer reusableView) throws IOException {
+  ByteBuffer readBlockPayloadInto(final int pageNum, final int offsetInPage, final int maxPayloadLength,
+      final byte[] dest, final ByteBuffer reusableView) throws IOException {
     final BasePage page = component.readPage(pageNum);
     final int payloadOffset = offsetInPage + SegmentFormat.BLOCK_HEADER_SIZE;
-    final int len = page.getMaxContentSize() - payloadOffset;
+    final int len = Math.min(maxPayloadLength, page.getMaxContentSize() - payloadOffset);
     reusableView.clear();
     if (len <= 0) {
       reusableView.limit(0);

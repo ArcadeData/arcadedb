@@ -98,6 +98,30 @@ public final class SegmentFormat {
     }
   }
 
+  /**
+   * Upper bound on the bytes a block payload (everything after {@link #BLOCK_HEADER_SIZE}) can
+   * occupy for {@code postingCount} postings under {@code quantization}. The first posting's RID
+   * lives in the block header, so only {@code postingCount - 1} RIDs are encoded; each of those
+   * costs at most two maximum-width VarLongs under {@link RidCompression#VARINT_DELTA}, which also
+   * bounds the fixed 12 bytes of {@link RidCompression#RAW}.
+   * <p>
+   * Used by the read path to cap how much of a page it copies out for a block: the block's true
+   * length is not stored in the format, so the reader used to copy from the payload to the end of
+   * the page. At the 64 KiB / blockSize-128 default that is a ~32 KiB copy for a ~1 KiB block, and
+   * it showed up as ~10% of query CPU in the profile attached to issue #5388.
+   */
+  public static int maxBlockPayloadSize(final int postingCount, final WeightQuantization quantization) {
+    if (postingCount <= 0)
+      return 0;
+    final int rids = (postingCount - 1) * VarInt.MAX_VARLONG_BYTES * 2;
+    final int weights = postingCount * switch (quantization) {
+      case INT8 -> 1;
+      case FP16 -> 2;
+      case FP32 -> 4;
+    };
+    return rids + weights;
+  }
+
   private SegmentFormat() {
     // utility class
   }

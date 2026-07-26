@@ -182,13 +182,11 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   }
 
   private static int estimateBlockPayloadSize(final SegmentParameters params) {
-    final int base = SegmentFormat.BLOCK_HEADER_SIZE + params.blockSize() * VarInt.MAX_VARLONG_BYTES * 2;
-    final int weightBytes = switch (params.weightQuantization()) {
-      case INT8 -> params.blockSize();
-      case FP16 -> params.blockSize() * 2;
-      case FP32 -> params.blockSize() * 4;
-    };
-    return Math.max(4096, base + weightBytes);
+    // Same worst case the read path caps its page-to-scratch copy with, so the two can never drift
+    // apart (issue #5388); the header is added back because the builder assembles both in one buffer.
+    final int base = SegmentFormat.BLOCK_HEADER_SIZE
+        + SegmentFormat.maxBlockPayloadSize(params.blockSize(), params.weightQuantization());
+    return Math.max(4096, base);
   }
 
   public void setSegmentId(final long segmentId) {
