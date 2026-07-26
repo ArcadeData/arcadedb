@@ -927,15 +927,17 @@ public enum GlobalConfiguration {
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       """
-      AppendEntries batch byte limit for replication (e.g. '4MB'). Ratis applies this limit per ENTRY as \
+      AppendEntries batch byte limit for replication (e.g. '32MB'). Ratis applies this limit per ENTRY as \
       well as per batch, so it is also the HARD MAXIMUM SIZE OF A SINGLE REPLICATED TRANSACTION - usually \
       lower than arcadedb.ha.grpcMessageSizeMax and therefore the limit that actually binds. An entry above \
       it is rejected with a state-machine error that makes the leader step down; the write then fails with \
-      ReplicatedEntryTooLargeException naming this setting. Raise it when single transactions or records \
-      are bigger than the default, and raise arcadedb.ha.writeBufferSize with it (it must stay >= this \
-      value + 8 bytes). Cost of raising it: a directly-allocated write buffer of writeBufferSize per server, \
-      plus up to this many bytes of heap per follower appender during catch-up.""",
-      String.class, "4MB"),
+      ReplicatedEntryTooLargeException naming this setting. The size compared against it is the COMPRESSED \
+      WAL of the transaction, so text/JSON payloads shrink far below their raw size while incompressible \
+      ones (binary blobs, base64, encrypted fields, float vectors) map roughly 1:1. Raise it when single \
+      transactions or records are bigger than the default, and raise arcadedb.ha.writeBufferSize with it \
+      (it must stay >= this value + 8 bytes). Cost of raising it: a directly-allocated write buffer of \
+      writeBufferSize per server, plus up to this many bytes of heap per follower appender during catch-up.""",
+      String.class, "32MB"),
 
   HA_APPEND_ELEMENT_LIMIT("arcadedb.ha.appendElementLimit", SCOPE.SERVER,
       """
@@ -949,9 +951,11 @@ public enum GlobalConfiguration {
 
   HA_WRITE_BUFFER_SIZE("arcadedb.ha.writeBufferSize", SCOPE.SERVER,
       """
-      Raft log write buffer size (e.g. '8MB'). Must be at least appendBufferSize + 8 bytes, \
-      otherwise the server fails to start with ConfigurationException.""",
-      String.class, "8MB"),
+      Raft log write buffer size (e.g. '40MB'). Must be at least appendBufferSize + 8 bytes, otherwise the \
+      server fails to start with ConfigurationException. Ratis allocates this as a DIRECT ByteBuffer, once \
+      per server, so it is off-heap memory reserved at startup - keep it just above appendBufferSize rather \
+      than generously oversized.""",
+      String.class, "40MB"),
 
   HA_LOG_PURGE_GAP("arcadedb.ha.logPurgeGap", SCOPE.SERVER,
       """
