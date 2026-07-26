@@ -51,12 +51,26 @@ class RaftPropertiesBuilderTest {
     assertThat(RaftServerConfigKeys.Log.Appender.bufferElementLimit(props)).isEqualTo(128);
   }
 
+  /**
+   * Raised from 4MB to 32MB in issue #4743: Ratis enforces this limit per ENTRY as well as per batch, so
+   * at 4MB a single legitimate record (the reporter's were 4-6.5MB) could not be replicated at all - and
+   * attempting it made the leader step down, then the retry toppled its successor.
+   */
   @Test
-  void defaultBufferByteLimitIs4MB() {
+  void defaultBufferByteLimitIs32MB() {
     final ContextConfiguration config = new ContextConfiguration();
     final RaftProperties props = RaftPropertiesBuilder.build(config);
     assertThat(RaftServerConfigKeys.Log.Appender.bufferByteLimit(props).getSizeInt())
-        .isEqualTo(4 * 1024 * 1024);
+        .isEqualTo(32 * 1024 * 1024);
+  }
+
+  @Test
+  void defaultWriteBufferSizeIs40MB() {
+    final ContextConfiguration config = new ContextConfiguration();
+    final RaftProperties props = RaftPropertiesBuilder.build(config);
+    // Coupled to appendBufferSize: Ratis requires >= appendBufferSize + 8 and preallocates it directly.
+    assertThat(RaftServerConfigKeys.Log.writeBufferSize(props).getSizeInt())
+        .isEqualTo(40 * 1024 * 1024);
   }
 
   @Test

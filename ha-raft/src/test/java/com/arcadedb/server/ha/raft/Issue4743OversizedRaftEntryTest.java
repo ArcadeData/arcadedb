@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
+import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -43,8 +45,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The cause was an oversized Raft entry, produced two ways:
  * <ul>
- *   <li>a single transaction whose WAL exceeded {@code arcadedb.ha.appendBufferSize} (4MB by default,
- *       and the reporter's records were 4-6.5MB each);</li>
+ *   <li>a single transaction whose compressed WAL exceeded {@code arcadedb.ha.appendBufferSize} - 4MB at
+ *       the time, and the reporter's records were 4-6.5MB each, which for incompressible content maps
+ *       roughly 1:1 onto the entry (a 6MB random-content record measures 6.03MB encoded). The default has
+ *       since been raised to 32MB precisely because it sat below a single legitimate record;</li>
  *   <li>index-compaction replication, which shipped the WHOLE newly compacted index as ONE synthetic
  *       WAL entry inside ONE {@code SCHEMA_ENTRY} - 21.5MB for a 517k-key index, growing without bound
  *       with the index size.</li>
@@ -64,21 +68,53 @@ class Issue4743OversizedRaftEntryTest {
   void effectiveEntrySizeIsTheSmallerOfTheTwoRatisLimits() {
     final ContextConfiguration cfg = new ContextConfiguration();
 
-    // Stock defaults: the appender byte limit (4MB) binds, NOT grpcMessageSizeMax (128MB).
-    assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(4L * 1024 * 1024);
+    // Stock defaults: the appender byte limit binds, NOT grpcMessageSizeMax (128MB).
+    assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(32L * 1024 * 1024);
 
     // Raising only the appender limit above the gRPC cap makes the gRPC cap bind again.
     cfg.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "256MB");
     assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg))
         .isEqualTo(cfg.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX));
 
-    // Raising the appender limit to a realistic bulk-load value makes THAT the effective ceiling.
-    cfg.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "32MB");
-    assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(32L * 1024 * 1024);
+    // Lowering it below the gRPC cap makes THAT the effective ceiling again.
+    cfg.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "8MB");
+    assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(8L * 1024 * 1024);
 
     // RaftPropertiesBuilder must agree: one definition, no drift between engine and ha-raft.
     assertThat(RaftPropertiesBuilder.maxReplicatedEntrySize(cfg))
         .isEqualTo(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg));
+  }
+
+  /**
+   * The default ceiling must sit above a single legitimate record, and the two coupled buffers must stay
+   * consistent. Ratis requires {@code writeBufferSize >= appendBufferSize + 8} and allocates the write
+   * buffer as a DIRECT ByteBuffer at startup, so the two defaults can only move together - a mismatch
+   * fails every HA server on boot with a ConfigurationException.
+   */
+  @Test
+  void defaultBuffersAllowARealisticRecordAndStayConsistent() {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    final long appendBuffer = FileUtils.getSizeAsNumber(cfg.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE));
+    final long writeBuffer = FileUtils.getSizeAsNumber(cfg.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
+
+    // A 6.5MB incompressible record encodes to ~6.6MB; the default must clear that with real headroom, so
+    // a single record can never again be unreplicable out of the box (issue #4743).
+    assertThat(appendBuffer).as("the default entry ceiling must be well above one large record")
+        .isGreaterThanOrEqualTo(32L * 1024 * 1024);
+    assertThat(writeBuffer).as("Ratis rejects writeBufferSize < appendBufferSize + 8 at startup")
+        .isGreaterThanOrEqualTo(appendBuffer + 8);
+    // An oversized write buffer is pure off-heap waste: it is preallocated and never grows past need.
+    assertThat(writeBuffer).as("the write buffer should track the append buffer, not dwarf it")
+        .isLessThanOrEqualTo(appendBuffer * 2);
+    // The log segment must be able to hold a maximum-size entry.
+    assertThat(FileUtils.getSizeAsNumber(cfg.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE)))
+        .as("a maximum-size entry must fit a Raft log segment").isGreaterThanOrEqualTo(appendBuffer);
+    // And the gRPC frame cap must not be the binding limit by accident.
+    assertThat(cfg.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX))
+        .as("the gRPC cap must stay above the appender limit").isGreaterThanOrEqualTo(appendBuffer);
+
+    // The defaults must actually build a valid Ratis configuration.
+    assertThatNoException().isThrownBy(() -> RaftPropertiesBuilder.build(cfg));
   }
 
   @Test
