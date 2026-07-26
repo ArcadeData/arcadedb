@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -141,19 +142,25 @@ public class FinalProjectionStep extends AbstractExecutionStep {
     final ResultInternal result = new ResultInternal();
 
     if (returnAll) {
-      // RETURN * - pass through all properties
+      // RETURN * - pass through the query's own variables. Bindings the executor generated for
+      // anonymous pattern elements are execution state, not variables the caller asked for, so they
+      // stay out of the row (issue #5444).
       Document singleDocument = null;
       int documentCount = 0;
+      int projectedCount = 0;
       for (final String prop : inputResult.getPropertyNames()) {
+        if (InternalVariables.isInternal(prop))
+          continue;
         final Object value = inputResult.getProperty(prop);
         result.setProperty(prop, value);
+        projectedCount++;
         if (value instanceof Document doc) {
           result.setMetadata(PROJECTION_NAME_METADATA, prop);
           singleDocument = doc;
           documentCount++;
         }
       }
-      if (documentCount == 1 && inputResult.getPropertyNames().size() == 1)
+      if (documentCount == 1 && projectedCount == 1)
         result.setElement(singleDocument);
       return result;
     }

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -127,7 +128,12 @@ public class ProjectReturnStep extends AbstractExecutionStep {
             if (distinct) {
               final StringBuilder keyBuilder = new StringBuilder();
               if (returnClause.isReturnAll()) {
+                // Distinctness is over the variables the query returns; the executor's internal
+                // bindings for anonymous pattern elements are not returned, so counting them here
+                // would keep rows that are duplicates to the caller (issue #5444).
                 for (final String name : new TreeSet<>(projectedResult.getPropertyNames())) {
+                  if (InternalVariables.isInternal(name))
+                    continue;
                   final Object val = projectedResult.getProperty(name);
                   keyBuilder.append(name).append('=').append(val).append('|');
                 }
