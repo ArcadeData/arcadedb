@@ -74,7 +74,8 @@ public class ExecuteCommandTool {
     final String command = args.getString("command");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
-    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(server, user, databaseName, config);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
+        server, user, databaseName, config, MCPToolUtils.RequiredAccess.ACCESS);
     final Database database = access.database();
 
     // Analyze once for both permission checking and execution (avoids double parsing)

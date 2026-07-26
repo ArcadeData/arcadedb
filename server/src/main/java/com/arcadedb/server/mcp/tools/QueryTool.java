@@ -71,7 +71,8 @@ public class QueryTool {
     final String query = args.getString("query");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
-    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveReadableDatabase(server, user, databaseName, config);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
+        server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
     final Database database = access.database();
 
     // Verify the query is actually read-only using semantic analysis

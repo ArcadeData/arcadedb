@@ -38,6 +38,11 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 public class MCPToolUtils {
 
+  public enum RequiredAccess {
+    ACCESS,
+    READ
+  }
+
   public record DatabaseAccess(ServerDatabase database, MCPPermissions permissions) {
   }
 
@@ -50,17 +55,8 @@ public class MCPToolUtils {
    * without a separate list_databases round-trip.
    */
   public static DatabaseAccess resolveDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
-      final String databaseName, final MCPConfiguration config) {
-    return resolveDatabase(server, user, databaseName, config, false);
-  }
-
-  public static DatabaseAccess resolveReadableDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
-      final String databaseName, final MCPConfiguration config) {
-    return resolveDatabase(server, user, databaseName, config, true);
-  }
-
-  private static DatabaseAccess resolveDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
-      final String databaseName, final MCPConfiguration config, final boolean requireRead) {
+      final String databaseName, final MCPConfiguration config, final RequiredAccess requiredAccess) {
+    final boolean requireRead = requiredAccess == RequiredAccess.READ;
     final MCPPermissions permissions = config.getPermissionsForDatabase(databaseName);
     if (!permissions.isUserAllowed(user.getName()))
       throw new SecurityException(

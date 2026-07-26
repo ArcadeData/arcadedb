@@ -63,6 +63,13 @@ more permissive global value. An explicit `allowedUsers: null` is an empty local
 matching the existing global configuration behavior. API token names retain the existing bare
 token matching behavior.
 
+Configuration API updates merge the `databases` object by database name: an update to one
+database leaves other overrides intact. A supplied database object replaces that database's
+override, an explicit null value removes that one override, and `"databases": null` clears all
+database overrides. The serialized configuration omits `databases` when no overrides exist.
+At startup, an override whose database is not currently loaded produces a warning but remains
+valid so it can apply if the database is created later.
+
 ## Enforcement
 
 `MCPConfiguration.getPermissionsForDatabase()` returns one immutable effective-permission
@@ -80,8 +87,9 @@ Database discovery in `list_databases`, `server_status`, and schema resources om
 whose effective policy denies the user or read access. ArcadeDB's native database authorization
 remains an independent required check; MCP configuration does not replace it.
 
-Future database-targeted tools must use the same resolver so they cannot bypass database-local
-read, write, or user restrictions.
+Future database-targeted tools must use the same resolver and explicitly select `READ` or
+`ACCESS` as their required access. There is no default resolver mode, so a new read tool cannot
+silently bypass database-local read restrictions.
 
 Tools without a database argument remain server-global and continue to use only global
 permissions: profiler controls, server settings, and server-level status details. Per-database

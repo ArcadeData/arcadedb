@@ -138,7 +138,7 @@ class MCPConfigurationTest {
     assertThat(json.getBoolean("allowInsert")).isFalse();
     assertThat(json.getJSONArray("allowedUsers").length()).isEqualTo(1);
     assertThat(json.getJSONArray("allowedUsers").getString(0)).isEqualTo("root");
-    assertThat(json.getJSONObject("databases").length()).isZero();
+    assertThat(json.has("databases")).isFalse();
   }
 
   @Test
@@ -156,6 +156,7 @@ class MCPConfigurationTest {
     assertThat(tenant.isAllowUpdate()).isFalse();
 
     final MCPPermissions inherited = config.getPermissionsForDatabase("unconfigured");
+    assertThat(inherited).isSameAs(config);
     assertThat(inherited.isAllowReads()).isTrue();
     assertThat(inherited.isAllowInsert()).isTrue();
     assertThat(inherited.isAllowUpdate()).isTrue();
@@ -223,7 +224,33 @@ class MCPConfigurationTest {
     config.updateFrom(update);
 
     assertThat(config.getPermissionsForDatabase("tenant").isAllowReads()).isTrue();
-    assertThat(config.toJSON().getJSONObject("databases").length()).isZero();
+    assertThat(config.toJSON().has("databases")).isFalse();
+  }
+
+  @Test
+  void databaseUpdatesMergeByNameAndNullRemovesOneOverride() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant_a", new JSONObject().put("allowReads", false))
+            .put("tenant_b", new JSONObject().put("allowInsert", false))));
+
+    config.updateFrom(new JSONObject()
+        .put("databases", new JSONObject()
+            .put("tenant_a", new JSONObject().put("allowUpdate", false))));
+
+    assertThat(config.toJSON().getJSONObject("databases").keySet())
+        .containsExactlyInAnyOrder("tenant_a", "tenant_b");
+    assertThat(config.getPermissionsForDatabase("tenant_a").isAllowUpdate()).isFalse();
+    assertThat(config.toJSON().getJSONObject("databases")
+        .getJSONObject("tenant_a").has("allowReads")).isFalse();
+
+    final JSONObject removal = new JSONObject();
+    removal.put("tenant_a", (Object) null);
+    config.updateFrom(new JSONObject().put("databases", removal));
+
+    assertThat(config.toJSON().getJSONObject("databases").keySet())
+        .containsExactly("tenant_b");
   }
 
   @Test

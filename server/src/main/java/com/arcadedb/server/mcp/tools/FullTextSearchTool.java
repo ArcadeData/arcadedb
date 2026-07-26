@@ -97,7 +97,8 @@ public class FullTextSearchTool {
     if (limit < 1)
       throw new IllegalArgumentException("'limit' must be at least 1, got " + limit);
 
-    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveReadableDatabase(server, user, databaseName, config);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
+        server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
     final Database database = access.database();
 
     final TypeIndex typeIndex = resolveIndex(database, args);

@@ -221,17 +221,32 @@ public class MCPConfiguration implements MCPPermissions {
    * configuration: a local {@code true} cannot enable an operation denied globally, and local users must also pass
    * the global user allowlist. An absent override inherits every global setting.
    */
-  public synchronized MCPPermissions getPermissionsForDatabase(final String databaseName) {
-    final DatabaseOverride override = databaseOverrides.get(databaseName);
-    return new EffectivePermissions(
-        allowReads && valueOrTrue(override != null ? override.allowReads : null),
-        allowInsert && valueOrTrue(override != null ? override.allowInsert : null),
-        allowUpdate && valueOrTrue(override != null ? override.allowUpdate : null),
-        allowDelete && valueOrTrue(override != null ? override.allowDelete : null),
-        allowSchemaChange && valueOrTrue(override != null ? override.allowSchemaChange : null),
-        allowAdmin && valueOrTrue(override != null ? override.allowAdmin : null),
-        List.copyOf(allowedUsers),
-        override != null && override.allowedUsers != null ? List.copyOf(override.allowedUsers) : null);
+  public MCPPermissions getPermissionsForDatabase(final String databaseName) {
+    if (!databaseOverrides.containsKey(databaseName))
+      return this;
+
+    synchronized (this) {
+      final DatabaseOverride override = databaseOverrides.get(databaseName);
+      if (override == null)
+        return this;
+      return new EffectivePermissions(
+          allowReads && valueOrTrue(override.allowReads),
+          allowInsert && valueOrTrue(override.allowInsert),
+          allowUpdate && valueOrTrue(override.allowUpdate),
+          allowDelete && valueOrTrue(override.allowDelete),
+          allowSchemaChange && valueOrTrue(override.allowSchemaChange),
+          allowAdmin && valueOrTrue(override.allowAdmin),
+          allowedUsers,
+          override.allowedUsers);
+    }
+  }
+
+  public void warnUnknownDatabaseOverrides(final Set<String> databaseNames) {
+    for (final String databaseName : databaseOverrides.keySet())
+      if (!databaseNames.contains(databaseName))
+        LogManager.instance().log(this, Level.WARNING,
+            "MCP configuration contains an override for unknown database '%s'; it will apply if that database is created",
+            databaseName);
   }
 
   public synchronized JSONObject toJSON() {
@@ -248,13 +263,14 @@ public class MCPConfiguration implements MCPPermissions {
     final JSONObject databases = new JSONObject();
     for (final Map.Entry<String, DatabaseOverride> entry : databaseOverrides.entrySet())
       databases.put(entry.getKey(), entry.getValue().toJSON());
-    json.put("databases", databases);
+    if (databases.length() > 0)
+      json.put("databases", databases);
     return json;
   }
 
   public synchronized void updateFrom(final JSONObject json) {
     final Map<String, DatabaseOverride> updatedDatabaseOverrides = json.has("databases")
-        ? parseDatabaseOverrides(json.getJSONObject("databases", null))
+        ? mergeDatabaseOverrides(databaseOverrides, json.getJSONObject("databases", null))
         : databaseOverrides;
 
     if (json.has("enabled"))
@@ -305,6 +321,23 @@ public class MCPConfiguration implements MCPPermissions {
       if (databaseName.isBlank())
         throw new IllegalArgumentException("MCP database override names must not be blank");
       result.put(databaseName, DatabaseOverride.fromJSON(databases.getJSONObject(databaseName)));
+    }
+    return Collections.unmodifiableMap(result);
+  }
+
+  private static Map<String, DatabaseOverride> mergeDatabaseOverrides(
+      final Map<String, DatabaseOverride> current, final JSONObject updates) {
+    if (updates == null)
+      return Map.of();
+
+    final Map<String, DatabaseOverride> result = new LinkedHashMap<>(current);
+    for (final String databaseName : updates.keySet()) {
+      if (databaseName.isBlank())
+        throw new IllegalArgumentException("MCP database override names must not be blank");
+      if (updates.isNull(databaseName))
+        result.remove(databaseName);
+      else
+        result.put(databaseName, DatabaseOverride.fromJSON(updates.getJSONObject(databaseName)));
     }
     return Collections.unmodifiableMap(result);
   }

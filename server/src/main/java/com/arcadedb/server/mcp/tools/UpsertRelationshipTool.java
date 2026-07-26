@@ -82,7 +82,8 @@ public class UpsertRelationshipTool {
     final JSONObject toMatchKeys = MCPToolUtils.requireNonEmptyObject(args, "toMatchKeys");
     final JSONObject relProperties = args.getJSONObject("relProperties", null);
 
-    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(server, user, databaseName, config);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
+        server, user, databaseName, config, MCPToolUtils.RequiredAccess.ACCESS);
     final Database database = access.database();
 
     final Map<String, Object> params = new HashMap<>();

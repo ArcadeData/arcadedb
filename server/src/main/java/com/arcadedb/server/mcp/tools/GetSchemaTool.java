@@ -54,7 +54,8 @@ public class GetSchemaTool {
       final MCPConfiguration config) {
     final String databaseName = args.getString("database");
 
-    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveReadableDatabase(server, user, databaseName, config);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
+        server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
 
     return buildSchema(access.database(), databaseName);
   }
