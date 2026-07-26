@@ -1022,7 +1022,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 }
                 final RandomAccessVectorValues vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
                     vectorProp,
-                    vectorLocationSnapshot, ordinalToVectorId, this, getGraphBuildCacheSize());
+                    vectorLocationSnapshot, ordinalToVectorId, this,
+                    computeGraphBuildCacheCapacity(ordinalToVectorId.length, false));
                 buildAndPersistPQ(vectors);
               } catch (final Exception e) {
                 LogManager.instance().log(this, Level.WARNING,
@@ -1367,10 +1368,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // worker threads cannot lookupByRID without a transaction context bound to the thread.
       final boolean inlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8
           || metadata.quantizationType == VectorQuantizationType.BINARY;
-      final int graphBuildCacheSize = getGraphBuildCacheSize();
-      final int preloadBudget = (inlineQuantization && graphBuildCacheSize > 0)
-          ? Math.min(expectedSize, graphBuildCacheSize)
-          : expectedSize;
+      final int graphBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize, inlineQuantization);
+      // Never preload more than the cache can hold: the surplus used to be read, boxed and then dropped.
+      final int preloadBudget = Math.min(expectedSize, graphBuildCacheSize);
       final Map<Integer, VectorFloat<?>> preloadedVectors = new HashMap<>(preloadBudget * 4 / 3 + 1);
       final List<Integer> validVectorIds = new ArrayList<>(expectedSize);
       int skippedDeletedDocs = 0;
@@ -1452,7 +1452,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
               if (fromDelta.length() == metadata.dimensions && !VectorUtils.isZeroVector(fromDelta)) {
                 vectorLocationSnapshot.put(vectorId, loc);
                 validVectorIds.add(vectorId);
-                preloadedVectors.put(vectorId, fromDelta);
+                if (preloadedVectors.size() < preloadBudget)
+                  preloadedVectors.put(vectorId, fromDelta);
               }
             } else {
               // Without quantization: validate by reading from document.
@@ -1468,7 +1469,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
                     vectorLocationSnapshot.put(vectorId, loc);
                     validVectorIds.add(vectorId);
-                    preloadedVectors.put(vectorId, vts.createFloatVector(vector));
+                    if (preloadedVectors.size() < preloadBudget)
+                      preloadedVectors.put(vectorId, vts.createFloatVector(vector));
                   }
                 }
 
@@ -5038,9 +5040,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Get the graph build cache size from configuration (per-index metadata or global default).
+   * Get the explicitly configured graph build cache size (per-index metadata or global setting).
    *
-   * @return Maximum number of vectors to cache during graph building
+   * @return Maximum number of vectors to cache during graph building, or 0/-1 when left to auto-sizing
    */
   private int getGraphBuildCacheSize() {
     if (metadata != null && metadata.graphBuildCacheSize > -1) {
@@ -5048,6 +5050,50 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
     return mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE);
+  }
+
+  /**
+   * Computes how many vectors the graph-build cache should hold.
+   * <p>
+   * An explicit {@code arcadedb.vectorIndex.graphBuildCacheSize} (or the per-index metadata) wins. Otherwise the
+   * capacity depends on what a cache miss costs during the build:
+   * <ul>
+   *   <li>inline-quantized indexes (INT8/BINARY) read a miss straight from an index page on any thread, so a
+   *       small bound is enough and the heap is better spent elsewhere;</li>
+   *   <li>document-based indexes (NONE/PRODUCT) pay a record lookup plus a full property deserialization on
+   *       every miss, so the whole corpus is cached when the heap allows it. This is what the validation phase
+   *       materializes anyway: bounding the cache below it (issue #3144) threw the vectors away right after
+   *       reading them and made a from-scratch fp32 build re-read almost every vector, hundreds of times each.</li>
+   * </ul>
+   *
+   * @param expectedSize        number of vectors the build will walk
+   * @param inlineQuantization  whether vectors are readable from index pages without a record lookup
+   *
+   * @return the number of vectors to hold, always positive
+   */
+  int computeGraphBuildCacheCapacity(final int expectedSize, final boolean inlineQuantization) {
+    final int configured = getGraphBuildCacheSize();
+    if (configured > 0)
+      return configured;
+
+    if (inlineQuantization)
+      return ArcadePageVectorValues.DEFAULT_CACHE_SIZE;
+
+    // Per-entry cost: the float payload plus the VectorFloat wrapper, the cache entry and the array slot
+    final long bytesPerVector = (long) metadata.dimensions * Float.BYTES + 64;
+
+    int heapPercent = mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT);
+    if (heapPercent <= 0)
+      return ArcadePageVectorValues.DEFAULT_CACHE_SIZE;
+    if (heapPercent > 90)
+      heapPercent = 90;
+
+    final long heapBudget = Runtime.getRuntime().maxMemory() / 100 * heapPercent;
+    final long affordable = Math.max(ArcadePageVectorValues.DEFAULT_CACHE_SIZE, heapBudget / bytesPerVector);
+    final long wanted = Math.max(1, expectedSize);
+
+    return (int) Math.min(Math.min(affordable, wanted), Integer.MAX_VALUE / 2);
   }
 
   /**

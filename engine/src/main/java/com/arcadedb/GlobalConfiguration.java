@@ -93,6 +93,7 @@ public enum GlobalConfiguration {
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(-1);
         VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(-1);
         VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT.setValue(50);
+        VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(50);
 
         if (cores > 1)
           // USE ONLY HALF OF THE CORES MINUS ONE
@@ -578,8 +579,18 @@ public enum GlobalConfiguration {
       Maximum number of vectors to cache in memory during HNSW graph building. \
       Higher values speed up construction but use more RAM. \
       RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
-      Recommended: 100000 for 768-dim vectors (~30MB), scale based on dimensionality.""",
-      Integer.class, 100_000),
+      0 (default) sizes it automatically: an index whose vectors live in the documents (no quantization, or \
+      PRODUCT) caches the whole set when it fits arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent, because \
+      every miss costs a record read; an inline-quantized index (INT8/BINARY) reads a miss straight from an \
+      index page and keeps a small bound instead.""",
+      Integer.class, 0),
+
+  VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent", SCOPE.DATABASE,
+      """
+      Maximum share of the JVM heap (percentage) the auto-sized graph-build cache may use. Only applies when \
+      arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
+      the cache evicts instead of holding everything.""",
+      Integer.class, 25),
 
   VECTOR_INDEX_SEARCH_CACHE_SIZE("arcadedb.vectorIndex.searchCacheSize", SCOPE.DATABASE,
       """
