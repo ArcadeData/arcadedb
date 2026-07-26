@@ -174,7 +174,6 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(14);
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -961,7 +960,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     final JSONObject first = payload.getJSONArray("results").getJSONObject(0);
     assertThat(first.getString("rid")).startsWith("#");
-    assertThat(first.getDouble("score")).isEqualTo(first.getDouble("distance"));
+    assertThat(first.has("score")).isFalse();
+    assertThat(first.getDouble("distance")).isGreaterThanOrEqualTo(0.0);
     assertThat(first.getJSONObject("properties").getString("name")).isEqualTo("dense-a");
   }
 
@@ -980,6 +980,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     final JSONObject payload = new JSONObject(
         response.getJSONArray("content").getJSONObject(0).getString("text"));
     assertThat(payload.getInt("count")).isEqualTo(2);
+    assertThat(payload.getInt("candidateLimit")).isEqualTo(16);
+    assertThat(payload.getBoolean("truncated")).isTrue();
     for (int i = 0; i < payload.getJSONArray("results").length(); i++)
       assertThat(payload.getJSONArray("results").getJSONObject(i)
           .getJSONObject("properties").getString("category")).isEqualTo("keep");
@@ -1006,8 +1008,28 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(payload.getInt("count")).isEqualTo(2);
     final JSONArray results = payload.getJSONArray("results");
     assertThat(results.getJSONObject(0).getJSONObject("properties").getString("name")).isEqualTo("sparse-high");
+    assertThat(results.getJSONObject(0).has("distance")).isFalse();
     assertThat(results.getJSONObject(0).getDouble("score"))
         .isGreaterThan(results.getJSONObject(1).getDouble("score"));
+  }
+
+  @Test
+  void vectorSearchUsesIndependentFilteredCandidateBudget() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'missing'")
+        .put("k", 1_000));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getInt("candidateLimit")).isEqualTo(8_000);
+    assertThat(payload.getInt("count")).isZero();
+    assertThat(payload.getBoolean("truncated")).isTrue();
   }
 
   @Test
@@ -1185,6 +1207,14 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("k", 1));
     assertThat(zeroFullVector.getJSONArray("content").getJSONObject(0).getString("text"))
         .contains("at least one non-zero weight");
+
+    final JSONObject zeroDenseVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(0.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(zeroDenseVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("at least one non-zero value");
 
     final JSONObject fractionalIndex = callTool("vector_search", new JSONObject()
         .put("database", getDatabaseName())

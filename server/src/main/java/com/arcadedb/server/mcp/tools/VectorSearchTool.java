@@ -21,7 +21,6 @@ package com.arcadedb.server.mcp.tools;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -56,6 +55,7 @@ public class VectorSearchTool {
   private static final int DEFAULT_K             = 10;
   private static final int MAX_K                 = 1_000;
   private static final int FILTER_OVERFETCH      = 8;
+  private static final int MAX_FILTER_CANDIDATES = 8_000;
   private static final int MAX_FILTER_EXPRESSION = 4_096;
 
   public static JSONObject getDefinition() {
@@ -66,6 +66,7 @@ public class VectorSearchTool {
             Search a dense LSM_VECTOR or sparse LSM_SPARSE_VECTOR index using a pre-computed query vector. \
             Dense results expose a distance (lower is better); sparse results expose a score (higher is better). \
             Set sparse=true for sparse indexes and pass queryIndices for a compact sparse representation. \
+            Filtered searches inspect a bounded candidate window and report its size and possible truncation. \
             Embedding generation is not performed by ArcadeDB.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
@@ -99,7 +100,9 @@ public class VectorSearchTool {
                 .put("filter", new JSONObject()
                     .put("type", "string")
                     .put("description",
-                        "Optional read-only SQL WHERE predicate applied to a bounded candidate set"))
+                        "Optional read-only SQL WHERE predicate applied to a bounded candidate set. It is evaluated "
+                            + "against each expanded neighbor row, where record properties are flattened and @rid, "
+                            + "@type, record, plus distance (dense) or score (sparse) are available."))
                 .put("sparse", new JSONObject()
                     .put("type", "boolean")
                     .put("default", false)
@@ -152,11 +155,13 @@ public class VectorSearchTool {
         throw new IllegalArgumentException(
             "'queryVector' has " + queryVector.length + " dimensions, but index '" + indexName + "' requires "
                 + resolved.dimensions());
+      requireNonZeroDenseVector(queryVector);
       parameters.put("queryVector", queryVector);
       functionCall = "`vector.neighbors`(:indexName, :queryVector, :candidateLimit, :options)";
     }
 
-    final int candidateLimit = filter == null ? k : (int) Math.min((long) k * FILTER_OVERFETCH, MAX_K);
+    final int candidateLimit =
+        filter == null ? k : (int) Math.min((long) k * FILTER_OVERFETCH, MAX_FILTER_CANDIDATES);
     parameters.put("candidateLimit", candidateLimit);
 
     final StringBuilder sql = new StringBuilder("SELECT FROM (SELECT expand(").append(functionCall).append("))");
@@ -183,6 +188,8 @@ public class VectorSearchTool {
       final ResultSet analyzedResultSet = analyzed.execute(parameters);
       try (final ResultSet resultSet =
           analyzedResultSet != null ? analyzedResultSet : database.query("sql", sql.toString(), parameters)) {
+        // A stale/deleted hit or malformed row is skipped and cannot be backfilled because the vector candidate
+        // window is already fixed. The response therefore reports possible truncation for filtered short results.
         while (resultSet.hasNext() && results.length() < k)
           appendResult(database, resultSet.next(), sparse, serializer, results);
       }
@@ -196,6 +203,8 @@ public class VectorSearchTool {
         .put("indexName", resolved.typeIndex().getName())
         .put("sparse", sparse)
         .put("scoring", resolved.scoring())
+        .put("candidateLimit", candidateLimit)
+        .put("truncated", results.length() == k || filter != null && results.length() < k)
         .put("count", results.length())
         .put("results", results);
   }
@@ -284,6 +293,13 @@ public class VectorSearchTool {
     return result;
   }
 
+  private static void requireNonZeroDenseVector(final float[] queryVector) {
+    for (final float value : queryVector)
+      if (value != 0.0f)
+        return;
+    throw new IllegalArgumentException("Dense 'queryVector' must contain at least one non-zero value");
+  }
+
   private static SparseQuery buildSparseQuery(final JSONObject args, final float[] queryVector,
       final int dimensions) {
     final JSONArray queryIndices = args.getJSONArray("queryIndices", null);
@@ -352,20 +368,27 @@ public class VectorSearchTool {
     if (!(rawScore instanceof final Number score))
       return;
 
-    final Record record;
-    try {
-      record = database.lookupByRID(rid, true);
-    } catch (final RecordNotFoundException e) {
-      return;
+    final Object embeddedRecord = row.getProperty("record");
+    final Document document;
+    if (embeddedRecord instanceof final Document candidate) {
+      document = candidate;
+    } else {
+      try {
+        final Object loaded = database.lookupByRID(rid, true);
+        if (!(loaded instanceof final Document candidate))
+          return;
+        document = candidate;
+      } catch (final RecordNotFoundException e) {
+        return;
+      }
     }
-    if (!(record instanceof final Document document))
-      return;
 
     final JSONObject result = new JSONObject()
         .put("rid", rid.toString())
-        .put("score", score)
         .put("properties", serializer.serializeDocument(document));
-    if (!sparse)
+    if (sparse)
+      result.put("score", score);
+    else
       result.put("distance", score);
     results.put(result);
   }
