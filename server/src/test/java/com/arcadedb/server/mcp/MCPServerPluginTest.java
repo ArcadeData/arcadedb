@@ -1029,7 +1029,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         response.getJSONArray("content").getJSONObject(0).getString("text"));
     assertThat(payload.getInt("candidateLimit")).isEqualTo(8_000);
     assertThat(payload.getInt("count")).isZero();
-    assertThat(payload.getBoolean("truncated")).isTrue();
+    assertThat(payload.getLong("indexedEntries")).isEqualTo(3);
+    assertThat(payload.getBoolean("truncated")).isFalse();
   }
 
   @Test

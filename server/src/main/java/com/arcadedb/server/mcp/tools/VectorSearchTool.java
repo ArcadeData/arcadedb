@@ -199,12 +199,14 @@ public class VectorSearchTool {
       throw invalidExpression(e);
     }
 
+    final long indexedEntries = resolved.typeIndex().countEntries();
     return new JSONObject()
         .put("indexName", resolved.typeIndex().getName())
         .put("sparse", sparse)
         .put("scoring", resolved.scoring())
+        .put("indexedEntries", indexedEntries)
         .put("candidateLimit", candidateLimit)
-        .put("truncated", results.length() == k || filter != null && results.length() < k)
+        .put("truncated", indexedEntries > candidateLimit || filter != null && results.length() == k)
         .put("count", results.length())
         .put("results", results);
   }
