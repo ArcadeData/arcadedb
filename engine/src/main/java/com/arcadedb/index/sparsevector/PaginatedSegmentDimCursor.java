@@ -79,6 +79,13 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   // Per-cursor (per-query) state, so it is contention-free even under concurrent queries.
   private long          decodedBlockCount;
 
+  // Per-cursor count of payload bytes copied out of the page cache by those decodes. Tracked
+  // separately from {@link #decodedBlockCount} because the two are not proportional: the reader used
+  // to hand back every byte from the block payload to the end of the page regardless of how long the
+  // block actually was, so a ~500-byte block cost a ~32 KB copy on a 64 KB page. Asserting on this
+  // counter is what keeps that from coming back (issue #5388).
+  private long          decodedPayloadBytes;
+
   // Required scratch capacity (one full page of payload). The byte[] / ByteBuffer pair is
   // borrowed from {@link com.arcadedb.database.DatabaseContext.DatabaseContextTL#getTemporaryBuffer1()}
   // inside {@link #decodeBlockIfNeeded} - the same per-thread Binary that BinarySerializer and
@@ -199,6 +206,11 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   /** Test/observability hook: total block payloads decoded by this cursor since construction. */
   public long decodedBlockCount() {
     return decodedBlockCount;
+  }
+
+  /** Test/observability hook: total payload bytes copied out of the page cache by those decodes. */
+  public long decodedPayloadBytes() {
+    return decodedPayloadBytes;
   }
 
   @Override
@@ -368,8 +380,10 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     // segment format.
     final Binary scratch = reader.component().getDatabase().getContext().getTemporaryBuffer1();
     scratch.size(scratchSize);
-    final ByteBuffer buf = reader.readBlockPayloadInto(pageNum, offsetInPage, scratch.getContent(), scratch.getByteBuffer());
+    final ByteBuffer buf = reader.readBlockPayloadInto(pageNum, offsetInPage, payloadLengthBound(currentBlock, bh.postingCount()),
+        scratch.getContent(), scratch.getByteBuffer());
     decodedBlockCount++;
+    decodedPayloadBytes += buf.limit();
 
     final int n = bh.postingCount();
     blockSize = n;
@@ -436,6 +450,33 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     }
 
     blockDecoded = true;
+  }
+
+  /**
+   * Upper bound on the payload bytes of {@code block}, used to keep the page-to-scratch copy down to
+   * the block instead of the rest of the page (issue #5388).
+   * <p>
+   * Two independent bounds, whichever is tighter:
+   * <ul>
+   *   <li>the format's worst case for {@code postingCount} postings at this segment's quantization,
+   *       which always holds;</li>
+   *   <li>the gap to the next block of this dim when that block sits on the same page. The builder
+   *       writes a dim's blocks back to back (header immediately followed by payload, then the next
+   *       block), so on the common path this gap <i>is</i> the exact payload length. It is only
+   *       taken when positive, so a build path that ever lays blocks out non-contiguously falls back
+   *       to the worst case rather than truncating a payload.</li>
+   * </ul>
+   * The last block of a dim on a page has no next-block gap and rides on the worst case alone; the
+   * reader clamps whatever comes back to the bytes actually left on the page.
+   */
+  private int payloadLengthBound(final int block, final int postingCount) {
+    int bound = SegmentFormat.maxBlockPayloadSize(postingCount, params.weightQuantization());
+    if (block + 1 < meta.blockCount() && meta.blockPageNum(block + 1) == meta.blockPageNum(block)) {
+      final int gap = meta.blockOffset(block + 1) - meta.blockOffset(block) - SegmentFormat.BLOCK_HEADER_SIZE;
+      if (gap > 0 && gap < bound)
+        bound = gap;
+    }
+    return bound;
   }
 
   private void materializePosting(final int idxInBlock) {
