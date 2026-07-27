@@ -32,21 +32,16 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IPAddressBlocklist;
+import com.arcadedb.utility.SafeHttpFetcher;
 
 import java.io.BufferedReader;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.InetAddress;
 import java.net.URI;
-import java.net.URL;
-import java.net.URLConnection;
-import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.Locale;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -273,11 +268,6 @@ public class LoadCSVStep extends AbstractExecutionStep {
     return new FileInputStream(filePath);
   }
 
-  /** Maximum number of redirect hops followed for a remote LOAD CSV fetch. */
-  private static final int REMOTE_MAX_REDIRECTS  = 5;
-  private static final int REMOTE_CONNECT_TIMEOUT_MS = 30_000;
-  private static final int REMOTE_READ_TIMEOUT_MS    = 30_000;
-
   /**
    * Opens a raw InputStream for a remote http(s) URL with Server-Side Request Forgery (SSRF) protection.
    * <p>
@@ -287,6 +277,11 @@ public class LoadCSVStep extends AbstractExecutionStep {
    * manually so that every hop is re-validated the same way, and only http/https schemes are allowed on each hop
    * (a redirect to file://, ftp://, jar://, ... is rejected). Remote access can be disabled entirely with
    * {@link GlobalConfiguration#OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS}.
+   * <p>
+   * The scheme/address/redirect handling itself lives in {@link SafeHttpFetcher}, shared with the other server-side
+   * fetcher of a caller-supplied URL ({@code IMPORT DATABASE}), so the two cannot drift apart - the reason the import
+   * path still had an unguarded redirect after this one had been fixed (GHSA-4w2m-77c8-83mw). See that class for the
+   * residual DNS-rebinding caveat.
    */
   static InputStream openRemoteInputStream(final String url, final CommandContext context) throws IOException {
     if (!context.getDatabase().getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS))
@@ -296,67 +291,9 @@ public class LoadCSVStep extends AbstractExecutionStep {
     final IPAddressBlocklist blocklist = IPAddressBlocklist.parse(
         context.getDatabase().getConfiguration().getValueAsString(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES));
 
-    String current = url;
-    for (int hop = 0; hop <= REMOTE_MAX_REDIRECTS; hop++) {
-      final URL netUrl = URI.create(current).toURL();
-      final String protocol = netUrl.getProtocol().toLowerCase(Locale.ROOT);
-      if (!protocol.equals("http") && !protocol.equals("https"))
-        throw new SecurityException("LOAD CSV blocked disallowed URL scheme '" + protocol + "' in redirect chain");
-
-      validateHostNotBlocked(netUrl.getHost(), blocklist);
-
-      final URLConnection rawConn = netUrl.openConnection();
-      if (!(rawConn instanceof final HttpURLConnection conn))
-        throw new SecurityException("LOAD CSV blocked non-HTTP connection for URL: " + current);
-
-      conn.setInstanceFollowRedirects(false);
-      conn.setConnectTimeout(REMOTE_CONNECT_TIMEOUT_MS);
-      conn.setReadTimeout(REMOTE_READ_TIMEOUT_MS);
-      conn.setRequestMethod("GET");
-
-      final int status = conn.getResponseCode();
-      if (status >= 300 && status < 400) {
-        final String location = conn.getHeaderField("Location");
-        conn.disconnect();
-        if (location == null || location.isEmpty())
-          throw new IOException("LOAD CSV received a redirect with no Location header from: " + current);
-        // Resolve relative redirect targets against the current URL; the next loop iteration re-validates scheme and IP.
-        current = new URL(netUrl, location).toString();
-        continue;
-      }
-      if (status >= 400)
-        throw new IOException("LOAD CSV received HTTP " + status + " fetching: " + current);
-
-      return conn.getInputStream();
-    }
-    throw new SecurityException("LOAD CSV exceeded the maximum number of redirects (" + REMOTE_MAX_REDIRECTS + ")");
-  }
-
-  /**
-   * Resolves the host to all of its IP addresses and refuses the request if any of them is inside a blocked range.
-   * Validating every resolved address (not just the first) closes the multi-record DNS bypass.
-   */
-  private static void validateHostNotBlocked(final String rawHost, final IPAddressBlocklist blocklist) throws IOException {
-    if (blocklist.isEmpty())
-      return;
-    if (rawHost == null || rawHost.isEmpty())
-      throw new SecurityException("LOAD CSV blocked remote URL with no host");
-
-    // java.net.URL#getHost() keeps the brackets around IPv6 literals; strip them before resolving.
-    String host = rawHost;
-    if (host.startsWith("[") && host.endsWith("]"))
-      host = host.substring(1, host.length() - 1);
-
-    final InetAddress[] addresses;
-    try {
-      addresses = InetAddress.getAllByName(host);
-    } catch (final UnknownHostException e) {
-      throw new IOException("LOAD CSV could not resolve host '" + host + "'", e);
-    }
-    for (final InetAddress address : addresses)
-      if (blocklist.isBlocked(address))
-        throw new SecurityException(
-            "LOAD CSV blocked request to a non-public or restricted address: " + host + " -> " + address.getHostAddress());
+    // An empty block-list is the configured opt-out from the address check; scheme and redirect handling still apply.
+    return SafeHttpFetcher.open(url, address -> !blocklist.isEmpty() && blocklist.isBlocked(address), "LOAD CSV")
+        .getInputStream();
   }
 
   /**

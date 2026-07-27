@@ -109,4 +109,33 @@ class ImportSecurityValidatorTest {
     GlobalConfiguration.SERVER_SECURITY_IMPORT_ALLOWED_LOCAL_PATHS.setValue("./target/imports");
     assertThatNoException().isThrownBy(() -> ImportSecurityValidator.validateLocalURL("classpath://orientdb-export-small.gz"));
   }
+
+  /**
+   * GHSA-4w2m-77c8-83mw: the fetch itself must be guarded, not just a preceding validate call. The redirect-chain
+   * behaviour is covered exhaustively by {@code SafeHttpFetcherTest}; these assert the import-specific wiring.
+   */
+  @Test
+  void openRemoteConnectionRefusesBlockedAddress() {
+    assertThatThrownBy(() -> ImportSecurityValidator.openRemoteConnection("http://169.254.169.254/latest/meta-data/"))
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("169.254.169.254");
+  }
+
+  @Test
+  void openRemoteConnectionRefusesNonHttpSchemeEvenWithBlockingDisabled() {
+    // Turning off the local-network block is the documented opt-out for trusted internal environments. It must NOT
+    // also disable the scheme check, or a remote fetch could still be redirected into a local file read.
+    GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.setValue(false);
+    assertThatThrownBy(() -> ImportSecurityValidator.openRemoteConnection("file:///etc/passwd"))
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("scheme");
+  }
+
+  @Test
+  void sourceDiscoveryRoutesRemoteFetchThroughTheGuard() {
+    // Proves the guard is reached from the actual import entry point, not only when called directly.
+    assertThatThrownBy(() -> new SourceDiscovery("http://169.254.169.254/latest/meta-data/").getSource())
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("169.254.169.254");
+  }
 }
