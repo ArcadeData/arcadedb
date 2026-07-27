@@ -1988,7 +1988,8 @@ public class CypherExecutionPlan {
    */
   private static boolean isStructurallyPure(final PathPattern part) {
     for (final NodePattern node : part.getNodes()) {
-      if (node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels())
+      if (node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels()
+          || node.hasWhereExpression())
         return false;
     }
     for (int i = 0; i < part.getRelationshipCount(); i++) {

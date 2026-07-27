@@ -18,14 +18,13 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Identifiable;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Expression representing EXISTS predicate.
@@ -46,213 +45,34 @@ public class ExistsExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    try {
-      final Map<String, Object> params = new HashMap<>();
-      String modifiedSubquery = subquery;
-
-      if (result != null) {
-        final List<String> whereConditions = new ArrayList<>();
-        final List<String> matchPatterns = new ArrayList<>();
-        final List<String> withItems = new ArrayList<>();
-
-        for (final String propertyName : result.getPropertyNames()) {
-          // Skip internal variables (space-prefixed)
-          if (propertyName.startsWith(" "))
-            continue;
-          final Object value = result.getProperty(propertyName);
-          params.put(propertyName, value);
-
-          if (value instanceof Identifiable) {
-            final String rid = ((Identifiable) value).getIdentity().toString();
-            final String paramName = "__exists_" + propertyName;
-            params.put(paramName, rid);
-
-            // Check if this variable appears in the subquery
-            if (variableUsedInSubquery(modifiedSubquery, propertyName)) {
-              whereConditions.add("id(" + propertyName + ") = $" + paramName);
-              // Add as extra MATCH pattern so the variable is in scope
-              matchPatterns.add("(" + propertyName + ")");
-            }
-          } else if (value != null && variableUsedInSubquery(modifiedSubquery, propertyName)) {
-            // Scalar outer variable referenced in subquery: bring into scope via WITH.
-            final String paramName = "__exists_" + propertyName;
-            params.put(paramName, value);
-            withItems.add("$" + paramName + " AS " + propertyName);
-          }
-        }
-
-        if (!matchPatterns.isEmpty())
-          modifiedSubquery = injectMatchPatterns(modifiedSubquery, matchPatterns);
-        if (!whereConditions.isEmpty()) {
-          final String conditionsStr = String.join(" AND ", whereConditions);
-          modifiedSubquery = injectWhereConditions(modifiedSubquery, conditionsStr);
-        }
-        if (!withItems.isEmpty())
-          modifiedSubquery = "WITH " + String.join(", ", withItems) + " " + modifiedSubquery;
-      }
-
-      try (final var resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
-        return resultSet.hasNext();
-      }
+    final Map<String, Object> params = new HashMap<>();
+    final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__exists_", params,
+        ExistsExpression::wrapNonMatchBody);
+    try (final var resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
+      return resultSet.hasNext();
     } catch (final Exception e) {
+      // An existential subquery that cannot run is not the same as one that does not match, but the
+      // Cypher contract here is a boolean, so the failure is absorbed. Trace it: a silent false is
+      // exactly how the corrupted-subquery bug of issue #5464 stayed invisible for so long.
+      LogManager.instance().log(ExistsExpression.class, Level.FINE, "Error on evaluating EXISTS subquery '%s'", e,
+          modifiedSubquery);
       return false;
     }
   }
 
   /**
-   * Checks if a variable name is used anywhere in the subquery text. Scans every occurrence and
-   * accepts the variable as long as at least one is a whole-word match, so e.g. {@code p} is
-   * detected in {@code WHERE p2.age > p.age} (where {@code p} appears first inside {@code p2}).
+   * Builds the correlated query when the body does not start with MATCH.
+   * <p>
+   * A body that starts with another clause keyword (RETURN, WITH, ...) only needs the extra patterns
+   * prepended as their own MATCH; injecting a WHERE there would short-circuit the body's own clauses.
+   * A bare pattern body becomes the predicate of the injected MATCH.
    */
-  private static boolean variableUsedInSubquery(final String subquery, final String varName) {
-    int fromIndex = 0;
-    final int len = varName.length();
-    while (true) {
-      final int idx = subquery.indexOf(varName, fromIndex);
-      if (idx < 0)
-        return false;
-      final boolean leftOk = idx == 0 || !isCypherIdentifierChar(subquery.charAt(idx - 1));
-      final int end = idx + len;
-      final boolean rightOk = end >= subquery.length() || !isCypherIdentifierChar(subquery.charAt(end));
-      if (leftOk && rightOk)
-        return true;
-      fromIndex = idx + 1;
-    }
-  }
-
-  /**
-   * Injects additional MATCH patterns into the subquery.
-   * If the subquery starts with MATCH, adds patterns as comma-separated items.
-   * If the subquery starts with another clause (RETURN, WITH, ...), prepends a
-   * MATCH clause that brings the outer-bound variables into scope.
-   * If it's a simple pattern (no leading clause keyword), wraps it with MATCH.
-   */
-  private static String injectMatchPatterns(final String subquery, final List<String> patterns) {
-    final String trimmed = subquery.trim();
-    final String upper = trimmed.toUpperCase();
-
-    if (upper.startsWith("MATCH")) {
-      // Find the end of "MATCH " and insert patterns with commas
-      int pos = 5;
-      while (pos < trimmed.length() && Character.isWhitespace(trimmed.charAt(pos)))
-        pos++;
-      return trimmed.substring(0, pos) + String.join(", ", patterns) + ", " + trimmed.substring(pos);
-    }
-
-    // Subquery body that starts with another clause keyword: just prepend
-    // MATCH so the outer-bound variables are in scope without injecting a
-    // WHERE that would short-circuit the body's own clauses.
+  private static String wrapNonMatchBody(final String patterns, final String body) {
+    final String upper = body.toUpperCase();
     if (upper.startsWith("RETURN") || upper.startsWith("WITH") || upper.startsWith("UNWIND")
         || upper.startsWith("CALL") || upper.startsWith("OPTIONAL"))
-      return "MATCH " + String.join(", ", patterns) + " " + trimmed;
-
-    // Simple pattern subquery (no MATCH keyword) - add patterns after wrapping
-    return "MATCH " + String.join(", ", patterns) + " WHERE " + trimmed;
-  }
-
-  /**
-   * Inject WHERE conditions after the first MATCH clause's pattern, before any subsequent clause.
-   * Handles subqueries like:
-   * - MATCH (n)-->() RETURN true
-   * - MATCH (n)-->(m) WITH n, count(*) AS c WHERE c = 3 RETURN true
-   * - MATCH (n) WHERE n.prop > 5 RETURN true
-   * Respects brace nesting (e.g., nested exists { ... } blocks).
-   */
-  private static String injectWhereConditions(final String query, final String conditions) {
-    final String upper = query.toUpperCase().trim();
-    final int matchKeywordEnd = upper.startsWith("MATCH") ? 5 : 0;
-
-    // Find the first top-level clause keyword (WHERE, WITH, RETURN, etc.) at brace depth 0
-    int clauseStart = -1;
-    int topWherePos = -1;
-    int braceDepth = 0;
-
-    for (int i = matchKeywordEnd; i < query.length(); i++) {
-      final char c = query.charAt(i);
-      if (c == '{') {
-        braceDepth++;
-        continue;
-      }
-      if (c == '}') {
-        braceDepth--;
-        continue;
-      }
-      if (braceDepth > 0)
-        continue;
-
-      // Only check keywords at the top level (braceDepth == 0)
-      if (matchesKeywordAt(upper, i, "WHERE") && topWherePos < 0)
-        topWherePos = i;
-      else if (clauseStart < 0 && (matchesKeywordAt(upper, i, "WITH") || matchesKeywordAt(upper, i, "RETURN")
-          || matchesKeywordAt(upper, i, "ORDER") || matchesKeywordAt(upper, i, "SKIP")
-          || matchesKeywordAt(upper, i, "LIMIT") || matchesKeywordAt(upper, i, "UNION")))
-        clauseStart = i;
-
-      // Stop once we find a non-WHERE clause keyword
-      if (clauseStart >= 0)
-        break;
-    }
-
-    if (clauseStart >= 0) {
-      if (topWherePos >= 0 && topWherePos < clauseStart) {
-        // Existing WHERE before the clause — prepend the correlation conditions. The existing
-        // WHERE body is parenthesized so a top-level OR in the body keeps its precedence: without
-        // the parentheses "cond AND a OR b" would parse as "(cond AND a) OR b", dropping the
-        // correlation from the OR branch (see issue #4995).
-        int insertPos = topWherePos + 5;
-        while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
-          insertPos++;
-        final String whereBody = query.substring(insertPos, clauseStart).trim();
-        return query.substring(0, insertPos) + conditions + " AND (" + whereBody + ") " + query.substring(clauseStart);
-      }
-      // Insert new WHERE before the clause keyword
-      return query.substring(0, clauseStart) + "WHERE " + conditions + " " + query.substring(clauseStart);
-    }
-
-    // No subsequent clause — check for top-level WHERE
-    if (topWherePos >= 0) {
-      int insertPos = topWherePos + 5;
-      while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
-        insertPos++;
-      final String whereBody = query.substring(insertPos).trim();
-      return query.substring(0, insertPos) + conditions + " AND (" + whereBody + ")";
-    }
-
-    // Append WHERE at end
-    return query + " WHERE " + conditions;
-  }
-
-  /**
-   * Checks if the uppercase query string has a keyword at the given position,
-   * ensuring it's a word boundary (not part of a longer identifier or Cypher token).
-   * Underscore is treated as an identifier character, and ':', '.', '$' are treated as
-   * non-boundary token prefixes, so that patterns like [:WORKS_WITH], n.with, or $with
-   * do not falsely match a keyword fragment.
-   */
-  private static boolean matchesKeywordAt(final String upper, final int pos, final String keyword) {
-    if (pos + keyword.length() > upper.length())
-      return false;
-    if (!upper.startsWith(keyword, pos))
-      return false;
-    // Check word boundary before — reject if preceded by an identifier char or a Cypher token
-    // prefix (: for labels/types, . for property access, $ for parameters)
-    if (pos > 0) {
-      final char before = upper.charAt(pos - 1);
-      if (isCypherIdentifierChar(before) || before == ':' || before == '.' || before == '$')
-        return false;
-    }
-    // Check word boundary after
-    final int end = pos + keyword.length();
-    if (end < upper.length()) {
-      final char after = upper.charAt(end);
-      if (isCypherIdentifierChar(after) || after == ':' || after == '.' || after == '$')
-        return false;
-    }
-    return true;
-  }
-
-  private static boolean isCypherIdentifierChar(final char c) {
-    return Character.isLetterOrDigit(c) || c == '_';
+      return "MATCH " + patterns + " " + body;
+    return "MATCH " + patterns + " WHERE " + body;
   }
 
   @Override

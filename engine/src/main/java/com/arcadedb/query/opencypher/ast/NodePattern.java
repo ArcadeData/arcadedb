@@ -30,6 +30,7 @@ import java.util.Map;
  * - (n:Person {name: 'John'}) - node with label and properties
  * - (:Person) - anonymous node with label
  * - (n:$(label)) - node with a dynamic label resolved at runtime (Cypher 25)
+ * - (n:Person WHERE n.age > 18) - node with an inline WHERE predicate
  */
 public class NodePattern implements PatternElement {
   private final String variable;
@@ -39,6 +40,7 @@ public class NodePattern implements PatternElement {
   private final boolean explicitProperties;
   private final String propertiesParameterName;
   private final boolean labelDisjunction;
+  private final BooleanExpression whereExpression;
 
   public NodePattern(final String variable, final List<String> labels, final Map<String, Object> properties) {
     this(variable, labels, properties, null);
@@ -57,6 +59,12 @@ public class NodePattern implements PatternElement {
   public NodePattern(final String variable, final List<String> labels, final List<Expression> dynamicLabels,
       final Map<String, Object> properties, final String propertiesParameterName,
       final boolean labelDisjunction) {
+    this(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction, null);
+  }
+
+  public NodePattern(final String variable, final List<String> labels, final List<Expression> dynamicLabels,
+      final Map<String, Object> properties, final String propertiesParameterName,
+      final boolean labelDisjunction, final BooleanExpression whereExpression) {
     this.variable = variable;
     this.labels = labels != null ? labels : Collections.emptyList();
     this.dynamicLabels = dynamicLabels != null ? dynamicLabels : Collections.emptyList();
@@ -64,6 +72,7 @@ public class NodePattern implements PatternElement {
     this.explicitProperties = properties != null || propertiesParameterName != null;
     this.propertiesParameterName = propertiesParameterName;
     this.labelDisjunction = labelDisjunction;
+    this.whereExpression = whereExpression;
   }
 
   /**
@@ -162,7 +171,36 @@ public class NodePattern implements PatternElement {
    */
   public NodePattern withLabels(final List<String> newLabels) {
     return new NodePattern(variable, newLabels, dynamicLabels, explicitProperties ? properties : null,
-        propertiesParameterName, labelDisjunction);
+        propertiesParameterName, labelDisjunction, whereExpression);
+  }
+
+  /**
+   * Returns the inline {@code WHERE} predicate declared inside the node pattern, e.g.
+   * {@code (n:Person WHERE n.age > 18)}, or {@code null} when the pattern carries none.
+   */
+  public BooleanExpression getWhereExpression() {
+    return whereExpression;
+  }
+
+  /**
+   * Returns true if this node pattern declares an inline {@code WHERE} predicate.
+   */
+  public boolean hasWhereExpression() {
+    return whereExpression != null;
+  }
+
+  /**
+   * Returns a copy of this node pattern without its inline {@code WHERE} predicate, preserving every
+   * other attribute. Used by {@link com.arcadedb.query.opencypher.rewriter.InlineNodeWhereHoister}
+   * once the predicate has been moved into the enclosing clause's WHERE (issue #5464).
+   *
+   * @return a new node pattern, or {@code this} when there is no inline predicate to drop
+   */
+  public NodePattern withoutWhereExpression() {
+    if (whereExpression == null)
+      return this;
+    return new NodePattern(variable, labels, dynamicLabels, explicitProperties ? properties : null,
+        propertiesParameterName, labelDisjunction, null);
   }
 
   /**
@@ -185,6 +223,9 @@ public class NodePattern implements PatternElement {
     }
     if (!properties.isEmpty()) {
       sb.append(" ").append(properties);
+    }
+    if (whereExpression != null) {
+      sb.append(" WHERE ").append(whereExpression.getText());
     }
     sb.append(")");
     return sb.toString();

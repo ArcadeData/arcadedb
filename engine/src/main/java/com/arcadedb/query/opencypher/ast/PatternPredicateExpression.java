@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.Iterator;
 import java.util.List;
@@ -97,7 +98,7 @@ public class PatternPredicateExpression implements BooleanExpression {
     // Enforce any label conjunction and inline property constraints declared on the
     // (already-bound) start node, e.g. exists((n:A:B)-->(:Node)). These constraints
     // must hold on the bound variable itself, not only on the traversal target (issue #5095).
-    if (!matchesNodePattern(startVertex, startNodePattern, context))
+    if (!matchesNodePattern(startVertex, startNodePattern, result, context))
       return false;
 
     // Get the relationship pattern
@@ -123,13 +124,13 @@ public class PatternPredicateExpression implements BooleanExpression {
     if (endVertex != null) {
       // We have a specific end node - check if relationship exists between them
       // Also verify target labels and inline properties if specified (e.g., (a)-[:T]->(b:Label {k:v}))
-      if (!matchesNodePattern(endVertex, endNodePattern, context))
+      if (!matchesNodePattern(endVertex, endNodePattern, result, context))
         return false;
-      return checkRelationshipExists(startVertex, endVertex, relPattern, relationshipTypes, isOutgoing, isIncoming, context);
+      return checkRelationshipExists(startVertex, endVertex, relPattern, relationshipTypes, isOutgoing, isIncoming, result, context);
     } else {
       // No specific end node - check if any relationship of the specified type exists
       // Also filter by target node labels and inline properties if specified
-      return checkAnyRelationshipExists(startVertex, relPattern, relationshipTypes, endNodePattern, isOutgoing, isIncoming, context);
+      return checkAnyRelationshipExists(startVertex, relPattern, relationshipTypes, endNodePattern, isOutgoing, isIncoming, result, context);
     }
   }
 
@@ -159,10 +160,10 @@ public class PatternPredicateExpression implements BooleanExpression {
         continue;
       final Vertex target = path.getEndVertex();
       if (endVertex != null) {
-        if (target.getIdentity().equals(endVertex.getIdentity()) && matchesNodePattern(target, endNodePattern, context))
+        if (target.getIdentity().equals(endVertex.getIdentity()) && matchesNodePattern(target, endNodePattern, result, context))
           return true;
       } else {
-        if (matchesNodePattern(target, endNodePattern, context))
+        if (matchesNodePattern(target, endNodePattern, result, context))
           return true;
       }
     }
@@ -201,6 +202,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       final String[] relationshipTypes,
       final boolean isOutgoing,
       final boolean isIncoming,
+      final Result row,
       final CommandContext context
   ) {
     // Check outgoing edges: startVertex -> endVertex
@@ -215,7 +217,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
         try {
-          if (edge.getIn().equals(endVertex) && matchesRelationshipProperties(edge, relPattern, context))
+          if (edge.getIn().equals(endVertex) && matchesRelationship(edge, relPattern, row, context))
             return true;
         } catch (final RecordNotFoundException e) {
           // Ghost edge: segment pointer exists but the backing edge record is gone (e.g. an HA
@@ -237,7 +239,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
         try {
-          if (edge.getOut().equals(endVertex) && matchesRelationshipProperties(edge, relPattern, context))
+          if (edge.getOut().equals(endVertex) && matchesRelationship(edge, relPattern, row, context))
             return true;
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
@@ -259,6 +261,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       final NodePattern endNodePattern,
       final boolean isOutgoing,
       final boolean isIncoming,
+      final Result row,
       final CommandContext context
   ) {
     // Check outgoing edges
@@ -273,7 +276,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
         try {
-          if (matchesRelationshipProperties(edge, relPattern, context) && matchesNodePattern(edge.getInVertex(), endNodePattern, context))
+          if (matchesRelationship(edge, relPattern, row, context) && matchesNodePattern(edge.getInVertex(), endNodePattern, row, context))
             return true;
         } catch (final RecordNotFoundException e) {
           // Ghost edge: segment pointer exists but the backing edge/target record is gone. Skip it.
@@ -294,7 +297,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
         try {
-          if (matchesRelationshipProperties(edge, relPattern, context) && matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
+          if (matchesRelationship(edge, relPattern, row, context) && matchesNodePattern(edge.getOutVertex(), endNodePattern, row, context))
             return true;
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
@@ -309,12 +312,15 @@ public class PatternPredicateExpression implements BooleanExpression {
    * Check if a vertex matches the target node pattern: both its labels and its inline properties.
    * A null or empty pattern component matches anything.
    */
-  private boolean matchesNodePattern(final Vertex vertex, final NodePattern nodePattern, final CommandContext context) {
+  private boolean matchesNodePattern(final Vertex vertex, final NodePattern nodePattern, final Result row,
+      final CommandContext context) {
     if (nodePattern == null)
       return true;
     if (!matchesTargetLabels(vertex, nodePattern.getLabels()))
       return false;
-    return matchesTargetProperties(vertex, nodePattern, context);
+    if (!matchesTargetProperties(vertex, nodePattern, context))
+      return false;
+    return matchesInlineWhere(nodePattern.getWhereExpression(), nodePattern.getVariable(), vertex, row, context);
   }
 
   /**
@@ -342,6 +348,40 @@ public class PatternPredicateExpression implements BooleanExpression {
       return true;
 
     return matchesInlineProperties(vertex, nodePattern.getProperties(), context);
+  }
+
+  /**
+   * Check if an edge satisfies every constraint declared on a relationship pattern: the inline
+   * property map {@code -[:R {w: 1}]->} and the inline predicate {@code -[r:R WHERE r.w = 1]->}.
+   */
+  private boolean matchesRelationship(final Edge edge, final RelationshipPattern relPattern, final Result row,
+      final CommandContext context) {
+    if (!matchesRelationshipProperties(edge, relPattern, context))
+      return false;
+    if (relPattern == null || !relPattern.hasWhereExpression())
+      return true;
+    return matchesInlineWhere(relPattern.getWhereExpression(), relPattern.getVariable(), edge, row, context);
+  }
+
+  /**
+   * Evaluates an inline {@code WHERE} predicate declared inside a node or relationship pattern
+   * against the record the pattern just bound. The outer row is copied into the evaluation scope so
+   * that the predicate can also reference variables bound before the pattern predicate, e.g.
+   * {@code MATCH (a) WHERE exists((a)-[r:R WHERE r.w > a.threshold]->())} (issue #5464).
+   */
+  private boolean matchesInlineWhere(final BooleanExpression where, final String variable, final Document record,
+      final Result row, final CommandContext context) {
+    if (where == null)
+      return true;
+
+    final ResultInternal scope = new ResultInternal();
+    if (row != null)
+      for (final String property : row.getPropertyNames())
+        scope.setProperty(property, row.getProperty(property));
+    if (variable != null && !variable.isEmpty())
+      scope.setProperty(variable, record);
+
+    return where.evaluate(scope, context);
   }
 
   /**
