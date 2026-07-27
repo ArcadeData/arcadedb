@@ -32,6 +32,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesRowSource;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
@@ -803,6 +804,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     final int slot = getSlot(shardIdx);
     scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, timestamps, columnValues), true,
         backPressurePercentage);
+  }
+
+  @Override
+  public void appendSamples(final String typeName, final TimeSeriesRowSource source) {
+    final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
+    final TimeSeriesEngine engine = tsType.getEngine();
+    final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
+    final int slot = getSlot(shardIdx);
+    scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);
   }
 
   /**
