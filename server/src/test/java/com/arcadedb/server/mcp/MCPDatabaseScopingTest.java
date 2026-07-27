@@ -29,6 +29,7 @@ import com.arcadedb.server.mcp.tools.QueryTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.mcp.tools.UpsertEntityTool;
 import com.arcadedb.server.mcp.tools.UpsertRelationshipTool;
+import com.arcadedb.server.mcp.tools.VectorSearchTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -87,6 +88,10 @@ class MCPDatabaseScopingTest extends BaseGraphServerTest {
         .put("database", getDatabaseName())
         .put("indexName", "missing")
         .put("queryText", "term"), config));
+    assertReadDenied(() -> VectorSearchTool.execute(getServer(0), user, new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "missing")
+        .put("queryVector", new JSONArray().put(1.0)), config));
 
     assertThat(contains(ListDatabasesTool.execute(getServer(0), user, new JSONObject(), config)
         .getJSONArray("databases"), getDatabaseName())).isFalse();
