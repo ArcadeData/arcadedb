@@ -172,6 +172,15 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Appends samples held as one boxed value array per non-timestamp column. Values are unboxed as
+   * they are written, without an intermediate copy; see {@link #appendSamples(TimeSeriesRowSource)}
+   * for the primitive form and for the locking semantics both share.
+   */
+  public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+    appendSamples(mutableBucket.newRowSource(timestamps, columnValues));
+  }
+
+  /**
    * Appends samples to the mutable bucket.
    * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
@@ -186,8 +195,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * our commit, we get a {@code ConcurrentModificationException} and retry transparently on the
    * freshly-cleared page (see issue #4458). In standalone mode the lock is held through commit as
    * before, since there is no recording-session deadlock.
+   * <p>
+   * The source is read once per retry attempt and never retained.
    */
-  public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
     // shipped to followers via the Raft WAL (TX_ENTRY). On a standalone database,
     // getWrappedDatabaseInstance() returns the same instance.
@@ -201,7 +212,7 @@ public class TimeSeriesShard implements AutoCloseable {
         try {
           db.begin();
           try {
-            mutableBucket.appendSamples(timestamps, columnValues);
+            mutableBucket.appendSamples(source);
           } catch (final Exception e) {
             if (db.isTransactionActive())
               db.rollback();
