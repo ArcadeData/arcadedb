@@ -120,16 +120,14 @@ class Issue4743CompactionEntrySizeIT extends BaseRaftHATest {
       assertThat(serverDb.countType("Address", false))
           .as("every record must replicate to server %d", serverIndex).isEqualTo(TOTAL_RECORDS);
       assertThat(serverDb.getSchema().getIndexByName(indexName).countEntries())
-          .as("the compacted index must be live and populated on server %d", serverIndex).isPositive();
+          .as("server %d must hold the WHOLE index after a split compaction", serverIndex)
+          .isEqualTo(TOTAL_RECORDS);
     });
 
-    // Follower index completeness is asserted by Issue5443FollowerIndexGapIT, not here. #5443 fixed the
-    // gap on the normal path (an incremental compaction round appends a series to the already-existing
-    // compacted file, and nothing replicated those pages). A SECOND, still-open defect shows up only in
-    // this test's artificial configuration: with a 512KB append buffer the schema change is split ~12
-    // ways, and a follower then detaches its compacted sub-index entirely and serves just its mutable
-    // pages (~1897 of 60000 entries). Publishing the schema in its own trailing chunk was tried and did
-    // NOT fix it, so the trigger is elsewhere. Tracked on #5443.
+    // Follower index completeness held back this assertion until #5443 fixed both of its causes: the
+    // pages an incremental round appends to the already-existing compacted file were never replicated,
+    // and a delivery-only chunk of a split schema change triggered a schema reload that detached the
+    // compacted sub-index for good. Issue5443SplitCompactionEntryIT covers the split path directly.
     final Index leaderIdx = getServerDatabase(leaderIndex, getDatabaseName()).getSchema().getIndexByName(indexName);
     assertThat(leaderIdx.countEntries()).as("the leader's index must hold every key").isEqualTo(TOTAL_RECORDS);
     assertThat(leaderIdx.get(new Object[] { uid(12_345) }).hasNext())

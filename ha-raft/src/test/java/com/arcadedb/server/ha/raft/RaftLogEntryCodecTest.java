@@ -474,10 +474,11 @@ class RaftLogEntryCodecTest {
         Map.of(), Map.of(), List.of(), List.of(),
         List.of(new RaftLogEntryCodec.TsSealedBlob("weather", 0, "weather_shard_0.ts.sealed", sealed)));
 
-    // Flip a byte inside the trailing compressed blob payload to corrupt it.
+    // Flip a byte inside the trailing compressed blob payload to corrupt it. NOT the very last byte:
+    // since #5443 that one is the split-continuation flag, and flipping it would leave the blob intact.
     final byte[] corrupted = new byte[encoded.size()];
     encoded.copyTo(corrupted, 0);
-    corrupted[corrupted.length - 1] ^= 0xFF;
+    corrupted[corrupted.length - 2] ^= 0xFF;
 
     Assertions.assertThatThrownBy(
             () -> RaftLogEntryCodec.decode(ByteString.copyFrom(corrupted)))
