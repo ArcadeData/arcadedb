@@ -53,6 +53,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
         .put("allowReads", true)
+        .put("profile", "all")
         .put("allowedUsers", new JSONArray().put("root")));
     seedFullTextIndex();
     seedSampleRecords();
@@ -235,6 +236,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
+    assertThat(tools.length()).isPositive();
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -288,6 +290,51 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasFullTextSearch).isTrue();
     assertThat(hasUpsertEntity).isTrue();
     assertThat(hasUpsertRelationship).isTrue();
+  }
+
+  @Test
+  void toolProfilesFilterDiscoveryAndExecution() throws Exception {
+    saveMCPConfig(new JSONObject().put("profile", "rag"));
+
+    JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 20)
+        .put("method", "tools/list")
+        .put("params", new JSONObject()));
+    assertThat(toolNames(response))
+        .contains("list_databases", "get_schema", "query", "sample_records", "vector_search", "full_text_search",
+            "upsert_entity", "upsert_relationship")
+        .doesNotContain("server_status", "execute_command");
+
+    JSONObject denied = callTool("server_status", new JSONObject());
+    assertThat(denied.getBoolean("isError", false)).isTrue();
+    assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("server_status").contains("rag");
+
+    final JSONObject allowed = callTool("query", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("language", "sql")
+        .put("query", "SELECT FROM V1 LIMIT 1"));
+    assertThat(allowed.getBoolean("isError", true)).isFalse();
+
+    saveMCPConfig(new JSONObject().put("profile", "admin"));
+    response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 21)
+        .put("method", "tools/list")
+        .put("params", new JSONObject()));
+    assertThat(toolNames(response))
+        .contains("list_databases", "get_schema", "query", "execute_command", "server_status",
+            "profiler_start", "profiler_stop", "profiler_status", "get_server_settings", "set_server_setting")
+        .doesNotContain("sample_records", "vector_search", "full_text_search");
+
+    denied = callTool("full_text_search", new JSONObject());
+    assertThat(denied.getBoolean("isError", false)).isTrue();
+    assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("full_text_search").contains("admin");
+
+    final JSONObject adminAllowed = callTool("server_status", new JSONObject());
+    assertThat(adminAllowed.getBoolean("isError", true)).isFalse();
   }
 
   @Test
@@ -595,7 +642,31 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       final JSONObject config = new JSONObject(body);
       assertThat(config.has("enabled")).isTrue();
       assertThat(config.has("allowReads")).isTrue();
+      assertThat(config.getString("profile")).isEqualTo("all");
       assertThat(config.has("allowedUsers")).isTrue();
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
+  void invalidConfigTypeReturnsBadRequest() throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpConfigUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final byte[] data = new JSONObject().put("enabled", "yes").toString().getBytes(StandardCharsets.UTF_8);
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(data);
+    }
+
+    connection.connect();
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+      assertThat(FileUtils.readStreamAsString(connection.getErrorStream(), "utf8"))
+          .contains("enabled").contains("boolean");
     } finally {
       connection.disconnect();
     }
@@ -2370,6 +2441,14 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     return response.getJSONObject("result");
+  }
+
+  private static Set<String> toolNames(final JSONObject response) {
+    final Set<String> names = new HashSet<>();
+    final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
+    for (int i = 0; i < tools.length(); i++)
+      names.add(tools.getJSONObject(i).getString("name"));
+    return names;
   }
 
   private void saveMCPConfig(final JSONObject config) throws Exception {

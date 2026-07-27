@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -29,6 +30,7 @@ import java.io.File;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MCPConfigurationTest {
   private static final String TEST_ROOT = "./target/mcp-config-test";
@@ -55,6 +57,7 @@ class MCPConfigurationTest {
     assertThat(config.isAllowDelete()).isFalse();
     assertThat(config.isAllowSchemaChange()).isFalse();
     assertThat(config.getAllowedUsers()).containsExactly("root");
+    assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.ALL);
   }
 
   @Test
@@ -63,6 +66,7 @@ class MCPConfigurationTest {
     config.setEnabled(true);
     config.setAllowInsert(true);
     config.setAllowUpdate(true);
+    config.setToolProfile(MCPConfiguration.ToolProfile.RAG);
     config.setAllowedUsers(List.of("root", "admin"));
     config.save();
 
@@ -73,6 +77,7 @@ class MCPConfigurationTest {
     assertThat(loaded.isAllowInsert()).isTrue();
     assertThat(loaded.isAllowUpdate()).isTrue();
     assertThat(loaded.isAllowDelete()).isFalse();
+    assertThat(loaded.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.RAG);
     assertThat(loaded.getAllowedUsers()).containsExactly("root", "admin");
   }
 
@@ -126,6 +131,7 @@ class MCPConfigurationTest {
     assertThat(json.getBoolean("enabled")).isFalse();
     assertThat(json.getBoolean("allowReads")).isTrue();
     assertThat(json.getBoolean("allowInsert")).isFalse();
+    assertThat(json.getString("profile")).isEqualTo("all");
     assertThat(json.getJSONArray("allowedUsers").length()).isEqualTo(1);
     assertThat(json.getJSONArray("allowedUsers").getString(0)).isEqualTo("root");
   }
@@ -138,16 +144,55 @@ class MCPConfigurationTest {
     final JSONObject update = new JSONObject()
         .put("allowInsert", true)
         .put("allowDelete", true)
+        .put("profile", "admin")
         .put("allowedUsers", new JSONArray().put("root").put("editor"));
 
     config.updateFrom(update);
 
     assertThat(config.isAllowInsert()).isTrue();
     assertThat(config.isAllowDelete()).isTrue();
+    assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.ADMIN);
     assertThat(config.getAllowedUsers()).containsExactly("root", "editor");
     // Unchanged values should remain
     assertThat(config.isEnabled()).isFalse();
     assertThat(config.isAllowUpdate()).isFalse();
+  }
+
+  @Test
+  void invalidProfileIsRejectedWithoutPartialUpdate() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.load();
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("allowInsert", true)
+        .put("profile", "retrieval")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("all").hasMessageContaining("rag").hasMessageContaining("admin");
+
+    assertThat(config.isAllowInsert()).isFalse();
+    assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.ALL);
+  }
+
+  @Test
+  void invalidBooleanTypeIsRejected() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.load();
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject().put("enabled", "yes")))
+        .isInstanceOf(JSONException.class)
+        .hasMessageContaining("enabled").hasMessageContaining("boolean");
+
+    assertThat(config.isEnabled()).isFalse();
+  }
+
+  @Test
+  void profileNamesAreCaseInsensitive() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+
+    config.updateFrom(new JSONObject().put("profile", "RaG"));
+
+    assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.RAG);
+    assertThat(config.toJSON().getString("profile")).isEqualTo("rag");
   }
 
   @Test
