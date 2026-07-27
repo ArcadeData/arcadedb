@@ -262,11 +262,20 @@ public class PatternComprehensionExpression implements Expression {
     else
       edges = currentVertex.getEdges(edgeDirection).iterator();
 
+    // Row reused across every candidate edge of this expansion: only the relationship variable
+    // changes per edge, so the enclosing bindings are copied once. Stays null when the pattern
+    // carries no inline WHERE, leaving the common path allocation-free.
+    final ResultInternal whereEvalRow = relPattern.hasWhereExpression() ? copyBindings(currentResult) : null;
+
     while (edges.hasNext()) {
       final Edge edge = edges.next();
       // Inline relationship property filter, e.g. [p = (a)-[:VE*1..4 {w:1}]->(c) | ...] (issue #5139).
       // Every relationship in the path must satisfy the map, so skip non-matching edges before recursing.
       if (!matchesEdgeProperties(edge, relPattern, context))
+        continue;
+      // Inline relationship WHERE predicate, e.g. [(a)-[r:E*1..2 WHERE r.tag = 'ok']->(b) | b]. As with
+      // the property map, every relationship in the path must satisfy it.
+      if (whereEvalRow != null && !matchesEdgeWhereExpression(edge, relPattern, whereEvalRow, context))
         continue;
       final RID edgeRid = edge.getIdentity();
       // Trail semantics: do not repeat the same edge in a single path
@@ -352,6 +361,31 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   /**
+   * Returns true if an edge satisfies the relationship pattern's inline {@code WHERE} predicate
+   * (e.g. the {@code WHERE r.tag = 'ok'} in {@code -[r:E WHERE r.tag = 'ok']->}). Mirrors the
+   * enforcement done by the regular MATCH path (MatchRelationshipStep.matchesEdgeWhereExpression),
+   * so pattern comprehensions apply the same predicate semantics.
+   *
+   * @param evalRow bindings visible to the predicate, pre-populated with the enclosing scope. The
+   *                relationship variable is rebound on it for each candidate edge.
+   */
+  private boolean matchesEdgeWhereExpression(final Edge edge, final RelationshipPattern relPattern,
+      final ResultInternal evalRow, final CommandContext context) {
+    final String variable = relPattern.getVariable();
+    if (variable != null && !variable.isEmpty())
+      evalRow.setProperty(variable, edge);
+    return relPattern.getWhereExpression().evaluate(evalRow, context);
+  }
+
+  private static ResultInternal copyBindings(final Result source) {
+    final ResultInternal copy = new ResultInternal();
+    if (source != null)
+      for (final String prop : source.getPropertyNames())
+        copy.setProperty(prop, source.getProperty(prop));
+    return copy;
+  }
+
+  /**
    * Compares an inline pattern property value against the stored value, mirroring the regular MATCH
    * path (MatchNodeStep.matchesProperties): resolves {@code $param} references and applies numeric
    * coercion so an inline literal (parsed as {@code Long}) matches a stored {@code Integer} and vice
@@ -409,10 +443,18 @@ public class PatternComprehensionExpression implements Expression {
     else
       edges = startVertex.getEdges(edgeDirection).iterator();
 
+    // Row reused across every candidate edge of this expansion: only the relationship variable
+    // changes per edge, so the enclosing bindings are copied once. Stays null when the pattern
+    // carries no inline WHERE, leaving the common path allocation-free.
+    final ResultInternal whereEvalRow = relPattern.hasWhereExpression() ? copyBindings(currentResult) : null;
+
     while (edges.hasNext()) {
       final Edge edge = edges.next();
       // Inline relationship property filter, e.g. [(a)-[:VE {w:1}]->(x) | ...] (issue #5139).
       if (!matchesEdgeProperties(edge, relPattern, context))
+        continue;
+      // Inline relationship WHERE predicate, e.g. [(a)-[r:E WHERE r.tag = 'ok']->(x) | ...].
+      if (whereEvalRow != null && !matchesEdgeWhereExpression(edge, relPattern, whereEvalRow, context))
         continue;
 
       final Vertex targetVertex;
