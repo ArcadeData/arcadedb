@@ -108,13 +108,13 @@ public class SampleRecordsTool {
 
   private static ResolvedTypes resolveTypeNames(final Database database, final String databaseName,
       final JSONObject args) {
+    final List<String> eligibleTypes = database.getSchema().getTypes().stream()
+        .filter(type -> !(type instanceof EdgeType))
+        .map(DocumentType::getName)
+        .sorted()
+        .toList();
     final JSONArray requestedTypes = args.getJSONArray("types", null);
     if (requestedTypes == null) {
-      final List<String> eligibleTypes = database.getSchema().getTypes().stream()
-          .filter(type -> !(type instanceof EdgeType))
-          .map(DocumentType::getName)
-          .sorted()
-          .toList();
       return new ResolvedTypes(
           eligibleTypes.stream().limit(MAX_TYPES).toList(),
           eligibleTypes.size(),
@@ -134,7 +134,7 @@ public class SampleRecordsTool {
       typeNames.add(typeName);
     }
     final List<String> names = new ArrayList<>(typeNames);
-    return new ResolvedTypes(names, names.size(), false);
+    return new ResolvedTypes(names, eligibleTypes.size(), false);
   }
 
   private static JSONArray sampleType(final Database database, final String typeName, final int limit,

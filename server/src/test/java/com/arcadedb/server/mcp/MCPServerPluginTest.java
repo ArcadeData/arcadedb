@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -354,7 +355,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(samples.getJSONArray("McpSampleRecord").getJSONObject(0).has("ordinal")).isTrue();
     assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
     assertThat(payload.getInt("sampledTypes")).isEqualTo(2);
-    assertThat(payload.getInt("availableTypes")).isEqualTo(2);
+    assertThat(payload.getInt("availableTypes")).isEqualTo(availableSampleTypeCount());
     assertThat(payload.getInt("recordsReturned")).isEqualTo(2);
     assertThat(payload.getBoolean("truncated")).isFalse();
   }
@@ -375,6 +376,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
     assertThat(samples.has("McpSampleEdge")).isFalse();
     assertThat(payload.getInt("sampledTypes")).isEqualTo(20);
+    assertThat(payload.getInt("availableTypes")).isEqualTo(availableSampleTypeCount());
     assertThat(payload.getInt("availableTypes")).isGreaterThan(20);
     assertThat(payload.getBoolean("truncated")).isTrue();
     assertThat(payload.getInt("recordsReturned")).isEqualTo(
@@ -392,6 +394,13 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         response.getJSONArray("content").getJSONObject(0).getString("text"));
     assertThat(payload.getJSONObject("samples").has("McpSampleEdge")).isTrue();
     assertThat(payload.getInt("sampledTypes")).isEqualTo(1);
+    assertThat(payload.getInt("availableTypes")).isEqualTo(availableSampleTypeCount());
+  }
+
+  private int availableSampleTypeCount() {
+    return Math.toIntExact(getServerDatabase(0, getDatabaseName()).getSchema().getTypes().stream()
+        .filter(type -> !(type instanceof EdgeType))
+        .count());
   }
 
   @Test
