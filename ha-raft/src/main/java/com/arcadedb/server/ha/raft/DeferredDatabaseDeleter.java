@@ -35,6 +35,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -67,14 +68,18 @@ class DeferredDatabaseDeleter implements AutoCloseable {
   /** Candidate staging names tried before giving up and deleting inline. */
   private static final int STAGING_NAME_ATTEMPTS = 16;
 
+  /** Throttle window for the queue-saturation warning, matching the engine pools. */
+  private static final long SATURATION_WARNING_WINDOW_MS = 60_000;
+
   private final ExecutorService executor;
+  private final AtomicLong     lastSaturationWarningOn = new AtomicLong(Long.MIN_VALUE);
 
   DeferredDatabaseDeleter() {
     this(new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(MAX_PENDING_DELETIONS), r -> {
       final Thread t = new Thread(r, "arcadedb-sm-database-deleter");
       t.setDaemon(true);
       return t;
-    }, new ThreadPoolExecutor.CallerRunsPolicy()));
+    }, new ThreadPoolExecutor.AbortPolicy()));
   }
 
   // @VisibleForTesting
@@ -184,21 +189,43 @@ class DeferredDatabaseDeleter implements AutoCloseable {
 
   private void submitDeletion(final Path staged) {
     try {
-      executor.execute(() -> {
-        try {
-          FileUtils.deleteRecursively(staged.toFile());
-          LogManager.instance().log(DeferredDatabaseDeleter.class, Level.FINE,
-              "Deleted dropped database directory '%s'", staged);
-        } catch (final Exception e) {
-          LogManager.instance().log(DeferredDatabaseDeleter.class, Level.WARNING,
-              "Error deleting dropped database directory '%s': it will be retried on the next restart", e, staged);
-        }
-      });
+      executor.execute(() -> delete(staged));
+      return;
     } catch (final RejectedExecutionException e) {
-      // Shutting down: the directory is reserved, so it stays invisible to the server and the startup sweep
-      // deletes it on the next start.
-      LogManager.instance().log(this, Level.FINE,
-          "Deferred deletion of '%s' rejected during shutdown: it will be retried on the next restart", staged);
+      if (executor.isShutdown()) {
+        // Shutting down: the directory is reserved, so it stays invisible to the server and the startup
+        // sweep deletes it on the next start.
+        LogManager.instance().log(this, Level.FINE,
+            "Deferred deletion of '%s' rejected during shutdown: it will be retried on the next restart", staged);
+        return;
+      }
+      warnSaturated(staged);
     }
+    // Caller-runs, outside the catch so a failure in delete() is not mistaken for a rejection.
+    delete(staged);
+  }
+
+  private static void delete(final Path staged) {
+    try {
+      FileUtils.deleteRecursively(staged.toFile());
+      LogManager.instance().log(DeferredDatabaseDeleter.class, Level.FINE,
+          "Deleted dropped database directory '%s'", staged);
+    } catch (final Exception e) {
+      LogManager.instance().log(DeferredDatabaseDeleter.class, Level.WARNING,
+          "Error deleting dropped database directory '%s': it will be retried on the next restart", e, staged);
+    }
+  }
+
+  /**
+   * Warns that the deletion queue is saturated and the caller is about to run the delete itself. Throttled to
+   * one message per window, matching the other pools, because a saturated queue produces one rejection per drop.
+   */
+  private void warnSaturated(final Path staged) {
+    final long now = System.currentTimeMillis();
+    final long last = lastSaturationWarningOn.get();
+    if (now - last >= SATURATION_WARNING_WINDOW_MS && lastSaturationWarningOn.compareAndSet(last, now))
+      LogManager.instance().log(this, Level.WARNING, """
+          Dropped-database deletion queue is full (%d pending): deleting '%s' on the calling thread. Sustained \
+          occurrences mean database drops are stalling the Raft apply loop""", MAX_PENDING_DELETIONS, staged);
   }
 }

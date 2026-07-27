@@ -84,7 +84,8 @@ it again.
   still openable afterwards; `drop()` still deletes; `closeForDrop()` inside a transaction throws.
 - `ha-raft` `DeferredDatabaseDeleterTest` - the rename is synchronous and the physical delete is not;
   the staged name is reserved; repeated drops of the same name get distinct staging directories; the
-  inline fallback when the rename cannot happen; the orphan sweep removes orphans and nothing else.
+  inline fallback when the rename cannot happen; a saturated queue deleting on the calling thread; the
+  orphan sweep removes orphans and nothing else.
 - `ha-raft` `ArcadeStateMachineDeferredDropTest` - `applyDropDatabaseEntry` deregisters the database
   and clears `databases/<name>` synchronously while leaving the physical delete to the background;
   eviction of the bootstrap baseline is preserved; replay after the rename is a no-op.
@@ -99,7 +100,7 @@ Pre-existing coverage that must stay green: `RaftDropDatabase3NodesIT` (asserts
 | Suite | Result |
 |---|---|
 | `engine` `LocalDatabaseCloseForDropTest` | 4/4 |
-| `ha-raft` full unit suite (`mvn -pl ha-raft test`) | 753/753 |
+| `ha-raft` full unit suite (`mvn -pl ha-raft test`) | 754/754 |
 | `ha-raft` `RaftDropDatabase3NodesIT` | 1/1 |
 | `server` `PostServerCommandHandlerIT` | 23/23 |
 | `engine` `com.arcadedb.database.*` | 149 run, 1 pre-existing failure |
@@ -116,6 +117,13 @@ stashed - it is a local classpath gap for the polyglot engine, unrelated to this
 - The client-visible indeterminate outcome (`ReplicationDispatchedTimeoutException`) is not addressed;
   this change removes the dominant reason to hit it for a drop, but option 1 of the issue (a way to
   confirm a dispatched drop committed) remains open.
+- The deleter's pool is not wired into `PoolMetrics`, so it does not appear on the Studio "Executor
+  Pools" card. `PoolMetrics` lives in `server` and binds JVM-wide engine singletons through their
+  `getInstance()`; `server` cannot depend on `ha-raft` (the dependency runs the other way, `provided`),
+  and this pool is a per-state-machine instance, so surfacing it needs a registration SPI rather than a
+  new `bindPool` call. Every other `ha-raft` pool is unmetered today for the same reason. The saturation
+  signal the card would carry is covered in the meantime by a throttled WARNING (60 s window, matching
+  the engine pools) emitted whenever the queue is full and the delete runs on the calling thread.
 - Physical deletion failures are still swallowed by `FileUtils.deleteRecursively`. A staged directory
   that survives is now retried by the sweep on the next restart, which is strictly better than the
   previous behaviour where a half-deleted `databases/<name>` was reloaded as a live database.

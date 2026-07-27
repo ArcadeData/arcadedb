@@ -2006,6 +2006,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     synchronized (server.getDatabasesLock()) {
       embedded.closeForDrop();
       server.removeDatabase(databaseName);
+      // stageForDeletion falls back to deleting inline when the rename is impossible, and that fallback
+      // belongs inside the lock even though it is slow: the directory still carries its live name, so
+      // releasing the lock first would let a concurrent create of the same name meet a half-deleted one.
       staged = deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
     }
     // Queued outside the lock: a saturated deletion queue runs the delete on this thread, and that must not
@@ -2025,7 +2028,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // @VisibleForTesting
   void setDeferredDatabaseDeleter(final DeferredDatabaseDeleter deleter) {
+    final DeferredDatabaseDeleter previous = this.deferredDatabaseDeleter;
     this.deferredDatabaseDeleter = deleter;
+    if (previous != null && previous != deleter)
+      previous.close();
   }
 
   private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {

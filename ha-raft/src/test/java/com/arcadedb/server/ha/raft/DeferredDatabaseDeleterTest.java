@@ -27,9 +27,11 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -158,6 +160,34 @@ class DeferredDatabaseDeleterTest {
 
     assertThat(unrenamable.stageForDeletion(databaseDirectory)).isNull();
     assertThat(databaseDirectory).as("the inline fallback must still remove the directory").doesNotExist();
+  }
+
+  /**
+   * A full queue must degrade to deleting on the calling thread rather than dropping the directory on the
+   * floor: leaking staged directories would grow the disk footprint silently until the next restart sweep.
+   */
+  @Test
+  void aSaturatedQueueDeletesOnTheCallingThread() throws Exception {
+    final ThreadPoolExecutor saturated = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.AbortPolicy());
+    final CountDownLatch gate = new CountDownLatch(1);
+    try (final DeferredDatabaseDeleter bounded = new DeferredDatabaseDeleter(saturated)) {
+      saturated.execute(() -> {
+        try {
+          gate.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+      saturated.execute(() -> {
+      });
+
+      final Path staged = bounded.stageForDeletion(createDatabaseDirectory("mydb"));
+      bounded.deleteInBackground(staged);
+
+      assertThat(staged).as("the rejected deletion must have run before the call returned").doesNotExist();
+      gate.countDown();
+    }
   }
 
   @Test
