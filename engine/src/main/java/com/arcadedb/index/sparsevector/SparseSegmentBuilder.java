@@ -747,4 +747,23 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       return Integer.compare(bucketId, b2);
     return Long.compare(position, b.getPosition());
   }
+
+  /** Same ordering as {@link #compareRid(RID, RID)} with the right-hand side supplied as raw components. */
+  public static int compareRid(final RID a, final int bucketId, final long position) {
+    final int b1 = a.getBucketId();
+    if (b1 != bucketId)
+      return Integer.compare(b1, bucketId);
+    return Long.compare(a.getPosition(), position);
+  }
+
+  /**
+   * Same ordering as {@link #compareRid(RID, RID)} with both sides supplied as raw components. This
+   * is the comparison the DAAT traversal runs millions of times per learned-sparse query, so it
+   * touches no object at all (issue #5467).
+   */
+  public static int compareRid(final int bucketId1, final long position1, final int bucketId2, final long position2) {
+    if (bucketId1 != bucketId2)
+      return Integer.compare(bucketId1, bucketId2);
+    return Long.compare(position1, position2);
+  }
 }

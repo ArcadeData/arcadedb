@@ -43,7 +43,11 @@ public final class DimCursor implements AutoCloseable {
   private final int             dimId;
   private final SourceCursor[]  sources;     // sorted oldest -> newest
   private final boolean[]       sourceLive;  // false once a source is exhausted
-  private RID                   currentRid;
+  // Merged position, held as components with the {@link RID} object materialised on demand. The
+  // scorer compares positions far more often than it reads them (issue #5467).
+  private int                   currentBucketId = -1;
+  private long                  currentPosition = -1L;
+  private RID                   currentRidObj;
   // Index of the newest live source aligned at currentRid; -1 when exhausted. The weight and
   // tombstone are resolved lazily from this source only when a caller actually asks for them, so a
   // Block-Max WAND skip that walks currentRid across block boundaries never forces the underlying
@@ -67,7 +71,19 @@ public final class DimCursor implements AutoCloseable {
   }
 
   public RID currentRid() {
-    return currentRid;
+    if (currentRidObj == null && currentBucketId >= 0)
+      currentRidObj = new RID(currentBucketId, currentPosition);
+    return currentRidObj;
+  }
+
+  /** Bucket id of the merged position, or {@code -1} when exhausted. */
+  public int currentBucketId() {
+    return currentBucketId;
+  }
+
+  /** Position component of the merged position, or {@code -1} when exhausted. */
+  public long currentPosition() {
+    return currentPosition;
   }
 
   public float currentWeight() {
@@ -126,13 +142,18 @@ public final class DimCursor implements AutoCloseable {
    * block max, while every older source's block max independently bounds its own posting.
    */
   public float blockMaxAt(final RID rid) {
+    return blockMaxAt(rid.getBucketId(), rid.getPosition());
+  }
+
+  /** Primitive-argument {@link #blockMaxAt(RID)}. */
+  public float blockMaxAt(final int bucketId, final long position) {
     if (exhausted)
       return 0.0f;
     float m = 0.0f;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      final float bm = sources[i].blockMaxAt(rid);
+      final float bm = sources[i].blockMaxAt(bucketId, position);
       if (bm > m)
         m = bm;
     }
@@ -148,13 +169,18 @@ public final class DimCursor implements AutoCloseable {
    * in-memory memtable covers {@code rid}), which tells the scorer it cannot block-skip here.
    */
   public RID blockEndAt(final RID rid) {
+    return blockEndAt(rid.getBucketId(), rid.getPosition());
+  }
+
+  /** Primitive-argument {@link #blockEndAt(RID)}. */
+  public RID blockEndAt(final int bucketId, final long position) {
     if (exhausted)
       return null;
     RID min = null;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      final RID be = sources[i].blockEndAt(rid);
+      final RID be = sources[i].blockEndAt(bucketId, position);
       if (be != null && (min == null || SparseSegmentBuilder.compareRid(be, min) < 0))
         min = be;
     }
@@ -183,15 +209,16 @@ public final class DimCursor implements AutoCloseable {
       start();
       return !exhausted;
     }
-    if (currentRid == null)
+    if (currentBucketId < 0)
       return false;
 
-    // Advance all sources currently aligned at currentRid.
-    final RID consumed = currentRid;
+    // Advance all sources currently aligned at the merged position.
+    final int consumedBucketId = currentBucketId;
+    final long consumedPosition = currentPosition;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      if (consumed.equals(sources[i].currentRid())) {
+      if (sources[i].currentPosition() == consumedPosition && sources[i].currentBucketId() == consumedBucketId) {
         if (!sources[i].advance())
           sourceLive[i] = false;
       }
@@ -204,18 +231,24 @@ public final class DimCursor implements AutoCloseable {
    * Forward-seek every source to the first posting whose RID >= target.
    */
   public boolean seekTo(final RID target) throws IOException {
+    return seekTo(target.getBucketId(), target.getPosition());
+  }
+
+  /** Primitive-argument {@link #seekTo(RID)}. */
+  public boolean seekTo(final int targetBucketId, final long targetPosition) throws IOException {
     if (exhausted)
       return false;
     if (!started) {
       start();
     }
-    if (currentRid != null && SparseSegmentBuilder.compareRid(currentRid, target) >= 0)
+    if (currentBucketId >= 0
+        && SparseSegmentBuilder.compareRid(currentBucketId, currentPosition, targetBucketId, targetPosition) >= 0)
       return true;
 
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      if (!sources[i].seekTo(target))
+      if (!sources[i].seekTo(targetBucketId, targetPosition))
         sourceLive[i] = false;
     }
     materializeMin();
@@ -227,7 +260,9 @@ public final class DimCursor implements AutoCloseable {
     for (final SourceCursor c : sources)
       c.close();
     exhausted = true;
-    currentRid = null;
+    currentBucketId = -1;
+    currentPosition = -1L;
+    currentRidObj = null;
     newestSourceIdx = -1;
   }
 
@@ -246,24 +281,28 @@ public final class DimCursor implements AutoCloseable {
    * reset; when an equal RID is seen on a newer source, only the newest-index is updated.
    */
   private void materializeMin() {
-    RID minRid = null;
+    int minBucketId = -1;
+    long minPosition = -1L;
     int newestAtMinIdx = -1;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      final RID rid = sources[i].currentRid();
-      if (rid == null) {
+      final int bucketId = sources[i].currentBucketId();
+      if (bucketId < 0) {
         sourceLive[i] = false;
         continue;
       }
-      if (minRid == null) {
-        minRid = rid;
+      final long position = sources[i].currentPosition();
+      if (newestAtMinIdx < 0) {
+        minBucketId = bucketId;
+        minPosition = position;
         newestAtMinIdx = i;
         continue;
       }
-      final int cmp = SparseSegmentBuilder.compareRid(rid, minRid);
+      final int cmp = SparseSegmentBuilder.compareRid(bucketId, position, minBucketId, minPosition);
       if (cmp < 0) {
-        minRid = rid;
+        minBucketId = bucketId;
+        minPosition = position;
         newestAtMinIdx = i;
       } else if (cmp == 0) {
         // i > newestAtMinIdx since we scan oldest-first and only revisit the same RID on a newer
@@ -271,13 +310,17 @@ public final class DimCursor implements AutoCloseable {
         newestAtMinIdx = i;
       }
     }
-    if (minRid == null) {
+    if (newestAtMinIdx < 0) {
       exhausted = true;
-      currentRid = null;
+      currentBucketId = -1;
+      currentPosition = -1L;
+      currentRidObj = null;
       newestSourceIdx = -1;
       return;
     }
-    currentRid = minRid;
+    currentBucketId = minBucketId;
+    currentPosition = minPosition;
+    currentRidObj = null;
     newestSourceIdx = newestAtMinIdx;
   }
 

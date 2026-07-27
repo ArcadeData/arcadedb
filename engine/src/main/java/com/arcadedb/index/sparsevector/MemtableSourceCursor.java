@@ -122,6 +122,16 @@ public final class MemtableSourceCursor implements SourceCursor {
   }
 
   @Override
+  public int currentBucketId() {
+    return currentRid == null ? -1 : currentRid.getBucketId();
+  }
+
+  @Override
+  public long currentPosition() {
+    return currentRid == null ? -1L : currentRid.getPosition();
+  }
+
+  @Override
   public float currentWeight() {
     return currentWeight;
   }
