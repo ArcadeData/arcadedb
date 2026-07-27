@@ -117,6 +117,46 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #5470: on a replicated database every vertex batch becomes one Raft entry, so a load of large
+   * records must be able to shrink it. The temporary ids of vertices flushed in an earlier batch must still
+   * resolve for the edges that follow.
+   */
+  @Test
+  void customVertexBatchSize() throws Exception {
+    testEachServer(serverIndex -> {
+      final StringBuilder body = new StringBuilder();
+      for (int i = 0; i < 7; i++)
+        body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"vbs").append(i).append("\",\"id\":")
+            .append(500 + i).append("}\n");
+      body.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"vbs0\",\"@to\":\"vbs6\"}\n");
+
+      final JSONObject result = postBatch(serverIndex, body.toString(), "application/x-ndjson", "vertexBatchSize=2");
+      assertThat(result.getInt("verticesCreated")).isEqualTo(7);
+      assertThat(result.getInt("edgesCreated")).isEqualTo(1);
+
+      final JSONObject query = executeCommand(serverIndex, "sql",
+          "SELECT FROM V1 WHERE id >= 500 AND id <= 506");
+      assertThat(query.getJSONObject("result").getJSONArray("records").length()).isEqualTo(7);
+    });
+  }
+
+  @Test
+  void invalidVertexBatchSizeReturnsError() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          {"@type":"vertex","@class":"V1","id":600}
+          """;
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "vertexBatchSize=0");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+      conn.disconnect();
+    });
+  }
+
   @Test
   void unknownTempIdReturnsError() throws Exception {
     testEachServer(serverIndex -> {
