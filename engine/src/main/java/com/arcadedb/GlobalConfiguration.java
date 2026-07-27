@@ -705,6 +705,16 @@ public enum GlobalConfiguration {
       'test' mode Studio is always served; in 'production' mode it is disabled by default and this setting can re-enable it""",
       Boolean.class, false),
 
+  SERVER_SHUTDOWN_TIMEOUT("arcadedb.server.shutdownTimeout", SCOPE.SERVER,
+      """
+      Milliseconds the JVM shutdown hook waits for the server lifecycle lock before giving up and letting \
+      the JVM exit WITHOUT a graceful stop. It only matters when another thread is inside start()/stop() \
+      when the shutdown signal arrives: normally the hook takes the lock immediately and this value is \
+      never reached. Giving up leaves databases as a kill would - the next open replays the WAL - which is \
+      the lesser evil, because a hook that waits forever can make the process unkillable (issue #5418). \
+      Raise it if a legitimate shutdown of very large databases needs longer than the default.""",
+      Long.class, 60_000L),
+
   // Metrics
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
 
