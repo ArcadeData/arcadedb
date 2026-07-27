@@ -67,7 +67,7 @@ class Issue4743CompactionEntrySizeIT extends BaseRaftHATest {
     // Only the explicit compact() below may run: a background auto-compaction racing the end-of-test
     // identity check would leave the nodes on different sub-index generations for reasons unrelated to
     // this regression.
-    config.setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 1);
+    config.setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0); // 0 = automatic compaction disabled
   }
 
   @Override
@@ -120,17 +120,14 @@ class Issue4743CompactionEntrySizeIT extends BaseRaftHATest {
       assertThat(serverDb.countType("Address", false))
           .as("every record must replicate to server %d", serverIndex).isEqualTo(TOTAL_RECORDS);
       assertThat(serverDb.getSchema().getIndexByName(indexName).countEntries())
-          .as("the compacted index must be live and populated on server %d", serverIndex).isPositive();
+          .as("server %d must hold the WHOLE index after a split compaction", serverIndex)
+          .isEqualTo(TOTAL_RECORDS);
     });
 
-    // The leader's index is complete and the compacted content is queryable there.
-    //
-    // NOTE: a FOLLOWER's index can end up short of TOTAL_RECORDS after a compaction. That is a
-    // pre-existing gap in compaction replication and NOT a side effect of the entry splitting under
-    // test: the same follower ends up with the exact same entry count on the unpatched code, and also
-    // with the stock 4MB append buffer where the compaction entry is never split at all. Asserting
-    // follower index completeness here would attribute another bug to this fix, so this test does not -
-    // it is reported separately.
+    // Follower index completeness held back this assertion until #5443 fixed both of its causes: the
+    // pages an incremental round appends to the already-existing compacted file were never replicated,
+    // and a delivery-only chunk of a split schema change triggered a schema reload that detached the
+    // compacted sub-index for good. Issue5443SplitCompactionEntryIT covers the split path directly.
     final Index leaderIdx = getServerDatabase(leaderIndex, getDatabaseName()).getSchema().getIndexByName(indexName);
     assertThat(leaderIdx.countEntries()).as("the leader's index must hold every key").isEqualTo(TOTAL_RECORDS);
     assertThat(leaderIdx.get(new Object[] { uid(12_345) }).hasNext())
