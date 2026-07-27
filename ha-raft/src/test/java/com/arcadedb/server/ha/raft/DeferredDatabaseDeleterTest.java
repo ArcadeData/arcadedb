@@ -65,6 +65,14 @@ class DeferredDatabaseDeleterTest {
     return directory;
   }
 
+  /** Mirrors the production call site: stage under the caller's lock, queue the deletion outside it. */
+  private Path drop(final Path databaseDirectory) {
+    final Path staged = deleter.stageForDeletion(databaseDirectory);
+    if (staged != null)
+      deleter.deleteInBackground(staged);
+    return staged;
+  }
+
   private static void awaitGone(final Path path) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + AWAIT_TIMEOUT_MS;
     while (Files.exists(path) && System.currentTimeMillis() < deadline)
@@ -84,7 +92,7 @@ class DeferredDatabaseDeleterTest {
     final CountDownLatch gate = new CountDownLatch(1);
     executor.submit(() -> gate.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS));
 
-    final Path staged = deleter.dropInBackground(databaseDirectory);
+    final Path staged = drop(databaseDirectory);
 
     assertThat(databaseDirectory).as("the database directory must be gone when the call returns").doesNotExist();
     assertThat(staged).as("the files must still be on disk: the delete is queued, not inline").exists();
@@ -101,7 +109,7 @@ class DeferredDatabaseDeleterTest {
     final CountDownLatch gate = new CountDownLatch(1);
     executor.submit(() -> gate.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS));
 
-    final Path staged = deleter.dropInBackground(databaseDirectory);
+    final Path staged = drop(databaseDirectory);
 
     assertThat(staged.getParent()).isEqualTo(databasesDirectory);
     assertThat(ArcadeDBServer.isReservedDatabaseName(staged.getFileName().toString())).isTrue();
@@ -116,8 +124,8 @@ class DeferredDatabaseDeleterTest {
     final CountDownLatch gate = new CountDownLatch(1);
     executor.submit(() -> gate.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS));
 
-    final Path first = deleter.dropInBackground(createDatabaseDirectory("mydb"));
-    final Path second = deleter.dropInBackground(createDatabaseDirectory("mydb"));
+    final Path first = drop(createDatabaseDirectory("mydb"));
+    final Path second = drop(createDatabaseDirectory("mydb"));
 
     assertThat(first).isNotEqualTo(second);
     assertThat(first).exists();
@@ -130,7 +138,26 @@ class DeferredDatabaseDeleterTest {
 
   @Test
   void aMissingDatabaseDirectoryIsANoOp() {
-    assertThat(deleter.dropInBackground(databasesDirectory.resolve("absent"))).isNull();
+    assertThat(drop(databasesDirectory.resolve("absent"))).isNull();
+  }
+
+  /**
+   * When the filesystem cannot rename the directory aside, the directory must still be gone when the call
+   * returns - deleted inline, the behaviour that predates the deferral - so the server never reloads a database
+   * the cluster dropped.
+   */
+  @Test
+  void aDirectoryThatCannotBeRenamedIsDeletedInline() throws Exception {
+    final DeferredDatabaseDeleter unrenamable = new DeferredDatabaseDeleter(executor) {
+      @Override
+      Path rename(final Path databaseDirectory) {
+        return null;
+      }
+    };
+    final Path databaseDirectory = createDatabaseDirectory("mydb");
+
+    assertThat(unrenamable.stageForDeletion(databaseDirectory)).isNull();
+    assertThat(databaseDirectory).as("the inline fallback must still remove the directory").doesNotExist();
   }
 
   @Test

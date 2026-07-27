@@ -39,12 +39,15 @@ Split the drop into a bounded synchronous part and an unbounded background part.
    `closeForDrop()` + the recursive delete, so its behaviour is unchanged.
 
 2. **ha-raft** - new `DeferredDatabaseDeleter`:
-   - `dropInBackground(dir)` renames `databases/<name>` to the sibling reserved directory
-     `databases/.dropped-<name>-<nanos>` with `ATOMIC_MOVE`, then enqueues the recursive delete on a
-     dedicated single-thread daemon executor. The rename is O(1) and is the only file work left on
-     the apply thread.
-   - If the rename fails (cross-device, or a platform holding handles) it falls back to deleting
-     inline, so the outcome is never worse than before the fix.
+   - `stageForDeletion(dir)` renames `databases/<name>` to the sibling reserved directory
+     `databases/.dropped-<name>-<nanos>` with `ATOMIC_MOVE`. The rename is O(1) and is the only file
+     work left on the apply thread.
+   - `deleteInBackground(staged)` queues the recursive delete on a dedicated single-thread daemon
+     executor. It is deliberately a separate call so the caller can make it outside the lock it holds
+     across the staging step: on a saturated queue the delete runs on the calling thread, and that
+     must not widen the lock hold.
+   - If the rename fails (cross-device, or a platform holding handles) `stageForDeletion` falls back
+     to deleting inline, so the outcome is never worse than before the fix.
    - `sweepOrphanedStagingDirectories(databasesDir)` enqueues any `.dropped-*` left behind by a crash
      or by an executor shutdown.
 
@@ -80,8 +83,8 @@ it again.
 - `engine` `LocalDatabaseCloseForDropTest` - `closeForDrop()` closes without deleting; the files are
   still openable afterwards; `drop()` still deletes; `closeForDrop()` inside a transaction throws.
 - `ha-raft` `DeferredDatabaseDeleterTest` - the rename is synchronous and the physical delete is not;
-  the staged name is reserved; deletion completes in the background; the inline fallback when the
-  rename cannot happen; the orphan sweep.
+  the staged name is reserved; repeated drops of the same name get distinct staging directories; the
+  inline fallback when the rename cannot happen; the orphan sweep removes orphans and nothing else.
 - `ha-raft` `ArcadeStateMachineDeferredDropTest` - `applyDropDatabaseEntry` deregisters the database
   and clears `databases/<name>` synchronously while leaving the physical delete to the background;
   eviction of the bootstrap baseline is preserved; replay after the rename is a no-op.
@@ -96,7 +99,7 @@ Pre-existing coverage that must stay green: `RaftDropDatabase3NodesIT` (asserts
 | Suite | Result |
 |---|---|
 | `engine` `LocalDatabaseCloseForDropTest` | 4/4 |
-| `ha-raft` full unit suite (`mvn -pl ha-raft test`) | 752/752 |
+| `ha-raft` full unit suite (`mvn -pl ha-raft test`) | 753/753 |
 | `ha-raft` `RaftDropDatabase3NodesIT` | 1/1 |
 | `server` `PostServerCommandHandlerIT` | 23/23 |
 | `engine` `com.arcadedb.database.*` | 149 run, 1 pre-existing failure |

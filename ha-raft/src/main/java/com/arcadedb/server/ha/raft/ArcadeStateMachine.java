@@ -2006,8 +2006,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     synchronized (server.getDatabasesLock()) {
       embedded.closeForDrop();
       server.removeDatabase(databaseName);
-      staged = deferredDatabaseDeleter.dropInBackground(databaseDirectory);
+      staged = deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
     }
+    // Queued outside the lock: a saturated deletion queue runs the delete on this thread, and that must not
+    // extend to holding the databases lock for the length of a recursive delete.
+    if (staged != null)
+      deferredDatabaseDeleter.deleteInBackground(staged);
 
     // Evict AFTER the drop succeeded, mirroring the applied-index drop eviction which runs only once
     // apply completes: if drop() had thrown and quarantined this database, the baseline must stay so a
