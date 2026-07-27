@@ -32,7 +32,40 @@ public class SchemaIdentifier extends SimpleNode {
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("schema:");
-    builder.append(name);
+
+    // The name is held decoded: re-quote the trailing bucket/index name when it carries characters the lexer only accepts inside
+    // back-ticks, so that re-parsing the serialised statement yields the same target (issue #5469).
+    final int sep = name != null ? name.indexOf(':') : -1;
+    if (sep > -1) {
+      builder.append(name, 0, sep + 1);
+      builder.append(quoteName(name.substring(sep + 1)));
+    } else
+      builder.append(name);
+  }
+
+  /**
+   * Strips the surrounding back-ticks (and un-escapes any embedded one) from the trailing name part of a {@code schema:<kind>:<name>}
+   * target. Returns the input untouched when it is not quoted.
+   */
+  public static String unquoteName(final String namePart) {
+    if (namePart.length() > 1 && namePart.charAt(0) == '`' && namePart.charAt(namePart.length() - 1) == '`')
+      return namePart.substring(1, namePart.length() - 1).replace("\\`", "`");
+    return namePart;
+  }
+
+  /**
+   * Wraps the trailing name part of a {@code schema:<kind>:<name>} target in back-ticks when it contains any character outside the
+   * set the lexer accepts unquoted. Returns the input untouched when quoting is not needed.
+   */
+  public static String quoteName(final String namePart) {
+    boolean needsQuoting = namePart.isEmpty();
+    for (int i = 0; !needsQuoting && i < namePart.length(); i++) {
+      final char c = namePart.charAt(i);
+      needsQuoting = !(Character.isLetterOrDigit(c) && c < 128) && c != '_' && c != '[' && c != ']' && c != '.' && c != '-'
+          && c != ',';
+    }
+
+    return needsQuoting ? "`" + namePart.replace("`", "\\`") + "`" : namePart;
   }
 
   public String getName() {

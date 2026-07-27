@@ -79,6 +79,9 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
             r.setProperty("unique", index.isUnique());
             r.setProperty("automatic", index.isAutomatic());
             r.setProperty("compacting", ((IndexInternal) index).isCompacting());
+            // Exposed here too (it was only on schema:index:<name>) so a listing can be rendered from this single query, without
+            // one detail query per index (issue #5469).
+            r.setProperty("valid", ((IndexInternal) index).isValid());
 
             if (fileId > -1) {
               r.setProperty("fileId", fileId);

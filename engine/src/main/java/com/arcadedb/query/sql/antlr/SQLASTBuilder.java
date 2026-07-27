@@ -3977,15 +3977,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit schema identifier (schema:name).
+   * Visit schema identifier ({@code schema:name} or {@code schema:<kind>:<name>}). The trailing name part addresses a bucket or an
+   * index by its own name and may be back-tick quoted to carry characters that are not legal in a bare identifier (issue #5469):
+   * the quotes are stripped here so the rest of the engine always sees the real name.
    */
   @Override
   public SchemaIdentifier visitSchemaIdentifier(final SQLParser.SchemaIdentifierContext ctx) {
     final SchemaIdentifier schemaId = new SchemaIdentifier(-1);
 
     if (ctx.SCHEMA_IDENTIFIER() != null) {
-      final String text = ctx.SCHEMA_IDENTIFIER().getText();
-      schemaId.name = text.substring("schema:".length());
+      final String text = ctx.SCHEMA_IDENTIFIER().getText().substring("schema:".length());
+
+      final int sep = text.indexOf(':');
+      if (sep > -1)
+        schemaId.name = text.substring(0, sep + 1) + SchemaIdentifier.unquoteName(text.substring(sep + 1));
+      else
+        schemaId.name = text;
     }
 
     return schemaId;

@@ -399,8 +399,12 @@ BUCKET_POSITIONAL_PARAM: B U C K E T COLON HOOK;                 // bucket:?
 
 BUCKET_IDENTIFIER: B U C K E T COLON IDENTIFIER;
 BUCKET_NUMBER_IDENTIFIER: B U C K E T COLON INTEGER_LITERAL;
-SCHEMA_IDENTIFIER: S C H E M A COLON IDENTIFIER (COLON SCHEMA_NAME_PART)?;
-fragment SCHEMA_NAME_PART: (LETTER | [0-9] | '_' | '[' | ']' | '.' | '-')+;
+// The trailing name part of `schema:<kind>:<name>` addresses a bucket or an index by its own name. Index names are auto-derived
+// as `Type[propA,propB]`, so the comma must be accepted here (issue #5469); back-tick quoting covers every other character a
+// user-supplied name may carry (spaces, colons, ...).
+SCHEMA_IDENTIFIER: S C H E M A COLON IDENTIFIER (COLON (SCHEMA_QUOTED_NAME_PART | SCHEMA_NAME_PART))?;
+fragment SCHEMA_NAME_PART: (LETTER | [0-9] | '_' | '[' | ']' | '.' | '-' | ',')+;
+fragment SCHEMA_QUOTED_NAME_PART: BACKTICK ( ~[`] | '\\`' )+ BACKTICK;
 
 // URL Identifiers
 HTTP_URL: 'http://' URL_CHAR+;

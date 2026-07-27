@@ -5699,7 +5699,7 @@ function loadStorageBuckets() {
         jQuery.ajax({
           type: "POST",
           url: "api/v1/query/" + database,
-          data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:bucket:" + bucket.name }),
+          data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:bucket:" + quoteSqlName(bucket.name) }),
           beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
         }).done(function (detailData) {
           if (detailData.result && detailData.result.length > 0)
@@ -5768,74 +5768,43 @@ function renderBucketsDataTable(buckets, details) {
 
 // ===== Indexes Tab =====
 
-var _indexDetails = {};
-
 function loadStorageIndexes() {
   var database = getCurrentDatabase();
   if (!database) return;
 
   $("#dbIndexDetailPanel").hide();
-  _indexDetails = {};
 
   if ($.fn.dataTable.isDataTable("#dbStorageIndexes"))
     try { $("#dbStorageIndexes").DataTable().destroy(); $("#dbStorageIndexes").empty(); } catch (e) {}
 
+  // A single query carries everything the listing shows: no per-index detail query (issue #5469). The full detail, which also
+  // includes the index internal statistics, is fetched lazily only for the row the user selects.
   jQuery.ajax({
     type: "POST",
     url: "api/v1/query/" + database,
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:indexes" }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
-    if (!data.result || data.result.length === 0) {
-      $("#dbStorageIndexes").DataTable({
-        paging: false, ordering: true, data: [],
-        columns: [{ title: "Name" }, { title: "Type" }, { title: "Type Name" }, { title: "File ID" }, { title: "Size" }, { title: "Unique" }, { title: "Compacting" }, { title: "Valid" }]
-      });
-      return;
-    }
-
-    var indexes = data.result;
-    var pending = indexes.length;
-    var detailResults = {};
-
-    for (var i = 0; i < indexes.length; i++) {
-      (function (index) {
-        jQuery.ajax({
-          type: "POST",
-          url: "api/v1/query/" + database,
-          data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:index:" + index.name }),
-          beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
-        }).done(function (detailData) {
-          if (detailData.result && detailData.result.length > 0)
-            detailResults[index.name] = detailData.result[0];
-        }).always(function () {
-          pending--;
-          if (pending === 0)
-            renderIndexesDataTable(indexes, detailResults);
-        });
-      })(indexes[i]);
-    }
+    renderIndexesDataTable(data.result || []);
   }).fail(function (jqXHR) {
     globalNotifyError(jqXHR.responseText);
   });
 }
 
-function renderIndexesDataTable(indexes, details) {
-  _indexDetails = details;
+function renderIndexesDataTable(indexes) {
   var tableData = [];
 
   for (var i = 0; i < indexes.length; i++) {
     var idx = indexes[i];
-    var d = details[idx.name] || {};
     tableData.push([
       escapeHtml(idx.name),
       escapeHtml(idx.indexType || "-"),
       escapeHtml(idx.typeName || "-"),
-      d.fileId != null ? d.fileId : "-",
-      escapeHtml(d.size || "-"),
+      idx.fileId != null ? idx.fileId : "-",
+      escapeHtml(idx.size || "-"),
       idx.unique ? "Yes" : "No",
-      d.compacting ? "Yes" : "No",
-      d.valid != null ? (d.valid ? "Yes" : "No") : "-"
+      idx.compacting ? "Yes" : "No",
+      idx.valid != null ? (idx.valid ? "Yes" : "No") : "-"
     ]);
   }
 
@@ -5865,10 +5834,25 @@ function renderIndexesDataTable(indexes, details) {
     var rowData = dt.row(this).data();
     if (!rowData) return;
     var name = $("<div>").html(rowData[0]).text();
-    var detail = _indexDetails[name] || {};
+    var database = getCurrentDatabase();
+
     $("#dbIndexDetailTitle").text(name);
-    $("#dbIndexDetailContent").text(JSON.stringify(detail, null, 2));
+    $("#dbIndexDetailContent").text("Loading...");
     $("#dbIndexDetailPanel").show();
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/query/" + database,
+      // The name is back-tick quoted: auto-derived compound-index names carry a comma, e.g. `MyType[propA,propB]`.
+      data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:index:" + quoteSqlName(name) }),
+      beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
+    }).done(function (detailData) {
+      var detail = detailData.result && detailData.result.length > 0 ? detailData.result[0] : {};
+      $("#dbIndexDetailContent").text(JSON.stringify(detail, null, 2));
+    }).fail(function (jqXHR) {
+      $("#dbIndexDetailContent").text("");
+      globalNotifyError(jqXHR.responseText);
+    });
   });
 }
 
