@@ -20,12 +20,14 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -98,6 +100,32 @@ class GetClusterHandlerIT extends BaseRaftHATest {
         leaderCount++;
     }
     assertThat(leaderCount).isEqualTo(1);
+  }
+
+  /**
+   * Issue #5453: the endpoint must let a client distinguish "is the leader" from "can serve now".
+   * {@code isLeader} keeps reporting the raw Raft role; the new {@code leaderReady} field carries
+   * Ratis' own readiness signal, which is false on a leader that has not yet committed its
+   * current-term no-op (and always false on a follower).
+   */
+  @Test
+  void clusterEndpointReportsLeaderReadiness() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
+
+    for (int i = 0; i < getServerCount(); i++) {
+      final JSONObject response = queryClusterEndpoint(i);
+      assertThat(response.has("leaderReady")).as("every node must carry leaderReady").isTrue();
+      if (i != leaderIndex)
+        assertThat(response.getBoolean("leaderReady")).as("a follower is never a ready leader").isFalse();
+    }
+
+    // The leader becomes discoverable (role flips to LEADER) before Ratis marks it ready, which is the
+    // very window this issue is about - so poll rather than assert on the first sample.
+    Awaitility.await("the elected leader reports leaderReady")
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> queryClusterEndpoint(leaderIndex).getBoolean("leaderReady"));
   }
 
   @Test

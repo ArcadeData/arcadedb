@@ -81,8 +81,15 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // operator can see that the cluster is running without failover margin.
     response.put("raftState", raftHAServer.getRaftLifeCycleState().name());
 
-    final boolean isLeader = raftHAServer.isLeader();
+    // The raw role is not the same as the ability to serve: a node that has just won an election
+    // rejects writes with the retryable LeaderNotReadyException until it has committed its
+    // current-term no-op. A client that writes as soon as it sees isLeader can burn its whole
+    // arcadedb.ha.quorumTimeout budget on retries, so readiness is published separately (issue #5453).
+    // One snapshot feeds both fields, so the pair can never be contradictory.
+    final RaftHAServer.LeadershipState leadership = raftHAServer.getLeadershipState();
+    final boolean isLeader = leadership.leader();
     response.put("isLeader", isLeader);
+    response.put("leaderReady", leadership.leaderReady());
 
     final RaftPeerId leaderId = raftHAServer.getLeaderId();
     response.put("leaderId", leaderId != null ? leaderId.toString() : JSONObject.NULL);
