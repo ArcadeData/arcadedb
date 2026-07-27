@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IPAddressBlocklist;
 
 import java.io.BufferedReader;
@@ -244,6 +245,17 @@ public class LoadCSVStep extends AbstractExecutionStep {
   static InputStream openRawInputStream(final String url, final CommandContext context) throws IOException {
     if (url.startsWith("http://") || url.startsWith("https://"))
       return openRemoteInputStream(url, context);
+
+    // Reading a local file hands the caller the contents of anything the server process can open, with the server's
+    // privileges - it escapes the database's data authority onto the host filesystem. That is an administrative
+    // capability, so it requires the same privilege as the other local-file-reading statement, IMPORT DATABASE
+    // (ImportDatabaseStatement). Without this gate any user who could run a read query could exfiltrate /etc/passwd,
+    // key material or application secrets straight through the query response (GHSA-hfp5-6gcp-8c75).
+    //
+    // In embedded mode (no security configured) this check is a no-op, so applications that legitimately load local
+    // CSV files through the embedded API are unaffected. On a server it is layered with the two settings below and
+    // with production mode, which already force-disables file access at startup (ArcadeDBServer).
+    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
     // File-based URL — check security settings
     final boolean allowFileUrls = context.getDatabase().getConfiguration()

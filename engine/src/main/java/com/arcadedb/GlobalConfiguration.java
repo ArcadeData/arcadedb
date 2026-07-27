@@ -435,7 +435,9 @@ public enum GlobalConfiguration {
   OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS("arcadedb.opencypher.loadCsv.allowFileUrls", SCOPE.DATABASE,
       """
       Allow LOAD CSV to access local files via file:/// URLs and bare file paths. \
-      Disable for security in multi-tenant server deployments.""",
+      Disable for security in multi-tenant server deployments. This is only the outer switch: on a server the \
+      local-file branch also requires the administrative 'updateSecurity' permission (the same privilege IMPORT \
+      DATABASE requires), and 'production' server mode force-disables this setting at startup.""",
       Boolean.class, true),
 
   OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY("arcadedb.opencypher.loadCsv.importDirectory", SCOPE.DATABASE,
