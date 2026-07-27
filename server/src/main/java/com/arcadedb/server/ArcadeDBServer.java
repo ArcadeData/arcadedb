@@ -1130,7 +1130,24 @@ public class ArcadeDBServer {
       } catch (Throwable t) {
         //IGNORE
       }
-      stopFromShutdownHook();
+      try {
+        stopFromShutdownHook();
+      } catch (final Throwable t) {
+        // A shutdown hook must never let anything escape (issue #5418, second deadlock). Apache Ratis
+        // installs a global UncaughtExceptionHandler that calls System.exit(); when it fires on THIS
+        // thread, that System.exit() blocks forever on the java.lang.Shutdown class monitor already held
+        // by the thread that is running the hooks - so a stray exception during shutdown hangs the JVM
+        // just as surely as the lock wait this method was written to bound. Swallow and let the exit
+        // proceed: the databases are then left as a kill would leave them, and the next open replays
+        // the WAL.
+        try {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error during the shutdown hook; the JVM will exit anyway and open databases will be recovered "
+                  + "from the WAL on the next start", t);
+        } catch (final Throwable ignored) {
+          // the logger may already be closing down
+        }
+      }
     }, "arcadedb-shutdown-hook"));
 
     hostAddress = assignHostAddress();

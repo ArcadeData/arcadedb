@@ -84,6 +84,33 @@ class Issue5418ShutdownHookDeadlockTest {
   }
 
   @Test
+  void aThrowingStopMustNotEscapeTheHook() {
+    // Second deadlock on this path: Apache Ratis installs a global UncaughtExceptionHandler that calls
+    // System.exit(). If it fires on the shutdown-hook thread, that System.exit() blocks forever on the
+    // java.lang.Shutdown class monitor already held by the thread running the hooks - the JVM hangs just
+    // as surely as an unbounded lock wait. So nothing may escape the hook body.
+    final AtomicBoolean escaped = new AtomicBoolean(false);
+    final Thread hook = new Thread(() -> {
+      try {
+        throw new IllegalStateException("stop() blew up during shutdown");
+      } catch (final Throwable t) {
+        // mirrors the production hook: swallow, log, let the exit proceed
+      }
+    }, "issue5418-hook-body");
+    hook.setUncaughtExceptionHandler((t, e) -> escaped.set(true));
+    hook.start();
+    try {
+      hook.join(10_000);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    assertThat(hook.isAlive()).isFalse();
+    assertThat(escaped.get())
+        .as("an exception escaping a shutdown hook reaches Ratis's exit-calling handler and hangs the JVM")
+        .isFalse();
+  }
+
+  @Test
   void hookAcquiresTheLockWhenItIsFree() {
     // The normal path - a shutdown signal on a healthy server - must be unaffected: the hook takes the
     // lock immediately and performs a full graceful stop.
