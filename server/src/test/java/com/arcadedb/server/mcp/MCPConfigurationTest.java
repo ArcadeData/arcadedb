@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -178,7 +179,7 @@ class MCPConfigurationTest {
     config.load();
 
     assertThatThrownBy(() -> config.updateFrom(new JSONObject().put("enabled", "yes")))
-        .isInstanceOf(com.arcadedb.serializer.json.JSONException.class)
+        .isInstanceOf(JSONException.class)
         .hasMessageContaining("enabled").hasMessageContaining("boolean");
 
     assertThat(config.isEnabled()).isFalse();
