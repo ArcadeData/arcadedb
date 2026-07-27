@@ -1,5 +1,8 @@
 # Issue #5454 - drop database deletes synchronously inside the Raft apply
 
+PR: https://github.com/ArcadeData/arcadedb/pull/5455
+
+
 ## Symptom
 
 `drop database` performed the full physical deletion of the database on the Ratis apply thread.
@@ -108,6 +111,28 @@ Pre-existing coverage that must stay green: `RaftDropDatabase3NodesIT` (asserts
 The engine failure is `DatabaseLifecycleBackgroundThreadsTest.engineBackgroundThreadsAreDaemon`
 (`Query engine 'js' was not found`), reproduced identically on the base commit with the change
 stashed - it is a local classpath gap for the polyglot engine, unrelated to this work.
+
+## Review cycles
+
+| # | Head | Review outcome | Applied |
+|---|---|---|---|
+| 1 | `9e2f26e07` | non-blocking | Split `dropInBackground` into `stageForDeletion` (under the lock) and `deleteInBackground` (outside it), so a caller-runs fallback cannot widen the lock hold. Retry the staging name on `FileAlreadyExistsException` instead of falling through to the inline delete. Cover the rename-not-possible fallback with a test. |
+| 2 | `b46254973` | non-blocking | Replace `CallerRunsPolicy` with an explicit rejection path that emits a throttled saturation WARNING. Comment the call site so the inline fallback is not moved out of the lock. Close a replaced deleter. Test the saturated-queue path. |
+| 3 | `bb9212bea` | non-blocking | Resolve `getDatabase(...).getEmbedded()` inside the lock. Mint staging names from a JVM-wide sequence, and retry on `DirectoryNotEmptyException` as well - a rename onto a populated staging directory raises that, not `FileAlreadyExistsException`, so a real collision would previously have skipped the retry and fallen through to the inline delete. |
+| 4 | `d04dcfb42` | LGTM, cosmetic notes only | Nothing applied - see below. |
+
+`gemini-code-assist` did not review any of the four head commits.
+
+Cosmetic notes raised on cycle 4 and deliberately not applied:
+
+- The deleter is built in the field initializer rather than in `initialize()`. Tying it to `initialize()`
+  would be more symmetric with `close()`, but the state-machine unit tests drive
+  `applyDropDatabaseEntry` without calling `initialize()`, and the executor starts no thread until the
+  first submit, so the current shape costs nothing.
+- `closeForDrop()` passes `"Cannot drop database"` to `checkDatabaseIsOpen`, which reads slightly oddly
+  when `closeForDrop()` is the direct entry point rather than `drop()`.
+- Background reclaim is serial by construction (one deleter thread). Intended: the goal is getting the
+  delete off the apply loop, not maximizing delete throughput.
 
 ## Known gaps
 
