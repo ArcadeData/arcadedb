@@ -79,7 +79,9 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -97,6 +99,15 @@ public class ArcadeDBServer {
    * must not be registered at startup, nor exposed through the server/cluster status APIs.
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
+
+  /**
+   * How long the shutdown hook waits for the lifecycle lock when the server is still {@code STARTING}
+   * (issue #5418). Short on purpose: a server that never came up has nothing worth flushing, and the
+   * most likely holder of the lock is the starting thread that triggered this shutdown by calling
+   * {@code System.exit()} - which will never release it. Long enough only to lose a benign race with a
+   * start that is about to complete.
+   */
+  private static final long                                 SHUTDOWN_HOOK_STARTING_TIMEOUT_MS    = 2_000;
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
@@ -123,6 +134,11 @@ public class ArcadeDBServer {
   // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
   // exposed via getDatabasesLock() without leaking the registry itself.
   private final       Object                                databasesLock                        = new Object();
+  // Serialises start() and stop(). Deliberately an explicit lock rather than `synchronized` on the
+  // instance: the JVM shutdown hook must be able to give up on it (see stopFromShutdownHook), because a
+  // startup failure that calls System.exit() from inside start() would otherwise deadlock the JVM
+  // permanently (issue #5418). Reentrant because start() calls stop() on its failure path.
+  private final       ReentrantLock                         lifecycleLock                        = new ReentrantLock();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
@@ -178,7 +194,19 @@ public class ArcadeDBServer {
     return snapshotInstallInProgress.get();
   }
 
-  public synchronized void start() {
+  public void start() {
+    // #5418: the lifecycle mutex is an explicit ReentrantLock rather than `synchronized`, so the JVM
+    // shutdown hook can wait for it with a TIMEOUT. See stopFromShutdownHook() for why that matters.
+    // Reentrant because start() calls stop() on its own failure path.
+    lifecycleLock.lock();
+    try {
+      startInternal();
+    } finally {
+      lifecycleLock.unlock();
+    }
+  }
+
+  private void startInternal() {
     LogManager.instance().setContext(getServerName());
 
     welcomeBanner();
@@ -479,7 +507,79 @@ public class ArcadeDBServer {
     return result;
   }
 
-  public synchronized void stop() {
+  public void stop() {
+    lifecycleLock.lock();
+    try {
+      stopInternal();
+    } finally {
+      lifecycleLock.unlock();
+    }
+  }
+
+  /**
+   * Stops the server from the JVM shutdown hook, and NEVER blocks the JVM from exiting (issue #5418).
+   * <p>
+   * A shutdown hook that waits unconditionally for the lifecycle mutex can hang the process for good.
+   * The observed path: {@link #start()} holds the mutex while Apache Ratis tries to bind its gRPC port;
+   * if the port is taken, Ratis reports the failure by calling {@code System.exit()} from that very
+   * thread. {@code System.exit()} runs the shutdown hooks and waits for them, so the starting thread is
+   * now parked inside {@code Shutdown.exit()} still holding the mutex, while this hook waits for a mutex
+   * that can never be released - a deadlock in which the JVM cannot exit and only SIGKILL ends it. Any
+   * startup port conflict was enough to trigger it.
+   * <p>
+   * So the wait is bounded, and the bound depends on what the mutex holder is likely doing:
+   * <ul>
+   *   <li>{@code STARTING}: the server never came up, so there is nothing worth flushing and the holder
+   *       is very likely the thread that triggered this shutdown. Wait only briefly, for the benign race
+   *       where a concurrent start is about to finish.</li>
+   *   <li>anything else: a legitimate concurrent {@code stop()} may be flushing databases, and cutting
+   *       that short would cost a WAL recovery on the next open. Wait up to
+   *       {@code arcadedb.server.shutdownTimeout}.</li>
+   * </ul>
+   * If the mutex never arrives, the databases are left as they are: the next open replays the WAL,
+   * exactly as after a kill. That is strictly better than a process that cannot be stopped.
+   */
+  private void stopFromShutdownHook() {
+    final long timeout = status == STATUS.STARTING
+        ? SHUTDOWN_HOOK_STARTING_TIMEOUT_MS
+        : configuration.getValueAsLong(GlobalConfiguration.SERVER_SHUTDOWN_TIMEOUT);
+
+    if (!awaitLifecycleLock(lifecycleLock, timeout)) {
+      LogManager.instance().log(this, Level.WARNING,
+          """
+          Could not acquire the server lifecycle lock within %dms while status is %s, so the shutdown hook is \
+          returning WITHOUT a graceful stop and the JVM will exit. Another thread is inside start()/stop() and \
+          did not release it - typically a startup failure that called System.exit() from inside start() (e.g. a \
+          port already in use). Open databases were not closed cleanly; the next open replays the WAL. Raise \
+          arcadedb.server.shutdownTimeout if a legitimate shutdown needs longer.""",
+          timeout, status);
+      return;
+    }
+
+    try {
+      stopInternal();
+    } finally {
+      lifecycleLock.unlock();
+    }
+  }
+
+  /**
+   * Bounded acquisition of the lifecycle lock, preserving the interrupt flag. Extracted so the
+   * shutdown-hook guard can be tested without driving a real JVM shutdown.
+   *
+   * @return {@code true} when the lock was acquired and the caller must unlock it
+   */
+  // @VisibleForTesting
+  static boolean awaitLifecycleLock(final ReentrantLock lock, final long timeoutMs) {
+    try {
+      return lock.tryLock(Math.max(0, timeoutMs), TimeUnit.MILLISECONDS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
+
+  private void stopInternal() {
     if (status == STATUS.OFFLINE || status == STATUS.SHUTTING_DOWN)
       return;
 
@@ -1030,8 +1130,8 @@ public class ArcadeDBServer {
       } catch (Throwable t) {
         //IGNORE
       }
-      stop();
-    }));
+      stopFromShutdownHook();
+    }, "arcadedb-shutdown-hook"));
 
     hostAddress = assignHostAddress();
   }
