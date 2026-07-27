@@ -48,10 +48,13 @@ final class TimeSeriesHandlerUtils {
         if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
         if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName)) {
+          // Coerce the JSON value to the column's declared type so it matches what both storage layers
+          // hand back (issue #5475).
+          final Object coerced = col.coerceValue(tagValue);
           if (filter == null)
-            filter = TagFilter.eq(nonTsIdx, tagValue);
+            filter = TagFilter.eq(nonTsIdx, coerced);
           else
-            filter = filter.and(nonTsIdx, tagValue);
+            filter = filter.and(nonTsIdx, coerced);
           break;
         }
         nonTsIdx++;

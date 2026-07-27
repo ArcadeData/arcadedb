@@ -24,6 +24,7 @@ import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
+import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -179,6 +180,10 @@ public class LocalTimeSeriesType extends LocalDocumentType {
       colJson.put("name", col.getName());
       colJson.put("dataType", col.getDataType().name());
       colJson.put("role", col.getRole().name());
+      // The codec is not recorded inside a sealed block: it is resolved from the schema when the store
+      // is opened, so it must be persisted or a future change to the default table would silently
+      // decode existing blocks with the wrong codec (issue #5475).
+      colJson.put("compression", col.getCompressionHint().name());
       colArray.put(colJson);
     }
     json.put("tsColumns", colArray);
@@ -222,11 +227,15 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     if (colArray != null) {
       for (int i = 0; i < colArray.length(); i++) {
         final JSONObject colJson = colArray.getJSONObject(i);
-        tsColumns.add(new ColumnDefinition(
-            colJson.getString("name"),
-            Type.getTypeByName(colJson.getString("dataType")),
-            ColumnDefinition.ColumnRole.valueOf(colJson.getString("role"))
-        ));
+        final Type dataType = Type.getTypeByName(colJson.getString("dataType"));
+        final ColumnDefinition.ColumnRole role = ColumnDefinition.ColumnRole.valueOf(colJson.getString("role"));
+        // A schema written before issue #5475 has no codec recorded; its blocks were encoded with the
+        // codec table of that build, so that table is what must decode them.
+        final String compression = colJson.getString("compression", null);
+        final TimeSeriesCodec codec = compression != null ?
+            TimeSeriesCodec.valueOf(compression) :
+            ColumnDefinition.legacyCodecFor(dataType, role);
+        tsColumns.add(new ColumnDefinition(colJson.getString("name"), dataType, role, codec));
       }
     }
 

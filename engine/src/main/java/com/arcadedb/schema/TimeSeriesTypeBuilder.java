@@ -100,6 +100,14 @@ public class TimeSeriesTypeBuilder {
     if (timestampColumn == null)
       throw new SchemaException("TimeSeries type requires a TIMESTAMP column");
 
+    // A TimeSeries row is a fixed-stride record and a sealed block column is one of three primitive
+    // codecs, so a type with neither a fixed width nor a bounded text form cannot be stored. Declaring
+    // one used to be accepted and then corrupted the columns after it in the row (issue #5475).
+    for (final ColumnDefinition col : columns)
+      if (!ColumnDefinition.isStorableType(col.getDataType()))
+        throw new SchemaException("Column '" + col.getName() + "' of type " + col.getDataType()
+            + " cannot be used in a TIMESERIES type. Supported types: " + ColumnDefinition.storableTypeNames());
+
     final LocalSchema schema = (LocalSchema) database.getSchema();
     if (schema.existsType(typeName))
       throw new SchemaException("Type '" + typeName + "' already exists");

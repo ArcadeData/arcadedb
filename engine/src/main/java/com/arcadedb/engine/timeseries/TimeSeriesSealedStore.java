@@ -1098,7 +1098,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
             double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
             for (final Object v : chunkValues) {
-              final double d = v != null ? ((Number) v).doubleValue() : 0.0;
+              final double d = ColumnDefinition.numericValueOf(v);
               if (d < min)
                 min = d;
               if (d > max)
@@ -1542,13 +1542,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       case GORILLA_XOR -> {
         final double[] doubles = new double[values.length];
         for (int i = 0; i < values.length; i++)
-          doubles[i] = values[i] != null ? ((Number) values[i]).doubleValue() : 0.0;
+          doubles[i] = ColumnDefinition.numericValueOf(values[i]);
         yield GorillaXORCodec.encode(doubles);
       }
       case SIMPLE8B -> {
         final long[] longs = new long[values.length];
         for (int i = 0; i < values.length; i++)
-          longs[i] = values[i] != null ? ((Number) values[i]).longValue() : 0L;
+          longs[i] = ColumnDefinition.integerValueOf(values[i]);
         yield Simple8bCodec.encode(longs);
       }
       case DICTIONARY -> {
@@ -1829,7 +1829,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final String[] distinctVals = entry.tagDistinctValues[schemaIdx];
       boolean anyMatch = false;
       for (final String dv : distinctVals) {
-        if (cond.values().contains(dv)) {
+        if (cond.matchValues().contains(dv)) {
           anyMatch = true;
           break;
         }
@@ -1849,7 +1849,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private static boolean matchesTagConditions(final String[][] tagCols,
       final List<TagFilter.Condition> conditions, final int i) {
     for (int ci = 0; ci < tagCols.length; ci++)
-      if (!conditions.get(ci).values().contains(tagCols[ci][i]))
+      if (!conditions.get(ci).matchValues().contains(tagCols[ci][i]))
         return false;
     return true;
   }
@@ -2113,25 +2113,29 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * value stored in the block (issue #5416).
    */
   private static final class RawColumn {
-    private final double[] doubles;
-    private final long[]   longs;
-    private final String[] strings;
-    private final boolean  integerType;
+    private final ColumnDefinition col;
+    private final double[]         doubles;
+    private final long[]           longs;
+    private final String[]         strings;
 
-    private RawColumn(final double[] doubles, final long[] longs, final String[] strings, final boolean integerType) {
+    private RawColumn(final ColumnDefinition col, final double[] doubles, final long[] longs, final String[] strings) {
+      this.col = col;
       this.doubles = doubles;
       this.longs = longs;
       this.strings = strings;
-      this.integerType = integerType;
     }
 
+    /**
+     * Boxing goes through the column definition so a sealed block hands back the same Java type the
+     * mutable row does for the same declared column (issue #5475).
+     */
     Object valueAt(final int i) {
       if (doubles != null)
-        return doubles[i];
+        return col.boxDouble(doubles[i]);
       if (longs != null)
-        return integerType ? (Object) (int) longs[i] : (Object) longs[i];
+        return col.boxRaw(longs[i]);
       if (strings != null)
-        return strings[i];
+        return col.boxString(strings[i]);
       return null;
     }
   }
@@ -2166,10 +2170,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final ColumnDefinition col = columns.get(c);
 
       final RawColumn decoded = switch (col.getCompressionHint()) {
-        case GORILLA_XOR -> new RawColumn(GorillaXORCodec.decode(compressed), null, null, false);
-        case SIMPLE8B -> new RawColumn(null, Simple8bCodec.decode(compressed), null, col.getDataType() == Type.INTEGER);
-        case DICTIONARY -> new RawColumn(null, null, DictionaryCodec.decode(compressed), false);
-        default -> new RawColumn(null, null, null, false);
+        case GORILLA_XOR -> new RawColumn(col, GorillaXORCodec.decode(compressed), null, null);
+        case SIMPLE8B -> new RawColumn(col, null, Simple8bCodec.decode(compressed), null);
+        case DICTIONARY -> new RawColumn(col, null, null, DictionaryCodec.decode(compressed));
+        default -> new RawColumn(col, null, null, null);
       };
 
       result.add(decoded);
@@ -2196,7 +2200,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       if (outPos < 0 || outPos >= rawColumns.length)
         return false;
-      if (!cond.values().contains(rawColumns[outPos].valueAt(rowIdx)))
+      if (!cond.matchValues().contains(rawColumns[outPos].valueAt(rowIdx)))
         return false;
     }
     return true;
@@ -2228,30 +2232,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
       final ColumnDefinition col = columns.get(c);
 
+      // Boxing goes through the column definition so a sealed block hands back the same Java type the
+      // mutable row does for the same declared column (issue #5475).
       final Object[] decompressed = switch (col.getCompressionHint()) {
         case GORILLA_XOR -> {
           final double[] vals = GorillaXORCodec.decode(compressed);
           final Object[] boxed = new Object[vals.length];
           for (int i = 0; i < vals.length; i++)
-            boxed[i] = vals[i];
+            boxed[i] = col.boxDouble(vals[i]);
           yield boxed;
         }
         case SIMPLE8B -> {
           final long[] vals = Simple8bCodec.decode(compressed);
           final Object[] boxed = new Object[vals.length];
-          if (col.getDataType() == Type.INTEGER) {
-            for (int i = 0; i < vals.length; i++)
-              boxed[i] = (int) vals[i];
-          } else {
-            for (int i = 0; i < vals.length; i++)
-              boxed[i] = vals[i];
-          }
+          for (int i = 0; i < vals.length; i++)
+            boxed[i] = col.boxRaw(vals[i]);
           yield boxed;
         }
         case DICTIONARY -> {
           final String[] vals = DictionaryCodec.decode(compressed);
           final Object[] boxed = new Object[vals.length];
-          System.arraycopy(vals, 0, boxed, 0, vals.length);
+          for (int i = 0; i < vals.length; i++)
+            boxed[i] = col.boxString(vals[i]);
           yield boxed;
         }
         default -> new Object[entry.sampleCount];

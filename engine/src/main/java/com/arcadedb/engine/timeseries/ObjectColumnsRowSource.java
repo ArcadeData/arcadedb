@@ -83,7 +83,7 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
 
     if (kind == TimeSeriesBatch.KIND_BOOLEAN)
       return Boolean.TRUE.equals(value) ? 1L : 0L;
-    if (value == null || kind == TimeSeriesBatch.KIND_OPAQUE)
+    if (value == null)
       return 0L;
 
     final Number number = (Number) value;
@@ -99,6 +99,11 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
 
   @Override
   public String getStringValue(final int row, final int columnIndex) {
-    return (String) columnValues[columnIndex][row];
+    final Object value = columnValues[columnIndex][row];
+    // A KIND_TEXT column has no native form in the row, so it is stored as its text form; a real
+    // STRING column keeps the strict cast it always had.
+    if (kinds[columnIndex] == TimeSeriesBatch.KIND_TEXT)
+      return value != null ? value.toString() : null;
+    return (String) value;
   }
 }

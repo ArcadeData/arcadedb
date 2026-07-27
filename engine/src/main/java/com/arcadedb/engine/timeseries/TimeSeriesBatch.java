@@ -65,7 +65,10 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   static final byte KIND_BYTE     = 5;
   static final byte KIND_BOOLEAN  = 6;
   static final byte KIND_STRING   = 7;
-  static final byte KIND_OPAQUE   = 8;
+  // A declared type with no fixed width and no native form in the row: stored as its text form, the
+  // only encoding the reader can walk past. CREATE TIMESERIES TYPE refuses these, so only a type
+  // whose schema predates issue #5475 can still carry one.
+  static final byte KIND_TEXT     = 8;
 
   private final ColumnDefinition[] columns;
   private final byte[]             kinds;
@@ -104,7 +107,9 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       columns[colIdx] = col;
       final byte kind = kindOf(col.getDataType());
       kinds[colIdx] = kind;
-      if (kind == KIND_STRING)
+      // KIND_TEXT columns are stored length-prefixed in the row exactly like a STRING, so they need
+      // the String backing too (issue #5475).
+      if (kind == KIND_STRING || kind == KIND_TEXT)
         stringValues[colIdx] = new String[initialCapacity];
       else
         rawValues[colIdx] = new long[initialCapacity];
@@ -146,7 +151,6 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
       case KIND_FLOAT -> Float.floatToRawIntBits((float) value);
       case KIND_BOOLEAN -> value != 0 ? 1L : 0L;
-      case KIND_OPAQUE -> 0L;
       default -> (long) value;
     };
   }
@@ -156,7 +160,6 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       case KIND_FLOAT -> Float.floatToRawIntBits(value);
       case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
       case KIND_BOOLEAN -> value != 0 ? 1L : 0L;
-      case KIND_OPAQUE -> 0L;
       default -> (long) value;
     };
   }
@@ -166,7 +169,6 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
       case KIND_FLOAT -> Float.floatToRawIntBits(value);
       case KIND_BOOLEAN -> value != 0 ? 1L : 0L;
-      case KIND_OPAQUE -> 0L;
       default -> value;
     };
   }
@@ -188,7 +190,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   }
 
   public void setString(final int row, final int columnIndex, final String value) {
-    if (kinds[columnIndex] != KIND_STRING)
+    if (kinds[columnIndex] != KIND_STRING && kinds[columnIndex] != KIND_TEXT)
       throw new IllegalArgumentException(
           "Column '" + columns[columnIndex].getName() + "' is of type " + columns[columnIndex].getDataType()
               + ", not STRING");
@@ -206,11 +208,15 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       stringValues[columnIndex][row] = (String) value;
       return;
     }
+    if (kind == KIND_TEXT) {
+      stringValues[columnIndex][row] = value != null ? value.toString() : null;
+      return;
+    }
     if (kind == KIND_BOOLEAN) {
       rawValues[columnIndex][row] = Boolean.TRUE.equals(value) ? 1L : 0L;
       return;
     }
-    if (value == null || kind == KIND_OPAQUE) {
+    if (value == null) {
       rawValues[columnIndex][row] = 0L;
       return;
     }
@@ -256,8 +262,8 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   private long[] rawColumn(final int columnIndex) {
     final long[] column = rawValues[columnIndex];
     if (column == null)
-      throw new IllegalArgumentException(
-          "Column '" + columns[columnIndex].getName() + "' is of type STRING, use setString()");
+      throw new IllegalArgumentException("Column '" + columns[columnIndex].getName() + "' of type "
+          + columns[columnIndex].getDataType() + " is stored as text, use setString()");
     return column;
   }
 
@@ -284,13 +290,13 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     return switch (type) {
       case DOUBLE -> KIND_DOUBLE;
       case FLOAT -> KIND_FLOAT;
-      case LONG, DATETIME -> KIND_LONG;
+      case LONG, DATETIME, DATE, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> KIND_LONG;
       case INTEGER -> KIND_INTEGER;
       case SHORT -> KIND_SHORT;
       case BYTE -> KIND_BYTE;
       case BOOLEAN -> KIND_BOOLEAN;
       case STRING -> KIND_STRING;
-      default -> KIND_OPAQUE;
+      default -> KIND_TEXT;
     };
   }
 }

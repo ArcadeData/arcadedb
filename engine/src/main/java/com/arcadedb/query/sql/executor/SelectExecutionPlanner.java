@@ -2335,7 +2335,9 @@ public class SelectExecutionPlanner {
           if (value == null)
             continue;
           final int nonTsIdx = nonTsIndexOf(columns, i);
-          blockMap.computeIfAbsent(nonTsIdx, k -> new HashSet<>()).add(value.toString());
+          // Coerce to the tag's declared type: both storage layers hand the value back in that type
+          // now, so a stringified literal would never match (issue #5475).
+          blockMap.computeIfAbsent(nonTsIdx, k -> new HashSet<>()).add(col.coerceValue(value));
           break;
         }
       }
