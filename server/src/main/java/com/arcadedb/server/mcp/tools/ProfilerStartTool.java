@@ -52,6 +52,11 @@ public class ProfilerStartTool {
     if (!config.isAllowAdmin())
       throw new SecurityException("Admin operations are not allowed by MCP configuration");
 
+    // allowAdmin is a deployment-wide switch, not an authorization decision: it says the MCP transport MAY expose
+    // admin operations, never that THIS caller may invoke them. Without the per-caller check any allowed MCP user
+    // reached this server-administration operation (GHSA-pff6-hp53-pj54).
+    MCPToolUtils.checkServerAdmin(user, "profiler_start");
+
     final ServerQueryProfiler profiler = server.getQueryProfiler();
     final int timeout = args.getInt("timeoutSeconds", 60);
 
