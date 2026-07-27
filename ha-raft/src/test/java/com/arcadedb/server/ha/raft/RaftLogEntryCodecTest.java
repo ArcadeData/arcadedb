@@ -437,6 +437,35 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
+  void moreChunksFollowSurvivesTheRoundTrip() {
+    // The flag decides whether the applier reloads the schema for a chunk, so a chunk that says "more
+    // follow" must still say it on the other side (issue #5443).
+    final ByteString notLast = RaftLogEntryCodec.encodeSchemaEntry("testdb", null, Map.of(1, "f.pages"), Map.of(),
+        List.of(new byte[] { 1, 2, 3 }), List.of(Map.of()), List.of(), true);
+    final ByteString last = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{\"types\":{}}", Map.of(), Map.of(),
+        List.of(), List.of(), List.of(), false);
+
+    assertThat(RaftLogEntryCodec.decode(notLast).moreChunksFollow()).isTrue();
+    assertThat(RaftLogEntryCodec.decode(last).moreChunksFollow()).isFalse();
+  }
+
+  @Test
+  void anEntryWithoutTheTrailingFlagDecodesAsTheLastChunk() {
+    // What a node running the pre-#5443 codec emits: the byte is simply not there. Reading it as false
+    // is what keeps the format compatible in both directions, so the decoder must not require it.
+    final ByteString withFlag = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{\"types\":{}}", Map.of(), Map.of(),
+        List.of(), List.of(), List.of(), false);
+    final byte[] raw = withFlag.toByteArray();
+    final ByteString withoutFlag = ByteString.copyFrom(raw, 0, raw.length - 1);
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(withoutFlag);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+    assertThat(decoded.moreChunksFollow()).isFalse();
+    assertThat(decoded.schemaJson()).isEqualTo("{\"types\":{}}");
+  }
+
+  @Test
   void schemaEntryWithoutSealedBlobsHasEmptyList() {
     // Entries produced by the pre-#4382 codec (no blob section) must decode with an empty list.
     final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}", Map.of(), Map.of());

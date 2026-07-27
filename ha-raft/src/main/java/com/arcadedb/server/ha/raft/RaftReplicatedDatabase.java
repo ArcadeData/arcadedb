@@ -1747,20 +1747,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // unfindable there while the records themselves replicated normally. The component knows the real
     // count, and getImmutablePage() resolves each page through the cache and the pending-flush queue
     // before falling back to disk, so both are correct regardless of flush timing.
-    // getFileById() THROWS when the id is unknown, so the guard has to be getFileByIdIfExists() plus the
-    // type test - the same shape snapshotPageCounts() uses. The on-disk count is the only fallback left
-    // for a file the schema does not know, and it is the very number that made this bug silent, so say so
-    // rather than degrade quietly. No current caller can reach it: the ids come either from addFiles or
-    // from snapshotPageCounts(), which already filtered on PaginatedComponent.
-    final int totalPages;
-    if (proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component)
-      totalPages = component.getTotalPages();
-    else {
-      totalPages = (int) file.getTotalPages();
-      LogManager.instance().log(this, Level.WARNING,
-          "File id '%d' of database '%s' is not a registered paginated component: replicating the %d pages "
-              + "already on disk, which may be short if a flush is still pending", fileId, getName(), totalPages);
-    }
+    // Only the component knows how many pages really exist: the file's own count is what is on disk, and
+    // trusting it is exactly what left followers with a short index. No caller can hand us anything else -
+    // the ids come from addFiles or from snapshotPageCounts(), which already filtered on PaginatedComponent -
+    // so a miss here is a bug in the caller, and it fails rather than quietly shipping a truncated range.
+    if (!(proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component))
+      throw new IllegalStateException(
+          "Cannot replicate file id '" + fileId + "' of database '" + getName()
+              + "': it is not a registered paginated component, so its real page count is unknown");
+
+    final int totalPages = component.getTotalPages();
 
     if (totalPages <= fromPage)
       return 0;
