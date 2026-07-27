@@ -26,6 +26,7 @@ import com.arcadedb.server.mcp.tools.FullTextSearchTool;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.mcp.tools.ListDatabasesTool;
 import com.arcadedb.server.mcp.tools.QueryTool;
+import com.arcadedb.server.mcp.tools.SampleRecordsTool;
 import com.arcadedb.server.mcp.tools.ServerStatusTool;
 import com.arcadedb.server.mcp.tools.UpsertEntityTool;
 import com.arcadedb.server.mcp.tools.UpsertRelationshipTool;
@@ -92,6 +93,8 @@ class MCPDatabaseScopingTest extends BaseGraphServerTest {
         .put("database", getDatabaseName())
         .put("indexName", "missing")
         .put("queryVector", new JSONArray().put(1.0)), config));
+    assertReadDenied(() -> SampleRecordsTool.execute(getServer(0), user, new JSONObject()
+        .put("database", getDatabaseName()), config));
 
     assertThat(contains(ListDatabasesTool.execute(getServer(0), user, new JSONObject(), config)
         .getJSONArray("databases"), getDatabaseName())).isFalse();

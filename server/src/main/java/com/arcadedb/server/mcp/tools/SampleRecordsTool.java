@@ -82,7 +82,9 @@ public class SampleRecordsTool {
     if (limit < 1 || limit > MAX_LIMIT)
       throw new IllegalArgumentException("'limit' must be between 1 and " + MAX_LIMIT);
 
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
+        server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
+    final Database database = access.database();
     final ResolvedTypes resolvedTypes = resolveTypeNames(database, databaseName, args);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
