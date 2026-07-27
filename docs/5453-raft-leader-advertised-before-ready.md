@@ -1,5 +1,7 @@
 # Issue #5453 - Raft leader is advertised as available before it is ready to serve
 
+PR: https://github.com/ArcadeData/arcadedb/pull/5458
+
 ## Symptom
 
 A freshly elected Raft leader was advertised as available the instant Ratis elected it, while Ratis
@@ -91,6 +93,12 @@ alongside it in:
 Callers - Studio, the cluster tooling, and application code that polls for a leader before writing -
 opt in to the stricter signal rather than having `isLeader` change meaning underneath them.
 
+All three read the pair through `RaftHAServer.getLeadershipState()`, which resolves the division
+once and returns both flags. Two separate `isLeader()` / `isLeaderReady()` calls could straddle a
+leadership change and publish the impossible pair `isLeader=false, leaderReady=true`; a payload that
+carries both fields should never be internally contradictory. `isLeaderReady()` is retained as the
+public single-flag companion to `isLeader()` and delegates to the same accessor.
+
 ### Deliberately not changed
 
 The ~12 `isLeader()` guards on leader-only write paths in `RaftHAServer` and `ArcadeStateMachine`
@@ -117,13 +125,38 @@ field and the probe gate address.
 
 `ha-raft/src/test/java/com/arcadedb/server/ha/raft/GetClusterHandlerIT.java`
 
-- `clusterEndpointReportsLeaderReadiness` - every node carries `leaderReady`; the leader of a
-  settled cluster reports it true and a follower reports it false.
+- `clusterEndpointReportsLeaderReadiness` - every node carries `leaderReady`; a follower reports it
+  false, and the elected leader reports it true. The leader assertion polls with Awaitility rather
+  than sampling once: the role flips to LEADER before Ratis marks the node ready, which is the very
+  window this issue is about, so a single sample would be racy by construction.
 
 ## Verification
 
 ```
 mvn -pl ha-raft -am -DskipTests install
-mvn -pl ha-raft test -Dtest=RaftHAServerReadinessTest
-mvn -pl ha-raft test -Dtest=GetClusterHandlerIT
+mvn -pl ha-raft test -Dtest=RaftHAServerReadinessTest,GetClusterHandlerIT,RaftClusterStatusExporterReemitTest,RaftHTTP2ServersIT
+mvn -pl server test -Dtest=GetReadyHandlerHATest,HealthProbesIT
 ```
+
+All green (44 + 11 tests). The gate was confirmed to genuinely fail closed by temporarily restoring
+`if (leader) return true;`, which fails exactly
+`freshlyElectedLeaderNotYetReadyIsNotReadyForTraffic` and `notYetReadyLeaderIsNotRescuedByZeroLag`
+and nothing else.
+
+## Review cycles
+
+### Cycle 1 - fa1743d (claude[bot])
+
+No blocking findings; the reviewer confirmed the core semantics, the defensive read and the legacy
+overload delegation. Three non-blocking observations, two of which were applied:
+
+- *Torn read on the reporting surfaces* - flagged as cosmetic, applied anyway. The three payloads
+  now read both flags from one snapshot via `getLeadershipState()`, so the contradictory pair can no
+  longer be published.
+- *IT robustness* - flagged as "only if it actually flakes", applied. The single-sample assertion on
+  the leader's `leaderReady` was racy by construction, for exactly the reason this issue exists; it
+  is now a bounded Awaitility poll.
+- *`isReadyForTraffic` is strictly stricter for leaders* - intended behaviour, no change. A leader
+  stays ready once ready until it loses leadership, so steady-state leaders are unaffected.
+
+gemini-code-assist did not review within the 15-minute polling window.

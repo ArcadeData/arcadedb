@@ -20,12 +20,14 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -118,9 +120,12 @@ class GetClusterHandlerIT extends BaseRaftHATest {
         assertThat(response.getBoolean("leaderReady")).as("a follower is never a ready leader").isFalse();
     }
 
-    // The cluster has settled by the time the leader is discoverable, so its leader reports ready.
-    assertThat(queryClusterEndpoint(leaderIndex).getBoolean("leaderReady"))
-        .as("the settled leader must report leaderReady").isTrue();
+    // The leader becomes discoverable (role flips to LEADER) before Ratis marks it ready, which is the
+    // very window this issue is about - so poll rather than assert on the first sample.
+    Awaitility.await("the elected leader reports leaderReady")
+        .atMost(30, TimeUnit.SECONDS)
+        .pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> queryClusterEndpoint(leaderIndex).getBoolean("leaderReady"));
   }
 
   @Test

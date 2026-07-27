@@ -1395,16 +1395,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * term and caught its state machine up, so {@link #isLeader()} alone must not be read as "can serve now".
    */
   public boolean isLeaderReady() {
+    return getLeadershipState().leaderReady();
+  }
+
+  /**
+   * The raw Raft role and Ratis' readiness signal, read from one division snapshot.
+   *
+   * @param leader      this node currently holds the LEADER role
+   * @param leaderReady this node is the leader <em>and</em> can serve now
+   */
+  public record LeadershipState(boolean leader, boolean leaderReady) {
+  }
+
+  /**
+   * Returns {@link #isLeader()} and {@link #isLeaderReady()} read from a single {@code getDivision(...)}
+   * snapshot, so a status payload carrying both can never report the impossible pair
+   * {@code leader=false, leaderReady=true} produced by a leadership change landing between two separate
+   * reads. Degrades to {@code (false, false)} on an unreadable division, matching the single-flag getters.
+   */
+  public LeadershipState getLeadershipState() {
     if (raftServer == null)
-      return false;
+      return new LeadershipState(false, false);
 
     try {
-      return raftServer.getDivision(raftGroup.getGroupId()).getInfo().isLeaderReady();
+      final var info = raftServer.getDivision(raftGroup.getGroupId()).getInfo();
+      return new LeadershipState(info.isLeader(), info.isLeaderReady());
     } catch (final Exception e) {
-      // Same contract as isLeader(): status reads degrade to "unknown", never propagate. Guards the
-      // IllegalStateException Ratis throws while an in-place restart re-initializes the division.
-      LogManager.instance().log(this, Level.WARNING, "Error checking leader readiness", e);
-      return false;
+      LogManager.instance().log(this, Level.WARNING, "Error checking leadership state", e);
+      return new LeadershipState(false, false);
     }
   }
 
@@ -1587,8 +1605,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public Map<String, Object> getStats() {
     final Map<String, Object> stats = new HashMap<>();
     stats.put("localPeerId", localPeerId.toString());
-    stats.put("isLeader", isLeader());
-    stats.put("leaderReady", isLeaderReady());
+    final LeadershipState leadership = getLeadershipState();
+    stats.put("isLeader", leadership.leader());
+    stats.put("leaderReady", leadership.leaderReady());
     stats.put("configuredServers", getConfiguredServers());
 
     if (clusterMonitor != null) {
