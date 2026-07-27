@@ -26,7 +26,6 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -577,15 +576,16 @@ public final class BmwScorer {
     void collect(RID rid, float score);
   }
 
+  /** Result ordering handed back to the caller: best score first. */
+  private static final Comparator<RidScore> BY_SCORE_DESC = (a, b) -> Float.compare(b.score(), a.score());
+
   /** Plain top-K: a K-sized min-heap whose head is the threshold once full. */
   private static final class TopKCollector implements Collector {
-    private final int                     k;
-    private final PriorityQueue<RidScore> heap;
-    private float                         threshold = Float.NEGATIVE_INFINITY;
+    private final RidScoreMinHeap heap;
+    private float                 threshold = Float.NEGATIVE_INFINITY;
 
     TopKCollector(final int k) {
-      this.k = k;
-      this.heap = new PriorityQueue<>(k, Comparator.comparing(RidScore::score));
+      this.heap = new RidScoreMinHeap(k);
     }
 
     @Override
@@ -600,20 +600,17 @@ public final class BmwScorer {
 
     @Override
     public void collect(final RID rid, final float score) {
-      if (heap.size() < k) {
-        heap.add(new RidScore(rid, score));
-        if (heap.size() == k)
-          threshold = heap.peek().score();
-      } else if (score > threshold) {
-        heap.poll();
-        heap.add(new RidScore(rid, score));
-        threshold = heap.peek().score();
-      }
+      // Below capacity the candidate is always retained and the threshold stays at
+      // NEGATIVE_INFINITY (anything can still enter). Once full, the heap's minimum *is* the
+      // threshold, and offer() admits exactly the candidates that beat it.
+      if (heap.offer(rid, score) && heap.isFull())
+        threshold = heap.minScore();
     }
 
     List<RidScore> drain() {
-      final List<RidScore> out = new ArrayList<>(heap);
-      out.sort((a, b) -> Float.compare(b.score(), a.score()));
+      final List<RidScore> out = new ArrayList<>(heap.size());
+      heap.drainInto(out);
+      out.sort(BY_SCORE_DESC);
       return out;
     }
   }
@@ -625,7 +622,7 @@ public final class BmwScorer {
     private final Function<RID, Object>                      groupKeyResolver;
     private final Set<RID>                                   allowedRIDs;
     private final boolean                                    filterActive;
-    private final HashMap<Object, PriorityQueue<RidScore>>   groups;
+    private final HashMap<Object, RidScoreMinHeap>           groups;
     private int                                              filledGroups;
     private float                                            threshold = Float.NEGATIVE_INFINITY;
 
@@ -652,37 +649,32 @@ public final class BmwScorer {
     @Override
     public void collect(final RID rid, final float score) {
       final Object groupKey = groupKeyResolver.apply(rid);
-      final PriorityQueue<RidScore> group = groups.get(groupKey);
+      final RidScoreMinHeap group = groups.get(groupKey);
       boolean stateChanged = false;
       if (group == null) {
         if (groups.size() < limit) {
-          final PriorityQueue<RidScore> opened = new PriorityQueue<>(groupSize, Comparator.comparing(RidScore::score));
-          opened.add(new RidScore(rid, score));
+          final RidScoreMinHeap opened = new RidScoreMinHeap(groupSize);
+          opened.offer(rid, score);
           groups.put(groupKey, opened);
-          if (groupSize == 1)
+          if (opened.isFull())  // groupSize == 1: the group is already at capacity.
             filledGroups++;
           stateChanged = true;
         }
         // else: limit groups already open and this one is a new key - reject.
-      } else if (group.size() < groupSize) {
-        group.add(new RidScore(rid, score));
-        if (group.size() == groupSize)
+      } else {
+        final boolean wasFull = group.isFull();
+        stateChanged = group.offer(rid, score);
+        if (!wasFull && group.isFull())
           filledGroups++;
-        stateChanged = true;
-      } else if (score > group.peek().score()) {
-        group.poll();
-        group.add(new RidScore(rid, score));
-        stateChanged = true;
       }
       // Recompute the global threshold once every group has reached capacity. Until then it stays
       // at NEGATIVE_INFINITY: a candidate could still open a new group or fill an empty slot inside
       // an existing one, so pruning against a per-group watermark would be incorrect.
       if (stateChanged && filledGroups == limit && groups.size() == limit) {
         float min = Float.POSITIVE_INFINITY;
-        for (final PriorityQueue<RidScore> pq : groups.values()) {
-          final RidScore worst = pq.peek();
-          if (worst != null && worst.score() < min)
-            min = worst.score();
+        for (final RidScoreMinHeap pq : groups.values()) {
+          if (!pq.isEmpty() && pq.minScore() < min)
+            min = pq.minScore();
         }
         if (min != Float.POSITIVE_INFINITY && min > threshold)
           threshold = min;
@@ -691,12 +683,12 @@ public final class BmwScorer {
 
     List<RidScore> drain() {
       int total = 0;
-      for (final PriorityQueue<RidScore> pq : groups.values())
+      for (final RidScoreMinHeap pq : groups.values())
         total += pq.size();
       final List<RidScore> out = new ArrayList<>(total);
-      for (final PriorityQueue<RidScore> pq : groups.values())
-        out.addAll(pq);
-      out.sort((a, b) -> Float.compare(b.score(), a.score()));
+      for (final RidScoreMinHeap pq : groups.values())
+        pq.drainInto(out);
+      out.sort(BY_SCORE_DESC);
       return out;
     }
   }
