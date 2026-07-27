@@ -393,7 +393,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // one taken here would make the write unreplayable and lost on this node forever (issue #5407).
     // Only the leader runs phase 2 (see the !leader early return below), so only it needs the ticket.
     final ArcadeStateMachine stateMachine = leader ? stateMachineOrNull() : null;
-    final long phase2Ticket = stateMachine != null ? stateMachine.beginLocalPhase2() : -1L;
+    final long phase2Ticket = stateMachine != null ?
+        stateMachine.beginLocalPhase2() :
+        ArcadeStateMachine.NO_PHASE2_TICKET;
     replicateAndCommitLocally(payload, leader, stateMachine, phase2Ticket);
   }
 
