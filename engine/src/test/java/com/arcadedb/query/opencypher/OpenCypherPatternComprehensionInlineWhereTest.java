@@ -44,6 +44,7 @@ class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
   protected void beginTest() {
     database.getSchema().createVertexType("A");
     database.getSchema().createVertexType("C");
+    database.getSchema().createVertexType("N");
     database.getSchema().createEdgeType("E");
 
     // a -[E {tag: 'ok'}]->  b
@@ -65,6 +66,16 @@ class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
         (a)-[:E {tag: 'ok'}]->(mid), \
         (mid)-[:E {tag: 'ok'}]->(okEnd), \
         (mid)-[:E {tag: 'bad'}]->(badEnd)""");
+
+    // Nodes for the three-valued-logic tests, again on their own label so the tests above are
+    // unaffected. 'tagged' is reached by an edge carrying tag and w; 'untagged' by an edge with no
+    // tag property at all, so predicates over r.tag evaluate to NULL for it.
+    database.command("opencypher",
+        """
+        MATCH (a:A {v: 1}) \
+        CREATE (tagged:N {name: 'tagged'}), (untagged:N {name: 'untagged'}), \
+        (a)-[:E {tag: 'ok', w: 1}]->(tagged), \
+        (a)-[:E]->(untagged)""");
   }
 
   @Test
@@ -189,6 +200,81 @@ class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void inlineWherePredicateSupportsConjunction() {
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN [(a)-[r:E WHERE r.tag = 'ok' AND r.w = 1]->(x:N) | x.name] AS names""");
+
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> names = rs.next().getProperty("names");
+    assertThat(names).containsExactly("tagged");
+  }
+
+  @Test
+  void inlineWherePredicateSupportsDisjunction() {
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN [(a)-[r:E WHERE r.tag = 'zzz' OR r.w = 1]->(x:N) | x.name] AS names""");
+
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> names = rs.next().getProperty("names");
+    assertThat(names).containsExactly("tagged");
+  }
+
+  @Test
+  void inlineWherePredicateExcludesRelationshipsWhoseComparisonIsNull() {
+    // The 'untagged' edge has no tag property, so r.tag = 'ok' is NULL and the edge is excluded -
+    // NULL is not a match in Cypher.
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN [(a)-[r:E WHERE r.tag = 'ok']->(x:N) | x.name] AS names""");
+
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> names = rs.next().getProperty("names");
+    assertThat(names).containsExactly("tagged");
+  }
+
+  @Test
+  void inlineWhereIsNullPredicateSelectsTheMissingProperty() {
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN [(a)-[r:E WHERE r.tag IS NULL]->(x:N) | x.name] AS names""");
+
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> names = rs.next().getProperty("names");
+    assertThat(names).containsExactly("untagged");
+  }
+
+  @Test
+  void negatedInlineWherePredicateMatchesTheRegularMatchPath() {
+    // Three-valued logic under NOT: for 'tagged' NOT(true) is false; for 'untagged' the comparison
+    // is NULL and NOT NULL stays NULL, so neither is a match. The comprehension parses the predicate
+    // through a different builder than MATCH does, so pin both engines to the same answer.
+    final ResultSet comprehension = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN [(a)-[r:E WHERE NOT (r.tag = 'ok')]->(x:N) | x.name] AS names""");
+
+    assertThat(comprehension.hasNext()).isTrue();
+    final List<Object> names = comprehension.next().getProperty("names");
+
+    final ResultSet match = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})-[r:E WHERE NOT (r.tag = 'ok')]->(x:N)
+        RETURN collect(x.name) AS names""");
+
+    assertThat(match.hasNext()).isTrue();
+    final List<Object> matchNames = match.next().getProperty("names");
+
+    assertThat(names).isEmpty();
+    assertThat(names).isEqualTo(matchNames);
   }
 
   @Test

@@ -35,9 +35,15 @@ Two independent gaps on the pattern-comprehension path, both of which had to be 
 
 **`parser/CypherExpressionBuilder.java`** - `parseRelationshipPattern(...)` now parses
 `ctx.expression()` and passes it to the 8-argument `RelationshipPattern` constructor. The body is
-parsed with the existing `parseExpression(...)` and adapted through `BooleanCoercionExpression`,
-the adapter already used by `CypherASTBuilder` for the same purpose. That keeps comparisons,
-`AND`/`OR`/`NOT` and boolean-typed properties all working without duplicating boolean-parsing logic.
+parsed with the existing `parseExpression(...)` and adapted through `BooleanCoercionExpression`.
+
+Note this is not the identical route the `MATCH` path takes: `CypherASTBuilder` uses its private
+`parseBooleanExpression(...)`, which builds a structured `BooleanExpression` tree, and falls back to
+`BooleanCoercionExpression` only for non-comparison forms. Sharing that method would mean exposing a
+private method across builder classes, so the comprehension path coerces instead.
+`parseExpression(...)` covers the whole precedence hierarchy including `AND`/`OR`/`NOT`, and the
+coercion maps a `NULL` result to "no match", which is the correct Cypher filter semantics. The two
+routes were therefore checked for behavioral parity rather than assumed equal - see Tests.
 
 **`ast/PatternComprehensionExpression.java`** - both expansion paths now apply the predicate
 directly after the existing property-map filter:
@@ -55,7 +61,7 @@ carries no inline `WHERE`, no row is allocated at all and the hot path is unchan
 ## Tests
 
 `engine/src/test/java/com/arcadedb/query/opencypher/OpenCypherPatternComprehensionInlineWhereTest.java`
-- 12 tests, using the exact data and queries from the issue report.
+- 17 tests, using the exact data and queries from the issue report.
 
 | Test | Asserts |
 |---|---|
@@ -69,13 +75,18 @@ carries no inline `WHERE`, no row is allocated at all and the hot path is unchan
 | `inlineWherePredicateAppliesToAnIncomingPattern` | `<-[r:E WHERE ...]-` filters the same relationship |
 | `inlineWherePredicateAppliesToAnUndirectedPattern` | direction-agnostic expansion honors the predicate |
 | `inlineWherePredicateResolvesAQueryParameter` | `WHERE r.tag = $tag` resolves the query parameter |
+| `inlineWherePredicateSupportsConjunction` | `AND` in the predicate body |
+| `inlineWherePredicateSupportsDisjunction` | `OR` in the predicate body |
+| `inlineWherePredicateExcludesRelationshipsWhoseComparisonIsNull` | a comparison over a missing property is `NULL`, so no match |
+| `inlineWhereIsNullPredicateSelectsTheMissingProperty` | `IS NULL` selects the untagged relationship |
+| `negatedInlineWherePredicateMatchesTheRegularMatchPath` | `NOT (...)` under three-valued logic gives the same answer as the equivalent `MATCH` |
 | `noInlineWherePredicateStillReturnsEveryRelationship` | control: no predicate, no filtering |
 | `comprehensionLevelWhereStillWorks` | control: documented workaround unaffected |
 
 ## Verification
 
 Before the fix, 4 of the original 8 tests failed with precisely the reported symptom (`c = 2`
-instead of `0` / `1`); the 4 control tests passed. After the fix all 12 pass.
+instead of `0` / `1`); the 4 control tests passed. After the fix all 17 pass.
 
 Per-hop enforcement was verified by mutation rather than by inspection: temporarily removing the
 predicate check from `traverseVariableLength(...)` makes
@@ -124,6 +135,14 @@ gemini-code-assist again posted nothing.
 | The var-length test had only one reachable hop, so it never exercised a path whose *later* hop fails the predicate | **Applied.** Added a two-hop `:C` chain to the fixture and a test asserting the path is truncated at the first failing hop. Verified by mutation (see Verification) that it genuinely fails without per-hop enforcement. The chain is label-scoped so the single-hop tests, which all pin the far end to `:A`, are unaffected. |
 | The inline predicate cannot reference the target node | **No change - expected behavior.** Consistent with `MatchRelationshipStep` ordering; now documented under Impact and notes. |
 | PR body said 8 tests where the doc and test class say more | **Applied.** PR body corrected to 12. |
+
+**Cycle 3** - `9096d47f` - claude reviewed again (approving), one substantive note plus a doc nit.
+gemini-code-assist again posted nothing.
+
+| Note | Decision |
+|---|---|
+| The comprehension parses the inline `WHERE` through `BooleanCoercionExpression` while `MATCH` uses `parseBooleanExpression(...)`; three-valued logic under `NOT` / `AND` / `OR` / `NULL` was therefore unverified | **Applied.** Five tests added covering `AND`, `OR`, a `NULL` comparison, `IS NULL`, and a `NOT (...)` case asserted equal to the answer the equivalent `MATCH` gives. All pass: the two routes agree, so the divergence is theoretical rather than real. The Fix section above no longer claims the two builders take the identical route. |
+| Trim the "Review cycles" section - it reads oddly as a committed repo doc | **Kept.** Checked against the repo: the most recent tracking docs on `main` (`docs/5454-*`, `docs/5453-*`) both carry a `## Review cycles` section, so this matches current convention rather than departing from it. |
 
 ## Known gaps
 
