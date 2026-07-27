@@ -18,15 +18,14 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Identifiable;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Expression representing a {@code COUNT { ... }} pattern / subquery expression.
@@ -52,166 +51,23 @@ public class CountExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    try {
-      final Map<String, Object> params = new HashMap<>();
-      String modifiedSubquery = subquery;
-
-      if (result != null) {
-        final List<String> whereConditions = new ArrayList<>();
-        final List<String> matchPatterns = new ArrayList<>();
-        final List<String> withItems = new ArrayList<>();
-
-        for (final String propertyName : result.getPropertyNames()) {
-          if (propertyName.startsWith(" "))
-            continue;
-          final Object value = result.getProperty(propertyName);
-          params.put(propertyName, value);
-
-          if (value instanceof Identifiable) {
-            final String rid = ((Identifiable) value).getIdentity().toString();
-            final String paramName = "__count_" + propertyName;
-            params.put(paramName, rid);
-
-            if (variableUsedInSubquery(modifiedSubquery, propertyName)) {
-              whereConditions.add("id(" + propertyName + ") = $" + paramName);
-              matchPatterns.add("(" + propertyName + ")");
-            }
-          } else if (value != null && variableUsedInSubquery(modifiedSubquery, propertyName)) {
-            final String paramName = "__count_" + propertyName;
-            params.put(paramName, value);
-            withItems.add("$" + paramName + " AS " + propertyName);
-          }
-        }
-
-        if (!matchPatterns.isEmpty())
-          modifiedSubquery = injectMatchPatterns(modifiedSubquery, matchPatterns);
-        if (!whereConditions.isEmpty()) {
-          final String conditionsStr = String.join(" AND ", whereConditions);
-          modifiedSubquery = injectWhereConditions(modifiedSubquery, conditionsStr);
-        }
-        if (!withItems.isEmpty())
-          modifiedSubquery = "WITH " + String.join(", ", withItems) + " " + modifiedSubquery;
+    final Map<String, Object> params = new HashMap<>();
+    final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__count_", params,
+        (patterns, body) -> "MATCH " + patterns + ", " + body + " RETURN 1");
+    long count = 0L;
+    try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
+      while (resultSet.hasNext()) {
+        resultSet.next();
+        count++;
       }
-
-      long count = 0L;
-      try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
-        while (resultSet.hasNext()) {
-          resultSet.next();
-          count++;
-        }
-      }
-      return count;
     } catch (final Exception e) {
+      // The Cypher contract here is a number, so a subquery that cannot run is absorbed as zero.
+      // Trace it: a silent zero is how the corrupted-subquery bug of issue #5464 stayed invisible.
+      LogManager.instance().log(CountExpression.class, Level.FINE, "Error on evaluating COUNT subquery '%s'", e,
+          modifiedSubquery);
       return 0L;
     }
-  }
-
-  private static boolean variableUsedInSubquery(final String subquery, final String varName) {
-    int fromIndex = 0;
-    final int len = varName.length();
-    while (true) {
-      final int idx = subquery.indexOf(varName, fromIndex);
-      if (idx < 0)
-        return false;
-      final boolean leftOk = idx == 0 || !isCypherIdentifierChar(subquery.charAt(idx - 1));
-      final int end = idx + len;
-      final boolean rightOk = end >= subquery.length() || !isCypherIdentifierChar(subquery.charAt(end));
-      if (leftOk && rightOk)
-        return true;
-      fromIndex = idx + 1;
-    }
-  }
-
-  private static boolean isCypherIdentifierChar(final char c) {
-    return Character.isLetterOrDigit(c) || c == '_';
-  }
-
-  private static String injectMatchPatterns(final String subquery, final List<String> patterns) {
-    final String trimmed = subquery.trim();
-    final String upper = trimmed.toUpperCase();
-
-    if (upper.startsWith("MATCH")) {
-      int pos = 5;
-      while (pos < trimmed.length() && Character.isWhitespace(trimmed.charAt(pos)))
-        pos++;
-      return trimmed.substring(0, pos) + String.join(", ", patterns) + ", " + trimmed.substring(pos);
-    }
-
-    return "MATCH " + String.join(", ", patterns) + ", " + trimmed + " RETURN 1";
-  }
-
-  private static String injectWhereConditions(final String query, final String conditions) {
-    final String upper = query.toUpperCase().trim();
-    final int matchKeywordEnd = upper.startsWith("MATCH") ? 5 : 0;
-
-    int clauseStart = -1;
-    int topWherePos = -1;
-    int braceDepth = 0;
-
-    for (int i = matchKeywordEnd; i < query.length(); i++) {
-      final char c = query.charAt(i);
-      if (c == '{') {
-        braceDepth++;
-        continue;
-      }
-      if (c == '}') {
-        braceDepth--;
-        continue;
-      }
-      if (braceDepth > 0)
-        continue;
-
-      if (matchesKeywordAt(upper, i, "WHERE") && topWherePos < 0)
-        topWherePos = i;
-      else if (clauseStart < 0 && (matchesKeywordAt(upper, i, "WITH") || matchesKeywordAt(upper, i, "RETURN")
-          || matchesKeywordAt(upper, i, "ORDER") || matchesKeywordAt(upper, i, "SKIP")
-          || matchesKeywordAt(upper, i, "LIMIT") || matchesKeywordAt(upper, i, "UNION")))
-        clauseStart = i;
-
-      if (clauseStart >= 0)
-        break;
-    }
-
-    if (clauseStart >= 0) {
-      if (topWherePos >= 0 && topWherePos < clauseStart)
-        return wrapExistingWhere(query, topWherePos, clauseStart, conditions);
-      return query.substring(0, clauseStart) + "WHERE " + conditions + " " + query.substring(clauseStart);
-    }
-
-    if (topWherePos >= 0)
-      return wrapExistingWhere(query, topWherePos, query.length(), conditions);
-
-    return query + " WHERE " + conditions;
-  }
-
-  /**
-   * Prepends the correlation {@code conditions} to an existing WHERE predicate, wrapping the
-   * original predicate in parentheses so operator precedence is preserved. Without the parentheses
-   * an injected {@code AND} would bind tighter than an inner {@code OR}
-   * (e.g. {@code cond AND a OR b} -> {@code (cond AND a) OR b}), decoupling the OR branch from the
-   * correlated outer row (issue #5165).
-   */
-  private static String wrapExistingWhere(final String query, final int topWherePos, final int whereBodyEnd,
-      final String conditions) {
-    int insertPos = topWherePos + 5;
-    while (insertPos < query.length() && Character.isWhitespace(query.charAt(insertPos)))
-      insertPos++;
-    final String body = query.substring(insertPos, whereBodyEnd).trim();
-    final String tail = whereBodyEnd < query.length() ? " " + query.substring(whereBodyEnd) : "";
-    return query.substring(0, insertPos) + conditions + " AND (" + body + ")" + tail;
-  }
-
-  private static boolean matchesKeywordAt(final String upper, final int pos, final String keyword) {
-    if (pos + keyword.length() > upper.length())
-      return false;
-    if (!upper.startsWith(keyword, pos))
-      return false;
-    if (pos > 0 && Character.isLetterOrDigit(upper.charAt(pos - 1)))
-      return false;
-    final int end = pos + keyword.length();
-    if (end < upper.length() && Character.isLetterOrDigit(upper.charAt(end)))
-      return false;
-    return true;
+    return count;
   }
 
   @Override

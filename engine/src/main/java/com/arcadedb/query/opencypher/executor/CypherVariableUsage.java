@@ -24,6 +24,7 @@ import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -86,10 +87,21 @@ public final class CypherVariableUsage {
     for (final MatchClause match : statement.getMatchClauses()) {
       if (match.hasPathPatterns()) {
         for (final PathPattern path : match.getPathPatterns()) {
+          for (final NodePattern node : path.getNodes())
+            if (node.hasWhereExpression()
+                && expressionReferencesVariable(node.getWhereExpression().getText(), variable))
+              return true;
           for (int i = 0; i < path.getRelationshipCount(); i++) {
             final RelationshipPattern rel = path.getRelationship(i);
             if (variable.equals(rel.getVariable()))
               relVarCount++;
+            // An inline WHERE inside a pattern reads the edge, e.g. -[r:E WHERE r.tag = 'ok']->.
+            // The predicate lives inside the binding pattern, so the scans below never saw it and the
+            // binding was dropped whenever nothing else in the query mentioned r. The predicate then
+            // evaluated against an unbound variable and silently filtered out every row (issue #5464).
+            if (rel.hasWhereExpression()
+                && expressionReferencesVariable(rel.getWhereExpression().getText(), variable))
+              return true;
           }
         }
       }
