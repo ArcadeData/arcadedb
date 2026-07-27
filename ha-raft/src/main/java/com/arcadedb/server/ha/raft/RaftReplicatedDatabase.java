@@ -1686,6 +1686,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * File ids of pre-existing paginated components that gained pages during the compaction session, mapped
    * to the page number the new pages start at. Files created by the session are excluded: they are shipped
    * whole. A file that shrank (or is new) contributes nothing.
+   * <p>
+   * <b>Invariant this relies on:</b> a compaction only ever APPENDS to a pre-existing file, and touches no
+   * interior page other than the root page 0 that registers the appended series - which is why the caller
+   * ships page 0 alongside the appended range. A compaction path that rewrote an interior page in place
+   * would not be replicated by this, and the follower's index would go short again exactly as in #5443.
+   * Any change to the compaction write path has to preserve that, or teach this method to track the pages
+   * it dirtied instead of only how many it added.
    */
   private Map<Integer, Integer> pagesGrownDuringSession(final Map<Integer, Integer> before,
       final Map<Integer, String> createdFiles) {
@@ -1801,9 +1808,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       walBuf.putInt((int) page.getVersion());
       walBuf.putInt(page.getContentSize());
 
-      final ByteBuffer pageBuffer = page.getContent();
-      for (int i = 0; i < deltaSize; i++)
-        walBuf.put(pageBuffer.get(BasePage.PAGE_HEADER_SIZE + i));
+      // Absolute bulk copy: it leaves both positions alone, so the shared page buffer is never
+      // disturbed, and it does not care whether either side is heap-backed.
+      walBuf.put(walBuf.position(), page.getContent(), BasePage.PAGE_HEADER_SIZE, deltaSize);
+      walBuf.position(walBuf.position() + deltaSize);
     }
 
     walBuf.putInt(segmentSize);
