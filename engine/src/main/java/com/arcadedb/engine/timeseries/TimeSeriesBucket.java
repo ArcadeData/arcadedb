@@ -214,10 +214,13 @@ public class TimeSeriesBucket extends PaginatedComponent {
         if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
 
-        if (col.getDataType() == Type.STRING)
-          colOffset += writeStringValue(dataPage, colOffset, col, source.getStringValue(i, colIdx));
+        // The width table decides, not the type name: a column with no fixed width is stored
+        // length-prefixed, which is the only encoding the reader can walk past (issue #5475).
+        final int fixedSize = col.getFixedSize();
+        if (fixedSize > 0)
+          colOffset += writeRawValue(dataPage, colOffset, fixedSize, source.getRawValue(i, colIdx));
         else
-          colOffset += writeRawValue(dataPage, colOffset, col, source.getRawValue(i, colIdx));
+          colOffset += writeStringValue(dataPage, colOffset, col, source.getStringValue(i, colIdx));
         colIdx++;
       }
 
@@ -428,8 +431,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
       if (columnIndices != null && !isInArray(cond.columnIndex(), columnIndices))
         return null;
 
-      boolean allStrings = !cond.values().isEmpty();
-      for (final Object value : cond.values())
+      boolean allStrings = !cond.matchValues().isEmpty();
+      for (final Object value : cond.matchValues())
         if (!(value instanceof String)) {
           allStrings = false;
           break;
@@ -437,13 +440,13 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
       byte[][] utf8Values = null;
       if (allStrings) {
-        utf8Values = new byte[cond.values().size()][];
+        utf8Values = new byte[cond.matchValues().size()][];
         int v = 0;
-        for (final Object value : cond.values())
+        for (final Object value : cond.matchValues())
           utf8Values[v++] = ((String) value).getBytes(StandardCharsets.UTF_8);
       }
 
-      matchers[i] = new TagMatcher(cond.columnIndex(), cond.values(), utf8Values);
+      matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), utf8Values);
     }
     return matchers;
   }
@@ -833,33 +836,32 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Writes the raw bits of a fixed-width column, using the same width
+   * Writes the raw bits of a fixed-width column in exactly the {@code fixedSize} bytes
    * {@link ColumnDefinition#getFixedSize()} reserves in the row stride, and returns the bytes written.
    * The two must agree: a column that wrote more than it reserved used to overrun its neighbours in
-   * the row (the {@code BYTE} case, which fell through to the 8-byte default).
+   * the row (issue #5475).
    */
-  private static int writeRawValue(final MutablePage page, final int offset, final ColumnDefinition col, final long raw) {
-    return switch (col.getDataType()) {
-      case DOUBLE, LONG, DATETIME -> {
-        page.writeLong(offset, raw);
-        yield 8;
-      }
-      case INTEGER, FLOAT -> {
-        page.writeInt(offset, (int) raw);
-        yield 4;
-      }
-      case SHORT -> {
-        page.writeShort(offset, (short) raw);
-        yield 2;
-      }
-      case BYTE, BOOLEAN -> {
-        page.writeByte(offset, (byte) raw);
-        yield 1;
-      }
-      default -> {
-        page.writeLong(offset, 0L);
-        yield 8;
-      }
+  private static int writeRawValue(final MutablePage page, final int offset, final int fixedSize, final long raw) {
+    switch (fixedSize) {
+    case 8 -> page.writeLong(offset, raw);
+    case 4 -> page.writeInt(offset, (int) raw);
+    case 2 -> page.writeShort(offset, (short) raw);
+    case 1 -> page.writeByte(offset, (byte) raw);
+    default -> throw new IllegalStateException("Unsupported fixed column width " + fixedSize);
+    }
+    return fixedSize;
+  }
+
+  /**
+   * Reads back the raw bits {@link #writeRawValue} stored for a fixed-width column.
+   */
+  private static long readRawValue(final BasePage page, final int offset, final int fixedSize) {
+    return switch (fixedSize) {
+      case 8 -> page.readLong(offset);
+      case 4 -> page.readInt(offset);
+      case 2 -> page.readShort(offset);
+      case 1 -> page.readByte(offset);
+      default -> throw new IllegalStateException("Unsupported fixed column width " + fixedSize);
     };
   }
 
@@ -913,26 +915,24 @@ public class TimeSeriesBucket extends PaginatedComponent {
     return result;
   }
 
+  /**
+   * Reads one column value, mirroring {@link #writeRawValue}/{@link #writeStringValue} exactly: same
+   * width table on the way out as on the way in, and the boxing delegated to
+   * {@link ColumnDefinition#boxRaw(long)} so the mutable and sealed layers cannot return different
+   * Java types for the same declared column (issue #5475).
+   */
   private Object readColumnValue(final BasePage page, final int offset, final ColumnDefinition col) {
-    return switch (col.getDataType()) {
-      case DOUBLE -> Double.longBitsToDouble(page.readLong(offset));
-      case LONG, DATETIME -> page.readLong(offset);
-      case INTEGER -> page.readInt(offset);
-      case FLOAT -> Float.intBitsToFloat(page.readInt(offset));
-      case SHORT -> page.readShort(offset);
-      case BYTE -> page.readByte(offset);
-      case BOOLEAN -> page.readByte(offset) == 1;
-      case STRING -> {
-        final int len = page.readShort(offset) & 0xFFFF;
-        if (len == 0)
-          yield "";
-        final byte[] bytes = new byte[len];
-        for (int i = 0; i < len; i++)
-          bytes[i] = (byte) page.readByte(offset + 2 + i);
-        yield new String(bytes, StandardCharsets.UTF_8);
-      }
-      default -> null;
-    };
+    final int fixedSize = col.getFixedSize();
+    if (fixedSize > 0)
+      return col.boxRaw(readRawValue(page, offset, fixedSize));
+
+    final int len = page.readShort(offset) & 0xFFFF;
+    if (len == 0)
+      return col.getDataType() == Type.STRING ? "" : null;
+
+    final byte[] bytes = new byte[len];
+    page.readByteArray(offset + 2, bytes);
+    return new String(bytes, StandardCharsets.UTF_8);
   }
 
   private int getColumnStorageSize(final BasePage page, final int offset, final ColumnDefinition col) {

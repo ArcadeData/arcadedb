@@ -136,10 +136,13 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
         if (nonTsIndex < 0)
           continue;
 
+        // A PromQL matcher value is always text; coerce it to the column's declared type so it matches
+        // what both storage layers hand back (issue #5475).
+        final Object coerced = nonTimestampColumn(columns, nonTsIndex).coerceValue(matcher.value());
         if (tagFilter == null)
-          tagFilter = TagFilter.eq(nonTsIndex, matcher.value());
+          tagFilter = TagFilter.eq(nonTsIndex, coerced);
         else
-          tagFilter = tagFilter.and(nonTsIndex, matcher.value());
+          tagFilter = tagFilter.and(nonTsIndex, coerced);
       }
 
       // Query the engine
@@ -204,6 +207,20 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
    * Returns the zero-based index among non-timestamp columns for use with TagFilter,
    * which accesses row[columnIndex + 1].
    */
+  /**
+   * The column at the given position among the non-timestamp columns.
+   */
+  private static ColumnDefinition nonTimestampColumn(final List<ColumnDefinition> columns, final int nonTsIndex) {
+    int nonTsIdx = -1;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (++nonTsIdx == nonTsIndex)
+        return col;
+    }
+    throw new IllegalArgumentException("No non-timestamp column at index " + nonTsIndex);
+  }
+
   private static int findNonTimestampColumnIndex(final List<ColumnDefinition> columns, final String name) {
     int nonTsIdx = -1;
     for (int i = 0; i < columns.size(); i++) {

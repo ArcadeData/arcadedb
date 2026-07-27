@@ -117,7 +117,9 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         continue;
       if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName))
-        return TagFilter.eq(nonTsIdx, tagValue);
+        // The tag value arrives as request text; coerce it to the column's declared type so it matches
+        // what both storage layers hand back (issue #5475).
+        return TagFilter.eq(nonTsIdx, col.coerceValue(tagValue));
       nonTsIdx++;
     }
 

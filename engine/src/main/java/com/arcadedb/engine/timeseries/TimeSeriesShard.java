@@ -814,7 +814,7 @@ public class TimeSeriesShard implements AutoCloseable {
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
             double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
             for (final Object v : chunkValues) {
-              final double d = v != null ? ((Number) v).doubleValue() : 0.0;
+              final double d = ColumnDefinition.numericValueOf(v);
               if (d < min)
                 min = d;
               if (d > max)
