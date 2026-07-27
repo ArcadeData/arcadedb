@@ -40,6 +40,7 @@ import org.junit.jupiter.api.condition.OS;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -102,6 +103,84 @@ class ConsoleTest {
   @Test
   void comment() throws Exception {
     assertThat(console.parse("-- This is a comment;")).isTrue();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5457: a semicolon inside a comment must not terminate the command.
+   */
+  @Test
+  void commentWithSemicolon() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("select 11 as value  -- A comment with a semicolon ; errors here")).isTrue();
+    assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
+
+    buffer.setLength(0);
+    assertThat(console.parse("select 22 as value /* a block ; comment */; select 33 as value")).isTrue();
+    assertThat(buffer.toString()).contains("22").contains("33").doesNotContain("ERROR");
+
+    buffer.setLength(0);
+    assertThat(console.parse("-- a full line comment ; with a semicolon")).isTrue();
+    assertThat(buffer.toString()).doesNotContain("ERROR");
+
+    buffer.setLength(0);
+    assertThat(console.parse("select 'a ; b' as value")).isTrue();
+    assertThat(buffer.toString()).contains("a ; b").doesNotContain("ERROR");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5457: with Cypher the line comment is `//`, while `--` is an undirected
+   * relationship in a pattern.
+   */
+  @Test
+  void cypherCommentWithSemicolon() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("create vertex type Person")).isTrue();
+    assertThat(console.parse("set language = cypher")).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("RETURN 44 AS value // a comment with a semicolon ; here")).isTrue();
+    assertThat(buffer.toString()).contains("44").doesNotContain("ERROR");
+
+    buffer.setLength(0);
+    assertThat(console.parse("MATCH (a:Person) -- (b:Person) RETURN count(a) AS value")).isTrue();
+    assertThat(buffer.toString()).doesNotContain("ERROR");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5457: a script is loaded line by line, but a block comment can span
+   * multiple lines.
+   */
+  @Test
+  void loadScriptWithComments() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final File script = new File("./target/issue-5457.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          /* a block comment
+             spanning ; multiple lines */
+          create document type Loaded;
+          insert into Loaded set id = 55; -- a trailing ; comment
+          """);
+
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+
+      assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
+      assertThat(buffer.toString()).doesNotContain("ERROR");
+
+      buffer.setLength(0);
+      assertThat(console.parse("select from Loaded")).isTrue();
+      assertThat(buffer.toString()).contains("55").doesNotContain("ERROR");
+    } finally {
+      script.delete();
+    }
   }
 
   @Test

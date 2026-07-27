@@ -23,12 +23,60 @@ import org.jline.reader.impl.DefaultParser;
 
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 
+/**
+ * Splits the text typed on the console (or read from a script) into the single commands to execute. The separator is the
+ * semicolon, but a semicolon found inside a string, a line comment or a block comment is part of the text, not a separator.
+ * Comments are dropped while splitting, so they never reach the query engine (issue #5457).
+ * <p>
+ * The line comment marker depends on the language in use: SQL uses `--`, while Cypher, Gremlin and Mongo use `//`. This matters
+ * because a double dash is a legal undirected relationship in Cypher (`(a) -- (b)`) and a double slash is a division in SQL.
+ */
 public class TerminalParser extends DefaultParser {
+  private static final String SQL_LINE_COMMENT   = "--";
+  private static final String OTHER_LINE_COMMENT = "//";
+
+  private String  lineComment           = SQL_LINE_COMMENT;
+  private boolean lineCommentNeedsBlank = true;
+  private boolean blockCommentOpen      = false;
+
+  /**
+   * Returns true if the text of the last parse ends inside a block comment, so the following lines are still part of it. Valid
+   * only right after a call to {@link #parse(String, int, ParseContext)}, it is used to load scripts line by line (issue #5457).
+   */
+  public boolean isBlockCommentOpen() {
+    return blockCommentOpen;
+  }
+
+  /**
+   * Sets the language in use, to pick the right line comment marker. Called by the console on `set language = <name>`.
+   */
+  public void setLanguage(final String language) {
+    final boolean sql = language == null || language.toLowerCase(Locale.ENGLISH).startsWith("sql");
+    lineComment = sql ? SQL_LINE_COMMENT : OTHER_LINE_COMMENT;
+    // THE SQL GRAMMAR READS A LINE COMMENT AS `--` FOLLOWED BY A SPACE, SO `1--2` STAYS ARITHMETIC
+    lineCommentNeedsBlank = sql;
+  }
 
   @Override
   public boolean isDelimiterChar(final CharSequence buffer, final int pos) {
     return buffer.charAt(pos) == ';';
+  }
+
+  /**
+   * Returns true if a line comment starts at the given position. With SQL the marker must be followed by a blank, exactly like in
+   * the engine grammar, so that two dashes glued to an operand (`1--2`) remain arithmetic. The end of the text is accepted as a
+   * terminator too: dropping such a comment is always safer than forwarding it to the parser.
+   */
+  private boolean isLineCommentStart(final String line, final int pos) {
+    if (line.charAt(pos) != lineComment.charAt(0) || pos + 1 >= line.length() || line.charAt(pos + 1) != lineComment.charAt(1))
+      return false;
+    return !lineCommentNeedsBlank || pos + 2 >= line.length() || Character.isWhitespace(line.charAt(pos + 2));
+  }
+
+  private static boolean isBlockCommentStart(final String line, final int pos) {
+    return line.charAt(pos) == '/' && pos + 1 < line.length() && line.charAt(pos + 1) == '*';
   }
 
   @Override
@@ -45,6 +93,8 @@ public class TerminalParser extends DefaultParser {
     int rawWordLength = -1;
     int rawWordStart = 0;
     int braceDepth = 0;
+    boolean insideLineComment = false;
+    boolean insideBlockComment = false;
 
     for (int i = 0; i < line.length(); ++i) {
       if (i == cursor) {
@@ -55,7 +105,24 @@ public class TerminalParser extends DefaultParser {
 
       final char c = line.charAt(i);
 
-      if (quoteStart < 0 && this.isQuoteChar(line, i)) {
+      if (insideLineComment) {
+        // KEEP THE LINE TERMINATOR SO THE FOLLOWING TEXT IS NOT GLUED TO THE COMMANDED LINE
+        if (c == '\n' || c == '\r') {
+          insideLineComment = false;
+          current.append(c);
+        }
+      } else if (insideBlockComment) {
+        if (c == '*' && i + 1 < line.length() && line.charAt(i + 1) == '/') {
+          insideBlockComment = false;
+          ++i;
+        }
+      } else if (quoteStart < 0 && isLineCommentStart(line, i)) {
+        insideLineComment = true;
+        ++i;
+      } else if (quoteStart < 0 && isBlockCommentStart(line, i)) {
+        insideBlockComment = true;
+        ++i;
+      } else if (quoteStart < 0 && this.isQuoteChar(line, i)) {
         quoteStart = i;
         current.append(c);
       } else if (quoteStart >= 0) {
@@ -121,6 +188,8 @@ public class TerminalParser extends DefaultParser {
         }
       }
     }
+
+    blockCommentOpen = insideBlockComment;
 
     if (current.length() > 0 || cursor == line.length()) {
       words.add(current.toString());
