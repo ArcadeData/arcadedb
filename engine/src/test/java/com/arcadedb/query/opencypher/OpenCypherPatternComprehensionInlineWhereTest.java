@@ -43,6 +43,7 @@ class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.getSchema().createVertexType("A");
+    database.getSchema().createVertexType("C");
     database.getSchema().createEdgeType("E");
 
     // a -[E {tag: 'ok'}]->  b
@@ -52,6 +53,18 @@ class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
         CREATE (a:A {v: 1}), (b:A {v: 2}), \
         (a)-[:E {tag: 'ok'}]->(b), \
         (a)-[:E {tag: 'bad'}]->(b)""");
+
+    // A two-hop chain used only by the variable-length tests. Its nodes carry label C, so the
+    // single-hop tests above - which all pin the far end to :A - are unaffected by it.
+    //   a -ok-> mid -ok->  okEnd     (both hops satisfy the predicate)
+    //   a -ok-> mid -bad-> badEnd    (second hop fails it)
+    database.command("opencypher",
+        """
+        MATCH (a:A {v: 1}) \
+        CREATE (mid:C {name: 'mid'}), (okEnd:C {name: 'okEnd'}), (badEnd:C {name: 'badEnd'}), \
+        (a)-[:E {tag: 'ok'}]->(mid), \
+        (mid)-[:E {tag: 'ok'}]->(okEnd), \
+        (mid)-[:E {tag: 'bad'}]->(badEnd)""");
   }
 
   @Test
@@ -124,6 +137,21 @@ class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void inlineWherePredicateTruncatesAVariableLengthPathAtTheFirstFailingHop() {
+    // Over the chain a -ok-> mid -ok-> okEnd and mid -bad-> badEnd, a 2-hop expansion must keep
+    // 'mid' and 'okEnd' and drop 'badEnd': the predicate has to be enforced on every hop, not just
+    // the first. Without per-hop enforcement all three would be collected.
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN [(a)-[r:E*1..2 WHERE r.tag = 'ok']->(x:C) | x.name] AS names""");
+
+    assertThat(rs.hasNext()).isTrue();
+    final List<Object> names = rs.next().getProperty("names");
+    assertThat(names).containsExactlyInAnyOrder("mid", "okEnd");
   }
 
   @Test

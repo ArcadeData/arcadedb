@@ -55,7 +55,7 @@ carries no inline `WHERE`, no row is allocated at all and the hot path is unchan
 ## Tests
 
 `engine/src/test/java/com/arcadedb/query/opencypher/OpenCypherPatternComprehensionInlineWhereTest.java`
-- 11 tests, using the exact data and queries from the issue report.
+- 12 tests, using the exact data and queries from the issue report.
 
 | Test | Asserts |
 |---|---|
@@ -65,6 +65,7 @@ carries no inline `WHERE`, no row is allocated at all and the hot path is unchan
 | `inlineWherePredicateCombinesWithComprehensionLevelWhere` | inline and comprehension-level `WHERE` compose |
 | `inlineWherePredicateCanReferenceOuterBoundVariable` | the predicate sees outer-scope bindings |
 | `inlineWherePredicateAppliesToEveryHopOfAVariableLengthPattern` | `*1..2` filters every hop |
+| `inlineWherePredicateTruncatesAVariableLengthPathAtTheFirstFailingHop` | a 2-hop chain is cut at the first hop that fails the predicate |
 | `inlineWherePredicateAppliesToAnIncomingPattern` | `<-[r:E WHERE ...]-` filters the same relationship |
 | `inlineWherePredicateAppliesToAnUndirectedPattern` | direction-agnostic expansion honors the predicate |
 | `inlineWherePredicateResolvesAQueryParameter` | `WHERE r.tag = $tag` resolves the query parameter |
@@ -74,7 +75,13 @@ carries no inline `WHERE`, no row is allocated at all and the hot path is unchan
 ## Verification
 
 Before the fix, 4 of the original 8 tests failed with precisely the reported symptom (`c = 2`
-instead of `0` / `1`); the 4 control tests passed. After the fix all 11 pass.
+instead of `0` / `1`); the 4 control tests passed. After the fix all 12 pass.
+
+Per-hop enforcement was verified by mutation rather than by inspection: temporarily removing the
+predicate check from `traverseVariableLength(...)` makes
+`inlineWherePredicateTruncatesAVariableLengthPathAtTheFirstFailingHop` fail (it then collects
+`badEnd` as well), confirming the test actually pins that behavior. The check was restored
+afterwards.
 
 Regression run: full `com.arcadedb.query.opencypher.**` package - **7495 tests, 0 failures**.
 The 3 errors reported are `OpenCypherCustomFunctionTest` GraalVM polyglot classloading failures
@@ -88,6 +95,10 @@ running that class unchanged on the base checkout.
   changes result accordingly - this is the intended correction, but it is a behavior change for
   queries that were silently relying on the unfiltered output.
 - No change to the regular `MATCH` path, which already applied the predicate.
+- The inline predicate is evaluated before the target vertex is resolved, so it cannot reference the
+  far-end node - `-[r:E WHERE b.v = 2]->(b)` does not see `b`. This matches the ordering in
+  `MatchRelationshipStep` (inline `WHERE` runs ahead of the target label/property filters), so the
+  two engines stay consistent. Predicates on the far end belong in the comprehension-level `WHERE`.
 
 ## PR
 
@@ -104,6 +115,15 @@ consistent with its ongoing sunset.
 | Broaden test coverage to incoming/`BOTH` directions and a parameter reference in the inline `WHERE` | **Applied.** Three tests added. All pass unchanged, confirming direction handling and parameter resolution already work through the fix - no further code change needed. |
 | Collapse the pre-existing inline binding-copy loops in this file onto the new `copyBindings(...)` helper | **Skipped.** A bug fix should not carry surrounding cleanup; the reviewer itself scoped this as a follow-up. The four call sites are untouched by this change, so folding them in would widen the regression surface for no behavioral gain. |
 | File a follow-up issue for `exists(pattern)` / `shortestPath` carrying the predicate but ignoring it | **Deferred to the maintainer.** Filing issues is outside the scope authorized for this PR. Documented under Known gaps below. |
+
+**Cycle 2** - `15ee8697` - claude reviewed again (approving; "safe to merge"), three minor notes.
+gemini-code-assist again posted nothing.
+
+| Note | Decision |
+|---|---|
+| The var-length test had only one reachable hop, so it never exercised a path whose *later* hop fails the predicate | **Applied.** Added a two-hop `:C` chain to the fixture and a test asserting the path is truncated at the first failing hop. Verified by mutation (see Verification) that it genuinely fails without per-hop enforcement. The chain is label-scoped so the single-hop tests, which all pin the far end to `:A`, are unaffected. |
+| The inline predicate cannot reference the target node | **No change - expected behavior.** Consistent with `MatchRelationshipStep` ordering; now documented under Impact and notes. |
+| PR body said 8 tests where the doc and test class say more | **Applied.** PR body corrected to 12. |
 
 ## Known gaps
 
