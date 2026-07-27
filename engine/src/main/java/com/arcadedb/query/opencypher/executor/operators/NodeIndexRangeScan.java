@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
@@ -59,6 +60,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   private final String propertyName;
   private final List<RangePredicate> predicates;  // Store predicates for parameter resolution
   private final String indexName;
+  /** Every property of the chosen index, in key order: a composite index is not registered under a single one. */
+  private final List<String> indexProperties;
 
   /**
    * Create a range scan operator from range predicates.
@@ -75,12 +78,20 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   public NodeIndexRangeScan(final String variable, final String label, final String propertyName,
                            final List<RangePredicate> predicates, final String indexName,
                            final double estimatedCost, final long estimatedCardinality) {
+    this(variable, label, propertyName, predicates, indexName, List.of(propertyName), estimatedCost, estimatedCardinality);
+  }
+
+  public NodeIndexRangeScan(final String variable, final String label, final String propertyName,
+                           final List<RangePredicate> predicates, final String indexName,
+                           final List<String> indexProperties,
+                           final double estimatedCost, final long estimatedCardinality) {
     super(estimatedCost, estimatedCardinality);
     this.variable = variable;
     this.label = label;
     this.propertyName = propertyName;
     this.predicates = predicates;
     this.indexName = indexName;
+    this.indexProperties = indexProperties == null || indexProperties.isEmpty() ? List.of(propertyName) : indexProperties;
   }
 
   @Override
@@ -131,9 +142,20 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             return;
           }
 
-          // Get the range index
-          final TypeIndex typeIndex = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
-          if (typeIndex == null || !(typeIndex instanceof RangeIndex)) {
+          // Resolve the index by its whole key: a composite index is not registered under the single
+          // anchor property, and looking it up by that property alone yielded no index and, silently,
+          // no rows at all (issue #5444). Its leading column still bounds a contiguous key range, so a
+          // one-element bound is a valid prefix bound.
+          TypeIndex typeIndex = (TypeIndex) type.getPolymorphicIndexByProperties(indexProperties);
+          if (typeIndex == null && indexProperties.size() > 1)
+            typeIndex = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
+          if (typeIndex == null)
+            // The planner picked an index the schema no longer offers. An empty result set here would
+            // silently drop rows the query must return, so fail instead.
+            throw new CommandExecutionException(
+                "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
+
+          if (!(typeIndex instanceof RangeIndex)) {
             finished = true;
             return;
           }

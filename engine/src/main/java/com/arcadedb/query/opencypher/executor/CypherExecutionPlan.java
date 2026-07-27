@@ -1609,6 +1609,7 @@ public class CypherExecutionPlan {
           final var anchor = physicalPlan.getAnchor();
           sourceStep = new IndexSeekStep(anchor.getVariable(), anchor.getIndex().getTypeName(),
               anchor.getPropertyName(), anchor.getPropertyValue(), anchor.getIndex().getIndexName(),
+              anchor.getIndex().getPropertyNames(),
               anchor.getEstimatedCost(), anchor.getEstimatedCardinality(), context);
         } else
           sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter, sourcePushdown);

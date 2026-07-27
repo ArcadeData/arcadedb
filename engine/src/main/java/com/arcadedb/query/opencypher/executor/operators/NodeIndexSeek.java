@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -53,29 +54,47 @@ import java.util.Set;
  * Cardinality: Estimated based on selectivity
  */
 public class NodeIndexSeek extends AbstractPhysicalOperator {
-  private final String variable;
-  private final String label;
-  private final String propertyName;
-  private final Object propertyValue;
-  private final String indexName;
+  private final String       variable;
+  private final String       label;
+  private final String       propertyName;
+  private final Object       propertyValue;
+  private final String       indexName;
+  /** Every property of the chosen index, in key order. */
+  private final List<String> indexProperties;
+  /**
+   * The equality values covering a leading prefix of the index key, in key order. The first element
+   * corresponds to {@link #propertyName} and may be an {@link InListValues}; a list shorter than
+   * {@link #indexProperties} makes this a prefix scan instead of a single-entry lookup.
+   */
+  private final List<Object> keyValues;
 
   public NodeIndexSeek(final String variable, final String label, final String propertyName,
                       final Object propertyValue, final String indexName,
                       final double estimatedCost, final long estimatedCardinality) {
+    this(variable, label, propertyName, propertyValue, indexName, List.of(propertyName), List.of(propertyValue),
+        estimatedCost, estimatedCardinality);
+  }
+
+  public NodeIndexSeek(final String variable, final String label, final String propertyName,
+                      final Object propertyValue, final String indexName, final List<String> indexProperties,
+                      final List<Object> keyValues, final double estimatedCost, final long estimatedCardinality) {
     super(estimatedCost, estimatedCardinality);
     this.variable = variable;
     this.label = label;
     this.propertyName = propertyName;
     this.propertyValue = propertyValue;
     this.indexName = indexName;
+    this.indexProperties = indexProperties == null || indexProperties.isEmpty() ? List.of(propertyName) : indexProperties;
+    this.keyValues = keyValues == null || keyValues.isEmpty() ? List.of(propertyValue) : keyValues;
   }
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     return new ResultSet() {
       private TypeIndex index = null;
-      private List<Object> seekKeys = null;   // one entry per value to seek (IN-list expands to N entries)
+      private List<Object[]> seekKeys = null; // one key per value to seek (IN-list expands to N keys)
       private int seekIndex = 0;
+      private boolean wholeKey = false;        // the key covers every index property: single-entry lookup
       private IndexCursor cursor = null;
       private Set<RID> seen = null;            // de-duplicate RIDs across multiple seek values (IN-list set semantics)
       private final List<Result> buffer = new ArrayList<>();
@@ -115,12 +134,27 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           return;
         }
 
-        // Get the index
-        index = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
-        if (index == null) {
-          finished = true;
-          return;
+        // Resolve the index by its whole key: a composite index is not registered under the single
+        // anchor property, and looking it up by that property alone used to yield no index and,
+        // silently, no rows at all (issue #5444).
+        index = (TypeIndex) type.getPolymorphicIndexByProperties(indexProperties);
+        if (index == null && indexProperties.size() > 1)
+          index = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
+        if (index == null)
+          // The planner picked an index that the schema no longer offers. Returning an empty result
+          // set here would silently drop rows the query must return, so fail instead.
+          throw new CommandExecutionException(
+              "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
+
+        // The prefix values are shared by every seek; only the leading value varies over an IN-list.
+        final List<Object> trailing = new ArrayList<>(keyValues.size() - 1);
+        for (int i = 1; i < keyValues.size(); i++) {
+          final Object resolved = resolveValue(keyValues.get(i));
+          if (resolved == null)
+            break; // an unresolved parameter truncates the key, degrading the seek to a shorter prefix
+          trailing.add(resolved);
         }
+        wholeKey = 1 + trailing.size() == index.getPropertyNames().size();
 
         // Resolve the seek keys at runtime (parameters change per execution). A single equality value
         // yields one key; an IN-list (issue #5306) yields one key per list element, with duplicates
@@ -132,24 +166,30 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
             final Object resolved = resolveValue(element);
             if (resolved instanceof Collection<?> coll) {
               for (final Object v : coll)
-                addSeekKey(v);
+                addSeekKey(v, trailing);
             } else if (resolved != null && resolved.getClass().isArray()) {
               for (final Object v : MultiValue.getMultiValueAsList(resolved))
-                addSeekKey(v);
+                addSeekKey(v, trailing);
             } else
-              addSeekKey(resolved);
+              addSeekKey(resolved, trailing);
           }
         } else {
-          addSeekKey(resolveValue(propertyValue));
+          addSeekKey(resolveValue(propertyValue), trailing);
         }
 
         if (seekKeys.isEmpty())
           finished = true;
       }
 
-      private void addSeekKey(final Object value) {
-        if (value != null)
-          seekKeys.add(value);
+      private void addSeekKey(final Object leadingValue, final List<Object> trailing) {
+        if (leadingValue == null)
+          return;
+
+        final Object[] key = new Object[1 + trailing.size()];
+        key[0] = leadingValue;
+        for (int i = 0; i < trailing.size(); i++)
+          key[1 + i] = trailing.get(i);
+        seekKeys.add(key);
       }
 
       private Object resolveValue(final Object value) {
@@ -181,7 +221,10 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
               finished = true;
               return;
             }
-            cursor = index.get(new Object[] { seekKeys.get(seekIndex++) });
+            final Object[] key = seekKeys.get(seekIndex++);
+            // A key covering every index property identifies at most one entry per RID; a shorter one
+            // matches a contiguous range of the ordered index, which only the range cursor can walk.
+            cursor = wholeKey ? index.get(key) : index.range(true, key, true, key, true);
             continue;
           }
 
@@ -221,7 +264,10 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     sb.append(indent).append("+ NodeIndexSeek");
     sb.append("(").append(variable).append(":").append(label).append(")");
     sb.append(" [index=").append(indexName);
-    sb.append(", ").append(propertyName).append("=").append(propertyValue);
+    // Show every key column the seek resolves, so a prefix seek on a composite index is recognizable
+    for (int i = 0; i < keyValues.size(); i++)
+      sb.append(", ").append(i < indexProperties.size() ? indexProperties.get(i) : propertyName)
+          .append("=").append(keyValues.get(i));
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
