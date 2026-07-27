@@ -160,6 +160,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   });
 
   /**
+   * Removes dropped database directories away from the apply loop. Deliberately not the lifecycleExecutor: a
+   * deletion is unbounded in the size of the database and would delay the snapshot-download triggers that
+   * executor carries.
+   */
+  private volatile DeferredDatabaseDeleter deferredDatabaseDeleter = new DeferredDatabaseDeleter();
+
+  /**
    * Per-database bootstrap baseline committed via {@link RaftLogEntryType#BOOTSTRAP_FINGERPRINT_ENTRY}.
    * Populated when the entry is applied (locally on every peer), used by the catch-up decision
    * tree (locally bootstrapped vs leader-shipped vs late-newer-joiner refusal). Issue #4147.
@@ -315,8 +322,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (server != null) {
       final String dbDir = server.getConfiguration().getValueAsString(
           GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
-      if (dbDir != null)
-        SnapshotInstaller.recoverPendingSnapshotSwaps(Path.of(dbDir));
+      if (dbDir != null) {
+        final Path databasesDirectory = Path.of(dbDir);
+        SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDirectory);
+        // Finish any deletion a crash or a shutdown cut short: the directories are reserved, so nothing else
+        // will ever look at them.
+        deferredDatabaseDeleter.sweepOrphanedStagingDirectories(databasesDirectory);
+      }
     }
     LogManager.instance().log(this, Level.INFO, "ArcadeStateMachine initialized (groupId=%s)", groupId);
   }
@@ -1984,9 +1996,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
 
-    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
-    db.getEmbedded().drop();
-    server.removeDatabase(databaseName);
+    // Only the rename below runs on the apply thread: the recursive delete costs one unlink per file and is
+    // unbounded in the size of the database, and this loop is sequential and shared by every database
+    // multiplexed on the state machine. Close, deregister and rename hold the databases lock as one unit -
+    // mirroring the snapshot installer's swap - so no concurrent open can reopen the directory in between.
+    final DatabaseInternal embedded = ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded();
+    final Path databaseDirectory = Path.of(embedded.getDatabasePath());
+    final Path staged;
+    synchronized (server.getDatabasesLock()) {
+      embedded.closeForDrop();
+      server.removeDatabase(databaseName);
+      staged = deferredDatabaseDeleter.dropInBackground(databaseDirectory);
+    }
 
     // Evict AFTER the drop succeeded, mirroring the applied-index drop eviction which runs only once
     // apply completes: if drop() had thrown and quarantined this database, the baseline must stay so a
@@ -1994,7 +2015,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // actually dropped - the #5100 failure mode).
     evictBootstrapBaseline(databaseName);
 
-    LogManager.instance().log(this, Level.INFO, "Database '%s' dropped via Raft drop-database entry", databaseName);
+    LogManager.instance().log(this, Level.INFO, "Database '%s' dropped via Raft drop-database entry%s", databaseName,
+        staged != null ? " (files staged as '" + staged.getFileName() + "' for background deletion)" : "");
+  }
+
+  // @VisibleForTesting
+  void setDeferredDatabaseDeleter(final DeferredDatabaseDeleter deleter) {
+    this.deferredDatabaseDeleter = deleter;
   }
 
   private void applySecurityUsersEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
@@ -2516,6 +2543,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public void close() throws IOException {
     lifecycleExecutor.shutdownNow();
+    deferredDatabaseDeleter.close();
     super.close();
   }
 
