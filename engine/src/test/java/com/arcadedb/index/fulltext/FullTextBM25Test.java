@@ -236,6 +236,93 @@ class FullTextBM25Test extends TestHelper {
     });
   }
 
+  /**
+   * {@code SEARCH_INDEX} counts document frequencies while it matches, whereas the literal {@code TypeIndex.get()} lookup
+   * derives them with a dedicated posting scan. For a single literal term the two derivations describe the same corpus, so
+   * they must produce byte-identical scores; a drift here means one of the two counting paths is wrong.
+   */
+  @Test
+  void matchTimeAndScanDerivedDocumentFrequenciesAgree() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 3");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+
+      for (int i = 0; i < 15; i++)
+        database.command("sql", "INSERT INTO Doc SET name = ?, content = ?", "d" + i,
+            i % 3 == 0 ? "alpha beta gamma" : "alpha delta");
+    });
+
+    database.transaction(() -> {
+      final Map<String, Float> searched = searchScores("Doc[content]", "alpha");
+
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      final Map<String, Float> direct = new HashMap<>();
+      final IndexCursor cursor = typeIndex.get(new Object[] { "alpha" });
+      while (cursor.hasNext()) {
+        final Document document = (Document) cursor.next().getRecord();
+        direct.put(document.getString("name"), cursor.getFloatScore());
+      }
+
+      assertThat(searched).hasSize(15);
+      assertThat(direct.keySet()).isEqualTo(searched.keySet());
+      for (final Map.Entry<String, Float> entry : searched.entrySet())
+        assertThat(direct.get(entry.getKey())).isEqualTo(entry.getValue());
+    });
+  }
+
+  /**
+   * A type whose indexed properties analyze to no tokens at all still counts every document in the corpus counters, so
+   * totalDocs is positive while the summed document length stays zero and the average document length is 0. Scoring must
+   * degrade to an empty result set rather than rejecting the corpus statistics.
+   */
+  @Test
+  void tokenlessCorpusReturnsNoMatchesInsteadOfFailing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+
+      for (int i = 0; i < 4; i++)
+        database.command("sql", "INSERT INTO Doc SET name = 'n" + i + "', content = ''");
+    });
+
+    database.transaction(() -> {
+      assertThat(searchScores("Doc[content]", "quantum")).isEmpty();
+
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      assertThat(typeIndex.get(new Object[] { "quantum" }).hasNext()).isFalse();
+
+      final ResultSet containsText = database.query("sql", "SELECT name FROM Doc WHERE content CONTAINSTEXT 'quantum'");
+      assertThat(containsText.hasNext()).isFalse();
+    });
+  }
+
+  /**
+   * The direct {@code TypeIndex.get()} path scores with type-wide statistics at every bucket count, so the tokenless corpus
+   * must degrade the same way on a single-bucket type.
+   */
+  @Test
+  void tokenlessSingleBucketCorpusReturnsNoMatchesInsteadOfFailing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+
+      for (int i = 0; i < 4; i++)
+        database.command("sql", "INSERT INTO Doc SET name = 'n" + i + "', content = ''");
+    });
+
+    database.transaction(() -> {
+      final ResultSet containsText = database.query("sql", "SELECT name FROM Doc WHERE content CONTAINSTEXT 'quantum'");
+      assertThat(containsText.hasNext()).isFalse();
+      assertThat(searchScores("Doc[content]", "quantum")).isEmpty();
+    });
+  }
+
   private void recomputeCounters() {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())

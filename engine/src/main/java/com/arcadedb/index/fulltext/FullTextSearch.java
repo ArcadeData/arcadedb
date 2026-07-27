@@ -38,6 +38,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -47,7 +49,10 @@ import java.util.TreeMap;
  * SEARCH_INDEX SQL function and by callers that need scored results without going through SQL.
  */
 public class FullTextSearch {
-  private static final int MAX_EXPLAIN_TERMS = 64;
+  private static final int      MAX_EXPLAIN_TERMS = 64;
+  // The map-returning search paths expose scores by RID and never read the cursor entry keys, so one shared empty array
+  // stands in for them rather than allocating a throwaway per bucket.
+  private static final Object[] NO_KEYS           = new Object[0];
 
   private FullTextSearch() {
   }
@@ -92,10 +97,12 @@ public class FullTextSearch {
    * normalized to {@code -1}, meaning unbounded; the SQL {@code SEARCH_INDEX} function depends on {@code -1}
    * continuing to mean unbounded.
    * <p>
-   * BM25 searches spanning several buckets first derive type-wide document frequencies and then apply those same statistics to
-   * every bucket. This makes scores globally comparable without adding shared counters to the write path. The limit is still
-   * pushed down after each bucket's candidates are scored; a global top-K is contained in the union of those now-comparable
-   * per-bucket top-K sets, so callers still sort and truncate a union of at most {@code buckets * limit} entries.
+   * BM25 searches spanning several buckets match every bucket first, counting each scoring token's document frequency in the
+   * same posting walk, and then score every bucket against those pooled type-wide statistics. This makes scores globally
+   * comparable without adding shared counters to the write path and without a dedicated document-frequency scan. The limit is
+   * still pushed down after each bucket's candidates are scored; a global top-K is contained in the union of those
+   * now-comparable per-bucket top-K sets, so callers still sort and truncate a union of at most {@code buckets * limit}
+   * entries.
    */
   public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit) {
     final int effectiveLimit = limit < 1 ? -1 : limit;
@@ -118,18 +125,56 @@ public class FullTextSearch {
 
   private static Map<RID, Float> searchBM25(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText,
       final int limit) {
-    final Map<String, Float> scoringTokens = collectScoringTokens(bucketIndexes, queryText,
-        FullTextQueryExecutor.MAX_EXPANDED_SCORING_TERMS);
-    final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes, scoringTokens);
-    final Map<RID, Float> allResults = new HashMap<>();
+    // Pass one: match each bucket and count every scoring token's document frequency during the same posting walk, so global
+    // statistics cost no extra scan. Matching stays bucket-local, preserving Lucene boolean/phrase/wildcard semantics; only the
+    // corpus statistics are pooled. Both passes are needed because no bucket can be scored until every bucket has reported its
+    // share of each token's document frequency.
+    final List<FullTextQueryExecutor.BM25QueryMatch> matches = new ArrayList<>(bucketIndexes.size());
+    final LinkedHashMap<String, Float> scoringTokens = new LinkedHashMap<>();
+    final Map<String, Long> documentFrequencies = new HashMap<>();
 
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
       final FullTextQueryExecutor.BM25QueryMatch match = new FullTextQueryExecutor(ftIndex).collectBM25Matches(queryText);
-      final IndexCursor cursor = ftIndex.scoreBM25WithContext(match.candidates(), scoringTokens, new Object[] {}, limit,
-          scoringContext);
-      mergeCursor(allResults, cursor);
+      matches.add(match);
+      for (final Map.Entry<String, Float> token : match.scoringTokens().entrySet())
+        scoringTokens.merge(token.getKey(), token.getValue(), Math::max);
+      // Each bucket reports only the tokens it holds postings for, and a wildcard is expanded against every bucket's own key
+      // range, so summing the per-bucket counts yields the type-wide document frequency.
+      for (final Map.Entry<String, Long> frequency : match.documentFrequencies().entrySet())
+        documentFrequencies.merge(frequency.getKey(), frequency.getValue(), Long::sum);
     }
+
+    capScoringTokens(scoringTokens, documentFrequencies, FullTextQueryExecutor.MAX_EXPANDED_SCORING_TERMS);
+
+    // Pass two: every bucket scores against the same corpus statistics, which is what makes the scores globally comparable.
+    final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes, documentFrequencies);
+    final Map<RID, Float> allResults = new HashMap<>();
+    for (int i = 0; i < bucketIndexes.size(); i++)
+      mergeCursor(allResults, bucketIndexes.get(i)
+          .scoreBM25WithContext(matches.get(i).candidates(), scoringTokens, NO_KEYS, limit, scoringContext));
+
     return allResults;
+  }
+
+  /**
+   * Bounds the union of the per-bucket scoring tokens exactly as a single bucket's own cap does: keep the first
+   * {@code maxTerms} discovered and drop the rest, so a pathological wildcard expansion cannot grow the scoring pass without
+   * limit. Matching already happened, so the result set is unaffected - dropped terms simply stop contributing score. Their
+   * document frequencies are dropped too, keeping the context free of statistics it will never consult.
+   */
+  private static void capScoringTokens(final LinkedHashMap<String, Float> scoringTokens,
+      final Map<String, Long> documentFrequencies, final int maxTerms) {
+    if (scoringTokens.size() <= maxTerms)
+      return;
+
+    final Iterator<Map.Entry<String, Float>> tokens = scoringTokens.entrySet().iterator();
+    for (int kept = 0; tokens.hasNext(); kept++) {
+      final Map.Entry<String, Float> token = tokens.next();
+      if (kept >= maxTerms) {
+        documentFrequencies.remove(token.getKey());
+        tokens.remove();
+      }
+    }
   }
 
   /**
@@ -145,7 +190,8 @@ public class FullTextSearch {
 
     final int effectiveLimit = limit < 1 ? -1 : limit;
     final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
-    final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes, scoringTokens);
+    final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
+        scanDocumentFrequencies(bucketIndexes, scoringTokens));
     final Map<RID, Float> allResults = new HashMap<>();
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
       mergeCursor(allResults,
@@ -166,7 +212,8 @@ public class FullTextSearch {
     final Map<String, Float> allTokens = collectScoringTokens(bucketIndexes, queryText,
         FullTextQueryExecutor.MAX_EXPANDED_SCORING_TERMS);
     final Map<String, Float> shownTokens = firstTokens(allTokens, MAX_EXPLAIN_TERMS);
-    final BM25ScoringContext context = createScoringContext(bucketIndexes, shownTokens);
+    final BM25ScoringContext context = createScoringContext(bucketIndexes,
+        scanDocumentFrequencies(bucketIndexes, shownTokens));
     final FullTextIndexMetadata metadata = bucketIndexes.getFirst().getFullTextMetadata();
 
     final JSONObject explain = new JSONObject()
@@ -233,10 +280,24 @@ public class FullTextSearch {
   }
 
   private static BM25ScoringContext createScoringContext(final List<LSMTreeFullTextIndex> bucketIndexes,
-      final Map<String, Float> scoringTokens) {
+      final Map<String, Long> documentFrequencies) {
     final LSMTreeFullTextIndex first = bucketIndexes.getFirst();
     first.ensureTypeWideBM25Counters();
 
+    // Both counters are clamped to the neutral values BM25 uses when no statistics are available. A type whose indexed
+    // properties analyze to no tokens counts every document but sums a zero length, leaving a zero average that would
+    // otherwise be rejected by BM25ScoringContext; length normalization is meaningless for such a corpus anyway.
+    return new BM25ScoringContext(Math.max(1L, first.getTypeWideDocumentCount()),
+        Math.max(1.0, first.getTypeWideAverageDocumentLength()), documentFrequencies);
+  }
+
+  /**
+   * Counts type-wide document frequencies with a dedicated posting scan, one scan per token per bucket. Used by the entry
+   * points that have no matching pass to fold the counting into: the literal {@link #searchSimple} lookup, whose scoring pass
+   * visits only the tokens it was handed, and {@link #explainScoring}.
+   */
+  private static Map<String, Long> scanDocumentFrequencies(final List<LSMTreeFullTextIndex> bucketIndexes,
+      final Map<String, Float> scoringTokens) {
     final Map<String, Long> documentFrequencies = new HashMap<>();
     for (final String token : scoringTokens.keySet()) {
       long df = 0L;
@@ -250,9 +311,7 @@ public class FullTextSearch {
       }
       documentFrequencies.put(token, df);
     }
-
-    return new BM25ScoringContext(Math.max(1L, first.getTypeWideDocumentCount()),
-        first.getTypeWideAverageDocumentLength(), documentFrequencies);
+    return documentFrequencies;
   }
 
   private static void mergeCursor(final Map<RID, Float> target, final IndexCursor cursor) {
