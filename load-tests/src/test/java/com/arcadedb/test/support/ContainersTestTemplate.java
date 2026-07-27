@@ -39,6 +39,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.containers.BindMode;
 import org.testcontainers.utility.MountableFile;
@@ -51,7 +52,11 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -178,11 +183,103 @@ public abstract class ContainersTestTemplate {
     Metrics.removeRegistry(loggingMeterRegistry);
   }
 
+  /**
+   * Removes the state a previous scenario left behind, so every test starts from an empty cluster.
+   * <p>
+   * The server writes into the bind mounts as the image's own user, whose uid does not match the one
+   * running the build on Linux CI. Those files then sit in directories the build user cannot unlink
+   * from, so a plain delete leaves the previous scenario's databases <em>and</em> its Raft log and
+   * snapshots in place, and the next cluster silently starts on top of them. When that happens, the
+   * removal is retried from a throwaway privileged container, which does have the rights.
+   * <p>
+   * {@code ./target/logs} is deliberately left alone: it is diagnostic output rather than state that
+   * feeds back into a later run, and keeping it lets a CI job publish the server-side view of every
+   * scenario instead of only the last one.
+   */
   private void deleteContainersDirectories() {
     logger.info("Deleting containers directories");
-    FileUtils.deleteRecursively(Path.of("./target/databases").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/replication").toFile());
-    FileUtils.deleteRecursively(Path.of("./target/logs").toFile());
+
+    final List<Path> stateDirectories = List.of(Path.of("./target/databases"), Path.of("./target/replication"));
+
+    boolean leftovers = false;
+    for (final Path directory : stateDirectories)
+      leftovers |= !quietDeleteRecursively(directory);
+
+    if (!leftovers)
+      return;
+
+    logger.info("Some container-owned files could not be removed directly, retrying from a privileged container");
+    deleteContainersDirectoriesFromContainer();
+
+    for (final Path directory : stateDirectories)
+      if (!quietDeleteRecursively(directory))
+        logger.warn("Directory '{}' still exists after privileged cleanup: the next test may inherit its state", directory);
+  }
+
+  /**
+   * Deletes {@code directory} and everything under it, tolerating individual failures. Unlike
+   * {@link FileUtils#deleteRecursively} this stays silent: on CI most entries are expected to be
+   * undeletable until the privileged pass runs, and logging a stack trace per entry buries the build
+   * log under a six-figure number of warnings.
+   *
+   * @return {@code true} when the directory is gone afterwards
+   */
+  private boolean quietDeleteRecursively(final Path directory) {
+    final File file = directory.toFile();
+    if (!file.exists())
+      return true;
+
+    try {
+      Files.walkFileTree(directory, new SimpleFileVisitor<>() {
+        @Override
+        public FileVisitResult visitFile(final Path path, final BasicFileAttributes attrs) {
+          try {
+            Files.delete(path);
+          } catch (final IOException ignored) {
+            // Left for the privileged pass.
+          }
+          return FileVisitResult.CONTINUE;
+        }
+
+        @Override
+        public FileVisitResult visitFileFailed(final Path path, final IOException exc) {
+          return FileVisitResult.CONTINUE;
+        }
+
+        @Override
+        public FileVisitResult postVisitDirectory(final Path path, final IOException exc) {
+          try {
+            Files.delete(path);
+          } catch (final IOException ignored) {
+            // Left for the privileged pass.
+          }
+          return FileVisitResult.CONTINUE;
+        }
+      });
+    } catch (final IOException e) {
+      logger.warn("Could not walk '{}' for deletion: {}", directory, e.getMessage());
+    }
+
+    return !file.exists();
+  }
+
+  /**
+   * Removes the bind-mounted state directories from inside a short-lived container running as root,
+   * which can unlink files the build user cannot. The paths are passed literally rather than as globs
+   * so this can only ever touch the three directories the scenarios own.
+   */
+  private void deleteContainersDirectoriesFromContainer() {
+    final String targetPath = Path.of("./target").toAbsolutePath().normalize().toString();
+
+    try (final GenericContainer<?> cleaner = new GenericContainer<>(IMAGE)
+        .withFileSystemBind(targetPath, "/cleanup", BindMode.READ_WRITE)
+        .withCreateContainerCmdModifier(cmd -> cmd.withUser("root"))
+        .withCommand("rm", "-rf", "/cleanup/databases", "/cleanup/replication")
+        .withStartupCheckStrategy(new OneShotStartupCheckStrategy())) {
+      cleaner.start();
+    } catch (final Exception e) {
+      logger.warn("Privileged cleanup container failed: {}", e.getMessage());
+    }
   }
 
   private void makeContainersDirectories(String name) {
