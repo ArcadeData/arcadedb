@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
@@ -53,7 +54,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
   private String usedPartitionBucket;
   private final String            variable;
   private final String            label;
-  private final BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
+  private BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
 
   public NodeByLabelScan(final String variable, final String label,
                         final double estimatedCost, final long estimatedCardinality) {
@@ -75,6 +76,19 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
    */
   public void setPatternProperties(final Map<String, Object> patternProperties) {
     this.patternProperties = patternProperties;
+  }
+
+  /**
+   * Adds a predicate the scan can decide on its own, so a row that cannot match is dropped before any
+   * expansion sees it. Several pushed predicates are ANDed together.
+   */
+  public void pushDownFilter(final BooleanExpression filter) {
+    this.whereFilter = whereFilter == null ?
+        filter : new LogicalExpression(LogicalExpression.Operator.AND, whereFilter, filter);
+  }
+
+  public BooleanExpression getWhereFilter() {
+    return whereFilter;
   }
 
   @Override

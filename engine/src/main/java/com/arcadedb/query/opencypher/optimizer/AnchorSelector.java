@@ -80,7 +80,11 @@ public class AnchorSelector {
     // of another label - the classic index-seek-as-driver rule (issue #5306). Picking a tiny
     // unfiltered label purely because its raw count is low would seed the pattern from the wrong end
     // and force a reverse expansion, which silently returns empty over unidirectional edges or a GAV.
-    for (final LogicalNode node : plan.getNodes().values()) {
+    // Anonymous nodes are candidates too: an inline property map on (:Person {id: $id}) is exactly as
+    // selective as the same map on a named node, and the seek binds the generated variable the
+    // expansion chain already uses. The guard above still keys off the named nodes, so a pattern with
+    // no named node at all keeps falling back the way count push-down expects.
+    for (final LogicalNode node : plan.getPatternNodes().values()) {
       final AnchorSelection candidate = evaluateNode(node, plan);
 
       if (candidate.useIndex()) {

@@ -23,9 +23,11 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
@@ -36,6 +38,7 @@ import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
@@ -168,7 +171,7 @@ public class CypherOptimizer {
 
     // 7. Push down filters
     if (!logicalPlan.getWhereFilters().isEmpty()) {
-      rootOperator = applyFilterPushdown(logicalPlan, rootOperator);
+      rootOperator = applyFilterPushdown(logicalPlan, rootOperator, anchor.getVariable(), anchorOperator);
     }
 
     // 8. Fuse consecutive GAVExpandAll operators into a single GAVFusedChainOperator
@@ -672,6 +675,19 @@ public class CypherOptimizer {
    */
   private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan,
       final PhysicalOperator rootOperator) {
+    return applyFilterPushdown(logicalPlan, rootOperator, null, null);
+  }
+
+  /**
+   * Wraps the remaining WHERE predicates in a Filter above the plan, after giving the anchor scan the
+   * ones it can decide by itself.
+   * <p>
+   * A predicate that reads only the anchor variable answers "is this row worth expanding at all", so
+   * evaluating it at the scan drops the row before the expansion multiplies it. Left at the top, the
+   * plan expanded every vertex of the label and threw most of the rows away afterwards.
+   */
+  private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan,
+      final PhysicalOperator rootOperator, final String anchorVariable, final PhysicalOperator anchorOperator) {
     // Wrap the root operator with a FilterOperator for each WHERE clause
     // In a full implementation, we would analyze which filters can be pushed down
     // to lower operators (closer to data sources) for better performance.
@@ -680,7 +696,10 @@ public class CypherOptimizer {
     PhysicalOperator currentOp = rootOperator;
 
     for (final WhereClause whereClause : logicalPlan.getWhereFilters()) {
-      final BooleanExpression filterExpression = whereClause.getConditionExpression();
+      BooleanExpression filterExpression = whereClause.getConditionExpression();
+
+      if (anchorOperator instanceof NodeByLabelScan scan && anchorVariable != null)
+        filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, scan);
 
       if (filterExpression != null) {
         // Estimate cost and cardinality for this filter
@@ -701,6 +720,59 @@ public class CypherOptimizer {
     }
 
     return currentOp;
+  }
+
+  /**
+   * Hands the anchor scan every top-level conjunct that reads the anchor variable and nothing else,
+   * and returns what is left for the Filter above, or null when everything was pushed down.
+   */
+  private BooleanExpression pushAnchorOnlyConjuncts(final BooleanExpression expression,
+      final String anchorVariable, final LogicalPlan logicalPlan, final NodeByLabelScan scan) {
+    if (expression == null)
+      return null;
+
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      return pushAnchorOnlyConjuncts(wrapper.getBooleanExpression(), anchorVariable, logicalPlan, scan);
+
+    if (expression instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      final BooleanExpression left = pushAnchorOnlyConjuncts(logical.getLeft(), anchorVariable, logicalPlan, scan);
+      final BooleanExpression right = pushAnchorOnlyConjuncts(logical.getRight(), anchorVariable, logicalPlan, scan);
+      if (left == null)
+        return right;
+      if (right == null)
+        return left;
+      return new LogicalExpression(LogicalExpression.Operator.AND, left, right);
+    }
+
+    if (!readsOnlyTheAnchor(expression, anchorVariable, logicalPlan))
+      return expression;
+
+    scan.pushDownFilter(expression);
+    return null;
+  }
+
+  /**
+   * Returns true if the predicate mentions the anchor variable and no other bound variable, so the
+   * anchor scan has everything it needs to decide it.
+   */
+  private boolean readsOnlyTheAnchor(final BooleanExpression expression, final String anchorVariable,
+      final LogicalPlan logicalPlan) {
+    final String text = expression.getText();
+    if (text == null || !CypherVariableUsage.expressionReferencesVariable(text, anchorVariable))
+      return false;
+
+    for (final String variable : logicalPlan.getPatternNodes().keySet())
+      if (!variable.equals(anchorVariable) && CypherVariableUsage.expressionReferencesVariable(text, variable))
+        return false;
+
+    for (final LogicalRelationship relationship : logicalPlan.getRelationships()) {
+      final String relationshipVariable = relationship.getVariable();
+      if (relationshipVariable != null && !relationshipVariable.isEmpty()
+          && CypherVariableUsage.expressionReferencesVariable(text, relationshipVariable))
+        return false;
+    }
+
+    return true;
   }
 
   /**

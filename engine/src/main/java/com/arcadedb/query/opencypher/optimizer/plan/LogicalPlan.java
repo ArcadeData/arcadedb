@@ -302,6 +302,16 @@ public class LogicalPlan {
   }
 
   /**
+   * Returns every node the pattern wrote, anonymous ones included, keyed by the variable the plan
+   * binds it to. An anonymous node is a legitimate starting point - {@code (:Person {id: $id})-[...]}
+   * is as selective as the named spelling - so anchor selection reads this map, while everything that
+   * depends on "did the query name this" keeps reading {@link #getNodes()}.
+   */
+  public Map<String, LogicalNode> getPatternNodes() {
+    return patternNodes;
+  }
+
+  /**
    * Returns all relationships in the logical plan.
    */
   public List<LogicalRelationship> getRelationships() {
