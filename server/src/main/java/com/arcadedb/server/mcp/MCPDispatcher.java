@@ -41,6 +41,8 @@ import com.arcadedb.server.mcp.tools.UpsertRelationshipTool;
 import com.arcadedb.server.mcp.tools.VectorSearchTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -50,6 +52,7 @@ import java.util.logging.Level;
 public class MCPDispatcher {
   public static final  String    MCP_PROTOCOL_VERSION = "2025-03-26";
   private static final JSONArray TOOLS_LIST;
+  private static final Set<String> REGISTERED_TOOL_NAMES;
 
   private static final String INSTRUCTIONS =
       """
@@ -59,6 +62,39 @@ public class MCPDispatcher {
       3. Use the 'query' tool for read-only operations (SELECT, MATCH, RETURN) and 'execute_command' for writes (CREATE, INSERT, UPDATE, DELETE, MERGE).
       4. Call get_schema before writing queries against an unfamiliar database to understand its types and properties. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead: it carries the same content without spending a tool call.
       5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.""";
+
+  private static final String RAG_INSTRUCTIONS =
+      """
+      You are connected to an ArcadeDB multi-model database server for retrieval and agent memory. Follow these rules:
+      1. Call list_databases when you do not know the target database name.
+      2. Call get_schema before searching an unfamiliar database. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead.
+      3. Use query for custom read-only SQL or Cypher retrieval.
+      4. Prefer the dedicated vector, hybrid, full-text, or sampling tools shown by tools/list when they match the task.
+      5. Use upsert_entity and upsert_relationship to maintain agent memory when the corresponding write permissions are enabled.
+      6. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.""";
+
+  private static final Set<String> RAG_TOOL_NAMES = Set.of(
+      "list_databases",
+      "get_schema",
+      "query",
+      "sample_records",
+      "vector_search",
+      "hybrid_search",
+      "full_text_search",
+      "upsert_entity",
+      "upsert_relationship");
+
+  private static final Set<String> ADMIN_TOOL_NAMES = Set.of(
+      "list_databases",
+      "get_schema",
+      "query",
+      "execute_command",
+      "server_status",
+      "profiler_start",
+      "profiler_stop",
+      "profiler_status",
+      "get_server_settings",
+      "set_server_setting");
 
   static {
     TOOLS_LIST = new JSONArray();
@@ -77,6 +113,11 @@ public class MCPDispatcher {
     TOOLS_LIST.put(ProfilerStatusTool.getDefinition());
     TOOLS_LIST.put(GetServerSettingsTool.getDefinition());
     TOOLS_LIST.put(SetServerSettingTool.getDefinition());
+
+    final Set<String> registered = new HashSet<>();
+    for (int i = 0; i < TOOLS_LIST.length(); i++)
+      registered.add(TOOLS_LIST.getJSONObject(i).getString("name"));
+    REGISTERED_TOOL_NAMES = Set.copyOf(registered);
   }
 
   /**
@@ -151,7 +192,7 @@ public class MCPDispatcher {
     try {
       return switch (method) {
         case "initialize" -> result(id, initialize());
-        case "tools/list" -> result(id, new JSONObject().put("tools", TOOLS_LIST));
+        case "tools/list" -> result(id, new JSONObject().put("tools", toolsForProfile(config.getToolProfile())));
         case "tools/call" -> toolsCall(id, params, user);
         case "resources/list" -> resourcesList(id, user);
         case "resources/read" -> resourcesRead(id, params, user);
@@ -182,7 +223,8 @@ public class MCPDispatcher {
     capabilities.put("resources", new JSONObject().put("listChanged", false).put("subscribe", false));
     result.put("capabilities", capabilities);
 
-    result.put("instructions", INSTRUCTIONS);
+    result.put("instructions",
+        config.getToolProfile() == MCPConfiguration.ToolProfile.RAG ? RAG_INSTRUCTIONS : INSTRUCTIONS);
 
     return result;
   }
@@ -222,6 +264,12 @@ public class MCPDispatcher {
         .log(this, Level.INFO, "MCP[%s] tools/call '%s' %s (user=%s)", transport, toolName, formatArgs(args), user.getName());
 
     try {
+      if (!REGISTERED_TOOL_NAMES.contains(toolName))
+        throw new IllegalArgumentException("Unknown tool: " + toolName);
+      if (!isToolAllowed(config.getToolProfile(), toolName))
+        throw new SecurityException(
+            "Tool '" + toolName + "' is not available in MCP profile '" + config.getToolProfile().configName() + "'");
+
       final JSONObject toolResult = switch (toolName) {
         case "list_databases" -> ListDatabasesTool.execute(server, user, args, config);
         case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
@@ -262,6 +310,26 @@ public class MCPDispatcher {
           .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, e.getMessage());
       return toolError(id, e.getMessage());
     }
+  }
+
+  private static JSONArray toolsForProfile(final MCPConfiguration.ToolProfile profile) {
+    final JSONArray filtered = new JSONArray();
+    for (int i = 0; i < TOOLS_LIST.length(); i++) {
+      final JSONObject definition = TOOLS_LIST.getJSONObject(i);
+      if (isToolAllowed(profile, definition.getString("name")))
+        filtered.put(definition);
+    }
+    return filtered;
+  }
+
+  static boolean isToolAllowed(final MCPConfiguration.ToolProfile profile, final String toolName) {
+    if (!REGISTERED_TOOL_NAMES.contains(toolName))
+      return false;
+    return switch (profile) {
+      case ALL -> true;
+      case RAG -> RAG_TOOL_NAMES.contains(toolName);
+      case ADMIN -> ADMIN_TOOL_NAMES.contains(toolName);
+    };
   }
 
   private static String formatArgs(final JSONObject args) {

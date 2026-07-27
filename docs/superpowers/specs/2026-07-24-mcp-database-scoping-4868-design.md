@@ -72,16 +72,25 @@ valid so it can apply if the database is created later.
 
 ## Enforcement
 
-`MCPConfiguration.getPermissionsForDatabase()` returns one immutable effective-permission
-snapshot. Database-targeted tools resolve that snapshot together with the authenticated
-database:
+`MCPConfiguration.getPermissionsForDatabase()` returns one effective-permission snapshot, or the
+global configuration itself when the database carries no override. Database-targeted tools resolve
+that snapshot together with the authenticated database, each declaring the access it requires:
 
-- `get_schema`
-- `query`
-- `execute_command`
-- `full_text_search`
-- `upsert_entity`
-- `upsert_relationship`
+| Tool | Required access |
+| --- | --- |
+| `get_schema` | `READ` |
+| `query` | `READ` |
+| `sample_records` | `READ` |
+| `vector_search` | `READ` |
+| `full_text_search` | `READ` |
+| `execute_command` | `ACCESS` |
+| `upsert_entity` | `ACCESS` |
+| `upsert_relationship` | `ACCESS` |
+
+The write tools request `ACCESS` rather than `READ` because their permission gate is the
+operation-type check that follows, which resolves `CREATE`/`UPDATE` against the same per-database
+snapshot. `execute_command` covers both cases: a read command is still gated on the database-local
+`allowReads` through that same check.
 
 Database discovery in `list_databases`, `server_status`, and schema resources omits databases
 whose effective policy denies the user or read access. ArcadeDB's native database authorization
