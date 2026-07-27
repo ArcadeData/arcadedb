@@ -77,6 +77,16 @@ layout/encoder if you need the exact native field names.
   Reference them in a pattern with `%X{arcadedb.requestId}` (Logback and Log4j2 alike), or rely on
   the JSON encoders, which include the MDC automatically.
 
+## Note for the standalone server distribution
+
+The SLF4J logger deliberately leaves all configuration to the backend, so it never reads
+`config/arcadedb-log.properties`. The distribution bundles the `slf4j-jdk14` binding, so setting
+`-Darcadedb.log.impl=slf4j` on a packaged server still logs through `java.util.logging` - but the
+`FileHandler` and the ANSI/JSON formatter declared in `config/arcadedb-log.properties` are no longer
+installed, which means the rolling `log/arcadedb.log.*` files stop being written. Either keep the
+default logger on the standalone server, or point JUL at that file yourself with
+`-Djava.util.logging.config.file=config/arcadedb-log.properties`.
+
 ## Want plain `java.util.logging`?
 
 You don't need the SLF4J logger for that: either keep the default logger, or select the SLF4J logger

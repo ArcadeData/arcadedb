@@ -63,6 +63,16 @@ public class Slf4jLogger implements Logger {
   private static final int TRACE = 4;
 
   /**
+   * Binds to SLF4J eagerly, so that a missing or broken {@code slf4j-api} surfaces while the logger
+   * is being constructed - where {@link LogManager} still falls back to {@link DefaultLogger} -
+   * rather than as a {@link NoClassDefFoundError} escaping from the first log statement, deep inside
+   * unrelated engine code.
+   */
+  public Slf4jLogger() {
+    LoggerFactory.getILoggerFactory();
+  }
+
+  /**
    * Logs {@code message} at {@code level} for {@code requester}, through SLF4J. This fixed-arity
    * overload (instead of varargs) keeps the common, no-parameter call path free of an {@code Object[]}
    * allocation. When the level is disabled the message is neither formatted nor emitted. Non-null
@@ -234,30 +244,67 @@ public class Slf4jLogger implements Logger {
    * Emits the already-formatted message at the resolved SLF4J level, with the current
    * {@link LogManager} correlation published to the MDC for the duration of the call and restored
    * afterwards (see {@link #pushCorrelation}/{@link #restoreCorrelation}).
+   * <p>
+   * Once the JVM is shutting down the backend's own shutdown hook may already have stopped the
+   * logging context, which would silently swallow the line; from that point on messages of INFO
+   * severity and above go straight to {@code System.err}, mirroring {@link DefaultLogger}.
    */
   private void write(final org.slf4j.Logger log, final int slf4jLevel, final String msg, final Throwable exception) {
+    if (DefaultLogger.isShuttingDown()) {
+      if (slf4jLevel <= INFO)
+        writeToSystemErr(msg, exception);
+      return;
+    }
+
     final LogManager.Correlation correlation = LogManager.instance().getCorrelation();
     final String[] saved = pushCorrelation(correlation);
     try {
       switch (slf4jLevel) {
       case ERROR -> {
-        if (exception != null) log.error(msg, exception); else log.error(msg);
+        if (exception != null)
+          log.error(msg, exception);
+        else
+          log.error(msg);
       }
       case WARN -> {
-        if (exception != null) log.warn(msg, exception); else log.warn(msg);
+        if (exception != null)
+          log.warn(msg, exception);
+        else
+          log.warn(msg);
       }
       case INFO -> {
-        if (exception != null) log.info(msg, exception); else log.info(msg);
+        if (exception != null)
+          log.info(msg, exception);
+        else
+          log.info(msg);
       }
       case DEBUG -> {
-        if (exception != null) log.debug(msg, exception); else log.debug(msg);
+        if (exception != null)
+          log.debug(msg, exception);
+        else
+          log.debug(msg);
       }
       default -> {
-        if (exception != null) log.trace(msg, exception); else log.trace(msg);
+        if (exception != null)
+          log.trace(msg, exception);
+        else
+          log.trace(msg);
       }
       }
     } finally {
       restoreCorrelation(correlation, saved);
+    }
+  }
+
+  /** Last-resort emission used while the JVM shuts down and the SLF4J backend may already be stopped. */
+  private static void writeToSystemErr(final String msg, final Throwable exception) {
+    try {
+      System.err.println(msg);
+      if (exception != null)
+        exception.printStackTrace(System.err);
+      System.err.flush();
+    } catch (final Exception e) {
+      // Silently ignore errors during shutdown logging.
     }
   }
 

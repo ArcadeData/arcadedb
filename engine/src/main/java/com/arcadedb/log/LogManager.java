@@ -18,6 +18,7 @@
  */
 package com.arcadedb.log;
 
+import java.util.Locale;
 import java.util.logging.Level;
 
 /**
@@ -126,16 +127,25 @@ public class LogManager {
 
   /**
    * Builds the {@link Logger} chosen by {@link #LOG_IMPL_PROPERTY}: {@link Slf4jLogger} for
-   * {@code slf4j}, otherwise the default {@link DefaultLogger}. Any failure constructing the chosen
-   * implementation (e.g. {@code slf4j-api} missing at runtime) is caught and falls back to
-   * {@link DefaultLogger}, so a logging misconfiguration can never prevent startup.
+   * {@code slf4j}, {@link DefaultLogger} when unset or {@code default}. Any other value is reported
+   * on {@code System.err} and treated as {@code default}, so a typo does not silently look like a
+   * working configuration. Any failure constructing the chosen implementation (e.g. {@code slf4j-api}
+   * missing at runtime) is caught and falls back to {@link DefaultLogger}, so a logging
+   * misconfiguration can never prevent startup.
    *
    * @return the logger instance to install; never {@code null}
    */
-  private static Logger createLogger() {
-    final String impl = System.getProperty(LOG_IMPL_PROPERTY, "").trim().toLowerCase(java.util.Locale.ROOT);
+  static Logger createLogger() {
+    final String impl = System.getProperty(LOG_IMPL_PROPERTY, "").trim().toLowerCase(Locale.ROOT);
     try {
-      return "slf4j".equals(impl) ? new Slf4jLogger() : new DefaultLogger();
+      if ("slf4j".equals(impl))
+        return new Slf4jLogger();
+
+      if (!impl.isEmpty() && !"default".equals(impl))
+        System.err.println("ArcadeDB: unknown value '" + impl + "' for " + LOG_IMPL_PROPERTY
+            + ", using java.util.logging. Supported values: 'default', 'slf4j'.");
+
+      return new DefaultLogger();
     } catch (final Throwable t) {
       // A logging-init problem must never take the process down: fall back to the dependency-free
       // java.util.logging implementation.

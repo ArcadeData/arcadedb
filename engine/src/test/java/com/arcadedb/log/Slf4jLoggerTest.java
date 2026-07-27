@@ -23,8 +23,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -215,9 +218,45 @@ class Slf4jLoggerTest {
     assertThat(handler.records.get(0).getThrown()).isSameAs(boom);
   }
 
+  @Test
+  void bypassesTheBackendOnceTheJvmIsShuttingDown() {
+    // The SLF4J backend registers its own shutdown hook and may already have stopped its appenders,
+    // which would silently swallow the line: shutdown-path messages must go to System.err instead.
+    final PrintStream originalErr = System.err;
+    final ByteArrayOutputStream captured = new ByteArrayOutputStream();
+    System.setErr(new PrintStream(captured, true));
+    DefaultLogger.setShuttingDown(true);
+    try {
+      logger.log(LOGGER_NAME, Level.SEVERE, "shutting down now", null, null);
+    } finally {
+      DefaultLogger.setShuttingDown(false);
+      System.setErr(originalErr);
+    }
+
+    assertThat(handler.records).isEmpty();
+    assertThat(captured.toString()).contains("shutting down now");
+  }
+
+  @Test
+  void dropsBelowInfoMessagesWhileShuttingDown() {
+    final PrintStream originalErr = System.err;
+    final ByteArrayOutputStream captured = new ByteArrayOutputStream();
+    System.setErr(new PrintStream(captured, true));
+    DefaultLogger.setShuttingDown(true);
+    try {
+      logger.log(LOGGER_NAME, Level.FINE, "noisy debug line", null, null);
+    } finally {
+      DefaultLogger.setShuttingDown(false);
+      System.setErr(originalErr);
+    }
+
+    assertThat(handler.records).isEmpty();
+    assertThat(captured.toString()).doesNotContain("noisy debug line");
+  }
+
   private static final class CapturingHandler extends Handler {
-    private final List<LogRecord>            records   = new ArrayList<>();
-    private       java.util.function.Consumer<LogRecord> onPublish = null;
+    private final List<LogRecord>       records   = new ArrayList<>();
+    private       Consumer<LogRecord>   onPublish = null;
 
     @Override
     public void publish(final LogRecord record) {

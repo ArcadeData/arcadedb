@@ -68,17 +68,11 @@
       <artifactId>undertow-core</artifactId>
       <version>${undertow-core.version}</version>
     </dependency>
-    <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
-      <version>${slf4j.version}</version>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-jdk14</artifactId>
-      <version>${slf4j.version}</version>
-    </dependency>
+    <!-- No SLF4J declaration here on purpose. The slf4j-api facade already arrives from
+         arcadedb-engine, and pinning a binding (slf4j-jdk14) at compile scope would leak it
+         transitively to every application embedding arcadedb-server, forcing them to add
+         <exclusions>. The runnable artifacts (console, package) declare the binding themselves at
+         runtime scope. -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-core</artifactId>
