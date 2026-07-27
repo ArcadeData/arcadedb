@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -120,6 +121,43 @@ class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
         """
         MATCH (a:A {v: 1})
         RETURN size([(a)-[r:E*1..2 WHERE r.tag = 'ok']->(b:A) | b]) AS c""");
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void inlineWherePredicateAppliesToAnIncomingPattern() {
+    // Traversed from the target side, the predicate must filter the same single relationship.
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (b:A {v: 2})
+        RETURN size([(b)<-[r:E WHERE r.tag = 'ok']-(a:A) | a]) AS c""");
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void inlineWherePredicateAppliesToAnUndirectedPattern() {
+    // Direction-agnostic expansion must still honor the predicate.
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN size([(a)-[r:E WHERE r.tag = 'ok']-(b:A) | b]) AS c""");
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void inlineWherePredicateResolvesAQueryParameter() {
+    // The predicate body must resolve $tag from the query parameters.
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:A {v: 1})
+        RETURN size([(a)-[r:E WHERE r.tag = $tag]->(b:A) | b]) AS c""",
+        Map.of("tag", "ok"));
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(1);

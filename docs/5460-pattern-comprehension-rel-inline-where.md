@@ -52,16 +52,10 @@ so both engines share the same semantics. The evaluation row is built once per e
 predicate sees outer-scope bindings without a per-edge copy of the whole row. When the pattern
 carries no inline `WHERE`, no row is allocated at all and the hot path is unchanged.
 
-## Verification
+## Tests
 
-New regression test:
 `engine/src/test/java/com/arcadedb/query/opencypher/OpenCypherPatternComprehensionInlineWhereTest.java`
-(8 tests, using the exact data and queries from the issue report).
-
-Before the fix 4 of the 8 failed with precisely the reported symptom (`c = 2` instead of `0` / `1`);
-the 4 control tests passed. After the fix all 8 pass.
-
-Coverage:
+- 11 tests, using the exact data and queries from the issue report.
 
 | Test | Asserts |
 |---|---|
@@ -71,8 +65,16 @@ Coverage:
 | `inlineWherePredicateCombinesWithComprehensionLevelWhere` | inline and comprehension-level `WHERE` compose |
 | `inlineWherePredicateCanReferenceOuterBoundVariable` | the predicate sees outer-scope bindings |
 | `inlineWherePredicateAppliesToEveryHopOfAVariableLengthPattern` | `*1..2` filters every hop |
+| `inlineWherePredicateAppliesToAnIncomingPattern` | `<-[r:E WHERE ...]-` filters the same relationship |
+| `inlineWherePredicateAppliesToAnUndirectedPattern` | direction-agnostic expansion honors the predicate |
+| `inlineWherePredicateResolvesAQueryParameter` | `WHERE r.tag = $tag` resolves the query parameter |
 | `noInlineWherePredicateStillReturnsEveryRelationship` | control: no predicate, no filtering |
 | `comprehensionLevelWhereStillWorks` | control: documented workaround unaffected |
+
+## Verification
+
+Before the fix, 4 of the original 8 tests failed with precisely the reported symptom (`c = 2`
+instead of `0` / `1`); the 4 control tests passed. After the fix all 11 pass.
 
 Regression run: full `com.arcadedb.query.opencypher.**` package - **7495 tests, 0 failures**.
 The 3 errors reported are `OpenCypherCustomFunctionTest` GraalVM polyglot classloading failures
@@ -87,12 +89,28 @@ running that class unchanged on the base checkout.
   queries that were silently relying on the unfiltered output.
 - No change to the regular `MATCH` path, which already applied the predicate.
 
-### Adjacent gaps observed but deliberately left out of scope
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5471
+
+## Review cycles
+
+**Cycle 1** - `6b4acb31` - claude reviewed (approving; "correct, performant, and ready to merge"),
+with three non-blocking suggestions. gemini-code-assist posted nothing within the 15-minute window,
+consistent with its ongoing sunset.
+
+| Suggestion | Decision |
+|---|---|
+| Broaden test coverage to incoming/`BOTH` directions and a parameter reference in the inline `WHERE` | **Applied.** Three tests added. All pass unchanged, confirming direction handling and parameter resolution already work through the fix - no further code change needed. |
+| Collapse the pre-existing inline binding-copy loops in this file onto the new `copyBindings(...)` helper | **Skipped.** A bug fix should not carry surrounding cleanup; the reviewer itself scoped this as a follow-up. The four call sites are untouched by this change, so folding them in would widen the regression surface for no behavioral gain. |
+| File a follow-up issue for `exists(pattern)` / `shortestPath` carrying the predicate but ignoring it | **Deferred to the maintainer.** Filing issues is outside the scope authorized for this PR. Documented under Known gaps below. |
+
+## Known gaps
 
 `CypherExpressionBuilder.parseRelationshipPattern` is also used by `exists(pattern)`
 (`PatternPredicateExpression`) and by `shortestPath`. Those evaluators do not consult
-`getWhereExpression()` either, so an inline `WHERE` remains ignored there. The parser change makes
-the predicate available on their AST nodes but does not alter their behavior, so this fix is
+`getWhereExpression()`, so an inline `WHERE` remains ignored there. The parser change makes the
+predicate available on their AST nodes but does not alter their behavior, so this fix is
 regression-free for them. Applying it in those evaluators is a separate change and warrants its own
 issue.
 
