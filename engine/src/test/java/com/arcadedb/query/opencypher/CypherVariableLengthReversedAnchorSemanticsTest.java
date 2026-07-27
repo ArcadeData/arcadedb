@@ -162,28 +162,37 @@ class CypherVariableLengthReversedAnchorSemanticsTest {
   }
 
   /**
-   * The optimizer never plans a statement with an inline node property constraint or a named path
-   * variable, so no physical anchor exists and the bridge cannot engage. The queries must still
-   * return the correct rows through the plain source-first plan; this test locks in that both
-   * shapes stay ineligible and correct, so a future eligibility change cannot silently reroute them.
+   * An inline node property constraint used to keep the optimizer out entirely, and with it the
+   * anchor the bridge needs. Now that the property map is planned as the equality predicate it
+   * stands for, the bridge reverses this shape too, and the reversed expansion applies the written
+   * source node's own property map as its target filter.
    */
   @Test
-  void shapesIneligibleForTheBridgeStayCorrect() {
+  void anInlinePropertyOnTheWrittenSourceIsAppliedByTheReversedExpansion() {
     final String inlineProperty = """
         MATCH (n:Node {name: 'a'})-[:LINK*]->(hub:Node)
         WHERE hub.id = 'hub'
         RETURN n.id AS id
         ORDER BY id""";
+
+    assertThat(planStartsFromAnchor(inlineProperty)).isTrue();
+    assertThat(rows(inlineProperty)).containsExactly("id=a;", "id=a;");
+  }
+
+  /**
+   * A named path variable still keeps the optimizer out, so no physical anchor exists and the bridge
+   * cannot engage. The query must return the correct rows through the plain source-first plan; this
+   * pins that a future eligibility change cannot silently reroute it unnoticed.
+   */
+  @Test
+  void aNamedPathStaysIneligibleForTheBridgeAndCorrect() {
     final String namedPath = """
         MATCH p = (n:Node)-[:LINK*]->(hub:Node)
         WHERE hub.id = 'hub'
         RETURN [x IN nodes(p) | x.id] AS ids
         ORDER BY ids""";
 
-    assertThat(planStartsFromAnchor(inlineProperty)).isFalse();
     assertThat(planStartsFromAnchor(namedPath)).isFalse();
-
-    assertThat(rows(inlineProperty)).containsExactly("id=a;", "id=a;");
     assertThat(rows(namedPath)).containsExactly(
         "ids=[a, b, d, hub];", "ids=[a, c, d, hub];", "ids=[b, d, hub];", "ids=[c, d, hub];",
         "ids=[d, hub];", "ids=[hub, a, b, d, hub];", "ids=[hub, a, c, d, hub];");

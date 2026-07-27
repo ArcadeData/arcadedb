@@ -139,15 +139,14 @@ public class ExpandIntoRule implements OptimizationRule {
   public Set<String> determineBoundVariables(final LogicalPlan logicalPlan, final String anchorVar) {
     final Set<String> boundVariables = new HashSet<>();
 
-    // Anchor is always bound
+    // The anchor is the only variable bound before the first expansion; every other node becomes
+    // bound as the chain reaches it, which buildExpansionChain records hop by hop.
+    //
+    // An inline property map does NOT bind its node: it is an equality predicate on a node that some
+    // operator still has to produce. Treating it as bound turned the very first hop into an
+    // ExpandInto semi-join against a variable nothing had produced yet, which matches no edge and
+    // returns no rows.
     boundVariables.add(anchorVar);
-
-    // Nodes with predicates are bound
-    for (final LogicalNode node : logicalPlan.getNodes().values()) {
-      if (node.getProperties() != null && !node.getProperties().isEmpty()) {
-        boundVariables.add(node.getVariable());
-      }
-    }
 
     return boundVariables;
   }

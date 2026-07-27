@@ -164,7 +164,9 @@ public class OpenCypherOptimizerVerificationTest extends TestHelper {
     assertThat(plan).contains("NodeIndexSeek(a:Person)");
     assertThat(plan).contains("index=Person[id]");
     assertThat(plan).contains("id=10");
-    assertThat(plan).contains("ExpandAll(a)-[r:KNOWS]->(b:Person)");
+    // "r" is written in the pattern but never read, so the expansion drops it and walks adjacency
+    // instead of materializing edge records
+    assertThat(plan).contains("ExpandAll(a)-[:KNOWS]->(b:Person)");
   }
 
   @Test
@@ -217,7 +219,8 @@ public class OpenCypherOptimizerVerificationTest extends TestHelper {
     assertThat(plan).contains("NodeIndexSeek(p:Person)");
     assertThat(plan).contains("index=Person[id]");
     assertThat(plan).contains("id=25");
-    assertThat(plan).contains("ExpandAll(p)-[r:WORKS_AT]->(c:Company)");
+    // "r" is written in the pattern but never read, so the expansion drops it
+    assertThat(plan).contains("ExpandAll(p)-[:WORKS_AT]->(c:Company)");
   }
 
   @Test

@@ -26,6 +26,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -183,6 +184,10 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
 
             final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
             neighborIds = provider.getNeighborIds(nodeId, arcadeDirection, edgeTypes);
+            // An undirected hop yields each relationship once; a self-loop sits in both the outgoing
+            // and the incoming list, so half of those entries are the same relationship seen twice.
+            if (direction == Direction.BOTH)
+              neighborIds = SelfLoops.deduplicate(neighborIds, nodeId);
             neighborIdx = 0;
           }
 

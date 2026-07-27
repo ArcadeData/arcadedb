@@ -263,11 +263,17 @@ public class CypherExecutionPlanner {
                 return false;
             }
 
-            // Phase 4: Property constraints without indexes not yet supported
-            // The optimizer doesn't apply property filters when using NodeByLabelScan
-            // This will be fixed in Phase 5
-            if (node.hasProperties())
-              return false; // Property constraints not yet fully integrated
+            // An inline property map is an equality predicate, and LogicalPlan lowers it into one, so
+            // the optimizer plans it exactly like the same comparison written in WHERE. Two shapes
+            // still cannot be lowered:
+            //   - a property map given as a whole parameter, (n $props), which is not a set of
+            //     equality predicates known at planning time;
+            //   - a property map on an anonymous node that no relationship binds, which leaves no
+            //     variable for the predicate to reference.
+            if (node.getPropertiesParameterName() != null)
+              return false;
+            if (node.hasProperties() && node.getVariable() == null && path.getRelationshipCount() == 0)
+              return false;
           }
         }
       }

@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -29,6 +31,7 @@ import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -45,9 +48,13 @@ import java.util.NoSuchElementException;
  * Cardinality: Estimated number of vertices of the type
  */
 public class NodeByLabelScan extends AbstractPhysicalOperator {
+  /** Inline property map written on the node pattern; only used to prune a partitioned type. */
+  private Map<String, Object> patternProperties;
+  /** Bucket the scan was restricted to, reported by {@link #explain(int)}. */
+  private String usedPartitionBucket;
   private final String            variable;
   private final String            label;
-  private final BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
+  private BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
 
   public NodeByLabelScan(final String variable, final String label,
                         final double estimatedCost, final long estimatedCardinality) {
@@ -61,6 +68,27 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
     this.variable = variable;
     this.label = label;
     this.whereFilter = whereFilter;
+  }
+
+  /**
+   * Supplies the node pattern's inline property map, which lets a partitioned type be scanned through
+   * the single bucket that can hold the matching records instead of all of them.
+   */
+  public void setPatternProperties(final Map<String, Object> patternProperties) {
+    this.patternProperties = patternProperties;
+  }
+
+  /**
+   * Adds a predicate the scan can decide on its own, so a row that cannot match is dropped before any
+   * expansion sees it. Several pushed predicates are ANDed together.
+   */
+  public void pushDownFilter(final BooleanExpression filter) {
+    this.whereFilter = whereFilter == null ?
+        filter : new LogicalExpression(LogicalExpression.Operator.AND, whereFilter, filter);
+  }
+
+  public BooleanExpression getWhereFilter() {
+    return whereFilter;
   }
 
   @Override
@@ -110,10 +138,22 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
             return;
           }
 
-          @SuppressWarnings("unchecked")
-          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
-              context.getDatabase().iterateType(label, true);
-          iterator = iter;
+          // A partitioned type whose partition properties are all pinned to literals lives in a
+          // single bucket: read that one instead of the whole type.
+          final String prunedBucket = PartitionPruning.prunedBucketName(
+              context.getDatabase().getSchema().getType(label), patternProperties);
+          if (prunedBucket != null) {
+            usedPartitionBucket = prunedBucket;
+            @SuppressWarnings("unchecked")
+            final Iterator<Identifiable> prunedIter =
+                (Iterator<Identifiable>) (Object) context.getDatabase().iterateBucket(prunedBucket);
+            iterator = prunedIter;
+          } else {
+            @SuppressWarnings("unchecked")
+            final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object)
+                context.getDatabase().iterateType(label, true);
+            iterator = iter;
+          }
         }
 
         // Fetch up to n vertices
@@ -158,6 +198,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
     sb.append(indent).append("+ NodeByLabelScan");
     sb.append("(").append(variable).append(":").append(label).append(")");
+    if (usedPartitionBucket != null)
+      sb.append(" [partition:").append(usedPartitionBucket).append("]");
     if (whereFilter != null)
       sb.append(" [filter: ").append(whereFilter.getText()).append("]");
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
