@@ -313,6 +313,17 @@ class MCPConfigurationTest {
   }
 
   @Test
+  void nullToolProfileIsRejected() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+
+    assertThatThrownBy(() -> config.setToolProfile((MCPConfiguration.ToolProfile) null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must not be null");
+
+    assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.ALL);
+  }
+
+  @Test
   void invalidBooleanTypeIsRejected() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
     config.load();

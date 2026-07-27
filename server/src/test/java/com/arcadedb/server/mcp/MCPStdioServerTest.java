@@ -128,6 +128,15 @@ class MCPStdioServerTest extends BaseGraphServerTest {
         "list_databases", "get_schema", "query", "execute_command", "server_status",
         "profiler_start", "profiler_stop", "profiler_status", "get_server_settings", "set_server_setting");
 
+    final JSONObject initialized = sendSingleRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 22)
+        .put("method", "initialize")
+        .put("params", new JSONObject()));
+    assertThat(initialized.getJSONObject("result").getString("instructions"))
+        .contains("multi-model database server")
+        .doesNotContain("retrieval and agent memory", "restricted tool surface");
+
     denied = callTool("full_text_search", new JSONObject());
     assertThat(denied.getBoolean("isError", false)).isTrue();
     assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text"))
