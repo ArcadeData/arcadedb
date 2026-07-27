@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
@@ -466,8 +467,16 @@ public class CypherOptimizer {
         // Use ExpandInto for bounded patterns
         currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding);
       } else {
+        // A relationship variable nobody reads is as good as anonymous: the hop can be walked
+        // through the CSR adjacency view, which never materializes an edge object. The step-based
+        // executor has always made that call; the operators have to make the same one, or the same
+        // query traverses edges here and adjacency ids there (10x on the expansion).
+        final boolean edgeIsMaterialized = rel.getVariable() != null && !rel.getVariable().isEmpty()
+            && (needsEdgeTracking.contains(rel)
+                || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
+
         // Use ExpandAll for unbounded patterns
-        currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding);
+        currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding, edgeIsMaterialized);
 
         // Must run before addTargetLabelFilter wraps currentOp.
         if ((rel.getVariable() == null || rel.getVariable().isEmpty())
@@ -514,9 +523,18 @@ public class CypherOptimizer {
       final PhysicalOperator input,
       final Set<String> boundVariables,
       final Set<String> sameClausePrecedingRelVars) {
-    // Extract parameters from relationship
+    return createExpandAllOperator(relationship, input, boundVariables, sameClausePrecedingRelVars, true);
+  }
+
+  private PhysicalOperator createExpandAllOperator(
+      final LogicalRelationship relationship,
+      final PhysicalOperator input,
+      final Set<String> boundVariables,
+      final Set<String> sameClausePrecedingRelVars,
+      final boolean edgeIsMaterialized) {
+    // Extract parameters from relationship. A variable nobody reads binds nothing worth carrying.
     String sourceVariable = relationship.getSourceVariable();
-    final String edgeVariable = relationship.getVariable();
+    final String edgeVariable = edgeIsMaterialized ? relationship.getVariable() : null;
     String targetVariable = relationship.getTargetVariable();
     Direction direction = relationship.getDirection();
     final String[] edgeTypes = relationship.getTypes().toArray(new String[0]);
@@ -880,9 +898,10 @@ public class CypherOptimizer {
     else
       expandTargetVariable = rel.getTargetVariable();
 
-    // Look up the LogicalNode for the expand target variable
-    final LogicalNode targetNode =
-        logicalPlan.getNodes().get(expandTargetVariable);
+    // Look up the LogicalNode for the expand target variable. An anonymous target carries its label
+    // just as a named one does - (a)-[:R]->(:Company) means the same as (a)-[:R]->(c:Company) - so it
+    // must be looked up among all pattern nodes, not only the named ones.
+    final LogicalNode targetNode = logicalPlan.getPatternNode(expandTargetVariable);
 
     if (targetNode == null || !targetNode.hasLabels())
       return input;

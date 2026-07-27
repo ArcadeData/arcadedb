@@ -18,11 +18,13 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -30,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -104,9 +107,13 @@ public class ExpandAll extends AbstractPhysicalOperator {
     return new ResultSet() {
       private Result currentInputResult = null;
       private Iterator<Edge> edgeIterator = null;
+      // Walked instead of edgeIterator when no edge object is needed: neighbours come straight from
+      // the adjacency lists, so no edge record is ever loaded.
+      private Iterator<Vertex> vertexIterator = null;
       // Cached set of edge RIDs already bound by same-clause preceding rel vars in
       // the current input row. Computed once per input row, queried per edge.
       private RidHashSet currentInputUsedEdgeRids = null;
+      private Set<RID> emittedSelfLoops = null; // lazily created for a source vertex that has self-loops
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -137,7 +144,19 @@ public class ExpandAll extends AbstractPhysicalOperator {
         buffer.clear();
         bufferIndex = 0;
 
+        // The edge is only needed when the query reads it or a later hop has to check it for
+        // relationship uniqueness. Otherwise the hop is pure adjacency and the neighbour iterator
+        // answers it without materializing a single edge record.
+        final boolean edgeNeeded = edgeVariable != null || edgeTrackingVar != null
+            || (sameClausePrecedingRelVars != null && !sameClausePrecedingRelVars.isEmpty());
+
         while (buffer.size() < n) {
+          if (!edgeNeeded) {
+            if (!expandNeighbor())
+              break;
+            continue;
+          }
+
           // If we've exhausted edges for current input, get next input
           if (edgeIterator == null || !edgeIterator.hasNext()) {
             if (!inputResults.hasNext()) {
@@ -156,6 +175,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
             final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
             edgeIterator = sourceVertex.getEdges(arcadeDirection, edgeTypes).iterator();
             currentInputUsedEdgeRids = collectUsedEdgeRids(currentInputResult);
+            emittedSelfLoops = null;
           }
 
           // Expand edges to target vertices
@@ -174,6 +194,17 @@ public class ExpandAll extends AbstractPhysicalOperator {
 
             if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
               continue;
+
+            // An undirected hop yields each relationship once. A self-loop is stored in both the
+            // outgoing and the incoming list of its vertex, so walking both lists reaches it twice;
+            // the second sighting is the same relationship, not another one. The set is allocated
+            // only for a vertex that actually carries a self-loop, so the common case pays nothing.
+            if (direction == Direction.BOTH && edge.getOut().equals(edge.getIn())) {
+              if (emittedSelfLoops == null)
+                emittedSelfLoops = new HashSet<>();
+              if (!emittedSelfLoops.add(edge.getIdentity()))
+                continue;
+            }
 
             // Cypher path isomorphism: each relationship in a MATCH pattern must be
             // a distinct edge. The set is empty when no same-clause rel var is bound
@@ -198,6 +229,54 @@ public class ExpandAll extends AbstractPhysicalOperator {
 
             buffer.add(result);
           }
+        }
+      }
+
+      /**
+       * Emits one row from the neighbour iterator, advancing to the next input row when the current
+       * source is exhausted. Returns false when there is nothing left to produce.
+       */
+      private boolean expandNeighbor() {
+        while (true) {
+          if (vertexIterator != null && vertexIterator.hasNext()) {
+            final Vertex targetVertex;
+            try {
+              targetVertex = vertexIterator.next();
+            } catch (final RecordNotFoundException e) {
+              // Ghost edge: a dangling pointer to a record that is gone. It cannot contribute a row.
+              GhostEdgeReporter.reportSkipped(e);
+              continue;
+            }
+
+            if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
+              continue;
+
+            final ResultInternal result = new ResultInternal();
+            for (final String prop : currentInputResult.getPropertyNames())
+              result.setProperty(prop, currentInputResult.getProperty(prop));
+            if (targetVariable != null)
+              result.setProperty(targetVariable, targetVertex);
+
+            buffer.add(result);
+            return true;
+          }
+
+          if (!inputResults.hasNext()) {
+            finished = true;
+            return false;
+          }
+
+          currentInputResult = inputResults.next();
+          final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
+          if (sourceVertex == null) {
+            vertexIterator = null;
+            continue; // OPTIONAL MATCH leaves the source unbound
+          }
+
+          final Iterator<Vertex> neighbors =
+              sourceVertex.getVertices(direction.toArcadeDirection(), edgeTypes).iterator();
+          vertexIterator = direction == Direction.BOTH ?
+              SelfLoops.deduplicating(neighbors, sourceVertex.getIdentity()) : neighbors;
         }
       }
 
