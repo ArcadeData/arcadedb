@@ -1310,7 +1310,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /** Number of leader-side phase 2 applies still holding the snapshot checkpoint back. */
-  public int pendingLocalPhase2Count() {
+  int pendingLocalPhase2Count() {
     return pendingLocalPhase2.size();
   }
 
@@ -1319,7 +1319,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * when none is in flight. Exposed for the {@code arcadedb.ha.phase2.*} gauges so a node whose log
    * compaction is pinned is visible on a dashboard rather than only in the throttled WARNING (#5410).
    */
-  public long oldestPendingLocalPhase2HeldMs() {
+  long oldestPendingLocalPhase2HeldMs() {
     final long oldest = oldestPendingLocalPhase2StartMs();
     return oldest == Long.MAX_VALUE ? 0L : Math.max(0L, System.currentTimeMillis() - oldest);
   }
@@ -1329,7 +1329,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * in flight. Companion gauge to {@link #oldestPendingLocalPhase2HeldMs()}: it names the index past
    * which the Raft log cannot be purged.
    */
-  public long lowestPendingLocalPhase2ReplayFloor() {
+  long lowestPendingLocalPhase2ReplayFloor() {
     final long lowest = lowestPendingLocalPhase2Floor();
     return lowest == Long.MAX_VALUE ? -1L : lowest;
   }
@@ -1469,6 +1469,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // entry unapplied here and the ticket deliberately held. A no-op for every other entry.
     // lastAppliedIndex still trails this entry at this point (applyTransaction advances it after we
     // return), so a concurrent takeSnapshot cannot yet checkpoint over what we just applied.
+    //
+    // Residual edge: a WAL version gap above consumed the mark but threw, so the ticket stays held
+    // and the entry origin-skips on every later replay - the snapshot resync the gap triggers is what
+    // makes it durable, and nothing releases the ticket afterwards. The checkpoint then stays pinned
+    // until this node restarts. Retaining is the safe direction (the resync may itself fail), and the
+    // pinned checkpoint is surfaced by warnIfPhase2StallingCompaction and the arcadedb.ha.phase2.*
+    // gauges rather than being silent.
     endLocalPhase2(abandonedPhase2Ticket);
   }
 

@@ -48,6 +48,20 @@ Ordering note: `lastAppliedIndex` advances in `applyTransaction` *after* `applyT
 at the moment of release a concurrent `takeSnapshot()` cannot yet report a checkpoint covering this
 entry.
 
+## Known gaps
+
+`applyTxEntry` consumes the abandoned mark before `applyChanges` runs. If `applyChanges` throws
+`WALVersionGapException`, the mark is gone but the ticket is (correctly) not released, and a snapshot
+resync is triggered. Once the resync makes the entry durable, nothing releases that ticket: every
+later replay origin-skips the entry because the mark is gone, so the checkpoint stays pinned until
+the node restarts.
+
+This is not a regression - before this change no release existed on any path - and the
+version-gap-during-abandoned-apply combination is exotic. Retaining is also the safe direction, since
+the resync may itself fail. It is left as a documented gap rather than fixed here because releasing on
+a failed apply is exactly the shape of the #5407 bug, and the condition is not silent: it trips
+`warnIfPhase2StallingCompaction` and shows up on the `arcadedb.ha.phase2.*` gauges below.
+
 ### Observability
 
 The issue also asked for the pinned-compaction condition to be visible on a dashboard rather than
