@@ -66,7 +66,10 @@ public class VectorSearchTool {
             Search a dense LSM_VECTOR or sparse LSM_SPARSE_VECTOR index using a pre-computed query vector. \
             Dense results expose a distance (lower is better); sparse results expose a score (higher is better). \
             Set sparse=true for sparse indexes and pass queryIndices for a compact sparse representation. \
-            Filtered searches inspect a bounded candidate window and report its size and possible truncation. \
+            Filtered searches inspect a bounded candidate window whose size is reported as candidateLimit. \
+            The truncated flag means the result window was filled, so more matches may exist: raise k to see them. \
+            When fewer than k results come back, truncated is false and the search already returned every match \
+            it could find within candidateLimit. \
             Embedding generation is not performed by ArcadeDB.""")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
@@ -199,14 +202,17 @@ public class VectorSearchTool {
       throw invalidExpression(e);
     }
 
-    final long indexedEntries = resolved.typeIndex().countEntries();
+    // Truncation describes the result window, not the index. A filled window is the only state in which further
+    // matches may exist; a short result set means the search ran out of candidates that satisfy the request, so
+    // reporting truncation there would tell the caller to widen a search that cannot yield more. Index cardinality
+    // is deliberately not consulted: it is almost always larger than the window, which would pin the flag to true
+    // and strip it of meaning, and reading it costs a full scan of the index locations on the dense path.
     return new JSONObject()
         .put("indexName", resolved.typeIndex().getName())
         .put("sparse", sparse)
         .put("scoring", resolved.scoring())
-        .put("indexedEntries", indexedEntries)
         .put("candidateLimit", candidateLimit)
-        .put("truncated", indexedEntries > candidateLimit || filter != null && results.length() == k)
+        .put("truncated", results.length() >= k)
         .put("count", results.length())
         .put("results", results);
   }

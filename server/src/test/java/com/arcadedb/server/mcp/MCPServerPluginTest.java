@@ -149,6 +149,44 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Seeds a type holding more vectors than a filtered search inspects, so truncation reporting can be observed
+   * on a candidate window that is genuinely smaller than the index. Exactly one record carries category 'solo'
+   * and sits close to the probe vector, so a filtered search for it returns fewer hits than requested while
+   * still having examined every match the filter can ever produce.
+   */
+  private void seedVectorBudgetRecords() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpVectorBudgetRecord"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE DOCUMENT TYPE McpVectorBudgetRecord BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpVectorBudgetRecord.name STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorBudgetRecord.category STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorBudgetRecord.embedding ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpVectorBudgetRecord (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }
+          """);
+
+      db.newDocument("McpVectorBudgetRecord")
+          .set("name", "budget-solo")
+          .set("category", "solo")
+          .set("embedding", new float[] { 0.95f, 0.05f, 0.0f })
+          .save();
+
+      // Comfortably more than the 16-candidate window a k=2 filtered search uses, so the index is larger than
+      // the window regardless of which neighbors the graph returns.
+      for (int i = 0; i < 24; i++)
+        db.newDocument("McpVectorBudgetRecord")
+            .set("name", "budget-bulk-" + i)
+            .set("category", "bulk")
+            .set("embedding", new float[] { 0.9f - i * 0.01f, 0.1f + i * 0.01f, 0.0f })
+            .save();
+    });
+  }
+
   @Test
   void initialize() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
@@ -1029,8 +1067,55 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         response.getJSONArray("content").getJSONObject(0).getString("text"));
     assertThat(payload.getInt("candidateLimit")).isEqualTo(8_000);
     assertThat(payload.getInt("count")).isZero();
-    assertThat(payload.getLong("indexedEntries")).isEqualTo(3);
     assertThat(payload.getBoolean("truncated")).isFalse();
+  }
+
+  /**
+   * Truncation must describe the result window, not the size of the index. A filtered search that returns fewer
+   * hits than requested has exhausted its matches, so reporting truncation there tells the caller to widen a
+   * search that cannot yield more. The index deliberately holds more vectors than the candidate window.
+   */
+  @Test
+  void vectorSearchDoesNotReportTruncationWhenResultWindowIsNotFilled() throws Exception {
+    seedVectorBudgetRecords();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorBudgetRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'solo'")
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getInt("candidateLimit")).isEqualTo(16);
+    assertThat(payload.getInt("count")).isEqualTo(1);
+    assertThat(payload.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("name")).isEqualTo("budget-solo");
+    assertThat(payload.getBoolean("truncated")).isFalse();
+  }
+
+  /**
+   * A filled result window is the one case where more matches may exist beyond what was returned.
+   */
+  @Test
+  void vectorSearchReportsTruncationWhenResultWindowIsFilled() throws Exception {
+    seedVectorBudgetRecords();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorBudgetRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    assertThat(payload.getBoolean("truncated")).isTrue();
   }
 
   @Test
