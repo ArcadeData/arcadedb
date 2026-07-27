@@ -1432,15 +1432,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
         && decoded.sealedFileBlobs() != null && !decoded.sealedFileBlobs().isEmpty();
 
-    // #4743: an intermediate chunk of a split schema change (see
-    // RaftTransactionBroker.replicateSchemaInChunks) carries WAL pages only - no files, no schema JSON,
-    // no sealed blobs. The change is published by the LAST chunk, so reloading the schema here would
-    // re-instantiate every component from the still-unchanged schema.json for nothing, on the single
-    // Raft apply thread, once per chunk. Apply the pages and move on.
-    final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
-        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty())
-        && (decoded.sealedFileBlobs() == null || decoded.sealedFileBlobs().isEmpty())
-        && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
+    // A non-final chunk of a schema change split across several entries (see
+    // RaftTransactionBroker.splitSchemaEntry) only DELIVERS pages: the change is published by the last
+    // chunk. Reloading the schema on such a chunk re-instantiates every component from a state that is
+    // still half-delivered - and that is not merely wasted work on the single Raft apply thread, it is
+    // STICKY: a compacted sub-index that cannot be resolved yet gets detached, and the later publication
+    // reuses the same in-memory component, so the follower keeps serving only its mutable pages for good
+    // (#5443: ~1897 of 60000 entries).
+    //
+    // The producer marks these chunks explicitly. Inferring them from "no schema JSON" was tried and is
+    // WRONG: the first chunk carries filesToAdd and no schema JSON, which is indistinguishable from a
+    // standalone DDL that adds files without changing the schema version - and skipping the reload for
+    // that would leave the new files unregistered in the schema.
+    final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
 
     try {
       if (decoded.filesToAdd() != null)
@@ -1496,8 +1500,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Reload schema after WAL pages are on disk so new index files have valid content
       // and are correctly registered (page counts, type links, in-memory structures).
       // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above) and for
-      // intermediate chunks of a split schema change (see walOnlyEntry above).
-      if (!sealedOnlyEntry && !walOnlyEntry)
+      // delivery-only chunks of a split schema change (see deliveryOnlyEntry above).
+      if (!sealedOnlyEntry && !deliveryOnlyEntry)
         db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
     } catch (final IOException e) {

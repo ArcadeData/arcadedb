@@ -220,7 +220,8 @@ public class RaftTransactionBroker {
           first ? filesToAdd : Collections.emptyMap(),
           last ? filesToRemove : Collections.emptyMap(),
           walGroups.get(g), deltaGroups.get(g),
-          last ? sealedFileBlobs : Collections.emptyList());
+          last ? sealedFileBlobs : Collections.emptyList(),
+          !last);
 
       if (chunk.size() > cap)
         // A single WAL entry (or the header plus one WAL entry) still does not fit. Fail loudly rather

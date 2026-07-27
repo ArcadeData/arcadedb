@@ -44,7 +44,9 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -1498,6 +1500,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     compactionSealedBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
     try {
+      // #5443: remember how long every paginated file is BEFORE the compaction, so the pages it appends
+      // to already-existing files can be shipped afterwards (see the loop below).
+      final Map<Integer, Integer> pageCountsBefore = snapshotPageCounts();
+
       final boolean result = invokeCompaction(compaction);
       if (!result)
         return false;
@@ -1527,7 +1533,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final RaftTransactionBroker broker = requireRaftServer().getTransactionBroker();
       final long walChunkBudget = Math.max(1024L, broker.maxEntrySize() / 2);
       for (final int fileId : addFiles.keySet())
-        appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas);
+        appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas, 0);
+
+      // #5443: a compaction does not only CREATE files - an incremental round APPENDS a new series to the
+      // already-existing compacted file. Those pages are written eagerly and deliberately without WAL, and
+      // the file is not in addFiles because it is not new, so nothing replicated them: the follower kept
+      // the shorter file and every key in the appended series became unfindable there, silently, while the
+      // records themselves replicated normally through their own transactions. Ship the appended range of
+      // every pre-existing paginated component that grew during this session.
+      for (final Map.Entry<Integer, Integer> grown : pagesGrownDuringSession(pageCountsBefore, addFiles).entrySet())
+        appendFilePagesAsWal(grown.getKey(), walChunkBudget, walEntries, bucketDeltas, grown.getValue());
 
       final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(compactionSealedBuffer.get());
 
@@ -1652,6 +1667,52 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
+   * Page count of every registered paginated component, keyed by file id. Taken before a compaction so
+   * {@link #pagesGrownDuringSession} can tell which pre-existing files it appended to (issue #5443).
+   */
+  private Map<Integer, Integer> snapshotPageCounts() {
+    final Map<Integer, Integer> counts = new HashMap<>();
+    for (final ComponentFile componentFile : proxied.getFileManager().getFiles()) {
+      if (componentFile == null)
+        continue;
+      final int fileId = componentFile.getFileId();
+      // getFileByIdIfExists(), not getFileById(): the latter THROWS on an id the schema does not know,
+      // and this walks every file the FileManager holds - a dropped file leaves a null slot in the
+      // schema's list, so one of those would abort the whole compaction replication instead of being
+      // skipped, which is what the type test below reads as if it were doing.
+      if (proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component)
+        counts.put(fileId, component.getTotalPages());
+    }
+    return counts;
+  }
+
+  /**
+   * File ids of pre-existing paginated components that gained pages during the compaction session, mapped
+   * to the page number the new pages start at. Files created by the session are excluded: they are shipped
+   * whole. A file that shrank (or is new) contributes nothing.
+   * <p>
+   * <b>Invariant this relies on:</b> a compaction only ever APPENDS to a pre-existing file, and touches no
+   * interior page other than the root page 0 that registers the appended series - which is why the caller
+   * ships page 0 alongside the appended range. A compaction path that rewrote an interior page in place
+   * would not be replicated by this, and the follower's index would go short again exactly as in #5443.
+   * Any change to the compaction write path has to preserve that, or teach this method to track the pages
+   * it dirtied instead of only how many it added.
+   */
+  private Map<Integer, Integer> pagesGrownDuringSession(final Map<Integer, Integer> before,
+      final Map<Integer, String> createdFiles) {
+    final Map<Integer, Integer> grown = new HashMap<>();
+    for (final Map.Entry<Integer, Integer> entry : snapshotPageCounts().entrySet()) {
+      final int fileId = entry.getKey();
+      if (createdFiles.containsKey(fileId))
+        continue;
+      final Integer pagesBefore = before.get(fileId);
+      if (pagesBefore != null && entry.getValue() > pagesBefore)
+        grown.put(fileId, pagesBefore);
+    }
+    return grown;
+  }
+
+  /**
    * Serializes every page of a newly created paginated file (e.g. an LSM index compaction output) as
    * synthetic WAL, split into as many self-contained WAL transactions as needed to keep each one
    * within {@code maxChunkBytes}.
@@ -1674,60 +1735,113 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * @return number of chunks appended to {@code walOut}
    */
   private int appendFilePagesAsWal(final int fileId, final long maxChunkBytes, final List<byte[]> walOut,
-      final List<Map<Integer, Integer>> bucketDeltasOut) throws IOException {
+      final List<Map<Integer, Integer>> bucketDeltasOut, final int fromPage) throws IOException {
     final PaginatedComponentFile file = (PaginatedComponentFile) proxied.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
-    final int totalPages = (int) file.getTotalPages();
 
-    if (totalPages == 0)
+    // #5443: the page COUNT and the page CONTENT must both come from the page manager, never from the
+    // file on disk. PaginatedComponentFile.getTotalPages() is channel.size()/pageSize, so it only sees
+    // what the asynchronous writer has already persisted: a compaction that has just published 13 pages
+    // can still measure 10 on disk. Serializing from the file then shipped a TRUNCATED index - the
+    // follower's compacted sub-index came out three pages short, and every key that lived in them became
+    // unfindable there while the records themselves replicated normally. The component knows the real
+    // count, and getImmutablePage() resolves each page through the cache and the pending-flush queue
+    // before falling back to disk, so both are correct regardless of flush timing.
+    // Only the component knows how many pages really exist: the file's own count is what is on disk, and
+    // trusting it is exactly what left followers with a short index. No caller can hand us anything else -
+    // the ids come from addFiles or from snapshotPageCounts(), which already filtered on PaginatedComponent -
+    // so a miss here is a bug in the caller, and it fails rather than quietly shipping a truncated range.
+    if (!(proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component))
+      throw new IllegalStateException(
+          "Cannot replicate file id '" + fileId + "' of database '" + getName()
+              + "': it is not a registered paginated component, so its real page count is unknown");
+
+    final int totalPages = component.getTotalPages();
+
+    if (totalPages <= fromPage)
       return 0;
 
-    final int deltaSize = pageSize - BasePage.PAGE_HEADER_SIZE;
-    // Per-page WAL record: fileId(4) + pageNum(4) + changesFrom(4) + changesTo(4) + version(4) + contentSize(4) + delta
-    final int perPageWalSize = 6 * Integer.BYTES + deltaSize;
-    // Per-chunk framing: txId(8) + timestamp(8) + pageCount(4) + segmentSize(4) + pages + segmentSize(4) + MAGIC(8)
-    final int chunkFramingSize = 2 * Long.BYTES + 3 * Integer.BYTES + Long.BYTES;
+    final int perPageWalSize = walPerPageSize(pageSize);
 
-    final long budget = maxChunkBytes - chunkFramingSize;
-    final int pagesPerChunk = budget >= perPageWalSize ? (int) Math.min(totalPages, budget / perPageWalSize) : 1;
+    // The root page carries the series registry: an appended series is invisible until page 0 says it
+    // exists, so a partial ship must always include it. Without this the follower stores the new pages
+    // and still reports the old entry count - which is exactly how issue #5443 stayed silent.
+    if (fromPage > 0)
+      appendPageRangeAsWal(fileId, pageSize, 0, 1, walOut, bucketDeltasOut);
 
-    final ByteBuffer pageBuf = ByteBuffer.allocate(pageSize);
+    final long budget = maxChunkBytes - WAL_CHUNK_FRAMING_SIZE;
+    final int pagesToShip = totalPages - fromPage;
+    final int pagesPerChunk = budget >= perPageWalSize ? (int) Math.min(pagesToShip, budget / perPageWalSize) : 1;
+
     int chunks = 0;
-    for (int firstPage = 0; firstPage < totalPages; firstPage += pagesPerChunk) {
-      final int pagesInChunk = Math.min(pagesPerChunk, totalPages - firstPage);
-      final int segmentSize = pagesInChunk * perPageWalSize;
-
-      final ByteBuffer walBuf = ByteBuffer.allocate(chunkFramingSize + segmentSize);
-      walBuf.putLong(-1L); // txId=-1 → forceApply on followers
-      walBuf.putLong(System.currentTimeMillis());
-      walBuf.putInt(pagesInChunk);
-      walBuf.putInt(segmentSize);
-
-      for (int pageNum = firstPage; pageNum < firstPage + pagesInChunk; pageNum++) {
-        file.readPage(pageNum, pageBuf);
-
-        final int version = pageBuf.getInt(0);                 // PAGE_VERSION_OFFSET
-        final int rawContentSize = pageBuf.getInt(Integer.BYTES); // PAGE_CONTENTSIZE_OFFSET (stored as full size)
-
-        walBuf.putInt(fileId);
-        walBuf.putInt(pageNum);
-        walBuf.putInt(BasePage.PAGE_HEADER_SIZE);  // changesFrom = 8
-        walBuf.putInt(pageSize - 1);               // changesTo
-        walBuf.putInt(version);
-        walBuf.putInt(rawContentSize - BasePage.PAGE_HEADER_SIZE); // contentSize in WAL = stored minus header
-
-        walBuf.put(pageBuf.array(), BasePage.PAGE_HEADER_SIZE, deltaSize);
-      }
-
-      walBuf.putInt(segmentSize);
-      walBuf.putLong(WALFile.MAGIC_NUMBER);
-
-      walOut.add(walBuf.array());
-      bucketDeltasOut.add(Collections.emptyMap());
+    for (int firstPage = fromPage; firstPage < totalPages; firstPage += pagesPerChunk) {
+      appendPageRangeAsWal(fileId, pageSize, firstPage, Math.min(pagesPerChunk, totalPages - firstPage),
+          walOut, bucketDeltasOut);
       chunks++;
     }
 
     return chunks;
+  }
+
+  /**
+   * Framing a WAL chunk carries: txId, timestamp, page count, segment size, then the trailing segment
+   * size and magic number. Both the chunking maths and the buffer that gets written have to agree on
+   * these three, so neither computes them for itself.
+   */
+  private static final int WAL_CHUNK_FRAMING_SIZE = 2 * Long.BYTES + 3 * Integer.BYTES + Long.BYTES;
+
+  /** Bytes of a page that travel in the WAL: everything after the page header. */
+  private static int walPageDeltaSize(final int pageSize) {
+    return pageSize - BasePage.PAGE_HEADER_SIZE;
+  }
+
+  /** Per-page WAL cost: the six ints of the page record, plus the delta itself. */
+  private static int walPerPageSize(final int pageSize) {
+    return 6 * Integer.BYTES + walPageDeltaSize(pageSize);
+  }
+
+  /**
+   * Serializes {@code pageCount} pages starting at {@code firstPage} as one synthetic WAL transaction.
+   * <p>
+   * Both the page count and the content come from the page manager, never from the file:
+   * {@code PaginatedComponentFile.getTotalPages()} is {@code channel.size()/pageSize}, so it only sees
+   * what the asynchronous writer has already persisted, and reading the file directly can serialize a
+   * page that has not been written yet.
+   */
+  private void appendPageRangeAsWal(final int fileId, final int pageSize, final int firstPage,
+      final int pageCount, final List<byte[]> walOut, final List<Map<Integer, Integer>> bucketDeltasOut)
+      throws IOException {
+    final int deltaSize = walPageDeltaSize(pageSize);
+    final int segmentSize = pageCount * walPerPageSize(pageSize);
+
+    final ByteBuffer walBuf = ByteBuffer.allocate(WAL_CHUNK_FRAMING_SIZE + segmentSize);
+    walBuf.putLong(-1L); // txId=-1 → forceApply on followers
+    walBuf.putLong(System.currentTimeMillis());
+    walBuf.putInt(pageCount);
+    walBuf.putInt(segmentSize);
+
+    for (int pageNum = firstPage; pageNum < firstPage + pageCount; pageNum++) {
+      final BasePage page = proxied.getPageManager()
+          .getImmutablePage(new PageId(proxied, fileId, pageNum), pageSize, false, true);
+
+      walBuf.putInt(fileId);
+      walBuf.putInt(pageNum);
+      walBuf.putInt(BasePage.PAGE_HEADER_SIZE);  // changesFrom = 8
+      walBuf.putInt(pageSize - 1);               // changesTo
+      walBuf.putInt((int) page.getVersion());
+      walBuf.putInt(page.getContentSize());
+
+      // Absolute bulk copy: it leaves both positions alone, so the shared page buffer is never
+      // disturbed, and it does not care whether either side is heap-backed.
+      walBuf.put(walBuf.position(), page.getContent(), BasePage.PAGE_HEADER_SIZE, deltaSize);
+      walBuf.position(walBuf.position() + deltaSize);
+    }
+
+    walBuf.putInt(segmentSize);
+    walBuf.putLong(WALFile.MAGIC_NUMBER);
+
+    walOut.add(walBuf.array());
+    bucketDeltasOut.add(Collections.emptyMap());
   }
 
   @Override

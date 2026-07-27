@@ -437,6 +437,35 @@ class RaftLogEntryCodecTest {
   }
 
   @Test
+  void moreChunksFollowSurvivesTheRoundTrip() {
+    // The flag decides whether the applier reloads the schema for a chunk, so a chunk that says "more
+    // follow" must still say it on the other side (issue #5443).
+    final ByteString notLast = RaftLogEntryCodec.encodeSchemaEntry("testdb", null, Map.of(1, "f.pages"), Map.of(),
+        List.of(new byte[] { 1, 2, 3 }), List.of(Map.of()), List.of(), true);
+    final ByteString last = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{\"types\":{}}", Map.of(), Map.of(),
+        List.of(), List.of(), List.of(), false);
+
+    assertThat(RaftLogEntryCodec.decode(notLast).moreChunksFollow()).isTrue();
+    assertThat(RaftLogEntryCodec.decode(last).moreChunksFollow()).isFalse();
+  }
+
+  @Test
+  void anEntryWithoutTheTrailingFlagDecodesAsTheLastChunk() {
+    // What a node running the pre-#5443 codec emits: the byte is simply not there. Reading it as false
+    // is what keeps the format compatible in both directions, so the decoder must not require it.
+    final ByteString withFlag = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{\"types\":{}}", Map.of(), Map.of(),
+        List.of(), List.of(), List.of(), false);
+    final byte[] raw = withFlag.toByteArray();
+    final ByteString withoutFlag = ByteString.copyFrom(raw, 0, raw.length - 1);
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(withoutFlag);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+    assertThat(decoded.moreChunksFollow()).isFalse();
+    assertThat(decoded.schemaJson()).isEqualTo("{\"types\":{}}");
+  }
+
+  @Test
   void schemaEntryWithoutSealedBlobsHasEmptyList() {
     // Entries produced by the pre-#4382 codec (no blob section) must decode with an empty list.
     final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}", Map.of(), Map.of());
@@ -474,10 +503,11 @@ class RaftLogEntryCodecTest {
         Map.of(), Map.of(), List.of(), List.of(),
         List.of(new RaftLogEntryCodec.TsSealedBlob("weather", 0, "weather_shard_0.ts.sealed", sealed)));
 
-    // Flip a byte inside the trailing compressed blob payload to corrupt it.
+    // Flip a byte inside the trailing compressed blob payload to corrupt it. NOT the very last byte:
+    // since #5443 that one is the split-continuation flag, and flipping it would leave the blob intact.
     final byte[] corrupted = new byte[encoded.size()];
     encoded.copyTo(corrupted, 0);
-    corrupted[corrupted.length - 1] ^= 0xFF;
+    corrupted[corrupted.length - 2] ^= 0xFF;
 
     Assertions.assertThatThrownBy(
             () -> RaftLogEntryCodec.decode(ByteString.copyFrom(corrupted)))
