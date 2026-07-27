@@ -18,8 +18,8 @@
 import { test, expect } from '../fixtures/test-fixtures';
 import { ArcadeStudioTestHelper, TEST_CONFIG } from '../utils';
 
-test.describe('DataTables v2.3.2 Upgrade Validation Tests', () => {
-  test('should load DataTables v2.3.2 without JavaScript errors', async ({ page }) => {
+test.describe('DataTables Upgrade Validation Tests', () => {
+  test('should load DataTables without JavaScript errors', async ({ page }) => {
     const helper = new ArcadeStudioTestHelper(page);
 
     // Track any JavaScript errors
@@ -317,7 +317,7 @@ test.describe('DataTables v2.3.2 Upgrade Validation Tests', () => {
     expect(responsiveTest.tableVisible).toBe(true, 'Table should be visible');
   });
 
-  test('should validate DataTables v2.x API compatibility fixes', async ({ page }) => {
+  test('should validate DataTables API compatibility fixes', async ({ page }) => {
     const helper = new ArcadeStudioTestHelper(page);
 
     // Login first to load DataTables libraries
@@ -325,21 +325,25 @@ test.describe('DataTables v2.3.2 Upgrade Validation Tests', () => {
 
     // Test that our studio-table.js fixes work correctly
     const apiCompatibilityTest = await page.evaluate(() => {
-      // Check if DataTables v2.x configuration is properly applied
-      const hasV2Features = {
-        // v2.x uses 'columns' instead of 'aoColumns'
+      // Check that the modern (non-Hungarian) option names are the defaults
+      const hasModernFeatures = {
+        // modern DataTables uses 'columns' instead of 'aoColumns'
         columnsProperty: typeof (window as any).$.fn.DataTable.defaults.columns !== 'undefined',
-        // v2.x uses 'data' instead of 'aaData'
+        // modern DataTables uses 'data' instead of 'aaData'
         dataProperty: typeof (window as any).$.fn.DataTable.defaults.data !== 'undefined',
         // Check version
         version: (window as any).$.fn.DataTable.version || 'unknown'
       };
 
-      return hasV2Features;
+      return hasModernFeatures;
     });
 
     console.log('API compatibility test:', apiCompatibilityTest);
-    expect(apiCompatibilityTest.version).toMatch(/^2\./);
+    // A modern DataTables (v2 or newer) must be loaded - v1 is not supported
+    expect(apiCompatibilityTest.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(parseInt(apiCompatibilityTest.version.split('.')[0], 10)).toBeGreaterThanOrEqual(2);
+    expect(apiCompatibilityTest.columnsProperty).toBe(true);
+    expect(apiCompatibilityTest.dataProperty).toBe(true);
 
     // Execute a query to test that our API fixes work
     await helper.executeQuery('SELECT name, brewery FROM Beer LIMIT 5', false);
