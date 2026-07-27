@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Example Logback configuration for an application that EMBEDS ArcadeDB.
+
+  ArcadeDB logs through the SLF4J facade when the SLF4J logger is selected with
+  -Darcadedb.log.impl=slf4j. To route those logs through Logback, put logback-classic
+  on the classpath (it is the SLF4J binding) and place this file as `logback.xml` on
+  the classpath.
+
+  - ArcadeDB loggers are named after the emitting class (com.arcadedb.*), so you can tune
+    verbosity per package below.
+  - Per-request correlation is published to the MDC under these keys:
+      arcadedb.requestId, arcadedb.database, arcadedb.traceId, arcadedb.spanId
+    Reference them in a pattern with %X{key} (the ":-" gives an empty default when absent).
+
+  This example reproduces the two formats ArcadeDB offers natively on the JUL logger:
+  an ANSI-coloured, human-readable console (CONSOLE) and a structured JSON console (JSON).
+-->
+<configuration>
+
+  <!-- Destination folder for log files. Override with -Darcadedb.logs.dir=/path (or an
+       ARCADEDB_LOGS_DIR env var); defaults to ./logs. This is the SLF4J-backend equivalent of the
+       native logger's `arcadedb.server.logsDirectory`. -->
+  <property name="LOG_DIR" value="${arcadedb.logs.dir:-${ARCADEDB_LOGS_DIR:-log}}"/>
+
+  <!-- Human-readable, ANSI-coloured console (equivalent to the native "text" format). -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%thread] %cyan(%logger{36}) %X{arcadedb.requestId:-} %X{arcadedb.database:-} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Rolling file in ${LOG_DIR}: one file per day, kept for 7 days, compressed on roll. -->
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${LOG_DIR}/arcadedb.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+      <fileNamePattern>${LOG_DIR}/arcadedb-%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+      <maxHistory>7</maxHistory>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} %X{arcadedb.requestId:-} %X{arcadedb.database:-} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Structured JSON console using Logback's built-in JsonEncoder (Logback >= 1.5, no extra
+       dependency). MDC entries (arcadedb.*) are emitted automatically. For richer/ECS-style JSON
+       use net.logstash.logback:logstash-logback-encoder instead. -->
+  <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="ch.qos.logback.classic.encoder.JsonEncoder"/>
+  </appender>
+
+  <!-- Tune ArcadeDB verbosity here. -->
+  <logger name="com.arcadedb" level="INFO"/>
+
+  <root level="WARN">
+    <appender-ref ref="CONSOLE"/>
+    <!-- Add file output, and/or swap CONSOLE for JSON to emit structured logs:
+    <appender-ref ref="FILE"/>
+    <appender-ref ref="JSON"/>
+    -->
+  </root>
+</configuration>
