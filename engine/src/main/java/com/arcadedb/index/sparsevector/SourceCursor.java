@@ -46,7 +46,37 @@ public interface SourceCursor extends AutoCloseable {
   /** Seek forward to the first posting whose RID is &gt;= {@code target}. Backwards seeks are no-ops. */
   boolean seekTo(RID target) throws IOException;
 
+  /**
+   * Primitive-argument {@link #seekTo(RID)}. Lets a traversal seek to a position it holds as
+   * components without allocating a {@link RID} to describe it.
+   */
+  default boolean seekTo(final int bucketId, final long position) throws IOException {
+    return seekTo(new RID(bucketId, position));
+  }
+
   RID currentRid();
+
+  /**
+   * Bucket id of {@link #currentRid()}, or {@code -1} when the cursor holds no position.
+   * <p>
+   * A DAAT traversal compares cursor positions far more often than it reads them: on a
+   * learned-sparse query the essential-term heap alone runs millions of position comparisons per
+   * query (issue #5467). Exposing the position as primitives lets each of those be two field loads
+   * rather than a {@link RID} dereference, and lets a cursor defer materialising the {@link RID}
+   * object until a posting is actually scored.
+   *
+   * @see #currentPosition()
+   */
+  default int currentBucketId() {
+    final RID r = currentRid();
+    return r == null ? -1 : r.getBucketId();
+  }
+
+  /** Position component of {@link #currentRid()}, or {@code -1} when the cursor holds no position. */
+  default long currentPosition() {
+    final RID r = currentRid();
+    return r == null ? -1L : r.getPosition();
+  }
 
   float currentWeight();
 
@@ -89,6 +119,11 @@ public interface SourceCursor extends AutoCloseable {
     return upperBoundRemaining();
   }
 
+  /** Primitive-argument {@link #blockMaxAt(RID)}. */
+  default float blockMaxAt(final int bucketId, final long position) {
+    return blockMaxAt(new RID(bucketId, position));
+  }
+
   /**
    * The last RID of the block that would contain {@code rid} (see {@link #blockMaxAt(RID)}). BMW
    * uses this as the right edge of the range that {@link #blockMaxAt(RID)} bounds, so it can skip
@@ -101,6 +136,15 @@ public interface SourceCursor extends AutoCloseable {
    */
   default RID blockEndAt(final RID rid) {
     return null;
+  }
+
+  /**
+   * Primitive-argument {@link #blockEndAt(RID)}. Still returns a {@link RID}, but the one it returns
+   * is an existing block-header object rather than a fresh allocation, so the whole block-max probe
+   * can run without allocating.
+   */
+  default RID blockEndAt(final int bucketId, final long position) {
+    return blockEndAt(new RID(bucketId, position));
   }
 
   @Override
