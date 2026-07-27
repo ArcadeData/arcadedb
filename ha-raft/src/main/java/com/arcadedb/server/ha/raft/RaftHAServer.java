@@ -1389,6 +1389,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Returns true if this server is the current Raft leader <em>and</em> Ratis considers it ready to serve.
+   * A node that has just won an election reports the leader role immediately but rejects client requests
+   * with the retryable {@code LeaderNotReadyException} until it has committed a no-op entry in its current
+   * term and caught its state machine up, so {@link #isLeader()} alone must not be read as "can serve now".
+   */
+  public boolean isLeaderReady() {
+    if (raftServer == null)
+      return false;
+
+    try {
+      return raftServer.getDivision(raftGroup.getGroupId()).getInfo().isLeaderReady();
+    } catch (final Exception e) {
+      // Same contract as isLeader(): status reads degrade to "unknown", never propagate. Guards the
+      // IllegalStateException Ratis throws while an in-place restart re-initializes the division.
+      LogManager.instance().log(this, Level.WARNING, "Error checking leader readiness", e);
+      return false;
+    }
+  }
+
+  /**
    * Returns the peer ID of the current Raft leader, or null if unknown.
    */
   public RaftPeerId getLeaderId() {
@@ -1568,6 +1588,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final Map<String, Object> stats = new HashMap<>();
     stats.put("localPeerId", localPeerId.toString());
     stats.put("isLeader", isLeader());
+    stats.put("leaderReady", isLeaderReady());
     stats.put("configuredServers", getConfiguredServers());
 
     if (clusterMonitor != null) {
@@ -1802,9 +1823,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Reports whether this node is ready to serve traffic for the readiness probe (issue #4834): a leader is
    * known, this node is a member of the current Raft configuration, and - for a follower - the local
-   * applied index is within {@code maxLagEntries} of the commit index. The leader is always caught up with
-   * itself. Returns {@code false} before the Raft server has started, during shutdown, or when the state
-   * cannot be read.
+   * applied index is within {@code maxLagEntries} of the commit index. A leader is Ready only once Ratis
+   * reports it ready, which a freshly elected one is not until it has committed its current-term no-op
+   * (issue #5453). Returns {@code false} before the Raft server has started, during shutdown, or when the
+   * state cannot be read.
    * <p>
    * All inputs are read from a single {@code getDivision(...)} snapshot so leader/membership/commit/applied
    * come from one consistent view rather than re-resolving the division per field (cheaper, and avoids a
@@ -1830,7 +1852,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final ArcadeStateMachine sm = getStateMachine();
       final boolean resyncInProgress = sm != null && sm.isResyncInProgress();
       return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
-          maxLagEntries, resyncInProgress);
+          maxLagEntries, resyncInProgress, info.isLeaderReady());
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.FINE, "Cannot read Raft state for readiness probe", e);
       return false;
@@ -1840,11 +1862,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Pure decision function behind {@link #isReadyForTraffic(long)}, split out so the predicate can be
    * unit-tested without the Ratis state plumbing. Returns {@code true} only when a leader is present and
-   * this node is in the current configuration, and either this node is the leader (caught up with itself by
-   * definition) or - as a follower - the lag {@code commitIndex - appliedIndex} is in
+   * this node is in the current configuration, and either this node is the leader (treated as caught up
+   * with itself by this overload) or - as a follower - the lag {@code commitIndex - appliedIndex} is in
    * {@code [0, maxLagEntries]}. A negative {@code commitIndex}/{@code appliedIndex} (state not readable this
    * tick) or a negative lag ({@code appliedIndex > commitIndex}, an inconsistent state) returns
    * {@code false} so the probe fails closed rather than advertising Ready on unreadable/inconsistent state.
+   * Production code calls the 8-argument overload, which additionally requires the leader to be ready.
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries) {
@@ -1863,12 +1886,32 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
       final boolean resyncInProgress) {
+    return isReadyForTrafficState(leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries,
+        resyncInProgress, leader);
+  }
+
+  /**
+   * Overload of {@link #isReadyForTrafficState(boolean, boolean, boolean, long, long, long, boolean)} that
+   * gates the leader branch on Ratis' own readiness signal (issue #5453) instead of assuming the role
+   * implies the ability to serve. A node that has just won an election reports the leader role before it
+   * has committed its current-term no-op, and rejects writes with the retryable
+   * {@code LeaderNotReadyException} until then; advertising Ready in that window makes a client's first
+   * write absorb retries until its {@code arcadedb.ha.quorumTimeout} budget expires.
+   * <p>
+   * {@code leaderReady} is a separate input rather than a redefinition of {@code leader} because a
+   * not-yet-ready leader must not fall through to the follower lag branch: a freshly elected leader
+   * typically has {@code commitIndex == appliedIndex} and would be reported Ready there anyway. The flag
+   * is meaningful only when {@code leader} is true; a follower's readiness is decided by its lag.
+   */
+  static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
+      final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
+      final boolean resyncInProgress, final boolean leaderReady) {
     if (!leaderPresent || !localInConfig)
       return false;
     if (resyncInProgress)
       return false;
     if (leader)
-      return true;
+      return leaderReady;
     if (commitIndex < 0 || appliedIndex < 0)
       return false;
     final long lag = commitIndex - appliedIndex;

@@ -29,7 +29,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Raft configuration and replayed the committed log. Advertising Ready too early during a Kubernetes
  * StatefulSet rolling restart lets the orchestrator terminate the next pod and drop the write quorum.
  *
- * Argument order: leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries.
+ * Argument order: leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries,
+ * then the optional resyncInProgress and leaderReady flags.
  */
 class RaftHAServerReadinessTest {
 
@@ -117,5 +118,56 @@ class RaftHAServerReadinessTest {
   void sixArgOverloadDefaultsToNoResync() {
     // The legacy 6-arg predicate behaves exactly as before (resyncInProgress defaults to false).
     assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100)).isTrue();
+  }
+
+  @Test
+  void freshlyElectedLeaderNotYetReadyIsNotReadyForTraffic() {
+    // Issue #5453: a node that has just won an election reports the LEADER role before it has
+    // committed its current-term no-op, and Ratis rejects writes with the retryable
+    // LeaderNotReadyException until then. The probe must fail closed on that window.
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, false)).isFalse();
+  }
+
+  @Test
+  void readyLeaderIsReadyForTraffic() {
+    // Once Ratis reports the leader ready, the same node serves traffic.
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, false, true)).isTrue();
+  }
+
+  @Test
+  void notYetReadyLeaderIsNotRescuedByZeroLag() {
+    // A not-yet-ready leader must not fall through to the follower lag branch: a freshly elected
+    // leader typically has commitIndex == appliedIndex, which would otherwise report Ready and
+    // defeat the gate.
+    assertThat(isReadyForTrafficState(true, true, true, 500, 500, 0, false, false)).isFalse();
+    // ... and a leader whose applied index trails is equally not Ready.
+    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false, false)).isFalse();
+  }
+
+  @Test
+  void followerIgnoresLeaderReadyFlag() {
+    // leaderReady is a leader-only signal: a caught-up follower is Ready either way.
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, false)).isTrue();
+    assertThat(isReadyForTrafficState(true, true, false, 1000, 1000, 100, false, true)).isTrue();
+    // A lagging follower stays not Ready even if the cluster's leader happens to be ready.
+    assertThat(isReadyForTrafficState(true, true, false, 100000, 5, 100, false, true)).isFalse();
+  }
+
+  @Test
+  void resyncStillWinsOverAReadyLeader() {
+    // The resync gate (#5273) is evaluated before the leader branch, so it still fails closed.
+    assertThat(isReadyForTrafficState(true, true, true, 1000, 1000, 100, true, true)).isFalse();
+  }
+
+  @Test
+  void sevenArgOverloadTreatsAnyLeaderAsReady() {
+    // The legacy 7-arg predicate keeps its documented behaviour (leaderReady defaults to leader),
+    // so existing callers are unaffected by the issue #5453 parameter.
+    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false)).isTrue();
+  }
+
+  @Test
+  void sixArgOverloadTreatsAnyLeaderAsReady() {
+    assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0)).isTrue();
   }
 }

@@ -100,6 +100,29 @@ class GetClusterHandlerIT extends BaseRaftHATest {
     assertThat(leaderCount).isEqualTo(1);
   }
 
+  /**
+   * Issue #5453: the endpoint must let a client distinguish "is the leader" from "can serve now".
+   * {@code isLeader} keeps reporting the raw Raft role; the new {@code leaderReady} field carries
+   * Ratis' own readiness signal, which is false on a leader that has not yet committed its
+   * current-term no-op (and always false on a follower).
+   */
+  @Test
+  void clusterEndpointReportsLeaderReadiness() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
+
+    for (int i = 0; i < getServerCount(); i++) {
+      final JSONObject response = queryClusterEndpoint(i);
+      assertThat(response.has("leaderReady")).as("every node must carry leaderReady").isTrue();
+      if (i != leaderIndex)
+        assertThat(response.getBoolean("leaderReady")).as("a follower is never a ready leader").isFalse();
+    }
+
+    // The cluster has settled by the time the leader is discoverable, so its leader reports ready.
+    assertThat(queryClusterEndpoint(leaderIndex).getBoolean("leaderReady"))
+        .as("the settled leader must report leaderReady").isTrue();
+  }
+
   @Test
   void allNodesAgreeOnLeader() throws Exception {
     final JSONObject response0 = queryClusterEndpoint(0);

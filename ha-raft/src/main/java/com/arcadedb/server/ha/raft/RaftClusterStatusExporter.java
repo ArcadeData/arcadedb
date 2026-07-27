@@ -61,6 +61,9 @@ class RaftClusterStatusExporter {
     haJSON.put("clusterName", haServer.getClusterName());
     haJSON.put("leader", haServer.getLeaderName());
     haJSON.put("isLeader", haServer.isLeader());
+    // Raw role vs. ability to serve: a freshly elected leader rejects writes until it has committed its
+    // current-term no-op (issue #5453).
+    haJSON.put("leaderReady", haServer.isLeaderReady());
     haJSON.put("localPeerId", haServer.getLocalPeerId().toString());
     haJSON.put("configuredServers", haServer.getConfiguredServers());
     haJSON.put("quorum", haServer.getQuorum().name());
