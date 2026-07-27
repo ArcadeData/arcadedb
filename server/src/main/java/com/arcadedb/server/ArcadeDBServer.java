@@ -312,6 +312,7 @@ public class ArcadeDBServer {
     // INITIALIZE MCP CONFIGURATION (always available, disabled by default)
     mcpConfiguration = new MCPConfiguration(serverRootPath);
     mcpConfiguration.load();
+    mcpConfiguration.warnUnknownDatabaseOverrides(getDatabaseNames());
 
     // INITIALIZE AI CONFIGURATION (always available, inactive until subscription token is set)
     aiConfiguration = new AiConfiguration(serverRootPath);

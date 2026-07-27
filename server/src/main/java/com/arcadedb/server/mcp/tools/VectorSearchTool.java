@@ -134,7 +134,9 @@ public class VectorSearchTool {
       throw new IllegalArgumentException("'queryIndices' requires sparse=true");
 
     final String filter = normalizeFilter(args.getString("filter", null));
-    final Database database = MCPToolUtils.resolveDatabase(server, user, databaseName);
+    final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
+        server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
+    final Database database = access.database();
     final ResolvedVectorIndex resolved = resolveIndex(database, indexName, sparse);
     final float[] queryVector = readFloatArray(args.getJSONArray("queryVector", null), "queryVector");
 

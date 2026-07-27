@@ -49,7 +49,7 @@ public class MCPResources {
 
     if (config.isAllowReads())
       for (final String databaseName : new TreeSet<>(server.getDatabaseNames())) {
-        if (!user.canAccessToDatabase(databaseName))
+        if (!MCPToolUtils.canReadDatabase(user, config, databaseName))
           continue;
 
         resources.put(new JSONObject()
@@ -73,7 +73,8 @@ public class MCPResources {
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
     final String databaseName = parseSchemaURI(uri);
-    if (databaseName == null || !server.existsDatabase(databaseName) || !user.canAccessToDatabase(databaseName))
+    if (databaseName == null || !server.existsDatabase(databaseName)
+        || !MCPToolUtils.canReadDatabase(user, config, databaseName))
       throw new MCPResourceNotFoundException("Resource not found: " + uri);
 
     final ServerDatabase database = server.getDatabase(databaseName);
