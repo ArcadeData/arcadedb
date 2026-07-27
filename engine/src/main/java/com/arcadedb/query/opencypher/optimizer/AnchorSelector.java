@@ -165,7 +165,14 @@ public class AnchorSelector {
 
         if (indexStats != null) {
           // INDEX SEEK - PREFERRED (lowest cost)
-          final double selectivity = indexStats.isUnique() ? 0.001 : 0.1; // 0.1% for unique, 10% otherwise
+          // On a composite index the other equality predicates extend the seek key as far as they
+          // reach without a gap; a key covering every column resolves a single entry, a shorter one
+          // narrows the prefix range that has to be scanned (issue #5444).
+          final List<Object> keyValues = collectKeyPrefixValues(indexStats, allPredicates, propertyValue);
+          final boolean wholeKey = keyValues.size() == indexStats.getPropertyNames().size();
+          final double selectivity = indexStats.isUnique() && wholeKey ?
+              0.001 :                                  // 0.1% for a unique key resolved in full
+              Math.max(0.001, Math.pow(0.1, keyValues.size())); // 10% per covered key column
           final long estimatedRows = (long) (typeCount * selectivity);
           final double cost = costModel.estimateIndexSeekCost(label, propertyName, selectivity);
 
@@ -176,6 +183,7 @@ public class AnchorSelector {
               indexStats,
               propertyName,
               propertyValue, // Pass the value from WHERE clause or inline properties
+              keyValues,
               cost,
               estimatedRows
           );
@@ -199,13 +207,15 @@ public class AnchorSelector {
           // Cost of nValues independent seeks. Still far below a full scan for any sane list size.
           final double cost = nValues * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
 
+          final InListValues inListValues = new InListValues(values);
           return new AnchorSelection(
               variable,
               node,
               true, // useIndex
               indexStats,
               propertyName,
-              new InListValues(values),
+              inListValues,
+              collectKeyPrefixValues(indexStats, allPredicates, inListValues),
               cost,
               estimatedRows
           );
@@ -305,7 +315,12 @@ public class AnchorSelector {
   }
 
   /**
-   * Finds an index that covers the given property.
+   * Finds an index whose key starts with the given property.
+   * <p>
+   * A single-property index is an exact match; a composite index is usable when the property is its
+   * leading column, because the entries of an ordered index whose key starts with that value form a
+   * contiguous range. The seek operator turns that into a prefix scan; see
+   * {@link com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek} (issue #5444).
    *
    * @param indexes      list of available indexes
    * @param propertyName property to search for
@@ -329,6 +344,31 @@ public class AnchorSelector {
     }
 
     return null;
+  }
+
+  /**
+   * Returns the values, in index key order, of the equality predicates that cover a leading prefix of
+   * the index key. The first element always belongs to the anchor property that selected the index;
+   * the scan stops at the first key column with no equality predicate, since a hole in the key makes
+   * everything after it non-contiguous in the index (issue #5444).
+   * <p>
+   * A returned list as long as the index key means the seek can resolve a single entry; a shorter one
+   * means the operator scans the matching prefix range and the Filter above it applies the rest.
+   */
+  private List<Object> collectKeyPrefixValues(final IndexStatistics index, final Map<String, Object> equalityPredicates,
+      final Object leadingValue) {
+    final List<String> keyProperties = index.getPropertyNames();
+    final List<Object> values = new ArrayList<>(keyProperties.size());
+    values.add(leadingValue);
+
+    for (int i = 1; i < keyProperties.size(); i++) {
+      final Object value = equalityPredicates.get(keyProperties.get(i));
+      if (value == null)
+        break;
+      values.add(value);
+    }
+
+    return values;
   }
 
   /**

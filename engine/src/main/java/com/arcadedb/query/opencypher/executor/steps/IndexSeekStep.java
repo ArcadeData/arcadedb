@@ -44,6 +44,8 @@ public class IndexSeekStep extends AbstractExecutionStep {
   private final String propertyName;
   private final Object propertyValue;
   private final String indexName;
+  /** Every property of the chosen index, in key order (issue #5444). */
+  private final List<String> indexProperties;
   private final double estimatedCost;
   private final long estimatedCardinality;
 
@@ -63,7 +65,21 @@ public class IndexSeekStep extends AbstractExecutionStep {
                       final Object propertyValue, final String indexName,
                       final double estimatedCost, final long estimatedCardinality,
                       final CommandContext context) {
+    this(variable, label, propertyName, propertyValue, indexName, List.of(propertyName), estimatedCost,
+        estimatedCardinality, context);
+  }
+
+  /**
+   * Creates an index seek step over an index whose key may span several properties.
+   *
+   * @param indexProperties every property of the index, in key order
+   */
+  public IndexSeekStep(final String variable, final String label, final String propertyName,
+                      final Object propertyValue, final String indexName, final List<String> indexProperties,
+                      final double estimatedCost, final long estimatedCardinality,
+                      final CommandContext context) {
     super(context);
+    this.indexProperties = indexProperties == null || indexProperties.isEmpty() ? List.of(propertyName) : indexProperties;
     this.variable = variable;
     this.label = label;
     this.propertyName = propertyName;
@@ -128,7 +144,7 @@ public class IndexSeekStep extends AbstractExecutionStep {
 
               // Execute index seek operator
               final NodeIndexSeek operator = new NodeIndexSeek(
-                  variable, label, propertyName, propertyValue, indexName,
+                  variable, label, propertyName, propertyValue, indexName, indexProperties, List.of(propertyValue),
                   estimatedCost, estimatedCardinality
               );
               operatorResults = operator.execute(context, n);
@@ -167,7 +183,7 @@ public class IndexSeekStep extends AbstractExecutionStep {
           // Standalone mode: execute index seek operator directly
           if (operatorResults == null) {
             final NodeIndexSeek operator = new NodeIndexSeek(
-                variable, label, propertyName, propertyValue, indexName,
+                variable, label, propertyName, propertyValue, indexName, indexProperties, List.of(propertyValue),
                 estimatedCost, estimatedCardinality
             );
             operatorResults = operator.execute(context, n);

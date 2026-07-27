@@ -126,6 +126,7 @@ public class IndexSelectionRule implements OptimizationRule {
             anchor.getPropertyName(),
             anchor.getRangePredicates(),
             anchor.getIndex().getIndexName(),
+            anchor.getIndex().getPropertyNames(),
             anchor.getEstimatedCost(),
             anchor.getEstimatedCardinality()
         );
@@ -137,6 +138,8 @@ public class IndexSelectionRule implements OptimizationRule {
             anchor.getPropertyName(),
             propertyValue,
             anchor.getIndex().getIndexName(),
+            anchor.getIndex().getPropertyNames(),
+            anchor.getKeyValues(),
             anchor.getEstimatedCost(),
             anchor.getEstimatedCardinality()
         );
