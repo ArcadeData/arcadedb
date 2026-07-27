@@ -108,6 +108,18 @@ a transparent retry into a hard local rejection without improving the outcome. T
 issue describes is that *external* callers had no way to see the distinction, which is what the new
 field and the probe gate address.
 
+## Operational impact
+
+This is not purely an additive JSON field: `isReadyForTraffic` backs the readiness endpoint via
+`RaftHAPlugin`, so a freshly elected leader now reports **not ready** for the brief window between
+winning the election and committing its current-term no-op. That is the intended effect - it is what
+stops a Kubernetes rolling restart from sending traffic to a leader that will reject it - but
+operators who expect a leader to be Ready the instant it is elected will see a short additional
+delay. Worth calling out in the release notes.
+
+A leader stays ready once Ratis marks it ready, until it loses leadership, so steady-state leaders
+are unaffected.
+
 ## Tests
 
 `ha-raft/src/test/java/com/arcadedb/server/ha/raft/RaftHAServerReadinessTest.java`
@@ -160,3 +172,27 @@ overload delegation. Three non-blocking observations, two of which were applied:
   stays ready once ready until it loses leadership, so steady-state leaders are unaffected.
 
 gemini-code-assist did not review within the 15-minute polling window.
+
+### Cycle 2 - f8d243d (claude[bot])
+
+"Recommend merge", no blocking findings. The reviewer independently confirmed that Ratis 3.2.2
+exposes `isLeaderReady()` and that it implies `isLeader()`, that `studio-cluster.js` reads only
+`isLeader` so nothing breaks, and that no other compile-scope consumer is affected. Three
+non-blocking notes:
+
+- *The readiness probe behaviour changes, not just the JSON* - correct, and worth operator
+  visibility. Captured in the "Operational impact" section above.
+- *WARNING log volume from `getLeadershipState()` on polled surfaces* - no action. The reviewer
+  concluded there is no net increase, since those callers already invoked `isLeader()`, which logs
+  identically.
+- *Studio could render `leaderReady`* - explicitly out of scope for this PR; see "Deferred" below.
+
+gemini-code-assist again did not review within the polling window (a known inconsistency for this
+repository, unrelated to this change).
+
+## Deferred
+
+Studio's `studio-cluster.js` still renders only `isLeader`. Surfacing the new signal - for example a
+"leader (initializing)" state while `leaderReady` is false - would make the UI reflect the same
+distinction the API now exposes. Left out deliberately to keep this PR scoped to the server-side
+defect; worth a follow-up issue.
