@@ -245,6 +245,9 @@ public final class RaftLogEntryCodec {
         dos.write(compressed);
       }
 
+      // KEEP THIS LAST. The decoder detects it with available() > 0, so it can only be the final field:
+      // anything appended after it would make a false flag indistinguishable from an older entry that
+      // never wrote one. A future trailing section needs its own presence byte written BEFORE this.
       dos.writeBoolean(moreChunksFollow);
 
       dos.flush();

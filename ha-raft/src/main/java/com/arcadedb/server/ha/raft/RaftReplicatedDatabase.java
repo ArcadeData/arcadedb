@@ -1761,11 +1761,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (totalPages <= fromPage)
       return 0;
 
-    final int deltaSize = pageSize - BasePage.PAGE_HEADER_SIZE;
+    final int deltaSize = walPageDeltaSize(pageSize);
     // Per-page WAL record: fileId(4) + pageNum(4) + changesFrom(4) + changesTo(4) + version(4) + contentSize(4) + delta
-    final int perPageWalSize = 6 * Integer.BYTES + deltaSize;
+    final int perPageWalSize = walPerPageSize(pageSize);
     // Per-chunk framing: txId(8) + timestamp(8) + pageCount(4) + segmentSize(4) + pages + segmentSize(4) + MAGIC(8)
-    final int chunkFramingSize = 2 * Long.BYTES + 3 * Integer.BYTES + Long.BYTES;
+
 
     // The root page carries the series registry: an appended series is invisible until page 0 says it
     // exists, so a partial ship must always include it. Without this the follower stores the new pages
@@ -1773,7 +1773,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (fromPage > 0)
       appendPageRangeAsWal(fileId, pageSize, 0, 1, walOut, bucketDeltasOut);
 
-    final long budget = maxChunkBytes - chunkFramingSize;
+    final long budget = maxChunkBytes - WAL_CHUNK_FRAMING_SIZE;
     final int pagesToShip = totalPages - fromPage;
     final int pagesPerChunk = budget >= perPageWalSize ? (int) Math.min(pagesToShip, budget / perPageWalSize) : 1;
 
@@ -1788,6 +1788,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
+   * Framing a WAL chunk carries: txId, timestamp, page count, segment size, then the trailing segment
+   * size and magic number. Both the chunking maths and the buffer that gets written have to agree on
+   * these three, so neither computes them for itself.
+   */
+  private static final int WAL_CHUNK_FRAMING_SIZE = 2 * Long.BYTES + 3 * Integer.BYTES + Long.BYTES;
+
+  /** Bytes of a page that travel in the WAL: everything after the page header. */
+  private static int walPageDeltaSize(final int pageSize) {
+    return pageSize - BasePage.PAGE_HEADER_SIZE;
+  }
+
+  /** Per-page WAL cost: the six ints of the page record, plus the delta itself. */
+  private static int walPerPageSize(final int pageSize) {
+    return 6 * Integer.BYTES + walPageDeltaSize(pageSize);
+  }
+
+  /**
    * Serializes {@code pageCount} pages starting at {@code firstPage} as one synthetic WAL transaction.
    * <p>
    * Both the page count and the content come from the page manager, never from the file:
@@ -1798,12 +1815,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private void appendPageRangeAsWal(final int fileId, final int pageSize, final int firstPage,
       final int pageCount, final List<byte[]> walOut, final List<Map<Integer, Integer>> bucketDeltasOut)
       throws IOException {
-    final int deltaSize = pageSize - BasePage.PAGE_HEADER_SIZE;
-    final int perPageWalSize = 6 * Integer.BYTES + deltaSize;
-    final int chunkFramingSize = 2 * Long.BYTES + 3 * Integer.BYTES + Long.BYTES;
-    final int segmentSize = pageCount * perPageWalSize;
+    final int deltaSize = walPageDeltaSize(pageSize);
+    final int segmentSize = pageCount * walPerPageSize(pageSize);
 
-    final ByteBuffer walBuf = ByteBuffer.allocate(chunkFramingSize + segmentSize);
+    final ByteBuffer walBuf = ByteBuffer.allocate(WAL_CHUNK_FRAMING_SIZE + segmentSize);
     walBuf.putLong(-1L); // txId=-1 → forceApply on followers
     walBuf.putLong(System.currentTimeMillis());
     walBuf.putInt(pageCount);

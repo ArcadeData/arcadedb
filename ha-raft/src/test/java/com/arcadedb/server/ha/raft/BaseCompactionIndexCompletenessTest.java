@@ -53,8 +53,9 @@ abstract class BaseCompactionIndexCompletenessTest extends BaseRaftHATest {
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM_TIMEOUT, 30_000L);
-    // Only the explicit compact() below may run, so the assertion cannot race a background compaction.
-    config.setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 1);
+    // 0 = automatic compaction disabled, so only the explicit compact() below runs and the assertion
+    // cannot race a background one.
+    config.setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
   }
 
   @Override

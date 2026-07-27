@@ -67,7 +67,7 @@ class Issue4743CompactionEntrySizeIT extends BaseRaftHATest {
     // Only the explicit compact() below may run: a background auto-compaction racing the end-of-test
     // identity check would leave the nodes on different sub-index generations for reasons unrelated to
     // this regression.
-    config.setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 1);
+    config.setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0); // 0 = automatic compaction disabled
   }
 
   @Override
