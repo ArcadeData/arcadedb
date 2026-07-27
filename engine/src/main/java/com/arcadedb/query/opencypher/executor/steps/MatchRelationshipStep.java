@@ -28,6 +28,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -316,7 +317,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                     final String[] types = pattern.hasTypes() ? pattern.getTypes().toArray(new String[0]) : null;
                     int[] neighborIds = gavProvider.getNeighborIds(sourceNodeId, dir.toArcadeDirection(), types);
                     if (dir == Direction.BOTH)
-                      neighborIds = deduplicateSelfLoops(neighborIds, sourceNodeId);
+                      neighborIds = SelfLoops.deduplicate(neighborIds, sourceNodeId);
                     currentGavNeighborIds = neighborIds;
                     currentGavNeighborIdx = 0;
                     currentGavProvider = gavProvider;
@@ -748,7 +749,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         // appears once in the forward and once in the backward neighbor list,
         // doubling it in the merged result. Keep only half the self-loop entries.
         if (direction == Direction.BOTH)
-          neighborIds = deduplicateSelfLoops(neighborIds, nodeId);
+          neighborIds = SelfLoops.deduplicate(neighborIds, nodeId);
 
         final int[] neighbors = neighborIds;
         return new Iterator<>() {
@@ -781,7 +782,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     // For BOTH direction, deduplicate self-loop vertices: the OLTP iterator
     // concatenates OUT and IN edge iterators, so self-loops yield the source
     // vertex twice. Skip every other occurrence of the source vertex.
-    // This is semantically equivalent to the CSR path's deduplicateSelfLoops(),
+    // This is semantically equivalent to the CSR path's SelfLoops.deduplicate(),
     // which removes selfLoopCount/2 entries from the neighbor array — both rely
     // on the invariant that each self-loop produces exactly 2 entries.
     //
@@ -1078,41 +1079,6 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       builder.append(")");
     }
     return builder.toString();
-  }
-
-  /**
-   * Removes duplicate self-loop entries from a neighbor ID array for BOTH direction.
-   * Each self-loop edge contributes the source node to both the forward and backward
-   * neighbor lists, so it appears twice in the merged array. This method keeps only
-   * half the self-loop entries, preserving correct multiplicity for multi-self-loop cases.
-   * <p>
-   * <b>Invariant:</b> the self-loop count is always even because every self-loop edge
-   * contributes exactly one entry to the forward neighbor list and one to the backward
-   * neighbor list — whether from base CSR or from the delta overlay (which adds to both
-   * ovOut and ovIn). This mirrors the OLTP path's skip-every-other deduplication in
-   * {@link #getVertices(Vertex)}, which also relies on the OUT+IN iterator concatenation
-   * producing exactly 2 entries per self-loop edge. See
-   * {@code GraphEngine.getVertices()} BOTH case for the structural guarantee.
-   */
-  private static int[] deduplicateSelfLoops(final int[] neighborIds, final int sourceNodeId) {
-    int selfLoopCount = 0;
-    for (final int id : neighborIds)
-      if (id == sourceNodeId)
-        selfLoopCount++;
-    if (selfLoopCount <= 1)
-      return neighborIds; // 0 or 1 self-loop entries: no duplicates to remove
-    final int toRemove = selfLoopCount / 2;
-    final int[] result = new int[neighborIds.length - toRemove];
-    int w = 0;
-    int skipped = 0;
-    for (final int id : neighborIds) {
-      if (id == sourceNodeId && skipped < toRemove) {
-        skipped++;
-        continue;
-      }
-      result[w++] = id;
-    }
-    return result;
   }
 
   private static String getIndent(final int depth, final int indent) {

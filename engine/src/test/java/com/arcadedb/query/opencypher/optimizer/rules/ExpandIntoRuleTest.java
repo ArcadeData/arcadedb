@@ -96,8 +96,9 @@ class ExpandIntoRuleTest {
   }
 
   @Test
-  void determineBoundVariablesWithMultipleBoundNodes() {
-    // Create plan with multiple nodes having properties
+  void determineBoundVariablesReportsOnlyTheAnchor() {
+    // An inline property map filters a node, it does not produce it: only the anchor is bound before
+    // the first expansion, and every other node becomes bound as the chain reaches it.
     final LogicalNode nodeA = new LogicalNode("a", Arrays.asList("Person"),
         CollectionUtils.singletonMap("id", 1));
     final LogicalNode nodeB = new LogicalNode("b", Arrays.asList("Person"),
@@ -112,14 +113,11 @@ class ExpandIntoRuleTest {
 
     final LogicalPlan plan = LogicalPlan.forTesting(nodes);
 
-    // When: Determine bound variables
     final Set<String> boundVars = rule.determineBoundVariables(plan, "a");
 
-    // Then: All nodes with properties are bound
-    assertThat(boundVars).contains("a"); // Anchor + properties
-    assertThat(boundVars).contains("b"); // Has properties
-    assertThat(boundVars).doesNotContain("c"); // No properties
+    assertThat(boundVars).containsExactly("a");
   }
+
 
   @Test
   void shouldUseExpandIntoWhenBothEndpointsBound() {

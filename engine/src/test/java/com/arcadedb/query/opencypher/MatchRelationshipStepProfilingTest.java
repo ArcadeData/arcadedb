@@ -230,10 +230,11 @@ class MatchRelationshipStepProfilingTest {
 
   @Test
   void singleHopAnonymousUsesFastPath() {
-    // Single-hop anonymous relationship should use fast path (vertex-only traversal)
-    // Node property constraint forces traditional execution path (optimizer doesn't support inline properties)
+    // Single-hop anonymous relationship should use fast path (vertex-only traversal).
+    // The unlabeled source keeps this on the step-based executor, which is what these markers
+    // describe: an inline property map no longer forces it, since the optimizer plans that too.
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
+        "PROFILE MATCH (a {name: 'Alice'})-[:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
 
     while (result.hasNext())
       result.next();
@@ -272,10 +273,10 @@ class MatchRelationshipStepProfilingTest {
   @Test
   void namedButUnusedEdgeVariableUsesFastPath() {
     // User writes [r:KNOWS] but never references r in RETURN/WHERE/ORDER BY
-    // The planner should detect that r is unused and enable fast path
-    // Node property constraint forces traditional execution path
+    // The planner should detect that r is unused and enable fast path.
+    // The unlabeled source keeps this on the step-based executor (see singleHopAnonymousUsesFastPath).
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
+        "PROFILE MATCH (a {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN a.name, count(b) AS cnt");
 
     while (result.hasNext())
       result.next();
@@ -288,10 +289,10 @@ class MatchRelationshipStepProfilingTest {
 
   @Test
   void namedAndUsedEdgeVariableUsesStandardPath() {
-    // User writes [r:KNOWS] AND references r.since in RETURN — must use standard path
-    // Node property constraint forces traditional execution path
+    // User writes [r:KNOWS] AND references r.since in RETURN — must use standard path.
+    // The unlabeled source keeps this on the step-based executor (see singleHopAnonymousUsesFastPath).
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN a.name, collect(r.since) AS years");
+        "PROFILE MATCH (a {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN a.name, collect(r.since) AS years");
 
     while (result.hasNext())
       result.next();
@@ -300,6 +301,34 @@ class MatchRelationshipStepProfilingTest {
     // Must use standard path because r is referenced in collect(r.since)
     assertThat(planString).contains("traversal: standard");
     result.close();
+  }
+
+  /**
+   * The two executors have to agree on whether the edge is materialized: an unreferenced
+   * relationship variable is as good as anonymous on both, and a referenced one is needed on both.
+   * Divergence here means the same query traverses edge records one way and adjacency the other.
+   */
+  @Test
+  void bothExecutorsAgreeOnWhetherTheEdgeIsMaterialized() {
+    final String unusedEdgeVariable = "MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN count(b) AS cnt";
+    final String usedEdgeVariable = "MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person) RETURN collect(r.since) AS years";
+
+    assertThat(profiledPlan(unusedEdgeVariable))
+        .as("an unread relationship variable must not appear in the expansion")
+        .contains("Cost-Based Optimizer")
+        .contains("-[:KNOWS]->");
+    assertThat(profiledPlan(usedEdgeVariable))
+        .as("a relationship variable the query reads must be bound by the expansion")
+        .contains("Cost-Based Optimizer")
+        .contains("-[r:KNOWS]->");
+  }
+
+  private String profiledPlan(final String query) {
+    try (final ResultSet result = database.query("opencypher", "PROFILE " + query)) {
+      while (result.hasNext())
+        result.next();
+      return result.getExecutionPlan().get().prettyPrint(0, 2);
+    }
   }
 
   @Test

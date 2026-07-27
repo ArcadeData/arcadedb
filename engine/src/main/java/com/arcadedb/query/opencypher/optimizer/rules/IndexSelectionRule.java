@@ -142,12 +142,15 @@ public class IndexSelectionRule implements OptimizationRule {
         );
       }
     } else {
-      return new NodeByLabelScan(
+      final NodeByLabelScan scan = new NodeByLabelScan(
           anchor.getVariable(),
           labelToUse,
           anchor.getEstimatedCost(),
           anchor.getEstimatedCardinality()
       );
+      // Lets a partitioned type be read through the single bucket its pinned partition values map to
+      scan.setPatternProperties(anchor.getNode().getProperties());
+      return scan;
     }
   }
 

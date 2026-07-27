@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
@@ -79,7 +80,11 @@ public class AnchorSelector {
     // of another label - the classic index-seek-as-driver rule (issue #5306). Picking a tiny
     // unfiltered label purely because its raw count is low would seed the pattern from the wrong end
     // and force a reverse expansion, which silently returns empty over unidirectional edges or a GAV.
-    for (final LogicalNode node : plan.getNodes().values()) {
+    // Anonymous nodes are candidates too: an inline property map on (:Person {id: $id}) is exactly as
+    // selective as the same map on a named node, and the seek binds the generated variable the
+    // expansion chain already uses. The guard above still keys off the named nodes, so a pattern with
+    // no named node at all keeps falling back the way count push-down expects.
+    for (final LogicalNode node : plan.getPatternNodes().values()) {
       final AnchorSelection candidate = evaluateNode(node, plan);
 
       if (candidate.useIndex()) {
@@ -129,11 +134,15 @@ public class AnchorSelector {
     // ALSO check WHERE clause for equality predicates on indexed properties
     final Map<String, Object> wherePredicates = extractEqualityPredicates(variable, plan);
 
-    // Merge inline properties with WHERE clause predicates
+    // Merge inline properties with WHERE clause predicates. Only a value the operator can resolve on
+    // its own - a literal or a query parameter - can drive a seek; anything else (a nested parameter
+    // field, a reference to another variable) is left to the Filter above the anchor, which evaluates
+    // it with a full row in hand. Seeking with an unresolved expression would find nothing at all.
     final Map<String, Object> allPredicates = new HashMap<>();
-    if (properties != null) {
-      allPredicates.putAll(properties);
-    }
+    if (properties != null)
+      for (final Map.Entry<String, Object> property : properties.entrySet())
+        if (isStaticallySeekable(property.getValue()))
+          allPredicates.put(property.getKey(), property.getValue());
     allPredicates.putAll(wherePredicates);
 
     // ALSO check WHERE clause for IN-list predicates on indexed properties (issue #5306).
@@ -280,6 +289,19 @@ public class AnchorSelector {
         cost,
         typeCount
     );
+  }
+
+  /**
+   * Returns true if an inline property value is something the seek operator can turn into a key
+   * without a row: a literal, or a parameter resolved from the command context. An expression that
+   * has to be evaluated - {@code $data.uuid}, {@code other.property} - is not seekable and belongs in
+   * the Filter.
+   */
+  private static boolean isStaticallySeekable(final Object value) {
+    if (value instanceof ParameterExpression || value instanceof LiteralExpression
+        || value instanceof CypherASTBuilder.ParameterReference)
+      return true;
+    return !(value instanceof Expression);
   }
 
   /**
