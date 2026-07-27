@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.mcp;
 
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
@@ -52,7 +53,11 @@ public class MCPConfigHandler extends AbstractServerHttpHandler {
     if (Methods.POST.equals(exchange.getRequestMethod())) {
       if (payload == null)
         return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
-      config.updateFrom(payload);
+      try {
+        config.updateFrom(payload);
+      } catch (final IllegalArgumentException | JSONException e) {
+        return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+      }
       config.save();
       return new ExecutionResponse(200, config.toJSON().toString());
     }
