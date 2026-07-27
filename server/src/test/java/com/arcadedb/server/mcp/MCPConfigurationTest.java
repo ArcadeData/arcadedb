@@ -58,6 +58,7 @@ class MCPConfigurationTest {
     assertThat(config.isAllowSchemaChange()).isFalse();
     assertThat(config.getAllowedUsers()).containsExactly("root");
     assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.ALL);
+    assertThat(config.getPrincipalToolProfile("root")).isNull();
   }
 
   @Test
@@ -144,6 +145,7 @@ class MCPConfigurationTest {
     assertThat(json.getJSONArray("allowedUsers").length()).isEqualTo(1);
     assertThat(json.getJSONArray("allowedUsers").getString(0)).isEqualTo("root");
     assertThat(json.has("databases")).isFalse();
+    assertThat(json.has("principalProfiles")).isFalse();
   }
 
   @Test
@@ -330,6 +332,90 @@ class MCPConfigurationTest {
 
     assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.RAG);
     assertThat(config.toJSON().getString("profile")).isEqualTo("rag");
+  }
+
+  @Test
+  void principalProfilesPersistAndUseCanonicalPrincipalNames() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject()
+            .put("retrieval-user", "RaG")
+            .put("apitoken:admin-token", "ADMIN")));
+    config.save();
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertThat(loaded.getPrincipalToolProfile("retrieval-user"))
+        .isEqualTo(MCPConfiguration.ToolProfile.RAG);
+    assertThat(loaded.getPrincipalToolProfile("apitoken:admin-token"))
+        .isEqualTo(MCPConfiguration.ToolProfile.ADMIN);
+    assertThat(loaded.getPrincipalToolProfile("admin-token")).isNull();
+    assertThat(loaded.getPrincipalToolProfile("unknown-user")).isNull();
+    assertThat(loaded.toJSON().getJSONObject("principalProfiles").getString("retrieval-user"))
+        .isEqualTo("rag");
+  }
+
+  @Test
+  void principalProfileUpdatesMergeRemoveAndClear() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject()
+            .put("retrieval-user", "rag")
+            .put("apitoken:admin-token", "admin")));
+
+    config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject().put("retrieval-user", "admin")));
+    assertThat(config.getPrincipalToolProfile("retrieval-user"))
+        .isEqualTo(MCPConfiguration.ToolProfile.ADMIN);
+    assertThat(config.getPrincipalToolProfile("apitoken:admin-token"))
+        .isEqualTo(MCPConfiguration.ToolProfile.ADMIN);
+
+    final JSONObject removal = new JSONObject();
+    removal.put("retrieval-user", (Object) null);
+    config.updateFrom(new JSONObject().put("principalProfiles", removal));
+    assertThat(config.getPrincipalToolProfile("retrieval-user")).isNull();
+    assertThat(config.getPrincipalToolProfile("apitoken:admin-token"))
+        .isEqualTo(MCPConfiguration.ToolProfile.ADMIN);
+
+    final JSONObject clear = new JSONObject();
+    clear.put("principalProfiles", (Object) null);
+    config.updateFrom(clear);
+    assertThat(config.getPrincipalToolProfile("apitoken:admin-token")).isNull();
+    assertThat(config.toJSON().has("principalProfiles")).isFalse();
+  }
+
+  @Test
+  void invalidPrincipalProfileIsRejectedWithoutPartialUpdate() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject().put("retrieval-user", "rag")));
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("allowInsert", true)
+        .put("principalProfiles", new JSONObject().put("retrieval-user", "retrieval"))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("all").hasMessageContaining("rag").hasMessageContaining("admin");
+
+    assertThat(config.isAllowInsert()).isFalse();
+    assertThat(config.getPrincipalToolProfile("retrieval-user"))
+        .isEqualTo(MCPConfiguration.ToolProfile.RAG);
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject().put("", "rag"))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must not be blank");
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject().put("retrieval-user", 42))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be a profile name");
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("principalProfiles", "rag")))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(config.getPrincipalToolProfile("retrieval-user"))
+        .isEqualTo(MCPConfiguration.ToolProfile.RAG);
   }
 
   @Test

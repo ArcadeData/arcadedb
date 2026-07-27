@@ -77,6 +77,7 @@ public class MCPConfiguration implements MCPPermissions {
   private volatile List<String> allowedUsers     = new CopyOnWriteArrayList<>(List.of("root"));
   private volatile Map<String, DatabaseOverride> databaseOverrides = Map.of();
   private volatile ToolProfile  toolProfile      = ToolProfile.ALL;
+  private volatile Map<String, ToolProfile> principalProfiles = Map.of();
   // Extra browser origins accepted by the HTTP transport, on top of always-allowed loopback origins.
   // Empty by default: a non-loopback browser page must be opted in explicitly, because deriving trust
   // from its Host header would not prevent DNS rebinding.
@@ -99,6 +100,8 @@ public class MCPConfiguration implements MCPPermissions {
       final Map<String, DatabaseOverride> loadedDatabaseOverrides =
           parseDatabaseOverrides(json.getJSONObject("databases", null));
       final ToolProfile loadedProfile = ToolProfile.parse(json.getString("profile", "all"));
+      final Map<String, ToolProfile> loadedPrincipalProfiles =
+          parsePrincipalProfiles(json.getJSONObject("principalProfiles", null));
 
       enabled = json.getBoolean("enabled", false);
       allowReads = json.getBoolean("allowReads", true);
@@ -109,6 +112,7 @@ public class MCPConfiguration implements MCPPermissions {
       allowAdmin = json.getBoolean("allowAdmin", false);
       databaseOverrides = loadedDatabaseOverrides;
       toolProfile = loadedProfile;
+      principalProfiles = loadedPrincipalProfiles;
 
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
       if (usersArray != null) {
@@ -219,6 +223,14 @@ public class MCPConfiguration implements MCPPermissions {
     this.toolProfile = ToolProfile.parse(toolProfile);
   }
 
+  /**
+   * Returns the profile override for the authenticated principal, or {@code null} when the global profile applies
+   * without an additional restriction. API tokens use their canonical security name, {@code apitoken:<name>}.
+   */
+  public ToolProfile getPrincipalToolProfile(final String principalName) {
+    return principalName == null ? null : principalProfiles.get(principalName);
+  }
+
   public List<String> getAllowedOrigins() {
     return Collections.unmodifiableList(allowedOrigins);
   }
@@ -299,6 +311,12 @@ public class MCPConfiguration implements MCPPermissions {
     json.put("profile", toolProfile.configName());
     json.put("allowedUsers", new JSONArray(allowedUsers));
     json.put("allowedOrigins", new JSONArray(allowedOrigins));
+    if (!principalProfiles.isEmpty()) {
+      final JSONObject principals = new JSONObject();
+      for (final Map.Entry<String, ToolProfile> entry : principalProfiles.entrySet())
+        principals.put(entry.getKey(), entry.getValue().configName());
+      json.put("principalProfiles", principals);
+    }
     final JSONObject databases = new JSONObject();
     for (final Map.Entry<String, DatabaseOverride> entry : databaseOverrides.entrySet())
       databases.put(entry.getKey(), entry.getValue().toJSON());
@@ -314,6 +332,9 @@ public class MCPConfiguration implements MCPPermissions {
     final ToolProfile updatedProfile = json.has("profile")
         ? ToolProfile.parse(json.getString("profile", null))
         : toolProfile;
+    final Map<String, ToolProfile> updatedPrincipalProfiles = json.has("principalProfiles")
+        ? mergePrincipalProfiles(principalProfiles, json.getJSONObject("principalProfiles", null))
+        : principalProfiles;
 
     if (json.has("enabled"))
       enabled = booleanValue(json, "enabled");
@@ -331,6 +352,7 @@ public class MCPConfiguration implements MCPPermissions {
       allowAdmin = booleanValue(json, "allowAdmin");
     databaseOverrides = updatedDatabaseOverrides;
     toolProfile = updatedProfile;
+    principalProfiles = updatedPrincipalProfiles;
     if (json.has("allowedUsers")) {
       final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
       // Treat explicit null as an empty list (client intent to clear all users)
@@ -381,6 +403,35 @@ public class MCPConfiguration implements MCPPermissions {
         result.remove(databaseName);
       else
         result.put(databaseName, DatabaseOverride.fromJSON(updates.getJSONObject(databaseName)));
+    }
+    return Collections.unmodifiableMap(result);
+  }
+
+  private static Map<String, ToolProfile> parsePrincipalProfiles(final JSONObject profiles) {
+    if (profiles == null)
+      return Map.of();
+    return mergePrincipalProfiles(Map.of(), profiles);
+  }
+
+  private static Map<String, ToolProfile> mergePrincipalProfiles(
+      final Map<String, ToolProfile> current, final JSONObject updates) {
+    if (updates == null)
+      return Map.of();
+
+    final Map<String, ToolProfile> result = new LinkedHashMap<>(current);
+    for (final String principalName : updates.keySet()) {
+      if (principalName.isBlank())
+        throw new IllegalArgumentException("MCP principal profile names must not be blank");
+      if (updates.isNull(principalName)) {
+        result.remove(principalName);
+        continue;
+      }
+
+      final Object value = updates.opt(principalName);
+      if (!(value instanceof String profileName))
+        throw new IllegalArgumentException(
+            "MCP principal profile for '" + principalName + "' must be a profile name");
+      result.put(principalName, ToolProfile.parse(profileName));
     }
     return Collections.unmodifiableMap(result);
   }
