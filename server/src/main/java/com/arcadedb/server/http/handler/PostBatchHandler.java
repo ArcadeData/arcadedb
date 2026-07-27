@@ -87,7 +87,9 @@ import java.util.logging.Level;
  * - preAllocateEdgeChunks (boolean, default true)
  * - edgeListInitialSize (int, default 2048)
  * - bidirectional (boolean, default true)
- * - commitEvery (int, default 50000)
+ * - commitEvery (int, default 50000): records written per transaction during an edge flush. It is the edge-phase
+ *   counterpart of {@code vertexBatchSize} below, so on a replicated database it bounds the size of the Raft
+ *   entry produced by a flush
  * - expectedEdgeCount (int, default 0)
  * - commitRetries (int, default 10): retries of a vertex-creation commit that fails with a
  *   transient retryable error (e.g. a Raft leader re-election), so a cluster hiccup does not
