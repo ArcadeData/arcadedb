@@ -822,6 +822,17 @@ public enum GlobalConfiguration {
       "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
 
+  SERVER_HTTP_STREAMING_READ_TIMEOUT("arcadedb.server.httpStreamingReadTimeout", SCOPE.SERVER,
+      """
+      Budget in milliseconds granted to endpoints that consume the request body while working (today only \
+      the bulk-load /api/v1/batch endpoint). Undertow kills a connection when no read() is issued for \
+      'arcadedb.network.socketTimeout' milliseconds, which on a streaming upload also counts the time the \
+      server spends committing instead of reading: a long index compaction or the replication of a large \
+      entry then aborts the upload mid-stream (issue #5470). This setting only relaxes that asynchronous \
+      watchdog; a client that really stops sending is still cut off after 'arcadedb.network.socketTimeout' \
+      because each blocking read keeps its own timeout. Set to 0 to disable the relaxation. Default is 10 minutes""",
+      Integer.class, 600_000), // 10 MINUTES DEFAULT
+
   // SERVER gRPC
   SERVER_GRPC_QUERY_MAX_RESULT_ROWS("arcadedb.server.grpcQueryMaxResultRows", SCOPE.SERVER,
       """

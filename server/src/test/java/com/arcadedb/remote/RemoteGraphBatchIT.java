@@ -149,6 +149,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
     try (final RemoteGraphBatch batch = database.batch()
         .withBatchSize(500_000)
         .withCommitEvery(10_000)
+        .withVertexBatchSize(1)
         .withLightEdges(false)
         .withBidirectional(true)
         .build()) {
