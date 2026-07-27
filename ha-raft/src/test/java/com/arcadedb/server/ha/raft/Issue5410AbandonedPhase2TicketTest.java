@@ -27,6 +27,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -182,6 +184,53 @@ class Issue5410AbandonedPhase2TicketTest {
     assertThat(stateMachine.consumeAbandonedLocalTransaction(DB_NAME, 7L))
         .as("a replayed entry must not release a ticket a second time")
         .isEqualTo(ArcadeStateMachine.NO_ABANDONED_MARK);
+  }
+
+  /**
+   * A marker dropped by TTL pruning must NOT release its ticket. Pruning is not proof the entry never
+   * committed: if it commits afterwards it is origin-skipped (so it never applies here), and the entry
+   * must stay inside the replay window. The docs lean on this invariant, so it is pinned here.
+   */
+  @Test
+  void aTtlPrunedMarkerKeepsItsTicketHeld() throws Exception {
+    final long staleTicket = stateMachine.beginLocalPhase2();
+    stateMachine.markLocalTransactionAbandoned(DB_NAME, 11L, staleTicket);
+
+    backdateAbandonedMark(DB_NAME, 11L);
+
+    // Marking any other transaction runs the prune pass that evicts the backdated entry.
+    final long freshTicket = stateMachine.beginLocalPhase2();
+    stateMachine.markLocalTransactionAbandoned(DB_NAME, 12L, freshTicket);
+
+    assertThat(stateMachine.consumeAbandonedLocalTransaction(DB_NAME, 11L))
+        .as("the stale marker must have been pruned")
+        .isEqualTo(ArcadeStateMachine.NO_ABANDONED_MARK);
+    assertThat(stateMachine.pendingLocalPhase2Count())
+        .as("pruning a marker must not release its ticket - the entry may still commit unapplied")
+        .isEqualTo(2);
+  }
+
+  /**
+   * Rewrites one abandoned mark's insertion time to just beyond {@code ABANDONED_TX_TTL_MS} so the
+   * next mark prunes it, without making the test wait out the real 10-minute TTL.
+   */
+  @SuppressWarnings("unchecked")
+  private void backdateAbandonedMark(final String databaseName, final long walTxId) throws Exception {
+    final Field marksField = ArcadeStateMachine.class.getDeclaredField("abandonedLocalTransactions");
+    marksField.setAccessible(true);
+    final Map<String, Object> marks = (Map<String, Object>) marksField.get(stateMachine);
+
+    final Field ttlField = ArcadeStateMachine.class.getDeclaredField("ABANDONED_TX_TTL_MS");
+    ttlField.setAccessible(true);
+    final long ttlMs = (long) ttlField.get(null);
+
+    final String key = databaseName + "/" + walTxId;
+    final Object mark = marks.get(key);
+    final Constructor<?> ctor = mark.getClass().getDeclaredConstructor(long.class, long.class);
+    ctor.setAccessible(true);
+    final Field ticketField = mark.getClass().getDeclaredField("phase2Ticket");
+    ticketField.setAccessible(true);
+    marks.put(key, ctor.newInstance(ticketField.get(mark), System.currentTimeMillis() - ttlMs - 1_000L));
   }
 
   /**

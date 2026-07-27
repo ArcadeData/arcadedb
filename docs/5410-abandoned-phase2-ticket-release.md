@@ -79,8 +79,36 @@ only in the throttled WARNING. Added, reusing the existing framework-agnostic pr
 
 Written before the fix (TDD), failing on the pre-fix code:
 
-- `Issue5410AbandonedPhase2TicketTest` - unit tests over the correlation and the release/retain
-  branches, driving the real `replicateAndCommitLocally` dispatched-timeout path.
+- `Issue5410AbandonedPhase2TicketTest` (9 cases) - the correlation and the release/retain branches,
+  driving the real `replicateAndCommitLocally` dispatched-timeout path, plus the TTL-prune retain
+  invariant this doc leans on.
 - `Issue5410AbandonedTicketReleaseIT` - end-to-end on a 3-node Raft cluster, reusing the #4790
   fault injection: after the abandoned entry converges, the leader's pending phase-2 count must
-  return to zero and `takeSnapshot()` must advance again.
+  return to zero and no replay floor may stay pinned.
+- `HAPendingPhase2MetricsTest` (4 cases) - the new gauges, including the HA-disabled and
+  provider-default fallbacks.
+
+The IT was confirmed to fail on the pre-fix code (the ticket stayed held through a 30 s poll) and to
+pass after, with its clean-commit baseline assertion passing in both runs so the test is known to
+discriminate. Regression: `Issue4790PhantomCommitOriginSkipIT`,
+`RaftLeaderCrashBetweenCommitAndApplyIT`, `RaftLeaderCrashWithExternalPropertyIT`,
+`Issue5407Phase2TicketLifecycleTest`, `ArcadeStateMachinePendingPhase2SnapshotTest` all pass; full
+`ha-raft` unit suite 769 tests green, server monitor suite 46 tests green.
+
+## PR and review history
+
+https://github.com/ArcadeData/arcadedb/pull/5472
+
+| Cycle | Head | Outcome |
+|---|---|---|
+| 1 | `7f2219c1a` | claude[bot]: "high-quality, well-scoped fix", nothing blocking. Flagged the WAL-version-gap residual edge and the unnecessarily widened accessor visibility. |
+| 2 | `74a621f65` | Documented the residual edge in code and here; narrowed the three stat accessors back to package-private. claude[bot]: "nothing blocking", suggested reusing the named ticket sentinel. |
+| 3 | `38640d8cd` | Replaced the bare `-1L` in `commit()` with `ArcadeStateMachine.NO_PHASE2_TICKET`. claude[bot]: "looks correct and safe to merge", suggested pinning the TTL-prune retain invariant in a test. |
+| 4 | this commit | Added `aTtlPrunedMarkerKeepsItsTicketHeld`. |
+
+gemini-code-assist did not respond in any cycle.
+
+Deferred, for the developer to decide: claude[bot] suggested filing a follow-up issue so the two
+"pinned until restart" residuals (TTL-pruned marker, WAL-version-gap) stay tracked against #5345.
+Not filed here - the #5408 precedent was that filing the follow-up (#5410) was explicitly authorized
+by the owner first.
