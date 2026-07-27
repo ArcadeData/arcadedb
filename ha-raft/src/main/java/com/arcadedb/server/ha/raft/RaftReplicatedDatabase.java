@@ -1676,7 +1676,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (componentFile == null)
         continue;
       final int fileId = componentFile.getFileId();
-      if (proxied.getSchema().getEmbedded().getFileById(fileId) instanceof PaginatedComponent component)
+      // getFileByIdIfExists(), not getFileById(): the latter THROWS on an id the schema does not know,
+      // and this walks every file the FileManager holds - a dropped file leaves a null slot in the
+      // schema's list, so one of those would abort the whole compaction replication instead of being
+      // skipped, which is what the type test below reads as if it were doing.
+      if (proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component)
         counts.put(fileId, component.getTotalPages());
     }
     return counts;
@@ -1761,11 +1765,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (totalPages <= fromPage)
       return 0;
 
-    final int deltaSize = walPageDeltaSize(pageSize);
-    // Per-page WAL record: fileId(4) + pageNum(4) + changesFrom(4) + changesTo(4) + version(4) + contentSize(4) + delta
     final int perPageWalSize = walPerPageSize(pageSize);
-    // Per-chunk framing: txId(8) + timestamp(8) + pageCount(4) + segmentSize(4) + pages + segmentSize(4) + MAGIC(8)
-
 
     // The root page carries the series registry: an appended series is invisible until page 0 says it
     // exists, so a partial ship must always include it. Without this the follower stores the new pages
