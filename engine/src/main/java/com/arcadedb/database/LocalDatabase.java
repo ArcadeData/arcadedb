@@ -303,17 +303,28 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void drop() {
+    closeForDrop();
+
+    executeInWriteLock(() -> {
+      FileUtils.deleteRecursively(new File(databasePath));
+      return null;
+    });
+  }
+
+  /**
+   * Closes the database with the same semantics {@link #drop()} uses - no index flush and no file sync, since
+   * the content is about to be discarded - but leaves the files at {@link #getDatabasePath()} in place, so the
+   * caller owns their removal. Callers that must not pay for the recursive delete on their own thread use this
+   * to rename the directory aside and delete it elsewhere.
+   */
+  @Override
+  public void closeForDrop() {
     checkDatabaseIsOpen(true, "Cannot drop database");
 
     if (isTransactionActive())
       throw new DatabaseOperationException("Cannot drop the database in transaction");
 
     closeInternal(true);
-
-    executeInWriteLock(() -> {
-      FileUtils.deleteRecursively(new File(databasePath));
-      return null;
-    });
   }
 
   @Override
