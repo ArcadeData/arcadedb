@@ -123,14 +123,13 @@ class Issue4743CompactionEntrySizeIT extends BaseRaftHATest {
           .as("the compacted index must be live and populated on server %d", serverIndex).isPositive();
     });
 
-    // The leader's index is complete and the compacted content is queryable there.
-    //
-    // NOTE: a FOLLOWER's index can end up short of TOTAL_RECORDS after a compaction. That is a
-    // pre-existing gap in compaction replication and NOT a side effect of the entry splitting under
-    // test: the same follower ends up with the exact same entry count on the unpatched code, and also
-    // with the stock 4MB append buffer where the compaction entry is never split at all. Asserting
-    // follower index completeness here would attribute another bug to this fix, so this test does not -
-    // it is reported separately.
+    // Follower index completeness is asserted by Issue5443FollowerIndexGapIT, not here. #5443 fixed the
+    // gap on the normal path (an incremental compaction round appends a series to the already-existing
+    // compacted file, and nothing replicated those pages). A SECOND, still-open defect shows up only in
+    // this test's artificial configuration: with a 512KB append buffer the schema change is split ~12
+    // ways, and a follower then detaches its compacted sub-index entirely and serves just its mutable
+    // pages (~1897 of 60000 entries). Publishing the schema in its own trailing chunk was tried and did
+    // NOT fix it, so the trigger is elsewhere. Tracked on #5443.
     final Index leaderIdx = getServerDatabase(leaderIndex, getDatabaseName()).getSchema().getIndexByName(indexName);
     assertThat(leaderIdx.countEntries()).as("the leader's index must hold every key").isEqualTo(TOTAL_RECORDS);
     assertThat(leaderIdx.get(new Object[] { uid(12_345) }).hasNext())
