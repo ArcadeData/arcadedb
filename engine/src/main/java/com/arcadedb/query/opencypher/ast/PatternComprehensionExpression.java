@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -131,9 +132,11 @@ public class PatternComprehensionExpression implements Expression {
     final List<String> relTypes = relPattern.getTypes();
     final String[] relTypeArray = relTypes != null && !relTypes.isEmpty() ? relTypes.toArray(new String[0]) : null;
 
+    // An undirected hop walks the merged BOTH adjacency in a single pass (see adjacency()). Two
+    // separate OUT and IN passes would emit each self-loop twice, because a self-loop is stored in
+    // both lists of its vertex (issue #5456), and for a variable-length hop they would also miss
+    // every path that changes direction mid-walk.
     final Direction direction = relPattern.getDirection();
-    final boolean checkOut = direction == Direction.OUT || direction == Direction.BOTH;
-    final boolean checkIn = direction == Direction.IN || direction == Direction.BOTH;
 
     if (relPattern.isVariableLength()) {
       final int minHops = relPattern.getEffectiveMinHops();
@@ -145,24 +148,12 @@ public class PatternComprehensionExpression implements Expression {
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, startVertex);
       }
 
-      if (maxHops >= 1) {
-        final Set<RID> visitedEdges = new HashSet<>();
-        if (checkOut)
-          traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements,
-              startVertex, Vertex.DIRECTION.OUT, relTypeArray, endNodePattern, relPattern, 0, minHops, maxHops, visitedEdges);
-        if (checkIn)
-          traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements,
-              startVertex, Vertex.DIRECTION.IN, relTypeArray, endNodePattern, relPattern, 0, minHops, maxHops, visitedEdges);
-      }
-    } else {
-      if (checkOut)
-        traverseEdges(baseResult, context, hopIndex, currentResult, resultList, pathElements,
-            startVertex, Vertex.DIRECTION.OUT, relTypeArray, endNodePattern, relPattern);
-
-      if (checkIn)
-        traverseEdges(baseResult, context, hopIndex, currentResult, resultList, pathElements,
-            startVertex, Vertex.DIRECTION.IN, relTypeArray, endNodePattern, relPattern);
-    }
+      if (maxHops >= 1)
+        traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements,
+            startVertex, direction, relTypeArray, endNodePattern, relPattern, 0, minHops, maxHops, new HashSet<>());
+    } else
+      traverseEdges(baseResult, context, hopIndex, currentResult, resultList, pathElements,
+          startVertex, direction, relTypeArray, endNodePattern, relPattern);
 
     // Remove start vertex from path when backtracking
     if (hopIndex == 0 && pathVariable != null && !pathElements.isEmpty())
@@ -248,7 +239,7 @@ public class PatternComprehensionExpression implements Expression {
   private void traverseVariableLength(final Result baseResult, final CommandContext context,
       final int hopIndex, final Result currentResult, final List<Object> resultList,
       final List<Object> pathElements,
-      final Vertex currentVertex, final Vertex.DIRECTION edgeDirection,
+      final Vertex currentVertex, final Direction direction,
       final String[] relTypeArray, final NodePattern endNodePattern,
       final RelationshipPattern relPattern,
       final int currentHop, final int minHops, final int maxHops,
@@ -256,11 +247,7 @@ public class PatternComprehensionExpression implements Expression {
     if (currentHop >= maxHops)
       return;
 
-    final Iterator<Edge> edges;
-    if (relTypeArray != null)
-      edges = currentVertex.getEdges(edgeDirection, relTypeArray).iterator();
-    else
-      edges = currentVertex.getEdges(edgeDirection).iterator();
+    final Iterator<Edge> edges = adjacency(currentVertex, direction, relTypeArray);
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
@@ -275,7 +262,7 @@ public class PatternComprehensionExpression implements Expression {
 
       final Vertex nextVertex;
       try {
-        nextVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+        nextVertex = otherEnd(edge, currentVertex, direction);
       } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Undo the visit mark and skip.
         GhostEdgeReporter.reportSkipped(e);
@@ -296,7 +283,7 @@ public class PatternComprehensionExpression implements Expression {
 
       if (nextHop < maxHops)
         traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements,
-            nextVertex, edgeDirection, relTypeArray, endNodePattern, relPattern, nextHop, minHops, maxHops, visitedEdges);
+            nextVertex, direction, relTypeArray, endNodePattern, relPattern, nextHop, minHops, maxHops, visitedEdges);
 
       if (trackPath) {
         pathElements.remove(pathElements.size() - 1);
@@ -400,14 +387,10 @@ public class PatternComprehensionExpression implements Expression {
   private void traverseEdges(final Result baseResult, final CommandContext context,
       final int hopIndex, final Result currentResult, final List<Object> resultList,
       final List<Object> pathElements,
-      final Vertex startVertex, final Vertex.DIRECTION edgeDirection,
+      final Vertex startVertex, final Direction direction,
       final String[] relTypeArray, final NodePattern endNodePattern,
       final RelationshipPattern relPattern) {
-    final Iterator<Edge> edges;
-    if (relTypeArray != null)
-      edges = startVertex.getEdges(edgeDirection, relTypeArray).iterator();
-    else
-      edges = startVertex.getEdges(edgeDirection).iterator();
+    final Iterator<Edge> edges = adjacency(startVertex, direction, relTypeArray);
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
@@ -417,7 +400,7 @@ public class PatternComprehensionExpression implements Expression {
 
       final Vertex targetVertex;
       try {
-        targetVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+        targetVertex = otherEnd(edge, startVertex, direction);
       } catch (final RecordNotFoundException e) {
         GhostEdgeReporter.reportSkipped(e);
         continue;
@@ -457,6 +440,33 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.remove(pathElements.size() - 1);
       }
     }
+  }
+
+  /**
+   * Walks the adjacency of a vertex in the direction the pattern asks for. An undirected hop is a
+   * single pass over the merged BOTH list, deduplicated so a self-loop - which is stored in both the
+   * outgoing and the incoming list of its vertex - contributes one match per relationship rather than
+   * two (issue #5456). The same rule is applied by the MATCH executors through {@link SelfLoops}.
+   */
+  private static Iterator<Edge> adjacency(final Vertex vertex, final Direction direction, final String[] relTypeArray) {
+    final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+    final Iterator<Edge> edges = relTypeArray != null ?
+        vertex.getEdges(arcadeDirection, relTypeArray).iterator() :
+        vertex.getEdges(arcadeDirection).iterator();
+    return direction == Direction.BOTH ? SelfLoops.deduplicatingEdges(edges) : edges;
+  }
+
+  /**
+   * Returns the endpoint of the edge the traversal moves to. For an undirected hop that is whichever
+   * end is not the vertex we came from, so a walk can change direction between hops; for a self-loop
+   * both ends are the same vertex.
+   */
+  private static Vertex otherEnd(final Edge edge, final Vertex from, final Direction direction) {
+    if (direction == Direction.OUT)
+      return edge.getInVertex();
+    if (direction == Direction.IN)
+      return edge.getOutVertex();
+    return edge.getOut().equals(from.getIdentity()) ? edge.getInVertex() : edge.getOutVertex();
   }
 
   private Vertex resolveVertex(final NodePattern nodePattern, final Result result) {

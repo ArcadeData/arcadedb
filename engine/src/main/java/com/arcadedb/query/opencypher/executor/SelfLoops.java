@@ -19,10 +19,13 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * An undirected pattern hop must yield each relationship once, but ArcadeDB stores every edge in two
@@ -109,6 +112,55 @@ public final class SelfLoops {
           throw new NoSuchElementException();
         final Vertex result = nextVertex;
         nextVertex = null;
+        return result;
+      }
+    };
+  }
+
+  /**
+   * Wraps a BOTH-direction edge iterator so a self-loop is yielded once per relationship instead of
+   * once per adjacency list.
+   * <p>
+   * Unlike {@link #deduplicating(Iterator, RID)}, which only has to preserve the multiplicity of a
+   * neighbour vertex and can therefore drop every second sighting, this variant must keep every
+   * <i>distinct</i> relationship: with two parallel self-loops the merged iteration is
+   * {@code loop1, loop2, loop1, loop2}, so a parity rule would keep {@code loop1} twice and lose
+   * {@code loop2}. The identity of the already-yielded loops is tracked instead, and the set is
+   * allocated only for a vertex that actually carries one, so the common case pays nothing.
+   *
+   * @param edges edges produced by a BOTH-direction traversal of a single vertex
+   */
+  public static Iterator<Edge> deduplicatingEdges(final Iterator<Edge> edges) {
+    return new Iterator<>() {
+      private Edge      nextEdge = null;
+      private Set<RID>  emitted  = null;
+
+      @Override
+      public boolean hasNext() {
+        if (nextEdge != null)
+          return true;
+        while (edges.hasNext()) {
+          final Edge candidate = edges.next();
+          if (candidate.getOut().equals(candidate.getIn())) {
+            // A self-loop sits in both the outgoing and the incoming list of its vertex, so walking
+            // both lists reaches the very same relationship twice.
+            if (emitted == null)
+              emitted = new HashSet<>();
+            if (!emitted.add(candidate.getIdentity()))
+              continue;
+          }
+          nextEdge = candidate;
+          return true;
+        }
+        return false;
+      }
+
+      @Override
+      public Edge next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Edge result = nextEdge;
+        nextEdge = null;
         return result;
       }
     };
