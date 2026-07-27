@@ -27,8 +27,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.HashSet;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -54,10 +54,8 @@ public class ServerStatusTool {
     result.put("version", Constants.getVersion());
     result.put("serverName", server.getServerName());
     result.put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
-    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
-    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
-    if (!allowedDatabases.contains("*"))
-      installedDatabases.retainAll(allowedDatabases);
+    final Set<String> installedDatabases = new TreeSet<>(server.getDatabaseNames());
+    installedDatabases.removeIf(databaseName -> !MCPToolUtils.canReadDatabase(user, config, databaseName));
     result.put("databases", new JSONArray(installedDatabases));
 
     final HAServerPlugin ha = server.getHA();
