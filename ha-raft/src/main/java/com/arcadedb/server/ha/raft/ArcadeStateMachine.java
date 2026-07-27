@@ -2000,10 +2000,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // unbounded in the size of the database, and this loop is sequential and shared by every database
     // multiplexed on the state machine. Close, deregister and rename hold the databases lock as one unit -
     // mirroring the snapshot installer's swap - so no concurrent open can reopen the directory in between.
-    final DatabaseInternal embedded = ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded();
-    final Path databaseDirectory = Path.of(embedded.getDatabasePath());
     final Path staged;
     synchronized (server.getDatabasesLock()) {
+      // Resolved inside the lock: getDatabase reopens a database that is registered-but-closed, so resolving
+      // it outside would let another holder of this lock deregister it between the lookup and the close, and
+      // this thread would reopen the directory from disk only to close it again.
+      final DatabaseInternal embedded = ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded();
+      final Path databaseDirectory = Path.of(embedded.getDatabasePath());
       embedded.closeForDrop();
       server.removeDatabase(databaseName);
       // stageForDeletion falls back to deleting inline when the rename is impossible, and that fallback

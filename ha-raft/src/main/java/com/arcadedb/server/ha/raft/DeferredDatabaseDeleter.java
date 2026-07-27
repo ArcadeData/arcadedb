@@ -24,6 +24,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -70,6 +71,9 @@ class DeferredDatabaseDeleter implements AutoCloseable {
 
   /** Throttle window for the queue-saturation warning, matching the engine pools. */
   private static final long SATURATION_WARNING_WINDOW_MS = 60_000;
+
+  /** Makes every staging name minted by this JVM distinct, independently of the clock's granularity. */
+  private static final AtomicLong STAGING_SEQUENCE = new AtomicLong();
 
   private final ExecutorService executor;
   private final AtomicLong     lastSaturationWarningOn = new AtomicLong(Long.MIN_VALUE);
@@ -161,12 +165,16 @@ class DeferredDatabaseDeleter implements AutoCloseable {
     final String name = databaseDirectory.getFileName().toString();
 
     for (int attempt = 0; attempt < STAGING_NAME_ATTEMPTS; attempt++) {
-      final Path candidate = parent.resolve(STAGING_PREFIX + name + "-" + System.nanoTime());
+      // A JVM-wide sequence rather than the clock alone: on a coarse-grained nanoTime two candidates in this
+      // loop could otherwise repeat, making the retry budget spin on the same name.
+      final Path candidate = parent.resolve(
+          STAGING_PREFIX + name + "-" + System.nanoTime() + "-" + STAGING_SEQUENCE.incrementAndGet());
       try {
         moveDirectory(databaseDirectory, candidate);
         return candidate;
-      } catch (final FileAlreadyExistsException e) {
-        // Another staged directory already claimed this name: spend an attempt on the next one.
+      } catch (final FileAlreadyExistsException | DirectoryNotEmptyException e) {
+        // The name is taken - an empty candidate raises FileAlreadyExists, a populated one raises
+        // DirectoryNotEmpty because a rename onto a non-empty directory cannot succeed. Try the next name.
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.WARNING, "Cannot move database directory '%s' to '%s'", e,
             databaseDirectory, candidate);
