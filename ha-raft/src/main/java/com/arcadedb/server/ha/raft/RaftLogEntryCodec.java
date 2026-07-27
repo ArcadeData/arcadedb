@@ -180,6 +180,15 @@ public final class RaftLogEntryCodec {
    *                         (issue #5443). Written as a trailing self-describing byte, so a node running
    *                         an older codec simply stops after the sealed-blob section and decodes it as
    *                         false - the pre-split behaviour.
+   *                         <p>
+   *                         <b>During a rolling upgrade</b> that means a node still running the older
+   *                         codec keeps the pre-fix behaviour for split entries: it reloads its schema on
+   *                         a delivery-only chunk and can detach a compacted sub-index for good, ending
+   *                         up with a short index. The wire format stays compatible in both directions,
+   *                         but the FIX only takes effect on a node once it is upgraded, and the symptom
+   *                         is silent - fewer rows from that node, no error. Upgrade the followers, and
+   *                         where a node was live through a compaction under the old codec, REBUILD INDEX
+   *                         on it (or let a snapshot install replace its files) to repair what it missed.
    */
   public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,

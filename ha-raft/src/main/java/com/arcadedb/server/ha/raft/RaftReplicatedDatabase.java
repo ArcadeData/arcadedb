@@ -1743,8 +1743,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // unfindable there while the records themselves replicated normally. The component knows the real
     // count, and getImmutablePage() resolves each page through the cache and the pending-flush queue
     // before falling back to disk, so both are correct regardless of flush timing.
-    final PaginatedComponent component = (PaginatedComponent) proxied.getSchema().getEmbedded().getFileById(fileId);
-    final int totalPages = component != null ? component.getTotalPages() : (int) file.getTotalPages();
+    // getFileById() THROWS when the id is unknown, so the guard has to be getFileByIdIfExists() plus the
+    // type test - the same shape snapshotPageCounts() uses. The on-disk count is the only fallback left
+    // for a file the schema does not know, and it is the very number that made this bug silent, so say so
+    // rather than degrade quietly. No current caller can reach it: the ids come either from addFiles or
+    // from snapshotPageCounts(), which already filtered on PaginatedComponent.
+    final int totalPages;
+    if (proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component)
+      totalPages = component.getTotalPages();
+    else {
+      totalPages = (int) file.getTotalPages();
+      LogManager.instance().log(this, Level.WARNING,
+          "File id '%d' of database '%s' is not a registered paginated component: replicating the %d pages "
+              + "already on disk, which may be short if a flush is still pending", fileId, getName(), totalPages);
+    }
 
     if (totalPages <= fromPage)
       return 0;
