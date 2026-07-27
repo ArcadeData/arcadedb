@@ -19,7 +19,9 @@
  * DataTables Critical Validation - Focused Test Suite
  *
  * This focused test suite validates the most critical DataTables functionality
- * after the v2.3.3 upgrade to identify specific breaking changes.
+ * against the bundled DataTables release, to surface breaking changes introduced
+ * by a major upgrade. Assertions are kept version-agnostic so the suite keeps
+ * guarding behavior across majors.
  */
 
 import { test, expect } from '@playwright/test';
@@ -32,7 +34,7 @@ test.describe('DataTables Critical Validation', () => {
     studioHelper = new ArcadeStudioTestHelper(page);
   });
 
-  test('should validate DataTables v2.x initialization and basic functionality', async ({ page }) => {
+  test('should validate DataTables initialization and basic functionality', async ({ page }) => {
     await studioHelper.login('Beer');
 
     // Execute a simple query
@@ -48,13 +50,14 @@ test.describe('DataTables Critical Validation', () => {
     // Check specific result table wrapper (v2.x uses .dt-container)
     await expect(page.locator('#result_wrapper.dt-container, #result_wrapper.dataTables_wrapper')).toBeVisible();
 
-    // Verify DataTables v2.x version
+    // Verify a modern DataTables (v2 or newer) is loaded - v1 is not supported
     const dtVersion = await page.evaluate(() => {
       return typeof $.fn.dataTable !== 'undefined' ? $.fn.dataTable.version : 'Not loaded';
     });
 
     console.log(`DataTables version detected: ${dtVersion}`);
-    expect(dtVersion).toMatch(/^2\./);
+    expect(dtVersion).toMatch(/^\d+\.\d+\.\d+/);
+    expect(parseInt(dtVersion.split('.')[0], 10)).toBeGreaterThanOrEqual(2);
 
     // Verify table has data
     const rowCount = await page.locator('#result tbody tr').count();
@@ -83,16 +86,21 @@ test.describe('DataTables Critical Validation', () => {
     await page.waitForTimeout(500);
     await expect(page.locator('#result')).toBeVisible();
 
-    // Check if table initialization used deprecated APIs
+    // Check the table's internal state. Row and column stores are exposed as
+    // `settings.data` / `settings.columns` from v3 onwards; v2 used the
+    // Hungarian-notation `aoData` / `aoColumns` / `sDom` names.
     const configInfo = await page.evaluate(() => {
       const table = $('#result').DataTable();
-      const settings = table.settings()[0];
+      const settings = table.settings()[0] as any;
+
+      const rows = settings.data ?? settings.aoData ?? [];
+      const columns = settings.columns ?? settings.aoColumns ?? [];
 
       return {
-        hasData: settings.aoData && settings.aoData.length > 0,
-        hasColumns: settings.aoColumns && settings.aoColumns.length > 0,
+        hasData: rows.length > 0,
+        hasColumns: columns.length > 0,
         apiVersion: $.fn.dataTable.version,
-        domStructure: settings.sDom || 'undefined'
+        domStructure: settings.dom ?? settings.sDom ?? 'undefined'
       };
     });
 
