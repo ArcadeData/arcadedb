@@ -96,7 +96,9 @@ public class SourceDiscovery {
   public Source getSource() throws IOException {
     final Source source;
     if (url.startsWith("http://") || url.startsWith("https://")) {
-      ImportSecurityValidator.validateRemoteURL(url);
+      // NOTE: no separate validate-then-fetch step here. Validating the URL and then handing the raw string to
+      // URL.openConnection() checks one thing and connects to another (the connection re-resolves the name and follows
+      // redirects unvalidated); getSourceFromURL now validates inside the connection open itself, on every hop.
       source = getSourceFromURL(url);
     } else {
       ImportSecurityValidator.validateLocalURL(url);
@@ -110,21 +112,19 @@ public class SourceDiscovery {
     final String urlPath = sep > -1 ? url.substring(0, sep) : url;
     final String resource = sep > -1 ? url.substring(sep + RESOURCE_SEPARATOR.length()) : null;
 
-    final HttpURLConnection connection = (HttpURLConnection) new URL(urlPath).openConnection();
-    connection.setRequestMethod("GET");
-    connection.setDoOutput(true);
-
-    connection.connect();
+    // Every connection is opened through ImportSecurityValidator.openRemoteConnection, which re-runs the scheme and
+    // address checks on each redirect hop instead of letting HttpURLConnection follow redirects unvalidated. The reset
+    // callback below re-opens the source and MUST go through the same path: it previously built a second raw
+    // connection with no validation at all, so a redirect (or a rebind) on that second fetch was entirely unchecked
+    // even once the first one was validated (GHSA-4w2m-77c8-83mw).
+    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath);
 
     return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
         source -> {
           try {
             connection.disconnect();
 
-            final HttpURLConnection connection1 = (HttpURLConnection) new URL(urlPath).openConnection();
-            connection1.setRequestMethod("GET");
-            connection1.setDoOutput(true);
-            connection1.connect();
+            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath);
 
             if (source.inputStream instanceof GZIPInputStream)
               source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
