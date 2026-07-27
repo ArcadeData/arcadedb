@@ -75,12 +75,15 @@ public class RemoteSchema implements Schema {
 
   @Override
   public boolean existsBucket(final String bucketName) {
-    return remoteDatabase.command("sql", "select from schema:types where '" + bucketName + "' IN buckets").hasNext();
+    return remoteDatabase.command("sql", "select from schema:types where :name IN buckets", Map.of("name", bucketName)).hasNext();
   }
 
   @Override
   public boolean existsIndex(final String indexName) {
-    return remoteDatabase.command("sql", "select from schema:indexes where name = `" + indexName + "`").hasNext();
+    // The name must be compared against a string parameter: quoting it as an identifier resolved it as a (missing) property of the
+    // record, so this always answered false. Index names routinely carry characters - the comma of the auto-derived
+    // `Type[propA,propB]` form - that cannot be inlined unescaped either.
+    return remoteDatabase.command("sql", "select from schema:indexes where name = :name", Map.of("name", indexName)).hasNext();
   }
 
   @Override

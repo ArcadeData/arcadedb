@@ -158,6 +158,34 @@ class RemoteSchemaIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #5469: existsIndex() compared the name against a back-tick quoted identifier, which the engine resolved as a (missing)
+   * property of the record, so it always answered false. existsBucket() inlined the name in a string literal. Both now bind the
+   * name as a parameter, which also copes with the comma of the auto-derived compound-index name {@code Type[propA,propB]}.
+   */
+  @Test
+  void existsIndexAndBucket() throws Exception {
+    testEachServer(serverIndex -> {
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+        final DocumentType type = database.getSchema().createDocumentType("IndexedDoc");
+        type.createProperty("propA", Type.STRING);
+        type.createProperty("propB", Type.INTEGER);
+        database.command("sql", "CREATE INDEX ON IndexedDoc (propA, propB) UNIQUE");
+
+        assertThat(database.getSchema().existsIndex("IndexedDoc[propA,propB]")).isTrue();
+        assertThat(database.getSchema().existsIndex("IndexedDoc[nonExistent]")).isFalse();
+
+        final String bucketName = type.getBuckets(false).getFirst().getName();
+        assertThat(database.getSchema().existsBucket(bucketName)).isTrue();
+        assertThat(database.getSchema().existsBucket("nonExistentBucket")).isFalse();
+
+        database.getSchema().dropType("IndexedDoc");
+      }
+    });
+  }
+
   @BeforeEach
   public void beginTest() {
     super.beginTest();
