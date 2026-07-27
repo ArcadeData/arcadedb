@@ -265,6 +265,10 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   public TypeLSMVectorIndexBuilder withPQClusters(final int pqClusters) {
     if (pqClusters < 1)
       throw new IllegalArgumentException("pqClusters must be at least 1");
+    // PQ codes are one byte per subspace, so more than 256 clusters cannot be encoded: reject it at index creation time
+    // instead of letting the graph build fail later, which would leave the index without a graph (issue #5417)
+    if (pqClusters > 256)
+      throw new IllegalArgumentException("pqClusters cannot exceed 256 (PQ codes are one byte per subspace)");
     ((LSMVectorIndexMetadata) metadata).pqClusters = pqClusters;
     return this;
   }
@@ -354,7 +358,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
       meta.pqSubspaces = json.getInt("pqSubspaces");
 
     if (json.has("pqClusters"))
-      meta.pqClusters = json.getInt("pqClusters");
+      withPQClusters(json.getInt("pqClusters"));
 
     if (json.has("pqCenterGlobally"))
       meta.pqCenterGlobally = json.getBoolean("pqCenterGlobally");

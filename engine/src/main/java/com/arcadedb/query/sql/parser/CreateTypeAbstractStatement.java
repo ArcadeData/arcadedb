@@ -30,7 +30,10 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 
+import com.arcadedb.database.Identifiable;
+
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -63,6 +66,13 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    * Page size for buckets of this type
    */
   public PInteger pageSize;
+
+  /**
+   * Inline `CUSTOM key = value (, key = value)*` metadata (issue #5409). Applied to the freshly
+   * created type right after its supertypes, so it lands in the same DDL transaction and avoids a
+   * follow-up ALTER TYPE. Insertion-ordered so `toString()` round-trips the original declaration.
+   */
+  public final Map<Identifier, Expression> customProperties = new LinkedHashMap<>();
 
   public CreateTypeAbstractStatement(final int id) {
     super(id);
@@ -101,6 +111,17 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     for (final DocumentType c : superclasses)
       type.addSuperType(c);
+
+    if (!customProperties.isEmpty()) {
+      final Map<String, Object> applied = new LinkedHashMap<>();
+      for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet()) {
+        final String key = entry.getKey().getStringValue();
+        final Object value = entry.getValue().execute((Identifiable) null, context);
+        type.setCustomValue(key, value);
+        applied.put(key, value);
+      }
+      result.setProperty("custom", applied);
+    }
 
     name = prevName;
     return new InternalResultSet(result);
@@ -162,6 +183,18 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       builder.append(" PAGESIZE ");
       pageSize.toString(params, builder);
     }
+    if (!customProperties.isEmpty()) {
+      builder.append(" CUSTOM ");
+      boolean first = true;
+      for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet()) {
+        if (!first)
+          builder.append(", ");
+        entry.getKey().toString(params, builder);
+        builder.append(" = ");
+        entry.getValue().toString(params, builder);
+        first = false;
+      }
+    }
   }
 
   protected CreateTypeAbstractStatement copy(final CreateTypeAbstractStatement result) {
@@ -171,6 +204,9 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     result.totalBucketNo = totalBucketNo == null ? null : totalBucketNo.copy();
     result.pageSize = pageSize == null ? null : pageSize.copy();
     result.ifNotExists = ifNotExists;
+    result.customProperties.clear();
+    for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet())
+      result.customProperties.put(entry.getKey().copy(), entry.getValue().copy());
     return result;
   }
 
@@ -193,6 +229,8 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       return false;
     if (!Objects.equals(pageSize, that.pageSize))
       return false;
+    if (!Objects.equals(customProperties, that.customProperties))
+      return false;
     return ifNotExists == that.ifNotExists;
   }
 
@@ -203,6 +241,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     result = 31 * result + (buckets != null ? buckets.hashCode() : 0);
     result = 31 * result + (totalBucketNo != null ? totalBucketNo.hashCode() : 0);
     result = 31 * result + (pageSize != null ? pageSize.hashCode() : 0);
+    result = 31 * result + customProperties.hashCode();
     return result;
   }
 

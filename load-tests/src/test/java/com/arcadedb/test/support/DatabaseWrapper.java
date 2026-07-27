@@ -205,14 +205,18 @@ public class DatabaseWrapper {
 
             CREATE EDGE TYPE Likes;
 
-            CREATE MATERIALIZED VIEW UserStats AS
-              SELECT id AS userId,
-                out('HasUploaded').in('Likes').size() AS totalLikes,
-                out('FriendOf').size() AS totalFriendships
-              FROM User
-              REFRESH INCREMENTAL;
 
             """);
+
+/**
+ *             CREATE MATERIALIZED VIEW UserStats AS
+ *               SELECT id AS userId,
+ *                 out('HasUploaded').in('Likes').size() AS totalLikes,
+ *                 out('FriendOf').size() AS totalFriendships
+ *               FROM User
+ *               REFRESH INCREMENTAL;
+ */
+
   }
 
   /**

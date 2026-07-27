@@ -19,7 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.network.binary.QuorumNotReachedException;
-import com.arcadedb.network.binary.ReplicationQueueFullException;
+import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -122,7 +122,11 @@ class RaftGroupCommitterTest {
    * Regression for the customer report on 2026-05-07: a 50k-vertex GraphBatch produced a single
    * Raft log entry of 74MB, which Ratis rejects against its 64MB cap. With the old code the
    * SlidingWindow client got stuck CLOSED forever; the new code fails fast in submitAndWait with
-   * a {@link ReplicationQueueFullException} carrying actionable advice.
+   * a {@link ReplicatedEntryTooLargeException} carrying actionable advice.
+   * <p>
+   * Issue #4743 narrowed the cap to the SMALLER of the gRPC frame limit and the Ratis appender byte
+   * limit, and made the failure non-retryable - retrying an oversized entry makes every newly elected
+   * leader step down in turn. See {@link Issue4743OversizedRaftEntryTest} for those guarantees.
    */
   @Test
   void oversizeEntryRejectedSynchronouslyWithGuidance() {
@@ -131,9 +135,9 @@ class RaftGroupCommitterTest {
         500, 10_000, 100, cap, null);
     try {
       assertThatThrownBy(() -> committer.submitAndWait(new byte[(int) cap + 1]))
-          .isInstanceOf(ReplicationQueueFullException.class)
-          .hasMessageContaining("exceeds raft.grpc.message.size.max")
-          .hasMessageContaining("arcadedb.ha.grpcMessageSizeMax")
+          .isInstanceOf(ReplicatedEntryTooLargeException.class)
+          .hasMessageContaining("maximum replicated Raft entry size")
+          .hasMessageContaining("arcadedb.ha.appendBufferSize")
           .hasMessageContaining("Reduce the batch size");
     } finally {
       committer.stop();
@@ -152,12 +156,12 @@ class RaftGroupCommitterTest {
         500, 10_000, 100, cap, null);
     try {
       assertThatThrownBy(() -> committer.submitAndWait(new byte[(int) cap + 1]))
-          .isInstanceOf(ReplicationQueueFullException.class);
+          .isInstanceOf(ReplicatedEntryTooLargeException.class);
       // A subsequent normal-sized entry must reach the flusher (and fail with the usual
       // "RaftClient not available" because we passed null - i.e. it got past the pre-check).
       assertThatThrownBy(() -> committer.submitAndWait(new byte[10]))
           .isInstanceOf(QuorumNotReachedException.class)
-          .hasMessageNotContaining("exceeds raft.grpc.message.size.max");
+          .hasMessageNotContaining("maximum replicated Raft entry size");
     } finally {
       committer.stop();
     }

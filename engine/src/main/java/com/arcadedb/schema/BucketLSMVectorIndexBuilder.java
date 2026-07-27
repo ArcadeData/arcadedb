@@ -248,6 +248,10 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public BucketLSMVectorIndexBuilder withPQClusters(final int pqClusters) {
     if (pqClusters < 1)
       throw new IllegalArgumentException("pqClusters must be at least 1");
+    // PQ codes are one byte per subspace, so more than 256 clusters cannot be encoded: reject it at index creation time
+    // instead of letting the graph build fail later, which would leave the index without a graph (issue #5417)
+    if (pqClusters > 256)
+      throw new IllegalArgumentException("pqClusters cannot exceed 256 (PQ codes are one byte per subspace)");
     this.pqClusters = pqClusters;
     return this;
   }
@@ -358,7 +362,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
       this.pqSubspaces = metadata.getInt("pqSubspaces");
 
     if (metadata.has("pqClusters"))
-      this.pqClusters = metadata.getInt("pqClusters");
+      withPQClusters(metadata.getInt("pqClusters"));
 
     if (metadata.has("pqCenterGlobally"))
       this.pqCenterGlobally = metadata.getBoolean("pqCenterGlobally");

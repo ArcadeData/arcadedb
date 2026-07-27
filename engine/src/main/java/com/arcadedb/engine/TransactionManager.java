@@ -83,7 +83,11 @@ public class TransactionManager {
     if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
 
-      task = new Timer("ArcadeDB TransactionManager " + database.getName());
+      // #5418: DAEMON timer. A leaked (never closed) Database used to keep this non-daemon thread alive and
+      // with it the whole JVM. The WAL housekeeping it drives is best-effort background work; the durable
+      // part of the shutdown runs in TransactionManager.close(), reached through the JVM shutdown hook
+      // installed by DatabaseFactory, which completes before daemon threads are stopped.
+      task = new Timer("ArcadeDB TransactionManager " + database.getName(), true);
       task.schedule(new TimerTask() {
         @Override
         public void run() {
@@ -419,6 +423,26 @@ public class TransactionManager {
     } finally {
       LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }
+  }
+
+  /**
+   * Point-in-time view of every commit-lock currently HELD on this database: the file, its owner, when
+   * it was acquired, how long it has been held and how many transactions are queued behind it.
+   * <p>
+   * Exposed because the lock table is otherwise unreachable from outside this class — {@code toString()}
+   * renders it, but only as a debug string a caller would have to parse. Locks have no lease: a resource
+   * is released by its owner or not at all, and the abandoned-lock sweep reclaims one only after the
+   * owning thread has DIED, so a lock leaked by a live-but-stuck thread is held until the process
+   * restarts. This is what lets an operator see that happening instead of inferring it from a wave of
+   * {@link com.arcadedb.exception.LockTimeoutException}s and restarting blind.
+   * <p>
+   * Returns a snapshot of rendered values, deliberately NOT the {@link LockManager}: diagnostics must be
+   * able to read the lock table without being able to unlock anything.
+   *
+   * @return one entry per held file, empty when nothing is locked (the normal, healthy state)
+   */
+  public List<LockManager.LockStats> getLockStats() {
+    return fileIdsLockManager.statsSnapshot();
   }
 
   public Map<String, Object> getStats() {
@@ -785,7 +809,8 @@ public class TransactionManager {
         if (attemptFileId != null)
           throw new LockTimeoutException(
               "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName()
-                  + ") during commit (fileIds=" + orderedFilesIds + ", timeout=" + timeout + "ms");
+                  + ") during commit (fileIds=" + orderedFilesIds + ", timeout=" + timeout + "ms" + describeHolder(attemptFileId)
+                  + ")");
 
         throw new LockTimeoutException("Timeout on locking files during commit (fileIds=" + orderedFilesIds + ")");
       }
@@ -822,7 +847,8 @@ public class TransactionManager {
 
         throw new LockTimeoutException(
             "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName()
-                + ") during commit (fileIds=" + Arrays.toString(fileIds) + ", timeout=" + timeout + "ms");
+                + ") during commit (fileIds=" + Arrays.toString(fileIds) + ", timeout=" + timeout + "ms"
+                + describeHolder(attemptFileId) + ")");
       }
     }
 
@@ -831,6 +857,26 @@ public class TransactionManager {
       LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, Arrays.toString(fileIds),
           Thread.currentThread().threadId());
     return lockedFiles;
+  }
+
+  /**
+   * Renders who holds {@code fileId} right now, as a suffix for a {@link LockTimeoutException} message,
+   * or an empty string when the lock was released in the meantime.
+   * <p>
+   * Without this the exception names only the file that could not be locked, which is the one thing an
+   * operator can already guess. The holder is knowable ONLY while the lock is still held: a lock leaked
+   * by a live thread is never reclaimed (the abandoned-lock sweep requires the owner to have died), so
+   * by the time the log is read the evidence is gone and the usual remedy is a blind restart. Building
+   * the string is safe here because the acquisition has already failed.
+   */
+  private String describeHolder(final int fileId) {
+    try {
+      final String holder = fileIdsLockManager.describeOwner(fileId);
+      return holder != null ? ", " + holder : "";
+    } catch (final Exception e) {
+      // Diagnostics must never replace the real failure with one of their own.
+      return "";
+    }
   }
 
   public void unlockFilesInOrder(final List<Integer> lockedFileIds, final Object requester) {

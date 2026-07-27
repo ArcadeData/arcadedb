@@ -19,11 +19,15 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.ast.PathMode;
@@ -62,6 +66,11 @@ public class ExpandPathStep extends AbstractExecutionStep {
   private final Set<String> previousStepVariables;
   private final Direction directionOverride;
   private final boolean reverseResultPath;
+  /**
+   * Created only when the target node pattern carries Cypher 25 dynamic {@code $(expression)}
+   * labels: every other pattern shape resolves its labels statically and must not pay for it.
+   */
+  private final ExpressionEvaluator dynamicLabelEvaluator;
 
   /**
    * Creates an expand path step.
@@ -131,6 +140,8 @@ public class ExpandPathStep extends AbstractExecutionStep {
     this.previousStepVariables = previousStepVariables;
     this.directionOverride = directionOverride;
     this.reverseResultPath = reverseResultPath;
+    this.dynamicLabelEvaluator = targetNodePattern != null && targetNodePattern.hasDynamicLabels() ?
+        new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance())) : null;
   }
 
   /**
@@ -204,8 +215,8 @@ public class ExpandPathStep extends AbstractExecutionStep {
               final TraversalPath path = reverseResultPath ? traversedPath.reversed() : traversedPath;
 
               // Filter by target node label if specified
-              if (targetNodePattern != null && targetNodePattern.hasLabels()) {
-                if (!matchesTargetLabel(targetVertex))
+              if (targetNodePattern != null && (targetNodePattern.hasLabels() || targetNodePattern.hasDynamicLabels())) {
+                if (!matchesTargetLabel(targetVertex, lastResult))
                   continue;
               }
 
@@ -352,11 +363,57 @@ public class ExpandPathStep extends AbstractExecutionStep {
     return false;
   }
 
-  private boolean matchesTargetLabel(final Vertex vertex) {
-    for (final String label : targetNodePattern.getLabels())
-      if (!vertex.getType().instanceOf(label))
+  /**
+   * Applies the target node pattern labels to a traversed end vertex, with the same semantics
+   * {@link com.arcadedb.query.opencypher.executor.steps.MatchNodeStep} uses when the node is
+   * reached by a scan: a disjunction {@code (n:A|B)} accepts any of the labels, a conjunction
+   * {@code (n:A:B)} requires all of them, and Cypher 25 dynamic {@code $(expression)} labels are
+   * resolved against the current binding.
+   */
+  private boolean matchesTargetLabel(final Vertex vertex, final Result currentResult) {
+    final List<String> labels = resolveEffectiveLabels(currentResult);
+    if (labels.isEmpty())
+      return true;
+
+    if (targetNodePattern.isLabelDisjunction()) {
+      for (final String label : labels)
+        if (Labels.hasLabel(vertex, label))
+          return true;
+      return false;
+    }
+
+    for (final String label : labels)
+      if (!Labels.hasLabel(vertex, label))
         return false;
     return true;
+  }
+
+  /**
+   * Returns the labels the target vertex must satisfy, combining the statically written labels with
+   * the result of evaluating any dynamic label expression against the current binding. A dynamic
+   * expression may yield a single label or a collection of labels, all of which are required.
+   */
+  private List<String> resolveEffectiveLabels(final Result currentResult) {
+    final List<String> staticLabels = targetNodePattern.getLabels();
+    if (dynamicLabelEvaluator == null)
+      return staticLabels;
+
+    final List<String> labels = new ArrayList<>(staticLabels.size() + targetNodePattern.getDynamicLabels().size());
+    labels.addAll(staticLabels);
+    for (final Expression dynamicLabel : targetNodePattern.getDynamicLabels())
+      appendResolvedLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, currentResult, context));
+    return labels;
+  }
+
+  private static void appendResolvedLabels(final List<String> labels, final Object resolved) {
+    if (resolved == null)
+      return;
+    if (resolved instanceof Iterable) {
+      for (final Object item : (Iterable<?>) resolved)
+        if (item != null)
+          labels.add(item.toString());
+    } else
+      labels.add(resolved.toString());
   }
 
   private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {

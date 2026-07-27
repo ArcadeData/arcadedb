@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -43,6 +44,17 @@ public class CypherSplitFunction implements StatelessFunction {
       return null;
     final String str = args[0].toString();
     final String delimiter = args[1].toString();
+
+    // An empty delimiter splits the string into its individual characters (Neo4j/Memgraph semantics).
+    // Java's String.split("", -1) appends a spurious trailing empty string, so handle this case explicitly.
+    if (delimiter.isEmpty()) {
+      if (str.isEmpty())
+        return List.of("");
+      final List<String> characters = new ArrayList<>(str.length());
+      str.codePoints().forEach(cp -> characters.add(new String(Character.toChars(cp))));
+      return characters;
+    }
+
     return List.of(str.split(Pattern.quote(delimiter), -1));
   }
 }

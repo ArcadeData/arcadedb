@@ -21,6 +21,7 @@ package com.arcadedb.index.hash;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
@@ -37,9 +38,7 @@ import com.arcadedb.serializer.BinaryTypes;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -75,6 +74,13 @@ public class HashIndexBucket extends PaginatedComponent {
   // very few columns in practice; this is a generous ceiling that still catches a garbage byte.
   static final int MAX_SANE_KEY_COUNT = 64;
 
+  // Number of times a lookup re-reads the metadata + directory before declaring the index corrupted (#4743).
+  static final int MAX_LOOKUP_RETRIES = 3;
+
+  // Upper bound on the problems reported by a single structural check, so a badly damaged index does not build a
+  // huge list (the first problems are enough to know it must be rebuilt).
+  static final int MAX_REPORTED_PROBLEMS = 20;
+
   // Bucket page header offsets (relative to PAGE_HEADER_SIZE)
   static final int BUCKET_LOCAL_DEPTH     = 0;                       // short (2)
   static final int BUCKET_ENTRY_COUNT     = 2;                       // short (2)
@@ -96,12 +102,17 @@ public class HashIndexBucket extends PaginatedComponent {
   byte[]  binaryKeyTypes;
   LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy;
 
-  // Cached metadata from page 0
-  private int globalDepth;
-  private int totalEntries;
-  private int directoryStartPage;
-  private int bucketsStartPage;
-  private int bucketCount;
+  // NOTE (#4743): the structural metadata (global depth, directory start page, bucket count, total entries) is
+  // NEVER cached in instance fields. It lives only on the metadata page (page 0) and is always read through the
+  // current transaction. Caching it in fields was a correctness bug: the fields were mutated in the middle of a
+  // commit, so (a) concurrent readers saw structural changes that were not published yet (a directory doubling
+  // made them read a not-yet-written directory slot, i.e. page 0, which the overflow walker then reported as a
+  // cyclic chain), and (b) a rolled back or retried commit left the cached depth permanently ahead of the
+  // persisted one, poisoning every later lookup on that index until the database was reopened.
+  //
+  // Number of key columns never changes after creation, so the offset of the trailing int triplet
+  // (dirStartPage, bucketsStartPage, bucketCount) on the metadata page is stable and computed once.
+  private int metaTailOffset;
 
   /**
    * Called at creation time.
@@ -181,11 +192,62 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   public int getGlobalDepth() {
-    return globalDepth;
+    try {
+      return readGlobalDepth();
+    } catch (final IOException e) {
+      throw new IndexException("Error on reading metadata of hash index '" + getName() + "'", e);
+    }
   }
 
   public int getTotalEntries() {
-    return totalEntries;
+    try {
+      return metaPage().readInt(META_TOTAL_ENTRIES);
+    } catch (final IOException e) {
+      throw new IndexException("Error on reading metadata of hash index '" + getName() + "'", e);
+    }
+  }
+
+  // ─── METADATA ACCESS (ALWAYS TRANSACTIONAL, SEE THE NOTE ON metaTailOffset) ───
+
+  private BasePage metaPage() throws IOException {
+    return readPage(0);
+  }
+
+  /**
+   * Reads a page of this index through the current transaction, so the changes of the transaction itself are seen.
+   * Outside a transaction (e.g. getStats() from the profiler, CHECK DATABASE on a background thread) it goes
+   * straight to the page manager, which returns the same last-committed version the transactional read would.
+   */
+  private BasePage readPage(final int pageNumber) throws IOException {
+    final PageId pageId = new PageId(database, fileId, pageNumber);
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null ? tx.getPage(pageId, pageSize) : database.getPageManager().getImmutablePage(pageId, pageSize, false, true);
+  }
+
+  private int readGlobalDepth() throws IOException {
+    return metaPage().readInt(META_GLOBAL_DEPTH);
+  }
+
+  private int readDirectoryStartPage() throws IOException {
+    return metaPage().readInt(metaTailOffset);
+  }
+
+  private int readBucketsStartPage() throws IOException {
+    return metaPage().readInt(metaTailOffset + Binary.INT_SERIALIZED_SIZE);
+  }
+
+  private int readBucketCount() throws IOException {
+    return metaPage().readInt(metaTailOffset + 2 * Binary.INT_SERIALIZED_SIZE);
+  }
+
+  /**
+   * A directory entry or an overflow pointer must always reference a page that exists in the file and that is not
+   * the metadata page (page 0). A pointer outside this range means either a corrupted index or - for a lookup
+   * running outside the commit lock - a torn read taken while a concurrent commit was publishing a directory
+   * doubling; {@link #get} retries such a lookup before giving up.
+   */
+  private boolean isValidBucketPage(final int pageNum) {
+    return pageNum > 0 && pageNum < getTotalPages();
   }
 
   // ─── LOOKUP ──────────────────────────────────────────────
@@ -196,10 +258,25 @@ public class HashIndexBucket extends PaginatedComponent {
   List<RID> get(final Object[] keys, final int limit) throws IOException {
     final byte[] serializedKey = serializeKeys(keys);
     final long hash = murmurHash64(serializedKey);
-    final int dirIndex = directoryIndex(hash, globalDepth);
-    final int bucketPageNum = readDirectoryEntry(dirIndex);
 
-    return searchBucket(bucketPageNum, serializedKey, limit);
+    // A lookup issued outside the commit path holds no file lock. The global depth and the directory start page
+    // are read from the same page 0 snapshot, and a doubling publishes a brand new directory region (see
+    // doubleDirectory), so the pair is always consistent. An entry can still be read while a split is switching
+    // it in place, hence the bounded retry before declaring the index corrupted (#4743).
+    for (int attempt = 0; ; attempt++) {
+      final BasePage metaPage = metaPage();
+      final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
+      final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
+
+      if (isValidBucketPage(bucketPageNum))
+        return searchBucket(bucketPageNum, serializedKey, limit);
+
+      if (attempt >= MAX_LOOKUP_RETRIES)
+        throw new IndexException(
+            "Invalid entry " + bucketPageNum + " at position " + dirIndex + " in the directory of hash index '" + getName()
+                + "' (fileId=" + fileId + ", totalPages=" + getTotalPages()
+                + "). The index is corrupted, please rebuild it (DROP and recreate it).");
+    }
   }
 
   /**
@@ -216,7 +293,7 @@ public class HashIndexBucket extends PaginatedComponent {
     int chainSteps = 0;
 
     while (currentPage != NO_OVERFLOW_PAGE) {
-      if (++chainSteps > maxChainPages)
+      if (++chainSteps > maxChainPages || !isValidBucketPage(currentPage))
         throw corruptedOverflowChain(currentPage);
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPage), pageSize);
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
@@ -282,8 +359,16 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   private void putInternal(final byte[] serializedKey, final RID rid, final long hash) throws IOException {
+    final BasePage metaPage = metaPage();
+    final int globalDepth = metaPage.readInt(META_GLOBAL_DEPTH);
     final int dirIndex = directoryIndex(hash, globalDepth);
-    final int bucketPageNum = readDirectoryEntry(dirIndex);
+    final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
+
+    if (!isValidBucketPage(bucketPageNum))
+      throw new IndexException(
+          "Invalid entry " + bucketPageNum + " at position " + dirIndex + " in the directory of hash index '" + getName()
+              + "' (fileId=" + fileId + ", totalPages=" + getTotalPages()
+              + "). The index is corrupted, please rebuild it (DROP and recreate it).");
 
     final MutablePage bucketPage = database.getTransaction()
         .getPageToModify(new PageId(database, fileId, bucketPageNum), pageSize, false);
@@ -298,7 +383,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final int maxChainPages = getTotalPages();
       int chainSteps = 0;
       while (currentPageNum != NO_OVERFLOW_PAGE) {
-        if (++chainSteps > maxChainPages)
+        if (++chainSteps > maxChainPages || !isValidBucketPage(currentPageNum))
           throw corruptedOverflowChain(currentPageNum);
         final MutablePage currentPage = database.getTransaction()
             .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
@@ -352,8 +437,9 @@ public class HashIndexBucket extends PaginatedComponent {
   void remove(final Object[] keys) throws IOException {
     final byte[] serializedKey = serializeKeys(keys);
     final long hash = murmurHash64(serializedKey);
-    final int dirIndex = directoryIndex(hash, globalDepth);
-    final int bucketPageNum = readDirectoryEntry(dirIndex);
+    final BasePage metaPage = metaPage();
+    final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
+    final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
     removeFromBucket(bucketPageNum, serializedKey, null);
   }
@@ -364,8 +450,9 @@ public class HashIndexBucket extends PaginatedComponent {
   void remove(final Object[] keys, final RID rid) throws IOException {
     final byte[] serializedKey = serializeKeys(keys);
     final long hash = murmurHash64(serializedKey);
-    final int dirIndex = directoryIndex(hash, globalDepth);
-    final int bucketPageNum = readDirectoryEntry(dirIndex);
+    final BasePage metaPage = metaPage();
+    final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
+    final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
     removeFromBucket(bucketPageNum, serializedKey, rid);
   }
@@ -377,7 +464,7 @@ public class HashIndexBucket extends PaginatedComponent {
     int chainSteps = 0;
 
     while (currentPageNum != NO_OVERFLOW_PAGE) {
-      if (++chainSteps > maxChainPages)
+      if (++chainSteps > maxChainPages || !isValidBucketPage(currentPageNum))
         throw corruptedOverflowChain(currentPageNum);
       final MutablePage page = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
@@ -437,7 +524,7 @@ public class HashIndexBucket extends PaginatedComponent {
    */
   private boolean canSplitHelp(final int bucketPageNum, final int entryCount, final int localDepth) throws IOException {
     final int newLocalDepth = localDepth + 1;
-    final int effectiveGlobalDepth = Math.max(globalDepth, newLocalDepth);
+    final int effectiveGlobalDepth = Math.max(readGlobalDepth(), newLocalDepth);
     final int splitBit = 1 << (effectiveGlobalDepth - newLocalDepth);
 
     boolean seenZero = false;
@@ -448,7 +535,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int maxChainPages = getTotalPages();
     int chainSteps = 0;
     while (currentPage != NO_OVERFLOW_PAGE) {
-      if (++chainSteps > maxChainPages)
+      if (++chainSteps > maxChainPages || !isValidBucketPage(currentPage))
         throw corruptedOverflowChain(currentPage);
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPage), pageSize);
       final int count = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
@@ -488,8 +575,10 @@ public class HashIndexBucket extends PaginatedComponent {
     final int newLocalDepth = localDepth + 1;
 
     // If localDepth == globalDepth, we need to double the directory
-    if (newLocalDepth > globalDepth)
+    if (newLocalDepth > readGlobalDepth())
       doubleDirectory();
+
+    final int globalDepth = readGlobalDepth();
 
     // Allocate new bucket page
     final int newBucketPageNum = allocateBucketPage(newLocalDepth);
@@ -511,38 +600,55 @@ public class HashIndexBucket extends PaginatedComponent {
     updateDirectoryAfterSplit(bucketPageNum, newBucketPageNum, localDepth, newLocalDepth);
 
     // Redistribute entries between old and new bucket
+    final int directoryStartPage = readDirectoryStartPage();
     for (final byte[] entry : allEntries) {
       final long entryHash = hashSerializedKey(entry);
       final int newDirIndex = directoryIndex(entryHash, globalDepth);
-      final int targetBucketPage = readDirectoryEntry(newDirIndex);
+      final int targetBucketPage = readDirectoryEntry(directoryStartPage, newDirIndex);
       insertRawEntry(targetBucketPage, entry);
     }
   }
 
   /**
-   * Doubles the directory size by incrementing globalDepth.
+   * Doubles the directory, incrementing globalDepth.
+   * <p>
+   * The doubled directory is always written to a freshly allocated region at the end of the file (copy on write)
+   * instead of being expanded in place. This is what makes a directory doubling atomic for a lookup that runs
+   * without the file lock (#4743): the old region is never touched, and the switch to the new one is the publish
+   * of a SINGLE page - page 0, which carries both the new global depth and the new directory start page. A reader
+   * therefore always sees either (old depth, old region) or (new depth, new region), never a mix of the two. The
+   * pages of the old region are left behind and reclaimed by the next index rebuild.
    */
   private void doubleDirectory() throws IOException {
-    final int oldSize = 1 << globalDepth;
+    final BasePage metaPage = metaPage();
+    final int oldDepth = metaPage.readInt(META_GLOBAL_DEPTH);
+    final int oldDirectoryStartPage = metaPage.readInt(metaTailOffset);
+    final int oldSize = 1 << oldDepth;
     final int newSize = oldSize * 2;
-    globalDepth++;
 
     // Read old directory entries
     final int[] oldEntries = new int[oldSize];
     for (int i = 0; i < oldSize; i++)
-      oldEntries[i] = readDirectoryEntry(i);
+      oldEntries[i] = readDirectoryEntry(oldDirectoryStartPage, i);
 
-    // Ensure directory pages have enough space
-    ensureDirectoryCapacity(newSize);
+    final int entriesPerPage = directoryEntriesPerPage();
+    final int neededPages = (newSize + entriesPerPage - 1) / entriesPerPage;
+
+    final int newDirectoryStartPage = getTotalPages();
+    for (int i = 0; i < neededPages; i++) {
+      database.getTransaction().addPage(new PageId(database, fileId, newDirectoryStartPage + i), pageSize);
+      updatePageCount(newDirectoryStartPage + i + 1);
+    }
 
     // Write doubled directory: each old entry is duplicated
     for (int i = 0; i < oldSize; i++) {
-      writeDirectoryEntry(2 * i, oldEntries[i]);
-      writeDirectoryEntry(2 * i + 1, oldEntries[i]);
+      writeDirectoryEntry(newDirectoryStartPage, 2 * i, oldEntries[i]);
+      writeDirectoryEntry(newDirectoryStartPage, 2 * i + 1, oldEntries[i]);
     }
 
-    // Update metadata
-    writeGlobalDepth(globalDepth);
+    // Update metadata: both fields live on page 0, so they become visible together
+    writeDirectoryStartPage(newDirectoryStartPage);
+    writeGlobalDepth(oldDepth + 1);
   }
 
   // ─── OVERFLOW PAGES ──────────────────────────────────────
@@ -554,10 +660,11 @@ public class HashIndexBucket extends PaginatedComponent {
         serializedKey.length + varIntSize(1) + serializedRID.length;
     final int totalNeeded = entryDataSize + SLOT_SIZE;
 
-    // Defensive cycle detection: a corrupted overflow chain that loops back to a
-    // previously-seen page would otherwise spin forever. Track visited page numbers.
-    final Set<Integer> visited = new HashSet<>();
-    visited.add(currentPageNum);
+    // Defensive cycle detection: a corrupted overflow chain that loops back to a previously-seen page would
+    // otherwise spin forever. A valid chain visits distinct pages, so it cannot be longer than the file: the
+    // bounded-step guard is equivalent to tracking the visited pages, without allocating on the insert path.
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
 
     while (true) {
       int overflowPageNum = currentPage.readInt(BUCKET_OVERFLOW_PAGE);
@@ -568,10 +675,8 @@ public class HashIndexBucket extends PaginatedComponent {
         currentPage.writeInt(BUCKET_OVERFLOW_PAGE, overflowPageNum);
       }
 
-      if (!visited.add(overflowPageNum))
-        throw new IllegalStateException(
-            "Detected cycle in hash index '" + getName() + "' overflow chain at page " + overflowPageNum
-                + ". The index is corrupted, please rebuild it.");
+      if (++chainSteps > maxChainPages || !isValidBucketPage(overflowPageNum))
+        throw corruptedOverflowChain(overflowPageNum);
 
       final MutablePage overflowPage = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, overflowPageNum), pageSize, false);
@@ -581,6 +686,9 @@ public class HashIndexBucket extends PaginatedComponent {
         insertEntryInPage(overflowPage, entryCount, serializedKey, serializedRID);
         return;
       }
+
+      if (entryCount == 0)
+        throw entryTooLarge(totalNeeded, freeSpace(overflowPage, 0));
 
       // Chain to the next overflow page
       currentPage = overflowPage;
@@ -608,8 +716,7 @@ public class HashIndexBucket extends PaginatedComponent {
     newPage.writeInt(BUCKET_OVERFLOW_PAGE, NO_OVERFLOW_PAGE);
     newPage.writeShort(BUCKET_DATA_END, (short) BUCKET_CONTENT_START);
 
-    bucketCount++;
-    writeBucketCount(bucketCount);
+    writeBucketCount(readBucketCount() + 1);
 
     return newPageNum;
   }
@@ -621,9 +728,7 @@ public class HashIndexBucket extends PaginatedComponent {
   // ─── INITIALIZATION ──────────────────────────────────────
 
   private void initializeNewIndex() throws IOException {
-    this.globalDepth = 0;
-    this.totalEntries = 0;
-    this.bucketCount = 0;
+    this.metaTailOffset = META_KEY_TYPES_START + binaryKeyTypes.length + 2 * Binary.BYTE_SERIALIZED_SIZE;
 
     // Page 0: metadata
     final MutablePage metaPage = database.getTransaction().addPage(new PageId(database, fileId, 0), pageSize);
@@ -645,12 +750,10 @@ public class HashIndexBucket extends PaginatedComponent {
     metaPage.writeByte(pos, (byte) (unique ? 1 : 0));
     pos += Binary.BYTE_SERIALIZED_SIZE;
 
-    this.directoryStartPage = 1;
-    metaPage.writeInt(pos, directoryStartPage);
+    metaPage.writeInt(pos, 1); // directoryStartPage = 1
     pos += Binary.INT_SERIALIZED_SIZE;
 
-    this.bucketsStartPage = 2;
-    metaPage.writeInt(pos, bucketsStartPage);
+    metaPage.writeInt(pos, 2); // bucketsStartPage = 2
     pos += Binary.INT_SERIALIZED_SIZE;
 
     metaPage.writeInt(pos, 0); // bucketCount = 0
@@ -658,7 +761,7 @@ public class HashIndexBucket extends PaginatedComponent {
     // Page 1: directory (initially 1 entry pointing to bucket at page 2)
     final MutablePage dirPage = database.getTransaction().addPage(new PageId(database, fileId, 1), pageSize);
     updatePageCount(2);
-    dirPage.writeInt(0, bucketsStartPage); // directory[0] → bucket page 2
+    dirPage.writeInt(0, 2); // directory[0] → bucket page 2
 
     // Page 2: initial bucket (local depth 0, empty)
     final MutablePage bucketPage = database.getTransaction().addPage(new PageId(database, fileId, 2), pageSize);
@@ -668,15 +771,16 @@ public class HashIndexBucket extends PaginatedComponent {
     bucketPage.writeInt(BUCKET_OVERFLOW_PAGE, NO_OVERFLOW_PAGE);
     bucketPage.writeShort(BUCKET_DATA_END, (short) BUCKET_CONTENT_START);
 
-    bucketCount = 1;
     writeBucketCount(1);
   }
 
+  /**
+   * Loads the immutable part of the metadata (key types + null strategy) and computes the offset of the trailing
+   * int triplet on the metadata page. The structural counters (global depth, directory start page, bucket count,
+   * total entries) are intentionally NOT cached here: see the note on {@link #metaTailOffset}.
+   */
   private void loadMetadata() throws IOException {
     final BasePage metaPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
-
-    globalDepth = metaPage.readInt(META_GLOBAL_DEPTH);
-    totalEntries = metaPage.readInt(META_TOTAL_ENTRIES);
 
     final int rawNumKeys = metaPage.readByte(META_NUMBER_OF_KEYS) & 0xFF;
 
@@ -714,17 +818,15 @@ public class HashIndexBucket extends PaginatedComponent {
     // unique is already set from constructor
     pos += Binary.BYTE_SERIALIZED_SIZE;
 
-    directoryStartPage = metaPage.readInt(pos);
-    pos += Binary.INT_SERIALIZED_SIZE;
-    bucketsStartPage = metaPage.readInt(pos);
-    pos += Binary.INT_SERIALIZED_SIZE;
-    bucketCount = metaPage.readInt(pos);
+    // Offset of the trailing int triplet (dirStartPage, bucketsStartPage, bucketCount): stable for the lifetime
+    // of the index because the number of key columns never changes.
+    this.metaTailOffset = pos;
 
     if (metadataCorrupt)
       LogManager.instance().log(this, Level.SEVERE,
           "Corrupted metadata detected on hash index '%s' (fileId=%d): %s. The index must be rebuilt (DROP and "
               + "recreate it). Raw metadata page 0 dump (content bytes):%n%s",
-          null, getName(), fileId, describeMetadata(rawNumKeys), dumpMetadataPage(metaPage));
+          null, getName(), fileId, describeMetadata(metaPage, rawNumKeys), dumpMetadataPage(metaPage));
   }
 
   /**
@@ -760,10 +862,12 @@ public class HashIndexBucket extends PaginatedComponent {
   /**
    * Human-readable one-line summary of the parsed metadata fields, used in corruption diagnostics.
    */
-  private String describeMetadata(final int rawNumKeys) {
-    return "globalDepth=" + globalDepth + ", totalEntries=" + totalEntries + ", numberOfKeys=" + rawNumKeys
-        + ", keyTypes=" + formatKeyTypes() + ", directoryStartPage=" + directoryStartPage + ", bucketsStartPage="
-        + bucketsStartPage + ", bucketCount=" + bucketCount + ", unique=" + unique;
+  private String describeMetadata(final BasePage metaPage, final int rawNumKeys) {
+    return "globalDepth=" + metaPage.readInt(META_GLOBAL_DEPTH) + ", totalEntries=" + metaPage.readInt(META_TOTAL_ENTRIES)
+        + ", numberOfKeys=" + rawNumKeys + ", keyTypes=" + formatKeyTypes()
+        + ", directoryStartPage=" + metaPage.readInt(metaTailOffset)
+        + ", bucketsStartPage=" + metaPage.readInt(metaTailOffset + Binary.INT_SERIALIZED_SIZE)
+        + ", bucketCount=" + metaPage.readInt(metaTailOffset + 2 * Binary.INT_SERIALIZED_SIZE) + ", unique=" + unique;
   }
 
   /**
@@ -823,7 +927,84 @@ public class HashIndexBucket extends PaginatedComponent {
   private IndexException corruptedOverflowChain(final int page) {
     return new IndexException(
         "Detected cycle in hash index '" + getName() + "' (fileId=" + fileId + ") overflow chain at page " + page
-            + ". The index is corrupted, please rebuild it (DROP and recreate it).");
+            + " (totalPages=" + getTotalPages() + "). The index is corrupted, please rebuild it (DROP and recreate it).");
+  }
+
+  /**
+   * A single entry (key + RID) never fits in an empty page: chaining another overflow page would not help, so fail
+   * with an actionable message instead of allocating pages forever.
+   */
+  private IndexException entryTooLarge(final int entrySize, final int pageCapacity) {
+    return new IndexException(
+        "Entry of " + entrySize + " bytes does not fit in a page of hash index '" + getName() + "' (fileId=" + fileId
+            + ", usable space per page=" + pageCapacity + " bytes). Use a smaller key or create the index with a bigger "
+            + "page size.");
+  }
+
+  /**
+   * Walks the directory and every overflow chain to verify that the index structure is sound: entries point to
+   * existing bucket pages, chains are acyclic and no page belongs to two different chains. Used by CHECK DATABASE
+   * to detect a corrupted index up front (issue #4743) instead of waiting for a query to hit the broken chain.
+   */
+  public List<String> checkStructuralIntegrity() {
+    final List<String> problems = new ArrayList<>();
+    try {
+      final BasePage metaPage = metaPage();
+      final int globalDepth = metaPage.readInt(META_GLOBAL_DEPTH);
+      final int directoryStartPage = metaPage.readInt(metaTailOffset);
+      final int totalPages = getTotalPages();
+
+      if (globalDepth < 0 || globalDepth > 30) {
+        problems.add("invalid globalDepth=" + globalDepth);
+        return problems;
+      }
+
+      // chainOwner[p] = head page of the chain page p belongs to, plus 1 (0 = not visited yet)
+      final int[] chainOwner = new int[totalPages];
+      final int directorySize = 1 << globalDepth;
+      int previousHead = -1;
+
+      for (int i = 0; i < directorySize && problems.size() < MAX_REPORTED_PROBLEMS; i++) {
+        final int head = readDirectoryEntry(directoryStartPage, i);
+        if (!isValidBucketPage(head)) {
+          problems.add("directory entry " + i + " points to the invalid page " + head + " (totalPages=" + totalPages + ")");
+          continue;
+        }
+
+        // consecutive entries usually share the same bucket: skip the chains already walked
+        if (head == previousHead || chainOwner[head] == head + 1)
+          continue;
+        previousHead = head;
+
+        int current = head;
+        while (current != NO_OVERFLOW_PAGE) {
+          if (!isValidBucketPage(current)) {
+            problems.add("chain of bucket " + head + " reaches the invalid page " + current + " (totalPages=" + totalPages + ")");
+            break;
+          }
+          if (chainOwner[current] == head + 1) {
+            problems.add("chain of bucket " + head + " is cyclic: page " + current + " is visited twice");
+            break;
+          }
+          if (chainOwner[current] != 0) {
+            problems.add("page " + current + " belongs to both the chain of bucket " + (chainOwner[current] - 1)
+                + " and the chain of bucket " + head);
+            break;
+          }
+          chainOwner[current] = head + 1;
+          current = readPage(current).readInt(BUCKET_OVERFLOW_PAGE);
+        }
+      }
+    } catch (final Exception e) {
+      problems.add("error while walking the index structure: " + e.getMessage());
+    }
+
+    if (!problems.isEmpty())
+      LogManager.instance().log(this, Level.SEVERE,
+          "CHECK DATABASE found a corrupted structure on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
+              + "(DROP and recreate it).", null, getName(), fileId, problems);
+
+    return problems;
   }
 
   /**
@@ -843,21 +1024,33 @@ public class HashIndexBucket extends PaginatedComponent {
           problems.add("invalid key type at column " + i + ": " + binaryKeyTypes[i] + " (0x"
               + String.format("%02X", binaryKeyTypes[i] & 0xFF) + ")");
 
-    if (globalDepth < 0)
-      problems.add("invalid globalDepth=" + globalDepth);
-    if (directoryStartPage < 1)
-      problems.add("invalid directoryStartPage=" + directoryStartPage);
-    if (bucketsStartPage < 1)
-      problems.add("invalid bucketsStartPage=" + bucketsStartPage);
-    if (bucketCount < 1)
-      problems.add("invalid bucketCount=" + bucketCount);
+    try {
+      final int globalDepth = readGlobalDepth();
+      final int directoryStartPage = readDirectoryStartPage();
+      final int bucketsStartPage = readBucketsStartPage();
+      final int bucketCount = readBucketCount();
 
-    if (!problems.isEmpty())
+      if (globalDepth < 0)
+        problems.add("invalid globalDepth=" + globalDepth);
+      if (directoryStartPage < 1)
+        problems.add("invalid directoryStartPage=" + directoryStartPage);
+      if (bucketsStartPage < 1)
+        problems.add("invalid bucketsStartPage=" + bucketsStartPage);
+      if (bucketCount < 1)
+        problems.add("invalid bucketCount=" + bucketCount);
+    } catch (final IOException e) {
+      problems.add("cannot read the metadata page: " + e.getMessage());
+    }
+
+    if (!problems.isEmpty()) {
       LogManager.instance().log(this, Level.SEVERE,
           "CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
               + "(DROP and recreate it).", null, getName(), fileId, problems);
+      // the structural walk relies on the metadata being sane: no point in running it on a corrupted page 0
+      return problems;
+    }
 
-    return problems;
+    return checkStructuralIntegrity();
   }
 
   // ─── DIRECTORY OPERATIONS ────────────────────────────────
@@ -866,20 +1059,31 @@ public class HashIndexBucket extends PaginatedComponent {
    * Reads the bucket page number from the directory at the given index.
    */
   int readDirectoryEntry(final int index) throws IOException {
-    final int entriesPerPage = (pageSize - BasePage.PAGE_HEADER_SIZE) / Binary.INT_SERIALIZED_SIZE;
+    return readDirectoryEntry(readDirectoryStartPage(), index);
+  }
+
+  /**
+   * Reads the bucket page number from the directory at the given index, with the directory start page already
+   * resolved by the caller (used by the loops that walk the whole directory, to read the metadata page once).
+   */
+  int readDirectoryEntry(final int directoryStartPage, final int index) throws IOException {
+    final int entriesPerPage = directoryEntriesPerPage();
     final int dirPageOffset = index / entriesPerPage;
     final int entryOffset = (index % entriesPerPage) * Binary.INT_SERIALIZED_SIZE;
 
-    final BasePage dirPage = database.getTransaction()
-        .getPage(new PageId(database, fileId, directoryStartPage + dirPageOffset), pageSize);
-    return dirPage.readInt(entryOffset);
+    return readPage(directoryStartPage + dirPageOffset).readInt(entryOffset);
+  }
+
+  private int directoryEntriesPerPage() {
+    return (pageSize - BasePage.PAGE_HEADER_SIZE) / Binary.INT_SERIALIZED_SIZE;
   }
 
   /**
    * Writes a bucket page number to the directory at the given index.
    */
-  private void writeDirectoryEntry(final int index, final int bucketPageNum) throws IOException {
-    final int entriesPerPage = (pageSize - BasePage.PAGE_HEADER_SIZE) / Binary.INT_SERIALIZED_SIZE;
+  private void writeDirectoryEntry(final int directoryStartPage, final int index, final int bucketPageNum)
+      throws IOException {
+    final int entriesPerPage = directoryEntriesPerPage();
     final int dirPageOffset = index / entriesPerPage;
     final int entryOffset = (index % entriesPerPage) * Binary.INT_SERIALIZED_SIZE;
 
@@ -888,63 +1092,20 @@ public class HashIndexBucket extends PaginatedComponent {
     dirPage.writeInt(entryOffset, bucketPageNum);
   }
 
-  /**
-   * Ensures the directory has enough pages for the given number of entries.
-   */
-  private void ensureDirectoryCapacity(final int numEntries) throws IOException {
-    final int entriesPerPage = (pageSize - BasePage.PAGE_HEADER_SIZE) / Binary.INT_SERIALIZED_SIZE;
-    final int neededPages = (numEntries + entriesPerPage - 1) / entriesPerPage;
-    final int currentDirPages = bucketsStartPage - directoryStartPage;
-
-    if (neededPages > currentDirPages) {
-      // We need more directory pages. Since bucket pages come after directory pages,
-      // we need to shift things. For simplicity, allocate directory pages at the end
-      // and update directoryStartPage. Actually, since the directory may be small and
-      // we'd need to move bucket pointers, let's use a simpler approach:
-      // Allocate new directory pages at the end of the file and update the start page.
-
-      final int newDirStartPage = getTotalPages();
-      for (int i = 0; i < neededPages; i++) {
-        final MutablePage newDirPage = database.getTransaction()
-            .addPage(new PageId(database, fileId, newDirStartPage + i), pageSize);
-        updatePageCount(newDirStartPage + i + 1);
-      }
-
-      // Copy existing directory entries to new location
-      final int oldDirSize = 1 << (globalDepth - 1); // size before doubling
-      for (int i = 0; i < oldDirSize; i++) {
-        final int entriesPerOldPage = (pageSize - BasePage.PAGE_HEADER_SIZE) / Binary.INT_SERIALIZED_SIZE;
-        final int oldPageOffset = i / entriesPerOldPage;
-        final int oldEntryOffset = (i % entriesPerOldPage) * Binary.INT_SERIALIZED_SIZE;
-
-        final BasePage oldDirPage = database.getTransaction()
-            .getPage(new PageId(database, fileId, directoryStartPage + oldPageOffset), pageSize);
-        final int bucketNum = oldDirPage.readInt(oldEntryOffset);
-
-        final int newPageOffset = i / entriesPerPage;
-        final int newEntryOffset = (i % entriesPerPage) * Binary.INT_SERIALIZED_SIZE;
-        final MutablePage newDirPage = database.getTransaction()
-            .getPageToModify(new PageId(database, fileId, newDirStartPage + newPageOffset), pageSize, false);
-        newDirPage.writeInt(newEntryOffset, bucketNum);
-      }
-
-      directoryStartPage = newDirStartPage;
-      writeDirectoryStartPage(directoryStartPage);
-    }
-  }
-
   private void updateDirectoryAfterSplit(final int oldBucketPage, final int newBucketPage,
       final int oldLocalDepth, final int newLocalDepth) throws IOException {
+    final int globalDepth = readGlobalDepth();
     final int directorySize = 1 << globalDepth;
     // The split bit is the newLocalDepth-th bit from the MSB of the hash.
     // In the directory index (top globalDepth bits), this maps to bit (globalDepth - newLocalDepth) from LSB.
     final int splitBit = 1 << (globalDepth - newLocalDepth);
+    final int directoryStartPage = readDirectoryStartPage();
 
     for (int i = 0; i < directorySize; i++) {
-      final int bucketPageForEntry = readDirectoryEntry(i);
+      final int bucketPageForEntry = readDirectoryEntry(directoryStartPage, i);
       if (bucketPageForEntry == oldBucketPage) {
         if ((i & splitBit) != 0)
-          writeDirectoryEntry(i, newBucketPage);
+          writeDirectoryEntry(directoryStartPage, i, newBucketPage);
       }
     }
   }
@@ -1091,14 +1252,13 @@ public class HashIndexBucket extends PaginatedComponent {
   private void insertRawEntry(final int bucketPageNum, final byte[] rawEntry) throws IOException {
     int currentPageNum = bucketPageNum;
 
-    // Defensive cycle detection on the overflow chain (see insertIntoOverflow above).
-    final Set<Integer> visited = new HashSet<>();
+    // Defensive, allocation-free cycle detection on the overflow chain (see insertIntoOverflow above).
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
 
     while (true) {
-      if (!visited.add(currentPageNum))
-        throw new IllegalStateException(
-            "Detected cycle in hash index '" + getName() + "' overflow chain at page " + currentPageNum
-                + ". The index is corrupted, please rebuild it.");
+      if (++chainSteps > maxChainPages || !isValidBucketPage(currentPageNum))
+        throw corruptedOverflowChain(currentPageNum);
 
       final MutablePage page = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
@@ -1125,6 +1285,9 @@ public class HashIndexBucket extends PaginatedComponent {
         page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount + 1));
         return;
       }
+
+      if (entryCount == 0)
+        throw entryTooLarge(totalNeeded, freeSpace(page, 0));
 
       // No space in this page - follow or create overflow chain (preserves raw entry format)
       int overflowPageNum = page.readInt(BUCKET_OVERFLOW_PAGE);
@@ -1646,7 +1809,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int maxChainPages = getTotalPages();
     int chainSteps = 0;
     while (currentPageNum != NO_OVERFLOW_PAGE) {
-      if (++chainSteps > maxChainPages)
+      if (++chainSteps > maxChainPages || !isValidBucketPage(currentPageNum))
         throw corruptedOverflowChain(currentPageNum);
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPageNum), pageSize);
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
@@ -1755,10 +1918,9 @@ public class HashIndexBucket extends PaginatedComponent {
   // ─── METADATA WRITING ────────────────────────────────────
 
   private void updateTotalEntries(final int delta) throws IOException {
-    totalEntries += delta;
     final MutablePage metaPage = database.getTransaction()
         .getPageToModify(new PageId(database, fileId, 0), pageSize, false);
-    metaPage.writeInt(META_TOTAL_ENTRIES, totalEntries);
+    metaPage.writeInt(META_TOTAL_ENTRIES, metaPage.readInt(META_TOTAL_ENTRIES) + delta);
   }
 
   private void writeGlobalDepth(final int depth) throws IOException {
@@ -1770,14 +1932,12 @@ public class HashIndexBucket extends PaginatedComponent {
   private void writeBucketCount(final int count) throws IOException {
     final MutablePage metaPage = database.getTransaction()
         .getPageToModify(new PageId(database, fileId, 0), pageSize, false);
-    final int pos = META_KEY_TYPES_START + binaryKeyTypes.length + 2 + Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE;
-    metaPage.writeInt(pos, count);
+    metaPage.writeInt(metaTailOffset + 2 * Binary.INT_SERIALIZED_SIZE, count);
   }
 
   private void writeDirectoryStartPage(final int startPage) throws IOException {
     final MutablePage metaPage = database.getTransaction()
         .getPageToModify(new PageId(database, fileId, 0), pageSize, false);
-    final int pos = META_KEY_TYPES_START + binaryKeyTypes.length + 2; // after nullStrategy + unique bytes
-    metaPage.writeInt(pos, startPage);
+    metaPage.writeInt(metaTailOffset, startPage);
   }
 }

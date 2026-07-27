@@ -845,7 +845,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
     final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
     final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
-    final long grpcMessageSizeMax = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX);
+    // #4743: the effective per-entry ceiling is the SMALLER of the gRPC frame cap and the Ratis
+    // appender byte limit - an entry above the latter makes the leader step down.
+    final long grpcMessageSizeMax = RaftPropertiesBuilder.maxReplicatedEntrySize(configuration);
     final long maxQueuedBytes = configuration.getValueAsLong(GlobalConfiguration.HA_GROUP_COMMIT_MAX_QUEUED_BYTES);
     transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize, offerTimeout,
         grpcMessageSizeMax, maxQueuedBytes, this::refreshRaftClient);
@@ -1274,7 +1276,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
         final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
         final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
-        final long grpcMessageSizeMax = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX);
+        // #4743: the effective per-entry ceiling is the SMALLER of the gRPC frame cap and the Ratis
+        // appender byte limit - an entry above the latter makes the leader step down.
+        final long grpcMessageSizeMax = RaftPropertiesBuilder.maxReplicatedEntrySize(configuration);
         final long maxQueuedBytes = configuration.getValueAsLong(GlobalConfiguration.HA_GROUP_COMMIT_MAX_QUEUED_BYTES);
         this.transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize,
             offerTimeout, grpcMessageSizeMax, maxQueuedBytes, this::refreshRaftClient);
@@ -1477,7 +1481,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
       final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
       final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
-      final long grpcMessageSizeMax = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX);
+      // #4743: the effective per-entry ceiling is the SMALLER of the gRPC frame cap and the Ratis
+      // appender byte limit - an entry above the latter makes the leader step down.
+      final long grpcMessageSizeMax = RaftPropertiesBuilder.maxReplicatedEntrySize(configuration);
       final long maxQueuedBytes = configuration.getValueAsLong(GlobalConfiguration.HA_GROUP_COMMIT_MAX_QUEUED_BYTES);
       final RaftTransactionBroker oldBroker = transactionBroker;
       transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize,

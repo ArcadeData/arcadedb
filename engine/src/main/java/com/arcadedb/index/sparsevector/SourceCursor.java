@@ -58,6 +58,18 @@ public interface SourceCursor extends AutoCloseable {
   float upperBoundRemaining();
 
   /**
+   * Approximate number of postings this source holds for this dim, i.e. how expensive it is to
+   * traverse. {@link BmwScorer} uses it to decide which terms are worth dropping out of the
+   * traversal first: MaxScore is free to pick any set of terms whose combined ceiling fits under the
+   * top-K watermark, so it picks the ones that remove the most work. Never affects correctness, so
+   * an approximation - or the {@code 0} default, for sources that cannot answer in O(1) - is fine;
+   * a term whose cost is unknown is simply the last to leave the traversal.
+   */
+  default long documentFrequency() {
+    return 0L;
+  }
+
+  /**
    * Tight Block-Max WAND upper bound on this source's contribution to the document identified by
    * {@code rid}: the maximum weight of the block that would contain {@code rid} (i.e. the first
    * block at or after the current position whose last RID is &gt;= {@code rid}). Unlike

@@ -22,11 +22,13 @@ import com.arcadedb.database.RID;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -50,16 +52,51 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class Memtable {
 
-  private final ConcurrentHashMap<Integer, ConcurrentSkipListMap<RID, Float>> postings    = new ConcurrentHashMap<>();
-  // Per-dim running max live weight. Maintained incrementally on every {@link #put} so the BMW
-  // upper bound a cursor reports does not require a fresh full scan of the dim's postings at
-  // construction time. Monotonically non-decreasing - a tombstone or an overwrite to a smaller
-  // weight is a safe over-estimate (BMW pruning correctness only requires an upper bound; a
-  // looser bound just means slightly less skipping). This trades a per-put map.merge() for the
-  // dropped O(n) scan in {@link MemtableSourceCursor}.
-  private final ConcurrentHashMap<Integer, Float>                              dimMaxWeight = new ConcurrentHashMap<>();
-  private final AtomicLong totalPostings        = new AtomicLong();
-  private final AtomicLong tombstoneCount       = new AtomicLong();
+  /** Canonical (bucketId, position) RID ordering, shared with the segment writer and the scorer. */
+  private static final Comparator<RID> RID_ORDER = SparseSegmentBuilder::compareRid;
+
+  // One entry per dim holding BOTH the posting map and the running max weight. They used to be two
+  // separate ConcurrentHashMaps, which cost every put two hash lookups and two Integer boxes of the
+  // same dim id - measurable on bulk loads where one record contributes one put per non-zero
+  // dimension (issue #5411).
+  private final ConcurrentHashMap<Integer, DimPostings> postings       = new ConcurrentHashMap<>();
+  private final AtomicLong                              totalPostings  = new AtomicLong();
+  private final AtomicLong                              tombstoneCount = new AtomicLong();
+
+  /**
+   * Per-dim postings plus the running max live weight. The max is maintained incrementally on every
+   * {@link #put} so the BMW upper bound a cursor reports does not require a fresh full scan of the
+   * dim's postings at construction time. Monotonically non-decreasing - a tombstone or an overwrite
+   * to a smaller weight is a safe over-estimate (BMW pruning correctness only requires an upper
+   * bound; a looser bound just means slightly less skipping).
+   * <p>
+   * The max is held as raw float bits in an {@link AtomicInteger} and raised with a CAS loop: a
+   * plain write could lose a concurrent higher value and under-estimate the bound, which BMW
+   * pruning is <b>not</b> allowed to do, while the previous {@code map.merge(dim, w, Math::max)}
+   * boxed both the dim and the weight on every posting.
+   */
+  private static final class DimPostings {
+    // Explicit comparator instead of RID's natural ordering: Comparable.compareTo(Object) has to
+    // re-test the argument type (RID? String?) on every skip-list comparison, and the call site is
+    // megamorphic across the JVM. SparseSegmentBuilder.compareRid is the same (bucketId, position)
+    // order, monomorphic and inlineable - and it is already the canonical ordering the segment
+    // writer and the scorer share.
+    final ConcurrentSkipListMap<RID, Float> map           = new ConcurrentSkipListMap<>(RID_ORDER);
+    final AtomicInteger                     maxWeightBits = new AtomicInteger();
+
+    void raiseMaxWeight(final float weight) {
+      int currentBits = maxWeightBits.get();
+      while (weight > Float.intBitsToFloat(currentBits)) {
+        if (maxWeightBits.compareAndSet(currentBits, Float.floatToRawIntBits(weight)))
+          return;
+        currentBits = maxWeightBits.get();
+      }
+    }
+
+    float maxWeight() {
+      return Float.intBitsToFloat(maxWeightBits.get());
+    }
+  }
 
   /** Insert or overwrite the weight for {@code (dim, rid)}. Negative or non-finite weights are rejected. */
   public void put(final int dim, final RID rid, final float weight) {
@@ -70,11 +107,11 @@ public final class Memtable {
     if (rid == null)
       throw new IllegalArgumentException("rid must not be null");
 
-    final ConcurrentSkipListMap<RID, Float> dimMap = postings.computeIfAbsent(dim, d -> new ConcurrentSkipListMap<>());
-    final Float prev = dimMap.put(rid, weight);
+    final DimPostings dimPostings = postings.computeIfAbsent(dim, d -> new DimPostings());
+    final Float prev = dimPostings.map.put(rid, weight);
     accountChange(prev, weight);
     // Track the running per-dim max so {@link #dimMaxWeight(int)} can answer in O(1).
-    dimMaxWeight.merge(dim, weight, Math::max);
+    dimPostings.raiseMaxWeight(weight);
   }
 
   /**
@@ -90,10 +127,10 @@ public final class Memtable {
   public void remove(final int dim, final RID rid) {
     if (rid == null)
       throw new IllegalArgumentException("rid must not be null");
-    ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
-    if (dimMap == null)
-      dimMap = postings.computeIfAbsent(dim, d -> new ConcurrentSkipListMap<>());
-    final Float prev = dimMap.put(rid, Float.NaN);
+    DimPostings dimPostings = postings.get(dim);
+    if (dimPostings == null)
+      dimPostings = postings.computeIfAbsent(dim, d -> new DimPostings());
+    final Float prev = dimPostings.map.put(rid, Float.NaN);
     accountChange(prev, Float.NaN);
   }
 
@@ -138,8 +175,8 @@ public final class Memtable {
    * for a dim that was never written to (which is also the natural lower bound).
    */
   public float dimMaxWeight(final int dim) {
-    final Float f = dimMaxWeight.get(dim);
-    return f == null ? 0.0f : f;
+    final DimPostings dimPostings = postings.get(dim);
+    return dimPostings == null ? 0.0f : dimPostings.maxWeight();
   }
 
   /**
@@ -174,10 +211,10 @@ public final class Memtable {
    * creation and may or may not see updates that commit afterward.
    */
   public Iterator<MemtablePosting> iterateDim(final int dim) {
-    final ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
-    if (dimMap == null)
+    final DimPostings dimPostings = postings.get(dim);
+    if (dimPostings == null)
       return Collections.emptyIterator();
-    return new DimIterator(dimMap.entrySet().iterator());
+    return new DimIterator(dimPostings.map.entrySet().iterator());
   }
 
   /**
@@ -187,16 +224,15 @@ public final class Memtable {
    * large memtable. Returns an empty iterator if the dim is absent.
    */
   public Iterator<MemtablePosting> iterateDimFrom(final int dim, final RID from) {
-    final ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
-    if (dimMap == null)
+    final DimPostings dimPostings = postings.get(dim);
+    if (dimPostings == null)
       return Collections.emptyIterator();
-    return new DimIterator(dimMap.tailMap(from, /* inclusive */ true).entrySet().iterator());
+    return new DimIterator(dimPostings.map.tailMap(from, /* inclusive */ true).entrySet().iterator());
   }
 
   /** Reset to empty (call only after the contents have been flushed). */
   public void clear() {
     postings.clear();
-    dimMaxWeight.clear();
     totalPostings.set(0L);
     tombstoneCount.set(0L);
   }

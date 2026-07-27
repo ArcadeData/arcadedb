@@ -44,7 +44,9 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
@@ -384,6 +386,36 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (payload == null)
       return;
 
+    // The state machine origin-skips this node's own entry because phase 2 below writes the pages -
+    // but phase 2 runs only after Raft has committed, so in between lastAppliedIndex covers an entry
+    // whose pages are not on disk yet. Hold a phase-2 ticket across that window so a snapshot
+    // checkpoint cannot cover the entry: the checkpoint is the only position a restart trusts, and
+    // one taken here would make the write unreplayable and lost on this node forever (issue #5407).
+    // Only the leader runs phase 2 (see the !leader early return below), so only it needs the ticket.
+    final ArcadeStateMachine stateMachine = leader ? stateMachineOrNull() : null;
+    final long phase2Ticket = stateMachine != null ? stateMachine.beginLocalPhase2() : -1L;
+    replicateAndCommitLocally(payload, leader, stateMachine, phase2Ticket);
+  }
+
+  /**
+   * Replicates the captured payload through Raft and, on the leader, applies phase 2 locally.
+   * <p>
+   * <b>Phase-2 ticket lifecycle (issue #5407):</b> the ticket is released ONLY where the local pages
+   * are known to be settled - phase 2 wrote them, a failed phase 2 reconciled them, or the entry
+   * provably never committed. Every other exit keeps it held, deliberately: if replication succeeded
+   * but phase 2 did not run, this node holds a committed entry it never applied, and a snapshot
+   * checkpoint taken afterwards (Ratis takes one on shutdown) would bury the entry below the replay
+   * position and lose the write for good. Holding the ticket costs a stalled log-compaction
+   * checkpoint until the node restarts, at which point replay applies the entry and the hold is gone
+   * with the process.
+   * <p>
+   * Package-private for direct unit testing: which exit releases the ticket is the load-bearing part
+   * of the fix, and driving every branch through {@link #commit()} would need the whole phase-1
+   * capture stubbed out.
+   */
+  // @VisibleForTesting
+  void replicateAndCommitLocally(final ReplicationPayload payload, final boolean leader,
+      final ArcadeStateMachine stateMachine, final long phase2Ticket) {
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     try {
       final RaftHAServer raft = requireRaftServer();
@@ -393,7 +425,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // but ALL-quorum watch failed. We MUST apply locally to prevent permanent divergence.
       HALog.log(this, HALog.BASIC,
           "ALL quorum watch failed after MAJORITY commit; applying locally to prevent leader divergence: db=%s", getName());
-      applyLocallyAfterMajorityCommit(payload);
+      if (applyLocallyAfterMajorityCommit(payload))
+        releasePhase2Ticket(stateMachine, phase2Ticket);
       throw e;
     } catch (final ReplicationDispatchedTimeoutException e) {
       // INDETERMINATE outcome (issue #4790): the entry was dispatched to Ratis but the quorum wait
@@ -406,9 +439,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       rollback();
       throw e;
     } catch (final ArcadeDBException e) {
+      // Replication failed outright: the entry never reached the log, so there is nothing this node
+      // could be missing and the replay window does not need protecting.
+      releasePhase2Ticket(stateMachine, phase2Ticket);
       rollback();
       throw e;
     } catch (final Exception e) {
+      releasePhase2Ticket(stateMachine, phase2Ticket);
       rollback();
       throw new TransactionException("Error on commit distributed transaction (replication)", e);
     }
@@ -420,6 +457,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // --- PHASE 2 (read lock on leader): quorum reached, apply locally ---
     if (!leader) {
+      releasePhase2Ticket(stateMachine, phase2Ticket);
       payload.tx().reset();
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       ctx.popIfNotLastTransaction();
@@ -443,6 +481,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         payload.tx().commit2ndPhase(payload.phase1());
 
+        // The pages are on disk: the entry is now genuinely durable here, so a snapshot checkpoint
+        // may cover it. Released before saveConfiguration so a failure there (which the catch below
+        // reconciles anyway) does not needlessly keep the checkpoint pinned.
+        releasePhase2Ticket(stateMachine, phase2Ticket);
+
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
@@ -452,6 +495,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
         // the same absolute bytes (idempotent), a lower-version one is skipped.
         final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
+        // Only a successful reconcile puts the replicated pages on disk. If it failed, the entry
+        // stays unapplied here and must remain replayable, so the ticket is deliberately kept.
+        if (reconciled)
+          releasePhase2Ticket(stateMachine, phase2Ticket);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
         // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
         // The generic rethrow here told applications the commit FAILED while the data was durably committed
@@ -474,9 +521,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * so we must write the local pages to prevent permanent divergence.
    * Package-private for direct unit testing (the real trigger needs an ALL-quorum cluster whose
    * watch fails after MAJORITY commit, which depends on Ratis watch timeouts).
+   *
+   * @return {@code true} if the local pages ended up written (by phase 2 or by reconciliation), so the
+   * caller may stop protecting this entry's Raft replay window (issue #5407)
    */
-  void applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
-    proxied.executeInReadLock(() -> {
+  boolean applyLocallyAfterMajorityCommit(final ReplicationPayload payload) {
+    return proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
         // #5064: MAJORITY already committed - same durability-boundary shift as the main phase-2 path.
@@ -488,19 +538,35 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         payload.tx().commit2ndPhase(payload.phase1());
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
+        return true;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
             """
             Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). \
             Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s""",
             getName(), payload.tx(), e.getMessage());
-        reconcileLeaderPagesAfterPhase2Failure(payload);
+        final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
+        return reconciled;
       } finally {
         current.popIfNotLastTransaction();
       }
-      return null;
     });
+  }
+
+  /**
+   * Stops protecting the Raft replay window for one commit (issue #5407). A no-op when no ticket was
+   * taken (replica commit, or the Raft server was not wired yet).
+   */
+  private static void releasePhase2Ticket(final ArcadeStateMachine stateMachine, final long phase2Ticket) {
+    if (stateMachine != null)
+      stateMachine.endLocalPhase2(phase2Ticket);
+  }
+
+  /** The local state machine, or {@code null} when the Raft server is not wired yet (e.g. during startup). */
+  private ArcadeStateMachine stateMachineOrNull() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getStateMachine() : null;
   }
 
   /**
@@ -515,10 +581,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * a retryable error), rather than masking the original replication failure.
    */
   private void markTransactionAbandonedForLocalApply(final ReplicationPayload payload) {
-    final RaftHAServer raft = raftHAServer;
-    if (raft == null)
-      return;
-    final ArcadeStateMachine stateMachine = raft.getStateMachine();
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
     if (stateMachine == null)
       return;
     try {
@@ -1437,6 +1500,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     compactionSealedBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
     try {
+      // #5443: remember how long every paginated file is BEFORE the compaction, so the pages it appends
+      // to already-existing files can be shipped afterwards (see the loop below).
+      final Map<Integer, Integer> pageCountsBefore = snapshotPageCounts();
+
       final boolean result = invokeCompaction(compaction);
       if (!result)
         return false;
@@ -1461,13 +1528,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // Synthetic WAL for genuinely new paginated files (e.g. LSM index compaction output).
       // txId=-1 on followers signals forceApply to bypass version-gap checks. The TimeSeries sealed
       // store is not a paginated file, so it contributes none here - it ships as a blob instead.
-      for (final int fileId : addFiles.keySet()) {
-        final byte[] wal = serializeFilePagesAsWal(fileId);
-        if (wal != null) {
-          walEntries.add(wal);
-          bucketDeltas.add(Collections.<Integer, Integer>emptyMap());
-        }
-      }
+      // #4743: chunked against the maximum replicated entry size so a big compacted index does not
+      // produce one oversized Raft entry (which would make the leader step down, over and over).
+      final RaftTransactionBroker broker = requireRaftServer().getTransactionBroker();
+      final long walChunkBudget = Math.max(1024L, broker.maxEntrySize() / 2);
+      for (final int fileId : addFiles.keySet())
+        appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas, 0);
+
+      // #5443: a compaction does not only CREATE files - an incremental round APPENDS a new series to the
+      // already-existing compacted file. Those pages are written eagerly and deliberately without WAL, and
+      // the file is not in addFiles because it is not new, so nothing replicated them: the follower kept
+      // the shorter file and every key in the appended series became unfindable there, silently, while the
+      // records themselves replicated normally through their own transactions. Ship the appended range of
+      // every pre-existing paginated component that grew during this session.
+      for (final Map.Entry<Integer, Integer> grown : pagesGrownDuringSession(pageCountsBefore, addFiles).entrySet())
+        appendFilePagesAsWal(grown.getKey(), walChunkBudget, walEntries, bucketDeltas, grown.getValue());
 
       final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(compactionSealedBuffer.get());
 
@@ -1475,8 +1550,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         return result;
 
       final String serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
-      requireRaftServer().getTransactionBroker()
-          .replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas, sealedBlobs);
+      broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas, sealedBlobs);
 
       HALog.log(this, HALog.DETAILED,
           "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d, sealedBlobs=%d",
@@ -1592,48 +1666,182 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
   }
 
-  private byte[] serializeFilePagesAsWal(final int fileId) throws IOException {
+  /**
+   * Page count of every registered paginated component, keyed by file id. Taken before a compaction so
+   * {@link #pagesGrownDuringSession} can tell which pre-existing files it appended to (issue #5443).
+   */
+  private Map<Integer, Integer> snapshotPageCounts() {
+    final Map<Integer, Integer> counts = new HashMap<>();
+    for (final ComponentFile componentFile : proxied.getFileManager().getFiles()) {
+      if (componentFile == null)
+        continue;
+      final int fileId = componentFile.getFileId();
+      // getFileByIdIfExists(), not getFileById(): the latter THROWS on an id the schema does not know,
+      // and this walks every file the FileManager holds - a dropped file leaves a null slot in the
+      // schema's list, so one of those would abort the whole compaction replication instead of being
+      // skipped, which is what the type test below reads as if it were doing.
+      if (proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component)
+        counts.put(fileId, component.getTotalPages());
+    }
+    return counts;
+  }
+
+  /**
+   * File ids of pre-existing paginated components that gained pages during the compaction session, mapped
+   * to the page number the new pages start at. Files created by the session are excluded: they are shipped
+   * whole. A file that shrank (or is new) contributes nothing.
+   * <p>
+   * <b>Invariant this relies on:</b> a compaction only ever APPENDS to a pre-existing file, and touches no
+   * interior page other than the root page 0 that registers the appended series - which is why the caller
+   * ships page 0 alongside the appended range. A compaction path that rewrote an interior page in place
+   * would not be replicated by this, and the follower's index would go short again exactly as in #5443.
+   * Any change to the compaction write path has to preserve that, or teach this method to track the pages
+   * it dirtied instead of only how many it added.
+   */
+  private Map<Integer, Integer> pagesGrownDuringSession(final Map<Integer, Integer> before,
+      final Map<Integer, String> createdFiles) {
+    final Map<Integer, Integer> grown = new HashMap<>();
+    for (final Map.Entry<Integer, Integer> entry : snapshotPageCounts().entrySet()) {
+      final int fileId = entry.getKey();
+      if (createdFiles.containsKey(fileId))
+        continue;
+      final Integer pagesBefore = before.get(fileId);
+      if (pagesBefore != null && entry.getValue() > pagesBefore)
+        grown.put(fileId, pagesBefore);
+    }
+    return grown;
+  }
+
+  /**
+   * Serializes every page of a newly created paginated file (e.g. an LSM index compaction output) as
+   * synthetic WAL, split into as many self-contained WAL transactions as needed to keep each one
+   * within {@code maxChunkBytes}.
+   * <p>
+   * Issue #4743: this used to produce ONE WAL entry covering the whole file. Because the whole file
+   * then rode a single {@code SCHEMA_ENTRY}, the Raft entry size grew with the index: a 517k-key
+   * index produced a 21.5MB entry, and Ratis rejects a single log entry above
+   * {@code arcadedb.ha.appendBufferSize} (4MB by default) with a {@code StateMachineException} that
+   * makes the LEADER STEP DOWN - so a big-enough index made compaction topple every elected leader
+   * in turn and the cluster never recovered. It also allocated the entire file on the heap at once.
+   * <p>
+   * Each chunk covers a contiguous page range and carries {@code txId=-1}, which makes followers
+   * {@code forceApply} it without a version-gap check, so the chunks are order-independent among
+   * themselves and individually idempotent on replay.
+   *
+   * @param maxChunkBytes soft cap for one chunk; always at least one page per chunk, so a single
+   *                      page bigger than the cap still ships (and is caught by the group committer's
+   *                      hard pre-check with an actionable error)
+   *
+   * @return number of chunks appended to {@code walOut}
+   */
+  private int appendFilePagesAsWal(final int fileId, final long maxChunkBytes, final List<byte[]> walOut,
+      final List<Map<Integer, Integer>> bucketDeltasOut, final int fromPage) throws IOException {
     final PaginatedComponentFile file = (PaginatedComponentFile) proxied.getFileManager().getFile(fileId);
     final int pageSize = file.getPageSize();
-    final int totalPages = (int) file.getTotalPages();
 
-    if (totalPages == 0)
-      return null;
+    // #5443: the page COUNT and the page CONTENT must both come from the page manager, never from the
+    // file on disk. PaginatedComponentFile.getTotalPages() is channel.size()/pageSize, so it only sees
+    // what the asynchronous writer has already persisted: a compaction that has just published 13 pages
+    // can still measure 10 on disk. Serializing from the file then shipped a TRUNCATED index - the
+    // follower's compacted sub-index came out three pages short, and every key that lived in them became
+    // unfindable there while the records themselves replicated normally. The component knows the real
+    // count, and getImmutablePage() resolves each page through the cache and the pending-flush queue
+    // before falling back to disk, so both are correct regardless of flush timing.
+    // Only the component knows how many pages really exist: the file's own count is what is on disk, and
+    // trusting it is exactly what left followers with a short index. No caller can hand us anything else -
+    // the ids come from addFiles or from snapshotPageCounts(), which already filtered on PaginatedComponent -
+    // so a miss here is a bug in the caller, and it fails rather than quietly shipping a truncated range.
+    if (!(proxied.getSchema().getEmbedded().getFileByIdIfExists(fileId) instanceof PaginatedComponent component))
+      throw new IllegalStateException(
+          "Cannot replicate file id '" + fileId + "' of database '" + getName()
+              + "': it is not a registered paginated component, so its real page count is unknown");
 
-    final int deltaSize = pageSize - BasePage.PAGE_HEADER_SIZE;
-    // Per-page WAL record: fileId(4) + pageNum(4) + changesFrom(4) + changesTo(4) + version(4) + contentSize(4) + delta
-    final int perPageWalSize = 6 * Integer.BYTES + deltaSize;
-    final int segmentSize = totalPages * perPageWalSize;
-    // Full buffer: txId(8) + timestamp(8) + pageCount(4) + segmentSize(4) + pages + segmentSize(4) + MAGIC(8)
-    final int totalSize = 2 * Long.BYTES + 2 * Integer.BYTES + segmentSize + Integer.BYTES + Long.BYTES;
+    final int totalPages = component.getTotalPages();
 
-    final ByteBuffer walBuf = ByteBuffer.allocate(totalSize);
+    if (totalPages <= fromPage)
+      return 0;
+
+    final int perPageWalSize = walPerPageSize(pageSize);
+
+    // The root page carries the series registry: an appended series is invisible until page 0 says it
+    // exists, so a partial ship must always include it. Without this the follower stores the new pages
+    // and still reports the old entry count - which is exactly how issue #5443 stayed silent.
+    if (fromPage > 0)
+      appendPageRangeAsWal(fileId, pageSize, 0, 1, walOut, bucketDeltasOut);
+
+    final long budget = maxChunkBytes - WAL_CHUNK_FRAMING_SIZE;
+    final int pagesToShip = totalPages - fromPage;
+    final int pagesPerChunk = budget >= perPageWalSize ? (int) Math.min(pagesToShip, budget / perPageWalSize) : 1;
+
+    int chunks = 0;
+    for (int firstPage = fromPage; firstPage < totalPages; firstPage += pagesPerChunk) {
+      appendPageRangeAsWal(fileId, pageSize, firstPage, Math.min(pagesPerChunk, totalPages - firstPage),
+          walOut, bucketDeltasOut);
+      chunks++;
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Framing a WAL chunk carries: txId, timestamp, page count, segment size, then the trailing segment
+   * size and magic number. Both the chunking maths and the buffer that gets written have to agree on
+   * these three, so neither computes them for itself.
+   */
+  private static final int WAL_CHUNK_FRAMING_SIZE = 2 * Long.BYTES + 3 * Integer.BYTES + Long.BYTES;
+
+  /** Bytes of a page that travel in the WAL: everything after the page header. */
+  private static int walPageDeltaSize(final int pageSize) {
+    return pageSize - BasePage.PAGE_HEADER_SIZE;
+  }
+
+  /** Per-page WAL cost: the six ints of the page record, plus the delta itself. */
+  private static int walPerPageSize(final int pageSize) {
+    return 6 * Integer.BYTES + walPageDeltaSize(pageSize);
+  }
+
+  /**
+   * Serializes {@code pageCount} pages starting at {@code firstPage} as one synthetic WAL transaction.
+   * <p>
+   * Both the page count and the content come from the page manager, never from the file:
+   * {@code PaginatedComponentFile.getTotalPages()} is {@code channel.size()/pageSize}, so it only sees
+   * what the asynchronous writer has already persisted, and reading the file directly can serialize a
+   * page that has not been written yet.
+   */
+  private void appendPageRangeAsWal(final int fileId, final int pageSize, final int firstPage,
+      final int pageCount, final List<byte[]> walOut, final List<Map<Integer, Integer>> bucketDeltasOut)
+      throws IOException {
+    final int deltaSize = walPageDeltaSize(pageSize);
+    final int segmentSize = pageCount * walPerPageSize(pageSize);
+
+    final ByteBuffer walBuf = ByteBuffer.allocate(WAL_CHUNK_FRAMING_SIZE + segmentSize);
     walBuf.putLong(-1L); // txId=-1 → forceApply on followers
     walBuf.putLong(System.currentTimeMillis());
-    walBuf.putInt(totalPages);
+    walBuf.putInt(pageCount);
     walBuf.putInt(segmentSize);
 
-    final ByteBuffer pageBuf = ByteBuffer.allocate(pageSize);
-    for (int pageNum = 0; pageNum < totalPages; pageNum++) {
-      file.readPage(pageNum, pageBuf);
-
-      final int version = pageBuf.getInt(0);                 // PAGE_VERSION_OFFSET
-      final int rawContentSize = pageBuf.getInt(Integer.BYTES); // PAGE_CONTENTSIZE_OFFSET (stored as full size)
+    for (int pageNum = firstPage; pageNum < firstPage + pageCount; pageNum++) {
+      final BasePage page = proxied.getPageManager()
+          .getImmutablePage(new PageId(proxied, fileId, pageNum), pageSize, false, true);
 
       walBuf.putInt(fileId);
       walBuf.putInt(pageNum);
       walBuf.putInt(BasePage.PAGE_HEADER_SIZE);  // changesFrom = 8
       walBuf.putInt(pageSize - 1);               // changesTo
-      walBuf.putInt(version);
-      walBuf.putInt(rawContentSize - BasePage.PAGE_HEADER_SIZE); // contentSize in WAL = stored minus header
+      walBuf.putInt((int) page.getVersion());
+      walBuf.putInt(page.getContentSize());
 
-      walBuf.put(pageBuf.array(), BasePage.PAGE_HEADER_SIZE, deltaSize);
+      // Absolute bulk copy: it leaves both positions alone, so the shared page buffer is never
+      // disturbed, and it does not care whether either side is heap-backed.
+      walBuf.put(walBuf.position(), page.getContent(), BasePage.PAGE_HEADER_SIZE, deltaSize);
+      walBuf.position(walBuf.position() + deltaSize);
     }
 
     walBuf.putInt(segmentSize);
     walBuf.putLong(WALFile.MAGIC_NUMBER);
 
-    return walBuf.array();
+    walOut.add(walBuf.array());
+    bucketDeltasOut.add(Collections.emptyMap());
   }
 
   @Override

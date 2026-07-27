@@ -36,6 +36,7 @@ import org.testcontainers.utility.MountableFile;
 
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -57,19 +58,28 @@ class ImportDatabaseScenarioIT extends ContainersTestTemplate {
   @Timeout(value = 15, unit = TimeUnit.MINUTES)
   @DisplayName("Three-node Raft HA: import database replicates data to every peer via TX_ENTRY")
   void importDatabaseReplicatedAcrossCluster() throws Exception {
-    final GenericContainer<?> leaderContainer = createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network);
-    leaderContainer.withCopyToContainer(
-        MountableFile.forClasspathResource("raft-import-fixture.jsonl.tgz"),
-        "/home/arcadedb/import-fixture.jsonl.tgz");
-    createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network);
-    createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
+    // Stage the fixture on every node. The 'import database' command runs on whichever node currently
+    // holds Raft leadership, and the importer reads the file from that node's local filesystem. Because
+    // leadership is non-deterministic, the fixture must exist on all peers.
+    final List<GenericContainer<?>> nodes = List.of(
+        createArcadeContainer("arcadedb-0", SERVER_LIST, "majority", network),
+        createArcadeContainer("arcadedb-1", SERVER_LIST, "majority", network),
+        createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network));
+    for (final GenericContainer<?> node : nodes)
+      node.withCopyToContainer(
+          MountableFile.forClasspathResource("raft-import-fixture.jsonl.tgz"),
+          "/home/arcadedb/import-fixture.jsonl.tgz");
 
-    logger.info("Starting cluster with fixture staged on leader");
+    logger.info("Starting cluster with fixture staged on every node");
     final List<ServerWrapper> servers = startCluster();
 
-    // Issue the import command on node 0
-    logger.info("Issuing import database on node 0");
-    final int importStatus = postServerCommand(servers.get(0),
+    // Issue the import on the current leader. 'import database' is a leader-only write (the importer's
+    // transactions replicate to peers as TX_ENTRY), so it must be issued on the node that holds
+    // leadership rather than relying on follower-to-leader HTTP forwarding.
+    final int leaderIdx = waitForRaftLeader(servers, 60);
+    assertThat(leaderIdx).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    logger.info("Issuing import database on the leader (node {})", leaderIdx);
+    final int importStatus = postServerCommand(servers.get(leaderIdx),
         "import database " + IMPORT_DB + " file:///home/arcadedb/import-fixture.jsonl.tgz",
         180_000);
     assertThat(importStatus).as("import database HTTP status").isEqualTo(200);
@@ -135,7 +145,17 @@ class ImportDatabaseScenarioIT extends ContainersTestTemplate {
     try {
       connection.getOutputStream().write(
           new JSONObject().put("command", command).toString().getBytes());
-      return connection.getResponseCode();
+      final int status = connection.getResponseCode();
+      if (status >= 400) {
+        try {
+          final var errStream = connection.getErrorStream();
+          if (errStream != null)
+            logger.error("Server command '{}' returned HTTP {}: {}", command, status,
+                new String(errStream.readAllBytes(), StandardCharsets.UTF_8));
+        } catch (final Exception ignored) {
+        }
+      }
+      return status;
     } finally {
       connection.disconnect();
     }

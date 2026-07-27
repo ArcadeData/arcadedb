@@ -57,8 +57,10 @@ import java.util.logging.Level;
  * the memtable first; once it crosses a flush threshold (or the database is closed), the
  * memtable is serialized as a new sealed segment. Background compaction merges small segments
  * into larger ones via N-way merge with newest-source-wins precedence. Top-K retrieval is
- * BlockMax-WAND DAAT (see {@link BmwScorer}); per-segment block-max metadata + skip lists
- * make selective queries skip whole posting-list regions without decompressing them.
+ * Block-Max MaxScore DAAT (see {@link BmwScorer}): terms whose combined maximum contribution
+ * cannot reach the top-K watermark leave the traversal entirely and are only point-probed, and
+ * per-segment block-max metadata + skip lists make selective queries skip whole posting-list
+ * regions without decompressing them.
  * <p>
  * The wrapper requires two parallel array properties on the indexed type:
  * <ul>
@@ -79,6 +81,13 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private       LSMSparseVectorIndexMetadata sparseMetadata;
   private       TypeIndex                    typeIndex;
   private final PaginatedSparseVectorEngine  engine;
+  /**
+   * Pre-built key for the post-commit memtable-flush callback. Built once per index instance
+   * because {@link #queueOrApply} registers the callback for every queued posting - hundreds per
+   * record on learned-sparse corpora - and rebuilding the string there showed up as pure garbage
+   * on bulk-load profiles (issue #5411).
+   */
+  private final String                       afterCommitFlushKey;
 
   /**
    * Factory handler used by the schema to instantiate sparse vector indexes.
@@ -123,6 +132,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     this.underlyingIndex = index;
     this.sparseMetadata = metadata;
     this.engine = openEngine(index, metadata);
+    this.afterCommitFlushKey = "sparse-flush:" + index.getName();
   }
 
   /**
@@ -140,6 +150,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     this.underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode,
         new Type[] { Type.INTEGER, Type.LINK, Type.FLOAT }, pageSize, nullStrategy);
     this.engine = openEngine(this.underlyingIndex, metadata);
+    this.afterCommitFlushKey = "sparse-flush:" + name;
   }
 
   @Override
@@ -480,7 +491,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
               : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
           new Object[] { new SparsePostingReplayKey(dim, rid, weight) }, rid);
-      tx.addAfterCommitCallbackIfAbsent("sparse-flush:" + getName(), engine::maybeFlush);
+      // Pre-built callback key: this runs once per POSTING (hundreds per record on learned-sparse
+      // corpora), so building the string here would concatenate millions of times per bulk load.
+      tx.addAfterCommitCallbackIfAbsent(afterCommitFlushKey, engine::maybeFlush);
       return;
     }
     if (add)
@@ -641,6 +654,25 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public boolean isUnique() {
+    return false;
+  }
+
+  /**
+   * Sparse postings ride the transaction's append-only lane (issue #5411). Both preconditions
+   * hold: the index is never unique (see {@link LSMSparseVectorIndexFactoryHandler}), and it has
+   * no in-transaction read path - {@link #get(Object[])} rejects direct lookups outright, and
+   * top-K retrieval reads the engine's memtable + segments, never the transaction overlay.
+   * <p>
+   * The win is structural rather than constant-factor: one record contributes one entry per
+   * non-zero dimension, so the ordered lane's {@code O(log n)} key comparison plus per-key
+   * {@code HashMap} were paid hundreds of times per record. On a 100k x 130-nnz load that put
+   * ~87% of build wall-clock inside {@code TransactionIndexContext} against ~14% in the memtable
+   * doing the actual work. Insertion-order replay also expresses the intended semantics directly
+   * ("the last operation on a posting wins") instead of relying on dedup-map overwrite plus the
+   * ordered lane's two-phase REMOVE-then-ADD split.
+   */
+  @Override
+  public boolean isTransactionKeyOrderRequired() {
     return false;
   }
 

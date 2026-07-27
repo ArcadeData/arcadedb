@@ -80,7 +80,16 @@ public final class RaftLogEntryCodec {
       long bootstrapLastTxId,
       // TimeSeries sealed-store blobs embedded in a SCHEMA_ENTRY (issue #4382). Empty for all other
       // entry types and for SCHEMA_ENTRYs produced by nodes that predate this section.
-      List<TsSealedBlob> sealedFileBlobs
+      List<TsSealedBlob> sealedFileBlobs,
+      /**
+       * True on every chunk of a SCHEMA_ENTRY that was split across several Raft entries except the last
+       * (issue #5443). Such a chunk only DELIVERS pages - the change is published by the final chunk - so
+       * the applier must not reload the schema for it. This is carried explicitly rather than inferred:
+       * a chunk that creates files but carries no schema JSON is indistinguishable from a legitimate
+       * standalone DDL that adds files without changing the schema version, and skipping the reload for
+       * THAT would leave the new files unregistered.
+       */
+      boolean moreChunksFollow
   ) {
   }
 
@@ -162,6 +171,29 @@ public final class RaftLogEntryCodec {
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<TsSealedBlob> sealedFileBlobs) {
+    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        sealedFileBlobs, false);
+  }
+
+  /**
+   * @param moreChunksFollow marks a non-final chunk of a schema change split across several entries
+   *                         (issue #5443). Written as a trailing self-describing byte, so a node running
+   *                         an older codec simply stops after the sealed-blob section and decodes it as
+   *                         false - the pre-split behaviour.
+   *                         <p>
+   *                         <b>During a rolling upgrade</b> that means a node still running the older
+   *                         codec keeps the pre-fix behaviour for split entries: it reloads its schema on
+   *                         a delivery-only chunk and can detach a compacted sub-index for good, ending
+   *                         up with a short index. The wire format stays compatible in both directions,
+   *                         but the FIX only takes effect on a node once it is upgraded, and the symptom
+   *                         is silent - fewer rows from that node, no error. Upgrade the followers, and
+   *                         where a node was live through a compaction under the old codec, REBUILD INDEX
+   *                         on it (or let a snapshot install replace its files) to repair what it missed.
+   */
+  public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -212,6 +244,11 @@ public final class RaftLogEntryCodec {
         dos.writeInt(compressed.length);   // compressed length
         dos.write(compressed);
       }
+
+      // KEEP THIS LAST. The decoder detects it with available() > 0, so it can only be the final field:
+      // anything appended after it would make a false flag indistinguishable from an older entry that
+      // never wrote one. A future trailing section needs its own presence byte written BEFORE this.
+      dos.writeBoolean(moreChunksFollow);
 
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
@@ -346,7 +383,7 @@ public final class RaftLogEntryCodec {
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
         return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L,
-            Collections.emptyList());
+            Collections.emptyList(), false);
       final String databaseName = dis.readUTF();
 
       final DecodedEntry result = switch (type) {
@@ -354,7 +391,7 @@ public final class RaftLogEntryCodec {
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
         case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
-            null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList());
+            null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false);
         case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
       };
@@ -392,7 +429,7 @@ public final class RaftLogEntryCodec {
     }
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
-        null, null, null, null, null, null, false, null, -1L, Collections.emptyList());
+        null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false);
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -471,8 +508,13 @@ public final class RaftLogEntryCodec {
       }
     }
 
+    // Trailing continuation flag (issue #5443), same presence rule as the sections above: absent on
+    // entries produced by an older codec, which decode as false.
+    final boolean moreChunksFollow = dis.available() > 0 && dis.readBoolean();
+
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
-        schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs);
+        schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs,
+        moreChunksFollow);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -483,7 +525,7 @@ public final class RaftLogEntryCodec {
       forceSnapshot = dis.readBoolean();
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList());
+        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList(), false);
   }
 
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
@@ -495,7 +537,7 @@ public final class RaftLogEntryCodec {
     final String fingerprint = new String(fpBytes, StandardCharsets.UTF_8);
     final long lastTxId = dis.readLong();
     return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList());
+        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList(), false);
   }
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
@@ -505,7 +547,7 @@ public final class RaftLogEntryCodec {
     dis.readFully(bytes);
     final String usersJson = new String(bytes, StandardCharsets.UTF_8);
     return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
-        null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList());
+        null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList(), false);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

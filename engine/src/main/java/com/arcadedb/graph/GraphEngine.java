@@ -292,7 +292,22 @@ public class GraphEngine {
     // No eager modify() - see connectOutgoingEdge. On a super-node target the eager MutableVertex would
     // serialise every concurrent append on the target vertex file's commit lock, which measured as THE
     // bottleneck (all writers queueing one replication round each) regardless of the edge-list layout.
-    getOrCreateEdgeList((VertexInternal) toVertex.asVertex(), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+    getOrCreateEdgeList(asVertexInternal(toVertex), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+  }
+
+  /**
+   * Resolves an {@link Identifiable} edge endpoint to a {@link VertexInternal}, unwrapping any {@link Vertex} that is
+   * not itself a {@code VertexInternal}. Notably {@link SynchronizedVertex} - the wrapper used to share a cached
+   * vertex across threads - is a {@code Vertex} whose {@code asVertex()} returns the wrapper itself, so a direct
+   * {@code (VertexInternal) toVertex.asVertex()} threw {@link ClassCastException} when a cached vertex was passed as an
+   * edge target (e.g. {@code from.newEdge(type, cachedVertex)}). {@link Identifiable#getRecord()} delegates to the real
+   * underlying record, giving back the {@code VertexInternal} the edge-list machinery needs.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static VertexInternal asVertexInternal(final Identifiable identifiable) {
+    final Vertex vertex = identifiable.asVertex();
+    return vertex instanceof VertexInternal vertexInternal ? vertexInternal : (VertexInternal) vertex.getRecord();
   }
 
   /**
@@ -552,6 +567,16 @@ public class GraphEngine {
   }
 
   public void deleteVertex(final VertexInternal vertex) {
+    deleteVertex(vertex, false);
+  }
+
+  /**
+   * Deletes a vertex, optionally forcing removal of its record even when the underlying multi-page chunk chain is
+   * structurally broken. With {@code force=true} the final record removal uses {@link Bucket#deleteRecord(RID, boolean)}
+   * so a vertex whose body cannot be assembled can still be deleted; edge disconnection is already best-effort (its
+   * chunk-walk failures are caught and logged), so it needs no change. See LocalBucket's force delete path.
+   */
+  public void deleteVertex(final VertexInternal vertex, final boolean force) {
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
     final List<Identifiable> edgesToDelete = new ArrayList<>();
 
@@ -642,7 +667,8 @@ public class GraphEngine {
     }
 
     // DELETE VERTEX RECORD
-    vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId()).deleteRecord(vertex.getIdentity());
+    vertex.getDatabase().getSchema().getBucketById(vertex.getIdentity().getBucketId())
+        .deleteRecord(vertex.getIdentity(), force);
   }
 
   public IterableGraph<Edge> getEdges(final VertexInternal vertex) {

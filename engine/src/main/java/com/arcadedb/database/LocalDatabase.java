@@ -39,6 +39,7 @@ import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -302,17 +303,28 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void drop() {
+    closeForDrop();
+
+    executeInWriteLock(() -> {
+      FileUtils.deleteRecursively(new File(databasePath));
+      return null;
+    });
+  }
+
+  /**
+   * Closes the database with the same semantics {@link #drop()} uses - no index flush and no file sync, since
+   * the content is about to be discarded - but leaves the files at {@link #getDatabasePath()} in place, so the
+   * caller owns their removal. Callers that must not pay for the recursive delete on their own thread use this
+   * to rename the directory aside and delete it elsewhere.
+   */
+  @Override
+  public void closeForDrop() {
     checkDatabaseIsOpen(true, "Cannot drop database");
 
     if (isTransactionActive())
       throw new DatabaseOperationException("Cannot drop the database in transaction");
 
     closeInternal(true);
-
-    executeInWriteLock(() -> {
-      FileUtils.deleteRecursively(new File(databasePath));
-      return null;
-    });
   }
 
   @Override
@@ -336,6 +348,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (getTransaction().isActive())
       // ROLLBACK ANY PENDING OPERATION
       getTransaction().kill();
+
+    // #5418: a real crash takes the index background threads down with the process, so the simulation must too -
+    // otherwise a vector index inactivity timer survives the "crash" and later fires against a dead database.
+    for (final Index idx : schema.getIndexes()) {
+      try {
+        ((IndexInternal) idx).releaseBackgroundResources();
+      } catch (final Exception e) {
+        // IGNORE IT: THIS IS A CRASH SIMULATION
+      }
+    }
 
     try {
       schema.close();
@@ -1200,6 +1222,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     try {
       final LocalBucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
+      // Set only when the index-cleanup read confirmed a structurally broken multi-page chain (below): the physical
+      // removal must then also use the force path, otherwise deleteRecordInternal would re-hit the broken link and throw
+      // the #4932 retry signal, leaving the record undeletable. Scoped to the exact record the caller asked to delete.
+      boolean forceBrokenChainDelete = false;
+
       if (record instanceof Document document) {
         try {
           indexer.deleteDocument(document);
@@ -1218,15 +1245,46 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           LogManager.instance().log(this, Level.WARNING,
               "Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; "
                   + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());
+        } catch (final ConcurrentModificationException e) {
+          // The record body could not be assembled for a consistent read, so its indexed keys and EXTERNAL pointers could
+          // not be read for cleanup. loadMultiPageRecord throws this after exhausting TX_RETRIES, but exhausted retries do
+          // NOT prove corruption: its page-version validation also fails when concurrent writes touch OTHER records
+          // sharing the chain's pages, so under a busy bucket this can be pure contention. Deleting anyway in that case
+          // would leak index entries for a healthy record. Disambiguate with a version-blind STRUCTURAL walk of the chunk
+          // chain: only a genuinely broken chain (a bad continuation pointer - the case that would otherwise make the
+          // record undeletable forever) takes the tolerant path below; transient contention rethrows, preserving the
+          // NeedRetryException semantics so the retry machinery re-runs the DELETE with intact index cleanup.
+          if (!bucket.isChunkChainBroken(record.getIdentity()))
+            throw e;
+          forceBrokenChainDelete = true;
+          logBrokenChainForceDelete(record.getIdentity(), e);
         }
       }
 
       if (record instanceof Edge edge) {
         graphEngine.deleteEdge(edge);
       } else if (record instanceof Vertex) {
-        graphEngine.deleteVertex((VertexInternal) record);
-      } else
-        bucket.deleteRecord(record.getIdentity());
+        try {
+          graphEngine.deleteVertex((VertexInternal) record, forceBrokenChainDelete);
+        } catch (final ConcurrentModificationException e) {
+          // The physical removal can raise the #4932 retry signal even when index cleanup did not (e.g. the type has no
+          // index left to read, so the broken chain is only discovered here). Fall back to force ONLY when the chain is
+          // confirmed structurally broken; a genuine transient conflict (or an already-forced delete) rethrows to retry.
+          if (forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
+            throw e;
+          logBrokenChainForceDelete(record.getIdentity(), e);
+          graphEngine.deleteVertex((VertexInternal) record, true);
+        }
+      } else {
+        try {
+          bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
+        } catch (final ConcurrentModificationException e) {
+          if (forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
+            throw e;
+          logBrokenChainForceDelete(record.getIdentity(), e);
+          bucket.deleteRecord(record.getIdentity(), true);
+        }
+      }
 
       success = true;
       stats.deleteRecord.incrementAndGet();
@@ -1247,6 +1305,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           wrappedDatabaseInstance.rollback();
       }
     }
+  }
+
+  private void logBrokenChainForceDelete(final RID rid, final ConcurrentModificationException e) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Cannot read record %s for index/external cleanup on delete (broken multi-page chunk chain): %s. Deleting the "
+            + "record anyway; run a database check to repair any dangling index entries.", rid, e.getMessage());
   }
 
   /**
@@ -2104,15 +2168,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
 
-    if (!drop) {
-      // FLUSH ALL INDEXES WHILE THE DATABASE IS STILL OPEN
-      for (Index idx : schema.getIndexes()) {
+    for (final Index idx : schema.getIndexes()) {
+      final IndexInternal index = (IndexInternal) idx;
+
+      if (!drop) {
+        // FLUSH ALL INDEXES WHILE THE DATABASE IS STILL OPEN
         try {
-          ((IndexInternal) idx).flush();
-        } catch (Exception e) {
+          index.flush();
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on flushing index %s: %s", e, idx.getName(),
               e.getMessage());
         }
+      }
+
+      // #5418: then stop whatever this index keeps running in the BACKGROUND. Nothing did before, so the vector
+      // index inactivity rebuild timer outlived Database.close() and fired minutes later against a closed - or
+      // by then already deleted - database: DatabaseIsClosedException, page-parse errors on dropped files, and
+      // a race with JVM shutdown. Deliberately AFTER the flush above (an index whose graceful shutdown is a
+      // graph build needs its build pool alive for it) and deliberately NOT index.close(), which also closes
+      // the index files: those must stay open until the page flush in the write-lock section below has run,
+      // and it is fileManager.close() that closes them, once, at the right point.
+      try {
+        index.releaseBackgroundResources();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on releasing the background resources of index %s: %s", e,
+            idx.getName(), e.getMessage());
       }
     }
 

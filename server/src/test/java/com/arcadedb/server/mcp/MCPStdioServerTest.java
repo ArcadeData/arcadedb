@@ -75,10 +75,16 @@ class MCPStdioServerTest extends BaseGraphServerTest {
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
     boolean hasSampleRecords = false;
-    for (int i = 0; i < tools.length(); i++)
-      if ("sample_records".equals(tools.getJSONObject(i).getString("name")))
+    boolean hasVectorSearch = false;
+    for (int i = 0; i < tools.length(); i++) {
+      final String name = tools.getJSONObject(i).getString("name");
+      if ("sample_records".equals(name))
         hasSampleRecords = true;
+      else if ("vector_search".equals(name))
+        hasVectorSearch = true;
+    }
     assertThat(hasSampleRecords).isTrue();
+    assertThat(hasVectorSearch).isTrue();
   }
 
   @Test

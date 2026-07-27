@@ -38,9 +38,12 @@ import io.undertow.util.StatusCodes;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -54,6 +57,13 @@ import java.util.zip.GZIPInputStream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
+
+  /**
+   * The samples of one measurement in a single request, paired with the type they resolved to so the
+   * schema lookup and the {@code instanceof} narrowing happen once per measurement, not per sample.
+   */
+  private record MeasurementBatch(LocalTimeSeriesType type, List<Sample> samples) {
+  }
 
   private String rawPayload;
 
@@ -133,50 +143,84 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
     if (samples.isEmpty())
       return new ExecutionResponse(204, "");
 
-    // Group by measurement and insert
-    int inserted = 0;
+    // Group by measurement, then append each group as ONE batch. Appending sample-by-sample would open a
+    // shard transaction per sample; on a Raft HA leader every one of those is a replicated quorum round
+    // trip, serialized behind the per-shard append lock, so ingest rate collapses to one sample per
+    // round trip. Grouping first keeps the cost proportional to the number of measurements, not samples.
+    // LinkedHashMap/LinkedHashSet preserve first-occurrence order, so the drop sets and their reported
+    // order stay identical to a straight pass over the samples.
     final Set<String> unknownTypes = new LinkedHashSet<>();
     final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
+    final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
+
+    for (final Sample sample : samples) {
+      final String measurement = sample.getMeasurement();
+
+      if (unknownTypes.contains(measurement) || nonTimeSeriesTypes.contains(measurement))
+        continue;
+
+      final MeasurementBatch batch = byMeasurement.get(measurement);
+      if (batch != null) {
+        batch.samples().add(sample);
+        continue;
+      }
+
+      if (!database.getSchema().existsType(measurement)) {
+        unknownTypes.add(measurement);
+        continue;
+      }
+
+      final DocumentType docType = database.getSchema().getType(measurement);
+      if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+        nonTimeSeriesTypes.add(measurement);
+        continue;
+      }
+
+      final MeasurementBatch created = new MeasurementBatch(tsType, new ArrayList<>());
+      created.samples().add(sample);
+      byMeasurement.put(measurement, created);
+    }
+
+    int inserted = 0;
+    // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
+    // begin/commit on getWrappedDatabaseInstance(), so every appendBatch below has already committed its
+    // shard writes by the time it returns. If a later measurement throws, the rollback here cannot undo
+    // the measurements already written - the same partial-write shape the 400 response below reports,
+    // now at measurement rather than sample granularity.
     database.begin();
     try {
-      for (final Sample sample : samples) {
-        final String measurement = sample.getMeasurement();
+      for (final MeasurementBatch batch : byMeasurement.values()) {
+        final TimeSeriesEngine engine = batch.type().getEngine();
+        final List<ColumnDefinition> columns = batch.type().getTsColumns();
+        final List<Sample> group = batch.samples();
+        final int count = group.size();
 
-        if (!database.getSchema().existsType(measurement)) {
-          unknownTypes.add(measurement);
-          continue;
+        final long[] timestamps = new long[count];
+        final Object[][] columnValues = new Object[columns.size() - 1][count]; // exclude timestamp
+
+        for (int s = 0; s < count; s++) {
+          final Sample sample = group.get(s);
+          timestamps[s] = sample.getTimestampMs();
+
+          int colIdx = 0;
+          for (int i = 0; i < columns.size(); i++) {
+            final ColumnDefinition col = columns.get(i);
+            if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+              continue;
+
+            Object value;
+            if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+              value = sample.getTags().get(col.getName());
+            else
+              value = sample.getFields().get(col.getName());
+
+            columnValues[colIdx][s] = value;
+            colIdx++;
+          }
         }
 
-        final DocumentType docType = database.getSchema().getType(measurement);
-        if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
-          nonTimeSeriesTypes.add(measurement);
-          continue;
-        }
-
-        final TimeSeriesEngine engine = tsType.getEngine();
-        final List<ColumnDefinition> columns = tsType.getTsColumns();
-
-        final long[] timestamps = new long[] { sample.getTimestampMs() };
-        final Object[][] columnValues = new Object[columns.size() - 1][1]; // exclude timestamp
-
-        int colIdx = 0;
-        for (int i = 0; i < columns.size(); i++) {
-          final ColumnDefinition col = columns.get(i);
-          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-            continue;
-
-          Object value;
-          if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-            value = sample.getTags().get(col.getName());
-          else
-            value = sample.getFields().get(col.getName());
-
-          columnValues[colIdx][0] = value;
-          colIdx++;
-        }
-
-        engine.appendSamples(timestamps, columnValues);
-        inserted++;
+        engine.appendBatch(timestamps, columnValues);
+        inserted += count;
       }
       database.commit();
     } catch (final Exception e) {

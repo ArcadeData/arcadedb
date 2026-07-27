@@ -28,6 +28,7 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.schema.Type;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +37,8 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.PriorityQueue;
+import java.util.Set;
 
 /**
  * Mutable TimeSeries bucket backed by paginated storage.
@@ -221,6 +224,220 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
     }
     return results;
+  }
+
+  /**
+   * Scans the mutable bucket newest-first and returns at most {@code limit} rows, the newest ones in
+   * the requested range.
+   * <p>
+   * Data pages are visited from the last to the first and are pruned on their min/max timestamp
+   * header, so a top-N query never materialises the rows of a page that cannot contribute. Rows are
+   * not assumed to be globally ordered across pages (late arrivals are always appended to the last
+   * page), which is why a page whose maximum is older than the current cut-off is skipped rather
+   * than ending the walk.
+   *
+   * @param fromTs        start timestamp (inclusive)
+   * @param toTs          end timestamp (inclusive)
+   * @param columnIndices which columns to return (null = all)
+   * @param tagFilter     optional tag filter, evaluated straight off the page so non-matching rows
+   *                      cost no allocation
+   * @param limit         maximum number of rows to return, 0 or less means unlimited
+   * @param metrics       optional page and row counters, may be {@code null}
+   *
+   * @return list of sample rows ordered from the newest to the oldest
+   */
+  public List<Object[]> scanRangeDescending(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final int limit, final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+    final int dataPageCount = getDataPageCount();
+
+    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter, columnIndices);
+    if (tagFilter != null && matchers == null)
+      // A condition on a column the caller did not ask for: nothing can match.
+      return new ArrayList<>();
+
+    // Bounded queries keep the current best rows in a min-heap on the timestamp, so the cut-off is
+    // always exact and a row is materialised only when it really enters the result. Unlimited
+    // queries have no cut-off to maintain and just collect.
+    final PriorityQueue<Object[]> heap = need == Integer.MAX_VALUE ?
+        null :
+        new PriorityQueue<>(Math.min(need, 1024), (a, b) -> Long.compare((long) a[0], (long) b[0]));
+    final List<Object[]> collected = heap == null ? new ArrayList<>() : null;
+
+    // Timestamp of the oldest row retained so far: with `need` rows already held, nothing older can
+    // enter the result.
+    long cutoffTs = Long.MIN_VALUE;
+    int held = 0;
+
+    for (int pageNum = dataPageCount; pageNum >= 1; pageNum--) {
+      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
+
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      if (sampleCount == 0)
+        continue;
+
+      final long pageMinTs = page.readLong(DATA_MIN_TS_OFFSET);
+      final long pageMaxTs = page.readLong(DATA_MAX_TS_OFFSET);
+
+      // Skip pages outside range
+      if (pageMaxTs < fromTs || pageMinTs > toTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      // Skip pages that cannot beat the rows already collected
+      if (held >= need && pageMaxTs <= cutoffTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      if (metrics != null)
+        metrics.addScannedPage();
+
+      // Rows are appended in arrival order, so walking a page backwards yields the newest rows first
+      // and the cut-off starts rejecting the rest of the page almost immediately.
+      for (int row = sampleCount - 1; row >= 0; row--) {
+        final int rowOffset = DATA_ROWS_OFFSET + row * rowSize;
+        final long ts = page.readLong(rowOffset);
+
+        if (ts < fromTs || ts > toTs)
+          continue;
+        if (held >= need && ts <= cutoffTs)
+          continue;
+        if (matchers != null && !matchesTagFilter(page, rowOffset, matchers))
+          continue;
+
+        final Object[] materialized = readRow(page, rowOffset, columnIndices);
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+
+        if (heap == null) {
+          collected.add(materialized);
+          held++;
+          continue;
+        }
+
+        heap.add(materialized);
+        if (heap.size() > need)
+          heap.poll();
+        held = heap.size();
+        if (held >= need)
+          cutoffTs = (long) heap.peek()[0];
+      }
+    }
+
+    final List<Object[]> results = heap == null ? collected : new ArrayList<>(heap);
+    TimeSeriesSealedStore.trimToDescendingLimit(results, need);
+    return results;
+  }
+
+  /**
+   * A tag condition prepared for repeated evaluation against raw page bytes.
+   * <p>
+   * String tags are by far the common case and used to cost a {@code byte[]} plus a {@code String}
+   * per row examined. Pre-encoding the candidate values lets the comparison run straight on the page.
+   */
+  private static final class TagMatcher {
+    private final int      columnIndex;
+    private final Set<?>   values;
+    private final byte[][] utf8Values;
+
+    private TagMatcher(final int columnIndex, final Set<?> values, final byte[][] utf8Values) {
+      this.columnIndex = columnIndex;
+      this.values = values;
+      this.utf8Values = utf8Values;
+    }
+  }
+
+  /**
+   * Prepares the filter for the scan, or returns {@code null} when it can never match.
+   * <p>
+   * Mirrors {@link TagFilter#matchesMapped(Object[], int[])}: a condition on a column that the
+   * caller did not request cannot be satisfied, because the row handed back would not carry it.
+   */
+  private TagMatcher[] buildTagMatchers(final TagFilter tagFilter, final int[] columnIndices) {
+    final List<TagFilter.Condition> conditions = tagFilter.getConditions();
+    final TagMatcher[] matchers = new TagMatcher[conditions.size()];
+
+    for (int i = 0; i < conditions.size(); i++) {
+      final TagFilter.Condition cond = conditions.get(i);
+      if (columnIndices != null && !isInArray(cond.columnIndex(), columnIndices))
+        return null;
+
+      boolean allStrings = !cond.values().isEmpty();
+      for (final Object value : cond.values())
+        if (!(value instanceof String)) {
+          allStrings = false;
+          break;
+        }
+
+      byte[][] utf8Values = null;
+      if (allStrings) {
+        utf8Values = new byte[cond.values().size()][];
+        int v = 0;
+        for (final Object value : cond.values())
+          utf8Values[v++] = ((String) value).getBytes(StandardCharsets.UTF_8);
+      }
+
+      matchers[i] = new TagMatcher(cond.columnIndex(), cond.values(), utf8Values);
+    }
+    return matchers;
+  }
+
+  /**
+   * Evaluates the prepared conditions directly against the page, without materialising the row.
+   */
+  private boolean matchesTagFilter(final BasePage page, final int rowOffset, final TagMatcher[] matchers) {
+    for (final TagMatcher matcher : matchers) {
+      int colOffset = rowOffset + 8;
+      int colIdx = 0;
+      ColumnDefinition target = null;
+      for (int c = 0; c < columns.size(); c++) {
+        final ColumnDefinition col = columns.get(c);
+        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+        if (colIdx == matcher.columnIndex) {
+          target = col;
+          break;
+        }
+        colOffset += getColumnStorageSize(page, colOffset, col);
+        colIdx++;
+      }
+
+      if (target == null)
+        return false;
+
+      // The byte comparison only applies to a STRING column: on any other type the leading bytes are
+      // not a length prefix and the value has to be decoded.
+      if (matcher.utf8Values != null && target.getDataType() == Type.STRING) {
+        if (!matchesUtf8(page, colOffset, matcher.utf8Values))
+          return false;
+      } else if (!matcher.values.contains(readColumnValue(page, colOffset, target)))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Compares the STRING stored at {@code offset} against the pre-encoded candidates, allocation-free.
+   */
+  private static boolean matchesUtf8(final BasePage page, final int offset, final byte[][] candidates) {
+    final int len = page.readShort(offset) & 0xFFFF;
+    for (final byte[] candidate : candidates) {
+      if (candidate.length != len)
+        continue;
+      boolean equal = true;
+      for (int i = 0; i < len; i++)
+        if ((byte) page.readByte(offset + 2 + i) != candidate[i]) {
+          equal = false;
+          break;
+        }
+      if (equal)
+        return true;
+    }
+    return false;
   }
 
   /**
