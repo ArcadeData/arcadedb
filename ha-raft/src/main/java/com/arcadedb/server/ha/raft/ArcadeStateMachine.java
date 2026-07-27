@@ -249,13 +249,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Locally-originated transactions whose leader-side phase 2 was abandoned because replication
   // returned an INDETERMINATE result (the entry was dispatched to Ratis but submitAndWait timed out
   // before quorum was confirmed - see ReplicationDispatchedTimeoutException). Keyed by
-  // "<databaseName>/<walTxId>" -> insertion time. If such an entry later reaches quorum and is
-  // applied here, applyTxEntry MUST apply it locally instead of origin-skipping it, otherwise the
-  // write lands on every follower but never on this leader: a silent, permanent divergence (issue
-  // #4790). Marking is always safe: it only changes behaviour IF the entry actually commits on this
-  // node's state machine (applying is then correct because the followers have it); if the entry
-  // never commits, the mark is inert and is pruned by TTL. Bounded by time-based pruning on insert.
-  private final        Map<String, Long> abandonedLocalTransactions    = new ConcurrentHashMap<>();
+  // "<databaseName>/<walTxId>". If such an entry later reaches quorum and is applied here,
+  // applyTxEntry MUST apply it locally instead of origin-skipping it, otherwise the write lands on
+  // every follower but never on this leader: a silent, permanent divergence (issue #4790). Marking
+  // is always safe: it only changes behaviour IF the entry actually commits on this node's state
+  // machine (applying is then correct because the followers have it); if the entry never commits,
+  // the mark is inert and is pruned by TTL. Bounded by time-based pruning on insert.
+  private final        Map<String, AbandonedPhase2> abandonedLocalTransactions = new ConcurrentHashMap<>();
   // Entries older than this are pruned on the next mark. Generous because a dispatched-but-stuck
   // entry can take a long time to either commit or be overwritten by a new leader.
   private static final long              ABANDONED_TX_TTL_MS           = 10 * 60 * 1000L;
@@ -282,6 +282,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** One in-flight leader-side phase 2: the replay floor to protect, and when it started. */
   private record PendingPhase2(long replayFloor, long startedAtMs) {
   }
+
+  /**
+   * One abandoned locally-originated transaction: the phase-2 ticket its commit is still holding,
+   * and when the mark was inserted (for TTL pruning). Carrying the ticket is what lets
+   * {@link #applyTxEntry} release it once the entry finally applies here, instead of leaving the
+   * snapshot checkpoint - and therefore Raft log purging - pinned until the node restarts (#5410).
+   */
+  private record AbandonedPhase2(long phase2Ticket, long insertedAt) {
+  }
+
+  /**
+   * Sentinel for "this entry carries no phase-2 ticket to release". Real tickets come from an
+   * {@link AtomicLong#incrementAndGet()} and are therefore always positive.
+   */
+  static final long NO_PHASE2_TICKET = -1L;
+
+  /**
+   * Sentinel for "this transaction was never marked abandoned", i.e. the origin-skip case. Kept
+   * distinct from {@link #NO_PHASE2_TICKET} on purpose: a transaction CAN be abandoned while holding
+   * no ticket (the commit took none because this node was not the leader), and conflating the two
+   * would make {@link #applyTxEntry} origin-skip an abandoned entry and reintroduce the #4790 lost
+   * write.
+   */
+  static final long NO_ABANDONED_MARK = Long.MIN_VALUE;
 
 
   public void setServer(final ArcadeDBServer server) {
@@ -1220,17 +1244,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * returned an indeterminate result ({@link ReplicationDispatchedTimeoutException}). If the entry
    * later commits, {@link #applyTxEntry} applies it here instead of origin-skipping it (issue #4790).
    * Called from {@link RaftReplicatedDatabase#commit()} on the dispatched-timeout path.
+   * <p>
+   * {@code phase2Ticket} is the still-held ticket of the commit that abandoned this transaction, or
+   * {@link #NO_PHASE2_TICKET} when it took none. Recording it here is the correlation the ticket
+   * lacks at {@link #beginLocalPhase2()} time (the WAL txId does not exist yet), and it is what lets
+   * the eventual apply release the ticket instead of pinning the checkpoint until restart (#5410).
    */
-  void markLocalTransactionAbandoned(final String databaseName, final long walTxId) {
+  void markLocalTransactionAbandoned(final String databaseName, final long walTxId, final long phase2Ticket) {
     final long now = System.currentTimeMillis();
     // Prune stale marks (entries that were dispatched but never committed, e.g. the slot was
-    // overwritten by a new leader) so the map cannot grow unbounded.
+    // overwritten by a new leader) so the map cannot grow unbounded. A pruned mark deliberately does
+    // NOT release its ticket: pruning is not proof the entry never committed, and if it does commit
+    // later it will now be origin-skipped (unapplied here), so it must stay inside the replay window.
     if (!abandonedLocalTransactions.isEmpty())
-      abandonedLocalTransactions.values().removeIf(insertedAt -> now - insertedAt > ABANDONED_TX_TTL_MS);
-    abandonedLocalTransactions.put(abandonedKey(databaseName, walTxId), now);
+      abandonedLocalTransactions.values().removeIf(abandoned -> now - abandoned.insertedAt() > ABANDONED_TX_TTL_MS);
+    abandonedLocalTransactions.put(abandonedKey(databaseName, walTxId), new AbandonedPhase2(phase2Ticket, now));
     HALog.log(this, HALog.BASIC,
         "Marked locally-originated tx %d on database '%s' for local apply on commit (replication was indeterminate, #4790)",
         walTxId, databaseName);
+  }
+
+  /**
+   * Consumes the abandoned mark for a locally-originated transaction, returning the phase-2 ticket
+   * to release once its pages are written (possibly {@link #NO_PHASE2_TICKET} when its commit held
+   * none), or {@link #NO_ABANDONED_MARK} when the transaction was not abandoned at all - the
+   * origin-skip case, where phase 2 already wrote the pages and released its own ticket.
+   * <p>
+   * Consuming is one-shot so a later replay of the same entry correctly origin-skips again.
+   */
+  long consumeAbandonedLocalTransaction(final String databaseName, final long walTxId) {
+    final AbandonedPhase2 abandoned = abandonedLocalTransactions.remove(abandonedKey(databaseName, walTxId));
+    return abandoned != null ? abandoned.phase2Ticket() : NO_ABANDONED_MARK;
   }
 
   private static String abandonedKey(final String databaseName, final long walTxId) {
@@ -1260,12 +1304,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * is holding a committed entry it never applied.
    */
   void endLocalPhase2(final long ticket) {
+    if (ticket == NO_PHASE2_TICKET)
+      return;
     pendingLocalPhase2.remove(ticket);
   }
 
   /** Number of leader-side phase 2 applies still holding the snapshot checkpoint back. */
-  int pendingLocalPhase2Count() {
+  public int pendingLocalPhase2Count() {
     return pendingLocalPhase2.size();
+  }
+
+  /**
+   * How long (ms) the oldest in-flight phase 2 has been holding the snapshot checkpoint, or {@code 0}
+   * when none is in flight. Exposed for the {@code arcadedb.ha.phase2.*} gauges so a node whose log
+   * compaction is pinned is visible on a dashboard rather than only in the throttled WARNING (#5410).
+   */
+  public long oldestPendingLocalPhase2HeldMs() {
+    final long oldest = oldestPendingLocalPhase2StartMs();
+    return oldest == Long.MAX_VALUE ? 0L : Math.max(0L, System.currentTimeMillis() - oldest);
+  }
+
+  /**
+   * The Raft replay floor currently pinning the snapshot checkpoint, or {@code -1} when nothing is
+   * in flight. Companion gauge to {@link #oldestPendingLocalPhase2HeldMs()}: it names the index past
+   * which the Raft log cannot be purged.
+   */
+  public long lowestPendingLocalPhase2ReplayFloor() {
+    final long lowest = lowestPendingLocalPhase2Floor();
+    return lowest == Long.MAX_VALUE ? -1L : lowest;
   }
 
   /**
@@ -1344,11 +1410,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // was confirmed). For such an entry phase 2 never ran, so it must be applied HERE instead of
     // origin-skipped, otherwise this leader silently loses a write the followers already have. The
     // mark is consumed (removed) so a later replay of the same entry correctly skips again.
+    // The ticket that commit() is still holding for this entry, when it was abandoned. Released
+    // below once applyChanges has written the pages - never on the origin-skip branch above, where
+    // releasing would reintroduce #5407.
+    long abandonedPhase2Ticket = NO_PHASE2_TICKET;
     if (originatedLocally) {
-      if (abandonedLocalTransactions.remove(abandonedKey(decoded.databaseName(), walTx.txId)) == null) {
+      final long abandoned = consumeAbandonedLocalTransaction(decoded.databaseName(), walTx.txId);
+      if (abandoned == NO_ABANDONED_MARK) {
         HALog.log(this, HALog.TRACE, "Skipping tx apply on originator for database '%s'", decoded.databaseName());
         return;
       }
+      abandonedPhase2Ticket = abandoned;
       HALog.log(this, HALog.BASIC,
           "Applying locally-originated tx %d on database '%s' whose phase 2 was abandoned (replication indeterminate, #4790)",
           walTx.txId, decoded.databaseName());
@@ -1390,6 +1462,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new ReplicationException(
           "WAL version gap detected - snapshot resync required (db=" + decoded.databaseName() + ")", e);
     }
+
+    // The abandoned entry's pages are now on disk, so the commit that gave up on it in phase 2 no
+    // longer needs to hold the Raft replay window open: release its ticket and let log compaction
+    // resume (#5410). Reached only when applyChanges returned normally - a failed apply leaves the
+    // entry unapplied here and the ticket deliberately held. A no-op for every other entry.
+    // lastAppliedIndex still trails this entry at this point (applyTransaction advances it after we
+    // return), so a concurrent takeSnapshot cannot yet checkpoint over what we just applied.
+    endLocalPhase2(abandonedPhase2Ticket);
   }
 
   /**

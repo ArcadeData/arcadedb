@@ -435,7 +435,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // silently dropping the write on the leader. Mark the transaction so that, if the entry does
       // commit, applyTxEntry applies it locally instead of skipping. Then roll back the in-flight
       // (un-applied) local transaction and surface the retryable error to the client.
-      markTransactionAbandonedForLocalApply(payload);
+      // The ticket travels with the mark (#5410): this branch keeps holding it so a crash before the
+      // entry applies still replays it, and whoever finally applies the entry releases it from the
+      // mark - without that correlation the checkpoint stayed pinned until the node restarted.
+      markTransactionAbandonedForLocalApply(payload, phase2Ticket);
       rollback();
       throw e;
     } catch (final ArcadeDBException e) {
@@ -579,14 +582,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * so the state machine sees the identical value when the entry commits. Best-effort: if anything
    * goes wrong while extracting the txId we log and continue (the caller still rolls back and throws
    * a retryable error), rather than masking the original replication failure.
+   * <p>
+   * {@code phase2Ticket} rides along so the eventual apply can release it (issue #5410). When the
+   * txId cannot be extracted the ticket stays held, which is the safe direction: an entry we cannot
+   * correlate is one we cannot prove was applied.
    */
-  private void markTransactionAbandonedForLocalApply(final ReplicationPayload payload) {
+  private void markTransactionAbandonedForLocalApply(final ReplicationPayload payload, final long phase2Ticket) {
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
     if (stateMachine == null)
       return;
     try {
       final long walTxId = ArcadeStateMachine.deserializeWalTransaction(payload.walData()).txId;
-      stateMachine.markLocalTransactionAbandoned(getName(), walTxId);
+      stateMachine.markLocalTransactionAbandoned(getName(), walTxId, phase2Ticket);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not mark transaction for local apply after indeterminate replication (db=%s): %s",

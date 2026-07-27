@@ -1,0 +1,72 @@
+# #5410 - Release the phase-2 ticket when an abandoned entry applies
+
+Follow-up to #5407 / PR #5408. Operational bug, not data loss.
+
+## Problem
+
+PR #5408 made `RaftReplicatedDatabase.commit()` take a phase-2 ticket from `ArcadeStateMachine`
+before replication. The ticket records a Raft replay floor, and `takeSnapshot()` clamps its
+durability checkpoint to the lowest in-flight floor so a Raft-committed but locally-unapplied entry
+can never be buried below the replay position.
+
+Tickets are retained by default and released only where the local pages are provably settled.
+
+The `ReplicationDispatchedTimeoutException` branch (#4790, indeterminate replication outcome)
+deliberately retains its ticket - correct, because the entry may still reach quorum and the retained
+ticket is what keeps it replayable across a crash.
+
+But the *normal* resolution of a #4790 timeout is that the entry later reaches quorum and is applied
+by `ArcadeStateMachine.applyTxEntry` through the `abandonedLocalTransactions` consumption path. At
+that moment the pages become durable, yet nothing released the ticket. The checkpoint stayed pinned
+and Ratis stopped purging the Raft log past that index until the process restarted - on a healthy
+node, with no crash involved.
+
+Related to #5345 (unbounded Raft log growth until disk-full).
+
+### Why it was not fixed in #5408
+
+The release needs a ticket-to-`walTxId` correlation that did not exist: the ticket is created in
+`commit()` before replication (no WAL txId associated yet), while
+`markTransactionAbandonedForLocalApply` knows the `walTxId` but not the ticket.
+
+## Fix
+
+Carry the ticket alongside the abandoned marker so the two reconcile.
+
+1. `abandonedLocalTransactions` changes from `Map<String, Long>` (key -> insertion time) to
+   `Map<String, AbandonedPhase2>`, where `AbandonedPhase2(phase2Ticket, insertedAt)` records both.
+2. `markLocalTransactionAbandoned(databaseName, walTxId, phase2Ticket)` stores the ticket;
+   `RaftReplicatedDatabase` passes the ticket it already holds on the dispatched-timeout branch.
+3. `applyTxEntry` releases the recorded ticket **only** on the branch that actually applied the
+   transaction, and only **after** `applyChanges` returned without throwing - i.e. once the pages are
+   on disk. The origin-skip branch never releases: releasing there would reintroduce #5407.
+4. TTL pruning of markers is unchanged, and a pruned marker deliberately does **not** release its
+   ticket: pruning is not proof the entry never committed, and if it does commit later it will be
+   origin-skipped (unapplied), so the entry must stay replayable.
+
+Ordering note: `lastAppliedIndex` advances in `applyTransaction` *after* `applyTxEntry` returns, so
+at the moment of release a concurrent `takeSnapshot()` cannot yet report a checkpoint covering this
+entry.
+
+### Observability
+
+The issue also asked for the pinned-compaction condition to be visible on a dashboard rather than
+only in the throttled WARNING. Added, reusing the existing framework-agnostic provider seam so the
+`ha-raft` module still needs no Micrometer dependency:
+
+- `ArcadeStateMachine` exposes `pendingLocalPhase2Count()`, `oldestPendingLocalPhase2HeldMs()` and
+  `lowestPendingLocalPhase2ReplayFloor()`.
+- `HAReplicationStatsProvider.PendingPhase2Stats` carries them; `RaftHAServer` / `RaftHAPlugin`
+  implement it.
+- `HAReplicationMetrics` registers `arcadedb.ha.phase2.pending`,
+  `arcadedb.ha.phase2.oldest_held_ms` and `arcadedb.ha.phase2.lowest_replay_floor`.
+
+## Verification
+
+Written before the fix (TDD), failing on the pre-fix code:
+
+- `Issue5410AbandonedPhase2TicketTest` - unit tests over the correlation and the release/retain
+  branches, driving the real `replicateAndCommitLocally` dispatched-timeout path.
+- `Issue5410AbandonedTicketReleaseIT` - end-to-end on a 3-node Raft cluster, reusing the #4790
+  fault injection: after the abandoned entry converges, the leader's pending phase-2 count must
+  return to zero and `takeSnapshot()` must advance again.
