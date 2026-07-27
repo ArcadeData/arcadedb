@@ -36,8 +36,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The comprehension-level {@code WHERE} (placed after the pattern) and the inline property-map form
  * {@code [:E {tag: 'ok'}]} are covered elsewhere; both are exercised here only as controls.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class OpenCypherPatternComprehensionInlineWhereTest extends TestHelper {
   @Override

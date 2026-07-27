@@ -144,6 +144,20 @@ gemini-code-assist again posted nothing.
 | The comprehension parses the inline `WHERE` through `BooleanCoercionExpression` while `MATCH` uses `parseBooleanExpression(...)`; three-valued logic under `NOT` / `AND` / `OR` / `NULL` was therefore unverified | **Applied.** Five tests added covering `AND`, `OR`, a `NULL` comparison, `IS NULL`, and a `NOT (...)` case asserted equal to the answer the equivalent `MATCH` gives. All pass: the two routes agree, so the divergence is theoretical rather than real. The Fix section above no longer claims the two builders take the identical route. |
 | Trim the "Review cycles" section - it reads oddly as a committed repo doc | **Kept.** Checked against the repo: the most recent tracking docs on `main` (`docs/5454-*`, `docs/5453-*`) both carry a `## Review cycles` section, so this matches current convention rather than departing from it. |
 
+**Cycle 4** - `9fa98e2c` - claude reviewed: **LGTM**, no blocking items. gemini-code-assist posted
+nothing across all four cycles.
+
+| Note | Decision |
+|---|---|
+| The test Javadoc carried a copy-pasted `@author` tag, misattributing the file | **Applied.** Tag removed rather than reassigned; 78 of the 183 tests in this package carry no `@author`, so omitting it is within convention. |
+| `exists(pattern)` / `shortestPath` now silently ignore a parsed predicate rather than never parsing it - worth its own tracking issue | **Deferred to the maintainer**, as in cycle 1. Recorded under Known gaps. |
+| `copyBindings(...)` duplicates property-copy loops in `MatchRelationshipStep` and `buildHopResult` | **Skipped**, as in cycle 1: consolidation is a follow-up, not part of this fix. |
+
+## Final state
+
+`max-cycles-reached` (4 of 4) with a clean approval on the last cycle - the remaining items are all
+explicitly non-blocking and either deferred to the maintainer or scoped to follow-ups.
+
 ## Known gaps
 
 `CypherExpressionBuilder.parseRelationshipPattern` is also used by `exists(pattern)`
