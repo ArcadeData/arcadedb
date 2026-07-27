@@ -62,6 +62,15 @@ public interface DatabaseInternal extends Database {
 
   DatabaseInternal getEmbedded();
 
+  /**
+   * Closes the database with drop semantics but without removing its files, leaving their deletion to the
+   * caller. Only the embedded instance supports it: reach it through {@link #getEmbedded()}, as the wrappers
+   * reject it the way they reject {@code drop()} and {@code close()}.
+   */
+  default void closeForDrop() {
+    throw new UnsupportedOperationException("Only an embedded database instance can be closed for drop");
+  }
+
   DatabaseContext.DatabaseContextTL getContext();
 
   FileManager getFileManager();
