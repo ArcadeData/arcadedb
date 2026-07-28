@@ -424,7 +424,9 @@ public class HybridSearchTool {
     }
     sql.append(") FROM [");
     // Seed RIDs are engine-derived, never caller text: they come from the retrieval legs' own result
-    // rows via MCPVectorLeg.toRID, and RID.toString renders only #<bucket>:<position>.
+    // rows via MCPVectorLeg.toRID, and RID.toString renders only #<bucket>:<position>. They are
+    // inlined rather than bound because TRAVERSE ... FROM :ridCollection throws NullPointerException
+    // (https://github.com/ArcadeData/arcadedb/issues/5505); once that lands they can be bound.
     for (int i = 0; i < seeds.size(); i++) {
       if (i > 0)
         sql.append(',');

@@ -391,9 +391,10 @@ out of scope here.
 **Engine: `TRAVERSE`/`SELECT` from a bound RID collection throws NPE.**
 `TraverseExecutionPlanner:155-174` and `SelectExecutionPlanner:1435-1453` omit the
 `rid.setLegacy(true)` their own singleton-RID branches perform, so `Rid.toRecordId` dereferences a
-null `expression`. Reproduced by probe 3. Confirmed still present on main as of 2026-07-28. The issue
-body is drafted at `docs/superpowers/4861-engine-traverse-npe-issue.md` and is not yet filed;
-`hybrid_search` does not depend on the fix landing.
+null `expression`. Reproduced by probe 3. Confirmed still present on main as of 2026-07-28. Filed as
+[#5505](https://github.com/ArcadeData/arcadedb/issues/5505). `hybrid_search` inlines seed RIDs as a
+workaround and does not depend on the fix landing; once it does, the expansion leg can bind them as a
+parameter instead.
 
 ## Non-goals
 
