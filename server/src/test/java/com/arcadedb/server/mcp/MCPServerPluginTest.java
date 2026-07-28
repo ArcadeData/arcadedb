@@ -1955,6 +1955,52 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchRejectsAWeightForALegTheRequestDoesNotUse() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject noFullTextLeg = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("fulltext", 2.0))
+        .put("k", 3));
+
+    // A weight nothing will read is the same silent no-op as an unknown key, so it is rejected too.
+    assertThat(noFullTextLeg.getBoolean("isError", false)).isTrue();
+    assertThat(noFullTextLeg.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.fulltext").contains("no full-text leg");
+
+    final JSONObject noExpandLeg = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("expand", 2.0))
+        .put("k", 3));
+
+    assertThat(noExpandLeg.getBoolean("isError", false)).isTrue();
+    assertThat(noExpandLeg.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.expand").contains("no graph expansion leg");
+  }
+
+  @Test
+  void hybridSearchAcceptsAWeightForALegTheRequestDoesUse() throws Exception {
+    seedHybridGraph();
+
+    // The guard must reject only weights with no leg behind them, never a legitimate override.
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("weights", new JSONObject().put("vector", 1.0).put("fulltext", 2.0).put("expand", 0.25))
+        .put("k", 6)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+  }
+
+  @Test
   void hybridSearchRejectsANonNumericWeight() throws Exception {
     seedHybridGraph();
 

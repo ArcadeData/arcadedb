@@ -365,6 +365,19 @@ public class HybridSearchTool {
     for (final String key : weights.keySet())
       if (!"vector".equals(key) && !"fulltext".equals(key) && !"expand".equals(key))
         throw new IllegalArgumentException("Unknown weights key '" + key + "'. Allowed: vector, fulltext, expand");
+
+    // A weight for a leg the request never asks for is rejected rather than ignored. It is read only
+    // when its leg becomes a fusion source, so accepting it would leave the caller believing an
+    // override took effect that nothing ever consumed - the same silent no-op an unknown key would be.
+    // The full-text leg counts as requested when either of its arguments is present, so an incomplete
+    // leg still reports the more specific error naming both fields.
+    if (weights.has("fulltext") && !args.has("fulltextIndexName") && !args.has("fulltextQuery"))
+      throw new IllegalArgumentException(
+          "weights.fulltext was supplied but the request has no full-text leg. Add 'fulltextIndexName' and "
+              + "'fulltextQuery', or drop the weight.");
+    if (weights.has("expand") && !args.has("expand"))
+      throw new IllegalArgumentException(
+          "weights.expand was supplied but the request has no graph expansion leg. Add 'expand', or drop the weight.");
     for (final String legName : List.of("vector", "fulltext", "expand")) {
       if (!weights.has(legName))
         continue;
