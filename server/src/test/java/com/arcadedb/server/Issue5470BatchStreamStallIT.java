@@ -162,4 +162,63 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
         assertThat(statusLine).contains("408");
     }
   }
+
+  /**
+   * A body that stops before the announced {@code Content-Length} - a proxy that gave up on the upload, a client
+   * that died, a connection cut between two chunks - must be reported as the truncated load it is, with the counts
+   * needed to resume. Reaching the end of the parser loop is NOT proof that the whole file arrived, and answering
+   * 200 with a partial count is the outcome that let a 16M-vertex load stop at 630,000 and look successful
+   * (issue #5470).
+   * <p>
+   * The records the client did send are still committed (the endpoint is explicitly not atomic) and nothing else
+   * is: what the server reads past the last byte the client sent - Undertow re-delivers what is left in the
+   * connection buffer once the peer is gone - must never end up in the database.
+   */
+  @Test
+  void aBodyShorterThanItsContentLengthIsNotReportedAsSuccess() throws Exception {
+    final int vertices = 100;
+    final StringBuilder body = new StringBuilder();
+    for (int i = 0; i < vertices; i++)
+      body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":").append(3_000_000 + i).append("}\n");
+
+    final byte[] sent = body.toString().getBytes(StandardCharsets.UTF_8);
+    final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
+
+    try (final Socket socket = new Socket("127.0.0.1", 2480)) {
+      socket.setSoTimeout(60_000);
+
+      final OutputStream out = socket.getOutputStream();
+      // vertexBatchSize=1 commits every record, so the reported counts are exactly what reached the database.
+      out.write(("POST /api/v1/batch/" + getDatabaseName() + "?vertexBatchSize=1 HTTP/1.1\r\n"
+          + "Host: 127.0.0.1:2480\r\n"
+          + "Authorization: Basic " + auth + "\r\n"
+          + "Content-Type: application/x-ndjson\r\n"
+          + "Content-Length: 1000000\r\n"
+          + "\r\n").getBytes(StandardCharsets.UTF_8));
+      out.write(sent);
+      out.flush();
+      // A fraction of the announced body, then a clean close: the parser sees a well-formed stream that just ends.
+      socket.shutdownOutput();
+
+      final BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      final String statusLine = in.readLine();
+
+      String payload = null;
+      for (String l = in.readLine(); l != null; l = in.readLine())
+        if (l.startsWith("{"))
+          payload = l;
+
+      assertThat(statusLine).as("a truncated upload must never be answered with 200").contains("408");
+      assertThat(payload).as("the 408 must carry the counts needed to resume").isNotNull();
+
+      final JSONObject result = new JSONObject(payload);
+      assertThat(result.getLong("verticesCreated")).isEqualTo(vertices);
+      assertThat(result.getBoolean("partialCommit")).isTrue();
+
+      final JSONObject count = executeCommand(0, "sql", "SELECT count(*) as total FROM V1 WHERE id >= 3000000");
+      assertThat(count.getJSONObject("result").getJSONArray("records").getJSONObject(0).getLong("total"))
+          .as("only the records the client sent may be loaded")
+          .isEqualTo(vertices);
+    }
+  }
 }
