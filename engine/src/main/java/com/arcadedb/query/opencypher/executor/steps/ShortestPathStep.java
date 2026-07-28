@@ -26,9 +26,11 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -55,6 +57,10 @@ import java.util.Set;
  * - MATCH p = allShortestPaths((a)-[:KNOWS*]-(b))
  * <p>
  * Uses the existing SQLFunctionShortestPath for path computation.
+ * <p>
+ * Relationship constraints honoured on every hop: the type list, the direction, the inline property map
+ * and the inline WHERE predicate. The {@code *min..max} hop bounds are NOT enforced - every traversal here
+ * runs unbounded until it reaches the target - so {@code [:LINK*1..3]} currently behaves as {@code [:LINK*]}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -152,9 +158,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
             // so existing behaviour and CSR-accelerated lookups in SQLFunctionShortestPath stay in play.
             final List<List<Object>> paths;
             if (pattern.isAllPaths()) {
-              paths = computeAllShortestPaths(sourceVertex, targetVertex, context);
+              paths = computeAllShortestPaths(sourceVertex, targetVertex, inputResult, context);
             } else {
-              final List<Object> single = computeShortestPath(sourceVertex, targetVertex, context);
+              final List<Object> single = computeShortestPath(sourceVertex, targetVertex, inputResult, context);
               paths = single == null || single.isEmpty() ? Collections.emptyList() : Collections.singletonList(single);
             }
 
@@ -196,12 +202,15 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * Computes the shortest path between source and target vertices.
    * Returns a list of alternating Vertex and Edge objects representing the path.
    */
-  private List<Object> computeShortestPath(final Vertex source, final Vertex target, final CommandContext context) {
-    // Inline edge property filters (e.g. shortestPath((a)-[:LINK*1..3 {w: 1}]->(b))) are not honoured
-    // by SQLFunctionShortestPath, so route through an edge-aware BFS that only walks matching edges (issue #5096).
-    final Map<String, Object> edgeFilters = edgePropertyFilters();
-    if (edgeFilters != null)
-      return computeShortestPathFiltered(source, target, edgeFilters, context);
+  private List<Object> computeShortestPath(final Vertex source, final Vertex target, final Result inputResult,
+      final CommandContext context) {
+    // Inline edge constraints (the property map in shortestPath((a)-[:LINK*1..3 {w: 1}]->(b)) and the
+    // inline WHERE in shortestPath((a)-[r:LINK* WHERE r.tag = 'ok']->(b))) are not honoured by
+    // SQLFunctionShortestPath, which only sees vertices. Route through an edge-aware BFS that walks
+    // matching edges only.
+    final EdgeConstraint constraint = edgeConstraint(inputResult, context);
+    if (constraint != null)
+      return computeFilteredShortestPath(source, target, patternDirection(), patternEdgeTypesArray(), constraint);
 
     // Collect every relationship type declared in the pattern. Variable-length type alternation
     // (e.g. [:R1|R2*]) is expressed as a single relationship with multiple types - all of them
@@ -268,12 +277,14 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * one. The legacy implementation returned the single path that {@link SQLFunctionShortestPath} happened
    * to find first, violating the OpenCypher contract.
    */
-  private List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target, final CommandContext context) {
-    // Inline edge property filters must be enforced on every hop (issue #5096); the vertex-only BFS below
-    // cannot see edge properties, so delegate to the edge-aware variant when a filter is declared.
-    final Map<String, Object> edgeFilters = edgePropertyFilters();
-    if (edgeFilters != null)
-      return computeAllShortestPathsFiltered(source, target, edgeFilters, context);
+  private List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target, final Result inputResult,
+      final CommandContext context) {
+    // Inline edge constraints must be enforced on every hop; the vertex-only BFS below cannot see edge
+    // properties, so delegate to the edge-aware variant when a property map or inline WHERE is declared.
+    final EdgeConstraint constraint = edgeConstraint(inputResult, context);
+    if (constraint != null)
+      return computeFilteredAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), constraint,
+          context.getDatabase());
 
     final List<String> edgeTypes;
     if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
@@ -372,17 +383,13 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Returns the inline edge property filters declared on the pattern relationship (e.g. {@code {w: 1}}),
-   * or {@code null} when none are present. Mirrors what the standard variable-length MATCH path feeds into
-   * {@code VariableLengthPathTraverser}, so shortestPath()/allShortestPaths() enforce the same constraint.
+   * Returns the inline edge constraint declared on the pattern relationship, or {@code null} when the
+   * pattern carries neither a property map nor an inline WHERE.
    */
-  private Map<String, Object> edgePropertyFilters() {
-    if (pattern.getRelationshipCount() > 0) {
-      final RelationshipPattern rel = pattern.getRelationship(0);
-      if (rel.hasProperties() && !rel.getProperties().isEmpty())
-        return rel.getProperties();
-    }
-    return null;
+  private EdgeConstraint edgeConstraint(final Result inputResult, final CommandContext context) {
+    if (pattern.getRelationshipCount() == 0)
+      return null;
+    return EdgeConstraint.from(pattern.getRelationship(0), inputResult, context);
   }
 
   private Vertex.DIRECTION patternDirection() {
@@ -409,32 +416,107 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Checks an edge against the inline property filters. Uses the same numeric-coercion rules as
-   * {@code GraphTraverser.matchesPropertyFilter} so filtered shortestPath() behaves identically to a
-   * variable-length MATCH pattern carrying the same {@code {prop: value}} constraint.
+   * Per-edge constraint declared on a pattern relationship: the inline property map (e.g. {@code {w: 1}})
+   * and/or the inline WHERE predicate (e.g. {@code WHERE r.tag = 'ok'}). Every relationship on a candidate
+   * path must satisfy all declared constraints, mirroring what a variable-length MATCH enforces.
+   * <p>
+   * Shared by both shortestPath() evaluators: {@link ShortestPathStep} (the {@code MATCH p = shortestPath(...)}
+   * form) and {@code ShortestPathExpression} (the {@code RETURN shortestPath(...)} form).
+   * <p>
+   * Not thread-safe and not reentrant: the row used to evaluate the WHERE predicate is allocated once and
+   * the relationship variable is rebound on it for each candidate edge. One instance belongs to a single
+   * traversal.
    */
-  private static boolean edgeMatchesFilter(final Edge edge, final Map<String, Object> filters) {
-    for (final Map.Entry<String, Object> entry : filters.entrySet()) {
-      final Object actual = edge.get(entry.getKey());
-      final Object expected = entry.getValue();
-      if (actual == null)
-        return false;
-      if (actual instanceof Number && expected instanceof Number) {
-        if (((Number) actual).longValue() != ((Number) expected).longValue())
-          return false;
-      } else if (!actual.equals(expected))
-        return false;
+  public static final class EdgeConstraint {
+    private final Map<String, Object> properties;
+    private final BooleanExpression  whereExpression;
+    private final String             relationshipVariable;
+    private final ResultInternal     whereEvalRow;
+    private final CommandContext     context;
+
+    private EdgeConstraint(final Map<String, Object> properties, final BooleanExpression whereExpression,
+        final String relationshipVariable, final ResultInternal whereEvalRow, final CommandContext context) {
+      this.properties = properties;
+      this.whereExpression = whereExpression;
+      this.relationshipVariable = relationshipVariable;
+      this.whereEvalRow = whereEvalRow;
+      this.context = context;
     }
-    return true;
+
+    /**
+     * Builds the constraint declared by {@code rel}, or returns {@code null} when the relationship carries
+     * neither an inline property map nor an inline WHERE. Returning {@code null} keeps the unconstrained
+     * traversal on the faster vertex-only path and leaves it allocation-free.
+     *
+     * @param currentRow bindings visible to the inline WHERE predicate; copied once so the enclosing scope
+     *                   stays reachable while the relationship variable is rebound per candidate edge
+     */
+    public static EdgeConstraint from(final RelationshipPattern rel, final Result currentRow,
+        final CommandContext context) {
+      if (rel == null)
+        return null;
+
+      final Map<String, Object> properties = resolveProperties(rel, context);
+      final BooleanExpression whereExpression = rel.getWhereExpression();
+      if (properties == null && whereExpression == null)
+        return null;
+
+      ResultInternal whereEvalRow = null;
+      if (whereExpression != null) {
+        whereEvalRow = new ResultInternal();
+        if (currentRow != null)
+          for (final String prop : currentRow.getPropertyNames())
+            whereEvalRow.setProperty(prop, currentRow.getProperty(prop));
+      }
+
+      return new EdgeConstraint(properties, whereExpression, rel.getVariable(), whereEvalRow, context);
+    }
+
+    /**
+     * Returns true when the edge satisfies every declared constraint.
+     */
+    public boolean matches(final Edge edge) {
+      if (!GraphTraverser.matchesPropertyFilter(edge, properties))
+        return false;
+      if (whereExpression == null)
+        return true;
+      if (relationshipVariable != null && !relationshipVariable.isEmpty())
+        whereEvalRow.setProperty(relationshipVariable, edge);
+      return whereExpression.evaluate(whereEvalRow, context);
+    }
+
+    /**
+     * Returns the inline property map declared by the relationship, or {@code null} when there is none.
+     * A map supplied as a bare parameter (e.g. {@code -[:LINK* $props]->}) is resolved against the query
+     * parameters here, so the parameter form constrains the traversal exactly like an inline map.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> resolveProperties(final RelationshipPattern rel, final CommandContext context) {
+      if (!rel.getProperties().isEmpty())
+        return rel.getProperties();
+
+      final String parameterName = rel.getPropertiesParameterName();
+      if (parameterName == null || context == null || context.getInputParameters() == null)
+        return null;
+
+      final Object parameterValue = context.getInputParameters().get(parameterName);
+      if (!(parameterValue instanceof Map))
+        return null;
+
+      final Map<String, Object> resolved = (Map<String, Object>) parameterValue;
+      return resolved.isEmpty() ? null : resolved;
+    }
   }
 
   /**
    * Edge-aware BFS returning a single shortest path (alternating Vertex/Edge objects) that only traverses
-   * edges satisfying {@code edgeFilters}. Tracks the actual edge used to reach each vertex so parallel edges
+   * edges satisfying {@code constraint}. Tracks the actual edge used to reach each vertex so parallel edges
    * with different property values are disambiguated correctly.
+   *
+   * @param edgeTypes restrict edges to these types, or null/empty to allow any type
    */
-  private List<Object> computeShortestPathFiltered(final Vertex source, final Vertex target,
-      final Map<String, Object> edgeFilters, final CommandContext context) {
+  public static List<Object> computeFilteredShortestPath(final Vertex source, final Vertex target,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
@@ -443,8 +525,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       return single;
     }
 
-    final Vertex.DIRECTION[] directions = expandDirections(patternDirection());
-    final String[] typesArray = patternEdgeTypesArray();
+    final Vertex.DIRECTION[] directions = expandDirections(direction);
+    final String[] typesArray = edgeTypes == null || edgeTypes.length == 0 ? null : edgeTypes;
 
     final Map<RID, Vertex> parentVertex = new HashMap<>();
     final Map<RID, Edge> incomingEdge = new HashMap<>();
@@ -463,7 +545,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
         for (final Vertex.DIRECTION dir : directions) {
           final Iterable<Edge> edges = typesArray != null ? v.getEdges(dir, typesArray) : v.getEdges(dir);
           for (final Edge edge : edges) {
-            if (!edgeMatchesFilter(edge, edgeFilters))
+            if (!constraint.matches(edge))
               continue;
             final Vertex neighbor;
             try {
@@ -507,12 +589,15 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Edge-aware layered BFS returning EVERY co-shortest path honouring {@code edgeFilters}. Records each
+   * Edge-aware layered BFS returning EVERY co-shortest path honouring {@code constraint}. Records each
    * co-shortest predecessor together with the edge that reached the vertex, so parallel edges yield the
    * distinct paths OpenCypher requires.
+   *
+   * @param edgeTypes restrict edges to these types, or null/empty to allow any type
    */
-  private List<List<Object>> computeAllShortestPathsFiltered(final Vertex source, final Vertex target,
-      final Map<String, Object> edgeFilters, final CommandContext context) {
+  public static List<List<Object>> computeFilteredAllShortestPaths(final Vertex source, final Vertex target,
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint,
+      final Database database) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
@@ -521,9 +606,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       return Collections.singletonList(single);
     }
 
-    final Vertex.DIRECTION[] directions = expandDirections(patternDirection());
-    final String[] typesArray = patternEdgeTypesArray();
-    final Database database = context.getDatabase();
+    final Vertex.DIRECTION[] directions = expandDirections(direction);
+    final String[] typesArray = edgeTypes == null || edgeTypes.length == 0 ? null : edgeTypes;
 
     final Map<RID, Integer> distance = new HashMap<>();
     final Map<RID, List<PredecessorLink>> predecessors = new HashMap<>();
@@ -549,7 +633,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
         for (final Vertex.DIRECTION dir : directions) {
           final Iterable<Edge> edges = typesArray != null ? v.getEdges(dir, typesArray) : v.getEdges(dir);
           for (final Edge edge : edges) {
-            if (!edgeMatchesFilter(edge, edgeFilters))
+            if (!constraint.matches(edge))
               continue;
             final Vertex neighbor;
             try {

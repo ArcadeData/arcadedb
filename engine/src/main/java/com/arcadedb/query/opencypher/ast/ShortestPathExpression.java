@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
+import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.EdgeConstraint;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
@@ -84,30 +85,48 @@ public class ShortestPathExpression implements Expression {
     final Vertex startVertex = (Vertex) startValue;
     final Vertex endVertex = (Vertex) endValue;
 
+    final RelationshipPattern relationship = pathPattern.getRelationships().size() == 1 ?
+        pathPattern.getRelationships().get(0) :
+        null;
+
     // Collect every relationship type declared in the pattern. With [:R1|R2*] all of them
     // must reach SQLFunctionShortestPath, otherwise paths that walk across more than one type
     // are silently dropped (issue #4190).
     List<String> edgeTypes = null;
-    if (pathPattern.getRelationships().size() == 1) {
-      final RelationshipPattern rel = pathPattern.getRelationships().get(0);
-      if (rel.getTypes() != null && !rel.getTypes().isEmpty())
-        edgeTypes = rel.getTypes();
+    if (relationship != null && relationship.getTypes() != null && !relationship.getTypes().isEmpty())
+      edgeTypes = relationship.getTypes();
+
+    // Get direction. SQLFunctionShortestPath takes it as a string, the edge-aware traversals as an enum.
+    final Direction patternDirection = relationship != null ? relationship.getDirection() : Direction.BOTH;
+    final String direction;
+    final Vertex.DIRECTION traversalDirection;
+    switch (patternDirection) {
+      case OUT:
+        direction = "OUT";
+        traversalDirection = Vertex.DIRECTION.OUT;
+        break;
+      case IN:
+        direction = "IN";
+        traversalDirection = Vertex.DIRECTION.IN;
+        break;
+      default:
+        direction = "BOTH";
+        traversalDirection = Vertex.DIRECTION.BOTH;
     }
 
-    // Get direction
-    String direction = "BOTH";
-    if (pathPattern.getRelationships().size() == 1) {
-      final RelationshipPattern rel = pathPattern.getRelationships().get(0);
-      switch (rel.getDirection()) {
-        case OUT:
-          direction = "OUT";
-          break;
-        case IN:
-          direction = "IN";
-          break;
-        default:
-          direction = "BOTH";
-      }
+    // The inline property map and the inline WHERE predicate constrain every relationship on the path.
+    // SQLFunctionShortestPath only sees vertices, so a constrained pattern must run the edge-aware BFS
+    // shared with the MATCH form instead.
+    final EdgeConstraint constraint = EdgeConstraint.from(relationship, result, context);
+    if (constraint != null) {
+      final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
+      final List<Object> filtered = ShortestPathStep.computeFilteredShortestPath(startVertex, endVertex,
+          traversalDirection, typesArray, constraint);
+      if (filtered == null || filtered.isEmpty())
+        return allPaths ? new ArrayList<>() : null;
+      // allShortestPaths() in expression position still yields the single shortest path found, matching the
+      // unconstrained branch below; enumerating every co-shortest path here is a separate concern.
+      return allPaths ? singlePathList(filtered) : filtered;
     }
 
     // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only).
@@ -131,31 +150,26 @@ public class ShortestPathExpression implements Expression {
       return allPaths ? new ArrayList<>() : null;
 
     // Resolve vertex RIDs and find connecting edges to build a proper path
-    final Vertex.DIRECTION vertexDirection;
-    switch (direction) {
-      case "OUT":
-        vertexDirection = Vertex.DIRECTION.OUT;
-        break;
-      case "IN":
-        vertexDirection = Vertex.DIRECTION.IN;
-        break;
-      default:
-        vertexDirection = Vertex.DIRECTION.BOTH;
-    }
-
-    final List<Object> resolved = ShortestPathStep.resolvePathWithEdges(pathRids, vertexDirection, edgeTypes,
+    final List<Object> resolved = ShortestPathStep.resolvePathWithEdges(pathRids, traversalDirection, edgeTypes,
         context.getDatabase());
 
     if (allPaths) {
       // For allShortestPaths, we return a list containing the single shortest path
       // (In a complete implementation, this would find ALL paths of the same length)
-      final List<Object> allPathsList = new ArrayList<>();
-      allPathsList.add(resolved);
-      return allPathsList;
+      return singlePathList(resolved);
     } else {
       // For shortestPath, return the single path
       return resolved;
     }
+  }
+
+  /**
+   * Wraps a single path into the list shape allShortestPaths() returns in expression position.
+   */
+  private static List<Object> singlePathList(final List<Object> path) {
+    final List<Object> allPathsList = new ArrayList<>(1);
+    allPathsList.add(path);
+    return allPathsList;
   }
 
   @Override
