@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -53,7 +52,7 @@ public class CollectExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    final Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = CorrelatedSubqueryRewriter.newParams(context);
     final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__collect_", params,
         (patterns, body) -> "MATCH " + patterns + " WITH * " + body);
 
