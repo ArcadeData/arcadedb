@@ -139,9 +139,10 @@ public interface SourceCursor extends AutoCloseable {
   }
 
   /**
-   * Primitive-argument {@link #blockEndAt(RID)}. Still returns a {@link RID}, but the one it returns
-   * is an existing block-header object rather than a fresh allocation, so the whole block-max probe
-   * can run without allocating.
+   * Primitive-argument {@link #blockEndAt(RID)}. Still returns a {@link RID}: block metadata is held
+   * as primitive arrays, so a boundary has to be materialised. {@link DimCursor} memoises the merged
+   * result over the range it bounds, which is what keeps that allocation off the per-candidate path
+   * (issue #5467).
    */
   default RID blockEndAt(final int bucketId, final long position) {
     return blockEndAt(new RID(bucketId, position));

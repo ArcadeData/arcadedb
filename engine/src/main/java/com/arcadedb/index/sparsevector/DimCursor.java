@@ -43,6 +43,11 @@ public final class DimCursor implements AutoCloseable {
   private final int             dimId;
   private final SourceCursor[]  sources;     // sorted oldest -> newest
   private final boolean[]       sourceLive;  // false once a source is exhausted
+  // The only source, when there is exactly one. A settled index that has compacted down to a single
+  // segment and holds nothing for this dim in the memtable is the common case on a read-mostly
+  // workload, and there the merge is pure overhead: the merged position IS the source's position, so
+  // every advance can skip the alignment scan and the min-selection pass (issue #5467).
+  private final SourceCursor    single;
   // Merged position, held as components with the {@link RID} object materialised on demand. The
   // scorer compares positions far more often than it reads them (issue #5467).
   private int                   currentBucketId = -1;
@@ -56,6 +61,21 @@ public final class DimCursor implements AutoCloseable {
   private boolean               started;
   private boolean               exhausted;
 
+  // Memoised merged block bounds (issue #5467). The Block-Max skip probes these once per candidate,
+  // but their value is constant over the whole block range they bound - a default block holds 128
+  // postings - so recomputing per candidate walked every live source and, inside each, that
+  // segment's block headers. The memo is valid for any probe in {@code [boundsFrom, boundsEnd]};
+  // see {@link #ensureBlockBounds} for why a later cursor state cannot invalidate it.
+  private boolean               boundsValid;
+  private float                 boundsBlockMax;
+  private int                   boundsFromBucketId;
+  private long                  boundsFromPosition;
+  private int                   boundsEndBucketId;
+  private long                  boundsEndPosition;
+  // The merged block end handed back to callers, or null when no live source bounds a finite one.
+  // Held as an object so a repeated probe inside the range allocates nothing.
+  private RID                   boundsEndRid;
+
   public DimCursor(final int dimId, final List<? extends SourceCursor> sources) {
     if (sources == null || sources.isEmpty())
       throw new IllegalArgumentException("at least one source is required");
@@ -64,6 +84,7 @@ public final class DimCursor implements AutoCloseable {
     this.sourceLive = new boolean[this.sources.length];
     for (int i = 0; i < this.sources.length; i++)
       this.sourceLive[i] = true;
+    this.single = this.sources.length == 1 ? this.sources[0] : null;
   }
 
   public int dimId() {
@@ -149,15 +170,8 @@ public final class DimCursor implements AutoCloseable {
   public float blockMaxAt(final int bucketId, final long position) {
     if (exhausted)
       return 0.0f;
-    float m = 0.0f;
-    for (int i = 0; i < sources.length; i++) {
-      if (!sourceLive[i])
-        continue;
-      final float bm = sources[i].blockMaxAt(bucketId, position);
-      if (bm > m)
-        m = bm;
-    }
-    return m;
+    ensureBlockBounds(bucketId, position);
+    return boundsBlockMax;
   }
 
   /**
@@ -176,15 +190,62 @@ public final class DimCursor implements AutoCloseable {
   public RID blockEndAt(final int bucketId, final long position) {
     if (exhausted)
       return null;
-    RID min = null;
+    ensureBlockBounds(bucketId, position);
+    return boundsEndRid;
+  }
+
+  /**
+   * Refresh {@code boundsBlockMax} / {@code boundsEndRid} unless the memo already covers
+   * {@code (bucketId, position)}, i.e. unless the probe falls inside {@code [boundsFrom, boundsEnd]}.
+   * <p>
+   * <b>Why a memo across probes is sound.</b> Let {@code b_S} be the block source {@code S} reports
+   * for the probe that filled the memo, and {@code end} the smallest of the sources' block ends.
+   * For any later probe {@code r} in {@code [from, end]}: {@code b_S} is by definition the first
+   * block of {@code S} whose last RID is &gt;= {@code from}, so its predecessor ends strictly before
+   * {@code from} &lt;= {@code r}, and its own last RID is &gt;= {@code end} &gt;= {@code r}. A
+   * posting of {@code S} at {@code r} therefore lies in {@code b_S}, and the memoised maximum bounds
+   * it. Cursor movement between the two probes cannot break that: a source can only move forward, so
+   * either it still sits at or before {@code r} (the argument above applies unchanged) or it has
+   * moved past {@code r} - and then it has no posting at {@code r} at all, since neither
+   * {@link SourceCursor#advance} nor {@link SourceCursor#seekTo} can step over one. A source going
+   * exhausted only removes a term from the maximum, leaving the memo an over-estimate, which is
+   * always safe for an upper bound.
+   * <p>
+   * The lower edge of the window is what makes an out-of-order probe recompute. Nothing in the
+   * traversal probes backwards - candidates only advance - but {@link #blockMaxAt} is public API and
+   * a bound taken from a block that starts after the probe would not cover it.
+   * <p>
+   * When no live source reports a finite block end (an in-memory memtable does not), the window
+   * collapses to the probe itself: the maximum is still correct, there is simply no range over which
+   * to reuse it, and the scorer cannot block-skip without a boundary anyway.
+   */
+  private void ensureBlockBounds(final int bucketId, final long position) {
+    if (boundsValid
+        && SparseSegmentBuilder.compareRid(bucketId, position, boundsFromBucketId, boundsFromPosition) >= 0
+        && SparseSegmentBuilder.compareRid(bucketId, position, boundsEndBucketId, boundsEndPosition) <= 0)
+      return;
+
+    float max = 0.0f;
+    RID end = null;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      final RID be = sources[i].blockEndAt(bucketId, position);
-      if (be != null && (min == null || SparseSegmentBuilder.compareRid(be, min) < 0))
-        min = be;
+      final SourceCursor s = sources[i];
+      final float bm = s.blockMaxAt(bucketId, position);
+      if (bm > max)
+        max = bm;
+      final RID be = s.blockEndAt(bucketId, position);
+      if (be != null && (end == null || SparseSegmentBuilder.compareRid(be, end) < 0))
+        end = be;
     }
-    return min;
+
+    boundsBlockMax = max;
+    boundsEndRid = end;
+    boundsFromBucketId = bucketId;
+    boundsFromPosition = position;
+    boundsEndBucketId = end != null ? end.getBucketId() : bucketId;
+    boundsEndPosition = end != null ? end.getPosition() : position;
+    boundsValid = true;
   }
 
   public void start() throws IOException {
@@ -211,6 +272,15 @@ public final class DimCursor implements AutoCloseable {
     }
     if (currentBucketId < 0)
       return false;
+
+    // Single source: it is by construction the one sitting on the merged position, so neither the
+    // alignment test nor the min-selection pass has anything to decide (issue #5467).
+    if (single != null) {
+      if (!single.advance())
+        sourceLive[0] = false;
+      materializeSingle();
+      return !exhausted;
+    }
 
     // Advance all sources currently aligned at the merged position.
     final int consumedBucketId = currentBucketId;
@@ -264,6 +334,8 @@ public final class DimCursor implements AutoCloseable {
     currentPosition = -1L;
     currentRidObj = null;
     newestSourceIdx = -1;
+    boundsValid = false;
+    boundsEndRid = null;
   }
 
   // ---------- internals ----------
@@ -281,6 +353,10 @@ public final class DimCursor implements AutoCloseable {
    * reset; when an equal RID is seen on a newer source, only the newest-index is updated.
    */
   private void materializeMin() {
+    if (single != null) {
+      materializeSingle();
+      return;
+    }
     int minBucketId = -1;
     long minPosition = -1L;
     int newestAtMinIdx = -1;
@@ -322,6 +398,28 @@ public final class DimCursor implements AutoCloseable {
     currentPosition = minPosition;
     currentRidObj = null;
     newestSourceIdx = newestAtMinIdx;
+  }
+
+  /**
+   * {@link #materializeMin()} specialised to a lone source: the merge degenerates to "whatever the
+   * source says", so the min-selection scan and its newest-wins tie handling drop out entirely.
+   * Behaviour is identical to the general path with {@code sources.length == 1}.
+   */
+  private void materializeSingle() {
+    final int bucketId = sourceLive[0] ? single.currentBucketId() : -1;
+    if (bucketId < 0) {
+      sourceLive[0] = false;
+      exhausted = true;
+      currentBucketId = -1;
+      currentPosition = -1L;
+      currentRidObj = null;
+      newestSourceIdx = -1;
+      return;
+    }
+    currentBucketId = bucketId;
+    currentPosition = single.currentPosition();
+    currentRidObj = null;
+    newestSourceIdx = 0;
   }
 
 }
