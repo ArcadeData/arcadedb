@@ -2567,7 +2567,15 @@ class CypherExpressionBuilder {
       direction = Direction.BOTH;
     }
 
-    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops);
+    // Inline WHERE predicate, e.g. the WHERE r.tag = 'ok' in -[r:E WHERE r.tag = 'ok']->. Parsed as
+    // a generic expression and coerced to a predicate so comparisons, AND/OR/NOT and boolean-typed
+    // properties are all covered without duplicating the boolean-parsing hierarchy.
+    BooleanExpression whereExpression = null;
+    if (ctx.expression() != null)
+      whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
+
+    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
+        whereExpression);
   }
 
   /**
