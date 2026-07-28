@@ -404,10 +404,9 @@ public class HybridSearchTool {
       sql.append(seeds.get(i).toString());
     }
     // The LIMIT applies inside the traversal, before the outer depth filter removes the seeds, so the
-    // budget must cover the seeds the filter discards, plus one row beyond the cap so exhaustion (the
-    // stream ends exactly at the cap) can be distinguished from truncation (a row remains beyond it).
+    // budget must cover the seeds that filter discards or the last expanded rows are lost.
     sql.append("] MAXDEPTH ").append(maxDepth)
-        .append(" LIMIT ").append(seeds.size() + MAX_EXPANSION + 1)
+        .append(" LIMIT ").append(seeds.size() + MAX_EXPANSION)
         .append(" STRATEGY BREADTH_FIRST) WHERE $depth > 0");
 
     final QueryEngine.AnalyzedQuery analyzed;
