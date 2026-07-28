@@ -40,8 +40,12 @@ public class AbsFunction implements StatelessFunction {
       throw new CommandExecutionException("abs() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Byte || args[0] instanceof Short || args[0] instanceof Integer || args[0] instanceof Long)
-      return Math.abs(((Number) args[0]).longValue());
+    if (args[0] instanceof Byte || args[0] instanceof Short || args[0] instanceof Integer || args[0] instanceof Long) {
+      final long val = ((Number) args[0]).longValue();
+      if (val == Long.MIN_VALUE)
+        throw new ArithmeticException("abs(Long.MIN_VALUE) overflow");
+      return Math.abs(val);
+    }
     if (args[0] instanceof Number)
       return Math.abs(((Number) args[0]).doubleValue());
     throw new CommandExecutionException("abs() requires a numeric argument");
