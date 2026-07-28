@@ -22,11 +22,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
+import com.arcadedb.query.polyglot.HostClassLookupFilter;
 import com.arcadedb.query.polyglot.PolyglotEngineManager;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 
-import java.util.Arrays;
+import java.util.List;
 import java.util.logging.Level;
 
 /**
@@ -36,6 +37,32 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ScriptTriggerExecutor implements TriggerExecutor {
+  /**
+   * Host classes a trigger script may resolve through {@code Java.type(...)}. Entries are matched literally by
+   * {@link HostClassLookupFilter}: {@code pkg.*} is that package alone and {@code pkg.**} includes subpackages.
+   * <p>
+   * {@code java.lang.*} is deliberately absent: it let a trigger reach
+   * {@code Java.type("java.lang.Runtime").getRuntime().exec(...)} / {@code ProcessBuilder} / {@code System.exit} and
+   * obtain OS command execution with only UPDATE_SCHEMA privileges (GHSA-x9f9-r4m8-9xc2). {@code allowCreateProcess(false)}
+   * does not stop that, because {@code exec()} is a host method call reached through HostAccess and not GraalVM's guest
+   * process API. JavaScript has native String/Math/Number, so dropping {@code java.lang.*} rarely affects real triggers.
+   * <p>
+   * {@code java.util} is restricted to its own level ({@code java.util.*}) plus the three subpackages made of pure
+   * value types and functional interfaces. The recursive {@code java.util.**} would readmit {@code java.util.zip},
+   * {@code java.util.jar}, {@code java.util.logging} and {@code java.util.concurrent}: the regex-matched
+   * {@code "java.util.*"} used to do exactly that and handed a trigger an arbitrary host-file-read primitive through
+   * {@code ZipFile}/{@code JarFile} (GHSA-wx28-2265-f788). The I/O-capable classes that live directly in
+   * {@code java.util} - {@code Formatter}, {@code Scanner}, {@code Timer}, {@code ServiceLoader} - are rejected by
+   * {@link HostClassLookupFilter#DENIED}, which is enforced on top of this list.
+   */
+  public static final List<String> ALLOWED_PACKAGES = List.of(//
+      "java.util.*",                                        //
+      "java.util.function.**",                              //
+      "java.util.stream.**",                                //
+      "java.util.regex.**",                                 //
+      "java.time.**",                                       //
+      "java.math.**");
+
   private final String              triggerName;
   private final String              script;
   private       GraalPolyglotEngine scriptEngine;
@@ -53,13 +80,7 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
       if (scriptEngine == null) {
         scriptEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
             .setLanguage("js")
-            // Do NOT allow host-class lookup of java.lang.*: it let a trigger script reach
-            // Java.type("java.lang.Runtime").getRuntime().exec(...) / ProcessBuilder / System.exit and
-            // obtain OS command execution with only UPDATE_SCHEMA privileges (GHSA-x9f9-r4m8-9xc2).
-            // allowCreateProcess(false) does not stop this because exec() is a host method call reached
-            // through HostAccess, not GraalVM's guest process API. Keep only the benign value packages;
-            // JavaScript has native String/Math/Number so dropping java.lang.* rarely affects real triggers.
-            .setAllowedPackages(Arrays.asList("java.util.*", "java.time.*", "java.math.*"))
+            .setAllowedPackages(ALLOWED_PACKAGES)
             .build();
       }
 
