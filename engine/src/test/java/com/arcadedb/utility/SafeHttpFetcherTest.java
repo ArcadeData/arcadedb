@@ -171,4 +171,24 @@ class SafeHttpFetcherTest {
         .isInstanceOf(IOException.class)
         .hasMessageContaining("404");
   }
+
+  @Test
+  void pinningIsInertWithoutAProviderAndDoesNotLeak() throws IOException {
+    // arcadedb-engine deliberately ships no resolver provider (installing one is a JVM-global, single-slot decision
+    // that must not be taken on an embedder's behalf), so binding must be a harmless no-op here and fetches must keep
+    // working through the documented fallback.
+    assertThat(PinnedDnsResolution.isPinningAvailable())
+        .as("the engine module must not register a resolver provider").isFalse();
+
+    final var connection = SafeHttpFetcher.open(baseUrl + "/content", BLOCK_LINK_LOCAL, "LOAD CSV");
+    try (final var in = connection.getInputStream()) {
+      assertThat(new String(in.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo(SECRET);
+    } finally {
+      connection.disconnect();
+    }
+
+    // The fetch must never leave a binding behind: a leaked pin on a pooled worker thread would constrain that
+    // thread's resolution of the hostname for every later, unrelated request it serves.
+    assertThat(PinnedDnsResolution.lookup("127.0.0.1")).as("no binding may survive the fetch").isNull();
+  }
 }

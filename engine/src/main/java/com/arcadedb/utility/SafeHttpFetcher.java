@@ -46,13 +46,22 @@ import java.util.function.Predicate;
  * hop, and by refusing any non-HTTP(S) scheme anywhere in the chain (so a redirect to {@code file://}, {@code jar://},
  * {@code ftp://} cannot smuggle a local read out of a remote fetch).
  * <p>
- * <b>Known limitation - DNS rebinding.</b> The connection is still established by hostname rather than to the exact
- * address that was validated. Pinning the validated address would require setting the {@code Host} header, which the
- * JDK treats as a restricted header and silently drops unless {@code sun.net.http.allowRestrictedHeaders=true}, and for
- * HTTPS it would additionally have to reproduce SNI and certificate-hostname verification by hand - a change far more
- * likely to weaken TLS than to strengthen it. In practice the window is closed by the JVM's positive DNS cache: the
- * {@link InetAddress#getAllByName} performed here populates it, and the immediately following connect reuses the
- * validated answer for {@code networkaddress.cache.ttl} seconds (30 by default). Deployments that fetch untrusted URLs
+ * <b>DNS rebinding.</b> The connection is deliberately established by hostname rather than to a literal IP: connecting
+ * to an address would mean setting the {@code Host} header, which the JDK silently drops as a restricted header, and
+ * for HTTPS would additionally require reproducing SNI and certificate-hostname verification by hand - far more likely
+ * to weaken TLS than to strengthen it. The connection therefore resolves the name again, independently of the
+ * validation, which is the classic rebinding (TOCTOU) window.
+ * <p>
+ * That window is closed by constraining resolution instead of the connection: the addresses validated here are pinned
+ * for the duration of the connect through {@link PinnedDnsResolution}, so the lookup the connection performs internally
+ * returns only what was already checked. Because the substitution happens below the socket layer, the request is still
+ * made by hostname and TLS is completely untouched. Pinning requires the server's
+ * {@code java.net.spi.InetAddressResolverProvider} to be installed; it is a JVM-global, single-slot decision, so it
+ * ships with the server distribution and is never imposed on an application that embeds {@code arcadedb-engine}.
+ * <p>
+ * Where the provider is absent (embedded use), the fallback is the JVM positive DNS cache: the
+ * {@link InetAddress#getAllByName} performed here populates it and the immediately following connect reuses the
+ * validated answer for {@code networkaddress.cache.ttl} seconds (30 by default). Embedders that fetch untrusted URLs
  * should keep that property at its default or higher; setting it to {@code 0} re-opens the rebinding window.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -99,19 +108,34 @@ public class SafeHttpFetcher {
       if (!protocol.equals("http") && !protocol.equals("https"))
         throw new SecurityException(context + ": blocked disallowed URL scheme '" + protocol + "' in the redirect chain");
 
-      validateHost(netUrl.getHost(), blocked, context);
+      final InetAddress[] validated = validateHost(netUrl.getHost(), blocked, context);
 
-      final URLConnection rawConnection = netUrl.openConnection();
-      if (!(rawConnection instanceof final HttpURLConnection connection))
-        throw new SecurityException(context + ": blocked non-HTTP connection for URL: " + current);
+      final HttpURLConnection connection;
+      final int status;
 
-      // The whole point: do NOT let the JDK follow the redirect for us, or the target is never revalidated.
-      connection.setInstanceFollowRedirects(false);
-      connection.setConnectTimeout(connectTimeoutMs);
-      connection.setReadTimeout(readTimeoutMs);
-      connection.setRequestMethod("GET");
+      // Pin the hostname to the addresses just validated for the duration of the connect, so the resolution the
+      // connection performs internally cannot return a different answer than the one that was checked. This is a no-op
+      // unless the server has installed the resolver provider; see PinnedDnsResolution.
+      PinnedDnsResolution.bind(netUrl.getHost(), validated);
+      try {
+        final URLConnection rawConnection = netUrl.openConnection();
+        if (!(rawConnection instanceof final HttpURLConnection httpConnection))
+          throw new SecurityException(context + ": blocked non-HTTP connection for URL: " + current);
+        connection = httpConnection;
 
-      final int status = connection.getResponseCode();
+        // The whole point: do NOT let the JDK follow the redirect for us, or the target is never revalidated.
+        connection.setInstanceFollowRedirects(false);
+        connection.setConnectTimeout(connectTimeoutMs);
+        connection.setReadTimeout(readTimeoutMs);
+        connection.setRequestMethod("GET");
+
+        // Forces the request to be sent and the response headers read, so the socket is connected before the pin is
+        // released. The caller's later getInputStream() reuses that established connection and resolves nothing.
+        status = connection.getResponseCode();
+      } finally {
+        PinnedDnsResolution.clear();
+      }
+
       if (status >= 300 && status < 400) {
         final String location = connection.getHeaderField("Location");
         connection.disconnect();
@@ -137,8 +161,11 @@ public class SafeHttpFetcher {
    * Resolves the host to all of its IP addresses and refuses the request if any of them is blocked. Validating every
    * resolved address rather than just the first closes the multi-record DNS bypass, where a name resolves to both a
    * public address and an internal one and the connection may pick either.
+   *
+   * @return the resolved addresses, all of which passed the check, so the caller can pin the connection to exactly
+   * these rather than letting it resolve the name again
    */
-  public static void validateHost(final String rawHost, final Predicate<InetAddress> blocked, final String context)
+  public static InetAddress[] validateHost(final String rawHost, final Predicate<InetAddress> blocked, final String context)
       throws IOException {
     if (rawHost == null || rawHost.isEmpty())
       throw new SecurityException(context + ": blocked remote URL with no host");
@@ -159,5 +186,7 @@ public class SafeHttpFetcher {
       if (blocked.test(address))
         throw new SecurityException(context + ": blocked request to a non-public or restricted address: " + host + " -> "
             + address.getHostAddress());
+
+    return addresses;
   }
 }
