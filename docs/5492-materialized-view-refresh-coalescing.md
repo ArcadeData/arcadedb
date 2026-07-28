@@ -147,3 +147,29 @@ on others' behalf. Inherent to full-refresh-per-change, strictly better than the
 and genuinely addressed only by true incremental maintenance, which is out of scope here.
 
 `gemini-code-assist` did not respond within the polling window.
+
+### Cycle 2 - `f98df0708`
+
+`claude[bot]` reported nothing blocking and independently walked the caller-run fallback
+(`markRefreshPendingIfRunning()` returns `false` then `tryBeginRefresh()` succeeds), confirming the
+new owner's snapshot necessarily includes the requesting thread's committed record. Three
+comment-only nits taken:
+
+1. The unreachable third branch of `finishRefreshPassAndCheckPending()` still pointed at
+   `endRefresh()` as the error-path release, which it no longer is. Reworded as the defensive guard
+   it actually is.
+2. `endRefresh()` is public and releases with a plain write, so it silently discards a pending
+   request - the class of bug this change removes elsewhere. It stays for the existing guard tests,
+   with javadoc steering callers to the two CAS releases.
+3. `newView(...)` builds a view over a type that does not exist; noted that this is fine because the
+   state-machine tests never run a refresh.
+
+Noted without action, both already covered above: the weaker recovery guarantee for non-INTERVAL
+views after a discarded request (mitigated by the visible non-VALID status), and owner starvation
+under sustained single-record load.
+
+`gemini-code-assist` again did not respond.
+
+### Final state
+
+`clean-approval` - the last review raised no blocking items and the only follow-ups were comments.
