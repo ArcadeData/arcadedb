@@ -391,7 +391,8 @@ out of scope here.
 **Engine: `TRAVERSE`/`SELECT` from a bound RID collection throws NPE.**
 `TraverseExecutionPlanner:155-174` and `SelectExecutionPlanner:1435-1453` omit the
 `rid.setLegacy(true)` their own singleton-RID branches perform, so `Rid.toRecordId` dereferences a
-null `expression`. Reproduced by probe 3. Filed as its own bug with a regression test per planner;
+null `expression`. Reproduced by probe 3. Confirmed still present on main as of 2026-07-28. The issue
+body is drafted at `docs/superpowers/4861-engine-traverse-npe-issue.md` and is not yet filed;
 `hybrid_search` does not depend on the fix landing.
 
 ## Non-goals
