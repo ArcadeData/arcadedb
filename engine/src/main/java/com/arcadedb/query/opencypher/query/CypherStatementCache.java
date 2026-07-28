@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.query;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser.ParsedQuery;
 import com.arcadedb.utility.LRUCache;
 
 import java.util.Collections;
@@ -36,8 +37,8 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CypherStatementCache {
-  private final Map<String, CypherStatement> cache;
-  private final Cypher25AntlrParser          parser;
+  private final Map<String, ParsedQuery> cache;
+  private final Cypher25AntlrParser      parser;
 
   /**
    * Creates a new statement cache.
@@ -58,27 +59,40 @@ public class CypherStatementCache {
    * @throws CommandParsingException if the query is invalid
    */
   public CypherStatement get(final String query) {
+    return getParsed(query).statement();
+  }
+
+  /**
+   * Gets a parsed query - its AST plus the parameter names it references - from cache, or parses it if not
+   * cached. Callers that need both take this in one lookup; the parameter names are cached with the AST, so
+   * checking that a caller bound them all never re-scans the query text.
+   *
+   * @param query the OpenCypher query string
+   * @return the parsed query (either from cache or freshly parsed)
+   * @throws CommandParsingException if the query is invalid
+   */
+  public ParsedQuery getParsed(final String query) {
     // Strip trailing semicolons - Neo4j clients (e.g., Neo4j Desktop) commonly append them
     final String normalizedQuery = query.endsWith(";") ? query.substring(0, query.length() - 1).trim() : query;
 
-    CypherStatement statement = cache.get(normalizedQuery);
-    if (statement == null) {
-      statement = parse(normalizedQuery);
-      cache.put(normalizedQuery, statement);
+    ParsedQuery parsed = cache.get(normalizedQuery);
+    if (parsed == null) {
+      parsed = parse(normalizedQuery);
+      cache.put(normalizedQuery, parsed);
     }
-    return statement;
+    return parsed;
   }
 
   /**
    * Parses an OpenCypher query using ANTLR4 parser.
    *
    * @param query the OpenCypher query string
-   * @return the parsed CypherStatement AST
+   * @return the parsed CypherStatement AST and the parameter names it references
    * @throws CommandParsingException if parsing fails
    */
-  private CypherStatement parse(final String query) throws CommandParsingException {
+  private ParsedQuery parse(final String query) throws CommandParsingException {
     try {
-      return parser.parse(query);
+      return parser.parseQuery(query);
     } catch (final CommandParsingException e) {
       // already a clear, actionable parsing error (e.g. deprecated-syntax hints) - keep it at top level
       throw e;

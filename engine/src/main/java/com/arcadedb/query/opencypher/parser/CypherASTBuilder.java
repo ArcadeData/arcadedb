@@ -2064,7 +2064,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parameter reference: $paramName (unquoted, starts with $)
     // This is different from a string literal like '$50' which was already handled above
     if (text.startsWith("$") && text.length() > 1) {
-      final String paramName = text.substring(1);
+      final String paramName = stripBackticks(text.substring(1));
       // Return a marker that will be resolved at execution time
       return new ParameterReference(paramName);
     }

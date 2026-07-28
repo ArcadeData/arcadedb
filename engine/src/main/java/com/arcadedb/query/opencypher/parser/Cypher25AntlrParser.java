@@ -25,7 +25,10 @@ import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -36,6 +39,23 @@ import java.util.regex.Pattern;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class Cypher25AntlrParser {
+
+  /**
+   * A parsed query: its AST plus the names of every parameter the query text references.
+   * <p>
+   * The parameter names belong to the text rather than to the AST - they are collected from the parse
+   * tree, where every {@code $name} appears as a {@code parameterName} node no matter which clause,
+   * subquery or inline map it was written in, and where an occurrence inside a string literal or a
+   * comment is not a node at all. Carrying them next to the statement means the caller can check the
+   * supplied parameter map without re-scanning the query on every execution.
+   *
+   * @param statement  the parsed AST
+   * @param parameters names referenced by the query, without the leading {@code $}, in the order they
+   *                   appear; empty when the query is parameterless
+   */
+  public record ParsedQuery(CypherStatement statement, Set<String> parameters) {
+  }
+
   /**
    * Parses a Cypher query string into a CypherStatement AST.
    *
@@ -44,6 +64,17 @@ public class Cypher25AntlrParser {
    * @throws CommandParsingException if query cannot be parsed
    */
   public CypherStatement parse(final String query) {
+    return parseQuery(query).statement();
+  }
+
+  /**
+   * Parses a Cypher query string into its AST and the set of parameter names it references.
+   *
+   * @param query the Cypher query string
+   * @return the parsed statement and its referenced parameter names
+   * @throws CommandParsingException if query cannot be parsed
+   */
+  public ParsedQuery parseQuery(final String query) {
     if (query == null || query.trim().isEmpty())
       throw new CommandParsingException("Query cannot be empty");
 
@@ -92,7 +123,7 @@ public class Cypher25AntlrParser {
 
       CypherSemanticValidator.validate(statement);
 
-      return statement;
+      return new ParsedQuery(statement, collectParameterNames(statementContext));
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
@@ -100,6 +131,38 @@ public class Cypher25AntlrParser {
       throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
+    }
+  }
+
+  /**
+   * Collects the name of every parameter the query references, walking the parse tree for
+   * {@code parameterName} nodes.
+   * <p>
+   * Reading them off the tree rather than the query text is what makes the set exact: a {@code $name}
+   * inside a string literal or a comment never becomes a node, and one written inside an inline property
+   * map, a subquery block or a SKIP/LIMIT does. Backticks are stripped so the name matches the key a
+   * caller binds.
+   * <p>
+   * The one parameter position that is a definition rather than a use is the target of
+   * {@code SESSION SET $name = <expression>}, which binds the name for the rest of the session; it is
+   * skipped, while the value expression on the right is still scanned.
+   */
+  private static Set<String> collectParameterNames(final ParseTree tree) {
+    final Set<String> names = new LinkedHashSet<>();
+    collectParameterNames(tree, names);
+    return names.isEmpty() ? Set.of() : Collections.unmodifiableSet(names);
+  }
+
+  private static void collectParameterNames(final ParseTree node, final Set<String> names) {
+    if (node instanceof Cypher25Parser.ParameterNameContext) {
+      names.add(CypherASTBuilder.stripBackticks(node.getText()));
+      return;
+    }
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final ParseTree child = node.getChild(i);
+      if (node instanceof Cypher25Parser.SessionCommandContext && child instanceof Cypher25Parser.ParameterContext)
+        continue;
+      collectParameterNames(child, names);
     }
   }
 

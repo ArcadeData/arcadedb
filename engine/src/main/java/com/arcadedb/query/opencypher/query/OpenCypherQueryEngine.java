@@ -39,6 +39,7 @@ import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser.ParsedQuery;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -163,13 +164,21 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
         profile = true;
 
-      // Use statement cache to avoid re-parsing
-      final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
+      // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
+      // check below costs no extra lookup.
+      final ParsedQuery parsed = database.getCypherStatementCache().getParsed(actualQuery);
+      final CypherStatement statement = parsed.statement();
 
       // Make any session parameters (SESSION SET) visible to this query as $name.
       final QuerySession session = currentQuerySession();
       final Map<String, Object> effectiveParameters = QuerySession.mergeParameters(
           session != null ? session.getParameters() : null, parameters);
+
+      // EXPLAIN never executes the query, so it is also the one mode that tolerates unbound parameters:
+      // Neo4j reports them as a notification there instead of failing, which is what makes EXPLAIN usable
+      // for inspecting a plan before the values are known.
+      if (!explain)
+        checkParametersAreBound(parsed.parameters(), effectiveParameters);
 
       // EXPLAIN never executes the underlying query, so the idempotency rule does not apply.
       // PROFILE is treated as idempotent at the wrapper level to match SQL parity
@@ -214,8 +223,23 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!profile && parameters != null && Boolean.TRUE.equals(parameters.get("$profileExecution")))
         profile = true;
 
-      // Use statement cache to avoid re-parsing
-      final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
+      // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
+      // check below costs no extra lookup.
+      final ParsedQuery parsed = database.getCypherStatementCache().getParsed(actualQuery);
+      final CypherStatement statement = parsed.statement();
+
+      // Make any session parameters (SESSION SET) visible to this command as $name. Resolve the session
+      // once and thread it to the merge, the parameter check and executeSession (avoids repeated
+      // thread-context lookups). Done before the direct-dispatch statements below so that every path
+      // through this method - DDL, admin, transaction control, session and the planner pipeline - checks
+      // the parameters the same way.
+      final QuerySession session = currentQuerySession();
+      final Map<String, Object> effectiveParameters = QuerySession.mergeParameters(
+          session != null ? session.getParameters() : null, parameters);
+
+      // See the EXPLAIN note in query(): a plan can be inspected before the values are known.
+      if (!explain)
+        checkParametersAreBound(parsed.parameters(), effectiveParameters);
 
       // DDL statements (constraints) are executed directly without the planner pipeline
       if (statement instanceof CypherDDLStatement)
@@ -229,12 +253,6 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // against the database transaction API, bypassing the planner's auto-commit pipeline.
       if (statement instanceof CypherTransactionStatement)
         return executeTransaction((CypherTransactionStatement) statement);
-
-      // Make any session parameters (SESSION SET) visible to this command as $name. Resolve the session
-      // once and thread it to both the merge and executeSession (avoids a second thread-context lookup).
-      final QuerySession session = currentQuerySession();
-      final Map<String, Object> effectiveParameters = QuerySession.mergeParameters(
-          session != null ? session.getParameters() : null, parameters);
 
       // Session management statements (SESSION SET/RESET/CLOSE) operate on the server session bound to
       // the current thread; executed directly, no planner pipeline.
@@ -252,6 +270,38 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
     return command(query, configuration, convertPositionalParameters(parameters));
+  }
+
+  /**
+   * Fails the query when it references a parameter the caller never bound.
+   * <p>
+   * An unbound parameter used to evaluate to null, and null is a legal value everywhere, so the query ran
+   * to completion against a value nobody supplied: a filter matched nothing, a predicate came out false
+   * and each caller absorbed that into its neutral answer. That silence is what made issue #5501 and its
+   * siblings invisible - a de-duplicating {@code WHERE NOT EXISTS { ... $id ... } CREATE ...} guard degraded
+   * into an unconditional CREATE rather than failing. Neo4j raises here, and so do we now.
+   * <p>
+   * Bound to null is not unbound: a caller that explicitly passes {@code null} means it, and the query runs.
+   *
+   * @param referenced the parameter names the query text mentions, collected at parse time
+   *
+   * @throws CommandParsingException listing every missing name, in the order the query mentions them
+   */
+  private static void checkParametersAreBound(final Set<String> referenced, final Map<String, Object> parameters) {
+    if (referenced.isEmpty())
+      return;
+
+    StringJoiner missing = null;
+    for (final String name : referenced) {
+      if (parameters == null || !parameters.containsKey(name)) {
+        if (missing == null)
+          missing = new StringJoiner(", ");
+        missing.add(name);
+      }
+    }
+
+    if (missing != null)
+      throw new CommandParsingException("Expected parameter(s): " + missing);
   }
 
   /**
