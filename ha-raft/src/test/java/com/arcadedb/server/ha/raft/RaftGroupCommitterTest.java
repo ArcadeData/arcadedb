@@ -452,4 +452,41 @@ class RaftGroupCommitterTest {
       committer.stop();
     }
   }
+
+  /**
+   * Issue #5503: a replica must wait for its OWN entry to be applied locally before releasing the commit
+   * locks it took in phase 1, so {@code submitAndWait} has to hand the committed Raft log index back to
+   * the caller. Waiting on the wrong index (or on the replica's own commit index, which still trails the
+   * leader) silently skips the wait and reopens the page-corruption window.
+   */
+  @Test
+  void submitAndWaitReturnsTheCommittedLogIndex() {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    final RaftClientReply reply = mock(RaftClientReply.class);
+    when(reply.isSuccess()).thenReturn(true);
+    when(reply.getLogIndex()).thenReturn(4242L);
+    when(client.async().send(any(Message.class))).thenReturn(CompletableFuture.completedFuture(reply));
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 5_000);
+    try {
+      assertThat(committer.submitAndWait(new byte[] { 1, 2, 3 })).isEqualTo(4242L);
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * The index is only meaningful when the entry actually committed. Every failure path throws, so a
+   * caller never receives a stale or fabricated index to wait on.
+   */
+  @Test
+  void submitAndWaitThrowsRatherThanReturningAnIndexWhenReplicationFails() {
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 500);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
+          .isInstanceOf(QuorumNotReachedException.class);
+    } finally {
+      committer.stop();
+    }
+  }
 }
