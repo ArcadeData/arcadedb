@@ -34,9 +34,9 @@ Each has its own local `excludeId` derivation (`leaderId != null ? leaderId : lo
 
 **Any change to what "replica" means must be applied to all three.** Grep `RaftHAServer.java` for `getPeers()` before claiming such a fix is complete. This has already caused one incomplete fix that review caught.
 
-## Known sharp edge: INCREMENTAL materialized views break page-version replication
+## Known sharp edge: materialized views break page-version replication
 
-Unresolved as of 2026-07. Established by a controlled A/B run on a 3-node cluster, identical load, only the schema differing:
+Unresolved as of 2026-07, tracked in #5492 - delete this section when that closes. Established by a controlled A/B run on a 3-node cluster, identical load, only the schema differing:
 
 - **With** a `REFRESH INCREMENTAL` materialized view: 2041/3000 writes fail, 12 snapshot-resync cycles in ~9 s, nodes never converge.
 - **Without** it: 3000/3000 writes, zero errors, immediate convergence.
@@ -45,6 +45,6 @@ The leader ships a `TX_ENTRY` whose page version is ahead of what followers hold
 
 The exact leader-side path is **not** proven. One theory is already ruled out and should not be re-proposed: `LocalSchema.getDatabase()` returns the wrapped instance, so the refresh does go through `RaftReplicatedDatabase`. It does not commit on the inner `LocalDatabase`.
 
-A second, independent defect sits next to it: the change listener runs a full refresh on every record insert despite `REFRESH INCREMENTAL`, making it a truncate-and-rebuild per row.
+A second, independent defect sits next to it: `MaterializedViewChangeListener` always schedules `MaterializedViewRefresher.fullRefresh` regardless of `REFRESH INCREMENTAL`, so every committing transaction that touches the source type triggers a `TRUNCATE TYPE ... UNSAFE` plus a full re-run of the defining query. Under single-record transactions that degenerates to a full rebuild per row. The refresh is deduplicated per transaction, not per record, and a refresh arriving while one is already running is **dropped** rather than queued (`tryBeginRefresh`), so a view can also be silently stale under concurrent writers with no HA involved.
 
 If you are investigating unexplained replication gaps, check whether the failing database has a materialized view before going further.
