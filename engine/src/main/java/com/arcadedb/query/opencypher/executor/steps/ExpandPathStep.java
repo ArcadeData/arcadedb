@@ -46,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Execution step for variable-length path patterns.
@@ -286,7 +287,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
-              currentPaths = createTraverser().traversePaths(sourceVertex);
+              currentPaths = createTraverser(lastResult).traversePaths(sourceVertex);
             } else {
               currentPaths = null;
             }
@@ -304,7 +305,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
   /**
    * Creates a traverser for this pattern.
    */
-  private VariableLengthPathTraverser createTraverser() {
+  private VariableLengthPathTraverser createTraverser(final Result currentResult) {
     final String[] types = pattern.hasTypes() ?
         pattern.getTypes().toArray(new String[0]) :
         null;
@@ -313,16 +314,45 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
     final Direction direction = directionOverride != null ? directionOverride : pattern.getDirection();
 
-    if (pathMode != null)
-      return new VariableLengthPathTraverser(
-          direction, types, props,
-          pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
-          true, useBFS, pathMode);
+    final VariableLengthPathTraverser traverser = pathMode != null ?
+        new VariableLengthPathTraverser(
+            direction, types, props,
+            pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
+            true, useBFS, pathMode) :
+        new VariableLengthPathTraverser(
+            direction, types, props,
+            pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
+            true, useBFS);
 
-    return new VariableLengthPathTraverser(
-        direction, types, props,
-        pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
-        true, useBFS);
+    traverser.withEdgePredicate(buildEdgePredicate(currentResult));
+    return traverser;
+  }
+
+  /**
+   * Builds the per-relationship predicate for an inline {@code WHERE}, e.g. the
+   * {@code WHERE r.tag = 'ok'} in {@code -[r:E*1..2 WHERE r.tag = 'ok']->}. Every relationship the
+   * path traverses must satisfy it, matching the inline property map and the clause-level
+   * {@code all(e IN r WHERE ...)} spelling.
+   * <p>
+   * The enclosing bindings are copied once per source row, so the predicate can reference variables
+   * from the outer scope, and only the relationship variable is rebound per candidate edge. Returns
+   * null when the pattern carries no predicate, leaving the traversal free of per-edge evaluation.
+   */
+  private Predicate<Edge> buildEdgePredicate(final Result currentResult) {
+    if (!pattern.hasWhereExpression())
+      return null;
+
+    final ResultInternal evalRow = new ResultInternal();
+    if (currentResult != null)
+      for (final String prop : currentResult.getPropertyNames())
+        evalRow.setProperty(prop, currentResult.getProperty(prop));
+
+    final boolean bindRelationship = relationshipVariable != null && !relationshipVariable.isEmpty();
+    return edge -> {
+      if (bindRelationship)
+        evalRow.setProperty(relationshipVariable, edge);
+      return pattern.getWhereExpression().evaluate(evalRow, context);
+    };
   }
 
   /**

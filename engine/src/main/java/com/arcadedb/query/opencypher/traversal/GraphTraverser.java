@@ -27,6 +27,7 @@ import com.arcadedb.utility.RidHashSet;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /**
  * Base class for graph traversal implementations.
@@ -41,6 +42,13 @@ public abstract class GraphTraverser {
   protected final boolean trackPaths;
   protected final boolean detectCycles;
   protected final PathMode pathMode;
+  /**
+   * Optional per-relationship predicate, carrying an inline {@code WHERE} such as the
+   * {@code WHERE r.tag = 'ok'} in {@code -[r:E*1..2 WHERE r.tag = 'ok']->}. Every relationship the
+   * path traverses must satisfy it, the same rule the inline property map follows. Null means
+   * unconstrained, which keeps the common path free of any per-edge evaluation.
+   */
+  protected Predicate<Edge> edgePredicate;
 
   /**
    * Creates a graph traverser with specified parameters.
@@ -178,6 +186,30 @@ public abstract class GraphTraverser {
    */
   protected boolean matchesPropertyFilter(final Edge edge) {
     return matchesPropertyFilter(edge, edgePropertyFilters);
+  }
+
+  /**
+   * Attaches the per-relationship inline {@code WHERE} predicate. Traversers that delegate to a
+   * nested traverser must forward it, otherwise the predicate is silently dropped for that strategy.
+   *
+   * @param edgePredicate predicate every traversed relationship must satisfy, null for unconstrained
+   *
+   * @return this traverser, for chaining at the construction site
+   */
+  public GraphTraverser withEdgePredicate(final Predicate<Edge> edgePredicate) {
+    this.edgePredicate = edgePredicate;
+    return this;
+  }
+
+  /**
+   * Checks an edge against the inline {@code WHERE} predicate, if one was attached.
+   *
+   * @param edge edge to check
+   *
+   * @return true if the edge satisfies the predicate (or no predicate is set)
+   */
+  protected boolean matchesEdgePredicate(final Edge edge) {
+    return edgePredicate == null || edgePredicate.test(edge);
   }
 
   /**
