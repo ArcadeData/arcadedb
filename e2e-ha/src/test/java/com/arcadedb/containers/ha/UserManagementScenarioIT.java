@@ -41,6 +41,15 @@ class UserManagementScenarioIT extends ContainersTestTemplate {
   private static final String SERVER_LIST    = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
   private static final String ALICE_PASSWORD = "alicepw1234";
 
+  /**
+   * Seconds between login probes. A probe for a user a node has not replicated yet counts as a failed
+   * password authentication, and {@code ServerSecurity} locks a principal out for 30 s once it records
+   * 5 failures inside that same 30 s window. The interval must therefore stay above
+   * {@code lockoutWindow / maxFailures} (30 s / 5 = 6 s), otherwise the probe loop locks the user out
+   * and every later probe is rejected for the lockout rather than answering the question under test.
+   */
+  private static final int    PROBE_INTERVAL_SECONDS = 10;
+
   @AfterEach
   @Override
   public void tearDown() {
@@ -58,30 +67,41 @@ class UserManagementScenarioIT extends ContainersTestTemplate {
     logger.info("Starting cluster");
     final List<ServerWrapper> servers = startCluster();
 
-    // Step A: create alice on the leader (node 0)
+    final int raftLeader = waitForRaftLeader(servers, 60);
+    assertThat(raftLeader).as("Raft leader index").isGreaterThanOrEqualTo(0);
+    // A node can still be outside the Raft group when another node already reports itself leader.
+    // Creating the user in that window commits on the majority while the late peer is absent, so it
+    // only learns about the user once it joins - long after the first login probes below.
+    waitForAllNodesKnowLeader(servers, 60);
+
+    // Step A: create alice on the current Raft leader (leadership is non-deterministic, and
+    // 'create user' is a leader-only write; routing directly avoids the unreliable
+    // follower-to-leader HTTP forwarding path, mirroring the other HA scenario tests)
     final JSONObject alice = new JSONObject()
         .put("name", "alice")
         .put("password", ALICE_PASSWORD)
         .put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
     logger.info("Creating user alice on leader");
-    final int createStatus = postServerCommandAsRoot(servers.get(0), "create user " + alice.toString(), 30_000);
+    final int createStatus = postServerCommandAsRoot(servers.get(raftLeader), "create user " + alice.toString(), 30_000);
     assertThat(createStatus).as("create user HTTP status").isEqualTo(200);
 
     // Step B: await until alice can log in on every node
     logger.info("Awaiting alice login propagation");
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
+    Awaitility.await().atMost(60, TimeUnit.SECONDS)
+        .pollDelay(500, TimeUnit.MILLISECONDS).pollInterval(PROBE_INTERVAL_SECONDS, TimeUnit.SECONDS)
         .until(() -> loginOk(servers.get(0), "alice", ALICE_PASSWORD)
             && loginOk(servers.get(1), "alice", ALICE_PASSWORD)
             && loginOk(servers.get(2), "alice", ALICE_PASSWORD));
 
     // Step C: drop alice on the leader
     logger.info("Dropping user alice on leader");
-    final int dropStatus = postServerCommandAsRoot(servers.get(0), "drop user alice", 30_000);
+    final int dropStatus = postServerCommandAsRoot(servers.get(raftLeader), "drop user alice", 30_000);
     assertThat(dropStatus).as("drop user HTTP status").isEqualTo(200);
 
     // Step D: await until alice can no longer log in on any node
     logger.info("Awaiting alice login rejection propagation");
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
+    Awaitility.await().atMost(60, TimeUnit.SECONDS)
+        .pollDelay(500, TimeUnit.MILLISECONDS).pollInterval(PROBE_INTERVAL_SECONDS, TimeUnit.SECONDS)
         .until(() -> !loginOk(servers.get(0), "alice", ALICE_PASSWORD)
             && !loginOk(servers.get(1), "alice", ALICE_PASSWORD)
             && !loginOk(servers.get(2), "alice", ALICE_PASSWORD));
@@ -125,8 +145,11 @@ class UserManagementScenarioIT extends ContainersTestTemplate {
    */
   private boolean loginOk(final ServerWrapper server, final String user, final String password) {
     try {
-      return postServerCommand(server, "list databases", user, password, 5000) == 200;
+      final int status = postServerCommand(server, "list databases", user, password, 5000);
+      logger.info("Login probe for '{}' on {}:{} returned HTTP {}", user, server.host(), server.httpPort(), status);
+      return status == 200;
     } catch (final Exception e) {
+      logger.info("Login probe for '{}' on {}:{} failed: {}", user, server.host(), server.httpPort(), e.toString());
       return false;
     }
   }

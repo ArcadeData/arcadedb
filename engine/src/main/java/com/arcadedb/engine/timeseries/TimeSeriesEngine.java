@@ -56,6 +56,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   private final TimeSeriesShard[]      shards;
   private final int                    shardCount;
   private final long                   compactionBucketIntervalMs;
+  // Value-column kinds, resolved once so the boxed append path does not rebuild them per call.
+  private final byte[]                 columnKinds;
   private final ExecutorService        shardExecutor;
   private final AtomicLong             appendCounter = new AtomicLong();
 
@@ -70,6 +72,7 @@ public class TimeSeriesEngine implements AutoCloseable {
     this.database = database;
     this.typeName = typeName;
     this.columns = columns;
+    this.columnKinds = ObjectColumnsRowSource.kindsOf(columns);
     this.shardCount = shardCount;
     this.compactionBucketIntervalMs = compactionBucketIntervalMs;
     this.shards = new TimeSeriesShard[shardCount];
@@ -118,8 +121,38 @@ public class TimeSeriesEngine implements AutoCloseable {
    * the limit will cause compaction to fail. Plan tag cardinality accordingly.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+    appendSamples(new ObjectColumnsRowSource(columnKinds, timestamps, columnValues));
+  }
+
+  /**
+   * Appends the samples of a primitive row source to a single shard, chosen round-robin.
+   * <p>
+   * Same routing and threading contract as {@link #appendSamples(long[], Object[][])}; the source
+   * hands over the raw bits the row format stores, so a caller holding primitive samples never
+   * allocates an object per value (issue #5474).
+   */
+  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     final int shardIdx = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
-    shards[shardIdx].appendSamples(timestamps, columnValues);
+    shards[shardIdx].appendSamples(source);
+  }
+
+  /**
+   * Creates an empty primitive batch shaped on this type's columns, ready to be filled and handed to
+   * {@link #appendBatch(TimeSeriesRowSource)}.
+   *
+   * @param capacity expected number of samples; the batch grows on demand if exceeded
+   */
+  public TimeSeriesBatch newBatch(final int capacity) {
+    return new TimeSeriesBatch(columns, capacity);
+  }
+
+  /**
+   * Wraps boxed column arrays as a {@link TimeSeriesRowSource} over this type's columns, for callers that
+   * must hand the samples to a shard directly (the async ingest path) instead of going through
+   * {@link #appendSamples(long[], Object[][])}. The arrays are held, not copied.
+   */
+  public TimeSeriesRowSource newRowSource(final long[] timestamps, final Object[][] columnValues) {
+    return new ObjectColumnsRowSource(columnKinds, timestamps, columnValues);
   }
 
   /**
@@ -146,62 +179,60 @@ public class TimeSeriesEngine implements AutoCloseable {
    *                        is the value for column {@code colIdx} of sample {@code sampleIdx}
    */
   public void appendBatch(final long[] allTimestamps, final Object[][] allColumnValues) throws IOException {
-    final int n = allTimestamps.length;
+    appendBatch(new ObjectColumnsRowSource(columnKinds, allTimestamps, allColumnValues));
+  }
+
+  /**
+   * Appends a batch of samples read from a primitive row source, distributing them across shards
+   * exactly as {@link #appendBatch(long[], Object[][])} does.
+   * <p>
+   * Each shard receives a {@code SubsetRowSource} view over the rows routed to it, so the split costs
+   * one {@code int[]} of row numbers per shard instead of a full copy of the sample data - and, unlike
+   * the previous {@code List<Integer>} grouping, not one boxed index per sample (issue #5474).
+   */
+  public void appendBatch(final TimeSeriesRowSource source) throws IOException {
+    final int n = source.size();
     if (n == 0)
       return;
 
     // Fast path: a single-sample batch avoids grouping overhead.
     if (n == 1) {
-      appendSamples(allTimestamps, allColumnValues);
+      appendSamples(source);
       return;
     }
 
-    final int colCount = allColumnValues.length;
-
-    // Assign each sample to a shard via round-robin and group sample indices per shard.
-    @SuppressWarnings("unchecked")
-    final List<Integer>[] shardGroups = new List[shardCount];
-    for (int s = 0; s < shardCount; s++)
-      shardGroups[s] = new ArrayList<>();
-
-    for (int i = 0; i < n; i++) {
-      final int s = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
-      shardGroups[s].add(i);
-    }
+    // Reserve the whole round-robin range at once: sample i goes to shard (base + i) % shardCount,
+    // which is the same assignment the per-sample increment produced, computed without a second pass.
+    final long base = appendCounter.getAndAdd(n);
 
     // #4957: with an enclosing transaction on the calling thread the shard writes MUST stay in-thread
     // (see the threading note in the javadoc); routing them to shardExecutor would publish the pages
     // out of band with the enclosing commit. The per-shard grouping is kept in both cases.
     final boolean inThread = database.isTransactionActive();
 
-    // Build per-shard arrays and either write them in-thread or dispatch parallel writes to shardExecutor.
     final List<CompletableFuture<Void>> futures = inThread ? null : new ArrayList<>(shardCount);
 
     for (int s = 0; s < shardCount; s++) {
-      final List<Integer> group = shardGroups[s];
-      if (group.isEmpty())
+      // Rows routed to this shard form an arithmetic progression of stride shardCount.
+      final int first = (int) Math.floorMod(s - base, (long) shardCount);
+      if (first >= n)
         continue;
 
-      final int m = group.size();
-      final long[] shardTs = new long[m];
-      final Object[][] shardCols = new Object[colCount][m];
+      final int m = (n - first + shardCount - 1) / shardCount;
+      final int[] rows = new int[m];
+      for (int j = 0, row = first; j < m; j++, row += shardCount)
+        rows[j] = row;
 
-      for (int j = 0; j < m; j++) {
-        final int idx = group.get(j);
-        shardTs[j] = allTimestamps[idx];
-        for (int c = 0; c < colCount; c++)
-          shardCols[c][j] = allColumnValues[c][idx];
-      }
-
+      final TimeSeriesRowSource shardSource = new SubsetRowSource(source, rows, m);
       final int shardIdx = s;
       if (inThread) {
-        shards[shardIdx].appendSamples(shardTs, shardCols);
+        shards[shardIdx].appendSamples(shardSource);
         continue;
       }
 
       futures.add(CompletableFuture.runAsync(() -> {
         try {
-          shards[shardIdx].appendSamples(shardTs, shardCols);
+          shards[shardIdx].appendSamples(shardSource);
         } catch (final IOException e) {
           throw new CompletionException(e);
         }
@@ -266,6 +297,48 @@ public class TimeSeriesEngine implements AutoCloseable {
         return row;
       }
     };
+  }
+
+  /**
+   * Queries all shards newest-first and returns at most {@code limit} rows in descending timestamp
+   * order (issue #5414).
+   * <p>
+   * Every shard is asked for its own newest {@code limit} rows and the per-shard results are merged;
+   * because each shard stops walking blocks as soon as its own limit is satisfied, an unbounded
+   * last-point query costs O(shards x blocks touched) instead of O(series).
+   * <p>
+   * The lower bound is tightened to the oldest row held so far as soon as {@code limit} rows are
+   * collected (issue #5416). Samples are routed to shards round-robin, so a tag can be absent from a
+   * shard entirely; without the running bound such a shard has nothing to build its own cut-off from
+   * and would look at every page and block it owns.
+   *
+   * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
+   * @param metrics optional block-level counters, may be {@code null}. Shards are visited
+   *                sequentially on the calling thread, so a single instance is safe here.
+   *
+   * @return rows sorted by descending timestamp, at most {@code limit} of them
+   */
+  public List<Object[]> queryDescending(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final int limit, final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+
+    final List<Object[]> merged = new ArrayList<>();
+    long lowerBound = fromTs;
+    for (final TimeSeriesShard shard : shards) {
+      final List<Object[]> shardRows = shard.scanRangeDescending(lowerBound, toTs, columnIndices, tagFilter, limit,
+          metrics);
+      if (shardRows.isEmpty())
+        continue;
+      merged.addAll(shardRows);
+      if (merged.size() >= need) {
+        TimeSeriesSealedStore.trimToDescendingLimit(merged, need);
+        // Inclusive: rows sharing the cut-off timestamp are still eligible, ties are broken by the merge.
+        lowerBound = Math.max(lowerBound, (long) merged.getLast()[0]);
+      }
+    }
+
+    TimeSeriesSealedStore.trimToDescendingLimit(merged, need);
+    return merged;
   }
 
   /**

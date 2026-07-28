@@ -143,11 +143,21 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         subIndex.checkKeyOrderOnLoad();
       }
     } catch (final Exception e) {
+      // #4743: do NOT repair the schema from here. This callback runs on EVERY load of the component,
+      // including the Raft apply path on a replica, where a schema write throws
+      // ServerIsNotTheLeaderException - which masked the real error, was retried as if it were
+      // transient and finally escalated the whole database to a snapshot resync. And on a leader it
+      // silently DROPPED a user index because one sub-index failed to resolve, turning a recoverable
+      // and reportable condition into data loss. Detach the unreadable sub-index instead: the index
+      // keeps serving its mutable pages (which is what "ignoring it" below has always claimed),
+      // CHECK DATABASE reports it, and REBUILD INDEX repairs it. Detaching only affects this
+      // in-memory instance - the sub-index file id is persisted only when page 0 of a NEW file is
+      // created, so nothing on disk is rewritten here.
+      subIndex = null;
       LogManager.instance().log(this, Level.SEVERE,
-          "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. Please recreate the index from scratch (error=%s)",
-          null, componentName, e.getMessage());
-
-      database.getSchema().dropIndex(componentName);
+          "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. "
+              + "Run 'REBUILD INDEX `%s`' to repair it (error=%s)",
+          null, componentName, componentName, e.getMessage());
     }
   }
 

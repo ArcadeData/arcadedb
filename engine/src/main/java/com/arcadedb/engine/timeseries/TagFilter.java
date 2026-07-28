@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -47,7 +48,7 @@ public final class TagFilter {
    */
   public static TagFilter eq(final int nonTsColumnIndex, final Object value) {
     final List<Condition> conditions = new ArrayList<>(1);
-    conditions.add(new Condition(nonTsColumnIndex, CollectionUtils.singletonSet(value)));
+    conditions.add(Condition.of(nonTsColumnIndex, CollectionUtils.singletonSet(value)));
     return new TagFilter(conditions);
   }
 
@@ -59,7 +60,7 @@ public final class TagFilter {
    */
   public static TagFilter in(final int nonTsColumnIndex, final Set<Object> values) {
     final List<Condition> conditions = new ArrayList<>(1);
-    conditions.add(new Condition(nonTsColumnIndex, values));
+    conditions.add(Condition.of(nonTsColumnIndex, values));
     return new TagFilter(conditions);
   }
 
@@ -72,7 +73,7 @@ public final class TagFilter {
   public TagFilter and(final int nonTsColumnIndex, final Object value) {
     final List<Condition> newConditions = new ArrayList<>(conditions.size() + 1);
     newConditions.addAll(conditions);
-    newConditions.add(new Condition(nonTsColumnIndex, CollectionUtils.singletonSet(value)));
+    newConditions.add(Condition.of(nonTsColumnIndex, CollectionUtils.singletonSet(value)));
     return new TagFilter(newConditions);
   }
 
@@ -85,7 +86,7 @@ public final class TagFilter {
   public TagFilter andIn(final int nonTsColumnIndex, final Set<Object> values) {
     final List<Condition> newConditions = new ArrayList<>(conditions.size() + 1);
     newConditions.addAll(conditions);
-    newConditions.add(new Condition(nonTsColumnIndex, values));
+    newConditions.add(Condition.of(nonTsColumnIndex, values));
     return new TagFilter(newConditions);
   }
 
@@ -114,7 +115,7 @@ public final class TagFilter {
     for (final Condition cond : conditions) {
       if (cond.columnIndex + 1 >= row.length)
         return false;
-      if (!cond.values.contains(row[cond.columnIndex + 1]))
+      if (!cond.matchValues.contains(row[cond.columnIndex + 1]))
         return false;
     }
     return true;
@@ -151,13 +152,108 @@ public final class TagFilter {
         return false; // tag column was not included in the requested subset
       if (outPos + 1 >= row.length)
         return false;
-      if (!cond.values.contains(row[outPos + 1]))
+      if (!cond.matchValues.contains(row[outPos + 1]))
         return false;
     }
     return true;
   }
 
-  record Condition(int columnIndex, Set<Object> values) {
+  /**
+   * Renders the filter the way an execution plan should show it, e.g.
+   * {@code host = 'web_1' AND rack IN ['a', 'b']} (issue #5416).
+   *
+   * @param nonTsColumnNames names of the non-timestamp columns in schema order; when {@code null} or
+   *                         too short the positional {@code col<n>} form is used instead
+   */
+  public String describe(final String[] nonTsColumnNames) {
+    final StringBuilder sb = new StringBuilder();
+    for (final Condition cond : conditions) {
+      if (!sb.isEmpty())
+        sb.append(" AND ");
+
+      if (nonTsColumnNames != null && cond.columnIndex >= 0 && cond.columnIndex < nonTsColumnNames.length)
+        sb.append(nonTsColumnNames[cond.columnIndex]);
+      else
+        sb.append("col").append(cond.columnIndex);
+
+      if (cond.values.size() == 1) {
+        sb.append(" = ").append(formatValue(cond.values.iterator().next()));
+        continue;
+      }
+
+      // Conditions hold a Set, so sort to keep the plan stable across runs.
+      final List<String> rendered = new ArrayList<>(cond.values.size());
+      for (final Object value : cond.values)
+        rendered.add(formatValue(value));
+      rendered.sort(null);
+      sb.append(" IN [").append(String.join(", ", rendered)).append(']');
+    }
+    return sb.toString();
+  }
+
+  private static String formatValue(final Object value) {
+    return value instanceof String ? "'" + value + "'" : String.valueOf(value);
+  }
+
+  /**
+   * One tag equality/IN condition.
+   * <p>
+   * A tag is compared against three different representations depending on where the scan is: the
+   * declared-type value read from a mutable row, the dictionary text of a sealed column, and the text
+   * kept in a block's tag metadata. {@code matchValues} therefore holds both the values as supplied by
+   * the caller and their text form, so every comparison site stays a plain set lookup with no
+   * per-row conversion (issue #5475). {@code values} keeps the caller's form alone, for
+   * {@link #describe(String[])}.
+   */
+  record Condition(int columnIndex, Set<Object> values, Set<Object> matchValues) {
+
+    static Condition of(final int columnIndex, final Set<Object> values) {
+      return new Condition(columnIndex, values, matchFormsOf(values));
+    }
+
+    /**
+     * Expands the caller's values with every representation a scan can present them in: the text form
+     * for a typed value, and the typed form for text. A form is only added when it is unambiguous, and
+     * an added form can only ever match a column that really is of that type, so no false positive is
+     * possible - a {@code STRING} tag holding {@code "1"} is not equal to {@code 1L}.
+     */
+    private static Set<Object> matchFormsOf(final Set<Object> values) {
+      final Set<Object> expanded = new HashSet<>(values.size() * 2);
+      for (final Object value : values) {
+        expanded.add(value);
+        if (value == null)
+          continue;
+        if (value instanceof String text) {
+          addTypedForms(expanded, text);
+          continue;
+        }
+        expanded.add(value.toString());
+      }
+      return expanded.size() == values.size() ? values : expanded;
+    }
+
+    private static void addTypedForms(final Set<Object> expanded, final String text) {
+      // Only the two literals a boolean column can hold; "yes" must not become false.
+      if (text.equalsIgnoreCase("true")) {
+        expanded.add(Boolean.TRUE);
+        return;
+      }
+      if (text.equalsIgnoreCase("false")) {
+        expanded.add(Boolean.FALSE);
+        return;
+      }
+      try {
+        expanded.add(Long.valueOf(text));
+        return;
+      } catch (final NumberFormatException ignored) {
+        // not integral, try decimal below
+      }
+      try {
+        expanded.add(Double.valueOf(text));
+      } catch (final NumberFormatException ignored) {
+        // plain text: nothing else to add
+      }
+    }
   }
 
   List<Condition> getConditions() {

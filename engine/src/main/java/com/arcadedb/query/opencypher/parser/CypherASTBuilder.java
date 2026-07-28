@@ -73,6 +73,7 @@ import com.arcadedb.query.opencypher.rewriter.ComparisonNormalizer;
 import com.arcadedb.query.opencypher.rewriter.CompositeRewriter;
 import com.arcadedb.query.opencypher.rewriter.ConstantFolder;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.query.opencypher.rewriter.InlineNodeWhereHoister;
 import com.arcadedb.query.opencypher.rewriter.LabelPredicateHoister;
 import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -553,9 +554,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       whereClause = visitWhereClause(ctx.whereClause());
     }
 
+    // Normalize a node inline "(n WHERE ...)" predicate into the clause WHERE so that every planner
+    // path enforces it, exactly like the equivalent "MATCH (n) WHERE ..." spelling (issue #5464)
+    final MatchClause normalized = InlineNodeWhereHoister.hoist(new MatchClause(pathPatterns, optional, whereClause));
+
     // Move a "WHERE n:Label" conjunct into the node pattern so that the planner can resolve the node
     // with a label scan instead of iterating every vertex type in the database (issue #5363)
-    return LabelPredicateHoister.hoist(new MatchClause(pathPatterns, optional, whereClause));
+    return LabelPredicateHoister.hoist(normalized);
   }
 
   @Override
@@ -1855,7 +1860,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         properties = visitProperties(propsCtx);
     }
 
-    return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction);
+    // Inline WHERE predicate (e.g., (n:Person WHERE n.age > 18)). Before issue #5464 this was parsed
+    // by the grammar but silently discarded, so the predicate never filtered anything.
+    BooleanExpression whereExpression = null;
+    if (ctx.expression() != null)
+      whereExpression = parseBooleanExpression(ctx.expression());
+
+    return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction,
+        whereExpression);
   }
 
   public RelationshipPattern visitRelationshipPattern(final Cypher25Parser.RelationshipPatternContext ctx) {

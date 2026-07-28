@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.antlr;
 
+import com.arcadedb.query.sql.parser.SchemaIdentifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import org.junit.jupiter.api.Test;
@@ -157,5 +158,33 @@ class SQLAntlrParserTest {
         ORDER BY (Name.toLowerCase() asc), (CreatedOn desc) LIMIT -1), \
         $c = UNIONALL( $a, $b ) limit -1"""))
         .isInstanceOf(SelectStatement.class);
+  }
+
+  /**
+   * Issue #5469: a {@code schema:index:<name>} / {@code schema:bucket:<name>} target must accept the comma of the auto-derived
+   * compound-index name, and back-tick quoting for anything else. The serialised statement must parse back to the same target.
+   */
+  @Test
+  void schemaTargetWithNonIdentifierName() {
+    final SQLAntlrParser parser = new SQLAntlrParser(null);
+
+    for (final String[] queryAndName : new String[][] {
+        { "SELECT FROM schema:index:MyType[propA,propB] LIMIT 20000", "index:MyType[propA,propB]" },
+        { "SELECT FROM schema:index:`MyType[propA,propB]`", "index:MyType[propA,propB]" },
+        { "SELECT FROM schema:index:`my weird index:name-1`", "index:my weird index:name-1" },
+        { "SELECT FROM schema:bucket:`a bucket`", "bucket:a bucket" },
+        { "SELECT FROM schema:indexes", "indexes" } }) {
+
+      final Statement stmt = parser.parse(queryAndName[0]);
+      assertThat(stmt).isInstanceOf(SelectStatement.class);
+
+      final SchemaIdentifier schema = ((SelectStatement) stmt).target.getItem().getSchema();
+      assertThat(schema).as(queryAndName[0]).isNotNull();
+      assertThat(schema.getName()).as(queryAndName[0]).isEqualTo(queryAndName[1]);
+
+      // Re-serialise and re-parse: the target must survive the round-trip.
+      final SchemaIdentifier reparsed = ((SelectStatement) parser.parse(stmt.toString())).target.getItem().getSchema();
+      assertThat(reparsed).as(stmt.toString()).isEqualTo(schema);
+    }
   }
 }

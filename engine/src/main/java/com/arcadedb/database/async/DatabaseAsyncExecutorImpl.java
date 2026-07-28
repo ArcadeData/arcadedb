@@ -32,6 +32,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesRowSource;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
@@ -147,6 +148,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     private AsyncThread(final DatabaseInternal database, final int id) {
       super("AsyncExecutor-" + database.getName() + "-" + id);
+      // #5418: DAEMON. These workers inherit the daemon flag of whatever application thread happened to
+      // touch the async API first, so on a leaked Database they kept the embedder's JVM from ever exiting.
+      // The graceful drain still happens in close(), which the JVM shutdown hook installed by
+      // DatabaseFactory reaches before daemon threads are stopped.
+      setDaemon(true);
       this.database = database;
 
       int queueSize =
@@ -809,6 +815,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     final int slot = getSlot(shardIdx);
     scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, timestamps, columnValues), true,
         backPressurePercentage);
+  }
+
+  @Override
+  public void appendSamples(final String typeName, final TimeSeriesRowSource source) {
+    final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType(typeName);
+    final TimeSeriesEngine engine = tsType.getEngine();
+    final int shardIdx = (int) (tsAppendCounter.getAndIncrement() % engine.getShardCount());
+    final int slot = getSlot(shardIdx);
+    scheduleTask(slot, new DatabaseAsyncAppendSamples(engine, shardIdx, source), true, backPressurePercentage);
   }
 
   /**

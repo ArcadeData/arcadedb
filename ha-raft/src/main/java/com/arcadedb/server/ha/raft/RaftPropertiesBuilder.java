@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ha.raft.ratis.FixedGrpcRpcType;
 import org.apache.ratis.RaftConfigKeys;
 import org.apache.ratis.conf.RaftProperties;
@@ -30,6 +31,7 @@ import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * Utility class that constructs a {@link RaftProperties} instance from an ArcadeDB
@@ -39,6 +41,31 @@ import java.util.concurrent.TimeUnit;
 class RaftPropertiesBuilder {
 
   private RaftPropertiesBuilder() {
+  }
+
+  /**
+   * Maximum size, in bytes, of a SINGLE replicated Raft log entry.
+   * <p>
+   * Two independent Ratis limits bound one entry and the SMALLER of the two wins:
+   * <ul>
+   *   <li>{@code raft.grpc.message.size.max} ({@code arcadedb.ha.grpcMessageSizeMax}) - the gRPC
+   *       transport frame cap. Exceeding it leaves the client {@code SlidingWindow} CLOSED.</li>
+   *   <li>{@code raft.server.log.appender.buffer.byte-limit} ({@code arcadedb.ha.appendBufferSize}) -
+   *       also enforced per-entry by {@code RaftLogBase.append}, which throws a
+   *       {@code StateMachineException} for an entry above it. That exception has
+   *       {@code leaderShouldStepDown() == true}, so {@code RaftServerImpl.appendTransaction} makes
+   *       the LEADER STEP DOWN. Because the caller then retries the same oversized entry against the
+   *       newly elected leader, the cluster enters an unbounded election-churn loop and the write
+   *       never lands (issue #4743): terms advance every few minutes, every node answers
+   *       {@code NotLeaderException}, and phase-2 applies stay unconfirmed forever. The default
+   *       (4MB) is an order of magnitude below the gRPC cap (128MB), so in practice THIS is the
+   *       binding limit.</li>
+   * </ul>
+   * Every producer of a Raft entry must keep its payload under this value: the group committer
+   * pre-flights it, and index-compaction replication chunks its synthetic WAL against it.
+   */
+  static long maxReplicatedEntrySize(final ContextConfiguration configuration) {
+    return GlobalConfiguration.maxReplicatedRaftEntrySize(configuration);
   }
 
   static RaftProperties build(final ContextConfiguration configuration) {
@@ -119,6 +146,20 @@ class RaftPropertiesBuilder {
           "arcadedb.ha.writeBufferSize (" + writeBuffer + ") must be >= arcadedb.ha.appendBufferSize + 8 ("
               + minWriteBuffer + " bytes). Increase writeBufferSize or decrease appendBufferSize");
     RaftServerConfigKeys.Log.setWriteBufferSize(properties, writeBuffer);
+
+    // #4743: the gRPC frame cap is NOT the effective per-entry ceiling - the appender byte limit is
+    // enforced per-entry too, and an entry above it makes the leader step down (see
+    // maxReplicatedEntrySize). Surface the mismatch once at startup: without it operators tune
+    // grpcMessageSizeMax (the number our own error messages used to name) and nothing changes.
+    if (grpcMessageSizeMax > appendBuffer.getSize())
+      LogManager.instance().log(RaftPropertiesBuilder.class, Level.INFO,
+          """
+          Maximum replicated Raft entry size is %d bytes (arcadedb.ha.appendBufferSize), NOT the %d bytes \
+          of arcadedb.ha.grpcMessageSizeMax: Ratis rejects a single log entry above the appender byte limit \
+          and the leader steps down. Raise arcadedb.ha.appendBufferSize (and arcadedb.ha.writeBufferSize, \
+          which must stay >= appendBufferSize + 8 bytes) if transactions or records bigger than that must \
+          replicate.""",
+          appendBuffer.getSize(), grpcMessageSizeMax);
 
     // Leader lease: consistent reads without round-trip
     RaftServerConfigKeys.Read.setLeaderLeaseEnabled(properties, true);

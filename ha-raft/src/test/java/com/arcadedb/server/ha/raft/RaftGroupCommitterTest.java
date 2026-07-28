@@ -19,7 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.network.binary.QuorumNotReachedException;
-import com.arcadedb.network.binary.ReplicationQueueFullException;
+import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -122,7 +122,11 @@ class RaftGroupCommitterTest {
    * Regression for the customer report on 2026-05-07: a 50k-vertex GraphBatch produced a single
    * Raft log entry of 74MB, which Ratis rejects against its 64MB cap. With the old code the
    * SlidingWindow client got stuck CLOSED forever; the new code fails fast in submitAndWait with
-   * a {@link ReplicationQueueFullException} carrying actionable advice.
+   * a {@link ReplicatedEntryTooLargeException} carrying actionable advice.
+   * <p>
+   * Issue #4743 narrowed the cap to the SMALLER of the gRPC frame limit and the Ratis appender byte
+   * limit, and made the failure non-retryable - retrying an oversized entry makes every newly elected
+   * leader step down in turn. See {@link Issue4743OversizedRaftEntryTest} for those guarantees.
    */
   @Test
   void oversizeEntryRejectedSynchronouslyWithGuidance() {
@@ -131,9 +135,9 @@ class RaftGroupCommitterTest {
         500, 10_000, 100, cap, null);
     try {
       assertThatThrownBy(() -> committer.submitAndWait(new byte[(int) cap + 1]))
-          .isInstanceOf(ReplicationQueueFullException.class)
-          .hasMessageContaining("exceeds raft.grpc.message.size.max")
-          .hasMessageContaining("arcadedb.ha.grpcMessageSizeMax")
+          .isInstanceOf(ReplicatedEntryTooLargeException.class)
+          .hasMessageContaining("maximum replicated Raft entry size")
+          .hasMessageContaining("arcadedb.ha.appendBufferSize")
           .hasMessageContaining("Reduce the batch size");
     } finally {
       committer.stop();
@@ -152,12 +156,12 @@ class RaftGroupCommitterTest {
         500, 10_000, 100, cap, null);
     try {
       assertThatThrownBy(() -> committer.submitAndWait(new byte[(int) cap + 1]))
-          .isInstanceOf(ReplicationQueueFullException.class);
+          .isInstanceOf(ReplicatedEntryTooLargeException.class);
       // A subsequent normal-sized entry must reach the flusher (and fail with the usual
       // "RaftClient not available" because we passed null - i.e. it got past the pre-check).
       assertThatThrownBy(() -> committer.submitAndWait(new byte[10]))
           .isInstanceOf(QuorumNotReachedException.class)
-          .hasMessageNotContaining("exceeds raft.grpc.message.size.max");
+          .hasMessageNotContaining("maximum replicated Raft entry size");
     } finally {
       committer.stop();
     }
@@ -199,13 +203,43 @@ class RaftGroupCommitterTest {
     // Critical: must NOT be the "Group committer shutting down" message that would surface if we
     // failed pending entries on the source. The new committer (target) handles it instead.
     assertThat(message).doesNotContain("Group committer shutting down");
-    // Either the transfer raced ahead and the entry was completed by the target's null-client
-    // path, or the source flusher caught it first - either is acceptable as long as we don't
-    // surface the hard-stop error.
-    assertThat(message).containsAnyOf("not available", "ok");
+    // Three legitimate outcomes, none of which is the hard-stop error: the transfer raced ahead and
+    // the target's null-client path completed it ("not available"/"ok"), the source flusher caught it
+    // first ("not available"), or the transfer fully won and the caller reclaimed its own un-dispatched
+    // entry ("stopped before dispatch").
+    assertThat(message).containsAnyOf("not available", "ok", "stopped before dispatch");
 
     source.stop();
     target.stop();
+  }
+
+  /**
+   * A {@code submitAndWait} that races in AFTER {@link RaftGroupCommitter#stop()} (or
+   * {@link RaftGroupCommitter#transferPendingTo}) has halted the flusher and drained the queue must
+   * NOT be stranded: the entry would otherwise sit in a queue nothing polls, blocking the caller for
+   * the whole {@code 2 * quorumTimeout} grace window. This reproduces the leader-refresh race where a
+   * caller holds the old (volatile) broker reference and submits just after the refresh stopped it.
+   */
+  @Test
+  void submitAfterStopFailsFastInsteadOfStranding() throws Exception {
+    // quorumTimeout 30s -> a stranded caller would block 2*30s = 60s; we require completion far sooner.
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 30_000);
+    committer.stop(); // flusher halted and queue drained BEFORE we submit
+
+    final CompletableFuture<String> result = CompletableFuture.supplyAsync(() -> {
+      try {
+        committer.submitAndWait(new byte[] { 1, 2, 3 });
+        return "ok";
+      } catch (final QuorumNotReachedException e) {
+        return "failed: " + e.getMessage();
+      }
+    });
+
+    // Without the fix the future never completes and this get() times out; with the fix the caller
+    // fails fast with a retryable error well within the 2*quorumTimeout window.
+    final String message = result.get(3, TimeUnit.SECONDS);
+    assertThat(message).startsWith("failed:");
+    assertThat(message).doesNotContain("Group committer shutting down");
   }
 
   /**

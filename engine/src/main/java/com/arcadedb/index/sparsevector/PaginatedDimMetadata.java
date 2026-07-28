@@ -33,8 +33,29 @@ public final class PaginatedDimMetadata {
   private final float         globalMaxWeight;
   private final int[]         blockPageNums;
   private final short[]       blockOffsets;
-  private final BlockHeader[] blockHeaders;
   private final SkipEntry[]   skipList;
+
+  // Per-block header fields, exploded into parallel primitive arrays instead of a BlockHeader[] of
+  // records. The DAAT hot paths - locating the block containing a probe target, seeking, reading a
+  // block max - walk these arrays and nothing else, so what used to be an array load plus a record
+  // dereference plus a RID dereference per block is now a pair of array loads (issue #5467). It also
+  // drops the per-block object graph: a BlockHeader plus its two RIDs cost ~80 bytes per block, i.e.
+  // tens of MB of live metadata on a large learned-sparse index.
+  private final int[]     blockFirstBucketIds;
+  private final long[]    blockFirstPositions;
+  private final int[]     blockLastBucketIds;
+  private final long[]    blockLastPositions;
+  private final short[]   blockPostingCounts;
+  private final float[]   blockMaxWeights;
+  private final float[]   blockWeightMins;
+  private final float[]   blockWeightMaxs;
+  private final boolean[] blockHasTombstones;
+
+  // Skip list, likewise exploded. The seek path binary-searches it on every jump.
+  private final int[]   skipFirstBucketIds;
+  private final long[]  skipFirstPositions;
+  private final float[] skipMaxWeightsToEnd;
+  private final int[]   skipBlockIndexes;
 
   public PaginatedDimMetadata(final int dimId, final int postingCount, final int df, final float globalMaxWeight,
       final int[] blockPageNums, final short[] blockOffsets, final BlockHeader[] blockHeaders, final SkipEntry[] skipList) {
@@ -47,8 +68,43 @@ public final class PaginatedDimMetadata {
     this.globalMaxWeight = globalMaxWeight;
     this.blockPageNums = blockPageNums;
     this.blockOffsets = blockOffsets;
-    this.blockHeaders = blockHeaders;
     this.skipList = skipList;
+
+    final int n = blockHeaders.length;
+    this.blockFirstBucketIds = new int[n];
+    this.blockFirstPositions = new long[n];
+    this.blockLastBucketIds = new int[n];
+    this.blockLastPositions = new long[n];
+    this.blockPostingCounts = new short[n];
+    this.blockMaxWeights = new float[n];
+    this.blockWeightMins = new float[n];
+    this.blockWeightMaxs = new float[n];
+    this.blockHasTombstones = new boolean[n];
+    for (int i = 0; i < n; i++) {
+      final BlockHeader h = blockHeaders[i];
+      this.blockFirstBucketIds[i] = h.firstRid().getBucketId();
+      this.blockFirstPositions[i] = h.firstRid().getPosition();
+      this.blockLastBucketIds[i] = h.lastRid().getBucketId();
+      this.blockLastPositions[i] = h.lastRid().getPosition();
+      this.blockPostingCounts[i] = (short) h.postingCount();
+      this.blockMaxWeights[i] = h.bmwUpperBound();
+      this.blockWeightMins[i] = h.weightMin();
+      this.blockWeightMaxs[i] = h.weightMax();
+      this.blockHasTombstones[i] = h.hasTombstones();
+    }
+
+    final int m = skipList.length;
+    this.skipFirstBucketIds = new int[m];
+    this.skipFirstPositions = new long[m];
+    this.skipMaxWeightsToEnd = new float[m];
+    this.skipBlockIndexes = new int[m];
+    for (int i = 0; i < m; i++) {
+      final SkipEntry e = skipList[i];
+      this.skipFirstBucketIds[i] = e.firstRid().getBucketId();
+      this.skipFirstPositions[i] = e.firstRid().getPosition();
+      this.skipMaxWeightsToEnd[i] = e.maxWeightToEnd();
+      this.skipBlockIndexes[i] = e.blockIndex();
+    }
   }
 
   public int dimId() {
@@ -83,8 +139,61 @@ public final class PaginatedDimMetadata {
     return blockOffsets[blockIndex] & 0xFFFF;
   }
 
-  public BlockHeader blockHeader(final int blockIndex) {
-    return blockHeaders[blockIndex];
+  public int blockFirstBucketId(final int blockIndex) {
+    return blockFirstBucketIds[blockIndex];
+  }
+
+  public long blockFirstPosition(final int blockIndex) {
+    return blockFirstPositions[blockIndex];
+  }
+
+  public int blockLastBucketId(final int blockIndex) {
+    return blockLastBucketIds[blockIndex];
+  }
+
+  public long blockLastPosition(final int blockIndex) {
+    return blockLastPositions[blockIndex];
+  }
+
+  /** Postings in the block. Stored as a short (blockSize is bounded by the format) and read unsigned. */
+  public int blockPostingCount(final int blockIndex) {
+    return blockPostingCounts[blockIndex] & 0xFFFF;
+  }
+
+  public float blockMaxWeight(final int blockIndex) {
+    return blockMaxWeights[blockIndex];
+  }
+
+  public float blockWeightMin(final int blockIndex) {
+    return blockWeightMins[blockIndex];
+  }
+
+  public float blockWeightMax(final int blockIndex) {
+    return blockWeightMaxs[blockIndex];
+  }
+
+  public boolean blockHasTombstones(final int blockIndex) {
+    return blockHasTombstones[blockIndex];
+  }
+
+  public int skipCount() {
+    return skipBlockIndexes.length;
+  }
+
+  public int skipFirstBucketId(final int i) {
+    return skipFirstBucketIds[i];
+  }
+
+  public long skipFirstPosition(final int i) {
+    return skipFirstPositions[i];
+  }
+
+  public float skipMaxWeightToEnd(final int i) {
+    return skipMaxWeightsToEnd[i];
+  }
+
+  public int skipBlockIndex(final int i) {
+    return skipBlockIndexes[i];
   }
 
   public SkipEntry[] skipList() {

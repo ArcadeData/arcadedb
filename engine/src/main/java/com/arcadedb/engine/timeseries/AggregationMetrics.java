@@ -37,6 +37,9 @@ public final class AggregationMetrics {
   private int  fastPathBlocks;
   private int  slowPathBlocks;
   private int  skippedBlocks;
+  private int  scannedPages;
+  private int  skippedPages;
+  private long materializedRows;
 
   public void addIo(final long nanos) {
     ioNanos += nanos;
@@ -64,6 +67,27 @@ public final class AggregationMetrics {
 
   public void addSkippedBlock() {
     skippedBlocks++;
+  }
+
+  /**
+   * A mutable-bucket data page whose rows were examined.
+   */
+  public void addScannedPage() {
+    scannedPages++;
+  }
+
+  /**
+   * A mutable-bucket data page discarded on its min/max timestamp header alone.
+   */
+  public void addSkippedPage() {
+    skippedPages++;
+  }
+
+  /**
+   * Rows actually turned into {@code Object[]}, i.e. the ones that survived every push-down.
+   */
+  public void addMaterializedRows(final int rows) {
+    materializedRows += rows;
   }
 
   public long getIoNanos() {
@@ -94,6 +118,18 @@ public final class AggregationMetrics {
     return skippedBlocks;
   }
 
+  public int getScannedPages() {
+    return scannedPages;
+  }
+
+  public int getSkippedPages() {
+    return skippedPages;
+  }
+
+  public long getMaterializedRows() {
+    return materializedRows;
+  }
+
   /**
    * Merges counters from another instance (used to aggregate across shards).
    */
@@ -105,15 +141,19 @@ public final class AggregationMetrics {
     fastPathBlocks += other.fastPathBlocks;
     slowPathBlocks += other.slowPathBlocks;
     skippedBlocks += other.skippedBlocks;
+    scannedPages += other.scannedPages;
+    skippedPages += other.skippedPages;
+    materializedRows += other.materializedRows;
   }
 
   @Override
   public String toString() {
     final long totalNanos = ioNanos + decompTsNanos + decompValNanos + accumNanos;
     return String.format(
-        "AggMetrics[io=%dms decompTs=%dms decompVal=%dms accum=%dms total=%dms | blocks: fast=%d slow=%d skipped=%d]",
+        "AggMetrics[io=%dms decompTs=%dms decompVal=%dms accum=%dms total=%dms | blocks: fast=%d slow=%d skipped=%d"
+            + " | pages: scanned=%d skipped=%d | rows: materialized=%d]",
         ioNanos / 1_000_000, decompTsNanos / 1_000_000, decompValNanos / 1_000_000,
         accumNanos / 1_000_000, totalNanos / 1_000_000,
-        fastPathBlocks, slowPathBlocks, skippedBlocks);
+        fastPathBlocks, slowPathBlocks, skippedBlocks, scannedPages, skippedPages, materializedRows);
   }
 }

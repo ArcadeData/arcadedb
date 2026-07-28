@@ -172,6 +172,15 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Appends samples held as one boxed value array per non-timestamp column. Values are unboxed as
+   * they are written, without an intermediate copy; see {@link #appendSamples(TimeSeriesRowSource)}
+   * for the primitive form and for the locking semantics both share.
+   */
+  public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+    appendSamples(mutableBucket.newRowSource(timestamps, columnValues));
+  }
+
+  /**
    * Appends samples to the mutable bucket.
    * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
@@ -186,8 +195,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * our commit, we get a {@code ConcurrentModificationException} and retry transparently on the
    * freshly-cleared page (see issue #4458). In standalone mode the lock is held through commit as
    * before, since there is no recording-session deadlock.
+   * <p>
+   * The source is read once per retry attempt and never retained.
    */
-  public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
     // shipped to followers via the Raft WAL (TX_ENTRY). On a standalone database,
     // getWrappedDatabaseInstance() returns the same instance.
@@ -201,7 +212,7 @@ public class TimeSeriesShard implements AutoCloseable {
         try {
           db.begin();
           try {
-            mutableBucket.appendSamples(timestamps, columnValues);
+            mutableBucket.appendSamples(source);
           } catch (final Exception e) {
             if (db.isTransactionActive())
               db.rollback();
@@ -340,6 +351,52 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Scans both layers newest-first and returns at most {@code limit} rows in descending timestamp
+   * order (issue #5414).
+   * <p>
+   * Both layers are walked backwards and stop as soon as the limit is satisfied: the mutable layer
+   * page by page (issue #5416), the sealed layer block by block. When the mutable layer alone
+   * already supplies {@code limit} rows that are all newer than the sealed store's newest
+   * timestamp, the sealed store is not touched at all.
+   *
+   * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
+   * @param metrics optional block-level counters, may be {@code null}
+   */
+  public List<Object[]> scanRangeDescending(final long fromTs, final long toTs, final int[] columnIndices,
+                                            final TagFilter tagFilter, final int limit,
+                                            final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+
+    compactionLock.readLock().lock();
+    try {
+      final List<Object[]> mutableRows = mutableBucket.scanRangeDescending(fromTs, toTs, columnIndices, tagFilter,
+          limit, metrics);
+
+      // The mutable tail alone can answer the query when it is complete and strictly newer than
+      // anything already sealed: no block has to be decompressed.
+      if (mutableRows.size() >= need && (long) mutableRows.getLast()[0] > sealedStore.getGlobalMaxTimestamp())
+        return mutableRows;
+
+      // The mutable rows already found bound the sealed walk from below: no sealed block older than
+      // the oldest row held can contribute (issue #5416). Inclusive, so ties stay eligible.
+      final long sealedFromTs = mutableRows.size() >= need ?
+          Math.max(fromTs, (long) mutableRows.getLast()[0]) :
+          fromTs;
+
+      final List<Object[]> results = sealedStore.scanRangeDescending(sealedFromTs, toTs, columnIndices, tagFilter,
+          limit, metrics);
+      if (mutableRows.isEmpty())
+        return results;
+
+      results.addAll(mutableRows);
+      TimeSeriesSealedStore.trimToDescendingLimit(results, need);
+      return results;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
    * Maximum number of samples per sealed block. Keeps decompression cost bounded.
    */
   static final int SEALED_BLOCK_SIZE = 65_536;
@@ -436,7 +493,13 @@ public class TimeSeriesShard implements AutoCloseable {
           // HA safety valve (issue #4382): if the rewritten sealed store would be too large to ship
           // inline in a single Raft entry, skip compaction entirely this cycle.
           if (db.isReplicated()) {
-            final long cap = database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE);
+            // #4743: never trust the configured cap on its own - it defaults to 48MB on the assumption
+            // that a Raft entry may be up to 64MB, but the real per-entry ceiling is
+            // min(grpcMessageSizeMax, appendBufferSize) and the latter defaults to 4MB. Shipping a blob
+            // above it makes Ratis reject the entry and the leader step down, over and over.
+            final long cap = Math.min(
+                database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE),
+                GlobalConfiguration.maxReplicatedRaftEntrySize(database.getConfiguration()));
             final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
             if (projected > cap) {
               db.rollback();
@@ -751,7 +814,7 @@ public class TimeSeriesShard implements AutoCloseable {
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
             double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
             for (final Object v : chunkValues) {
-              final double d = v != null ? ((Number) v).doubleValue() : 0.0;
+              final double d = ColumnDefinition.numericValueOf(v);
               if (d < min)
                 min = d;
               if (d > max)

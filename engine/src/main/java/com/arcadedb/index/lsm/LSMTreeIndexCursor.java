@@ -49,6 +49,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private final int                                    totalCursors;
   private final byte[]                                 binaryKeyTypes;
   private final Object[][]                             cursorKeys;
+  private final int[]                                  lastConsumedPageNumber;
+  private final int[]                                  lastConsumedPosition;
   private final BinaryComparator                       comparator;
   private       Object[]                               currentKeys;
   private       RID[]                                  currentValues;
@@ -56,6 +58,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private       int                                    validIterators;
   private       TempIndexCursor                        txCursor;
   private       Object[]                               txCursorKeys;
+  /** Dead (tombstone-resolved) keys skipped by this scan; flushed to the main index stats at scan end. */
+  private       long                                   deadEntriesSkipped = 0;
 
   public LSMTreeIndexCursor(final LSMTreeIndexMutable index, final boolean ascendingOrder) throws IOException {
     this(index, ascendingOrder, null, true, null, true);
@@ -101,6 +105,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
     pageCursors = new LSMTreeIndexUnderlyingAbstractCursor[totalCursors];
     cursorKeys = new Object[totalCursors][binaryKeyTypes.length];
 
+    // Infinite-loop detection state (see advanceCursor()): the consumed (page, position) of each
+    // underlying cursor must advance strictly monotonically in scan direction. Sentinel values sort
+    // before any real position in the respective direction so the first consumption always passes.
+    lastConsumedPageNumber = new int[totalCursors];
+    lastConsumedPosition = new int[totalCursors];
+    Arrays.fill(lastConsumedPageNumber, ascendingOrder ? Integer.MIN_VALUE : Integer.MAX_VALUE);
+    Arrays.fill(lastConsumedPosition, ascendingOrder ? Integer.MIN_VALUE : Integer.MAX_VALUE);
+
     validIterators = 0;
 
     for (int i = 0; i < compactedSeriesIterators.size(); ++i) {
@@ -109,8 +121,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (pageCursor.hasNext()) {
           pageCursor.next();
           cursorKeys[totalPages + i] = pageCursor.getKeys();
-        } else
+        } else {
+          pageCursor.close(); // release the file registration of an empty series cursor
           pageCursor = null;
+        }
         pageCursors[totalPages + i] = pageCursor;
       }
     }
@@ -174,25 +188,17 @@ public class LSMTreeIndexCursor implements IndexCursor {
     for (int i = 0; i < pageCursors.length; ++i) {
 
       LSMTreeIndexUnderlyingAbstractCursor pageCursor = pageCursors[i];
-      // Defensive loop guard: each iteration either returns, breaks, or strictly advances
-      // pageCursor by one position. The bound is therefore the page entry count; we use 2x
-      // for safety in case an entry is legitimately skipped via two separate paths
-      // (removedKeys and fromKeys non-inclusive).
-      int safetyCounter = 0;
-      final int safetyLimit = pageCursor != null ? Math.max(1024, pageCursor.totalKeys * 2) : 0;
+      // Termination: each iteration either breaks, invalidates the cursor, or advances it via
+      // advanceCursor(), which throws on the only non-terminating state (a stuck cursor).
+      // No iteration budget: a long run of removed/tombstoned keys is legal work of any length.
       while (pageCursor != null) {
-        if (++safetyCounter > safetyLimit)
-          throw new IllegalStateException(
-              "Detected infinite loop while initializing cursor on index '" + index.getName() + "' (DESC=" + (!ascendingOrder)
-                  + ", iterations=" + safetyCounter + "). The index may be corrupted, please rebuild it.");
-
         final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(pageCursor.getKeys());
         if (removedKeys.contains(keys)) {
           if (pageCursor.hasNext()) {
-            pageCursor.next();
-            cursorKeys[i] = pageCursor.getKeys(); // keep cache in sync with the advanced cursor
+            advanceCursor(i); // keeps the cursorKeys cache in sync with the advanced cursor
             continue;
           }
+          pageCursor.close();
           pageCursors[i] = null;
           break;
         }
@@ -201,13 +207,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
           if (LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[i], fromKeys) == 0) {
             // SKIP THIS
             if (pageCursor.hasNext()) {
-              pageCursor.next();
-              cursorKeys[i] = pageCursor.getKeys();
+              advanceCursor(i);
               // Re-evaluate the new key from scratch (removedKeys, range and tombstone checks): falling
               // through would run them against the OLD key still bound above.
               continue;
             }
             // INVALID
+            pageCursor.close();
             pageCursors[i] = null;
             break;
           }
@@ -222,6 +228,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
             ;
           else {
             // INVALID
+            pageCursor.close();
             pageCursors[i] = null;
             pageCursor = null;
           }
@@ -254,10 +261,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
             // every cursor left alive by this constructor is counted in validIterators.
             removedKeys.add(keys);
             if (pageCursor.hasNext()) {
-              pageCursor.next();
-              cursorKeys[i] = pageCursor.getKeys(); // keep cache in sync with the advanced cursor
+              advanceCursor(i); // keeps the cursorKeys cache in sync with the advanced cursor
               continue;
             }
+            pageCursor.close();
             pageCursors[i] = null;
             cursorKeys[i] = null;
             break;
@@ -270,6 +277,23 @@ public class LSMTreeIndexCursor implements IndexCursor {
     }
 
     getClosestEntryInTx(fromKeys, beginKeysInclusive);
+  }
+
+  /**
+   * Human-readable description of the logical index this cursor belongs to, so an operator reading the
+   * "infinite loop" error can tell which type/properties to rebuild instead of having only the internal
+   * bucket-level sub-index name (e.g. {@code MyType_0_1234567890}). Best-effort: never throws, since it runs
+   * while surfacing another error.
+   */
+  private String describeIndexForRebuild() {
+    try {
+      final LSMTreeIndex mainIndex = index.getMainIndex();
+      if (mainIndex != null)
+        return "type=" + mainIndex.getTypeName() + ", properties=" + mainIndex.getPropertyNames();
+    } catch (final Exception e) {
+      // IGNORE: fall back to the sub-index name already present in the message
+    }
+    return "type=?, properties=?";
   }
 
   @Override
@@ -316,18 +340,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
   @Override
   public RID next() {
-    // Defensive loop guard: a corrupted or buggy cursor should never iterate this body
-    // more than a small multiple of (totalCursors + tx changes). If it does, we are
-    // stuck and must surface the problem instead of hanging the thread; the index can
-    // be rebuilt to recover.
-    int safetyCounter = 0;
-    final int safetyLimit = Math.max(1024, (totalCursors + 1) * 1024);
+    // Termination: every round either returns a value, consumes one RID from currentValues, or
+    // consumes one key by advancing every contributing cursor via advanceCursor(), which throws on
+    // the only non-terminating state (a stuck cursor); the tx overlay is a bounded collection.
+    // No iteration budget is imposed: a long tombstone run to skip is legal work (compaction never
+    // purges tombstones) and its length is unrelated to the number of cursors, so any count-based
+    // heuristic here misfires on delete-heavy workloads and fails healthy queries.
     do {
-      if (++safetyCounter > safetyLimit)
-        throw new IllegalStateException(
-            "Detected infinite loop while iterating index '" + index.getName() + "' (DESC=" + (!ascendingOrder)
-                + ", iterations=" + safetyCounter + "). The index may be corrupted, please rebuild it.");
-
       if (currentValues != null && currentValueIndex < currentValues.length) {
         final RID value = currentValues[currentValueIndex++];
         if (value != null && !index.isDeletedEntry(value))
@@ -388,6 +407,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
       if (minorKey == null) {
         validIterators = 0;
+        flushScanStats();
         return null;//throw new NoSuchElementException();
       }
 
@@ -449,8 +469,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
           final LSMTreeIndexUnderlyingAbstractCursor currentCursor = pageCursors[minorKeyIndex];
 
           if (currentCursor.hasNext()) {
-            currentCursor.next();
-            cursorKeys[minorKeyIndex] = currentCursor.getKeys();
+            advanceCursor(minorKeyIndex);
 
             if (serializedToKeys != null) {
               final int compare = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, cursorKeys[minorKeyIndex], toKeys);
@@ -477,6 +496,11 @@ public class LSMTreeIndexCursor implements IndexCursor {
         while (txCursor.hasNext())
           mergedRIDs.add((RID) txCursor.next());
 
+      // a consumed key with no surviving RID is pure skip work caused by tombstone build-up:
+      // account it so operators can see when a delete-heavy index needs a full compaction
+      if (mergedRIDs.isEmpty())
+        ++deadEntriesSkipped;
+
       currentValues = mergedRIDs.isEmpty() ? null : mergedRIDs.toArray(new RID[0]);
 
       if (txCursor == null || !txCursor.hasNext())
@@ -487,6 +511,51 @@ public class LSMTreeIndexCursor implements IndexCursor {
             currentValues[currentValueIndex]))) && hasNext());
 
     return currentValues == null || currentValueIndex >= currentValues.length ? null : currentValues[currentValueIndex++];
+  }
+
+  /**
+   * Advances an underlying cursor past its current (already consumed) entry, enforcing the
+   * termination invariant of the whole scan: the consumed (page, position) of every underlying
+   * cursor moves strictly monotonically in scan direction. Every legal state satisfies it: a
+   * duplicate-key group merged inside a page settles the position on the far end of the group
+   * before it is consumed, and a key whose values continue on the next page of a compacted series
+   * advances the page number. A genuinely stuck cursor, the only way this iteration can fail to
+   * terminate (e.g. the historical DESC duplicate-group bug where getKeys() re-settled on the same
+   * group after next()), re-consumes a position and is detected on its first repetition.
+   * <p>
+   * Unlike the previous iteration-count heuristic (budgeted on the number of cursors), this check
+   * can never misfire on a long tombstone run: since compaction does not purge tombstones,
+   * delete-heavy workloads legitimately skip an unbounded number of consecutive dead keys, and
+   * doing so used to fail healthy range scans with a false "index may be corrupted" error.
+   * <p>
+   * Must be called only when the cursor's {@code hasNext()} returned true; also refreshes the
+   * {@code cursorKeys} cache for the new position.
+   */
+  private void advanceCursor(final int cursorIndex) {
+    final LSMTreeIndexUnderlyingAbstractCursor cursor = pageCursors[cursorIndex];
+
+    final int pageNumber = cursor.getCurrentPageId().getPageNumber();
+    final int position = cursor.getCurrentPositionInPage();
+
+    final int lastPage = lastConsumedPageNumber[cursorIndex];
+    final int lastPosition = lastConsumedPosition[cursorIndex];
+
+    final boolean advanced = ascendingOrder ?
+        pageNumber > lastPage || (pageNumber == lastPage && position > lastPosition) :
+        pageNumber < lastPage || (pageNumber == lastPage && position < lastPosition);
+
+    if (!advanced)
+      throw new IllegalStateException(
+          "Detected infinite loop while iterating index '" + index.getName() + "' (" + describeIndexForRebuild() + ", DESC=" + (
+              !ascendingOrder) + ", pageNumber=" + pageNumber + ", positionInPage=" + position
+              + "): the cursor did not advance. The index may be corrupted, please rebuild it with: REBUILD INDEX `"
+              + index.getName() + "`");
+
+    lastConsumedPageNumber[cursorIndex] = pageNumber;
+    lastConsumedPosition[cursorIndex] = position;
+
+    cursor.next();
+    cursorKeys[cursorIndex] = cursor.getKeys();
   }
 
   private void getClosestEntryInTx(final Object[] keys, final boolean inclusive) {
@@ -587,6 +656,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (it != null)
         it.close();
     Arrays.fill(pageCursors, null);
+    flushScanStats();
+  }
+
+  /** Flush-and-reset so exhaustion followed by an explicit close() cannot double-count. */
+  private void flushScanStats() {
+    if (deadEntriesSkipped > 0 && index.mainIndex != null) {
+      index.mainIndex.addDeadEntriesSkipped(deadEntriesSkipped);
+      deadEntriesSkipped = 0;
+    }
   }
 
   @Override

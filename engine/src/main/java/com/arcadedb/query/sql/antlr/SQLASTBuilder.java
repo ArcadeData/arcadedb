@@ -3977,15 +3977,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit schema identifier (schema:name).
+   * Visit schema identifier ({@code schema:name} or {@code schema:<kind>:<name>}). The trailing name part addresses a bucket or an
+   * index by its own name and may be back-tick quoted to carry characters that are not legal in a bare identifier (issue #5469):
+   * the quotes are stripped here so the rest of the engine always sees the real name.
    */
   @Override
   public SchemaIdentifier visitSchemaIdentifier(final SQLParser.SchemaIdentifierContext ctx) {
     final SchemaIdentifier schemaId = new SchemaIdentifier(-1);
 
     if (ctx.SCHEMA_IDENTIFIER() != null) {
-      final String text = ctx.SCHEMA_IDENTIFIER().getText();
-      schemaId.name = text.substring("schema:".length());
+      final String text = ctx.SCHEMA_IDENTIFIER().getText().substring("schema:".length());
+
+      final int sep = text.indexOf(':');
+      if (sep > -1)
+        schemaId.name = text.substring(0, sep + 1) + SchemaIdentifier.unquoteName(text.substring(sep + 1));
+      else
+        schemaId.name = text;
     }
 
     return schemaId;
@@ -4962,6 +4969,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
+
     return stmt;
   }
 
@@ -5039,6 +5048,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         }
       }
     }
+
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
 
     return stmt;
   }
@@ -5121,7 +5132,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
+
     return stmt;
+  }
+
+  /**
+   * Collect the inline {@code CUSTOM key = value (, key = value)*} clause shared by
+   * {@code CREATE ... TYPE} and {@code CREATE PROPERTY} (issue #5409) into the target map,
+   * preserving declaration order so the statement round-trips through {@code toString()}.
+   */
+  private void collectCustomMetadata(final List<SQLParser.CustomMetadataItemContext> items,
+      final Map<Identifier, Expression> target) {
+    if (items == null)
+      return;
+
+    for (final SQLParser.CustomMetadataItemContext itemCtx : items)
+      target.put((Identifier) visit(itemCtx.identifier()), (Expression) visit(itemCtx.expression()));
   }
 
   /**
@@ -5490,6 +5517,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.attributes.add(attr);
       }
     }
+
+    collectCustomMetadata(bodyCtx.customMetadataItem(), stmt.customProperties);
 
     return stmt;
   }

@@ -40,6 +40,7 @@ public class AnchorSelection {
   private final IndexStatistics index;
   private final String propertyName;
   private final Object propertyValue;  // For equality index seek
+  private final List<Object> keyValues;  // Equality values covering a leading prefix of the index key
   private final List<RangePredicate> rangePredicates;  // For range scan
   private final double estimatedCost;
   private final long estimatedCardinality;
@@ -47,21 +48,29 @@ public class AnchorSelection {
   // Constructor for full scan (no index)
   public AnchorSelection(final String variable, final LogicalNode node,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, false, null, null, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, false, null, null, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek with value
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName, final Object propertyValue,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, propertyValue, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, propertyValue, null, null, estimatedCost, estimatedCardinality);
+  }
+
+  // Constructor for equality index seek covering a prefix of a composite key (issue #5444)
+  public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
+                        final IndexStatistics index, final String propertyName, final Object propertyValue,
+                        final List<Object> keyValues,
+                        final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, useIndex, index, propertyName, propertyValue, keyValues, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for range index scan
@@ -69,13 +78,13 @@ public class AnchorSelection {
                         final IndexStatistics index, final String propertyName,
                         final List<RangePredicate> rangePredicates,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, true, index, propertyName, null, rangePredicates, estimatedCost, estimatedCardinality);
+    this(variable, node, true, index, propertyName, null, null, rangePredicates, estimatedCost, estimatedCardinality);
   }
 
   // Main constructor
   private AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                          final IndexStatistics index, final String propertyName, final Object propertyValue,
-                         final List<RangePredicate> rangePredicates,
+                         final List<Object> keyValues, final List<RangePredicate> rangePredicates,
                          final double estimatedCost, final long estimatedCardinality) {
     this.variable = variable;
     this.node = node;
@@ -84,6 +93,7 @@ public class AnchorSelection {
     this.index = index;
     this.propertyName = propertyName;
     this.propertyValue = propertyValue;
+    this.keyValues = keyValues == null || keyValues.isEmpty() ? List.of() : List.copyOf(keyValues);
     this.rangePredicates = rangePredicates;
     this.estimatedCost = estimatedCost;
     this.estimatedCardinality = estimatedCardinality;
@@ -129,6 +139,17 @@ public class AnchorSelection {
    */
   public Object getPropertyValue() {
     return propertyValue;
+  }
+
+  /**
+   * Returns the equality values that cover a leading prefix of the index key, in key order. The first
+   * element is always {@link #getPropertyValue()}. Empty when the anchor is not an equality index seek.
+   * <p>
+   * A list as long as the index key lets the seek resolve a single entry; a shorter one makes it scan
+   * the matching prefix range, with the remaining predicates applied by the Filter above (issue #5444).
+   */
+  public List<Object> getKeyValues() {
+    return keyValues.isEmpty() && propertyValue != null ? List.of(propertyValue) : keyValues;
   }
 
   /**

@@ -49,6 +49,10 @@ class GrowableVectorValues implements RandomAccessVectorValues {
   private final int dimensions;
   private final ConcurrentHashMap<Integer, VectorFloat<?>> vectors;
   private final AtomicInteger count = new AtomicInteger(0);
+  // Upper bound on the number of vectors kept on-heap. When the disk fallback is available the
+  // map is a pure cache, so it is capped (issue #3144: an unbounded cache held a second full copy
+  // of the whole vector set during bulk ingest). Evicted/never-cached ordinals are re-read lazily.
+  private final int maxCacheSize;
 
   // Lazy-load support: when a vector is not in the map, read from disk
   private final VectorLocationIndex vectorIndex;
@@ -60,32 +64,50 @@ class GrowableVectorValues implements RandomAccessVectorValues {
    * Simple mode: no disk fallback (used in tests and when all vectors are in memory).
    */
   GrowableVectorValues(final int dimensions) {
-    this(dimensions, 1024, null, null, null, null);
+    this(dimensions, 1024, null, null, null, null, Integer.MAX_VALUE);
   }
 
   /**
    * Simple mode with initial capacity.
    */
   GrowableVectorValues(final int dimensions, final int initialCapacity) {
-    this(dimensions, initialCapacity, null, null, null, null);
+    this(dimensions, initialCapacity, null, null, null, null, Integer.MAX_VALUE);
   }
 
   /**
-   * Full mode with lazy disk fallback for existing vectors.
+   * Full mode with lazy disk fallback for existing vectors and an unbounded cache.
    */
   GrowableVectorValues(final int dimensions, final int initialCapacity,
       final VectorLocationIndex vectorIndex, final LSMVectorIndex lsmIndex,
       final DatabaseInternal database, final String vectorPropertyName) {
+    this(dimensions, initialCapacity, vectorIndex, lsmIndex, database, vectorPropertyName, Integer.MAX_VALUE);
+  }
+
+  /**
+   * Full mode with lazy disk fallback for existing vectors and a bounded cache.
+   * <p>
+   * {@code maxCacheSize <= 0} means unbounded (backward compatible). A positive value caps the
+   * number of vectors held on-heap; once the cap is reached new vectors are not cached and are
+   * re-read from disk on next access via {@link #getVector}. This only makes sense when a disk
+   * fallback is configured - callers using simple mode must leave the cache unbounded.
+   */
+  GrowableVectorValues(final int dimensions, final int initialCapacity,
+      final VectorLocationIndex vectorIndex, final LSMVectorIndex lsmIndex,
+      final DatabaseInternal database, final String vectorPropertyName, final int maxCacheSize) {
     this.dimensions = dimensions;
-    this.vectors = new ConcurrentHashMap<>(Math.max(16, initialCapacity));
+    this.vectors = new ConcurrentHashMap<>(Math.max(16, Math.min(initialCapacity, maxCacheSize <= 0 ? initialCapacity : maxCacheSize)));
     this.vectorIndex = vectorIndex;
     this.lsmIndex = lsmIndex;
     this.database = database;
     this.vectorPropertyName = vectorPropertyName;
+    this.maxCacheSize = maxCacheSize <= 0 ? Integer.MAX_VALUE : maxCacheSize;
   }
 
   void addVector(final int ordinal, final VectorFloat<?> vector) {
-    vectors.put(ordinal, vector);
+    // Cache the vector only while under the cap; beyond it we rely on the lazy disk fallback in
+    // getVector(). The logical count is advanced regardless so size() reflects every added ordinal.
+    if (vector != null && vectors.size() < maxCacheSize)
+      vectors.put(ordinal, vector);
     int current;
     while ((current = count.get()) <= ordinal)
       count.compareAndSet(current, ordinal + 1);
@@ -146,7 +168,8 @@ class GrowableVectorValues implements RandomAccessVectorValues {
 
       if (vector != null && vector.length == dimensions && !VectorUtils.isZeroVector(vector)) {
         final VectorFloat<?> vf = vts.createFloatVector(vector);
-        vectors.put(ordinal, vf); // Cache for next access
+        if (vectors.size() < maxCacheSize)
+          vectors.put(ordinal, vf); // Cache for next access while under the cap (issue #3144)
         return vf;
       }
     } catch (final Exception e) {

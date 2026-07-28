@@ -242,7 +242,38 @@ public class LocalSchema implements Schema {
       if (f != null)
         f.onAfterSchemaLoad();
 
+    if (mode == ComponentFile.MODE.READ_WRITE)
+      sweepOrphanCompactedIndexFiles(snapshot);
+
     updateSecurity();
+  }
+
+  /**
+   * Drops compacted index files that no mutable index claimed during the load. A crash between a
+   * compaction's publication (schema saved, the mutable header already pointing at its CURRENT compacted
+   * file) and the physical drop of a replaced or aborted compacted file leaves the stale file on disk; the
+   * directory scan re-registers it at the next open, but nothing references it anymore, leaking its space
+   * forever. Every legitimate compacted component gets its mainIndex set by the owning mutable index while
+   * reading its header (SUB-INDEX FILE ID), so a compacted component still unclaimed after the whole schema
+   * load is provably an orphan.
+   */
+  private void sweepOrphanCompactedIndexFiles(final List<Component> snapshot) {
+    for (final Component component : snapshot) {
+      if (!(component instanceof LSMTreeIndexCompacted compacted) || compacted.getMainIndex() != null)
+        continue;
+
+      LogManager.instance().log(this, Level.INFO,
+          "Dropping orphan compacted index file '%s' (fileId=%d) left behind by an interrupted compaction", null,
+          compacted.getName(), compacted.getFileId());
+      try {
+        database.getPageManager().deleteFile(database, compacted.getFileId());
+        database.getFileManager().dropFile(compacted.getFileId());
+        removeFile(compacted.getFileId());
+      } catch (final Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on dropping orphan compacted index file '%s'", e, compacted.getName());
+      }
+    }
   }
 
   @Override
@@ -1283,6 +1314,18 @@ public class LocalSchema implements Schema {
                     + "'. Remove the association first");
         }
 
+        // Drop the dependent sub-indexes BEFORE deleting the bucket file. This ordering matters for crash
+        // consistency: these steps are not atomic, so if the process dies mid-drop the surviving on-disk state
+        // must be recoverable. Deleting the bucket file first would leave an index file whose bucket is gone -
+        // on reload that index cannot be relinked to any bucket, stays an orphan in indexMap with
+        // associatedBucketId=-1, and breaks REBUILD INDEX * (getBucketById(-1)) as well as its own toJSON().
+        // Dropping the indexes first leaves at worst a bucket with no index, which is fully recoverable with a
+        // plain REBUILD/CREATE INDEX. Both directions still need schema.json saved (finally) to be complete.
+        for (final Index idx : new ArrayList<>(indexMap.values())) {
+          if (idx.getAssociatedBucketId() == bucket.getFileId())
+            dropIndex(idx.getName());
+        }
+
         database.getPageManager().deleteFile(database, bucket.getFileId());
         try {
           database.getFileManager().dropFile(bucket.getFileId());
@@ -1292,11 +1335,6 @@ public class LocalSchema implements Schema {
         removeFile(bucket.getFileId());
 
         bucketMap.remove(bucketName);
-
-        for (final Index idx : new ArrayList<>(indexMap.values())) {
-          if (idx.getAssociatedBucketId() == bucket.getFileId())
-            dropIndex(idx.getName());
-        }
 
         return null;
 

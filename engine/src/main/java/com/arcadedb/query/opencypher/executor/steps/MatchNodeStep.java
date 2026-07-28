@@ -28,6 +28,7 @@ import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
@@ -552,50 +553,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {
-    if (!(type.getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy partitioned))
+    final String bucketName = PartitionPruning.prunedBucketName(type, pattern.getProperties());
+    if (bucketName == null)
       return null;
 
-    if (type instanceof LocalDocumentType ldt && ldt.isNeedsRepartition()) {
-      // Stale mapping; nudge operators and bail.
-      ldt.warnIfNeedsRepartition();
-      return null;
-    }
-
-    final List<String> partitionProps = partitioned.getProperties();
-    if (partitionProps == null || partitionProps.isEmpty())
-      return null;
-
-    final Map<String, Object> patternProps = pattern.getProperties();
-    if (patternProps == null || patternProps.isEmpty())
-      return null;
-
-    // Every partition property must be bound to a usable literal. Parameters and Expression
-    // resolvers are skipped: a parameter-bound partition value would bake the bucket id into
-    // the cached plan and silently misroute later executions.
-    final Object[] keyValues = new Object[partitionProps.size()];
-    for (int i = 0; i < partitionProps.size(); i++) {
-      final String prop = partitionProps.get(i);
-      if (!patternProps.containsKey(prop))
-        return null;
-      final Object val = patternProps.get(prop);
-      if (val == null
-          || val instanceof CypherASTBuilder.ParameterReference
-          || val instanceof Expression)
-        return null;
-      keyValues[i] = val;
-    }
-
-    final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
-    // Cache the bucket list once for the bounds check + name lookup. The MATCH path runs per
-    // node iteration, so even one redundant {@code getBuckets} call lands on the hot path.
-    // TODO follow-up: hoist the bucket-list snapshot to step construction so high-fanout MATCH
-    // loops (UNWIND list -> MATCH per element) don't pay {@code getBuckets(false)} per
-    // iteration. See review note #8 (issue #4087 follow-up).
-    final List<? extends Bucket> typeBuckets = type.getBuckets(false);
-    if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
-      return null;
-
-    final String bucketName = typeBuckets.get(bucketIndex).getName();
     usedPartitionBucket = bucketName;
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateBucket(bucketName);

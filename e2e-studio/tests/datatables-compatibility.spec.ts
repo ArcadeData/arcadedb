@@ -16,15 +16,12 @@
 */
 
 /**
- * DataTables v2.3.3 Compatibility Test Suite
+ * DataTables Compatibility Test Suite
  *
- * This test suite validates the major DataTables upgrade from v1.13.x to v2.3.x
- * across all critical ArcadeDB Studio table functionality.
- *
- * UPGRADE CONTEXT:
- * - DataTables: 1.13.11 → 2.3.3 (MAJOR BREAKING CHANGES)
- * - All extensions upgraded to v3.x (buttons, responsive, select)
- * - Bootstrap integration: 5.3.6 → 5.3.7 (SAFE)
+ * This test suite validates ArcadeDB Studio's table functionality against the
+ * bundled DataTables release. It was written for the v1.13.x -> v2.x upgrade and
+ * is kept version-agnostic so it keeps guarding behavior across later majors
+ * (Studio currently ships DataTables v3.x with the v4.x extensions).
  *
  * CRITICAL TEST AREAS:
  * 1. Query result tables (highest priority)
@@ -40,7 +37,7 @@
 import { test, expect } from '@playwright/test';
 import { ArcadeStudioTestHelper, assertGraphState } from '../utils/test-utils';
 
-test.describe('DataTables v2.3.3 Compatibility Suite', () => {
+test.describe('DataTables Compatibility Suite', () => {
   let studioHelper: ArcadeStudioTestHelper;
 
   test.beforeEach(async ({ page }) => {
@@ -390,7 +387,7 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
   });
 
   test.describe('DataTables Configuration Validation', () => {
-    test('should validate v2.x initialization options', async ({ page }) => {
+    test('should validate initialization options', async ({ page }) => {
       await studioHelper.login('Beer');
       await studioHelper.executeQuery('SELECT name FROM Beer LIMIT 5', false);
 
@@ -399,20 +396,24 @@ test.describe('DataTables v2.3.3 Compatibility Suite', () => {
       await page.waitForTimeout(500);
       await expect(page.locator('#result')).toBeVisible();
 
-      // Check that DataTables v2.x configuration options are working
+      // Check that the DataTables configuration options are applied. Feature flags
+      // live under `settings.features` (camelCase) from v3 onwards; v2 exposed the
+      // same flags under the Hungarian-notation `settings.oFeatures`.
       const dtConfig = await page.evaluate(() => {
         const table = $('#result').DataTable();
+        const settings = table.settings()[0] as any;
+        const features = settings.features ?? settings.oFeatures ?? {};
         return {
           version: $.fn.dataTable.version,
           pageLength: table.page.len(),
-          ordering: table.settings()[0].oFeatures.bSort,
-          paging: table.settings()[0].oFeatures.bPaginate,
-          searching: table.settings()[0].oFeatures.bFilter
+          ordering: features.ordering ?? features.bSort,
+          paging: features.paging ?? features.bPaginate,
+          searching: features.searching ?? features.bFilter
         };
       });
 
-      // Verify v2.x version
-      expect(dtConfig.version).toMatch(/^2\./);
+      // A modern DataTables (v2 or newer) must be loaded - v1 is not supported
+      expect(parseInt(dtConfig.version.split('.')[0], 10)).toBeGreaterThanOrEqual(2);
 
       // Verify configuration options
       expect(dtConfig.pageLength).toBe(20); // As set in studio-table.js

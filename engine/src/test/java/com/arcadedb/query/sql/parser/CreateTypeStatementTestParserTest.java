@@ -45,4 +45,27 @@ class CreateTypeStatementTestParserTest extends AbstractParserTest {
     checkWrongSyntax("CREATE DOCUMENT TYPE Foo if");
     checkWrongSyntax("CREATE DOCUMENT TYPE Foo if not");
   }
+
+  /**
+   * Issue #5409: inline CUSTOM metadata on CREATE ... TYPE.
+   */
+  @Test
+  void customMetadata() {
+    checkRightSyntax("CREATE DOCUMENT TYPE Foo CUSTOM coolness = 10");
+    checkRightSyntax("create document type Foo custom coolness = 10");
+    checkRightSyntax("CREATE VERTEX TYPE Foo CUSTOM x = 'width', y = 'height'");
+    checkRightSyntax("CREATE EDGE TYPE Foo CUSTOM x = 'width', y = 'height'");
+    checkRightSyntax("CREATE EDGE TYPE Foo UNIDIRECTIONAL CUSTOM x = 'width'");
+    checkRightSyntax("CREATE DOCUMENT TYPE Foo IF NOT EXISTS EXTENDS bar, baz BUCKETS 5 PAGESIZE 65536 CUSTOM a = 1, b = 'x'");
+    checkRightSyntax("CREATE DOCUMENT TYPE Foo EXTENDS bar, baz CUSTOM a = 1, b = 'x'");
+    checkRightSyntax("CREATE DOCUMENT TYPE Foo BUCKET 12, 13 CUSTOM a = 1, b = 'x'");
+    // `custom` is a valid identifier, so a type literally named "custom" must still parse.
+    checkRightSyntax("CREATE DOCUMENT TYPE custom");
+    checkRightSyntax("CREATE DOCUMENT TYPE custom CUSTOM custom = 1");
+
+    checkWrongSyntax("CREATE DOCUMENT TYPE Foo CUSTOM");
+    checkWrongSyntax("CREATE DOCUMENT TYPE Foo CUSTOM a");
+    checkWrongSyntax("CREATE DOCUMENT TYPE Foo CUSTOM a =");
+    checkWrongSyntax("CREATE DOCUMENT TYPE Foo CUSTOM a = 1,");
+  }
 }

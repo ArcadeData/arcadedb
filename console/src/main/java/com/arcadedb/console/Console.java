@@ -192,9 +192,8 @@ public class Console {
       } else if ("-fae".equalsIgnoreCase(value)) {
         failAtEnd = true;
       } else {
-        commands.append(value);
-        if (!value.endsWith(";"))
-          commands.append(";");
+        // TERMINATE THE ARGUMENT WITH A NEW LINE BEFORE THE SEPARATOR, SO A TRAILING LINE COMMENT DOES NOT SWALLOW THE NEXT ONE
+        commands.append(value).append("\n;");
       }
     }
 
@@ -336,6 +335,8 @@ public class Console {
     }
     case "language" -> {
       language = value;
+      // THE LINE COMMENT MARKER DEPENDS ON THE LANGUAGE: `--` WITH SQL, `//` WITH THE OTHERS
+      parser.setLanguage(language);
       outputLine(3, "Set language to %s", language);
     }
     case "expandresultset" -> {
@@ -736,11 +737,24 @@ public class Console {
     long lastLapTime = System.currentTimeMillis();
     long lastLapExecutedLines = 0L;
 
+    // COLLECTS THE LINES OF A BLOCK COMMENT THAT SPANS MULTIPLE LINES, TO EXECUTE THEM ONLY ONCE THE COMMENT IS CLOSED
+    final StringBuilder pending = new StringBuilder();
+
     try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
       while (bufferedReader.ready()) {
         final String line = FileUtils.decodeFromFile(bufferedReader.readLine());
 
-        parse(line, true);
+        pending.append(line).append('\n');
+
+        final ParsedLine parsedLine = parser.parse(pending.toString(), 0);
+        if (parser.isBlockCommentOpen()) {
+          // THE COMMENT CONTINUES ON THE NEXT LINE
+          byteReadFromFile += line.length() + 1;
+          continue;
+        }
+
+        pending.setLength(0);
+        execute(parsedLine, true);
 
         ++executedLines;
         byteReadFromFile += line.length() + 1;
@@ -762,6 +776,10 @@ public class Console {
       }
     }
 
+    if (!pending.isEmpty())
+      // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT: EXECUTE WHAT COMES BEFORE IT
+      execute(parser.parse(pending.toString(), 0), true);
+
     elapsed = System.currentTimeMillis() - startedOn;
 
     output(2, "\nFile processed in " + (elapsed / 1000) + " seconds");
@@ -773,9 +791,13 @@ public class Console {
   }
 
   public boolean parse(final String line, final boolean printCommand) throws IOException {
+    return execute(parser.parse(line, 0), printCommand);
+  }
 
-    final ParsedLine parsedLine = parser.parse(line, 0);
-
+  /**
+   * Executes the commands extracted from the text by the parser.
+   */
+  private boolean execute(final ParsedLine parsedLine, final boolean printCommand) throws IOException {
     if (parsedLine == null)
       return true;
 

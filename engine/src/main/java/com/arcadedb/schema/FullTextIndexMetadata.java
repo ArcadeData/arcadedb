@@ -87,9 +87,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private float              bm25B       = DEFAULT_BM25_B;
   private final Map<String, Float> fieldBoosts = new ConcurrentHashMap<>();
 
-  // PERSISTED CORPUS STATISTICS FOR avgdl (live document count and sum of document lengths).
-  // NOTE (concurrency): concurrent transactions can index documents into the same bucket simultaneously, all mutating this
-  // shared per-bucket metadata, so the counters are AtomicLong (and countersValid is volatile) - bare longs would lose updates.
+  // PERSISTED TYPE-WIDE CORPUS STATISTICS (live document count and sum of document lengths).
+  // NOTE (concurrency): every bucket index of a logical TypeIndex shares this metadata instance, so concurrent transactions can
+  // update it from different buckets. The counters are AtomicLong (and countersValid is volatile) so bare longs cannot lose
+  // updates.
   private final AtomicLong totalDocs     = new AtomicLong(0L);
   private final AtomicLong sumDocLength  = new AtomicLong(0L);
   private volatile boolean countersValid = false;
@@ -537,12 +538,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   /**
    * Returns the average document length across the collection, or 1.0 when no statistics are available.
    * <p>
-   * SCOPE (intentional, do not "fix" without understanding): these counters are TYPE-WIDE (this metadata instance is shared by
-   * every bucket index of the type), so avgdl is type-wide - whereas BM25's {@code N} and {@code df} are measured PER BUCKET (see
-   * {@code LSMTreeFullTextIndex.resolveTotalDocs}). The mismatch is deliberate: per-bucket {@code df} requires a per-bucket
-   * {@code N} for an unbiased IDF, while avgdl is only a length normalizer for which a type-wide value is a fine estimate and
-   * avoids per-bucket length bookkeeping. For a multi-bucket type with very unequal bucket sizes, length normalization is
-   * therefore slightly biased - a cosmetic inaccuracy, not a correctness bug.
+   * SCOPE: these counters are TYPE-WIDE because every bucket index of the logical type shares this metadata instance.
+   * {@code FullTextSearch} combines them with type-wide document frequencies so scores from different buckets are comparable.
+   * A caller addressing one bucket-level index directly still uses that bucket's local N/df with this type-wide average as a
+   * length-normalization estimate; cross-bucket callers should use the logical {@code TypeIndex} or {@code FullTextSearch}.
    * <p>
    * The two counters are read independently (no shared lock). This method reads {@code totalDocs} first, then {@code sumDocLength};
    * combined with the write ordering in {@link #addDocument}/{@link #removeDocument} (which publish via {@code totalDocs}), the

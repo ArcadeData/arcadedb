@@ -126,6 +126,7 @@ public class IndexSelectionRule implements OptimizationRule {
             anchor.getPropertyName(),
             anchor.getRangePredicates(),
             anchor.getIndex().getIndexName(),
+            anchor.getIndex().getPropertyNames(),
             anchor.getEstimatedCost(),
             anchor.getEstimatedCardinality()
         );
@@ -137,17 +138,22 @@ public class IndexSelectionRule implements OptimizationRule {
             anchor.getPropertyName(),
             propertyValue,
             anchor.getIndex().getIndexName(),
+            anchor.getIndex().getPropertyNames(),
+            anchor.getKeyValues(),
             anchor.getEstimatedCost(),
             anchor.getEstimatedCardinality()
         );
       }
     } else {
-      return new NodeByLabelScan(
+      final NodeByLabelScan scan = new NodeByLabelScan(
           anchor.getVariable(),
           labelToUse,
           anchor.getEstimatedCost(),
           anchor.getEstimatedCardinality()
       );
+      // Lets a partitioned type be read through the single bucket its pinned partition values map to
+      scan.setPatternProperties(anchor.getNode().getProperties());
+      return scan;
     }
   }
 

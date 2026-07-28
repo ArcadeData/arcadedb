@@ -506,6 +506,70 @@ class RemoteHttpComponentTest {
     assertThat(result.getMessage()).contains("Not Found");
   }
 
+  /**
+   * The server deflects requests with 503 while it installs a snapshot. That response carries no typed
+   * {@code exception} field, so it must be classified as retryable from the status code alone: the request
+   * is refused before execution, nothing was committed, and the server asks the client to come back.
+   */
+  @Test
+  void manageExceptionHttp503SnapshotInstallIsRetryable() {
+    final JSONObject json = new JSONObject();
+    json.put("error", "Server is installing a snapshot, please retry");
+    json.put("detail", "");
+    // No exception field: this is the raw deflection emitted before any handler runs.
+
+    final HttpResponse<String> response = createMockResponse(503, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+    assertThat(result.getMessage()).contains("Server is installing a snapshot");
+  }
+
+  /**
+   * An untyped 503 is retry-worthy by the server contract: non-retryable conflicts deliberately use 409.
+   */
+  @Test
+  void manageExceptionHttp503WithoutReasonIsRetryable() {
+    final HttpResponse<String> response = createMockResponse(503, "{}");
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+  }
+
+  /**
+   * The status-code fallback must not shadow the typed dispatch. QuorumNotReachedException extends
+   * NeedRetryException, so the server's NeedRetryException catch sends it with status 503 AND the typed
+   * field: the caller must still receive the specific type, not the generic supertype.
+   */
+  @Test
+  void manageExceptionHttp503KeepsTypedQuorumNotReached() {
+    final JSONObject json = new JSONObject();
+    json.put("exception", QuorumNotReachedException.class.getName());
+    json.put("detail", "Quorum not reached");
+
+    final HttpResponse<String> response = createMockResponse(503, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(QuorumNotReachedException.class);
+    assertThat(result.getMessage()).isEqualTo("Quorum not reached");
+  }
+
+  /**
+   * An exception type this client does not know about, delivered with 503, still has to be retryable:
+   * the status code carries the contract even when the type name does not.
+   */
+  @Test
+  void manageExceptionHttp503UnknownTypeIsRetryable() {
+    final JSONObject json = new JSONObject();
+    json.put("exception", "com.arcadedb.server.SomeFutureServerException");
+    json.put("detail", "not yet known to this client");
+
+    final HttpResponse<String> response = createMockResponse(503, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+  }
+
   @Test
   void manageExceptionHttp500InternalServerError() {
     final JSONObject json = new JSONObject();
@@ -916,9 +980,77 @@ class RemoteHttpComponentTest {
     });
   }
 
+  /**
+   * With the FIXED connection strategy {@code maxRetry} comes from NETWORK_SAME_SERVER_ERROR_RETRIES, whose
+   * default of 0 is clamped to 1. That must not cap the separate election/503 retry budget
+   * (HA_CLIENT_ELECTION_RETRY_COUNT): a transient 503 has to be retried on the same server, otherwise every
+   * write issued while a node installs a snapshot is lost even though the server asked the client to retry.
+   */
+  @Test
+  void httpCommandRetriesTransient503ThenSucceeds() throws Exception {
+    final String error503 = new JSONObject().put("error", "Server is installing a snapshot, please retry").toString();
+
+    withHttpServer(List.of(new StubResponse(503, error503), new StubResponse(200, "{\"result\":\"ok\"}")), port -> {
+      final ContextConfiguration configuration = new ContextConfiguration();
+      configuration.setValue(GlobalConfiguration.HA_CLIENT_ELECTION_RETRY_DELAY_MS, 10L);
+      final TestableRemoteHttpComponent c = new TestableRemoteHttpComponent("127.0.0.1", port, "root", "test", configuration);
+      c.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+      try {
+        final Object result = c.httpCommand("GET", null, "server", null, null, null, false, false,
+            (response, json) -> json.getString("result"));
+        assertThat(result).isEqualTo("ok");
+      } finally {
+        c.close();
+      }
+    });
+  }
+
+  private record StubResponse(int statusCode, String body) {
+  }
+
   @FunctionalInterface
   private interface ServerAction {
     void run(int port) throws Exception;
+  }
+
+  /**
+   * Starts a loopback HTTP server that answers the given responses in order, one per connection, then runs
+   * {@code action} against its port. Used to exercise the client's retry loop across multiple attempts.
+   */
+  private void withHttpServer(final List<StubResponse> responses, final ServerAction action) throws Exception {
+    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+      final int port = serverSocket.getLocalPort();
+
+      final Thread serverThread = new Thread(() -> {
+        for (final StubResponse stub : responses) {
+          try (final Socket client = serverSocket.accept()) {
+            final InputStream in = client.getInputStream();
+            final byte[] buf = new byte[8192];
+            int total = 0;
+            while (total < buf.length) {
+              final int n = in.read(buf, total, buf.length - total);
+              if (n < 0)
+                break;
+              total += n;
+              if (new String(buf, 0, total, StandardCharsets.ISO_8859_1).contains("\r\n\r\n"))
+                break;
+            }
+            final byte[] body = stub.body().getBytes(StandardCharsets.UTF_8);
+            final byte[] header = ("HTTP/1.1 " + stub.statusCode() + " \r\nContent-Type: application/json\r\nContent-Length: "
+                + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1);
+            client.getOutputStream().write(header);
+            client.getOutputStream().write(body);
+            client.getOutputStream().flush();
+          } catch (final Exception ignored) {
+            // best-effort: the test assertions cover the client side
+          }
+        }
+      });
+      serverThread.setDaemon(true);
+      serverThread.start();
+
+      action.run(port);
+    }
   }
 
   /**

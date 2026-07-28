@@ -108,6 +108,31 @@ class ConsoleBatchTest {
     db.drop();
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/5457: comments (even when they contain a semicolon) must not break the
+   * script, and a comment at the end of an argument must not swallow the following argument.
+   */
+  @Test
+  void batchModeWithComments() throws Exception {
+    Console.execute(new String[] { "-b", """
+        create database console; -- creates the database ; and this is a comment
+        /* a block comment
+           spanning ; multiple lines */
+        create vertex type ConsoleOnlyVertex; -- creates the type
+        """ });
+
+    Database db = new DatabaseFactory("./target/databases/console").open();
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
+    db.drop();
+
+    Console.execute(
+        new String[] { "-b", "create database console -- a trailing comment ; here", "create vertex type ConsoleOnlyVertex" });
+
+    db = new DatabaseFactory("./target/databases/console").open();
+    assertThat(db.getSchema().existsType("ConsoleOnlyVertex")).isTrue();
+    db.drop();
+  }
+
   @Test
   void interactiveMode() throws Exception {
     Console.execute(new String[] { "create database console; create vertex type ConsoleOnlyVertex;exit" });

@@ -165,6 +165,14 @@ function escapeHtml(unsafe) {
   return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
+/**
+ * Wraps a schema object name (bucket, index, type) in back-ticks so it can be embedded in a SQL command even when it carries
+ * characters that are not valid in a bare identifier - e.g. the comma in the auto-derived compound-index name `Type[propA,propB]`.
+ */
+function quoteSqlName(name) {
+  return "`" + String(name).replace(/`/g, "\\`") + "`";
+}
+
 function arrayRemove(array, predicate) {
   for (var i = 0; i < array.length; i++) {
     if (predicate(array[i])) {

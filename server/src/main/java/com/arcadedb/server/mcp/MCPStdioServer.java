@@ -21,6 +21,7 @@ package com.arcadedb.server.mcp;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.mcp.MCPDispatcher.MCPResponse;
@@ -91,8 +92,7 @@ public class MCPStdioServer {
           continue;
 
         try {
-          final JSONObject request = new JSONObject(line);
-          final String response = dispatch(request);
+          final String response = dispatch(line.trim());
           if (response != null) {
             output.println(response);
             output.flush();
@@ -109,10 +109,24 @@ public class MCPStdioServer {
     }
   }
 
-  private String dispatch(final JSONObject request) {
-    final MCPResponse response = dispatcher.dispatch(request, user);
+  /**
+   * Dispatches one newline-delimited message, which MCP 2025-03-26 allows to be either a single JSON-RPC
+   * object or a batch array. Returns the line to write back, or null when there is nothing to answer.
+   */
+  private String dispatch(final String line) {
+    if (line.charAt(0) == '[') {
+      final JSONArray batch = new JSONArray(line);
+      if (batch.isEmpty())
+        return jsonRpcError(null, -32600, "Invalid Request: empty batch");
 
-    // A null body is a JSON-RPC notification, which is written back as nothing at all.
+      final JSONArray responses = dispatcher.dispatchBatch(batch, user);
+      // A batch containing only notifications and/or responses produces no output.
+      return responses.isEmpty() ? null : responses.toString();
+    }
+
+    final MCPResponse response = dispatcher.dispatch(new JSONObject(line), user);
+
+    // A null body is a one-way notification or response, which is written back as nothing at all.
     return response.json() == null ? null : response.json().toString();
   }
 

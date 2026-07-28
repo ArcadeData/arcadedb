@@ -222,15 +222,9 @@ public class GraphBatch implements AutoCloseable {
     this.commitEvery = commitEvery;
     this.commitRetries = commitRetries;
     this.commitRetryDelayMs = commitRetryDelayMs;
-    // Replication layers (e.g. Raft) need WAL bytes captured during commit phase 1 to ship to
-    // followers; if we skipped the WAL the leader would write pages locally but replicas would
-    // silently miss the changes. Force WAL on for replicated databases (issue #4076).
-    if (!useWAL && database.isReplicated()) {
-      LogManager.instance().log(this, Level.INFO,
-          "GraphBatch: WAL was disabled but the database is replicated, forcing WAL on so changes can be replicated");
-      this.useWAL = true;
-    } else
-      this.useWAL = useWAL;
+    // Already the effective value: Builder.build() forces the WAL on for replicated databases (issue #4076)
+    // before it derives commitEvery from it (issue #5470).
+    this.useWAL = useWAL;
     this.walFlush = walFlush;
     this.preAllocateEdgeChunks = preAllocateEdgeChunks;
     this.parallelFlush = parallelFlush;
@@ -975,6 +969,23 @@ public class GraphBatch implements AutoCloseable {
    */
   public int getDeferredIncomingEdgeCount() {
     return inEdgeCount;
+  }
+
+  /**
+   * Number of records written inside one transaction during an edge flush, or 0 when the whole flush is
+   * committed at once. On a replicated database this is also the size of a single Raft entry, so it bounds
+   * how large a replicated entry can get (issue #5470).
+   */
+  public int getCommitEvery() {
+    return commitEvery;
+  }
+
+  /**
+   * Whether the bulk load writes the WAL. Always true on a replicated database, whatever the builder was
+   * asked for, because replication ships the WAL bytes to the followers (issue #4076).
+   */
+  public boolean isUseWAL() {
+    return useWAL;
   }
 
   // ---------------------------------------------------------------------------
@@ -2350,12 +2361,24 @@ public class GraphBatch implements AutoCloseable {
       if (!batchSizeExplicit && expectedEdgeCount > 0)
         effectiveBatchSize = Math.max(MIN_BATCH_SIZE, Math.min(MAX_BATCH_SIZE, expectedEdgeCount));
 
+      // Replication layers (e.g. Raft) need the WAL bytes captured during commit phase 1 to ship to the
+      // followers; if we skipped the WAL the leader would write pages locally but the replicas would
+      // silently miss the changes. Force WAL on for replicated databases (issue #4076).
+      final boolean effectiveUseWAL = useWAL || database.isReplicated();
+      if (effectiveUseWAL && !useWAL)
+        LogManager.instance().log(GraphBatch.class, Level.INFO,
+            "GraphBatch: WAL was disabled but the database is replicated, forcing WAL on so changes can be replicated");
+
       // When WAL is off and no explicit commitEvery, use 0 (single commit per flush)
-      // to eliminate unnecessary transaction begin/commit overhead
-      final int effectiveCommitEvery = !commitEveryExplicit && !useWAL ? 0 : commitEvery;
+      // to eliminate unnecessary transaction begin/commit overhead.
+      // This must be decided on the EFFECTIVE WAL setting, not on the requested one: on a replicated
+      // database the shortcut would otherwise commit a whole flush (up to batchSize edges) in one
+      // transaction, which replication ships as a single Raft entry - past the maximum replicated entry
+      // size the load then dies with ReplicatedEntryTooLargeException (issue #5470).
+      final int effectiveCommitEvery = !commitEveryExplicit && !effectiveUseWAL ? 0 : commitEvery;
 
       return new GraphBatch(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
-          bidirectional, effectiveCommitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
+          bidirectional, effectiveCommitEvery, effectiveUseWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
           commitRetries, commitRetryDelayMs);
     }
   }

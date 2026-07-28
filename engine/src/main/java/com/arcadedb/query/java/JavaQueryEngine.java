@@ -38,6 +38,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class JavaQueryEngine implements QueryEngine {
   public static final String                       ENGINE_NAME       = "java";
@@ -46,6 +47,9 @@ public class JavaQueryEngine implements QueryEngine {
   private final       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
   private final       Set<String>                  registeredClasses = new HashSet<>();
   private final       Set<String>                  registeredMethods = new HashSet<>();
+
+  /** #5418: names the user-code workers and marks them DAEMON (see the constructor). */
+  private static final AtomicLong USER_CODE_THREAD_SEQ = new AtomicLong();
 
   private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
     @Override
@@ -100,7 +104,13 @@ public class JavaQueryEngine implements QueryEngine {
 
   protected JavaQueryEngine(final DatabaseInternal database) {
     this.userCodeExecutorQueue = new ArrayBlockingQueue<>(1_000);
-    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, new ThreadPoolExecutor.CallerRunsPolicy());
+    // #5418: named DAEMON workers. With the JDK default factory these were non-daemon core threads that never
+    // time out, so a single java-language query on a Database the embedder later leaks pinned its JVM alive.
+    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, r -> {
+      final Thread t = new Thread(r, "ArcadeDB-JavaUserCode-" + USER_CODE_THREAD_SEQ.incrementAndGet());
+      t.setDaemon(true);
+      return t;
+    }, new ThreadPoolExecutor.CallerRunsPolicy());
     this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);
   }
 

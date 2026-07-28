@@ -92,6 +92,8 @@ public enum GlobalConfiguration {
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(-1);
         VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(-1);
+        VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT.setValue(50);
+        VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(50);
 
         if (cores > 1)
           // USE ONLY HALF OF THE CORES MINUS ONE
@@ -124,6 +126,7 @@ public enum GlobalConfiguration {
         SERVER_HTTP_WORKER_THREADS.setValue(16);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
         VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(10_000);
+        VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(10_000);
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
@@ -399,6 +402,14 @@ public enum GlobalConfiguration {
       "At commit, when the only conflict on an edge-list page is concurrent in-chunk edge appends (which commute), re-apply the appends on top of the newer page version instead of failing the whole transaction with a ConcurrentModificationException. Removes the retry storm on super-node (hot vertex) edge insertion",
       Boolean.class, true),
 
+  TX_PAGE_SLOT_MERGE("arcadedb.txPageSlotMerge", SCOPE.DATABASE,
+      "Generalization of GRAPH_EDGE_APPEND_MERGE to arbitrary records. At commit, when a bucket page conflicts only because concurrent transactions touched DIFFERENT record slots on it (logically-unrelated records sharing a page), re-apply this transaction's slot writes on top of the newer committed page instead of failing the whole transaction with a ConcurrentModificationException. Covers new-record inserts into free slots and same-or-smaller in-place updates (e.g. the vertex edge-list head-pointer flip on super-node insertion); a genuine same-record conflict, or any non-rebasable change (delete, multi-page/placeholder record, record growth), still raises the exception so it is retried",
+      Boolean.class, true),
+
+  TX_PAGE_SLOT_MERGE_MAX_BYTES("arcadedb.txPageSlotMergeMaxBytes", SCOPE.DATABASE,
+      "Per-transaction soft cap (in bytes) on the record pre-images/final images retained for the disjoint-slot merge (TX_PAGE_SLOT_MERGE). When a transaction's tracked images exceed this, the merge is disabled for the rest of that transaction and its conflicting pages fall back to a normal retry - bounding heap on a very large transaction (e.g. a bulk in-place update) instead of retaining ~2x every touched record until commit",
+      Long.class, 16L * 1024 * 1024),
+
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
       "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. FORWARD-INCOMPATIBLE ON FIRST USE: promotion writes a new record type (the stripe directory), so once any vertex promotes, the database can no longer be opened by releases older than 26.8.1; promotion is one-way. Iteration order on promoted vertices is approximate (newest-generation-first) instead of strict reverse-insertion. 0 disables promotion entirely (databases stay fully readable by older versions)",
       Integer.class, 4096),
@@ -553,6 +564,10 @@ public enum GlobalConfiguration {
   INDEX_COMPACTION_MIN_PAGES_SCHEDULE("arcadedb.indexCompactionMinPagesSchedule", SCOPE.DATABASE,
       "Minimum number of mutable pages for an index to be schedule for automatic compaction. 0 = disabled", Integer.class, 10),
 
+  INDEX_COMPACTION_FULL_SERIES("arcadedb.indexCompactionFullSeriesThreshold", SCOPE.DATABASE,
+      "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. 0 = disabled",
+      Integer.class, 10),
+
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
       Maximum number of vector locations to cache in memory per vector index. \
@@ -566,8 +581,44 @@ public enum GlobalConfiguration {
       Maximum number of vectors to cache in memory during HNSW graph building. \
       Higher values speed up construction but use more RAM. \
       RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
-      Recommended: 100000 for 768-dim vectors (~30MB), scale based on dimensionality.""",
-      Integer.class, 100_000),
+      0 (default) sizes it automatically: an index whose vectors live in the documents (no quantization, or \
+      PRODUCT) caches the whole set when it fits arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent, because \
+      every miss costs a record read; an inline-quantized index (INT8/BINARY) reads a miss straight from an \
+      index page and keeps a small bound instead.""",
+      Integer.class, 0),
+
+  VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent", SCOPE.DATABASE,
+      """
+      Maximum share of the JVM heap (percentage) the auto-sized graph-build cache may use. Only applies when \
+      arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
+      the cache evicts instead of holding everything.""",
+      Integer.class, 25),
+
+  VECTOR_INDEX_SEARCH_CACHE_SIZE("arcadedb.vectorIndex.searchCacheSize", SCOPE.DATABASE,
+      """
+      Maximum number of vectors kept in the per-index search cache. The cache is shared by every query on the \
+      index and survives across queries, so a working set that fits stays resident instead of being re-read from \
+      the documents (or from the quantized index pages) on every beam-search hop. \
+      RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
+      0 (default) sizes it automatically from the number of indexed vectors, capped by \
+      arcadedb.vectorIndex.searchCacheMaxHeapPercent. -1 disables the cache entirely.""",
+      Integer.class, 0),
+
+  VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,
+      """
+      Upper bound, as a percentage of the maximum JVM heap, on the RAM an automatically sized per-index search \
+      cache may use (see arcadedb.vectorIndex.searchCacheSize). Ignored when the cache size is set explicitly.""",
+      Integer.class, 25),
+
+  VECTOR_INDEX_SEARCHER_POOL_SIZE("arcadedb.vectorIndex.searcherPoolSize", SCOPE.DATABASE,
+      """
+      Maximum number of JVector graph searchers kept alive per vector index for reuse across queries. Each \
+      searcher owns the beam-search scratch state (candidate heap, result heaps, visited set) plus a graph view; \
+      allocating one per query made that scratch state the largest single source of garbage on a dense-search \
+      workload, and the resulting young-GC frequency dominated the query tail latency. \
+      0 (default) sizes the pool automatically as 2x the available cores. -1 disables pooling and allocates a \
+      searcher per query.""",
+      Integer.class, 0),
 
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
       """
@@ -576,6 +627,24 @@ public enum GlobalConfiguration {
       Lower values provide fresher results but rebuild more frequently. \
       Recommended: 50-200 for read-heavy, 200-500 for write-heavy workloads.""",
       Integer.class, 100),
+
+  VECTOR_INDEX_REBUILD_GRAPH_RATIO("arcadedb.vectorIndex.rebuildGraphRatio", SCOPE.DATABASE,
+      """
+      Fraction of the current graph size that must accumulate as pending mutations before the HNSW graph is \
+      rebuilt, on top of the absolute mutationsBeforeRebuild floor. A rebuild always re-indexes the whole graph, \
+      so a fixed absolute threshold makes it cost O(index size) for every few new vectors and turns bulk \
+      ingestion quadratic. Scaling the threshold with the graph amortizes rebuilds geometrically. \
+      Pending vectors stay exactly searchable through the in-memory delta buffer meanwhile, so a higher ratio \
+      trades a slightly longer per-query delta scan for far less rebuild CPU. Set to 0 to disable scaling and \
+      use only the absolute threshold.""",
+      Float.class, 0.2f),
+
+  VECTOR_INDEX_MAX_PENDING_MUTATIONS("arcadedb.vectorIndex.maxPendingMutations", SCOPE.DATABASE,
+      """
+      Hard ceiling on the rebuild threshold computed from rebuildGraphRatio. Pending vectors are held in an \
+      in-memory delta buffer until the next rebuild, so this bounds that buffer's footprint \
+      (RAM = pendingMutations * dimensions * 4 bytes). Set to 0 for no ceiling.""",
+      Integer.class, 50_000),
 
   VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
       """
@@ -637,6 +706,16 @@ public enum GlobalConfiguration {
       Force-enable the Studio web tool (static content) even when the server runs in 'production' mode. In 'development' and \
       'test' mode Studio is always served; in 'production' mode it is disabled by default and this setting can re-enable it""",
       Boolean.class, false),
+
+  SERVER_SHUTDOWN_TIMEOUT("arcadedb.server.shutdownTimeout", SCOPE.SERVER,
+      """
+      Milliseconds the JVM shutdown hook waits for the server lifecycle lock before giving up and letting \
+      the JVM exit WITHOUT a graceful stop. It only matters when another thread is inside start()/stop() \
+      when the shutdown signal arrives: normally the hook takes the lock immediately and this value is \
+      never reached. Giving up leaves databases as a kill would - the next open replays the WAL - which is \
+      the lesser evil, because a hook that waits forever can make the process unkillable (issue #5418). \
+      Raise it if a legitimate shutdown of very large databases needs longer than the default.""",
+      Long.class, 60_000L),
 
   // Metrics
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
@@ -744,6 +823,17 @@ public enum GlobalConfiguration {
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
       "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
+
+  SERVER_HTTP_STREAMING_READ_TIMEOUT("arcadedb.server.httpStreamingReadTimeout", SCOPE.SERVER,
+      """
+      Budget in milliseconds granted to endpoints that consume the request body while working (today only \
+      the bulk-load /api/v1/batch endpoint). Undertow kills a connection when no read() is issued for \
+      'arcadedb.network.socketTimeout' milliseconds, which on a streaming upload also counts the time the \
+      server spends committing instead of reading: a long index compaction or the replication of a large \
+      entry then aborts the upload mid-stream (issue #5470). This setting only relaxes that asynchronous \
+      watchdog; a client that really stops sending is still cut off after 'arcadedb.network.socketTimeout' \
+      because each blocking read keeps its own timeout. Set to 0 to disable the relaxation. Default is 10 minutes""",
+      Integer.class, 600_000), // 10 MINUTES DEFAULT
 
   // SERVER gRPC
   SERVER_GRPC_QUERY_MAX_RESULT_ROWS("arcadedb.server.grpcQueryMaxResultRows", SCOPE.SERVER,
@@ -859,7 +949,18 @@ public enum GlobalConfiguration {
       "Maximum Raft log segment size (e.g. '64MB', '128MB')", String.class, "64MB"),
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
-      "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
+      """
+      AppendEntries batch byte limit for replication (e.g. '32MB'). Ratis applies this limit per ENTRY as \
+      well as per batch, so it is also the HARD MAXIMUM SIZE OF A SINGLE REPLICATED TRANSACTION - usually \
+      lower than arcadedb.ha.grpcMessageSizeMax and therefore the limit that actually binds. An entry above \
+      it is rejected with a state-machine error that makes the leader step down; the write then fails with \
+      ReplicatedEntryTooLargeException naming this setting. The size compared against it is the COMPRESSED \
+      WAL of the transaction, so text/JSON payloads shrink far below their raw size while incompressible \
+      ones (binary blobs, base64, encrypted fields, float vectors) map roughly 1:1. Raise it when single \
+      transactions or records are bigger than the default, and raise arcadedb.ha.writeBufferSize with it \
+      (it must stay >= this value + 8 bytes). Cost of raising it: a directly-allocated write buffer of \
+      writeBufferSize per server, plus up to this many bytes of heap per follower appender during catch-up.""",
+      String.class, "32MB"),
 
   HA_APPEND_ELEMENT_LIMIT("arcadedb.ha.appendElementLimit", SCOPE.SERVER,
       """
@@ -873,9 +974,11 @@ public enum GlobalConfiguration {
 
   HA_WRITE_BUFFER_SIZE("arcadedb.ha.writeBufferSize", SCOPE.SERVER,
       """
-      Raft log write buffer size (e.g. '8MB'). Must be at least appendBufferSize + 8 bytes, \
-      otherwise the server fails to start with ConfigurationException.""",
-      String.class, "8MB"),
+      Raft log write buffer size (e.g. '40MB'). Must be at least appendBufferSize + 8 bytes, otherwise the \
+      server fails to start with ConfigurationException. Ratis allocates this as a DIRECT ByteBuffer, once \
+      per server, so it is off-heap memory reserved at startup - keep it just above appendBufferSize rather \
+      than generously oversized.""",
+      String.class, "40MB"),
 
   HA_LOG_PURGE_GAP("arcadedb.ha.logPurgeGap", SCOPE.SERVER,
       """
@@ -1173,8 +1276,8 @@ public enum GlobalConfiguration {
       Maximum size in bytes of a TimeSeries sealed-store file that may be shipped inline inside a single \
       Raft SCHEMA_ENTRY during compaction. When the projected sealed-store size would exceed this cap, the \
       leader skips compacting that shard (data stays in the fully replicated mutable bucket) instead of \
-      producing an entry too large for the Raft transport. Kept below the Raft message size cap (64MB) with \
-      headroom for the schema JSON and the mutable-bucket clear WAL.""",
+      producing an entry too large for the Raft transport. Always clamped down to the real per-entry ceiling, \
+      min(arcadedb.ha.grpcMessageSizeMax, arcadedb.ha.appendBufferSize), so a value above that has no effect.""",
       Long.class, 48 * 1024 * 1024L),
 
   HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
@@ -1526,6 +1629,26 @@ public enum GlobalConfiguration {
         return v;
     }
     return null;
+  }
+
+  /**
+   * Maximum size, in bytes, of a SINGLE replicated Raft log entry: the smaller of
+   * {@link #HA_GRPC_MESSAGE_SIZE_MAX} and {@link #HA_APPEND_BUFFER_SIZE}.
+   * <p>
+   * Issue #4743: the gRPC frame cap is NOT the effective ceiling. Ratis also enforces the appender
+   * buffer byte limit per entry, and rejects an entry above it with a {@code StateMachineException}
+   * whose {@code leaderShouldStepDown()} is {@code true} - so the LEADER STEPS DOWN, the caller retries
+   * the same oversized entry against the next leader and topples it too, and the cluster churns
+   * elections while the write never lands. Since the appender default (4MB) is far below the gRPC
+   * default (128MB), in practice the appender limit is what binds.
+   * <p>
+   * Every component that produces or projects the size of a replicated entry must measure itself
+   * against this value, not against either knob alone.
+   */
+  public static long maxReplicatedRaftEntrySize(final ContextConfiguration configuration) {
+    final long grpcMessageSizeMax = configuration.getValueAsLong(HA_GRPC_MESSAGE_SIZE_MAX);
+    final long appendBufferSize = FileUtils.getSizeAsNumber(configuration.getValueAsString(HA_APPEND_BUFFER_SIZE));
+    return Math.min(grpcMessageSizeMax, appendBufferSize);
   }
 
   /**

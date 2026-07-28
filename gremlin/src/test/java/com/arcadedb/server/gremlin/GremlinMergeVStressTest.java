@@ -122,8 +122,14 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
               lastException = e;
               String errorMsg = e.getMessage();
 
-              // Check if it's a concurrent modification exception that should be retried
-              if (errorMsg != null && (errorMsg.contains("Concurrent modification") ||
+              // Check if it's a concurrent modification exception that should be retried. The engine appends the
+              // canonical marker "Please retry the operation" to EVERY retriable concurrency conflict - not only the
+              // page-level "Concurrent modification on page ..." but also the slot-rebase variant introduced with the
+              // adaptive slot merge (issue #5381): "Slot rebase not possible on page ... (concurrent change to the
+              // same record). Please retry the operation". Match on that marker so a new retriable variant is never
+              // misclassified as a fatal error.
+              if (errorMsg != null && (errorMsg.contains("Please retry the operation") ||
+                  errorMsg.contains("Concurrent modification") ||
                   errorMsg.contains("ConcurrentModificationException"))) {
                 attempt++;
 //                System.out.println(Thread.currentThread().getName() + " iteration " + iteration +

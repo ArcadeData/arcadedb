@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
@@ -31,8 +32,11 @@ import com.arcadedb.server.http.handler.batch.CsvBatchRecordStream;
 import com.arcadedb.server.http.handler.batch.JsonlBatchRecordStream;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
+import org.xnio.Options;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -58,6 +62,13 @@ import java.util.logging.Level;
  * Input must contain vertices first, then edges. Vertices can have temporary IDs (@id) that
  * edges reference via @from/@to. Edges can also reference existing database RIDs (#bucket:pos).
  * <p>
+ * Read timeout: the body is consumed while the load runs, so the pauses the worker thread takes inside a commit
+ * (index compaction, replication of a large entry) count towards Undertow's read watchdog. For the duration of
+ * the request that watchdog is therefore raised to {@code arcadedb.server.httpStreamingReadTimeout} instead of
+ * {@code arcadedb.network.socketTimeout}, which still bounds every single blocking read and so keeps cutting off
+ * a client that stops sending (issue #5470). A body that ends early is answered with HTTP 408 and the
+ * partial-commit counts, never with a 200 carrying a truncated count.
+ * <p>
  * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
  * failure mid-stream leaves earlier chunks durably committed. On a client-input error the response
  * carries {@code verticesCreated} / {@code edgesCreated} and a {@code partialCommit} flag; because
@@ -76,12 +87,18 @@ import java.util.logging.Level;
  * - preAllocateEdgeChunks (boolean, default true)
  * - edgeListInitialSize (int, default 2048)
  * - bidirectional (boolean, default true)
- * - commitEvery (int, default 50000)
+ * - commitEvery (int, default 50000): records written per transaction during an edge flush. It is the edge-phase
+ *   counterpart of {@code vertexBatchSize} below, so on a replicated database it bounds the size of the Raft
+ *   entry produced by a flush
  * - expectedEdgeCount (int, default 0)
  * - commitRetries (int, default 10): retries of a vertex-creation commit that fails with a
  *   transient retryable error (e.g. a Raft leader re-election), so a cluster hiccup does not
  *   abort the whole streaming load (issue #4724)
  * - commitRetryDelayMs (long, default 1000): initial back-off before the first retry
+ * - vertexBatchSize (int, default 10000): vertices accumulated before they are created and committed in
+ *   one transaction. On a replicated database that transaction becomes a single Raft entry, so this is the
+ *   knob to lower when the server warns that a replicated entry approaches the maximum entry size
+ *   (issue #5470); on an embedded/standalone database it only trades memory for throughput
  */
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
@@ -132,29 +149,49 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         ? contentTypeHeader.getFirst().toLowerCase()
         : "application/x-ndjson";
 
-    // On a follower of a replicated database the request must run on the leader: the bulk
-    // path mutates shared state (schema dictionary, type metadata) that only the leader can
-    // serialize. Without forwarding, a single batch with several new property keys hits the
-    // race in Dictionary.getIdByName as the local state machine apply runs concurrently with
-    // the user thread (issue #4122).
-    final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha != null && !ha.isLeader())
-      return forwardBatchToLeader(exchange, ha, databaseName, user, contentType);
+    // Start streaming input. The stream must be created BEFORE relaxing the connection watchdog below:
+    // UndertowInputStream captures the read timeout in effect at construction time and uses it to bound
+    // every blocking read, so a client that stops sending is still cut off after
+    // 'arcadedb.network.socketTimeout' while the asynchronous watchdog moves to the streaming budget.
+    final InputStream inputStream = exchange.getInputStream();
 
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
-    final boolean isCsv = contentType.contains("text/csv");
+    // Applies to the forwarding path too: while the leader is busy the follower cannot drain the client
+    // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
+    final Integer previousReadTimeout = relaxConnectionReadTimeout(exchange);
+    try {
+      // On a follower of a replicated database the request must run on the leader: the bulk
+      // path mutates shared state (schema dictionary, type metadata) that only the leader can
+      // serialize. Without forwarding, a single batch with several new property keys hits the
+      // race in Dictionary.getIdByName as the local state machine apply runs concurrently with
+      // the user thread (issue #4122).
+      final HAServerPlugin ha = httpServer.getServer().getHA();
+      if (ha != null && !ha.isLeader())
+        return forwardBatchToLeader(exchange, ha, databaseName, user, contentType);
 
-    // Configure GraphBatch from query parameters
-    GraphBatch.Builder builder = database.batch();
-    configureBuilder(exchange, builder);
+      final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
+      final boolean isCsv = contentType.contains("text/csv");
 
-    final long startTime = System.currentTimeMillis();
+      // Configure GraphBatch from query parameters
+      final GraphBatch.Builder builder = database.batch();
+      configureBuilder(exchange, builder);
+
+      return streamRecords(exchange, databaseName, isCsv, builder, inputStream, new HashMap<>(),
+          System.currentTimeMillis(), parseVertexBatchSize(exchange));
+    } finally {
+      restoreConnectionReadTimeout(exchange, previousReadTimeout);
+    }
+  }
+
+  /**
+   * Consumes the streaming request body and feeds it to a {@link GraphBatch}. Extracted from
+   * {@link #execute} so the caller can restore the connection read timeout in a {@code finally} block.
+   */
+  private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
+      final boolean isCsv, final GraphBatch.Builder builder, final InputStream inputStream,
+      final Map<String, RID> tempIdMap, final long startTime, final int vertexBatchSize) throws Exception {
+
     long verticesCreated = 0;
     long edgesCreated = 0;
-    final Map<String, RID> tempIdMap = new HashMap<>();
-
-    // Start streaming input
-    final InputStream inputStream = exchange.getInputStream();
 
     try (final BatchRecordStream stream = isCsv
         ? new CsvBatchRecordStream(inputStream)
@@ -163,8 +200,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
       // Phase 1: Vertices — accumulate by type for batch creation
       String currentTypeName = null;
-      List<Object[]> vertexPropsBatch = new ArrayList<>(VERTEX_BATCH_SIZE);
-      List<String> vertexTempIds = new ArrayList<>(VERTEX_BATCH_SIZE);
+      final List<Object[]> vertexPropsBatch = new ArrayList<>(vertexBatchSize);
+      final List<String> vertexTempIds = new ArrayList<>(vertexBatchSize);
 
       while (stream.hasNext()) {
         final BatchRecord rec = stream.next();
@@ -189,7 +226,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         vertexPropsBatch.add(rec.copyProperties());
         vertexTempIds.add(rec.tempId);
 
-        if (vertexPropsBatch.size() >= VERTEX_BATCH_SIZE) {
+        if (vertexPropsBatch.size() >= vertexBatchSize) {
           verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, tempIdMap);
         }
       }
@@ -244,6 +281,34 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       error.put("edgesCreated", edgesCreated);
       error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
       return new ExecutionResponse(400, error.toString());
+    } catch (final IOException e) {
+      // The request body could not be read to the end: the client went away, a proxy cut the upload, or the
+      // connection watchdog fired because the server spent longer than its budget committing instead of
+      // reading (issue #5470). Never let this look like a completed load: reaching the end of the loop with a
+      // truncated body would answer 200 with a partial count and the client would happily move on.
+      final String message = e.getMessage() != null ? e.getMessage() : e.toString();
+      LogManager.instance().log(this, Level.WARNING,
+          "Batch load on database '%s' was interrupted after %d vertices and %d edges because the request body "
+              + "could not be read to the end: %s. If the server was busy (index compaction, replication of a large "
+              + "entry) raise '%s' (currently %d ms)",
+          null, databaseName, verticesCreated, edgesCreated, message,
+          GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT.getKey(),
+          httpServer.getServer().getConfiguration()
+              .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT));
+
+      final JSONObject error = new JSONObject();
+      error.put("error", "Request body was truncated after " + verticesCreated + " vertices and " + edgesCreated
+          + " edges: " + message);
+      error.put("exception", e.getClass().getName());
+      final String correlationId = getCorrelationId(exchange);
+      if (correlationId != null && !correlationId.isEmpty())
+        error.put("requestId", correlationId);
+      error.put("verticesCreated", verticesCreated);
+      error.put("edgesCreated", edgesCreated);
+      error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
+      // 408: the request was not fully received. The response often never reaches a client whose connection is
+      // already gone, but when it does it carries the counts needed to resume instead of restarting.
+      return new ExecutionResponse(408, error.toString());
     }
 
     final long elapsed = System.currentTimeMillis() - startTime;
@@ -262,6 +327,83 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     }
 
     return new ExecutionResponse(200, result.toString());
+  }
+
+  /**
+   * Number of vertices accumulated before they are created and committed in a single transaction. On a
+   * replicated database that transaction is shipped as one Raft entry, so a load of large records has to lower
+   * it to stay below the maximum replicated entry size - which is exactly what the server suggests when it
+   * warns that an entry is approaching the limit (issue #5470).
+   */
+  private int parseVertexBatchSize(final HttpServerExchange exchange) {
+    final String value = getQueryParameter(exchange, "vertexBatchSize");
+    if (value == null)
+      return VERTEX_BATCH_SIZE;
+
+    final int vertexBatchSize = Integer.parseInt(value);
+    if (vertexBatchSize < 1)
+      throw new IllegalArgumentException("vertexBatchSize must be greater than 0, but was " + vertexBatchSize);
+    return vertexBatchSize;
+  }
+
+  /**
+   * Raises the connection read timeout for the duration of a streaming batch load and returns the previous
+   * value so the caller can put it back (issue #5470).
+   * <p>
+   * Undertow arms an asynchronous watchdog that closes the connection when no {@code read()} is issued on the
+   * request channel for {@code arcadedb.network.socketTimeout} milliseconds. On this endpoint the body is
+   * consumed while the load runs, so that timer also counts the time the worker thread spends inside a commit:
+   * a full index compaction or the replication of a large Raft entry easily blocks it for minutes and the
+   * upload is killed halfway through with no way to tell the client. The watchdog is therefore given the
+   * {@code arcadedb.server.httpStreamingReadTimeout} budget instead.
+   * <p>
+   * This does not weaken slow-client protection: {@code UndertowInputStream} captured the original timeout when
+   * it was created (before this call) and applies it to every blocking read, so a client that stops sending is
+   * still cut off after {@code arcadedb.network.socketTimeout}.
+   *
+   * @return the previous timeout to restore, or {@code null} when nothing was changed
+   */
+  private Integer relaxConnectionReadTimeout(final HttpServerExchange exchange) {
+    final int streamingTimeout = httpServer.getServer().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT);
+    if (streamingTimeout <= 0)
+      return null;
+
+    try {
+      final ServerConnection connection = exchange.getConnection();
+      if (!connection.supportsOption(Options.READ_TIMEOUT))
+        return null;
+
+      final Integer previous = connection.getOption(Options.READ_TIMEOUT);
+      // A previous value of 0/null means the watchdog is already disabled: leave it alone. Never lower a
+      // timeout that is already more generous than the streaming budget.
+      if (previous == null || previous <= 0 || previous >= streamingTimeout)
+        return null;
+
+      connection.setOption(Options.READ_TIMEOUT, streamingTimeout);
+      return previous;
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot raise the read timeout of the batch connection, a long server-side pause may abort the upload: %s",
+          e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Puts back the read timeout saved by {@link #relaxConnectionReadTimeout}: the connection is keep-alive and
+   * the relaxed budget must not leak into the next request served on it.
+   */
+  private void restoreConnectionReadTimeout(final HttpServerExchange exchange, final Integer previous) {
+    if (previous == null)
+      return;
+
+    try {
+      exchange.getConnection().setOption(Options.READ_TIMEOUT, previous);
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot restore the read timeout of the batch connection: %s",
+          e.getMessage());
+    }
   }
 
   private int flushVertexBatch(final GraphBatch batch, final String typeName,

@@ -366,6 +366,18 @@ public class RemoteGraphBatch implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Number of vertices the server accumulates before creating and committing them in a single transaction.
+     * Default: 10,000. On a replicated database that transaction is shipped as one Raft entry, so lower it
+     * when the server warns that a replicated entry approaches the maximum entry size (issue #5470).
+     */
+    public Builder withVertexBatchSize(final int vertexBatchSize) {
+      if (vertexBatchSize < 1)
+        throw new IllegalArgumentException("vertexBatchSize must be greater than 0");
+      queryParams.put("vertexBatchSize", String.valueOf(vertexBatchSize));
+      return this;
+    }
+
     /** If true, enables Write-Ahead Logging during import. Default: false. */
     public Builder withWAL(final boolean useWAL) {
       queryParams.put("wal", String.valueOf(useWAL));

@@ -182,13 +182,11 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   }
 
   private static int estimateBlockPayloadSize(final SegmentParameters params) {
-    final int base = SegmentFormat.BLOCK_HEADER_SIZE + params.blockSize() * VarInt.MAX_VARLONG_BYTES * 2;
-    final int weightBytes = switch (params.weightQuantization()) {
-      case INT8 -> params.blockSize();
-      case FP16 -> params.blockSize() * 2;
-      case FP32 -> params.blockSize() * 4;
-    };
-    return Math.max(4096, base + weightBytes);
+    // Same worst case the read path caps its page-to-scratch copy with, so the two can never drift
+    // apart (issue #5388); the header is added back because the builder assembles both in one buffer.
+    final int base = SegmentFormat.BLOCK_HEADER_SIZE
+        + SegmentFormat.maxBlockPayloadSize(params.blockSize(), params.weightQuantization());
+    return Math.max(4096, base);
   }
 
   public void setSegmentId(final long segmentId) {
@@ -736,5 +734,36 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     if (b1 != b2)
       return Integer.compare(b1, b2);
     return Long.compare(a.getPosition(), b.getPosition());
+  }
+
+  /**
+   * Same ordering as {@link #compareRid(RID, RID)} with the left-hand side supplied as raw
+   * components. Lets the cursor hot path compare against decoded postings held in primitive arrays
+   * without materialising a {@link RID} per comparison.
+   */
+  public static int compareRid(final int bucketId, final long position, final RID b) {
+    final int b2 = b.getBucketId();
+    if (bucketId != b2)
+      return Integer.compare(bucketId, b2);
+    return Long.compare(position, b.getPosition());
+  }
+
+  /** Same ordering as {@link #compareRid(RID, RID)} with the right-hand side supplied as raw components. */
+  public static int compareRid(final RID a, final int bucketId, final long position) {
+    final int b1 = a.getBucketId();
+    if (b1 != bucketId)
+      return Integer.compare(b1, bucketId);
+    return Long.compare(a.getPosition(), position);
+  }
+
+  /**
+   * Same ordering as {@link #compareRid(RID, RID)} with both sides supplied as raw components. This
+   * is the comparison the DAAT traversal runs millions of times per learned-sparse query, so it
+   * touches no object at all (issue #5467).
+   */
+  public static int compareRid(final int bucketId1, final long position1, final int bucketId2, final long position2) {
+    if (bucketId1 != bucketId2)
+      return Integer.compare(bucketId1, bucketId2);
+    return Long.compare(position1, position2);
   }
 }

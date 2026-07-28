@@ -1553,6 +1553,7 @@ public class CypherExecutionPlan {
         NodePattern sourceNode = pathPattern.getFirstNode();
         String sourceVar = sourceNode.getVariable() != null ? sourceNode.getVariable() :
             ("  src" + anonymousVarCounter++);
+        final String writtenSourceVar = sourceVar;
 
         final boolean reversedFromIndexedAnchor =
             shouldReverseVariableLengthPathFromIndexedAnchor(matchClause, pathPattern);
@@ -1608,6 +1609,7 @@ public class CypherExecutionPlan {
           final var anchor = physicalPlan.getAnchor();
           sourceStep = new IndexSeekStep(anchor.getVariable(), anchor.getIndex().getTypeName(),
               anchor.getPropertyName(), anchor.getPropertyValue(), anchor.getIndex().getIndexName(),
+              anchor.getIndex().getPropertyNames(),
               anchor.getEstimatedCost(), anchor.getEstimatedCardinality(), context);
         } else
           sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter, sourcePushdown);
@@ -1665,7 +1667,7 @@ public class CypherExecutionPlan {
           // Anonymous edge: null if GAV-eligible, internal var if edge tracking needed.
           final String relVar;
           if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
-            if (relPattern.isVariableLength() || isEdgeVariableReferenced(relPattern.getVariable()))
+            if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable()))
               relVar = relPattern.getVariable();
             else
               relVar = hopNeedsEdgeTracking[i] ? ("  rel" + anonymousVarCounter++) : null;
@@ -1674,15 +1676,18 @@ public class CypherExecutionPlan {
           String targetVar = targetNode.getVariable() != null ? targetNode.getVariable() :
               ("  tgt" + anonymousVarCounter++);
 
-          // When reversed, swap source/target variables and use the original source as target
+          // When reversed, swap source/target variables and use the original source as target.
+          // This mapping only holds for a single-relationship pattern: the written source is the
+          // end of the one reversed hop. Both entry points into `reversed` enforce that (the
+          // bound-target reversal below and shouldReverseVariableLengthPathFromIndexedAnchor);
+          // reversing a longer pattern requires rebuilding the whole pattern back to front.
           final String effectiveSourceVar;
           final String effectiveTargetVar;
           final NodePattern effectiveTargetNode;
           final Direction directionOverride;
           if (reversed) {
             effectiveSourceVar = currentSourceVar; // already swapped to bound target
-            effectiveTargetVar = pathPattern.getFirstNode().getVariable() != null ?
-                pathPattern.getFirstNode().getVariable() : targetVar;
+            effectiveTargetVar = writtenSourceVar;
             targetVar = effectiveTargetVar;
             effectiveTargetNode = pathPattern.getFirstNode(); // original source becomes target for label filtering
             directionOverride = relPattern.getDirection().reverse();
@@ -1792,8 +1797,19 @@ public class CypherExecutionPlan {
 
   /**
    * The physical operators do not yet implement variable-length expansion, but their cost-based
-   * anchor selection is still useful to the traditional executor. Limit this bridge to a single,
-   * bounded relationship whose indexed target can be reached through stored incoming adjacency.
+   * anchor selection is still useful to the traditional executor. Limit this bridge to a single
+   * relationship whose indexed target can be reached through stored incoming adjacency.
+   * <p>
+   * Two of the conditions below are load-bearing rather than merely conservative:
+   * <ul>
+   *   <li>a single relationship, because the reversal in {@code buildMatchStep} maps the one hop
+   *   back onto the written source node and cannot express a longer reversed pattern;</li>
+   *   <li>a single-property index, because {@code NodeIndexSeek} and {@link IndexSeekStep} seek
+   *   with a one-element key, which a composite index rejects.</li>
+   * </ul>
+   * The remaining conditions bound the shapes this bridge has been proven against; see issue #5358
+   * for the tracked relaxations and for the native variable-length expansion operator that makes
+   * this bridge unnecessary.
    */
   private boolean shouldReverseVariableLengthPathFromIndexedAnchor(final MatchClause matchClause,
       final PathPattern pathPattern) {
@@ -1818,13 +1834,13 @@ public class CypherExecutionPlan {
     }
 
     final RelationshipPattern relationship = pathPattern.getRelationship(0);
-    if (!relationship.isVariableLength() || relationship.getMaxHops() == null || !relationship.hasTypes()
+    if (!relationship.isVariableLength() || !relationship.hasTypes()
         || isAnyEdgeTypeUnidirectional(relationship.getTypes()))
       return false;
 
     final String sourceVariable = pathPattern.getFirstNode().getVariable();
     final String targetVariable = pathPattern.getLastNode().getVariable();
-    return sourceVariable != null && targetVariable != null && !sourceVariable.equals(targetVariable)
+    return targetVariable != null && !targetVariable.equals(sourceVariable)
         && targetVariable.equals(physicalPlan.getAnchor().getVariable());
   }
 
@@ -1972,7 +1988,8 @@ public class CypherExecutionPlan {
    */
   private static boolean isStructurallyPure(final PathPattern part) {
     for (final NodePattern node : part.getNodes()) {
-      if (node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels())
+      if (node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels()
+          || node.hasWhereExpression())
         return false;
     }
     for (int i = 0; i < part.getRelationshipCount(); i++) {
@@ -2269,7 +2286,7 @@ public class CypherExecutionPlan {
                 final NodePattern targetNode = pathPattern.getNode(i + 1);
                 final String relVar;
                 if (relPattern.getVariable() != null && !relPattern.getVariable().isEmpty()) {
-                  if (relPattern.isVariableLength() || isEdgeVariableReferenced(relPattern.getVariable()))
+                  if (relPattern.isVariableLength() || CypherVariableUsage.isEdgeVariableReferenced(statement, relPattern.getVariable()))
                     relVar = relPattern.getVariable();
                   else
                     relVar = hopNeedsEdgeTrackingLegacy[i] ? ("  rel" + anonymousVarCounter++) : null;
@@ -3744,320 +3761,9 @@ public class CypherExecutionPlan {
    * MATCH pattern declaration. If the variable appears only in the pattern (e.g.,
    * {@code [r:KNOWS]}) but is never used elsewhere, it can be treated as anonymous
    * for GAV/fast-path purposes.
-   * <p>
-   * Rather than enumerating every clause type, this method counts how many times
-   * the variable appears across all relationship patterns in all MATCH clauses.
-   * If it appears more than once, it's a bound reference in another pattern.
-   * Then it checks all expression texts from all other clauses (RETURN, WHERE,
-   * ORDER BY, WITH, UNWIND, SET, DELETE, CREATE, MERGE) for the variable name.
-   *
-   * @param variable the edge variable name to check
-   * @return true if the variable is referenced elsewhere in the query
-   */
-  private boolean isEdgeVariableReferenced(final String variable) {
-    // 1. Check if the variable appears as a relationship variable in OTHER MATCH patterns
-    //    (e.g., MATCH ()-[r:E]-() MATCH p = ()-[r]-() — r is bound in the second MATCH)
-    int relVarCount = 0;
-    for (final MatchClause match : statement.getMatchClauses()) {
-      if (match.hasPathPatterns()) {
-        for (final PathPattern path : match.getPathPatterns()) {
-          for (int i = 0; i < path.getRelationshipCount(); i++) {
-            final RelationshipPattern rel = path.getRelationship(i);
-            if (variable.equals(rel.getVariable()))
-              relVarCount++;
-          }
-        }
-      }
-    }
-    // If the variable appears in more than one relationship pattern, it's referenced elsewhere
-    if (relVarCount > 1)
-      return true;
 
-    // 2. Check all expression texts from non-MATCH clauses.
-    //    Use clausesInOrder to cover everything: RETURN, WHERE, WITH, UNWIND, SET, DELETE, etc.
-    if (statement.getClausesInOrder() != null) {
-      for (final ClauseEntry entry : statement.getClausesInOrder()) {
-        switch (entry.getType()) {
-        case RETURN: {
-          final ReturnClause rc = entry.getTypedClause();
-          for (final ReturnClause.ReturnItem item : rc.getReturnItems())
-            if (expressionReferencesVariable(item.getExpression().getText(), variable))
-              return true;
-          break;
-        }
-        case WITH: {
-          final WithClause wc = entry.getTypedClause();
-          for (final ReturnClause.ReturnItem item : wc.getItems())
-            if (expressionReferencesVariable(item.getExpression().getText(), variable))
-              return true;
-          if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null)
-            if (expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
-              return true;
-          break;
-        }
-        case UNWIND: {
-          final UnwindClause uc = entry.getTypedClause();
-          if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
-            return true;
-          break;
-        }
-        case SET: {
-          // The edge variable can be the assignment target (SET r.prop = ...) or appear inside the
-          // value/target expression (SET u.x = CASE WHEN r IS NOT NULL ...). Checking only the target
-          // variable dropped the edge binding when it was used solely on the right-hand side (issue #5137).
-          final SetClause sc = entry.getTypedClause();
-          for (final SetClause.SetItem item : sc.getItems()) {
-            if (variable.equals(item.getVariable()))
-              return true;
-            if (item.getValueExpression() != null
-                && expressionReferencesVariable(item.getValueExpression().getText(), variable))
-              return true;
-            if (item.getTargetExpression() != null
-                && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
-              return true;
-          }
-          break;
-        }
-        case REMOVE: {
-          // REMOVE r.prop / REMOVE r:Label keeps the edge binding alive. Missing this dropped the
-          // edge binding, so a top-level REMOVE on a relationship property silently found no edge
-          // and became a no-op unless the edge was also projected through WITH (issue #5013).
-          final RemoveClause rc = entry.getTypedClause();
-          for (final RemoveClause.RemoveItem item : rc.getItems())
-            if (variable.equals(item.getVariable()))
-              return true;
-          break;
-        }
-        case DELETE: {
-          final DeleteClause dc = entry.getTypedClause();
-          if (deleteReferencesVariable(dc, variable))
-            return true;
-          break;
-        }
-        case FOREACH: {
-          // FOREACH can reference the edge variable in its list expression (e.g. FOREACH (x IN [r] | ...))
-          // or inside any of its inner write clauses. Missing this dropped the edge binding, so DELETE
-          // inside FOREACH silently found no edge (issue #4912).
-          final ForeachClause fc = entry.getTypedClause();
-          if (foreachReferencesVariable(fc, variable))
-            return true;
-          break;
-        }
-        case SUBQUERY: {
-          // A scoped CALL (r) { ... } imports the edge variable, and CALL { WITH r ... } references it in
-          // the inner statement. Missing this dropped the edge binding, so DELETE inside a CALL subquery
-          // silently found no edge (issue #4913).
-          final SubqueryClause sq = entry.getTypedClause();
-          if (subqueryReferencesVariable(sq, variable))
-            return true;
-          break;
-        }
-        default:
-          break;
-        }
-      }
-    }
 
-    // 3. Check statement-level WHERE, ORDER BY (may not be in clausesInOrder)
-    if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
-      if (expressionReferencesVariable(statement.getWhereClause().getConditionExpression().getText(), variable))
-        return true;
 
-    for (final MatchClause match : statement.getMatchClauses())
-      if (match.hasWhereClause() && match.getWhereClause().getConditionExpression() != null)
-        if (expressionReferencesVariable(match.getWhereClause().getConditionExpression().getText(), variable))
-          return true;
-
-    if (statement.getOrderByClause() != null)
-      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
-        if (expressionReferencesVariable(item.getExpression(), variable))
-          return true;
-
-    // 4. Check RETURN clause (may not be in clausesInOrder for simple queries)
-    if (statement.getReturnClause() != null)
-      for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
-        if (expressionReferencesVariable(item.getExpression().getText(), variable))
-          return true;
-
-    // 5. Check UNWIND clauses (may not be in clausesInOrder for legacy path)
-    for (final UnwindClause uc : statement.getUnwindClauses())
-      if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
-        return true;
-
-    return false;
-  }
-
-  /**
-   * Checks whether a FOREACH clause references the given variable, either in its list expression
-   * or inside any of its inner write clauses (recursively for nested FOREACH). Used to keep the
-   * edge binding alive when a FOREACH consumes it (issue #4912).
-   */
-  private boolean foreachReferencesVariable(final ForeachClause foreachClause, final String variable) {
-    if (foreachClause == null)
-      return false;
-    if (foreachClause.getListExpression() != null
-        && expressionReferencesVariable(foreachClause.getListExpression().getText(), variable))
-      return true;
-    if (foreachClause.getInnerClauses() != null) {
-      for (final ClauseEntry inner : foreachClause.getInnerClauses()) {
-        switch (inner.getType()) {
-        case DELETE:
-          if (deleteReferencesVariable(inner.getTypedClause(), variable))
-            return true;
-          break;
-        case SET: {
-          final SetClause sc = inner.getTypedClause();
-          for (final SetClause.SetItem item : sc.getItems()) {
-            if (variable.equals(item.getVariable()))
-              return true;
-            if (item.getValueExpression() != null
-                && expressionReferencesVariable(item.getValueExpression().getText(), variable))
-              return true;
-            if (item.getTargetExpression() != null
-                && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
-              return true;
-          }
-          break;
-        }
-        case REMOVE: {
-          final RemoveClause rc = inner.getTypedClause();
-          for (final RemoveClause.RemoveItem item : rc.getItems())
-            if (variable.equals(item.getVariable()))
-              return true;
-          break;
-        }
-        case FOREACH:
-          if (foreachReferencesVariable(inner.getTypedClause(), variable))
-            return true;
-          break;
-        case CREATE:
-        case MERGE:
-          // Inline property expressions inside CREATE/MERGE patterns may reference the variable.
-          // Enumerating them cheaply is awkward, so stay conservative: keep the edge binding.
-          // A false positive only forgoes the GAV/CSR fast path; a false negative would silently
-          // drop a still-referenced edge (the class of bug this method exists to prevent).
-          return true;
-        default:
-          break;
-        }
-      }
-    }
-    return false;
-  }
-
-  /**
-   * Checks whether a scoped CALL subquery references the given variable, either because the variable is
-   * imported via the explicit scope list {@code CALL (r) { ... }} or because the inner statement references
-   * it (e.g. {@code CALL { WITH r ... DELETE r }}). Used to keep the edge binding alive when a CALL subquery
-   * consumes it (issue #4913).
-   */
-  private boolean subqueryReferencesVariable(final SubqueryClause subqueryClause, final String variable) {
-    if (subqueryClause == null)
-      return false;
-    // Explicit scope: CALL (r) { ... } imports r from the outer row.
-    final List<String> scope = subqueryClause.getScopeVariables();
-    if (scope != null && scope.contains(variable))
-      return true;
-    // Otherwise inspect the inner statement's clauses (e.g. CALL { WITH r ... DELETE r }).
-    final CypherStatement inner = subqueryClause.getInnerStatement();
-    if (inner == null || inner.getClausesInOrder() == null)
-      return false;
-    for (final ClauseEntry entry : inner.getClausesInOrder()) {
-      switch (entry.getType()) {
-      case WITH: {
-        final WithClause wc = entry.getTypedClause();
-        for (final ReturnClause.ReturnItem item : wc.getItems())
-          if (expressionReferencesVariable(item.getExpression().getText(), variable))
-            return true;
-        if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null
-            && expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
-          return true;
-        break;
-      }
-      case UNWIND:
-        if (expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression().getText(), variable))
-          return true;
-        break;
-      case SET: {
-        final SetClause sc = entry.getTypedClause();
-        for (final SetClause.SetItem item : sc.getItems()) {
-          if (variable.equals(item.getVariable()))
-            return true;
-          if (item.getValueExpression() != null
-              && expressionReferencesVariable(item.getValueExpression().getText(), variable))
-            return true;
-          if (item.getTargetExpression() != null
-              && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
-            return true;
-        }
-        break;
-      }
-      case REMOVE: {
-        final RemoveClause rc = entry.getTypedClause();
-        for (final RemoveClause.RemoveItem item : rc.getItems())
-          if (variable.equals(item.getVariable()))
-            return true;
-        break;
-      }
-      case DELETE:
-        if (deleteReferencesVariable(entry.getTypedClause(), variable))
-          return true;
-        break;
-      case RETURN: {
-        final ReturnClause rc = entry.getTypedClause();
-        for (final ReturnClause.ReturnItem item : rc.getReturnItems())
-          if (expressionReferencesVariable(item.getExpression().getText(), variable))
-            return true;
-        break;
-      }
-      case FOREACH:
-        if (foreachReferencesVariable(entry.getTypedClause(), variable))
-          return true;
-        break;
-      case SUBQUERY:
-        if (subqueryReferencesVariable(entry.getTypedClause(), variable))
-          return true;
-        break;
-      default:
-        break;
-      }
-    }
-    return false;
-  }
-
-  /** Checks whether a DELETE clause references the given variable, by name or within a target expression. */
-  private boolean deleteReferencesVariable(final DeleteClause deleteClause, final String variable) {
-    if (deleteClause.getVariables().contains(variable))
-      return true;
-    final List<Expression> expressions = deleteClause.getExpressions();
-    if (expressions != null)
-      for (final Expression expression : expressions)
-        if (expression != null && expressionReferencesVariable(expression.getText(), variable))
-          return true;
-    return false;
-  }
-
-  /**
-   * Checks if an expression text references a variable as a standalone identifier.
-   * Uses word-boundary matching to avoid false positives (e.g., "relation" matching "r").
-   */
-  private static boolean expressionReferencesVariable(final String expressionText, final String variable) {
-    if (expressionText == null || variable == null)
-      return false;
-    // Find the variable as a standalone identifier (not part of a longer word)
-    int idx = 0;
-    while ((idx = expressionText.indexOf(variable, idx)) >= 0) {
-      final boolean startOk = idx == 0 || !Character.isLetterOrDigit(expressionText.charAt(idx - 1))
-          && expressionText.charAt(idx - 1) != '_';
-      final int end = idx + variable.length();
-      final boolean endOk = end >= expressionText.length() || !Character.isLetterOrDigit(expressionText.charAt(end))
-          && expressionText.charAt(end) != '_';
-      if (startOk && endOk)
-        return true;
-      idx++;
-    }
-    return false;
-  }
 
   /**
    * Determines which hops in a path pattern need edge tracking for Cypher's relationship

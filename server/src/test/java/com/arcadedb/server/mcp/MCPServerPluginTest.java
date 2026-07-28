@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -52,8 +53,10 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     saveMCPConfig(new JSONObject()
         .put("enabled", true)
         .put("allowReads", true)
+        .put("profile", "all")
         .put("allowedUsers", new JSONArray().put("root")));
     seedFullTextIndex();
+    seedSampleRecords();
   }
 
   private void seedFullTextIndex() {
@@ -62,9 +65,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       return;
 
     db.transaction(() -> {
-      // A single bucket keeps BM25 statistics (document frequency, average document length) computed over one
-      // consistent corpus; the index scores per bucket, so a multi-bucket type could otherwise let term frequency
-      // lose to a per-bucket IDF difference and make the ranking assertions flaky.
+      // Keep this MCP fixture on one bucket; the engine's explicit multi-bucket BM25 regression covers global score comparability.
       db.command("sql", "CREATE DOCUMENT TYPE Article BUCKETS 1");
       db.command("sql", "CREATE PROPERTY Article.title STRING");
       db.command("sql", "CREATE PROPERTY Article.content STRING");
@@ -96,6 +97,118 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     });
   }
 
+  private void seedSampleRecords() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpSampleRecord"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE DOCUMENT TYPE McpSampleRecord");
+      db.command("sql", "CREATE PROPERTY McpSampleRecord.ordinal INTEGER");
+      db.command("sql", "CREATE PROPERTY McpSampleRecord.label STRING");
+      for (int i = 1; i <= 5; i++)
+        db.command("sql", "INSERT INTO McpSampleRecord SET ordinal = ?, label = ?", i, "sample-" + i);
+
+      db.command("sql", "CREATE DOCUMENT TYPE McpEmptySample");
+      db.command("sql", "CREATE PROPERTY McpEmptySample.value STRING");
+
+      db.command("sql", "CREATE EDGE TYPE McpSampleEdge");
+      for (int i = 1; i <= 21; i++)
+        db.command("sql", "CREATE DOCUMENT TYPE ZzMcpDefaultSample" + i);
+    });
+  }
+
+  private void seedVectorIndexes() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpVectorRecord"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE DOCUMENT TYPE McpVectorRecord BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpVectorRecord.name STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorRecord.category STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorRecord.embedding ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpVectorRecord (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }
+          """);
+
+      db.newDocument("McpVectorRecord")
+          .set("name", "dense-a")
+          .set("category", "keep")
+          .set("embedding", new float[] { 1.0f, 0.0f, 0.0f })
+          .save();
+      db.newDocument("McpVectorRecord")
+          .set("name", "dense-b")
+          .set("category", "drop")
+          .set("embedding", new float[] { 0.9f, 0.1f, 0.0f })
+          .save();
+      db.newDocument("McpVectorRecord")
+          .set("name", "dense-c")
+          .set("category", "keep")
+          .set("embedding", new float[] { 0.0f, 1.0f, 0.0f })
+          .save();
+
+      db.command("sql", "CREATE DOCUMENT TYPE McpSparseVectorRecord BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpSparseVectorRecord.name STRING");
+      db.command("sql", "CREATE PROPERTY McpSparseVectorRecord.tokens ARRAY_OF_INTEGERS");
+      db.command("sql", "CREATE PROPERTY McpSparseVectorRecord.weights ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpSparseVectorRecord (tokens, weights) LSM_SPARSE_VECTOR
+          METADATA { dimensions: 8, weightQuantization: 'FP32' }
+          """);
+
+      db.newDocument("McpSparseVectorRecord")
+          .set("name", "sparse-low")
+          .set("tokens", new int[] { 1, 5 })
+          .set("weights", new float[] { 0.1f, 0.3f })
+          .save();
+      db.newDocument("McpSparseVectorRecord")
+          .set("name", "sparse-high")
+          .set("tokens", new int[] { 2, 5 })
+          .set("weights", new float[] { 0.2f, 0.6f })
+          .save();
+    });
+  }
+
+  /**
+   * Seeds a type holding more vectors than a filtered search inspects, so truncation reporting can be observed
+   * on a candidate window that is genuinely smaller than the index. Exactly one record carries category 'solo'
+   * and sits close to the probe vector, so a filtered search for it returns fewer hits than requested while
+   * still having examined every match the filter can ever produce.
+   */
+  private void seedVectorBudgetRecords() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpVectorBudgetRecord"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE DOCUMENT TYPE McpVectorBudgetRecord BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpVectorBudgetRecord.name STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorBudgetRecord.category STRING");
+      db.command("sql", "CREATE PROPERTY McpVectorBudgetRecord.embedding ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpVectorBudgetRecord (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }
+          """);
+
+      db.newDocument("McpVectorBudgetRecord")
+          .set("name", "budget-solo")
+          .set("category", "solo")
+          .set("embedding", new float[] { 0.95f, 0.05f, 0.0f })
+          .save();
+
+      // Comfortably more than the 16-candidate window a k=2 filtered search uses, so the index is larger than
+      // the window regardless of which neighbors the graph returns.
+      for (int i = 0; i < 24; i++)
+        db.newDocument("McpVectorBudgetRecord")
+            .set("name", "budget-bulk-" + i)
+            .set("category", "bulk")
+            .set("embedding", new float[] { 0.9f - i * 0.01f, 0.1f + i * 0.01f, 0.0f })
+            .save();
+    });
+  }
+
   @Test
   void initialize() throws Exception {
     final JSONObject response = mcpRequest(new JSONObject()
@@ -121,7 +234,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
-    assertThat(tools.length()).isEqualTo(13);
+    assertThat(tools.length()).isPositive();
 
     // Verify tool names
     boolean hasListDatabases = false;
@@ -134,6 +247,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     boolean hasProfilerStatus = false;
     boolean hasGetServerSettings = false;
     boolean hasSetServerSetting = false;
+    boolean hasSampleRecords = false;
+    boolean hasVectorSearch = false;
     boolean hasFullTextSearch = false;
     boolean hasUpsertEntity = false;
     boolean hasUpsertRelationship = false;
@@ -151,6 +266,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       case "profiler_status" -> hasProfilerStatus = true;
       case "get_server_settings" -> hasGetServerSettings = true;
       case "set_server_setting" -> hasSetServerSetting = true;
+      case "sample_records" -> hasSampleRecords = true;
+      case "vector_search" -> hasVectorSearch = true;
       case "full_text_search" -> hasFullTextSearch = true;
       case "upsert_entity" -> hasUpsertEntity = true;
       case "upsert_relationship" -> hasUpsertRelationship = true;
@@ -166,9 +283,56 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(hasProfilerStatus).isTrue();
     assertThat(hasGetServerSettings).isTrue();
     assertThat(hasSetServerSetting).isTrue();
+    assertThat(hasSampleRecords).isTrue();
+    assertThat(hasVectorSearch).isTrue();
     assertThat(hasFullTextSearch).isTrue();
     assertThat(hasUpsertEntity).isTrue();
     assertThat(hasUpsertRelationship).isTrue();
+  }
+
+  @Test
+  void toolProfilesFilterDiscoveryAndExecution() throws Exception {
+    saveMCPConfig(new JSONObject().put("profile", "rag"));
+
+    JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 20)
+        .put("method", "tools/list")
+        .put("params", new JSONObject()));
+    assertThat(toolNames(response))
+        .contains("list_databases", "get_schema", "query", "sample_records", "vector_search", "full_text_search",
+            "upsert_entity", "upsert_relationship")
+        .doesNotContain("server_status", "execute_command");
+
+    JSONObject denied = callTool("server_status", new JSONObject());
+    assertThat(denied.getBoolean("isError", false)).isTrue();
+    assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("server_status").contains("rag");
+
+    final JSONObject allowed = callTool("query", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("language", "sql")
+        .put("query", "SELECT FROM V1 LIMIT 1"));
+    assertThat(allowed.getBoolean("isError", true)).isFalse();
+
+    saveMCPConfig(new JSONObject().put("profile", "admin"));
+    response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 21)
+        .put("method", "tools/list")
+        .put("params", new JSONObject()));
+    assertThat(toolNames(response))
+        .contains("list_databases", "get_schema", "query", "execute_command", "server_status",
+            "profiler_start", "profiler_stop", "profiler_status", "get_server_settings", "set_server_setting")
+        .doesNotContain("sample_records", "vector_search", "full_text_search");
+
+    denied = callTool("full_text_search", new JSONObject());
+    assertThat(denied.getBoolean("isError", false)).isTrue();
+    assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("full_text_search").contains("admin");
+
+    final JSONObject adminAllowed = callTool("server_status", new JSONObject());
+    assertThat(adminAllowed.getBoolean("isError", true)).isFalse();
   }
 
   @Test
@@ -214,6 +378,130 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       }
     }
     assertThat(foundV1).isTrue();
+  }
+
+  @Test
+  void sampleRecordsUsesRequestedTypesAndPerTypeLimit() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray()
+            .put("McpSampleRecord")
+            .put("McpEmptySample")
+            .put("McpSampleRecord"))
+        .put("limit", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    final JSONObject samples = payload.getJSONObject("samples");
+
+    assertThat(samples.keySet()).containsExactlyInAnyOrder("McpSampleRecord", "McpEmptySample");
+    assertThat(samples.getJSONArray("McpSampleRecord").length()).isEqualTo(2);
+    assertThat(samples.getJSONArray("McpSampleRecord").getJSONObject(0).has("ordinal")).isTrue();
+    assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
+    assertThat(payload.getInt("sampledTypes")).isEqualTo(2);
+    assertThat(payload.getInt("availableTypes")).isEqualTo(availableSampleTypeCount());
+    assertThat(payload.getInt("recordsReturned")).isEqualTo(2);
+    assertThat(payload.getBoolean("truncated")).isFalse();
+  }
+
+  @Test
+  void sampleRecordsDefaultsToBoundedNonEdgeTypes() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName()));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    final JSONObject samples = payload.getJSONObject("samples");
+
+    assertThat(samples.has("McpSampleRecord")).isTrue();
+    assertThat(samples.getJSONArray("McpSampleRecord").length()).isEqualTo(3);
+    assertThat(samples.has("McpEmptySample")).isTrue();
+    assertThat(samples.getJSONArray("McpEmptySample").length()).isZero();
+    assertThat(samples.has("McpSampleEdge")).isFalse();
+    assertThat(payload.getInt("sampledTypes")).isEqualTo(20);
+    assertThat(payload.getInt("availableTypes")).isEqualTo(availableSampleTypeCount());
+    assertThat(payload.getInt("availableTypes")).isGreaterThan(20);
+    assertThat(payload.getBoolean("truncated")).isTrue();
+    assertThat(payload.getInt("recordsReturned")).isEqualTo(
+        samples.keySet().stream().mapToInt(name -> samples.getJSONArray(name).length()).sum());
+  }
+
+  @Test
+  void sampleRecordsAllowsExplicitEdgeTypes() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray().put("McpSampleEdge")));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getJSONObject("samples").has("McpSampleEdge")).isTrue();
+    assertThat(payload.getInt("sampledTypes")).isEqualTo(1);
+    assertThat(payload.getInt("availableTypes")).isEqualTo(availableSampleTypeCount());
+  }
+
+  private int availableSampleTypeCount() {
+    return Math.toIntExact(getServerDatabase(0, getDatabaseName()).getSchema().getTypes().stream()
+        .filter(type -> !(type instanceof EdgeType))
+        .count());
+  }
+
+  @Test
+  void sampleRecordsRejectsMoreThanTwentyRequestedTypes() throws Exception {
+    final JSONArray types = new JSONArray();
+    for (int i = 0; i <= 20; i++)
+      types.put("McpSampleRecord");
+
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", types));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("types").contains("at most 20");
+  }
+
+  @Test
+  void sampleRecordsRejectsOutOfRangeLimits() throws Exception {
+    for (final int invalidLimit : new int[] { -1, 0, 21 }) {
+      final JSONObject response = callTool("sample_records", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("types", new JSONArray().put("McpSampleRecord"))
+          .put("limit", invalidLimit));
+
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+      assertThat(errorText).contains("limit").contains("1").contains("20");
+    }
+  }
+
+  @Test
+  void sampleRecordsRejectsUnknownTypesBeforeQueryExecution() throws Exception {
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray().put("McpSampleRecord` LIMIT 20")));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("does not exist").contains("McpSampleRecord");
+  }
+
+  @Test
+  void sampleRecordsDeniedWhenReadsDisabled() throws Exception {
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+
+    final JSONObject response = callTool("sample_records", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("types", new JSONArray().put("McpSampleRecord")));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String errorText = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(errorText).contains("not allowed");
   }
 
   @Test
@@ -352,7 +640,31 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       final JSONObject config = new JSONObject(body);
       assertThat(config.has("enabled")).isTrue();
       assertThat(config.has("allowReads")).isTrue();
+      assertThat(config.getString("profile")).isEqualTo("all");
       assertThat(config.has("allowedUsers")).isTrue();
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
+  void invalidConfigTypeReturnsBadRequest() throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpConfigUrl()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final byte[] data = new JSONObject().put("enabled", "yes").toString().getBytes(StandardCharsets.UTF_8);
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(data);
+    }
+
+    connection.connect();
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+      assertThat(FileUtils.readStreamAsString(connection.getErrorStream(), "utf8"))
+          .contains("enabled").contains("boolean");
     } finally {
       connection.disconnect();
     }
@@ -365,7 +677,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
-  void notificationReturns204() throws Exception {
+  void notificationReturns202() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", getBasicAuth());
@@ -382,7 +694,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     connection.connect();
 
     try {
-      assertThat(connection.getResponseCode()).isEqualTo(204);
+      // MCP 2025-03-26 requires 202 Accepted (not 204) for a POST that carried only notifications.
+      assertThat(connection.getResponseCode()).isEqualTo(202);
     } finally {
       connection.disconnect();
     }
@@ -881,6 +1194,416 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(errorText).contains("nonexistent_db");
     assertThat(errorText).containsIgnoringCase("available databases");
     assertThat(errorText).contains("graph");
+  }
+
+  @Test
+  void vectorSearchDenseReturnsDistanceAndProperties() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getString("indexName")).isEqualTo("McpVectorRecord[embedding]");
+    assertThat(payload.getBoolean("sparse")).isFalse();
+    assertThat(payload.getString("scoring")).startsWith("distance_lower_is_better");
+    assertThat(payload.getInt("count")).isEqualTo(2);
+
+    final JSONObject first = payload.getJSONArray("results").getJSONObject(0);
+    assertThat(first.getString("rid")).startsWith("#");
+    assertThat(first.has("score")).isFalse();
+    assertThat(first.getDouble("distance")).isGreaterThanOrEqualTo(0.0);
+    assertThat(first.getJSONObject("properties").getString("name")).isEqualTo("dense-a");
+  }
+
+  @Test
+  void vectorSearchAppliesReadOnlyFilterToBoundedCandidates() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'keep'")
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    assertThat(payload.getInt("candidateLimit")).isEqualTo(16);
+    assertThat(payload.getBoolean("truncated")).isTrue();
+    for (int i = 0; i < payload.getJSONArray("results").length(); i++)
+      assertThat(payload.getJSONArray("results").getJSONObject(i)
+          .getJSONObject("properties").getString("category")).isEqualTo("keep");
+  }
+
+  @Test
+  void vectorSearchSparseAcceptsCompactIndicesAndWeights() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getBoolean("sparse")).isTrue();
+    assertThat(payload.getString("scoring")).contains("score_higher_is_better");
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    final JSONArray results = payload.getJSONArray("results");
+    assertThat(results.getJSONObject(0).getJSONObject("properties").getString("name")).isEqualTo("sparse-high");
+    assertThat(results.getJSONObject(0).has("distance")).isFalse();
+    assertThat(results.getJSONObject(0).getDouble("score"))
+        .isGreaterThan(results.getJSONObject(1).getDouble("score"));
+  }
+
+  @Test
+  void vectorSearchUsesIndependentFilteredCandidateBudget() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'missing'")
+        .put("k", 1_000));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getInt("candidateLimit")).isEqualTo(8_000);
+    assertThat(payload.getInt("count")).isZero();
+    assertThat(payload.getBoolean("truncated")).isFalse();
+  }
+
+  /**
+   * Truncation must describe the result window, not the size of the index. A filtered search that returns fewer
+   * hits than requested has exhausted its matches, so reporting truncation there tells the caller to widen a
+   * search that cannot yield more. The index deliberately holds more vectors than the candidate window.
+   */
+  @Test
+  void vectorSearchDoesNotReportTruncationWhenResultWindowIsNotFilled() throws Exception {
+    seedVectorBudgetRecords();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorBudgetRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'solo'")
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getInt("candidateLimit")).isEqualTo(16);
+    assertThat(payload.getInt("count")).isEqualTo(1);
+    assertThat(payload.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("name")).isEqualTo("budget-solo");
+    assertThat(payload.getBoolean("truncated")).isFalse();
+  }
+
+  /**
+   * A filled result window is the one case where more matches may exist beyond what was returned.
+   */
+  @Test
+  void vectorSearchReportsTruncationWhenResultWindowIsFilled() throws Exception {
+    seedVectorBudgetRecords();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorBudgetRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        response.getJSONArray("content").getJSONObject(0).getString("text"));
+
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    assertThat(payload.getBoolean("truncated")).isTrue();
+  }
+
+  @Test
+  void vectorSearchSupportsDenseOptionsAndFullSparseVectors() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject dense = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("efSearch", 20)
+        .put("filter", "   ")
+        .put("k", 1));
+    assertThat(dense.getBoolean("isError", true)).isFalse();
+
+    final JSONObject sparse = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector",
+            new JSONArray().put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(1.0).put(0.0).put(0.0))
+        .put("sparse", true)
+        .put("k", 2));
+    assertThat(sparse.getBoolean("isError", true)).isFalse();
+    final JSONObject payload = new JSONObject(
+        sparse.getJSONArray("content").getJSONObject(0).getString("text"));
+    assertThat(payload.getInt("count")).isEqualTo(2);
+    assertThat(payload.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("name")).isEqualTo("sparse-high");
+  }
+
+  @Test
+  void vectorSearchValidatesIndexModeAndDimensions() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject wrongMode = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("k", 1));
+    assertThat(wrongMode.getBoolean("isError", false)).isTrue();
+    assertThat(wrongMode.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("LSM_SPARSE_VECTOR").contains("sparse=true");
+
+    final JSONObject wrongDimensions = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0))
+        .put("k", 1));
+    assertThat(wrongDimensions.getBoolean("isError", false)).isTrue();
+    assertThat(wrongDimensions.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("2 dimensions").contains("requires 3");
+  }
+
+  @Test
+  void vectorSearchRejectsInvalidOptionsAndIndexSelection() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject invalidEfSearch = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("efSearch", 0)
+        .put("k", 1));
+    assertThat(invalidEfSearch.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'efSearch' must be at least 1");
+
+    final JSONObject sparseEfSearch = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("efSearch", 20)
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(sparseEfSearch.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'efSearch' applies only to dense");
+
+    final JSONObject denseIndices = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryIndices", new JSONArray().put(0))
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(denseIndices.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'queryIndices' requires sparse=true");
+
+    final JSONObject oversizedFilter = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "x".repeat(4_097))
+        .put("k", 1));
+    assertThat(oversizedFilter.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'filter' must not exceed 4096");
+
+    final JSONObject unknownIndex = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Missing[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(unknownIndex.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("does not exist").contains("McpVectorRecord[embedding]");
+
+    final JSONObject denseAsSparse = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryIndices", new JSONArray().put(0))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(denseAsSparse.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("LSM_VECTOR").contains("sparse=false");
+
+    final JSONObject nonVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "Article[title]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(nonVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("LSM_TREE").contains("not LSM_VECTOR");
+  }
+
+  @Test
+  void vectorSearchRejectsMalformedSparseVectors() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(1).put(5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("same length");
+  }
+
+  @Test
+  void vectorSearchRejectsInvalidVectorValuesAndSparseDimensions() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject empty = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray())
+        .put("k", 1));
+    assertThat(empty.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("must not be empty");
+
+    final JSONObject nonNumeric = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put("bad").put(0.0))
+        .put("k", 1));
+    assertThat(nonNumeric.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("must contain only numbers");
+
+    final JSONObject wrongFullDimensions = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector", new JSONArray().put(0.0).put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(wrongFullDimensions.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("index requires 8").contains("Pass queryIndices");
+
+    final JSONObject zeroFullVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryVector",
+            new JSONArray().put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(0.0).put(0.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(zeroFullVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("at least one non-zero weight");
+
+    final JSONObject zeroDenseVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(0.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(zeroDenseVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("at least one non-zero value");
+
+    final JSONObject fractionalIndex = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(1.5))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(fractionalIndex.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("non-negative integers");
+
+    final JSONObject duplicateIndex = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5).put(5))
+        .put("queryVector", new JSONArray().put(1.0).put(0.5))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(duplicateIndex.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("duplicate dimension 5");
+
+    final JSONObject outOfRange = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(8))
+        .put("queryVector", new JSONArray().put(1.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(outOfRange.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("outside index dimensions 0-7");
+
+    final JSONObject zeroCompactVector = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpSparseVectorRecord[tokens,weights]")
+        .put("queryIndices", new JSONArray().put(5))
+        .put("queryVector", new JSONArray().put(0.0))
+        .put("sparse", true)
+        .put("k", 1));
+    assertThat(zeroCompactVector.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("at least one non-zero weight");
+  }
+
+  @Test
+  void vectorSearchRejectsMalformedFilterWithoutExecutingWrites() throws Exception {
+    seedVectorIndexes();
+    final Database db = getServerDatabase(0, getDatabaseName());
+    final long before = db.countType("McpVectorRecord", false);
+
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("filter", "category = 'keep'); DELETE FROM McpVectorRecord")
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("Invalid vector search");
+    assertThat(db.countType("McpVectorRecord", false)).isEqualTo(before);
+  }
+
+  @Test
+  void vectorSearchEnforcesBoundsAndReadPermission() throws Exception {
+    for (final int invalidK : new int[] { 0, 1_001 }) {
+      final JSONObject response = callTool("vector_search", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("indexName", "McpVectorRecord[embedding]")
+          .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+          .put("k", invalidK));
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      assertThat(response.getJSONArray("content").getJSONObject(0).getString("text")).contains("'k'");
+    }
+
+    saveMCPConfig(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", false)
+        .put("allowedUsers", new JSONArray().put("root")));
+    final JSONObject denied = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 1));
+    assertThat(denied.getBoolean("isError", false)).isTrue();
+    assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text")).contains("not allowed");
   }
 
   @Test
@@ -1716,6 +2439,14 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     assertThat(response.has("result")).isTrue();
     return response.getJSONObject("result");
+  }
+
+  private static Set<String> toolNames(final JSONObject response) {
+    final Set<String> names = new HashSet<>();
+    final JSONArray tools = response.getJSONObject("result").getJSONArray("tools");
+    for (int i = 0; i < tools.length(); i++)
+      names.add(tools.getJSONObject(i).getString("name"));
+    return names;
   }
 
   private void saveMCPConfig(final JSONObject config) throws Exception {

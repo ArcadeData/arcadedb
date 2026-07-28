@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -40,6 +41,12 @@ public class CreatePropertyStatement extends DDLStatement {
   public Identifier                             ofType;
   public List<CreatePropertyAttributeStatement> attributes = new ArrayList<CreatePropertyAttributeStatement>();
   public boolean ifNotExists = false;
+  /**
+   * Inline `CUSTOM key = value (, key = value)*` metadata (issue #5409). Applied to the freshly
+   * created property, so the declaration no longer needs a follow-up ALTER PROPERTY. Insertion-
+   * ordered so `toString()` round-trips the original declaration.
+   */
+  public final Map<Identifier, Expression> customProperties = new LinkedHashMap<>();
 
   public CreatePropertyStatement(final int id) {
     super(id);
@@ -86,6 +93,18 @@ public class CreatePropertyStatement extends DDLStatement {
       final Object val = attr.setOnProperty(internalProp, context);
       result.setProperty(attr.settingName.getStringValue(), val);
     }
+
+    if (!customProperties.isEmpty()) {
+      final Map<String, Object> applied = new LinkedHashMap<>();
+      for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet()) {
+        final String key = entry.getKey().getStringValue();
+        final Object value = entry.getValue().execute((Identifiable) null, context);
+        internalProp.setCustomValue(key, value);
+        applied.put(key, value);
+      }
+      result.setProperty("custom", applied);
+    }
+
     typeName = prevType;
   }
 
@@ -118,6 +137,19 @@ public class CreatePropertyStatement extends DDLStatement {
       }
       builder.append(")");
     }
+
+    if (!customProperties.isEmpty()) {
+      builder.append(" CUSTOM ");
+      boolean first = true;
+      for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet()) {
+        if (!first)
+          builder.append(", ");
+        entry.getKey().toString(params, builder);
+        builder.append(" = ");
+        entry.getValue().toString(params, builder);
+        first = false;
+      }
+    }
   }
 
   @Override
@@ -129,6 +161,8 @@ public class CreatePropertyStatement extends DDLStatement {
     result.propertyType = propertyType == null ? null : propertyType.copy();
     result.ofType = ofType == null ? null : ofType.copy();
     result.attributes = attributes == null ? null : attributes.stream().map(x -> x.copy()).collect(Collectors.toList());
+    for (final Map.Entry<Identifier, Expression> entry : customProperties.entrySet())
+      result.customProperties.put(entry.getKey().copy(), entry.getValue().copy());
     return result;
   }
 
@@ -151,6 +185,8 @@ public class CreatePropertyStatement extends DDLStatement {
       return false;
     if (!Objects.equals(attributes, that.attributes))
       return false;
+    if (!Objects.equals(customProperties, that.customProperties))
+      return false;
     return ifNotExists == that.ifNotExists;
   }
 
@@ -161,6 +197,7 @@ public class CreatePropertyStatement extends DDLStatement {
     result = 31 * result + (propertyType != null ? propertyType.hashCode() : 0);
     result = 31 * result + (ofType != null ? ofType.hashCode() : 0);
     result = 31 * result + (attributes != null ? attributes.hashCode() : 0);
+    result = 31 * result + customProperties.hashCode();
     return result;
   }
 }

@@ -211,6 +211,15 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return rid.getBucketId() < 0;
   }
 
+  /**
+   * The LSMTreeIndex this component belongs to. For a compacted sub-index loaded from disk it is null until
+   * the owning mutable index claims it while reading its header (SUB-INDEX FILE ID): a compacted component
+   * still unclaimed AFTER the schema load is an orphan left behind by an interrupted compaction.
+   */
+  public LSMTreeIndex getMainIndex() {
+    return mainIndex;
+  }
+
   public void drop() throws IOException {
     if (database.isOpen()) {
       database.getPageManager().deleteFile(database, file.getFileId());
@@ -673,7 +682,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    */
   public List<String> checkKeyOrder(final int maxProblems) {
     final List<String> problems = new ArrayList<>();
-    final int totalPages = getTotalPages();
+    final int totalPages = getCheckablePages();
 
     for (int pageNumber = 0; pageNumber < totalPages && problems.size() < maxProblems; ++pageNumber) {
       try {
@@ -686,6 +695,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     }
 
     return problems;
+  }
+
+  /**
+   * Number of pages {@link #checkKeyOrder(int)} may inspect. By default every physical page, but
+   * components whose readers see only a published subset (the compacted sub-index, whose in-flight
+   * compaction pages are flushed before page 0's counter announces them) narrow it to match reader
+   * visibility, so the check never mistakes a not-yet-published page for corruption.
+   */
+  protected int getCheckablePages() {
+    return getTotalPages();
   }
 
   public void setStoreTermFrequency(final boolean storeTermFrequency) {

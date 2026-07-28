@@ -82,6 +82,7 @@ import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
@@ -1833,6 +1834,14 @@ public class SelectExecutionPlanner {
       if (tryTimeSeriesAggregationPushDown(plan, tsType, fromTs, toTs, info, context))
         return;
 
+      // Issue #5414: last-point queries scan the series newest-first so they can stop after the
+      // newest blocks instead of walking everything.
+      final int descendingLimit = timeSeriesDescendingScanLimit(tsType, info, context);
+      if (descendingLimit >= 0) {
+        plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, true, descendingLimit, context));
+        return;
+      }
+
       plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, context));
       return;
     }
@@ -2326,7 +2335,9 @@ public class SelectExecutionPlanner {
           if (value == null)
             continue;
           final int nonTsIdx = nonTsIndexOf(columns, i);
-          blockMap.computeIfAbsent(nonTsIdx, k -> new HashSet<>()).add(value.toString());
+          // Coerce to the tag's declared type: both storage layers hand the value back in that type
+          // now, so a stringified literal would never match (issue #5475).
+          blockMap.computeIfAbsent(nonTsIdx, k -> new HashSet<>()).add(col.coerceValue(value));
           break;
         }
       }
@@ -2402,6 +2413,190 @@ public class SelectExecutionPlanner {
         return true; // anything else is not consumed by push-down
       }
     }
+    return false;
+  }
+
+  /**
+   * Issue #5414: decides whether the TimeSeries fetch may run newest-first, and how many rows the
+   * engine is allowed to stop at.
+   * <p>
+   * Sealed blocks are stored in ascending timestamp order, so an unbounded last-point query used to
+   * decompress the whole series just to keep its final row. Scanning backwards lets the engine stop
+   * after the newest blocks. Two query shapes qualify:
+   * <ul>
+   *   <li>{@code ORDER BY <timestampColumn> DESC}: the fetch itself produces the requested order, so
+   *       {@code orderApplied} is set and no {@link OrderByStep} is added;</li>
+   *   <li>a projection made exclusively of {@code ts.last(<value>, <timestampColumn>)} with no
+   *       GROUP BY: the newest row alone determines the result, so the scan stops at one row.</li>
+   * </ul>
+   *
+   * @return {@code -1} when the fetch must stay ascending, {@code 0} for a descending fetch with no
+   *         row cap, or a positive row cap that the engine may stop at
+   */
+  private int timeSeriesDescendingScanLimit(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.expand || info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent)
+      return -1;
+
+    if (isTimeSeriesLastPointProjection(tsType, info, context))
+      return 1;
+
+    if (!isTimeSeriesTimestampOrderByDesc(tsType, info))
+      return -1;
+
+    // The fetch produces the requested order: skip the sort step.
+    info.orderApplied = true;
+
+    // The row cap may only be pushed down when nothing downstream can discard a row: no aggregation,
+    // no DISTINCT and a WHERE clause the engine reproduces exactly.
+    if (info.limit == null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return 0;
+    if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
+      return 0;
+
+    try {
+      final int limitValue = info.limit.getValue(context);
+      if (limitValue < 0)
+        return 0;
+      final int skipValue = info.skip == null ? 0 : info.skip.getValue(context);
+      if (skipValue < 0)
+        return 0;
+      return Math.addExact(skipValue, limitValue);
+    } catch (final RuntimeException e) {
+      // SKIP/LIMIT depend on runtime state (or overflow): fall back to an uncapped descending scan.
+      return 0;
+    }
+  }
+
+  /**
+   * Returns true when the ORDER BY is a single descending clause on the time-series timestamp column
+   * and the fetch order alone can satisfy it.
+   * <p>
+   * The ORDER BY of a projecting query is applied <em>after</em> the projection (see
+   * {@link #handleProjectionsBeforeOrderBy}), so the clause is only about the raw timestamp when the
+   * projection does not rebind that name to something else. Aggregation, GROUP BY and DISTINCT all
+   * make the clause refer to post-aggregation output, and a non-null {@code projectionAfterOrderBy}
+   * is only chained together with the {@link OrderByStep} we would be removing.
+   */
+  private static boolean isTimeSeriesTimestampOrderByDesc(final LocalTimeSeriesType tsType, final QueryPlanningInfo info) {
+    if (info.orderApplied || info.orderBy == null || info.orderBy.getItems() == null || info.orderBy.getItems().size() != 1)
+      return false;
+    if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.projectionAfterOrderBy != null)
+      return false;
+
+    final OrderByItem item = info.orderBy.getItems().getFirst();
+    // A modifier, a computed expression or a parameterised direction all mean the fetch order alone
+    // cannot satisfy the clause.
+    if (item.modifier != null || item.expression != null || item.getDirectionParameter() != null)
+      return false;
+    if (!OrderByItem.DESC.equalsIgnoreCase(item.getType()))
+      return false;
+
+    final String timestampColumn = tsType.getTimestampColumn();
+    if (!timestampColumn.equals(item.getName()))
+      return false;
+
+    return projectionKeepsTimestampName(info.projection, timestampColumn);
+  }
+
+  /**
+   * Returns true unless the projection binds the timestamp column's name to a different expression,
+   * in which case an {@code ORDER BY <timestampColumn>} sorts on that expression instead.
+   */
+  private static boolean projectionKeepsTimestampName(final Projection projection, final String timestampColumn) {
+    if (projection == null || projection.getItems() == null)
+      return true;
+    for (final ProjectionItem item : projection.getItems()) {
+      if (item.isAll() || !timestampColumn.equals(item.getProjectionAliasAsString()))
+        continue;
+      return item.getExpression() != null && timestampColumn.equals(item.getExpression().toString().trim());
+    }
+    return true;
+  }
+
+  /**
+   * Returns true when the whole projection is made of {@code ts.last(<value>, <timestampColumn>)}
+   * calls, so the newest row alone produces the result.
+   */
+  private boolean isTimeSeriesLastPointProjection(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.aggregateProjection == null || info.groupBy != null || info.distinct || info.orderBy != null)
+      return false;
+
+    final Projection projection = statement.getProjection();
+    if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
+      return false;
+
+    // The single row the engine returns must be the row the aggregate would have kept: a residual
+    // predicate could discard it and the aggregate would then see nothing.
+    if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
+      return false;
+
+    final String timestampColumn = tsType.getTimestampColumn();
+    for (final ProjectionItem item : projection.getItems()) {
+      final FunctionCall funcCall = extractFunctionCall(item.expression);
+      if (funcCall == null || !SQLFunctionTsLast.NAME.equalsIgnoreCase(funcCall.getName().getStringValue()))
+        return false;
+      final List<Expression> params = funcCall.getParams();
+      if (params == null || params.size() != 2)
+        return false;
+      if (!timestampColumn.equals(params.get(1).toString().trim()))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Returns true when the time range and tag filter handed to the engine reproduce the WHERE clause
+   * <em>exactly</em>, so the residual {@link FilterStep} cannot discard any row the engine returns.
+   * <p>
+   * This is stricter than {@link #hasNonPushDownConditions} on purpose: that check treats <b>any</b>
+   * predicate mentioning the timestamp column as consumed, while only the forms
+   * {@link #extractTimeRange} actually understands become bounds. A row cap must not be pushed down
+   * on the strength of a predicate the engine never saw - the newest row could be filtered out
+   * afterwards and the query would return nothing.
+   */
+  private boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+      return true;
+    // An OR pushes the union of the per-block tag values, a superset that relies on the residual
+    // filter to drop false positives.
+    if (info.flattenedWhereClause.size() > 1)
+      return false;
+
+    final String timestampColumn = tsType.getTimestampColumn();
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+    final Set<String> constrainedTags = new HashSet<>();
+
+    for (final BooleanExpression expr : info.flattenedWhereClause.getFirst().getSubBlocks()) {
+      if (extractTimeRange(expr, timestampColumn, context) != null)
+        continue;
+
+      if (!(expr instanceof BinaryCondition binary) || !(binary.operator instanceof EqualsCompareOperator))
+        return false;
+
+      final String leftStr = binary.left != null ? binary.left.toString().trim() : null;
+      final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
+      final String tagName = isTimeSeriesTagColumn(columns, leftStr) ? leftStr
+          : isTimeSeriesTagColumn(columns, rightStr) ? rightStr : null;
+      // Two equalities on the same tag are pushed down as an IN of both values, again a superset.
+      if (tagName == null || !constrainedTags.add(tagName))
+        return false;
+
+      final Expression valueExpr = tagName.equals(leftStr) ? binary.right : binary.left;
+      if (valueExpr == null || valueExpr.execute((Identifiable) null, context) == null)
+        return false;
+    }
+    return true;
+  }
+
+  private static boolean isTimeSeriesTagColumn(final List<ColumnDefinition> columns, final String name) {
+    if (name == null)
+      return false;
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(name))
+        return true;
     return false;
   }
 

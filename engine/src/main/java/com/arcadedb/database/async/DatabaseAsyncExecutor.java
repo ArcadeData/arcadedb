@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.timeseries.TimeSeriesRowSource;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
@@ -313,6 +314,21 @@ public interface DatabaseAsyncExecutor {
    * @param columnValues One array per column (tags + fields), each with the same length as timestamps
    */
   void appendSamples(String typeName, long[] timestamps, Object[]... columnValues);
+
+  /**
+   * Schedules the asynchronous append of time-series samples read from a primitive row source, so a caller
+   * holding primitive data never boxes a value on the way in (issue #5474). Routing and slot affinity are the
+   * same as {@link #appendSamples(String, long[], Object[][])}.
+   * <p>
+   * Unlike the boxed form, the source is <b>not</b> copied: it is read by the async worker when the task runs,
+   * so the caller must not mutate or refill it before then. Submit a freshly filled
+   * {@link com.arcadedb.engine.timeseries.TimeSeriesBatch} per call, which is what makes this path allocate
+   * nothing per sample.
+   *
+   * @param typeName The name of the TimeSeries type
+   * @param source   The samples to append, owned by the executor until the task has run
+   */
+  void appendSamples(String typeName, TimeSeriesRowSource source);
 
   /**
    * Forces the shutdown of the asynchronous threads.

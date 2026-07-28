@@ -157,25 +157,169 @@ class FullTextBM25Test extends TestHelper {
   @Test
   void bm25RankingHoldsAcrossMultipleBuckets() {
     database.transaction(() -> {
-      // Multiple buckets: BM25 is scored per bucket, so N (doc count) and df must both be per-bucket to keep IDF unbiased.
-      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 4");
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
       database.command("sql", "CREATE PROPERTY Doc.name STRING");
       database.command("sql", "CREATE PROPERTY Doc.content STRING");
       database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
 
-      database.command("sql", "INSERT INTO Doc SET name = 'rare', content = 'quantum data analysis'");
-      for (int i = 0; i < 40; i++)
-        database.command("sql", "INSERT INTO Doc SET name = 'common" + i + "', content = 'data record number " + i + "'");
+      // Inserts alternate between the two buckets. Bucket 0 receives ten documents matching both query terms, while bucket 1
+      // receives one document matching only "alpha" plus nine non-matches. With bucket-local statistics, the one-term match gets
+      // a very high local IDF for alpha and incorrectly outranks every two-term match from bucket 0. Type-wide statistics make
+      // alpha common across the corpus and restore the expected two-term > one-term ordering.
+      for (int i = 0; i < 20; i++) {
+        final String name;
+        final String content;
+        if (i == 0) {
+          name = "twoTerms";
+          content = "alpha beta apple";
+        } else if (i == 1) {
+          name = "oneTerm";
+          content = "alpha filler apricot";
+        } else if (i % 2 == 0) {
+          name = "twoTerms" + i;
+          content = "alpha beta apple";
+        } else {
+          name = "noise" + i;
+          content = "noise filler filler";
+        }
+        database.command("sql", "INSERT INTO Doc SET name = ?, content = ?", name, content);
+      }
     });
 
     database.transaction(() -> {
-      final Map<String, Float> scores = searchScores("Doc[content]", "quantum data");
-      assertThat(scores.get("rare")).isNotNull();
-      // The document with the rare, discriminative term must rank above every common-only document, regardless of which bucket
-      // each landed in.
-      for (final Map.Entry<String, Float> e : scores.entrySet())
-        if (!"rare".equals(e.getKey()))
-          assertThat(scores.get("rare")).isGreaterThan(e.getValue());
+      final ResultSet records = database.query("sql", "SELECT FROM Doc WHERE name IN ['twoTerms', 'oneTerm']");
+      final Map<String, Integer> buckets = new HashMap<>();
+      while (records.hasNext()) {
+        final Result record = records.next();
+        buckets.put(record.getProperty("name"), record.getIdentity().orElseThrow().getBucketId());
+      }
+      assertThat(buckets.get("twoTerms")).isNotEqualTo(buckets.get("oneTerm"));
+
+      final Map<String, Float> scores = searchScores("Doc[content]", "alpha beta");
+      assertThat(scores).containsKeys("twoTerms", "oneTerm");
+      assertThat(scores.get("twoTerms")).isGreaterThan(scores.get("oneTerm"));
+
+      // Wildcard terms differ by bucket ("apple" vs "apricot"). Both must be included in the global scoring-token union, while
+      // Boolean matching remains document-local rather than combining terms found in different buckets.
+      final Map<String, Float> wildcardScores = searchScores("Doc[content]", "ap*");
+      assertThat(wildcardScores.get("twoTerms")).isPositive();
+      assertThat(wildcardScores.get("oneTerm")).isPositive();
+      assertThat(searchScores("Doc[content]", "+apple +apricot")).isEmpty();
+
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      final Map<String, Float> directScores = new HashMap<>();
+      final IndexCursor direct = typeIndex.get(new Object[] { "alpha beta" });
+      while (direct.hasNext()) {
+        final Document document = (Document) direct.next().getRecord();
+        directScores.put(document.getString("name"), direct.getFloatScore());
+      }
+      assertThat(directScores.get("twoTerms")).isGreaterThan(directScores.get("oneTerm"));
+
+      final Map<String, Float> fieldScores = new HashMap<>();
+      final ResultSet fields = database.query("sql",
+          "SELECT name, $score FROM Doc WHERE SEARCH_FIELDS(['content'], 'alpha beta') = true");
+      while (fields.hasNext()) {
+        final Result result = fields.next();
+        fieldScores.put(result.getProperty("name"), ((Number) result.getProperty("$score")).floatValue());
+      }
+      assertThat(fieldScores.get("twoTerms")).isGreaterThan(fieldScores.get("oneTerm"));
+
+      final ResultSet explain = database.query("sql",
+          "EXPLAIN SELECT name FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha beta') = true");
+      final String plan = explain.next().getProperty("executionPlanAsString");
+      assertThat(plan)
+          .contains("\"corpusScope\":\"type\"")
+          .contains("\"bucketCount\":2")
+          .contains("\"totalDocs\":20")
+          .contains("\"df\":11")
+          .doesNotContain("scored per bucket");
+    });
+  }
+
+  /**
+   * {@code SEARCH_INDEX} counts document frequencies while it matches, whereas the literal {@code TypeIndex.get()} lookup
+   * derives them with a dedicated posting scan. For a single literal term the two derivations describe the same corpus, so
+   * they must produce byte-identical scores; a drift here means one of the two counting paths is wrong.
+   */
+  @Test
+  void matchTimeAndScanDerivedDocumentFrequenciesAgree() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 3");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+
+      for (int i = 0; i < 15; i++)
+        database.command("sql", "INSERT INTO Doc SET name = ?, content = ?", "d" + i,
+            i % 3 == 0 ? "alpha beta gamma" : "alpha delta");
+    });
+
+    database.transaction(() -> {
+      final Map<String, Float> searched = searchScores("Doc[content]", "alpha");
+
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      final Map<String, Float> direct = new HashMap<>();
+      final IndexCursor cursor = typeIndex.get(new Object[] { "alpha" });
+      while (cursor.hasNext()) {
+        final Document document = (Document) cursor.next().getRecord();
+        direct.put(document.getString("name"), cursor.getFloatScore());
+      }
+
+      assertThat(searched).hasSize(15);
+      assertThat(direct.keySet()).isEqualTo(searched.keySet());
+      for (final Map.Entry<String, Float> entry : searched.entrySet())
+        assertThat(direct.get(entry.getKey())).isEqualTo(entry.getValue());
+    });
+  }
+
+  /**
+   * A type whose indexed properties analyze to no tokens at all still counts every document in the corpus counters, so
+   * totalDocs is positive while the summed document length stays zero and the average document length is 0. Scoring must
+   * degrade to an empty result set rather than rejecting the corpus statistics.
+   */
+  @Test
+  void tokenlessCorpusReturnsNoMatchesInsteadOfFailing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+
+      for (int i = 0; i < 4; i++)
+        database.command("sql", "INSERT INTO Doc SET name = 'n" + i + "', content = ''");
+    });
+
+    database.transaction(() -> {
+      assertThat(searchScores("Doc[content]", "quantum")).isEmpty();
+
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      assertThat(typeIndex.get(new Object[] { "quantum" }).hasNext()).isFalse();
+
+      final ResultSet containsText = database.query("sql", "SELECT name FROM Doc WHERE content CONTAINSTEXT 'quantum'");
+      assertThat(containsText.hasNext()).isFalse();
+    });
+  }
+
+  /**
+   * The direct {@code TypeIndex.get()} path scores with type-wide statistics at every bucket count, so the tokenless corpus
+   * must degrade the same way on a single-bucket type.
+   */
+  @Test
+  void tokenlessSingleBucketCorpusReturnsNoMatchesInsteadOfFailing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+
+      for (int i = 0; i < 4; i++)
+        database.command("sql", "INSERT INTO Doc SET name = 'n" + i + "', content = ''");
+    });
+
+    database.transaction(() -> {
+      final ResultSet containsText = database.query("sql", "SELECT name FROM Doc WHERE content CONTAINSTEXT 'quantum'");
+      assertThat(containsText.hasNext()).isFalse();
+      assertThat(searchScores("Doc[content]", "quantum")).isEmpty();
     });
   }
 

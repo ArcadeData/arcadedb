@@ -43,9 +43,16 @@ public final class DimCursor implements AutoCloseable {
   private final int             dimId;
   private final SourceCursor[]  sources;     // sorted oldest -> newest
   private final boolean[]       sourceLive;  // false once a source is exhausted
-  private RID                   currentRid;
-  private float                 currentWeight;
-  private boolean               currentTombstone;
+  // Merged position, held as components with the {@link RID} object materialised on demand. The
+  // scorer compares positions far more often than it reads them (issue #5467).
+  private int                   currentBucketId = -1;
+  private long                  currentPosition = -1L;
+  private RID                   currentRidObj;
+  // Index of the newest live source aligned at currentRid; -1 when exhausted. The weight and
+  // tombstone are resolved lazily from this source only when a caller actually asks for them, so a
+  // Block-Max WAND skip that walks currentRid across block boundaries never forces the underlying
+  // segment cursor to decode a payload it will not score (issue #5388).
+  private int                   newestSourceIdx = -1;
   private boolean               started;
   private boolean               exhausted;
 
@@ -64,15 +71,34 @@ public final class DimCursor implements AutoCloseable {
   }
 
   public RID currentRid() {
-    return currentRid;
+    if (currentRidObj == null && currentBucketId >= 0)
+      currentRidObj = new RID(currentBucketId, currentPosition);
+    return currentRidObj;
+  }
+
+  /** Bucket id of the merged position, or {@code -1} when exhausted. */
+  public int currentBucketId() {
+    return currentBucketId;
+  }
+
+  /** Position component of the merged position, or {@code -1} when exhausted. */
+  public long currentPosition() {
+    return currentPosition;
   }
 
   public float currentWeight() {
-    return currentWeight;
+    if (exhausted || newestSourceIdx < 0)
+      return 0.0f;
+    final SourceCursor s = sources[newestSourceIdx];
+    // Resolving the weight forces a lazily-parked segment cursor to decode its block - the single
+    // point where a scored document actually pays for a page read.
+    return s.isTombstone() ? 0.0f : s.currentWeight();
   }
 
   public boolean isTombstone() {
-    return currentTombstone;
+    if (exhausted || newestSourceIdx < 0)
+      return false;
+    return sources[newestSourceIdx].isTombstone();
   }
 
   public boolean isExhausted() {
@@ -97,6 +123,70 @@ public final class DimCursor implements AutoCloseable {
     return m;
   }
 
+  /**
+   * Merged posting count across every source for this dim: how expensive this term is to traverse.
+   * {@link BmwScorer} uses it to rank which terms are worth dropping out of the traversal first, so
+   * an approximation is fine (sources that cannot answer in O(1) report 0).
+   */
+  public long documentFrequency() {
+    long total = 0L;
+    for (final SourceCursor s : sources)
+      total += s.documentFrequency();
+    return total;
+  }
+
+  /**
+   * Merged Block-Max WAND upper bound on this dim's contribution to {@code rid}: the max over
+   * live sources of their {@link SourceCursor#blockMaxAt(RID) blockMaxAt}. Taking the max is
+   * correct because on a conflict the newest source wins and its weight is bounded by its own
+   * block max, while every older source's block max independently bounds its own posting.
+   */
+  public float blockMaxAt(final RID rid) {
+    return blockMaxAt(rid.getBucketId(), rid.getPosition());
+  }
+
+  /** Primitive-argument {@link #blockMaxAt(RID)}. */
+  public float blockMaxAt(final int bucketId, final long position) {
+    if (exhausted)
+      return 0.0f;
+    float m = 0.0f;
+    for (int i = 0; i < sources.length; i++) {
+      if (!sourceLive[i])
+        continue;
+      final float bm = sources[i].blockMaxAt(bucketId, position);
+      if (bm > m)
+        m = bm;
+    }
+    return m;
+  }
+
+  /**
+   * Right edge of the range that {@link #blockMaxAt(RID)} bounds: the min over live sources of
+   * their {@link SourceCursor#blockEndAt(RID) blockEndAt}, ignoring sources that report no finite
+   * boundary. Taking the min keeps the merged block-max valid over {@code [rid, blockEnd]} - the
+   * tighter (smaller) block boundary of any source is where at least one source's per-block bound
+   * stops holding. Returns {@code null} if no live source bounds a finite boundary (e.g. only an
+   * in-memory memtable covers {@code rid}), which tells the scorer it cannot block-skip here.
+   */
+  public RID blockEndAt(final RID rid) {
+    return blockEndAt(rid.getBucketId(), rid.getPosition());
+  }
+
+  /** Primitive-argument {@link #blockEndAt(RID)}. */
+  public RID blockEndAt(final int bucketId, final long position) {
+    if (exhausted)
+      return null;
+    RID min = null;
+    for (int i = 0; i < sources.length; i++) {
+      if (!sourceLive[i])
+        continue;
+      final RID be = sources[i].blockEndAt(bucketId, position);
+      if (be != null && (min == null || SparseSegmentBuilder.compareRid(be, min) < 0))
+        min = be;
+    }
+    return min;
+  }
+
   public void start() throws IOException {
     if (started)
       return;
@@ -119,15 +209,16 @@ public final class DimCursor implements AutoCloseable {
       start();
       return !exhausted;
     }
-    if (currentRid == null)
+    if (currentBucketId < 0)
       return false;
 
-    // Advance all sources currently aligned at currentRid.
-    final RID consumed = currentRid;
+    // Advance all sources currently aligned at the merged position.
+    final int consumedBucketId = currentBucketId;
+    final long consumedPosition = currentPosition;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      if (consumed.equals(sources[i].currentRid())) {
+      if (sources[i].currentPosition() == consumedPosition && sources[i].currentBucketId() == consumedBucketId) {
         if (!sources[i].advance())
           sourceLive[i] = false;
       }
@@ -140,18 +231,24 @@ public final class DimCursor implements AutoCloseable {
    * Forward-seek every source to the first posting whose RID >= target.
    */
   public boolean seekTo(final RID target) throws IOException {
+    return seekTo(target.getBucketId(), target.getPosition());
+  }
+
+  /** Primitive-argument {@link #seekTo(RID)}. */
+  public boolean seekTo(final int targetBucketId, final long targetPosition) throws IOException {
     if (exhausted)
       return false;
     if (!started) {
       start();
     }
-    if (currentRid != null && SparseSegmentBuilder.compareRid(currentRid, target) >= 0)
+    if (currentBucketId >= 0
+        && SparseSegmentBuilder.compareRid(currentBucketId, currentPosition, targetBucketId, targetPosition) >= 0)
       return true;
 
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      if (!sources[i].seekTo(target))
+      if (!sources[i].seekTo(targetBucketId, targetPosition))
         sourceLive[i] = false;
     }
     materializeMin();
@@ -163,14 +260,20 @@ public final class DimCursor implements AutoCloseable {
     for (final SourceCursor c : sources)
       c.close();
     exhausted = true;
-    currentRid = null;
+    currentBucketId = -1;
+    currentPosition = -1L;
+    currentRidObj = null;
+    newestSourceIdx = -1;
   }
 
   // ---------- internals ----------
 
   /**
-   * Compute {@code currentRid} as the min over live sources and resolve {@code currentWeight} /
-   * {@code currentTombstone} as the newest source's value at that RID, in a single pass.
+   * Compute {@code currentRid} as the min over live sources and record which source ({@code
+   * newestSourceIdx}) supplies its weight/tombstone, in a single pass. The weight and tombstone
+   * are NOT read here - they are resolved lazily by {@link #currentWeight()} / {@link
+   * #isTombstone()} so a BMW skip that only ever reads {@code currentRid} never forces the winning
+   * segment cursor to decode its block (issue #5388).
    * <p>
    * Sources are passed oldest-first, so a higher index means newer. We track the min RID and,
    * for any source that ties the running min, prefer the newest. Two pieces of state suffice:
@@ -178,24 +281,28 @@ public final class DimCursor implements AutoCloseable {
    * reset; when an equal RID is seen on a newer source, only the newest-index is updated.
    */
   private void materializeMin() {
-    RID minRid = null;
+    int minBucketId = -1;
+    long minPosition = -1L;
     int newestAtMinIdx = -1;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
-      final RID rid = sources[i].currentRid();
-      if (rid == null) {
+      final int bucketId = sources[i].currentBucketId();
+      if (bucketId < 0) {
         sourceLive[i] = false;
         continue;
       }
-      if (minRid == null) {
-        minRid = rid;
+      final long position = sources[i].currentPosition();
+      if (newestAtMinIdx < 0) {
+        minBucketId = bucketId;
+        minPosition = position;
         newestAtMinIdx = i;
         continue;
       }
-      final int cmp = SparseSegmentBuilder.compareRid(rid, minRid);
+      final int cmp = SparseSegmentBuilder.compareRid(bucketId, position, minBucketId, minPosition);
       if (cmp < 0) {
-        minRid = rid;
+        minBucketId = bucketId;
+        minPosition = position;
         newestAtMinIdx = i;
       } else if (cmp == 0) {
         // i > newestAtMinIdx since we scan oldest-first and only revisit the same RID on a newer
@@ -203,17 +310,18 @@ public final class DimCursor implements AutoCloseable {
         newestAtMinIdx = i;
       }
     }
-    if (minRid == null) {
+    if (newestAtMinIdx < 0) {
       exhausted = true;
-      currentRid = null;
-      currentTombstone = false;
-      currentWeight = 0.0f;
+      currentBucketId = -1;
+      currentPosition = -1L;
+      currentRidObj = null;
+      newestSourceIdx = -1;
       return;
     }
-    final SourceCursor newest = sources[newestAtMinIdx];
-    currentRid = minRid;
-    currentTombstone = newest.isTombstone();
-    currentWeight = currentTombstone ? 0.0f : newest.currentWeight();
+    currentBucketId = minBucketId;
+    currentPosition = minPosition;
+    currentRidObj = null;
+    newestSourceIdx = newestAtMinIdx;
   }
 
 }

@@ -26,13 +26,13 @@ jobs:
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Meterian Scanner
         uses: MeterianHQ/meterian-github-action@6849965b713613691cd357967671da061d968f83 # v1.0.17
         with:
           cli_args: "--report-sarif=report.sarif"
           oss: true
-      - uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v3.29.5
+      - uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v3.29.5
         if: success() || failure()
         with:
           sarif_file: report.sarif

@@ -93,8 +93,8 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
-| org.slf4j | slf4j-api | 2.0.17 | MIT | https://www.slf4j.org/ |
-| org.slf4j | slf4j-jdk14 | 2.0.17 | MIT | https://www.slf4j.org/ |
+| org.slf4j | slf4j-api | 2.0.18 | MIT | https://www.slf4j.org/ |
+| org.slf4j | slf4j-jdk14 | 2.0.18 | MIT | https://www.slf4j.org/ |
 | ch.qos.logback | logback-classic | 1.5.27 | EPL 1.0 / LGPL 2.1 | https://logback.qos.ch/ |
 | ch.qos.logback | logback-core | 1.5.27 | EPL 1.0 / LGPL 2.1 | https://logback.qos.ch/ |
 | com.conversantmedia | disruptor | 1.2.21 | Apache 2.0 | https://github.com/conversant/disruptor |

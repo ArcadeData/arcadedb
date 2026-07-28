@@ -28,6 +28,7 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.schema.Type;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +37,8 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.PriorityQueue;
+import java.util.Set;
 
 /**
  * Mutable TimeSeries bucket backed by paginated storage.
@@ -90,6 +93,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   private List<ColumnDefinition> columns;
   private int                    rowSize; // fixed row size in bytes
+  // Value-column kinds, resolved with rowSize so the boxed append path does not rebuild them per call.
+  private byte[]                 columnKinds;
 
   /**
    * Factory handler for loading existing .tstb files during schema load.
@@ -112,6 +117,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
+    this.columnKinds = ObjectColumnsRowSource.kindsOf(columns);
     // Note: initHeaderPage() is NOT called here.
     // TimeSeriesShard calls it in a self-contained nested transaction after registering the
     // bucket with the schema, so the nested TX commit can resolve the file by its ID.
@@ -126,6 +132,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
+    this.columnKinds = ObjectColumnsRowSource.kindsOf(columns);
   }
 
   /**
@@ -134,6 +141,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
   public void setColumns(final List<ColumnDefinition> columns) {
     this.columns = columns;
     this.rowSize = calculateRowSize(columns);
+    this.columnKinds = ObjectColumnsRowSource.kindsOf(columns);
   }
 
   /**
@@ -143,43 +151,103 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * @param columnValues array of column value arrays, one per non-timestamp column
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+    appendSamples(newRowSource(timestamps, columnValues));
+  }
+
+  /**
+   * Wraps boxed column arrays as a {@link TimeSeriesRowSource} over this bucket's columns. The arrays
+   * are held, not copied, and the column kinds come from this bucket's cached table.
+   */
+  TimeSeriesRowSource newRowSource(final long[] timestamps, final Object[][] columnValues) {
+    return new ObjectColumnsRowSource(columnKinds, timestamps, columnValues);
+  }
+
+  /**
+   * Appends samples to the mutable bucket within the current transaction, reading them straight off a
+   * primitive row source so a caller holding primitive data never boxes a value (issue #5474).
+   * <p>
+   * The page bookkeeping is hoisted out of the per-sample loop: the header page is resolved once and
+   * its counters are folded in registers until the end of the batch, and the active data page is kept
+   * across samples until it fills. Doing it per sample cost three {@code PageId} allocations and three
+   * transaction map lookups for every point written - more garbage than the boxing this method
+   * removes.
+   */
+  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
+    final int sampleCount = source.size();
+    if (sampleCount == 0)
+      return;
+
     final TransactionContext tx = database.getTransaction();
+    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
 
-    for (int i = 0; i < timestamps.length; i++) {
-      final MutablePage dataPage = getOrCreateActiveDataPage(tx);
+    long totalSamples = headerPage.readLong(HEADER_SAMPLE_COUNT_OFFSET);
+    long minTs = headerPage.readLong(HEADER_MIN_TS_OFFSET);
+    long maxTs = headerPage.readLong(HEADER_MAX_TS_OFFSET);
 
-      final int sampleCountInPage = dataPage.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
-      final int rowOffset = DATA_ROWS_OFFSET + sampleCountInPage * rowSize;
+    final int maxSamplesPerPage = getMaxSamplesPerPage();
+    final int columnCount = columns.size();
 
-      // Write timestamp
-      dataPage.writeLong(rowOffset, timestamps[i]);
+    MutablePage dataPage = null;
+    int samplesInPage = 0;
+    long pageMinTs = 0;
+    long pageMaxTs = 0;
 
-      // Write each non-timestamp column value
+    for (int i = 0; i < sampleCount; i++) {
+      if (dataPage == null || samplesInPage >= maxSamplesPerPage) {
+        if (dataPage != null)
+          flushDataPageHeader(dataPage, samplesInPage, pageMinTs, pageMaxTs);
+
+        dataPage = getOrCreateActiveDataPage(tx, headerPage);
+        samplesInPage = dataPage.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+        pageMinTs = samplesInPage == 0 ? Long.MAX_VALUE : dataPage.readLong(DATA_MIN_TS_OFFSET);
+        pageMaxTs = samplesInPage == 0 ? Long.MIN_VALUE : dataPage.readLong(DATA_MAX_TS_OFFSET);
+      }
+
+      final long timestamp = source.getTimestamp(i);
+      final int rowOffset = DATA_ROWS_OFFSET + samplesInPage * rowSize;
+      dataPage.writeLong(rowOffset, timestamp);
+
       int colOffset = rowOffset + 8;
       int colIdx = 0;
-      for (int c = 0; c < columns.size(); c++) {
-        if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+      for (int c = 0; c < columnCount; c++) {
+        final ColumnDefinition col = columns.get(c);
+        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
 
-        final Object value = columnValues[colIdx][i];
-        colOffset += writeColumnValue(dataPage, colOffset, columns.get(c), value);
+        // The width table decides, not the type name: a column with no fixed width is stored
+        // length-prefixed, which is the only encoding the reader can walk past (issue #5475).
+        final int fixedSize = col.getFixedSize();
+        if (fixedSize > 0)
+          colOffset += writeRawValue(dataPage, colOffset, fixedSize, source.getRawValue(i, colIdx));
+        else
+          colOffset += writeStringValue(dataPage, colOffset, col, source.getStringValue(i, colIdx));
         colIdx++;
       }
 
-      // Update page sample count and min/max timestamps
-      dataPage.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) (sampleCountInPage + 1));
+      samplesInPage++;
+      if (timestamp < pageMinTs)
+        pageMinTs = timestamp;
+      if (timestamp > pageMaxTs)
+        pageMaxTs = timestamp;
 
-      final long currentMinTs = dataPage.readLong(DATA_MIN_TS_OFFSET);
-      final long currentMaxTs = dataPage.readLong(DATA_MAX_TS_OFFSET);
-
-      if (sampleCountInPage == 0 || timestamps[i] < currentMinTs)
-        dataPage.writeLong(DATA_MIN_TS_OFFSET, timestamps[i]);
-      if (sampleCountInPage == 0 || timestamps[i] > currentMaxTs)
-        dataPage.writeLong(DATA_MAX_TS_OFFSET, timestamps[i]);
-
-      // Update header page stats
-      updateHeaderStats(tx, timestamps[i]);
+      totalSamples++;
+      if (timestamp < minTs)
+        minTs = timestamp;
+      if (timestamp > maxTs)
+        maxTs = timestamp;
     }
+
+    flushDataPageHeader(dataPage, samplesInPage, pageMinTs, pageMaxTs);
+
+    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, totalSamples);
+    headerPage.writeLong(HEADER_MIN_TS_OFFSET, minTs);
+    headerPage.writeLong(HEADER_MAX_TS_OFFSET, maxTs);
+  }
+
+  private static void flushDataPageHeader(final MutablePage page, final int samplesInPage, final long minTs, final long maxTs) {
+    page.writeShort(DATA_SAMPLE_COUNT_OFFSET, (short) samplesInPage);
+    page.writeLong(DATA_MIN_TS_OFFSET, minTs);
+    page.writeLong(DATA_MAX_TS_OFFSET, maxTs);
   }
 
   /**
@@ -221,6 +289,220 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
     }
     return results;
+  }
+
+  /**
+   * Scans the mutable bucket newest-first and returns at most {@code limit} rows, the newest ones in
+   * the requested range.
+   * <p>
+   * Data pages are visited from the last to the first and are pruned on their min/max timestamp
+   * header, so a top-N query never materialises the rows of a page that cannot contribute. Rows are
+   * not assumed to be globally ordered across pages (late arrivals are always appended to the last
+   * page), which is why a page whose maximum is older than the current cut-off is skipped rather
+   * than ending the walk.
+   *
+   * @param fromTs        start timestamp (inclusive)
+   * @param toTs          end timestamp (inclusive)
+   * @param columnIndices which columns to return (null = all)
+   * @param tagFilter     optional tag filter, evaluated straight off the page so non-matching rows
+   *                      cost no allocation
+   * @param limit         maximum number of rows to return, 0 or less means unlimited
+   * @param metrics       optional page and row counters, may be {@code null}
+   *
+   * @return list of sample rows ordered from the newest to the oldest
+   */
+  public List<Object[]> scanRangeDescending(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final int limit, final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+    final int dataPageCount = getDataPageCount();
+
+    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter, columnIndices);
+    if (tagFilter != null && matchers == null)
+      // A condition on a column the caller did not ask for: nothing can match.
+      return new ArrayList<>();
+
+    // Bounded queries keep the current best rows in a min-heap on the timestamp, so the cut-off is
+    // always exact and a row is materialised only when it really enters the result. Unlimited
+    // queries have no cut-off to maintain and just collect.
+    final PriorityQueue<Object[]> heap = need == Integer.MAX_VALUE ?
+        null :
+        new PriorityQueue<>(Math.min(need, 1024), (a, b) -> Long.compare((long) a[0], (long) b[0]));
+    final List<Object[]> collected = heap == null ? new ArrayList<>() : null;
+
+    // Timestamp of the oldest row retained so far: with `need` rows already held, nothing older can
+    // enter the result.
+    long cutoffTs = Long.MIN_VALUE;
+    int held = 0;
+
+    for (int pageNum = dataPageCount; pageNum >= 1; pageNum--) {
+      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
+
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      if (sampleCount == 0)
+        continue;
+
+      final long pageMinTs = page.readLong(DATA_MIN_TS_OFFSET);
+      final long pageMaxTs = page.readLong(DATA_MAX_TS_OFFSET);
+
+      // Skip pages outside range
+      if (pageMaxTs < fromTs || pageMinTs > toTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      // Skip pages that cannot beat the rows already collected
+      if (held >= need && pageMaxTs <= cutoffTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      if (metrics != null)
+        metrics.addScannedPage();
+
+      // Rows are appended in arrival order, so walking a page backwards yields the newest rows first
+      // and the cut-off starts rejecting the rest of the page almost immediately.
+      for (int row = sampleCount - 1; row >= 0; row--) {
+        final int rowOffset = DATA_ROWS_OFFSET + row * rowSize;
+        final long ts = page.readLong(rowOffset);
+
+        if (ts < fromTs || ts > toTs)
+          continue;
+        if (held >= need && ts <= cutoffTs)
+          continue;
+        if (matchers != null && !matchesTagFilter(page, rowOffset, matchers))
+          continue;
+
+        final Object[] materialized = readRow(page, rowOffset, columnIndices);
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+
+        if (heap == null) {
+          collected.add(materialized);
+          held++;
+          continue;
+        }
+
+        heap.add(materialized);
+        if (heap.size() > need)
+          heap.poll();
+        held = heap.size();
+        if (held >= need)
+          cutoffTs = (long) heap.peek()[0];
+      }
+    }
+
+    final List<Object[]> results = heap == null ? collected : new ArrayList<>(heap);
+    TimeSeriesSealedStore.trimToDescendingLimit(results, need);
+    return results;
+  }
+
+  /**
+   * A tag condition prepared for repeated evaluation against raw page bytes.
+   * <p>
+   * String tags are by far the common case and used to cost a {@code byte[]} plus a {@code String}
+   * per row examined. Pre-encoding the candidate values lets the comparison run straight on the page.
+   */
+  private static final class TagMatcher {
+    private final int      columnIndex;
+    private final Set<?>   values;
+    private final byte[][] utf8Values;
+
+    private TagMatcher(final int columnIndex, final Set<?> values, final byte[][] utf8Values) {
+      this.columnIndex = columnIndex;
+      this.values = values;
+      this.utf8Values = utf8Values;
+    }
+  }
+
+  /**
+   * Prepares the filter for the scan, or returns {@code null} when it can never match.
+   * <p>
+   * Mirrors {@link TagFilter#matchesMapped(Object[], int[])}: a condition on a column that the
+   * caller did not request cannot be satisfied, because the row handed back would not carry it.
+   */
+  private TagMatcher[] buildTagMatchers(final TagFilter tagFilter, final int[] columnIndices) {
+    final List<TagFilter.Condition> conditions = tagFilter.getConditions();
+    final TagMatcher[] matchers = new TagMatcher[conditions.size()];
+
+    for (int i = 0; i < conditions.size(); i++) {
+      final TagFilter.Condition cond = conditions.get(i);
+      if (columnIndices != null && !isInArray(cond.columnIndex(), columnIndices))
+        return null;
+
+      boolean allStrings = !cond.matchValues().isEmpty();
+      for (final Object value : cond.matchValues())
+        if (!(value instanceof String)) {
+          allStrings = false;
+          break;
+        }
+
+      byte[][] utf8Values = null;
+      if (allStrings) {
+        utf8Values = new byte[cond.matchValues().size()][];
+        int v = 0;
+        for (final Object value : cond.matchValues())
+          utf8Values[v++] = ((String) value).getBytes(StandardCharsets.UTF_8);
+      }
+
+      matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), utf8Values);
+    }
+    return matchers;
+  }
+
+  /**
+   * Evaluates the prepared conditions directly against the page, without materialising the row.
+   */
+  private boolean matchesTagFilter(final BasePage page, final int rowOffset, final TagMatcher[] matchers) {
+    for (final TagMatcher matcher : matchers) {
+      int colOffset = rowOffset + 8;
+      int colIdx = 0;
+      ColumnDefinition target = null;
+      for (int c = 0; c < columns.size(); c++) {
+        final ColumnDefinition col = columns.get(c);
+        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+        if (colIdx == matcher.columnIndex) {
+          target = col;
+          break;
+        }
+        colOffset += getColumnStorageSize(page, colOffset, col);
+        colIdx++;
+      }
+
+      if (target == null)
+        return false;
+
+      // The byte comparison only applies to a STRING column: on any other type the leading bytes are
+      // not a length prefix and the value has to be decoded.
+      if (matcher.utf8Values != null && target.getDataType() == Type.STRING) {
+        if (!matchesUtf8(page, colOffset, matcher.utf8Values))
+          return false;
+      } else if (!matcher.values.contains(readColumnValue(page, colOffset, target)))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Compares the STRING stored at {@code offset} against the pre-encoded candidates, allocation-free.
+   */
+  private static boolean matchesUtf8(final BasePage page, final int offset, final byte[][] candidates) {
+    final int len = page.readShort(offset) & 0xFFFF;
+    for (final byte[] candidate : candidates) {
+      if (candidate.length != len)
+        continue;
+      boolean equal = true;
+      for (int i = 0; i < len; i++)
+        if ((byte) page.readByte(offset + 2 + i) != candidate[i]) {
+          equal = false;
+          break;
+        }
+      if (equal)
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -518,12 +800,11 @@ public class TimeSeriesBucket extends PaginatedComponent {
     pageCount.set(1);
   }
 
-  private MutablePage getOrCreateActiveDataPage(final TransactionContext tx) throws IOException {
+  private MutablePage getOrCreateActiveDataPage(final TransactionContext tx, final MutablePage headerPage) throws IOException {
     // Use the logical page count from the header, NOT getTotalPages() (physical).
     // After clearDataPages() resets HEADER_DATA_PAGE_COUNT to 0, the physical pages
     // still exist on disk; we transparently reuse them starting from page 1, avoiding
     // allocating new pages and avoiding wasted space.
-    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
     final int dataPageCount = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
 
     if (dataPageCount > 0) {
@@ -554,61 +835,49 @@ public class TimeSeriesBucket extends PaginatedComponent {
     return newPage;
   }
 
-  private void updateHeaderStats(final TransactionContext tx, final long timestamp) throws IOException {
-    final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
-    final long count = headerPage.readLong(HEADER_SAMPLE_COUNT_OFFSET);
-    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, count + 1);
-
-    final long currentMin = headerPage.readLong(HEADER_MIN_TS_OFFSET);
-    final long currentMax = headerPage.readLong(HEADER_MAX_TS_OFFSET);
-    if (timestamp < currentMin)
-      headerPage.writeLong(HEADER_MIN_TS_OFFSET, timestamp);
-    if (timestamp > currentMax)
-      headerPage.writeLong(HEADER_MAX_TS_OFFSET, timestamp);
+  /**
+   * Writes the raw bits of a fixed-width column in exactly the {@code fixedSize} bytes
+   * {@link ColumnDefinition#getFixedSize()} reserves in the row stride, and returns the bytes written.
+   * The two must agree: a column that wrote more than it reserved used to overrun its neighbours in
+   * the row (issue #5475).
+   */
+  private static int writeRawValue(final MutablePage page, final int offset, final int fixedSize, final long raw) {
+    switch (fixedSize) {
+    case 8 -> page.writeLong(offset, raw);
+    case 4 -> page.writeInt(offset, (int) raw);
+    case 2 -> page.writeShort(offset, (short) raw);
+    case 1 -> page.writeByte(offset, (byte) raw);
+    default -> throw new IllegalStateException("Unsupported fixed column width " + fixedSize);
+    }
+    return fixedSize;
   }
 
-  private int writeColumnValue(final MutablePage page, final int offset, final ColumnDefinition col, final Object value) {
-    return switch (col.getDataType()) {
-      case DOUBLE -> {
-        page.writeLong(offset, Double.doubleToRawLongBits(value != null ? ((Number) value).doubleValue() : 0.0));
-        yield 8;
-      }
-      case LONG, DATETIME -> {
-        page.writeLong(offset, value != null ? ((Number) value).longValue() : 0L);
-        yield 8;
-      }
-      case INTEGER -> {
-        page.writeInt(offset, value != null ? ((Number) value).intValue() : 0);
-        yield 4;
-      }
-      case FLOAT -> {
-        page.writeInt(offset, Float.floatToRawIntBits(value != null ? ((Number) value).floatValue() : 0f));
-        yield 4;
-      }
-      case SHORT -> {
-        page.writeShort(offset, value != null ? ((Number) value).shortValue() : (short) 0);
-        yield 2;
-      }
-      case BOOLEAN -> {
-        page.writeByte(offset, (byte) (Boolean.TRUE.equals(value) ? 1 : 0));
-        yield 1;
-      }
-      case STRING -> {
-        // For strings in mutable layer, store length-prefixed UTF-8
-        final byte[] bytes = value != null ? ((String) value).getBytes(StandardCharsets.UTF_8) : new byte[0];
-        if (bytes.length > MAX_STRING_BYTES)
-          throw new IllegalArgumentException(
-              "String value exceeds max length of " + MAX_STRING_BYTES + " bytes for column '" + col.getName() + "'");
-        page.writeShort(offset, (short) bytes.length);
-        if (bytes.length > 0)
-          page.writeByteArray(offset + 2, bytes);
-        yield 2 + bytes.length;
-      }
-      default -> {
-        page.writeLong(offset, 0L);
-        yield 8;
-      }
+  /**
+   * Reads back the raw bits {@link #writeRawValue} stored for a fixed-width column.
+   */
+  private static long readRawValue(final BasePage page, final int offset, final int fixedSize) {
+    return switch (fixedSize) {
+      case 8 -> page.readLong(offset);
+      case 4 -> page.readInt(offset);
+      case 2 -> page.readShort(offset);
+      case 1 -> page.readByte(offset);
+      default -> throw new IllegalStateException("Unsupported fixed column width " + fixedSize);
     };
+  }
+
+  /**
+   * Writes a STRING column in the mutable layer as a length-prefixed UTF-8 payload and returns the
+   * bytes written. {@code null} is stored as a zero-length payload.
+   */
+  private static int writeStringValue(final MutablePage page, final int offset, final ColumnDefinition col, final String value) {
+    final byte[] bytes = value != null ? value.getBytes(StandardCharsets.UTF_8) : new byte[0];
+    if (bytes.length > MAX_STRING_BYTES)
+      throw new IllegalArgumentException(
+          "String value exceeds max length of " + MAX_STRING_BYTES + " bytes for column '" + col.getName() + "'");
+    page.writeShort(offset, (short) bytes.length);
+    if (bytes.length > 0)
+      page.writeByteArray(offset + 2, bytes);
+    return 2 + bytes.length;
   }
 
   private Object[] readRow(final BasePage page, final int rowOffset, final int[] columnIndices) {
@@ -646,25 +915,24 @@ public class TimeSeriesBucket extends PaginatedComponent {
     return result;
   }
 
+  /**
+   * Reads one column value, mirroring {@link #writeRawValue}/{@link #writeStringValue} exactly: same
+   * width table on the way out as on the way in, and the boxing delegated to
+   * {@link ColumnDefinition#boxRaw(long)} so the mutable and sealed layers cannot return different
+   * Java types for the same declared column (issue #5475).
+   */
   private Object readColumnValue(final BasePage page, final int offset, final ColumnDefinition col) {
-    return switch (col.getDataType()) {
-      case DOUBLE -> Double.longBitsToDouble(page.readLong(offset));
-      case LONG, DATETIME -> page.readLong(offset);
-      case INTEGER -> page.readInt(offset);
-      case FLOAT -> Float.intBitsToFloat(page.readInt(offset));
-      case SHORT -> page.readShort(offset);
-      case BOOLEAN -> page.readByte(offset) == 1;
-      case STRING -> {
-        final int len = page.readShort(offset) & 0xFFFF;
-        if (len == 0)
-          yield "";
-        final byte[] bytes = new byte[len];
-        for (int i = 0; i < len; i++)
-          bytes[i] = (byte) page.readByte(offset + 2 + i);
-        yield new String(bytes, StandardCharsets.UTF_8);
-      }
-      default -> null;
-    };
+    final int fixedSize = col.getFixedSize();
+    if (fixedSize > 0)
+      return col.boxRaw(readRawValue(page, offset, fixedSize));
+
+    final int len = page.readShort(offset) & 0xFFFF;
+    if (len == 0)
+      return col.getDataType() == Type.STRING ? "" : null;
+
+    final byte[] bytes = new byte[len];
+    page.readByteArray(offset + 2, bytes);
+    return new String(bytes, StandardCharsets.UTF_8);
   }
 
   private int getColumnStorageSize(final BasePage page, final int offset, final ColumnDefinition col) {

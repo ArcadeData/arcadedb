@@ -273,6 +273,73 @@ class SparseSegmentComponentTest extends TestHelper {
     });
   }
 
+  /**
+   * A block decode must copy the block out of the page, not the rest of the page (issue #5388).
+   * <p>
+   * The block's byte length is not stored in the segment format, so the reader used to hand back
+   * everything from the payload offset to the end of the page and let the cursor stop decoding after
+   * {@code postingCount} postings. That is correct but copies ~32 KiB for a ~0.5 KiB block at the
+   * 64 KiB page default: a profile of a learned-sparse query loop attributed 10.6% of query CPU to
+   * that one {@code arraycopy}. The reader now caps the copy at the block's worst-case payload size,
+   * tightened further by the gap to the next block of the same dim on the same page.
+   * <p>
+   * Asserted on copied bytes rather than wall-clock so the guard is deterministic. All three
+   * quantizations are covered because the worst-case bound is quantization-dependent, and every
+   * posting is read back so a bound that truncated a payload would fail loudly rather than silently.
+   */
+  @Test
+  void blockPayloadCopyIsBoundedToTheBlockNotThePage() throws Exception {
+    for (final WeightQuantization wq : WeightQuantization.values()) {
+      final SegmentParameters params = SegmentParameters.builder().weightQuantization(wq).build();
+      // Enough postings to fill many blocks and span several pages.
+      final List<RID> rids = ridSequence(0, 0, 20_000);
+      final float[] weights = randomWeights(rids.size(), 0x5388L);
+      final AtomicReference<SparseSegmentComponent> componentHolder = new AtomicReference<>();
+      final String name = "seg-copy-bound-" + wq.name().toLowerCase();
+
+      inTx(() -> {
+        final SparseSegmentComponent c = newComponent(name);
+        componentHolder.set(c);
+        try (final SparseSegmentBuilder b = new SparseSegmentBuilder(c, params)) {
+          b.setSegmentId(5388L);
+          b.startDim(7);
+          for (int i = 0; i < rids.size(); i++)
+            b.appendPosting(rids.get(i), weights[i]);
+          b.endDim();
+          b.finish();
+        }
+      });
+
+      inTx(() -> {
+        final PaginatedSegmentReader r = new PaginatedSegmentReader(componentHolder.get());
+        final int pageContentSize = componentHolder.get().pageContentSize();
+        try (final PaginatedSegmentDimCursor c = r.openCursor(7)) {
+          // Full scan: every posting must still decode correctly under the capped read.
+          for (int i = 0; i < rids.size(); i++) {
+            assertThat(c.advance()).isTrue();
+            assertThat(c.currentRid()).isEqualTo(rids.get(i));
+            assertThat(c.currentWeight()).isNotNaN();
+          }
+          assertThat(c.advance()).isFalse();
+
+          final long blocks = c.decodedBlockCount();
+          assertThat(blocks).as("%s: the scan must span many blocks and pages", wq).isGreaterThan(100L);
+
+          final long perBlock = c.decodedPayloadBytes() / blocks;
+          final int worstCase = SegmentFormat.maxBlockPayloadSize(params.blockSize(), wq);
+          assertThat(perBlock)
+              .as("%s: copied %d bytes per block, worst case for %d postings is %d, page content is %d", wq, perBlock,
+                  params.blockSize(), worstCase, pageContentSize)
+              .isLessThanOrEqualTo(worstCase);
+          // The regression this guards: half a page per block on average.
+          assertThat(perBlock)
+              .as("%s: copied %d bytes per block, which is page-sized rather than block-sized", wq, perBlock)
+              .isLessThan(pageContentSize / 8L);
+        }
+      });
+    }
+  }
+
   // --- helpers --------------------------------------------------------------
 
   /** Wraps a checked-throwing block so it can run inside a {@code TransactionScope.execute()}. */
