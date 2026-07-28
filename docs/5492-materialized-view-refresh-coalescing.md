@@ -1,8 +1,10 @@
 # Issue #5492 - a dropped materialized view refresh leaves the view permanently stale
 
 - Issue: https://github.com/ArcadeData/arcadedb/issues/5492
+- PR: https://github.com/ArcadeData/arcadedb/pull/5502 (refs #5492, does **not** close it)
+- Split out: https://github.com/ArcadeData/arcadedb/issues/5503
 - Branch: `fix/5492-ha-mv-page-version-replication-gap`
-- Base: `main` at f7ee51d01
+- Base: `main` at d3cb57b9f
 
 ## Scope
 
@@ -115,3 +117,33 @@ actually was.
 | `engine` `com.arcadedb.schema.*Test` | 310 pass |
 | `server` `HTTPMaterializedViewIT`, `RemoteMaterializedViewIT`, `Issue3941AsyncRefreshMaterializedViewIT` | 11 pass |
 | `ha-raft` `RaftReplicationMaterializedViewIT` | 1 pass |
+
+## Review cycles
+
+### Cycle 1 - `e23c1947c`
+
+`claude[bot]` raised three items. All resolved.
+
+1. **Two unrelated MCP hybrid_search doc files in the diff.** Real, but not added by this work: the
+   branch was cut from a local `main` carrying two unpushed commits (`f7ee51d01`, `a1959e343`), so
+   they showed up in the diff against `origin/main`. Resolved by rebasing onto `origin/main` with the
+   author's explicit authorization to force-push; the branch now carries only this work's commits.
+2. **The error path could still drop a pending request.** Correct, and the sharper form of the very
+   bug being fixed: `endRefresh()` did a plain `set(REFRESH_IDLE)`, clobbering a request registered
+   during a failing pass. Fixed by `releaseRefreshAfterFailure()`, which CASes the release and reports
+   whether a request was discarded. The request is deliberately not retried - a pass that just failed
+   would likely fail again, and retrying a persistent failure would spin - so the discard is logged at
+   WARNING and the view is left in a non-VALID status, making the staleness visible rather than
+   silent. Covered by `aFailedPassReportsTheRequestItDiscardsInsteadOfClobberingIt`, verified to fail
+   against the plain-write release.
+3. **Tag the end-to-end test slow.** Applied `@Tag("slow")` at method level.
+
+Declined: dropping `docs/5492-...md`. `docs/NNNN-*.md` is the established per-issue convention in this
+repo, and this file records the negative result on the replication half, which the PR description only
+summarizes.
+
+Noted without action: under sustained single-record load one writer thread can bear repeated rebuilds
+on others' behalf. Inherent to full-refresh-per-change, strictly better than the previous behaviour,
+and genuinely addressed only by true incremental maintenance, which is out of scope here.
+
+`gemini-code-assist` did not respond within the polling window.
