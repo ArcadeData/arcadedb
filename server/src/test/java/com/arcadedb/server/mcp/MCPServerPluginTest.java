@@ -2229,6 +2229,69 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchRejectsAnUnknownWeightsKey() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("vecter", 2.0))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("vecter").contains("vector").contains("fulltext").contains("expand");
+  }
+
+  @Test
+  void hybridSearchRejectsANegativeWeight() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("expand", -1.0))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.expand");
+  }
+
+  @Test
+  void hybridSearchRejectsANonObjectExpand() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONArray())
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'expand' must be an object with optional edgeTypes, direction, and maxDepth");
+  }
+
+  @Test
+  void hybridSearchRejectsInvalidExpandBeforeResolvingTheDatabase() throws Exception {
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", "McpNoSuchDatabase")
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject().put("maxDepth", 4))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("maxDepth");
+    assertThat(text).doesNotContain("McpNoSuchDatabase");
+  }
+
+  @Test
   void fullTextSearchByIndexName() throws Exception {
     final JSONObject response = callTool("full_text_search", new JSONObject()
         .put("database", getDatabaseName())
