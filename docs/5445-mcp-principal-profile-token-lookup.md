@@ -118,6 +118,31 @@ fix was applied.
 | `server` `MCPToolUtilsTest` | 4/4 |
 | `server` MCP suite (`MCPConfigurationTest,MCPStdioServerTest,MCPServerPluginTest,MCPPermissionsTest,MCPResourcesTest,MCPToolUtilsTest`) | 161/161 |
 
+## Review cycles
+
+| # | Head | Review outcome | Applied |
+|---|---|---|---|
+| 1 | `1ef55c671` | LGTM, two non-blocking observations | Scoped the `invalidPrincipalProfileIsRejectedWithoutPartialUpdate` claim with a comment - see below. Nothing else applied. |
+
+`gemini-code-assist` did not review this head; `claude[bot]` posted twice.
+
+Observations raised and how they were resolved:
+
+- *`objectValue` throws `IllegalArgumentException` while the sibling `booleanValue` throws `JSONException` for
+  the same class of wrong-type error.* Not changed. `IllegalArgumentException` is the convention the rest of
+  `MCPConfiguration` already uses for a rejected configuration value - blank override and principal names, an
+  unknown override key, an unknown profile name, a non-string profile, a null tool profile. `booleanValue` is
+  the single outlier, so aligning `objectValue` with it would spread the inconsistency rather than remove it.
+  Both land on `400` through `MCPConfigHandler`'s combined catch, so no behaviour depends on the choice.
+
+- *The "without partial update" guarantee is narrower than the test name suggests.* Correct, and confirmed by
+  probe: `updateFrom({"enabled": true, "allowReads": "yes"})` leaves `enabled` set to `true` after throwing,
+  because the `allow*` booleans are assigned inline while `databases`, `profile` and `principalProfiles` are
+  parsed up front. The test's payload is rejected atomically only because the invalid field is one of the three
+  parsed first. The behaviour predates this PR - the inline boolean block arrives with #5402 (`68d6596dc`) - so
+  it is left alone here and the test now carries a comment stating exactly what it proves. Making `updateFrom`
+  atomic for every field is the follow-up.
+
 ## Known gaps
 
 - **MCP Resources are not profile-gated.** `arcadedb://{database}/schema` is governed by the read,
@@ -130,3 +155,7 @@ fix was applied.
   `ArcadeData/arcadedb-docs` repository at `src/main/asciidoc/reference/mcp/mcp.adoc` and documents
   the `mcp-config.json` keys. It does not mention `principalProfiles`, nor the `profile` key from
   #5402, nor the `databases` key from #5401. A docs PR is owed there.
+- **`updateFrom` is not atomic across every field.** Raised in review and confirmed: the `allow*` booleans are
+  assigned inline, so a payload whose invalid field is a boolean commits the booleans that precede it before
+  throwing. Pre-existing since #5402 and untouched here. The fix is to parse every field into locals before
+  assigning any, mirroring what `databases`, `profile` and `principalProfiles` already do.

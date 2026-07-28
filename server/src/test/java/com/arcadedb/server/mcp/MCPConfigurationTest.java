@@ -396,6 +396,10 @@ class MCPConfigurationTest {
     assertThat(config.toJSON().has("principalProfiles")).isFalse();
   }
 
+  // The "without partial update" this asserts comes from field ordering: databases, profile and
+  // principalProfiles are parsed before updateFrom mutates anything, so rejecting one of them leaves every
+  // other setting alone. It is not general atomicity - the allow* booleans are still assigned inline, so an
+  // invalid boolean can commit the booleans that precede it. That is out of scope here.
   @Test
   void invalidPrincipalProfileIsRejectedWithoutPartialUpdate() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
