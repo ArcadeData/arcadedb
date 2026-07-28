@@ -66,9 +66,12 @@ public class MaterializedViewRefresher {
       LogManager.instance().log(MaterializedViewRefresher.class, Level.SEVERE,
           "Error refreshing materialized view '%s': %s", e, view.getName(), e.getMessage());
       if (discardedPendingRequest)
+        // Deliberately does not name the status: callers layer their own on top of the ERROR set
+        // above (MaterializedViewChangeListener overwrites it with STALE), so naming one here would
+        // report a state the operator never sees.
         LogManager.instance().log(MaterializedViewRefresher.class, Level.WARNING,
-            "A refresh requested during the failed refresh of materialized view '%s' was not run; the view is left in status %s",
-            null, view.getName(), view.getStatus());
+            "A refresh requested during the failed refresh of materialized view '%s' was not run; the view is left non-VALID and stale",
+            null, view.getName());
       throw e;
     }
   }

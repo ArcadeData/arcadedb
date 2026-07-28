@@ -170,6 +170,36 @@ under sustained single-record load.
 
 `gemini-code-assist` again did not respond.
 
+### Cycle 3 - `4c45fa490`
+
+`claude[bot]` again reported nothing blocking, and independently verified the coalesced-pass snapshot
+ordering (the pass that clears `RUNNING_PENDING` is pass K; the pass that re-reads source data is
+K+1, whose transaction begins after the flag was set, so every committed record is seen by some later
+pass). One wording fix taken: the discard WARNING named `ERROR`, but
+`MaterializedViewChangeListener` overwrites the status with `STALE` afterwards, so the message named
+a state the operator never sees. It now says "left non-VALID and stale".
+
+Two items raised and deliberately **not** fixed here:
+
+- **The drain loop runs synchronously on the committing thread.** After-commit callbacks fire on the
+  committing thread, so one unlucky writer can be pinned running repeated full rebuilds on behalf of
+  the others, unbounded while writes keep arriving. This is strictly better than dropping the
+  requests, but it concentrates unbounded work on a user commit path. Moving the refresh onto
+  `DatabaseAsyncExecutor` or a dedicated bounded pool (per the concurrency guidance in `CLAUDE.md`)
+  would keep the coalescing and get it off the hot path. Worth its own issue.
+- **`ContinuousAggregate` has the identical defect.** `ContinuousAggregateImpl` still uses the
+  `AtomicBoolean` drop-on-contention guard, and `ContinuousAggregateRefresher.incrementalRefresh` is
+  driven post-commit from `SaveElementStep.java:154-156` - the same shape as the materialized view
+  listener, so the same silent staleness. Verified, not fixed here: it needs its own tests, and the
+  same three-state primitives port over mechanically.
+
+Declined as optional: a test asserting end-to-end re-convergence after a discarded request. Forcing a
+refresh to fail deterministically needs either a droppable source type (blocked - dropping the source
+of a view is rejected) or a view constructed outside the schema with a deliberately invalid query,
+which tests the fixture more than the behaviour. The state-machine level recovery (ownership released,
+next caller takes it) is already covered.
+
 ### Final state
 
-`clean-approval` - the last review raised no blocking items and the only follow-ups were comments.
+`clean-approval` - the last two reviews raised no blocking items and the only follow-ups were
+comments and wording.
