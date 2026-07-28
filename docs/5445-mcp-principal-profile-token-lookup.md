@@ -1,6 +1,6 @@
 # Issue #5445 follow-up - a principal profile written with a bare API-token name is silently inert
 
-PR: (to be filled after opening)
+PR: https://github.com/ArcadeData/arcadedb/pull/5479
 
 Follow-up to #5468, which implemented per-principal MCP tool profiles and merged as `ec3447a96`.
 Two defects found reviewing that change after the merge.
