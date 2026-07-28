@@ -43,8 +43,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The relationship variable must be visible to the end node's predicate, matching the {@code MATCH}
  * spelling, which hoists the inline predicate into the clause {@code WHERE} where {@code r} is bound.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue5489NodeInlineWhereRelVariableTest {
   private Database database;
@@ -160,6 +158,20 @@ class Issue5489NodeInlineWhereRelVariableTest {
     // Single-hop bound so the relationship variable is unambiguous for this shape.
     assertThat(comprehension(
         "MATCH (a:A {v:1}) RETURN [(a)-[r:E*1..1]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
+        .containsExactly(10);
+  }
+
+  /**
+   * An anonymous relationship binds no variable, so a predicate that names one is referencing an
+   * undefined variable. It resolves to null and the predicate rejects every candidate, which is the
+   * engine's pre-existing behavior for any undefined variable rather than anything this hop changes.
+   */
+  @Test
+  void anonymousRelationshipLeavesAPredicateVariableUndefined() {
+    assertThat(comprehension("MATCH (a:A {v:1}) RETURN [(a)-[:E]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
+        .isEmpty();
+    // Naming the relationship is what makes the very same predicate resolve.
+    assertThat(comprehension("MATCH (a:A {v:1}) RETURN [(a)-[r:E]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
         .containsExactly(10);
   }
 
