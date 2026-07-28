@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.ast.*;
 
 import java.util.*;
@@ -1758,6 +1759,7 @@ public class CypherSemanticValidator {
       final List<Expression> args = func.getArguments();
       if (args.size() == 1) {
         final Expression arg = args.get(0);
+        checkStaticallyKnownArgType(name, arg);
         final VarType argType = getExpressionType(arg);
         if (argType != null) {
           switch (name) {
@@ -1807,6 +1809,39 @@ public class CypherSemanticValidator {
       }
       if (caseExpr.getElseExpression() != null)
         checkFunctionArgTypes(caseExpr.getElseExpression());
+    }
+  }
+
+  /**
+   * Rejects an argument whose type is already readable in the query text - a literal or a map constructor - when it falls
+   * outside the function's input domain. The functions repeat the check at runtime for values known only then; doing it here
+   * as well matches Neo4j, which fails {@code MATCH (n:Nothing) RETURN size(42)} even though the query matches no row and the
+   * function would never run. Same message and same exception as the runtime check, so the client sees one behaviour.
+   * See issues #5477 (size) and #5476 (head, last, tail).
+   */
+  private void checkStaticallyKnownArgType(final String functionName, final Expression arg) {
+    final boolean isMap = arg instanceof MapExpression;
+    // A null literal is legal everywhere: null propagation is not a type error.
+    final Object literal = arg instanceof LiteralExpression ? ((LiteralExpression) arg).getValue() : null;
+    if (!isMap && literal == null)
+      return;
+    // A literal holding a collection is a LIST, which every function handled below accepts.
+    if (literal instanceof Collection || (literal != null && literal.getClass().isArray()))
+      return;
+
+    switch (functionName) {
+      case "size":
+        // size() counts characters of a STRING and entries of a LIST or a MAP.
+        if (!isMap && !(literal instanceof CharSequence))
+          throw CypherFunctionHelper.typeMismatch("size", "a STRING, a LIST<ANY> or a MAP", literal);
+        break;
+      case "head":
+      case "last":
+      case "tail":
+        // LIST-only: even a string literal is a type error.
+        throw CypherFunctionHelper.typeMismatch(functionName, "a LIST<ANY>", isMap ? Map.of() : literal);
+      default:
+        break;
     }
   }
 
