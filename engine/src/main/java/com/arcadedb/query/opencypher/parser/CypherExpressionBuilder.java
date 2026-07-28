@@ -494,9 +494,10 @@ class CypherExpressionBuilder {
    * Shared logic for parsing expressions from text.
    */
   Expression parseExpressionText(final String text) {
-    // Check for parameter: $paramName or $1
+    // Check for parameter: $paramName or $1. Backticks are stripped so an escaped name resolves against
+    // the key the caller bound, e.g. $`my param` -> "my param".
     if (text.startsWith("$")) {
-      final String parameterName = text.substring(1); // Remove the $ prefix
+      final String parameterName = CypherASTBuilder.stripBackticks(text.substring(1)); // Remove the $ prefix
       return new ParameterExpression(parameterName, text);
     }
 
@@ -2507,7 +2508,7 @@ class CypherExpressionBuilder {
     String propertiesParameterName = null;
     if (ctx.properties() != null) {
       if (ctx.properties().parameter() != null)
-        propertiesParameterName = ctx.properties().parameter().parameterName().getText();
+        propertiesParameterName = CypherASTBuilder.stripBackticks(ctx.properties().parameter().parameterName().getText());
       else if (ctx.properties().map() != null)
         properties = parseMapProperties(ctx.properties().map());
     }
@@ -2543,7 +2544,7 @@ class CypherExpressionBuilder {
     String propertiesParameterName = null;
     if (ctx.properties() != null) {
       if (ctx.properties().parameter() != null)
-        propertiesParameterName = ctx.properties().parameter().parameterName().getText();
+        propertiesParameterName = CypherASTBuilder.stripBackticks(ctx.properties().parameter().parameterName().getText());
       else if (ctx.properties().map() != null)
         properties = parseMapProperties(ctx.properties().map());
     }
