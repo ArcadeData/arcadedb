@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -271,7 +272,7 @@ public class MCPDispatcher {
     final JSONObject args = params.getJSONObject("arguments", new JSONObject());
 
     LogManager.instance()
-        .log(this, Level.INFO, "MCP[%s] tools/call '%s' %s (user=%s)", transport, toolName, formatArgs(args), user.getName());
+        .log(this, Level.INFO, "MCP[%s] tools/call '%s' %s (user=%s)", transport, toolName, formatArgs(toolName, args), user.getName());
 
     try {
       if (!REGISTERED_TOOL_NAMES.contains(toolName))
@@ -382,15 +383,27 @@ public class MCPDispatcher {
     }
   }
 
-  private static String formatArgs(final JSONObject args) {
+  /**
+   * Renders a tool's arguments for the request log. The value a caller writes to a secret setting is masked here,
+   * because this line is emitted before the tool runs and would otherwise place the secret in the log regardless of
+   * how the tool's own response is redacted. Masking is deliberately limited to the one argument that is a secret by
+   * definition: arguments elsewhere carry caller data, which cannot be told apart from a secret without guessing, and
+   * blanking it would leave the log unable to explain what a call did.
+   */
+  static String formatArgs(final String toolName, final JSONObject args) {
     if (args.length() == 0)
       return "{}";
+    final boolean maskValue = "set_server_setting".equals(toolName) && isHiddenSetting(args.getString("key", null));
     final StringBuilder sb = new StringBuilder("{");
     boolean first = true;
     for (final String key : args.keySet()) {
       if (!first)
         sb.append(", ");
       first = false;
+      if (maskValue && "value".equals(key)) {
+        sb.append(key).append("=\"*****\"");
+        continue;
+      }
       final Object value = args.get(key);
       if (value instanceof String s) {
         final String sanitized = sanitizeForLog(s);
@@ -404,6 +417,18 @@ public class MCPDispatcher {
         sb.append(key).append("=").append(value);
     }
     return sb.append("}").toString();
+  }
+
+  /**
+   * Reports whether a configuration key names a setting the server treats as secret, using the same
+   * {@link GlobalConfiguration#isHidden()} rule the settings tools apply. An unresolvable key is not secret: the
+   * tool rejects it before it can change anything.
+   */
+  private static boolean isHiddenSetting(final String key) {
+    if (key == null || key.isEmpty())
+      return false;
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+    return cfg != null && cfg.isHidden();
   }
 
   private static String sanitizeForLog(final String value) {
