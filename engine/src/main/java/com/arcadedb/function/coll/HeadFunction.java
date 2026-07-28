@@ -20,13 +20,16 @@ package com.arcadedb.function.coll;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.List;
 
 /**
  * head() function - returns the first element of a list.
+ * <p>
+ * Signature: {@code head(list :: LIST<ANY>) :: ANY}. A non-list argument is a type error, not a null
+ * result (issue #5476); {@code null} propagates to {@code null} and an empty list answers {@code null}.
  */
 public class HeadFunction implements StatelessFunction {
   @Override
@@ -38,10 +41,9 @@ public class HeadFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
       throw new CommandExecutionException("head() requires exactly one argument");
-    // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
-    final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
-    if (list != null)
-      return list.isEmpty() ? null : list.get(0);
-    return null;
+    final List<Object> list = CypherFunctionHelper.requireListArgument(args[0], "head");
+    if (list == null)
+      return null;
+    return list.isEmpty() ? null : list.get(0);
   }
 }
