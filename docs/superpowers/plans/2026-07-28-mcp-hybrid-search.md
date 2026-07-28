@@ -58,6 +58,7 @@ Pure refactor. `vector_search`'s observable behavior must not change; the existi
   - `MCPVectorLeg.DEFAULT_K` = 10, `MAX_K` = 1000, `FILTER_OVERFETCH` = 8, `MAX_FILTER_CANDIDATES` = 8000, `MAX_FILTER_EXPRESSION` = 4096 (all `public static final int`)
   - `record MCPVectorLeg.ResolvedVectorIndex(TypeIndex typeIndex, int dimensions, String scoring)`
   - `record MCPVectorLeg.VectorLegQuery(ResolvedVectorIndex index, boolean sparse, int candidateLimit, String sql, Map<String, Object> parameters)`
+  - `static void MCPVectorLeg.validateArguments(JSONObject args, String indexNameField)` - the checks needing no `Database`, called before `resolveDatabase`
   - `static VectorLegQuery MCPVectorLeg.build(Database database, JSONObject args, String indexNameField, int limit)`
   - `static RID MCPVectorLeg.toRID(Object raw)`
 
@@ -470,7 +471,7 @@ Ends with a registered, callable tool that performs a vector-only search. No fus
 - Modify: `server/src/test/java/com/arcadedb/server/mcp/MCPStdioServerTest.java`
 
 **Interfaces:**
-- Consumes: `MCPVectorLeg.build`, `MCPVectorLeg.toRID`, `MCPVectorLeg.DEFAULT_K`, `MCPVectorLeg.MAX_K` from Task 1.
+- Consumes: `MCPVectorLeg.validateArguments`, `MCPVectorLeg.build`, `MCPVectorLeg.toRID`, `MCPVectorLeg.DEFAULT_K`, `MCPVectorLeg.MAX_K` from Task 1. `validateArguments(JSONObject args, String indexNameField)` runs the checks needing no `Database` and MUST be called before `resolveDatabase`, so an argument fault reads the same whether or not the database resolves.
 - Produces:
   - `static JSONObject HybridSearchTool.getDefinition()`
   - `static JSONObject HybridSearchTool.execute(ArcadeDBServer, ServerSecurityUser, JSONObject, MCPConfiguration)`
@@ -775,6 +776,10 @@ public class HybridSearchTool {
     final int k = args.getInt("k", MCPVectorLeg.DEFAULT_K);
     if (k < 1 || k > MCPVectorLeg.MAX_K)
       throw new IllegalArgumentException("'k' must be between 1 and " + MCPVectorLeg.MAX_K);
+
+    // Argument faults are reported before the database is resolved, so a malformed request reads the
+    // same whether or not the database also resolves.
+    MCPVectorLeg.validateArguments(args, "vectorIndexName");
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
