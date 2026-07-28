@@ -1934,6 +1934,130 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchExpandsAlongTheGraphAndReportsPaths() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        // The fixture is small enough that an unfiltered vector leg retrieves every record, which would
+        // make every record a seed and leave the expansion leg with nothing new to contribute. Narrowing
+        // the vector leg to h0 is what makes the expanded rows observable.
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("direction", "out")
+            .put("maxDepth", 2))
+        .put("k", 10)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+    final JSONObject expandLeg = payload.getJSONObject("legs").getJSONObject("expand");
+    assertThat(expandLeg.getString("direction")).isEqualTo("out");
+    assertThat(expandLeg.getInt("maxDepth")).isEqualTo(2);
+    assertThat(expandLeg.getBoolean("truncated")).isFalse();
+    assertThat(expandLeg.getInt("count")).isGreaterThan(0);
+
+    JSONObject expanded = null;
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      final JSONArray sources = row.getJSONArray("sources");
+      for (int s = 0; s < sources.length(); s++)
+        if ("expand".equals(sources.getString(s)) && sources.length() == 1)
+          expanded = row;
+    }
+
+    assertThat(expanded).isNotNull();
+    assertThat(expanded.getInt("depth")).isBetween(1, 2);
+    // The path starts at the seed and ends at the row itself, so it is one longer than the depth.
+    assertThat(expanded.getJSONArray("path").length()).isEqualTo(expanded.getInt("depth") + 1);
+    assertThat(expanded.getJSONArray("path").getString(expanded.getJSONArray("path").length() - 1))
+        .isEqualTo(expanded.getString("rid"));
+  }
+
+  @Test
+  void hybridSearchDedupsNodesReachableBySeveralPaths() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        // h2 must reach the result set through the expansion leg, not as a seed, or its depth is never set.
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 3))
+        .put("k", 10)));
+
+    // h2 is reachable from h0 both directly and through h1. It must appear once, at its shallowest depth.
+    final Set<String> rids = new HashSet<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      assertThat(rids.add(results.getJSONObject(i).getString("rid"))).isTrue();
+
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      if ("h2".equals(row.getJSONObject("properties").getString("title")) && row.has("depth"))
+        assertThat(row.getInt("depth")).isEqualTo(1);
+    }
+  }
+
+  @Test
+  void hybridSearchRestrictsExpansionToTheRequestedEdgeTypes() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 1))
+        .put("k", 10)));
+
+    // h4 hangs off h0 by McpHybridMentions only, so restricting to McpHybridCites must not reach it.
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      assertThat(results.getJSONObject(i).getJSONObject("properties").getString("title")).isNotEqualTo("h4");
+  }
+
+  @Test
+  void hybridSearchFusesAllThreeLegs() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        // Seeds become h0 (vector) and h5 (full-text). h5 is unconnected, so every expanded row comes
+        // from h0's citation chain and none of them is already a seed.
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 2))
+        .put("k", 10)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+    assertThat(payload.getJSONObject("legs").has("vector")).isTrue();
+    assertThat(payload.getJSONObject("legs").has("fulltext")).isTrue();
+    assertThat(payload.getJSONObject("legs").has("expand")).isTrue();
+
+    final Set<String> allSources = new HashSet<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++) {
+      final JSONArray sources = results.getJSONObject(i).getJSONArray("sources");
+      for (int s = 0; s < sources.length(); s++)
+        allSources.add(sources.getString(s));
+    }
+    assertThat(allSources).contains("vector", "fulltext", "expand");
+  }
+
+  @Test
   void fullTextSearchByIndexName() throws Exception {
     final JSONObject response = callTool("full_text_search", new JSONObject()
         .put("database", getDatabaseName())

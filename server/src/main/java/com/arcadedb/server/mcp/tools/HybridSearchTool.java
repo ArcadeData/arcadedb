@@ -29,6 +29,9 @@ import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -38,12 +41,14 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Fuses a vector retrieval leg, a full-text retrieval leg, and a depth-limited graph expansion leg
@@ -218,6 +223,22 @@ public class HybridSearchTool {
     if (!fullTextLeg.isEmpty())
       legList.add(new Leg("fulltext", fullTextLeg, weightOf(args, "fulltext", 1.0f)));
 
+    final JSONObject expandArgs = args.getJSONObject("expand", null);
+    Map<RID, ExpansionInfo> expansionInfo = Map.of();
+    if (expandArgs != null) {
+      requireVertexType(database, vectorQuery.index().typeIndex().getTypeName());
+      final Expansion expansion = runExpansionLeg(database, expandArgs, collectSeeds(vectorLeg, fullTextLeg));
+      expansionInfo = expansion.info();
+      legs.put("expand", new JSONObject()
+          .put("direction", expandArgs.getString("direction", "out"))
+          .put("edgeTypes", expandArgs.getJSONArray("edgeTypes", new JSONArray()))
+          .put("maxDepth", expandArgs.getInt("maxDepth", 1))
+          .put("truncated", expansion.truncated())
+          .put("count", expansion.rows().size()));
+      if (!expansion.rows().isEmpty())
+        legList.add(new Leg("expand", expansion.rows(), weightOf(args, "expand", 0.5f)));
+    }
+
     final JSONObject response = new JSONObject()
         .put("vectorIndexName", vectorQuery.index().typeIndex().getName())
         .put("sparse", vectorQuery.sparse())
@@ -243,7 +264,7 @@ public class HybridSearchTool {
       }
       response.put("fused", false);
     } else {
-      results = fuse(database, legList, strategy, k, serializer, Map.of());
+      results = fuse(database, legList, strategy, k, serializer, expansionInfo);
       response.put("fused", true).put("fusionStrategy", strategy);
       if (legs.has("fulltext"))
         response.put("fulltextIndexName", legs.getJSONObject("fulltext").getString("indexName"));
@@ -261,6 +282,176 @@ public class HybridSearchTool {
    */
   public static int legLimit(final int k) {
     return (int) Math.min((long) k * LEG_OVERFETCH, MAX_LEG_CANDIDATES);
+  }
+
+  /**
+   * Result of the graph expansion leg: the ranked rows in breadth-first discovery order, the depth
+   * and path for each of them, and whether the fan-out cap cut the walk short.
+   */
+  public record Expansion(List<LegRow> rows, Map<RID, ExpansionInfo> info, boolean truncated) {
+  }
+
+  /**
+   * Walks outward from the seeds and returns the nodes found, ranked by breadth-first discovery order.
+   * <p>
+   * The rows carry no score. Breadth-first order already encodes "closer to a retrieved record ranks
+   * higher", which is the only ranking signal a traversal produces, and inventing a numeric score for
+   * it would put a second scoring model next to the engine's.
+   * <p>
+   * Seeds are dropped from the result: each is already ranked by the leg that found it, and letting it
+   * rank again here would count its own presence twice.
+   */
+  private static Expansion runExpansionLeg(final Database database, final JSONObject expandArgs,
+      final List<RID> seeds) {
+    final int maxDepth = expandArgs.getInt("maxDepth", 1);
+    if (maxDepth < 1 || maxDepth > MAX_DEPTH)
+      throw new IllegalArgumentException(
+          "expand.maxDepth must be between 1 and " + MAX_DEPTH + ", got " + maxDepth);
+
+    final String direction = expandArgs.getString("direction", "out");
+    if (!"out".equals(direction) && !"in".equals(direction) && !"both".equals(direction))
+      throw new IllegalArgumentException(
+          "expand.direction must be one of out, in, both, got '" + direction + "'");
+
+    final List<String> edgeTypes = validatedEdgeTypes(database, expandArgs.getJSONArray("edgeTypes", null));
+
+    if (seeds.isEmpty())
+      return new Expansion(List.of(), Map.of(), false);
+
+    final StringBuilder sql = new StringBuilder(
+        "SELECT @rid AS rid, $depth AS depth, $path AS path FROM (TRAVERSE ");
+    sql.append(direction).append('(');
+    for (int i = 0; i < edgeTypes.size(); i++) {
+      if (i > 0)
+        sql.append(", ");
+      sql.append('\'').append(edgeTypes.get(i)).append('\'');
+    }
+    sql.append(") FROM [");
+    for (int i = 0; i < seeds.size(); i++) {
+      if (i > 0)
+        sql.append(',');
+      sql.append(seeds.get(i).toString());
+    }
+    // The LIMIT applies inside the traversal, before the outer depth filter removes the seeds, so the
+    // seeds consume slots and the budget must cover them or the last expanded rows are lost.
+    sql.append("] MAXDEPTH ").append(maxDepth)
+        .append(" LIMIT ").append(seeds.size() + MAX_EXPANSION)
+        .append(" STRATEGY BREADTH_FIRST) WHERE $depth > 0");
+
+    final QueryEngine.AnalyzedQuery analyzed;
+    try {
+      analyzed = database.getQueryEngine("sql").analyze(sql.toString());
+    } catch (final RuntimeException e) {
+      throw invalidExpression("expansion leg", e);
+    }
+    if (!analyzed.isIdempotent())
+      throw new SecurityException("Generated graph expansion is not read-only");
+
+    final List<LegRow> rows = new ArrayList<>();
+    final Map<RID, ExpansionInfo> info = new HashMap<>();
+    final Set<RID> seedSet = new HashSet<>(seeds);
+    try {
+      final ResultSet analyzedResultSet = analyzed.execute(Map.of());
+      try (final ResultSet resultSet = analyzedResultSet != null
+          ? analyzedResultSet
+          : database.query("sql", sql.toString())) {
+        while (resultSet.hasNext() && rows.size() < MAX_EXPANSION) {
+          final Result row = resultSet.next();
+          final RID rid = MCPVectorLeg.toRID(row.getProperty("rid"));
+          if (rid == null || seedSet.contains(rid) || info.containsKey(rid))
+            continue;
+          if (!(row.getProperty("depth") instanceof final Number depth))
+            continue;
+          rows.add(new LegRow(rid, null));
+          info.put(rid, new ExpansionInfo(depth.intValue(), readPath(row.getProperty("path"), rid)));
+        }
+        return new Expansion(rows, info, rows.size() >= MAX_EXPANSION && resultSet.hasNext());
+      }
+    } catch (final SecurityException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      throw invalidExpression("expansion leg", e);
+    }
+  }
+
+  /**
+   * Reads the traversal's path metadata. Falls back to the row's own RID when the path is missing, so
+   * a row always reports where it is even if the engine did not carry how it was reached.
+   */
+  private static List<RID> readPath(final Object raw, final RID rid) {
+    if (!(raw instanceof final List<?> steps))
+      return List.of(rid);
+    final List<RID> path = new ArrayList<>(steps.size());
+    for (final Object step : steps) {
+      final RID stepRid = MCPVectorLeg.toRID(step);
+      if (stepRid != null)
+        path.add(stepRid);
+    }
+    return path.isEmpty() ? List.of(rid) : path;
+  }
+
+  /**
+   * Validates every requested edge type against the schema. An unknown name is rejected rather than
+   * passed through, because a traversal over a name that matches nothing returns an empty neighborhood
+   * and raises no error: an unvalidated typo would silently downgrade the search with no way for the
+   * caller to notice.
+   */
+  private static List<String> validatedEdgeTypes(final Database database, final JSONArray requested) {
+    if (requested == null || requested.length() == 0)
+      return List.of();
+
+    final List<String> names = new ArrayList<>(requested.length());
+    for (int i = 0; i < requested.length(); i++) {
+      final Object raw = requested.get(i);
+      if (!(raw instanceof final String name) || name.isBlank())
+        throw new IllegalArgumentException("expand.edgeTypes must contain only non-blank type names");
+      if (name.indexOf('\'') >= 0 || name.indexOf('`') >= 0 || name.indexOf('\\') >= 0)
+        throw new IllegalArgumentException(
+            "expand.edgeTypes entry '" + name + "' contains a quote or backslash, which is not supported");
+      if (!database.getSchema().existsType(name) || !(database.getSchema().getType(name) instanceof EdgeType))
+        throw new IllegalArgumentException("Edge type '" + name + "' does not exist. "
+            + describeAvailableEdgeTypes(database));
+      names.add(name);
+    }
+    return names;
+  }
+
+  private static String describeAvailableEdgeTypes(final Database database) {
+    final Set<String> names = new TreeSet<>();
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof EdgeType)
+        names.add(type.getName());
+    return "Available edge types: " + names;
+  }
+
+  /**
+   * Picks the records the expansion walks out from: every retrieval hit, in rank order, vector leg
+   * first, capped so a wide retrieval cannot turn into an unbounded traversal.
+   */
+  private static List<RID> collectSeeds(final List<LegRow> vectorLeg, final List<LegRow> fullTextLeg) {
+    final Set<RID> seeds = new LinkedHashSet<>();
+    for (final LegRow row : vectorLeg) {
+      if (seeds.size() >= MAX_SEEDS)
+        break;
+      seeds.add(row.rid());
+    }
+    for (final LegRow row : fullTextLeg) {
+      if (seeds.size() >= MAX_SEEDS)
+        break;
+      seeds.add(row.rid());
+    }
+    return new ArrayList<>(seeds);
+  }
+
+  /**
+   * Graph expansion is only meaningful over vertices. Checking the index's type once gives one clear
+   * error instead of a silently empty neighborhood.
+   */
+  private static void requireVertexType(final Database database, final String typeName) {
+    if (!database.getSchema().existsType(typeName)
+        || !(database.getSchema().getType(typeName) instanceof VertexType))
+      throw new IllegalArgumentException("Graph expansion requires a vertex type, but '" + typeName
+          + "' is not one. Drop 'expand', or search an index declared on a vertex type.");
   }
 
   private static List<LegRow> runVectorLeg(final Database database, final MCPVectorLeg.VectorLegQuery query) {
