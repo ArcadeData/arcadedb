@@ -1,8 +1,10 @@
 # Issue #5490 - relationship inline `WHERE` is ignored entirely on variable-length patterns
 
 - Issue: https://github.com/ArcadeData/arcadedb/issues/5490
+- PR: https://github.com/ArcadeData/arcadedb/pull/5493
 - Branch: `fix/5490-varlen-rel-inline-where-ignored`
 - Base: `main` at 4aaa90c56
+- Final state: `timeout` (see "Review cycles")
 
 ## Problem
 
@@ -58,10 +60,12 @@ choke point as the existing property filter:
 - `VariableLengthPathTraverser` builds its BFS or DFS strategy internally, so it now forwards the
   predicate to that delegate. Both `traverse` and `traversePaths` route through one `delegate()`
   helper, which is what keeps the two entry points from drifting.
-- Both producers build the predicate from the pattern's `WHERE`, copying the enclosing bindings once
-  per source row and rebinding only the relationship variable per candidate edge. Copying once
-  rather than per edge matters because a traversal evaluates this for every relationship it walks,
-  and it is what lets the predicate reference outer-scope variables.
+- `RelationshipPattern.buildInlineWherePredicate` is the single place the predicate is built. It
+  copies the enclosing bindings once per source row and rebinds only the relationship variable per
+  candidate edge. Copying once rather than per edge matters because a traversal evaluates this for
+  every relationship it walks, and it is what lets the predicate reference outer-scope variables.
+  Both producers call it, so the `MATCH` and `EXISTS {}` spellings cannot drift in how they build
+  the evaluation scope.
 
 Pruning during traversal rather than filtering completed paths afterwards is deliberate: under BFS
 shortest-path semantics a post-filter would discard a target whose shortest path fails the
@@ -73,8 +77,44 @@ Every relationship the path traverses must satisfy the predicate, matching the i
 and the clause-level `all(e IN r WHERE ...)` spelling. A test asserts the inline and clause-level
 spellings agree.
 
+## Review cycles
+
+### Cycle 1 - head d41bd16f
+
+`claude[bot]`: LGTM, no blocking items. It independently confirmed the two properties the fix turns
+on, that the BFS iterator enumerates all in-bounds paths so pruning a failing edge does not preclude
+reaching a target by a longer satisfying path, and that per-relationship binding of the variable
+matches Neo4j's relationship-pattern-predicate semantics. Three non-blocking suggestions, all
+applied in fe1214d3:
+
+1. **Duplication between the two predicate builders.** Correct: `ExpandPathStep` and
+   `PatternPredicateExpression` each built the evaluation scope themselves, so the two spellings
+   could drift with only tests holding them together. Collapsed onto
+   `RelationshipPattern.buildInlineWherePredicate`.
+
+   Placed there rather than on `GraphTraverser` as the review suggested. `GraphTraverser` is in the
+   traversal package and knows nothing about expression evaluation; hosting scope construction there
+   would make the traversal layer depend on the AST and the evaluator. `RelationshipPattern` already
+   owns both the relationship variable and the `WHERE` expression, so it is the cohesive home and
+   still gives the rule the single definition the review asked for.
+2. **`getWhereExpression()` re-invoked inside the per-edge lambda.** Resolved by the same
+   refactoring, which hoists it into a local before the lambda.
+3. **Thread-safety of the captured, per-edge-mutated scope.** Confirmation rather than a defect, and
+   accurate: it is safe because a fresh predicate is built per source row and variable-length
+   traversal is single-threaded. Recorded in the builder's javadoc so a future parallelization does
+   not silently inherit a shared mutable row.
+
+`gemini-code-assist`: did not respond within the 15-minute polling window on head d41bd16f, so the
+both-reviewers gate could not be satisfied and the loop exited with a `timeout` state rather than
+`clean-approval`. This matches its known inconsistent re-review behavior on this repository and is
+not a signal about the change.
+
+No deferred items: every raised point was actionable and was addressed, so no `review-deferred-*.md`
+notes file was produced.
+
 ## Files changed
 
+- `engine/src/main/java/com/arcadedb/query/opencypher/ast/RelationshipPattern.java`
 - `engine/src/main/java/com/arcadedb/query/opencypher/traversal/GraphTraverser.java`
 - `engine/src/main/java/com/arcadedb/query/opencypher/traversal/BreadthFirstTraverser.java`
 - `engine/src/main/java/com/arcadedb/query/opencypher/traversal/DepthFirstTraverser.java`
