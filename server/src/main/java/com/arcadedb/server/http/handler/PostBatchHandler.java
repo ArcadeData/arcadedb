@@ -31,6 +31,7 @@ import com.arcadedb.server.http.handler.batch.BatchRecordStream;
 import com.arcadedb.server.http.handler.batch.CsvBatchRecordStream;
 import com.arcadedb.server.http.handler.batch.JsonlBatchRecordStream;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.StringRidHashMap;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
@@ -45,9 +46,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.logging.Level;
 
 /**
@@ -121,8 +120,6 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   private static final int        MAX_ID_MAPPING_IN_RESPONSE = 10_000;
   /** Temporary ids mapped before the first heap warning; every following warning doubles the threshold. */
   private static final int        ID_MAP_WARNING_THRESHOLD   = 250_000;
-  /** Order of magnitude of one {@code String -> RID} entry (key, RID and hash-map node) on a 64-bit JVM. */
-  private static final int        ID_MAP_ENTRY_BYTES         = 170;
   /** How far the tail of a short body is drained before deciding it is a live client rather than a cut upload. */
   private static final int        TRUNCATION_PROBE_BYTES     = 64 * 1024;
   private static final HttpClient HTTP_CLIENT                = HttpClient.newHttpClient();
@@ -200,7 +197,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final GraphBatch.Builder builder = database.batch();
       configureBuilder(exchange, builder);
 
-      return streamRecords(exchange, databaseName, isCsv, builder, inputStream, new HashMap<>(),
+      return streamRecords(exchange, databaseName, isCsv, builder, inputStream, new StringRidHashMap(),
           System.currentTimeMillis(), parseVertexBatchSize(exchange));
     } finally {
       restoreConnectionReadTimeout(exchange, previousReadTimeout);
@@ -213,7 +210,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
       final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
-      final Map<String, RID> tempIdMap, final long startTime, final int vertexBatchSize) throws Exception {
+      final StringRidHashMap tempIdMap, final long startTime, final int vertexBatchSize) throws Exception {
 
     long verticesCreated = 0;
     long edgesCreated = 0;
@@ -236,10 +233,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // OutOfMemoryError that leaves no trace but a closed connection (issue #5470).
         if (tempIdMap.size() >= nextIdMapWarning) {
           LogManager.instance().log(this, Level.WARNING,
-              "Batch load on database '%s' has resolved %d temporary ids so far, roughly %d MB of heap that cannot be "
+              "Batch load on database '%s' has resolved %d temporary ids so far, holding %d MB of heap that cannot be "
                   + "released before the end of the request. Make sure the server heap is sized for it, or split the "
                   + "payload into several requests referencing the vertices by RID",
-              null, databaseName, tempIdMap.size(), (long) tempIdMap.size() * ID_MAP_ENTRY_BYTES / (1024 * 1024));
+              null, databaseName, tempIdMap.size(), tempIdMap.retainedBytes() / (1024 * 1024));
           nextIdMapWarning *= 2;
         }
 
@@ -364,8 +361,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (!tempIdMap.isEmpty()) {
       if (echoIdMapping(exchange, tempIdMap.size())) {
         final JSONObject mapping = new JSONObject();
-        for (final Map.Entry<String, RID> entry : tempIdMap.entrySet())
-          mapping.put(entry.getKey(), entry.getValue().toString());
+        tempIdMap.forEach((key, rid) -> mapping.put(key, rid.toString()));
         result.put("idMapping", mapping);
       } else {
         result.put("idMappingOmitted", true);
@@ -568,7 +564,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   }
 
   private int flushVertexBatch(final GraphBatch batch, final String typeName,
-      final List<Object[]> propsBatch, final List<String> tempIds, final Map<String, RID> tempIdMap) {
+      final List<Object[]> propsBatch, final List<String> tempIds, final StringRidHashMap tempIdMap) {
 
     final int count = propsBatch.size();
     final Object[][] propsArray = propsBatch.toArray(new Object[count][]);
@@ -585,14 +581,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     return count;
   }
 
-  private void processEdge(final GraphBatch batch, final BatchRecord rec, final Map<String, RID> tempIdMap,
+  private void processEdge(final GraphBatch batch, final BatchRecord rec, final StringRidHashMap tempIdMap,
       final int lineNumber) {
     final RID srcRID = resolveRef(rec.fromRef, tempIdMap, lineNumber);
     final RID dstRID = resolveRef(rec.toRef, tempIdMap, lineNumber);
     batch.newEdge(srcRID, rec.typeName, dstRID, rec.copyEdgeProperties());
   }
 
-  private RID resolveRef(final String ref, final Map<String, RID> tempIdMap, final int lineNumber) {
+  private RID resolveRef(final String ref, final StringRidHashMap tempIdMap, final int lineNumber) {
     if (ref.charAt(0) == '#') {
       // Existing RID reference
       final int colonIdx = ref.indexOf(':');
