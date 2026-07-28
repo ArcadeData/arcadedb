@@ -24,6 +24,8 @@
 - After every Java change: compile and fix until it passes.
 - Prefer primitive arrays over boxed collections on hot paths.
 - Run at minimum `mvn -pl server test -Dtest='MCP*'` before declaring any task done.
+- Separate multiple `-Dtest` selectors with `,` and never with `+`. Under this repo's Surefire, a `+` runs **zero** tests and reports no failure, so any verification step written with `+` proves nothing.
+- Invoke Maven as `/opt/homebrew/bin/mvn`; a shell alias for `mvn` silently produces no output in this worktree.
 - MCP documentation lives in the separate `ArcadeData/arcadedb-docs` repository, not this tree.
 
 ---
@@ -616,7 +618,7 @@ In `MCPStdioServerTest.java`, add `"hybrid_search"` to the `contains(...)` list 
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearch*+MCPPermissionsTest#toolProfilesAreAllowlists'`
+Run: `mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearch*,MCPPermissionsTest#toolProfilesAreAllowlists'`
 Expected: FAIL. `hybridSearchIsRegisteredInHttpTransport` fails because `hybrid_search` is not in `tools/list`; the two call tests fail with `Unknown tool: hybrid_search`; the permissions test fails on the new `isTrue()`.
 
 - [ ] **Step 3: Create `HybridSearchTool` with the definition and the vector-only path**
@@ -908,7 +910,7 @@ No edit to `RAG_TOOL_NAMES` is needed - `"hybrid_search"` is already there at li
 
 - [ ] **Step 5: Compile and run the new tests**
 
-Run: `mvn -pl server -am -q -DskipTests install && mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearch*+MCPPermissionsTest#toolProfilesAreAllowlists+MCPStdioServerTest'`
+Run: `mvn -pl server -am -q -DskipTests install && mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearch*,MCPPermissionsTest#toolProfilesAreAllowlists,MCPStdioServerTest'`
 Expected: PASS.
 
 - [ ] **Step 6: Run every MCP test**
@@ -1027,7 +1029,7 @@ Add to `MCPServerPluginTest.java`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearchFuses*+MCPServerPluginTest#hybridSearchWeights*+MCPServerPluginTest#hybridSearchRejectsAnIncomplete*'`
+Run: `mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearchFuses*,MCPServerPluginTest#hybridSearchWeights*,MCPServerPluginTest#hybridSearchRejectsAnIncomplete*'`
 Expected: FAIL - `fused` is false, `fusionStrategy` is absent, and the incomplete-leg call succeeds instead of erroring.
 
 - [ ] **Step 3: Add the full-text leg and the fusion call**
@@ -1456,7 +1458,7 @@ Add `import java.util.HashSet;` and `import java.util.Set;` to the test class if
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearchExpands*+MCPServerPluginTest#hybridSearchDedups*+MCPServerPluginTest#hybridSearchRestricts*+MCPServerPluginTest#hybridSearchFusesAll*'`
+Run: `mvn -pl server test -Dtest='MCPServerPluginTest#hybridSearchExpands*,MCPServerPluginTest#hybridSearchDedups*,MCPServerPluginTest#hybridSearchRestricts*,MCPServerPluginTest#hybridSearchFusesAll*'`
 Expected: FAIL - `legs.expand` is absent because the `expand` argument is ignored.
 
 - [ ] **Step 3: Implement the expansion leg**
@@ -1872,7 +1874,7 @@ class HybridSearchCapsTest {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `mvn -pl server test -Dtest='HybridSearchCapsTest+MCPServerPluginTest#hybridSearchRejects*+MCPServerPluginTest#hybridSearchAllows*+MCPServerPluginTest#hybridSearchHonors*'`
+Run: `mvn -pl server test -Dtest='HybridSearchCapsTest,MCPServerPluginTest#hybridSearchRejects*,MCPServerPluginTest#hybridSearchAllows*,MCPServerPluginTest#hybridSearchHonors*'`
 Expected: FAIL on `hybridSearchRejectsScoreBasedFusionWithExpansion` only - the `DBSF`/`LINEAR` + `expand` calls currently reach `vector.fuse` and surface the engine's own parse-level message instead of a self-correcting one. `HybridSearchCapsTest` and the other tests in this step should already pass, since the caps and guards they cover landed in Tasks 2-4; if any of them fails, an earlier task is incomplete.
 
 - [ ] **Step 3: Add the rank-only-leg strategy guard**
@@ -1890,12 +1892,12 @@ In `HybridSearchTool.execute`, immediately after `final String strategy = strate
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `mvn -pl server -am -q -DskipTests install && mvn -pl server test -Dtest='HybridSearchCapsTest+MCPServerPluginTest#hybridSearch*'`
+Run: `mvn -pl server -am -q -DskipTests install && mvn -pl server test -Dtest='HybridSearchCapsTest,MCPServerPluginTest#hybridSearch*'`
 Expected: PASS.
 
 - [ ] **Step 5: Run every MCP test plus the vector and full-text suites**
 
-Run: `mvn -pl server test -Dtest='MCP*+HybridSearchCapsTest'`
+Run: `mvn -pl server test -Dtest='MCP*,HybridSearchCapsTest'`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -1920,7 +1922,7 @@ Expected: PASS. The `hybrid_search` work touches `VectorSearchTool` and `MCPDisp
 
 - [ ] **Step 2: Run the engine module tests that cover the functions this tool calls**
 
-Run: `mvn -pl engine test -Dtest='*VectorFuse*+*FullText*+SQLTraverse*'`
+Run: `mvn -pl engine test -Dtest='*VectorFuse*,*FullText*,SQLTraverse*'`
 Expected: PASS. No engine code changed, so any failure is pre-existing; record it rather than fixing it here.
 
 - [ ] **Step 3: Confirm no debug output survived**
