@@ -211,6 +211,12 @@ public class HybridSearchTool {
         .put("vector", new JSONObject().put("count", vectorLeg.size()));
 
     final String strategy = strategyOf(args);
+    // The expansion leg ranks by traversal order and carries no score, which the score-normalizing
+    // strategies cannot consume. Rejecting here names the conflict; letting it through would surface
+    // as a parse-level complaint about a source the caller never wrote.
+    if (args.getJSONObject("expand", null) != null && !"RRF".equals(strategy))
+      throw new IllegalArgumentException("fusionStrategy " + strategy + " needs a score on every row, but the graph "
+          + "expansion leg is ranked by traversal order and has none. Use RRF, or drop 'expand'.");
     final List<LegRow> fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()

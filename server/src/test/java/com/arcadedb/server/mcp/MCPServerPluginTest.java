@@ -2098,6 +2098,115 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchRejectsScoreBasedFusionWithExpansion() throws Exception {
+    seedHybridGraph();
+
+    for (final String strategy : new String[] { "DBSF", "LINEAR" }) {
+      final JSONObject response = callTool("hybrid_search", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("vectorIndexName", "McpHybridDoc[embedding]")
+          .put("queryVector", probeVector())
+          .put("fusionStrategy", strategy)
+          .put("expand", new JSONObject().put("maxDepth", 1))
+          .put("k", 5));
+
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+          .contains(strategy).contains("RRF").contains("expand");
+    }
+  }
+
+  @Test
+  void hybridSearchAllowsScoreBasedFusionWithoutExpansion() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("fusionStrategy", "LINEAR")
+        .put("k", 5)));
+
+    assertThat(payload.getString("fusionStrategy")).isEqualTo("LINEAR");
+    assertThat(payload.getBoolean("fused")).isTrue();
+  }
+
+  @Test
+  void hybridSearchRejectsDepthAboveTheServerCap() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject().put("maxDepth", 4))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("maxDepth").contains("1 and 3");
+  }
+
+  @Test
+  void hybridSearchHonorsTheDepthCapWhenTheGraphIsDeeper() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 1))
+        .put("k", 10)));
+
+    // From h0 at one hop only h1 and h2 are reachable; h3 sits two hops out and must not appear.
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      assertThat(row.getJSONObject("properties").getString("title")).isNotEqualTo("h3");
+      if (row.has("depth"))
+        assertThat(row.getInt("depth")).isEqualTo(1);
+    }
+  }
+
+  @Test
+  void hybridSearchRejectsAnUnknownEdgeType() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridNotAnEdge")))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("McpHybridNotAnEdge").contains("Available edge types");
+  }
+
+  @Test
+  void hybridSearchRejectsExpansionOverADocumentType() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpVectorRecord[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("vertex type").contains("McpVectorRecord");
+  }
+
+  @Test
   void fullTextSearchByIndexName() throws Exception {
     final JSONObject response = callTool("full_text_search", new JSONObject()
         .put("database", getDatabaseName())
