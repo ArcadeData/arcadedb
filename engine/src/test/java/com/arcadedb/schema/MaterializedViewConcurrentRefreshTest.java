@@ -172,6 +172,10 @@ class MaterializedViewConcurrentRefreshTest extends TestHelper {
         .isEqualTo(expected);
   }
 
+  /**
+   * Builds a view over a type that does not exist. That is fine for the state-machine tests: they
+   * exercise the ownership transitions directly and never run an actual refresh.
+   */
   private MaterializedViewImpl newView(final String name) {
     return new MaterializedViewImpl(database, name, "SELECT value FROM Foo", name, List.of("Foo"),
         MaterializedViewRefreshMode.MANUAL, true, 0);

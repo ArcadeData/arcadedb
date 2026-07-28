@@ -146,6 +146,14 @@ public class MaterializedViewImpl implements MaterializedView {
     return refreshState.compareAndSet(REFRESH_IDLE, REFRESH_RUNNING);
   }
 
+  /**
+   * Releases ownership unconditionally, discarding any pending request without reporting it.
+   * <p>
+   * Prefer {@link #finishRefreshPassAndCheckPending()} (success) or
+   * {@link #releaseRefreshAfterFailure()} (failure): both release with a CAS, so a request registered
+   * concurrently is either serviced or reported. This method overwrites such a request silently,
+   * which is the defect coalescing exists to prevent, so use it only where no coalescing is in play.
+   */
   public void endRefresh() {
     refreshState.set(REFRESH_IDLE);
   }
@@ -183,7 +191,8 @@ public class MaterializedViewImpl implements MaterializedView {
       if (refreshState.compareAndSet(REFRESH_RUNNING_PENDING, REFRESH_RUNNING))
         return true;
       if (refreshState.get() == REFRESH_IDLE)
-        // Ownership was already released (endRefresh on an error path); nothing left to drain.
+        // Defensive: the owner is the only thread that moves RUNNING/RUNNING_PENDING back to IDLE,
+        // so this is unreachable while ownership is held. Stop rather than spin if it ever is.
         return false;
     }
   }
