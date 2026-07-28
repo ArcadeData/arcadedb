@@ -37,9 +37,14 @@ Named users use their user name. API tokens use the canonical authenticated prin
 token's display name. Profile names are case-insensitive when parsed and serialized as
 lowercase.
 
-The global `allowedUsers` gate still decides whether a principal may reach MCP at all. Its
-existing bare-token convenience remains unchanged; the canonical prefix is required only for
-the profile map because that map identifies one exact principal.
+The global `allowedUsers` gate still decides whether a principal may reach MCP at all, and it
+accepts either the canonical or the bare token spelling. Profile lookup accepts both spellings
+too: an API-token principal is matched first by `apitoken:<token-name>` and, failing that, by
+the bare token name. The canonical entry therefore stays authoritative when both are present,
+while an operator who writes the same name in `allowedUsers` and in `principalProfiles` gets
+the restriction they configured instead of a silently inert entry. Matching the bare form
+cannot widen the surface, because a principal profile is only ever intersected with the global
+one.
 
 ## Update semantics
 
@@ -50,12 +55,15 @@ Configuration API updates merge `principalProfiles` by principal name:
 - `"principalProfiles": null` clears every override.
 - Omitting `principalProfiles` leaves the map unchanged.
 
-Blank principal names, non-string values, and unknown profile names are rejected before any
-other setting in the same update is applied. The serialized configuration omits
-`principalProfiles` when no overrides exist.
+Blank principal names, non-string values, unknown profile names, and a `principalProfiles` value
+that is not an object are rejected before any other setting in the same update is applied. All
+four are reported as a client error, so the configuration endpoint answers `400` rather than
+surfacing a malformed payload as an internal error. The same rule now covers the `databases`
+key, which shares the parsing path. The serialized configuration omits `principalProfiles` when
+no overrides exist.
 
 An override for a principal that does not currently exist remains valid and inert. It starts
-applying only if authentication later produces that exact principal name. This supports
+applying only if authentication later produces that principal name. This supports
 pre-provisioning and token rotation without making configuration persistence depend on the
 current user registry.
 
@@ -75,6 +83,12 @@ selection and enforcement rules.
 The global profile and principal override are both allowlists. For example, global `rag` plus
 principal `admin` exposes only the tools common to both profiles. A hidden tool remains denied
 when called directly by name.
+
+Profiles gate tools only. The MCP Resources surface stays governed by the read, database, and
+user permission layers alone. That is currently equivalent, because every profile exposes
+`get_schema` and the only resource is a database schema, so no profile can deny content the
+resource would reveal. A resource added later without a matching tool would break that
+equivalence and would need its own profile mapping.
 
 ## Validation
 
