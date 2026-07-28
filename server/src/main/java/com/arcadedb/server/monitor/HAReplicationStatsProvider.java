@@ -66,10 +66,32 @@ public interface HAReplicationStatsProvider {
   }
 
   /**
+   * In-flight leader-side phase-2 applies, which hold the Raft snapshot checkpoint back so an entry
+   * that is Raft-committed but not yet written locally stays replayable (issue #5407). A ticket that
+   * stays held pins log compaction until the node restarts, so this is the signal that explains a
+   * Raft log which stops shrinking (issues #5410, #5345).
+   *
+   * @param pending           number of phase-2 applies currently holding the checkpoint back
+   * @param oldestHeldMs      how long (ms) the oldest of them has been held ({@code 0} when none)
+   * @param lowestReplayFloor the Raft index past which the log cannot be purged while these are
+   *                          held ({@code -1} when none)
+   */
+  record PendingPhase2Stats(int pending, long oldestHeldMs, long lowestReplayFloor) {
+  }
+
+  /**
    * Returns a live snapshot of replication health. Called on each metrics scrape, so implementations
    * must be cheap and non-blocking.
    */
   HAReplicationStats getHAReplicationStats();
+
+  /**
+   * Returns the in-flight phase-2 hold state. Cheap and non-blocking - it scans a map sized by
+   * concurrent commits. Defaults to "nothing held" for implementations without a Raft state machine.
+   */
+  default PendingPhase2Stats getPendingPhase2Stats() {
+    return new PendingPhase2Stats(0, 0, -1);
+  }
 
   /**
    * Returns a per-follower health sample (leader only; empty otherwise). Cheap and non-blocking - it

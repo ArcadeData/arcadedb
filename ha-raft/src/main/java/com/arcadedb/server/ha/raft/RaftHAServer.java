@@ -2383,6 +2383,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * In-flight leader-side phase-2 holds on the Raft snapshot checkpoint (issue #5410). Reported on
+   * every node, not just the leader: a ticket taken while this node WAS the leader keeps pinning log
+   * compaction after it steps down, which is exactly the case an operator needs to see.
+   */
+  public HAReplicationStatsProvider.PendingPhase2Stats getPendingPhase2Stats() {
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm == null)
+      return new HAReplicationStatsProvider.PendingPhase2Stats(0, 0, -1);
+    return new HAReplicationStatsProvider.PendingPhase2Stats(
+        sm.pendingLocalPhase2Count(), sm.oldestPendingLocalPhase2HeldMs(), sm.lowestPendingLocalPhase2ReplayFloor());
+  }
+
+  /**
    * Leader-&gt;follower replication round-trip latency, in milliseconds, keyed by follower peer id.
    * Unlike {@code lastRpcElapsedMs} (age of the last RPC, which on an idle cluster just tracks the
    * heartbeat cadence - issue #5314), this is the actual measured RTT of the {@code appendEntries}
