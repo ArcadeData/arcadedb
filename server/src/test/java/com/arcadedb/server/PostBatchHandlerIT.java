@@ -515,6 +515,109 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     assertThat(requested.getJSONObject("idMapping").keySet()).hasSize(vertices);
   }
 
+  /**
+   * Issue #5470: with {@code refMode=ordinal} the edges name the vertices by their position in the payload, so the
+   * server keeps two primitive arrays (12 bytes per vertex) instead of a map of ids, and resolving an edge is an
+   * array read. The position may be left implicit or spelled out, as a number or in the {@code v<n>} form.
+   */
+  @Test
+  void ordinalModeResolvesEdgesByPositionInThePayload() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          {"@type":"vertex","@class":"V1","id":810000}
+          {"@type":"vertex","@class":"V1","@id":1,"id":810001}
+          {"@type":"vertex","@class":"V1","@id":"v2","id":810002}
+          {"@type":"edge","@class":"E1","@from":0,"@to":2}
+          {"@type":"edge","@class":"E1","@from":"v1","@to":"0"}
+          """;
+
+      final JSONObject result = postBatch(serverIndex, body, "application/x-ndjson", "refMode=ordinal");
+      assertThat(result.getInt("verticesCreated")).isEqualTo(3);
+      assertThat(result.getInt("edgesCreated")).isEqualTo(2);
+      assertThat(result.getJSONObject("idMapping").keySet()).containsExactlyInAnyOrder("0", "1", "2");
+
+      final JSONObject query = executeCommand(serverIndex, "sql",
+          "SELECT out('E1').id as target FROM V1 WHERE id = 810000");
+      assertThat(query.getJSONObject("result").getJSONArray("records").getJSONObject(0).getJSONArray("target")
+          .getInt(0)).isEqualTo(810002);
+    });
+  }
+
+  /**
+   * Edges must still be able to point at vertices already in the database, and a load that spans several vertex
+   * batches must keep resolving positions across them.
+   */
+  @Test
+  void ordinalModeAcrossSeveralBatchesAndAgainstExistingRids() throws Exception {
+    testEachServer(serverIndex -> {
+      final StringBuilder body = new StringBuilder();
+      for (int i = 0; i < 7; i++)
+        body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":").append(820_000 + i).append("}\n");
+      body.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":0,\"@to\":6}\n");
+
+      final JSONObject result = postBatch(serverIndex, body.toString(), "application/x-ndjson",
+          "refMode=ordinal&vertexBatchSize=2");
+      assertThat(result.getInt("verticesCreated")).isEqualTo(7);
+      assertThat(result.getInt("edgesCreated")).isEqualTo(1);
+
+      final String firstRid = result.getJSONObject("idMapping").getString("0");
+      final String body2 = "{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":820100}\n"
+          + "{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":0,\"@to\":\"" + firstRid + "\"}\n";
+
+      final JSONObject result2 = postBatch(serverIndex, body2, "application/x-ndjson", "refMode=ordinal");
+      assertThat(result2.getInt("edgesCreated")).isEqualTo(1);
+
+      final JSONObject query = executeCommand(serverIndex, "sql",
+          "SELECT out('E1').id as target FROM V1 WHERE id = 820100");
+      assertThat(query.getJSONObject("result").getJSONArray("records").getJSONObject(0).getJSONArray("target")
+          .getInt(0)).isEqualTo(820000);
+    });
+  }
+
+  @Test
+  void ordinalModeRejectsWhatItCannotResolve() throws Exception {
+    testEachServer(serverIndex -> {
+      // An @id that is not the position of the vertex: fails on that line, not later on an edge.
+      final String misnumbered = """
+          {"@type":"vertex","@class":"V1","@id":"__natural/key","id":830000}
+          """;
+      assertThat(postBatchError(serverIndex, misnumbered, "refMode=ordinal").getString("error"))
+          .contains("at line 1").contains("refMode=ordinal");
+
+      final String danglingRef = """
+          {"@type":"vertex","@class":"V1","id":830001}
+          {"@type":"edge","@class":"E1","@from":0,"@to":9}
+          """;
+      assertThat(postBatchError(serverIndex, danglingRef, "refMode=ordinal").getString("error"))
+          .contains("only 1 vertices were loaded");
+
+      // An unknown refMode is rejected like every other bad query parameter: 400, message sanitized by the base
+      // handler (same contract as invalidVertexBatchSizeReturnsError).
+      final String badMode = """
+          {"@type":"vertex","@class":"V1","id":830002}
+          """;
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "refMode=whatever");
+      writeBody(conn, badMode);
+      conn.connect();
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+      conn.disconnect();
+    });
+  }
+
+  private JSONObject postBatchError(final int serverIndex, final String body, final String queryParams)
+      throws Exception {
+    final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", queryParams);
+    writeBody(conn, body);
+    conn.connect();
+
+    try {
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+      return new JSONObject(readError(conn));
+    } finally {
+      conn.disconnect();
+    }
+  }
+
   private String hugeBody(final int vertices, final int firstId) {
     final StringBuilder body = new StringBuilder(vertices * 64);
     for (int i = 0; i < vertices; i++)
