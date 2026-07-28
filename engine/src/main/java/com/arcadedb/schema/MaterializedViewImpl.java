@@ -25,7 +25,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class MaterializedViewImpl implements MaterializedView {
@@ -33,6 +33,13 @@ public class MaterializedViewImpl implements MaterializedView {
   private final String name;
   private final String query;
   private final String backingTypeName;
+  /** No refresh running. */
+  private static final int REFRESH_IDLE            = 0;
+  /** A refresh is running and no further one has been requested. */
+  private static final int REFRESH_RUNNING         = 1;
+  /** A refresh is running and at least one more was requested while it ran. */
+  private static final int REFRESH_RUNNING_PENDING = 2;
+
   private final List<String> sourceTypeNames;
   private final MaterializedViewRefreshMode refreshMode;
   private final boolean simpleQuery;
@@ -40,7 +47,7 @@ public class MaterializedViewImpl implements MaterializedView {
   private volatile long lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private volatile MaterializedViewChangeListener changeListener;
-  private final AtomicBoolean refreshInProgress = new AtomicBoolean(false);
+  private final AtomicInteger refreshState = new AtomicInteger(REFRESH_IDLE);
 
   // Runtime metrics (not persisted)
   private final AtomicLong refreshCount         = new AtomicLong(0);
@@ -136,11 +143,49 @@ public class MaterializedViewImpl implements MaterializedView {
 
   /** Atomically marks refresh as in-progress. Returns {@code true} if successful, {@code false} if already running. */
   public boolean tryBeginRefresh() {
-    return refreshInProgress.compareAndSet(false, true);
+    return refreshState.compareAndSet(REFRESH_IDLE, REFRESH_RUNNING);
   }
 
   public void endRefresh() {
-    refreshInProgress.set(false);
+    refreshState.set(REFRESH_IDLE);
+  }
+
+  /**
+   * Records that a refresh was requested while another was already running, so the running refresh
+   * makes a further pass instead of the request being dropped. Returns {@code false} if no refresh is
+   * running any more, in which case the caller must run the refresh itself.
+   */
+  public boolean markRefreshPendingIfRunning() {
+    while (true) {
+      final int state = refreshState.get();
+      if (state == REFRESH_IDLE)
+        return false;
+      if (state == REFRESH_RUNNING_PENDING)
+        return true;
+      if (refreshState.compareAndSet(REFRESH_RUNNING, REFRESH_RUNNING_PENDING))
+        return true;
+    }
+  }
+
+  /**
+   * Ends one refresh pass. Returns {@code true} if a request arrived while that pass was running, in
+   * which case ownership is retained and the caller must make another pass; otherwise ownership is
+   * released and {@code false} is returned.
+   * <p>
+   * Releasing ownership and testing for a pending request must be one atomic step: if they were
+   * separate, a request registered in between would be seen by neither the outgoing owner nor the
+   * requester (which observed the refresh as still running), and the view would stay stale forever.
+   */
+  public boolean finishRefreshPassAndCheckPending() {
+    while (true) {
+      if (refreshState.compareAndSet(REFRESH_RUNNING, REFRESH_IDLE))
+        return false;
+      if (refreshState.compareAndSet(REFRESH_RUNNING_PENDING, REFRESH_RUNNING))
+        return true;
+      if (refreshState.get() == REFRESH_IDLE)
+        // Ownership was already released (endRefresh on an error path); nothing left to drain.
+        return false;
+    }
   }
 
   @Override
