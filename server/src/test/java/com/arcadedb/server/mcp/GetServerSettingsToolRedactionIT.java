@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
+import com.arcadedb.server.mcp.tools.SetServerSettingTool;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,6 +70,27 @@ class GetServerSettingsToolRedactionIT extends BaseGraphServerTest {
         }
       }
       assertThat(found).as("clusterToken setting must be present in the exported settings").isTrue();
+    });
+  }
+
+  @Test
+  void clusterTokenIsRedactedInMcpSetServerSetting() throws Exception {
+    testEachServer((serverIndex) -> {
+      final MCPConfiguration config = new MCPConfiguration("./target/test");
+      config.setAllowAdmin(true);
+
+      final JSONObject args = new JSONObject()
+          .put("key", "arcadedb.ha.clusterToken")
+          .put("value", "replacement-token");
+
+      final JSONObject result = SetServerSettingTool.execute(getServer(serverIndex), null, args, config);
+
+      // The setter echoes the value it replaced, so a secret reaches the caller through previousValue
+      // unless it is masked with the same rule the getter applies.
+      assertThat(result.toString()).as("cluster token must not leak through the MCP set_server_setting tool")
+          .doesNotContain(SECRET_TOKEN);
+      assertThat(result.getString("previousValue")).as("clusterToken previousValue must be masked")
+          .isEqualTo("*****");
     });
   }
 }
