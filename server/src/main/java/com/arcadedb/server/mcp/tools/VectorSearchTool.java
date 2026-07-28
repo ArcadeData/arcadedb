@@ -22,17 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.exception.SchemaException;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexInternal;
-import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
-import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -40,24 +32,10 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
-
 /**
  * @author Justin Blethrow
  */
 public class VectorSearchTool {
-  private static final int DEFAULT_K             = 10;
-  private static final int MAX_K                 = 1_000;
-  private static final int FILTER_OVERFETCH      = 8;
-  private static final int MAX_FILTER_CANDIDATES = 8_000;
-  private static final int MAX_FILTER_EXPRESSION = 4_096;
-
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "vector_search")
@@ -93,8 +71,8 @@ public class VectorSearchTool {
                 .put("k", new JSONObject()
                     .put("type", "integer")
                     .put("minimum", 1)
-                    .put("maximum", MAX_K)
-                    .put("default", DEFAULT_K)
+                    .put("maximum", MCPVectorLeg.MAX_K)
+                    .put("default", MCPVectorLeg.DEFAULT_K)
                     .put("description", "Maximum number of results to return"))
                 .put("efSearch", new JSONObject()
                     .put("type", "integer")
@@ -119,64 +97,20 @@ public class VectorSearchTool {
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
     final String databaseName = MCPToolUtils.requireString(args, "database");
-    final String indexName = MCPToolUtils.requireString(args, "indexName");
-    final int k = args.getInt("k", DEFAULT_K);
-    if (k < 1 || k > MAX_K)
-      throw new IllegalArgumentException("'k' must be between 1 and " + MAX_K);
+    final int k = args.getInt("k", MCPVectorLeg.DEFAULT_K);
+    if (k < 1 || k > MCPVectorLeg.MAX_K)
+      throw new IllegalArgumentException("'k' must be between 1 and " + MCPVectorLeg.MAX_K);
+    MCPVectorLeg.validateArguments(args, "indexName");
 
-    final boolean sparse = args.getBoolean("sparse", false);
-    final Integer efSearch = args.has("efSearch") ? args.getInt("efSearch") : null;
-    if (efSearch != null && efSearch < 1)
-      throw new IllegalArgumentException("'efSearch' must be at least 1");
-    if (sparse && efSearch != null)
-      throw new IllegalArgumentException("'efSearch' applies only to dense LSM_VECTOR indexes");
-    if (!sparse && args.has("queryIndices"))
-      throw new IllegalArgumentException("'queryIndices' requires sparse=true");
-
-    final String filter = normalizeFilter(args.getString("filter", null));
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
     final Database database = access.database();
-    final ResolvedVectorIndex resolved = resolveIndex(database, indexName, sparse);
-    final float[] queryVector = readFloatArray(args.getJSONArray("queryVector", null), "queryVector");
 
-    final Map<String, Object> parameters = new LinkedHashMap<>();
-    parameters.put("indexName", resolved.typeIndex().getName());
-    parameters.put("k", k);
-
-    final Map<String, Object> options = new LinkedHashMap<>();
-    if (efSearch != null)
-      options.put("efSearch", efSearch);
-    parameters.put("options", options);
-
-    final String functionCall;
-    if (sparse) {
-      final SparseQuery sparseQuery = buildSparseQuery(args, queryVector, resolved.dimensions());
-      parameters.put("queryIndices", sparseQuery.indices());
-      parameters.put("queryVector", sparseQuery.values());
-      functionCall = "`vector.sparseNeighbors`(:indexName, :queryIndices, :queryVector, :candidateLimit, :options)";
-    } else {
-      if (queryVector.length != resolved.dimensions())
-        throw new IllegalArgumentException(
-            "'queryVector' has " + queryVector.length + " dimensions, but index '" + indexName + "' requires "
-                + resolved.dimensions());
-      requireNonZeroDenseVector(queryVector);
-      parameters.put("queryVector", queryVector);
-      functionCall = "`vector.neighbors`(:indexName, :queryVector, :candidateLimit, :options)";
-    }
-
-    final int candidateLimit =
-        filter == null ? k : (int) Math.min((long) k * FILTER_OVERFETCH, MAX_FILTER_CANDIDATES);
-    parameters.put("candidateLimit", candidateLimit);
-
-    final StringBuilder sql = new StringBuilder("SELECT FROM (SELECT expand(").append(functionCall).append("))");
-    if (filter != null)
-      sql.append(" WHERE (").append(filter).append(')');
-    sql.append(" LIMIT :k");
+    final MCPVectorLeg.VectorLegQuery leg = MCPVectorLeg.build(database, args, "indexName", k);
 
     final QueryEngine.AnalyzedQuery analyzed;
     try {
-      analyzed = database.getQueryEngine("sql").analyze(sql.toString());
+      analyzed = database.getQueryEngine("sql").analyze(leg.sql());
     } catch (final RuntimeException e) {
       throw invalidExpression(e);
     }
@@ -190,13 +124,14 @@ public class VectorSearchTool {
 
     final JSONArray results = new JSONArray();
     try {
-      final ResultSet analyzedResultSet = analyzed.execute(parameters);
-      try (final ResultSet resultSet =
-          analyzedResultSet != null ? analyzedResultSet : database.query("sql", sql.toString(), parameters)) {
+      final ResultSet analyzedResultSet = analyzed.execute(leg.parameters());
+      try (final ResultSet resultSet = analyzedResultSet != null
+          ? analyzedResultSet
+          : database.query("sql", leg.sql(), leg.parameters())) {
         // A stale/deleted hit or malformed row is skipped and cannot be backfilled because the vector candidate
         // window is already fixed. The response therefore reports possible truncation for filtered short results.
         while (resultSet.hasNext() && results.length() < k)
-          appendResult(database, resultSet.next(), sparse, serializer, results);
+          appendResult(database, resultSet.next(), leg.sparse(), serializer, results);
       }
     } catch (final SecurityException e) {
       throw e;
@@ -210,167 +145,20 @@ public class VectorSearchTool {
     // is deliberately not consulted: it is almost always larger than the window, which would pin the flag to true
     // and strip it of meaning, and reading it costs a full scan of the index locations on the dense path.
     return new JSONObject()
-        .put("indexName", resolved.typeIndex().getName())
-        .put("sparse", sparse)
-        .put("scoring", resolved.scoring())
-        .put("candidateLimit", candidateLimit)
+        .put("indexName", leg.index().typeIndex().getName())
+        .put("sparse", leg.sparse())
+        .put("scoring", leg.index().scoring())
+        .put("candidateLimit", leg.candidateLimit())
         .put("truncated", results.length() >= k)
         .put("count", results.length())
         .put("results", results);
   }
 
-  private static String normalizeFilter(final String raw) {
-    if (raw == null)
-      return null;
-    final String filter = raw.trim();
-    if (filter.isEmpty())
-      return null;
-    if (filter.length() > MAX_FILTER_EXPRESSION)
-      throw new IllegalArgumentException(
-          "'filter' must not exceed " + MAX_FILTER_EXPRESSION + " characters");
-    return filter;
-  }
-
-  private static ResolvedVectorIndex resolveIndex(final Database database, final String indexName,
-      final boolean sparse) {
-    final Index rawIndex;
-    try {
-      rawIndex = database.getSchema().getIndexByName(indexName);
-    } catch (final SchemaException e) {
-      throw new IllegalArgumentException(
-          "Vector index '" + indexName + "' does not exist. " + describeAvailableIndexes(database, sparse), e);
-    }
-
-    if (!(rawIndex instanceof final TypeIndex typeIndex))
-      throw new IllegalArgumentException(
-          "Index '" + indexName + "' is not a type index. " + describeAvailableIndexes(database, sparse));
-
-    final Schema.INDEX_TYPE expectedType =
-        sparse ? Schema.INDEX_TYPE.LSM_SPARSE_VECTOR : Schema.INDEX_TYPE.LSM_VECTOR;
-    final Schema.INDEX_TYPE actualType = typeIndex.getType();
-    if (actualType != expectedType) {
-      final String hint = actualType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR
-          ? " Set sparse=true for this index."
-          : actualType == Schema.INDEX_TYPE.LSM_VECTOR ? " Set sparse=false for this index." : "";
-      throw new IllegalArgumentException(
-          "Index '" + indexName + "' is " + actualType + ", not " + expectedType + "." + hint + " "
-              + describeAvailableIndexes(database, sparse));
-    }
-
-    for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets()) {
-      if (bucketIndex instanceof final LSMVectorIndex denseIndex)
-        return new ResolvedVectorIndex(typeIndex, denseIndex.getDimensions(),
-            "distance_lower_is_better:" + denseIndex.getSimilarityFunction().name());
-
-      if (bucketIndex instanceof final LSMSparseVectorIndex sparseIndex) {
-        final LSMSparseVectorIndexMetadata metadata = sparseIndex.getSparseMetadata();
-        final int dimensions = metadata != null ? metadata.dimensions : 0;
-        final String modifier = metadata != null ? metadata.modifier : LSMSparseVectorIndexMetadata.MODIFIER_NONE;
-        final String scoring = LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(modifier)
-            ? "score_higher_is_better:idf_weighted_dot_product"
-            : "score_higher_is_better:dot_product";
-        return new ResolvedVectorIndex(typeIndex, dimensions, scoring);
-      }
-    }
-
-    throw new IllegalArgumentException("Vector index '" + indexName + "' has no searchable bucket indexes");
-  }
-
-  private static String describeAvailableIndexes(final Database database, final boolean sparse) {
-    final Schema.INDEX_TYPE expectedType =
-        sparse ? Schema.INDEX_TYPE.LSM_SPARSE_VECTOR : Schema.INDEX_TYPE.LSM_VECTOR;
-    final Set<String> names = new TreeSet<>();
-    for (final Index index : database.getSchema().getIndexes())
-      if (index instanceof TypeIndex && index.getType() == expectedType)
-        names.add(index.getName());
-    return "Available " + expectedType + " indexes: " + names;
-  }
-
-  private static float[] readFloatArray(final JSONArray array, final String field) {
-    if (array == null || array.length() == 0)
-      throw new IllegalArgumentException("'" + field + "' is required and must not be empty");
-
-    final float[] result = new float[array.length()];
-    for (int i = 0; i < array.length(); i++) {
-      final Object value = array.get(i);
-      if (!(value instanceof final Number number))
-        throw new IllegalArgumentException("'" + field + "' must contain only numbers");
-      final double asDouble = number.doubleValue();
-      if (!Double.isFinite(asDouble) || Math.abs(asDouble) > Float.MAX_VALUE)
-        throw new IllegalArgumentException("'" + field + "' must contain only finite float values");
-      result[i] = (float) asDouble;
-    }
-    return result;
-  }
-
-  private static void requireNonZeroDenseVector(final float[] queryVector) {
-    for (final float value : queryVector)
-      if (value != 0.0f)
-        return;
-    throw new IllegalArgumentException("Dense 'queryVector' must contain at least one non-zero value");
-  }
-
-  private static SparseQuery buildSparseQuery(final JSONObject args, final float[] queryVector,
-      final int dimensions) {
-    final JSONArray queryIndices = args.getJSONArray("queryIndices", null);
-    if (queryIndices == null) {
-      if (dimensions > 0 && queryVector.length != dimensions)
-        throw new IllegalArgumentException(
-            "Sparse 'queryVector' has " + queryVector.length + " dimensions, but the index requires " + dimensions
-                + ". Pass queryIndices with compact sparse weights instead.");
-
-      final List<Integer> indices = new ArrayList<>();
-      final List<Float> values = new ArrayList<>();
-      for (int i = 0; i < queryVector.length; i++)
-        if (queryVector[i] != 0.0f) {
-          indices.add(i);
-          values.add(queryVector[i]);
-        }
-      if (indices.isEmpty())
-        throw new IllegalArgumentException("Sparse 'queryVector' must contain at least one non-zero weight");
-
-      final int[] compactIndices = new int[indices.size()];
-      final float[] compactValues = new float[values.size()];
-      for (int i = 0; i < indices.size(); i++) {
-        compactIndices[i] = indices.get(i);
-        compactValues[i] = values.get(i);
-      }
-      return new SparseQuery(compactIndices, compactValues);
-    }
-
-    if (queryIndices.length() != queryVector.length)
-      throw new IllegalArgumentException(
-          "'queryIndices' and 'queryVector' must have the same length (got " + queryIndices.length() + " and "
-              + queryVector.length + ")");
-
-    final int[] indices = new int[queryIndices.length()];
-    final Set<Integer> seen = new HashSet<>();
-    boolean hasNonZeroWeight = false;
-    for (int i = 0; i < queryIndices.length(); i++) {
-      final Object raw = queryIndices.get(i);
-      if (!(raw instanceof final Number number) || !Double.isFinite(number.doubleValue())
-          || number.doubleValue() != Math.rint(number.doubleValue())
-          || number.doubleValue() < 0 || number.doubleValue() > Integer.MAX_VALUE)
-        throw new IllegalArgumentException("'queryIndices' must contain only non-negative integers");
-
-      final int index = number.intValue();
-      if (!seen.add(index))
-        throw new IllegalArgumentException("'queryIndices' contains duplicate dimension " + index);
-      if (dimensions > 0 && index >= dimensions)
-        throw new IllegalArgumentException(
-            "Sparse query dimension " + index + " is outside index dimensions 0-" + (dimensions - 1));
-      indices[i] = index;
-      hasNonZeroWeight |= queryVector[i] != 0.0f;
-    }
-    if (!hasNonZeroWeight)
-      throw new IllegalArgumentException("Sparse 'queryVector' must contain at least one non-zero weight");
-
-    return new SparseQuery(indices, queryVector);
-  }
-
   private static void appendResult(final Database database, final Result row, final boolean sparse,
       final JsonSerializer serializer, final JSONArray results) {
-    final RID rid = resolveRID(row);
+    RID rid = MCPVectorLeg.toRID(row.getProperty("@rid"));
+    if (rid == null)
+      rid = row.getIdentity().orElse(null);
     if (rid == null)
       return;
 
@@ -403,23 +191,8 @@ public class VectorSearchTool {
     results.put(result);
   }
 
-  private static RID resolveRID(final Result row) {
-    final Object raw = row.getProperty("@rid");
-    if (raw instanceof final RID rid)
-      return rid;
-    if (raw instanceof final String value && RID.is(value))
-      return new RID(value);
-    return row.getIdentity().orElse(null);
-  }
-
   private static IllegalArgumentException invalidExpression(final RuntimeException cause) {
     final String detail = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
     return new IllegalArgumentException("Invalid vector search or filter expression: " + detail, cause);
-  }
-
-  private record ResolvedVectorIndex(TypeIndex typeIndex, int dimensions, String scoring) {
-  }
-
-  private record SparseQuery(int[] indices, float[] values) {
   }
 }

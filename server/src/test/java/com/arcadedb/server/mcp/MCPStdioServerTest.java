@@ -81,7 +81,7 @@ class MCPStdioServerTest extends BaseGraphServerTest {
     assertThat(response.has("result")).isTrue();
     assertThat(toolNames(response)).contains(
         "list_databases", "get_schema", "query", "execute_command", "sample_records", "vector_search",
-        "full_text_search", "upsert_entity", "upsert_relationship", "server_status");
+        "hybrid_search", "full_text_search", "upsert_entity", "upsert_relationship", "server_status");
   }
 
   @Test
@@ -109,8 +109,8 @@ class MCPStdioServerTest extends BaseGraphServerTest {
         .put("method", "tools/list")
         .put("params", new JSONObject()));
     assertThat(toolNames(response))
-        .contains("list_databases", "get_schema", "query", "sample_records", "vector_search", "full_text_search",
-            "upsert_entity", "upsert_relationship")
+        .contains("list_databases", "get_schema", "query", "sample_records", "vector_search", "hybrid_search",
+            "full_text_search", "upsert_entity", "upsert_relationship")
         .doesNotContain("server_status", "execute_command");
 
     JSONObject denied = callTool("server_status", new JSONObject());

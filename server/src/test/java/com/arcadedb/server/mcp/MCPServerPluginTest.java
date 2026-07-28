@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -31,8 +32,10 @@ import java.io.DataOutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -171,6 +174,67 @@ class MCPServerPluginTest extends BaseGraphServerTest {
           .set("weights", new float[] { 0.2f, 0.6f })
           .save();
     });
+  }
+
+  private void seedHybridGraph() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpHybridDoc"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE VERTEX TYPE McpHybridDoc BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpHybridDoc.title STRING");
+      db.command("sql", "CREATE PROPERTY McpHybridDoc.content STRING");
+      db.command("sql", "CREATE PROPERTY McpHybridDoc.embedding ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpHybridDoc (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }
+          """);
+      db.command("sql", "CREATE INDEX ON McpHybridDoc (content) FULL_TEXT");
+      db.command("sql", "CREATE EDGE TYPE McpHybridCites");
+      db.command("sql", "CREATE EDGE TYPE McpHybridMentions");
+
+      // h0 is the nearest neighbor of the probe vector and the root of the citation chain.
+      // h5 is the strongest full-text match for 'gearbox' and is not reachable from h0 at all,
+      // so the full-text leg and the expansion leg contribute disjoint rows.
+      final MutableVertex h0 = db.newVertex("McpHybridDoc").set("title", "h0")
+          .set("content", "graph traversal over connected documents")
+          .set("embedding", new float[] { 1.0f, 0.0f, 0.0f }).save();
+      final MutableVertex h1 = db.newVertex("McpHybridDoc").set("title", "h1")
+          .set("content", "vector similarity ranking")
+          .set("embedding", new float[] { 0.0f, 1.0f, 0.0f }).save();
+      final MutableVertex h2 = db.newVertex("McpHybridDoc").set("title", "h2")
+          .set("content", "reciprocal rank fusion")
+          .set("embedding", new float[] { 0.0f, 0.0f, 1.0f }).save();
+      final MutableVertex h3 = db.newVertex("McpHybridDoc").set("title", "h3")
+          .set("content", "breadth first expansion")
+          .set("embedding", new float[] { 0.5f, 0.5f, 0.0f }).save();
+      final MutableVertex h4 = db.newVertex("McpHybridDoc").set("title", "h4")
+          .set("content", "unrelated mention target")
+          .set("embedding", new float[] { 0.0f, 0.5f, 0.5f }).save();
+      final MutableVertex h5 = db.newVertex("McpHybridDoc").set("title", "h5")
+          .set("content", "gearbox gearbox gearbox")
+          .set("embedding", new float[] { 0.1f, 0.1f, 0.9f }).save();
+
+      // Chain h0 -> h1 -> h2 -> h3, plus a shortcut h0 -> h2 so h2 is reachable two ways,
+      // plus h0 -> h4 on a different edge type so edge filtering is observable.
+      h0.newEdge("McpHybridCites", h1).save();
+      h1.newEdge("McpHybridCites", h2).save();
+      h2.newEdge("McpHybridCites", h3).save();
+      h0.newEdge("McpHybridCites", h2).save();
+      h0.newEdge("McpHybridMentions", h4).save();
+      // h5 is deliberately left unconnected.
+      assertThat(h5.getIdentity()).isNotNull();
+    });
+  }
+
+  private static JSONArray probeVector() {
+    return new JSONArray().put(1.0).put(0.0).put(0.0);
+  }
+
+  private static JSONObject payloadOf(final JSONObject response) {
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    return new JSONObject(response.getJSONArray("content").getJSONObject(0).getString("text"));
   }
 
   /**
@@ -1742,6 +1806,591 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("k", 1));
     assertThat(denied.getBoolean("isError", false)).isTrue();
     assertThat(denied.getJSONArray("content").getJSONObject(0).getString("text")).contains("not allowed");
+  }
+
+  @Test
+  void vectorSearchReportsArgumentFaultsBeforeDatabaseFaults() throws Exception {
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", "McpNoSuchDatabase")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'indexName' is required");
+  }
+
+  @Test
+  void hybridSearchIsRegisteredInHttpTransport() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 90)
+        .put("method", "tools/list")
+        .put("params", new JSONObject()));
+
+    assertThat(toolNames(response)).contains("hybrid_search");
+  }
+
+  @Test
+  void hybridSearchVectorOnlyReturnsTheVectorLegUnfused() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("k", 3)));
+
+    assertThat(payload.getString("vectorIndexName")).isEqualTo("McpHybridDoc[embedding]");
+    assertThat(payload.getBoolean("fused")).isFalse();
+    assertThat(payload.getBoolean("sparse")).isFalse();
+    assertThat(payload.getString("scoring")).startsWith("distance_lower_is_better");
+    assertThat(payload.getInt("count")).isEqualTo(3);
+    assertThat(payload.getJSONObject("legs").getJSONObject("vector").getInt("count")).isGreaterThanOrEqualTo(3);
+
+    final JSONObject first = payload.getJSONArray("results").getJSONObject(0);
+    assertThat(first.getJSONObject("properties").getString("title")).isEqualTo("h0");
+    assertThat(first.getDouble("distance")).isGreaterThanOrEqualTo(0.0);
+    assertThat(first.has("fusedScore")).isFalse();
+    assertThat(first.getJSONArray("sources").getString(0)).isEqualTo("vector");
+  }
+
+  @Test
+  void hybridSearchRejectsOutOfRangeK() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("k", 0));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'k' must be between 1 and 1000");
+  }
+
+  @Test
+  void hybridSearchFusesVectorAndFullText() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("k", 6)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+    assertThat(payload.getString("fusionStrategy")).isEqualTo("RRF");
+    assertThat(payload.getString("fulltextIndexName")).isEqualTo("McpHybridDoc[content]");
+    assertThat(payload.getJSONObject("legs").getJSONObject("fulltext").getInt("count")).isEqualTo(1);
+
+    final JSONArray results = payload.getJSONArray("results");
+    boolean sawFullTextSource = false;
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      assertThat(row.getDouble("fusedScore")).isGreaterThan(0.0);
+      assertThat(row.has("distance")).isFalse();
+      final JSONArray sources = row.getJSONArray("sources");
+      for (int s = 0; s < sources.length(); s++)
+        if ("fulltext".equals(sources.getString(s)))
+          sawFullTextSource = true;
+    }
+    // h5 matches 'gearbox' and is far from the probe vector, so it can only arrive via the full-text leg.
+    assertThat(sawFullTextSource).isTrue();
+  }
+
+  @Test
+  void hybridSearchWeightsShiftTheFusedOrder() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject fullTextHeavy = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("weights", new JSONObject().put("vector", 0.01).put("fulltext", 100.0))
+        .put("k", 6)));
+
+    assertThat(fullTextHeavy.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("title")).isEqualTo("h5");
+  }
+
+  @Test
+  void hybridSearchRejectsAnIncompleteFullTextLeg() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextQuery", "gearbox")
+        .put("k", 3));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("fulltextIndexName").contains("fulltextQuery");
+  }
+
+  @Test
+  void hybridSearchReportsTheFullTextIndexEvenWhenThatLegMatchesNothing() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "zzznosuchterm")
+        .put("k", 3)));
+
+    // A leg that matched nothing cannot become a fusion source, so the response is unfused. It must
+    // still name the index that was searched, or the caller cannot tell an empty leg from an absent one.
+    assertThat(payload.getBoolean("fused")).isFalse();
+    assertThat(payload.getString("fulltextIndexName")).isEqualTo("McpHybridDoc[content]");
+    assertThat(payload.getJSONObject("legs").getJSONObject("fulltext").getInt("count")).isEqualTo(0);
+  }
+
+  @Test
+  void hybridSearchRejectsAWeightForALegTheRequestDoesNotUse() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject noFullTextLeg = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("fulltext", 2.0))
+        .put("k", 3));
+
+    // A weight nothing will read is the same silent no-op as an unknown key, so it is rejected too.
+    assertThat(noFullTextLeg.getBoolean("isError", false)).isTrue();
+    assertThat(noFullTextLeg.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.fulltext").contains("no full-text leg");
+
+    final JSONObject noExpandLeg = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("expand", 2.0))
+        .put("k", 3));
+
+    assertThat(noExpandLeg.getBoolean("isError", false)).isTrue();
+    assertThat(noExpandLeg.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.expand").contains("no graph expansion leg");
+  }
+
+  @Test
+  void hybridSearchAcceptsAWeightForALegTheRequestDoesUse() throws Exception {
+    seedHybridGraph();
+
+    // The guard must reject only weights with no leg behind them, never a legitimate override.
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("weights", new JSONObject().put("vector", 1.0).put("fulltext", 2.0).put("expand", 0.25))
+        .put("k", 6)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+  }
+
+  @Test
+  void hybridSearchRejectsANonNumericWeight() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("vector", "abc"))
+        .put("k", 3));
+
+    // A wrong-typed weight must be reported by the tool's own validation, not by the JSON layer's
+    // parse failure, which names neither the argument nor the rule it broke.
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.vector").contains("finite number");
+  }
+
+  @Test
+  void hybridSearchReportsTheSeedCountItActuallyUsed() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("k", 10)));
+
+    final JSONObject expand = payload.getJSONObject("legs").getJSONObject("expand");
+    // The filter leaves exactly one seed, so the reported count is checkable rather than incidental.
+    // seedsTruncated is derived from the same cap that HybridSearchSeedsTest pins directly; this
+    // fixture is far too small to drive it true, so it is not asserted here.
+    assertThat(expand.getInt("seedCount")).isEqualTo(1);
+  }
+
+  @Test
+  void hybridSearchExpandsAlongTheGraphAndReportsPaths() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        // The fixture is small enough that an unfiltered vector leg retrieves every record, which would
+        // make every record a seed and leave the expansion leg with nothing new to contribute. Narrowing
+        // the vector leg to h0 is what makes the expanded rows observable.
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("direction", "out")
+            .put("maxDepth", 2))
+        .put("k", 10)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+    final JSONObject expandLeg = payload.getJSONObject("legs").getJSONObject("expand");
+    assertThat(expandLeg.getString("direction")).isEqualTo("out");
+    assertThat(expandLeg.getInt("maxDepth")).isEqualTo(2);
+    assertThat(expandLeg.getBoolean("truncated")).isFalse();
+    assertThat(expandLeg.getInt("count")).isGreaterThan(0);
+
+    JSONObject expanded = null;
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      final JSONArray sources = row.getJSONArray("sources");
+      for (int s = 0; s < sources.length(); s++)
+        if ("expand".equals(sources.getString(s)) && sources.length() == 1)
+          expanded = row;
+    }
+
+    assertThat(expanded).isNotNull();
+    assertThat(expanded.getInt("depth")).isBetween(1, 2);
+    // The path starts at the seed and ends at the row itself, so it is one longer than the depth.
+    assertThat(expanded.getJSONArray("path").length()).isEqualTo(expanded.getInt("depth") + 1);
+    assertThat(expanded.getJSONArray("path").getString(expanded.getJSONArray("path").length() - 1))
+        .isEqualTo(expanded.getString("rid"));
+  }
+
+  @Test
+  void hybridSearchDedupsNodesReachableBySeveralPaths() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        // h2 must reach the result set through the expansion leg, not as a seed, or its depth is never set.
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 3))
+        .put("k", 10)));
+
+    // h2 is reachable from h0 both directly and through h1. It must appear once, at its shallowest depth.
+    final Set<String> rids = new HashSet<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      assertThat(rids.add(results.getJSONObject(i).getString("rid"))).isTrue();
+
+    JSONObject h2 = null;
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      if ("h2".equals(row.getJSONObject("properties").getString("title")))
+        h2 = row;
+    }
+    // h2 is reachable from h0 directly and through h1, so breadth-first discovery must place it at
+    // depth 1 and emit it exactly once.
+    assertThat(h2).isNotNull();
+    assertThat(h2.getInt("depth")).isEqualTo(1);
+    assertThat(h2.getJSONArray("path").length()).isEqualTo(2);
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
+  }
+
+  @Test
+  void hybridSearchRestrictsExpansionToTheRequestedEdgeTypes() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 1))
+        .put("k", 10)));
+
+    // h4 hangs off h0 by McpHybridMentions only, so restricting to McpHybridCites must not reach it.
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      assertThat(results.getJSONObject(i).getJSONObject("properties").getString("title")).isNotEqualTo("h4");
+
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
+
+    final Set<String> titles = new HashSet<>();
+    for (int i = 0; i < results.length(); i++)
+      titles.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+    // h1 and h2 hang off h0 by McpHybridCites and must be reached; h4 hangs off it by
+    // McpHybridMentions only and must not be.
+    assertThat(titles).contains("h1", "h2");
+    assertThat(titles).doesNotContain("h4");
+  }
+
+  @Test
+  void hybridSearchWithoutEdgeTypesTraversesEveryEdgeType() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("k", 10)));
+
+    final Set<String> titles = new HashSet<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      titles.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+
+    // Omitting edgeTypes traverses every edge type, so h4 arrives over McpHybridMentions alongside
+    // the McpHybridCites neighbors that the restricted traversal reaches.
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
+    assertThat(titles).contains("h1", "h2", "h4");
+  }
+
+  @Test
+  void hybridSearchFusesAllThreeLegs() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        // Seeds become h0 (vector) and h5 (full-text). h5 is unconnected, so every expanded row comes
+        // from h0's citation chain and none of them is already a seed.
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 2))
+        .put("k", 10)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+    assertThat(payload.getJSONObject("legs").has("vector")).isTrue();
+    assertThat(payload.getJSONObject("legs").has("fulltext")).isTrue();
+    assertThat(payload.getJSONObject("legs").has("expand")).isTrue();
+
+    final Set<String> allSources = new HashSet<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++) {
+      final JSONArray sources = results.getJSONObject(i).getJSONArray("sources");
+      for (int s = 0; s < sources.length(); s++)
+        allSources.add(sources.getString(s));
+    }
+    assertThat(allSources).contains("vector", "fulltext", "expand");
+  }
+
+  @Test
+  void hybridSearchRejectsScoreBasedFusionWithExpansion() throws Exception {
+    seedHybridGraph();
+
+    for (final String strategy : new String[] { "DBSF", "LINEAR" }) {
+      final JSONObject response = callTool("hybrid_search", new JSONObject()
+          .put("database", getDatabaseName())
+          .put("vectorIndexName", "McpHybridDoc[embedding]")
+          .put("queryVector", probeVector())
+          .put("fusionStrategy", strategy)
+          .put("expand", new JSONObject().put("maxDepth", 1))
+          .put("k", 5));
+
+      assertThat(response.getBoolean("isError", false)).isTrue();
+      assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+          .contains(strategy).contains("RRF").contains("expand");
+    }
+  }
+
+  @Test
+  void hybridSearchAllowsScoreBasedFusionWithoutExpansion() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("fusionStrategy", "LINEAR")
+        .put("k", 6)));
+
+    assertThat(payload.getString("fusionStrategy")).isEqualTo("LINEAR");
+    assertThat(payload.getBoolean("fused")).isTrue();
+
+    final List<String> order = new ArrayList<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      order.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+
+    // h0's embedding is the probe vector exactly, so under a score-normalizing strategy it must not
+    // sink below the records furthest from the probe. It does exactly that if a dense distance is
+    // fused as though it were a similarity.
+    assertThat(order).contains("h0");
+    assertThat(order.indexOf("h0")).isLessThan(order.indexOf("h2"));
+  }
+
+  @Test
+  void hybridSearchRejectsDepthAboveTheServerCap() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject().put("maxDepth", 4))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("maxDepth").contains("1 and 3");
+  }
+
+  @Test
+  void hybridSearchHonorsTheDepthCapWhenTheGraphIsDeeper() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridCites"))
+            .put("maxDepth", 1))
+        .put("k", 10)));
+
+    // From h0 at one hop only h1 and h2 are reachable; h3 sits two hops out and must not appear.
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      assertThat(row.getJSONObject("properties").getString("title")).isNotEqualTo("h3");
+      if (row.has("depth"))
+        assertThat(row.getInt("depth")).isEqualTo(1);
+    }
+
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
+
+    final Set<String> titles = new HashSet<>();
+    for (int i = 0; i < results.length(); i++)
+      titles.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+    // h1 and h2 sit one hop from h0 and must be reached; h3 sits two hops out and must not be.
+    assertThat(titles).contains("h1", "h2");
+    assertThat(titles).doesNotContain("h3");
+  }
+
+  @Test
+  void hybridSearchRejectsAnUnknownEdgeType() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject()
+            .put("edgeTypes", new JSONArray().put("McpHybridNotAnEdge")))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("McpHybridNotAnEdge").contains("Available edge types");
+  }
+
+  @Test
+  void hybridSearchRejectsExpansionOverADocumentType() throws Exception {
+    seedVectorIndexes();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpVectorRecord[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("vertex type").contains("McpVectorRecord");
+  }
+
+  @Test
+  void hybridSearchRejectsAnUnknownWeightsKey() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("vecter", 2.0))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("vecter").contains("vector").contains("fulltext").contains("expand");
+  }
+
+  @Test
+  void hybridSearchRejectsANegativeWeight() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("expand", -1.0))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.expand");
+  }
+
+  @Test
+  void hybridSearchRejectsANonObjectExpand() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONArray())
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'expand' must be an object with optional edgeTypes, direction, and maxDepth");
+  }
+
+  @Test
+  void hybridSearchRejectsInvalidExpandBeforeResolvingTheDatabase() throws Exception {
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", "McpNoSuchDatabase")
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("expand", new JSONObject().put("maxDepth", 4))
+        .put("k", 5));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    final String text = response.getJSONArray("content").getJSONObject(0).getString("text");
+    assertThat(text).contains("maxDepth");
+    assertThat(text).doesNotContain("McpNoSuchDatabase");
   }
 
   @Test
