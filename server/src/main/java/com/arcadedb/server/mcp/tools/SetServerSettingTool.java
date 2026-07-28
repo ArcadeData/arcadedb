@@ -71,7 +71,12 @@ public class SetServerSettingTool {
 
     final JSONObject result = new JSONObject();
     result.put("key", key);
-    result.put("previousValue", oldValue != null ? oldValue.toString() : JSONObject.NULL);
+    // A secret is masked on the way out here for the same reason it is masked when read: this response
+    // hands the caller the value it just replaced, so echoing it would disclose through the setter what
+    // the getter refuses to disclose. Masking is keyed on the setting, not on whether it held a value,
+    // so an unset secret cannot be distinguished from a set one either.
+    result.put("previousValue",
+        cfg.isHidden() ? "*****" : oldValue != null ? oldValue.toString() : JSONObject.NULL);
     result.put("newValue", value);
     result.put("message", "Setting '" + key + "' updated successfully.");
     return result;
