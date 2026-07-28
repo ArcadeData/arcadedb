@@ -98,10 +98,10 @@ public class MCPConfiguration implements MCPPermissions {
       final String content = new String(Files.readAllBytes(configFile.toPath()), StandardCharsets.UTF_8);
       final JSONObject json = new JSONObject(content);
       final Map<String, DatabaseOverride> loadedDatabaseOverrides =
-          parseDatabaseOverrides(json.getJSONObject("databases", null));
+          parseDatabaseOverrides(objectValue(json, "databases"));
       final ToolProfile loadedProfile = ToolProfile.parse(json.getString("profile", "all"));
       final Map<String, ToolProfile> loadedPrincipalProfiles =
-          parsePrincipalProfiles(json.getJSONObject("principalProfiles", null));
+          parsePrincipalProfiles(objectValue(json, "principalProfiles"));
 
       enabled = json.getBoolean("enabled", false);
       allowReads = json.getBoolean("allowReads", true);
@@ -225,10 +225,22 @@ public class MCPConfiguration implements MCPPermissions {
 
   /**
    * Returns the profile override for the authenticated principal, or {@code null} when the global profile applies
-   * without an additional restriction. API tokens use their canonical security name, {@code apitoken:<name>}.
+   * without an additional restriction. API tokens are matched first by their canonical security name,
+   * {@code apitoken:<name>}, then by the bare token name, the same convention {@link #isUserAllowed(String)} accepts.
+   * The bare form can only narrow the surface further, because a principal profile is intersected with the global one
+   * and never grants a tool; matching it keeps an allowlist entry and a profile entry written the same way from
+   * silently disagreeing about which principal they address.
    */
   public ToolProfile getPrincipalToolProfile(final String principalName) {
-    return principalName == null ? null : principalProfiles.get(principalName);
+    if (principalName == null)
+      return null;
+
+    final ToolProfile canonical = principalProfiles.get(principalName);
+    if (canonical != null)
+      return canonical;
+    if (principalName.startsWith("apitoken:"))
+      return principalProfiles.get(principalName.substring("apitoken:".length()));
+    return null;
   }
 
   public List<String> getAllowedOrigins() {
@@ -327,13 +339,13 @@ public class MCPConfiguration implements MCPPermissions {
 
   public synchronized void updateFrom(final JSONObject json) {
     final Map<String, DatabaseOverride> updatedDatabaseOverrides = json.has("databases")
-        ? mergeDatabaseOverrides(databaseOverrides, json.getJSONObject("databases", null))
+        ? mergeDatabaseOverrides(databaseOverrides, objectValue(json, "databases"))
         : databaseOverrides;
     final ToolProfile updatedProfile = json.has("profile")
         ? ToolProfile.parse(json.getString("profile", null))
         : toolProfile;
     final Map<String, ToolProfile> updatedPrincipalProfiles = json.has("principalProfiles")
-        ? mergePrincipalProfiles(principalProfiles, json.getJSONObject("principalProfiles", null))
+        ? mergePrincipalProfiles(principalProfiles, objectValue(json, "principalProfiles"))
         : principalProfiles;
 
     if (json.has("enabled"))
@@ -557,6 +569,20 @@ public class MCPConfiguration implements MCPPermissions {
       return matchesUser(globalUsers, username)
           && (databaseUsers == null || matchesUser(databaseUsers, username));
     }
+  }
+
+  /**
+   * Reads a nested configuration object, mapping an absent or explicitly null value to {@code null} (the caller's
+   * clear-everything intent) and any other non-object value to a rejected update. Returning the value untyped would
+   * surface a malformed payload as an internal error instead of a client error.
+   */
+  private static JSONObject objectValue(final JSONObject json, final String name) {
+    if (json.isNull(name))
+      return null;
+    final Object value = json.opt(name);
+    if (value instanceof JSONObject object)
+      return object;
+    throw new IllegalArgumentException("MCP configuration field '" + name + "' must be an object");
   }
 
   private static boolean booleanValue(final JSONObject json, final String name) {
