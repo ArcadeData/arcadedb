@@ -2171,6 +2171,15 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       if (row.has("depth"))
         assertThat(row.getInt("depth")).isEqualTo(1);
     }
+
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
+
+    final Set<String> titles = new HashSet<>();
+    for (int i = 0; i < results.length(); i++)
+      titles.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+    // h1 and h2 sit one hop from h0 and must be reached; h3 sits two hops out and must not be.
+    assertThat(titles).contains("h1", "h2");
+    assertThat(titles).doesNotContain("h3");
   }
 
   @Test

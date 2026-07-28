@@ -197,8 +197,16 @@ public class HybridSearchTool {
       throw new IllegalArgumentException("'k' must be between 1 and " + MCPVectorLeg.MAX_K);
 
     // Argument faults are reported before the database is resolved, so a malformed request reads the
-    // same whether or not the database also resolves.
+    // same whether or not the database also resolves, and a rejected request does no I/O.
     MCPVectorLeg.validateArguments(args, "vectorIndexName");
+
+    final String strategy = strategyOf(args);
+    // The expansion leg ranks by traversal order and carries no score, which the score-normalizing
+    // strategies cannot consume. Rejecting here names the conflict; letting it through would surface
+    // as a parse-level complaint about a source the caller never wrote.
+    if (args.getJSONObject("expand", null) != null && !"RRF".equals(strategy))
+      throw new IllegalArgumentException("fusionStrategy " + strategy + " needs a score on every row, but the graph "
+          + "expansion leg is ranked by traversal order and has none. Use RRF, or drop 'expand'.");
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
@@ -210,13 +218,6 @@ public class HybridSearchTool {
     final JSONObject legs = new JSONObject()
         .put("vector", new JSONObject().put("count", vectorLeg.size()));
 
-    final String strategy = strategyOf(args);
-    // The expansion leg ranks by traversal order and carries no score, which the score-normalizing
-    // strategies cannot consume. Rejecting here names the conflict; letting it through would surface
-    // as a parse-level complaint about a source the caller never wrote.
-    if (args.getJSONObject("expand", null) != null && !"RRF".equals(strategy))
-      throw new IllegalArgumentException("fusionStrategy " + strategy + " needs a score on every row, but the graph "
-          + "expansion leg is ranked by traversal order and has none. Use RRF, or drop 'expand'.");
     final List<LegRow> fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
