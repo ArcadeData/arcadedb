@@ -100,6 +100,7 @@ public class VectorSearchTool {
     final int k = args.getInt("k", MCPVectorLeg.DEFAULT_K);
     if (k < 1 || k > MCPVectorLeg.MAX_K)
       throw new IllegalArgumentException("'k' must be between 1 and " + MCPVectorLeg.MAX_K);
+    MCPVectorLeg.validateArguments(args, "indexName");
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);

@@ -68,6 +68,24 @@ public final class MCPVectorLeg {
   }
 
   /**
+   * Validates the arguments that need no schema access. Kept separate from {@link #build} so callers
+   * can run it before resolving the database, which is the order the tools use: an argument fault is
+   * reported as an argument fault regardless of whether the database also resolves.
+   */
+  public static void validateArguments(final JSONObject args, final String indexNameField) {
+    MCPToolUtils.requireString(args, indexNameField);
+    final boolean sparse = args.getBoolean("sparse", false);
+    final Integer efSearch = args.has("efSearch") ? args.getInt("efSearch") : null;
+    if (efSearch != null && efSearch < 1)
+      throw new IllegalArgumentException("'efSearch' must be at least 1");
+    if (sparse && efSearch != null)
+      throw new IllegalArgumentException("'efSearch' applies only to dense LSM_VECTOR indexes");
+    if (!sparse && args.has("queryIndices"))
+      throw new IllegalArgumentException("'queryIndices' requires sparse=true");
+    normalizeFilter(args.getString("filter", null));
+  }
+
+  /**
    * Validates every vector argument and assembles the leg statement. Validation order is deliberate:
    * argument-shape faults are reported before any schema lookup, so a caller that got both the flags
    * and the index name wrong learns about the flags first and does not chase a schema error.

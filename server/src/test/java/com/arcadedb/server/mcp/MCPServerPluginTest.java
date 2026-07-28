@@ -1745,6 +1745,18 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void vectorSearchReportsArgumentFaultsBeforeDatabaseFaults() throws Exception {
+    final JSONObject response = callTool("vector_search", new JSONObject()
+        .put("database", "McpNoSuchDatabase")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("k", 2));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'indexName' is required");
+  }
+
+  @Test
   void fullTextSearchByIndexName() throws Exception {
     final JSONObject response = callTool("full_text_search", new JSONObject()
         .put("database", getDatabaseName())
