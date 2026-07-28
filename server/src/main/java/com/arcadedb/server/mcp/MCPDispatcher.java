@@ -73,6 +73,14 @@ public class MCPDispatcher {
       5. Use upsert_entity and upsert_relationship to maintain agent memory when the corresponding write permissions are enabled.
       6. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.""";
 
+  private static final String RESTRICTED_INSTRUCTIONS =
+      """
+      You are connected to an ArcadeDB multi-model database server with a restricted tool surface. Follow these rules:
+      1. Use only tools shown by tools/list; hidden tools cannot be invoked directly by name.
+      2. Call list_databases when you do not know the target database name.
+      3. Call get_schema before querying an unfamiliar database. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead.
+      4. Use query for read-only SQL or Cypher retrieval.""";
+
   private static final Set<String> RAG_TOOL_NAMES = Set.of(
       "list_databases",
       "get_schema",
@@ -191,9 +199,9 @@ public class MCPDispatcher {
 
     try {
       return switch (method) {
-        case "initialize" -> result(id, initialize());
-        case "tools/list" -> result(id, new JSONObject().put("tools", toolsForProfile(config.getToolProfile())));
-        case "tools/call" -> toolsCall(id, params, user);
+        case "initialize" -> result(id, initialize(effectiveProfile(user)));
+        case "tools/list" -> result(id, new JSONObject().put("tools", toolsForProfile(effectiveProfile(user))));
+        case "tools/call" -> toolsCall(id, params, user, effectiveProfile(user));
         case "resources/list" -> resourcesList(id, user);
         case "resources/read" -> resourcesRead(id, params, user);
         case "ping" -> result(id, new JSONObject());
@@ -209,7 +217,7 @@ public class MCPDispatcher {
     }
   }
 
-  private JSONObject initialize() {
+  private JSONObject initialize(final EffectiveToolProfile profile) {
     final JSONObject result = new JSONObject();
     result.put("protocolVersion", MCP_PROTOCOL_VERSION);
 
@@ -223,8 +231,7 @@ public class MCPDispatcher {
     capabilities.put("resources", new JSONObject().put("listChanged", false).put("subscribe", false));
     result.put("capabilities", capabilities);
 
-    result.put("instructions",
-        config.getToolProfile() == MCPConfiguration.ToolProfile.RAG ? RAG_INSTRUCTIONS : INSTRUCTIONS);
+    result.put("instructions", instructionsForProfile(profile));
 
     return result;
   }
@@ -256,7 +263,8 @@ public class MCPDispatcher {
     }
   }
 
-  private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user) {
+  private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
+      final EffectiveToolProfile profile) {
     final String toolName = params.getString("name", "");
     final JSONObject args = params.getJSONObject("arguments", new JSONObject());
 
@@ -266,9 +274,9 @@ public class MCPDispatcher {
     try {
       if (!REGISTERED_TOOL_NAMES.contains(toolName))
         throw new IllegalArgumentException("Unknown tool: " + toolName);
-      if (!isToolAllowed(config.getToolProfile(), toolName))
+      if (!profile.allows(toolName))
         throw new SecurityException(
-            "Tool '" + toolName + "' is not available in MCP profile '" + config.getToolProfile().configName() + "'");
+            "Tool '" + toolName + "' is not available in " + profile.description());
 
       final JSONObject toolResult = switch (toolName) {
         case "list_databases" -> ListDatabasesTool.execute(server, user, args, config);
@@ -312,11 +320,17 @@ public class MCPDispatcher {
     }
   }
 
-  private static JSONArray toolsForProfile(final MCPConfiguration.ToolProfile profile) {
+  private EffectiveToolProfile effectiveProfile(final ServerSecurityUser user) {
+    return new EffectiveToolProfile(
+        config.getToolProfile(),
+        config.getPrincipalToolProfile(user.getName()));
+  }
+
+  private static JSONArray toolsForProfile(final EffectiveToolProfile profile) {
     final JSONArray filtered = new JSONArray();
     for (int i = 0; i < TOOLS_LIST.length(); i++) {
       final JSONObject definition = TOOLS_LIST.getJSONObject(i);
-      if (isToolAllowed(profile, definition.getString("name")))
+      if (profile.allows(definition.getString("name")))
         filtered.put(definition);
     }
     return filtered;
@@ -330,6 +344,39 @@ public class MCPDispatcher {
       case RAG -> RAG_TOOL_NAMES.contains(toolName);
       case ADMIN -> ADMIN_TOOL_NAMES.contains(toolName);
     };
+  }
+
+  private static String instructionsForProfile(final EffectiveToolProfile profile) {
+    if (profile.matches(MCPConfiguration.ToolProfile.RAG))
+      return RAG_INSTRUCTIONS;
+    if (profile.matches(MCPConfiguration.ToolProfile.ALL)
+        || profile.matches(MCPConfiguration.ToolProfile.ADMIN))
+      return INSTRUCTIONS;
+    return RESTRICTED_INSTRUCTIONS;
+  }
+
+  private record EffectiveToolProfile(
+      MCPConfiguration.ToolProfile global,
+      MCPConfiguration.ToolProfile principal) {
+
+    private boolean allows(final String toolName) {
+      return isToolAllowed(global, toolName)
+          && (principal == null || isToolAllowed(principal, toolName));
+    }
+
+    private boolean matches(final MCPConfiguration.ToolProfile profile) {
+      for (final String toolName : REGISTERED_TOOL_NAMES)
+        if (allows(toolName) != isToolAllowed(profile, toolName))
+          return false;
+      return true;
+    }
+
+    private String description() {
+      if (principal == null)
+        return "MCP profile '" + global.configName() + "'";
+      return "global MCP profile '" + global.configName()
+          + "' intersected with principal profile '" + principal.configName() + "'";
+    }
   }
 
   private static String formatArgs(final JSONObject args) {

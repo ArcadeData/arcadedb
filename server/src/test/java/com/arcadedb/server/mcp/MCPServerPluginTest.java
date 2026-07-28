@@ -50,11 +50,13 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   @BeforeEach
   void enableMCP() throws Exception {
     // MCP is disabled by default, enable it for tests
-    saveMCPConfig(new JSONObject()
+    final JSONObject config = new JSONObject()
         .put("enabled", true)
         .put("allowReads", true)
         .put("profile", "all")
-        .put("allowedUsers", new JSONArray().put("root")));
+        .put("allowedUsers", new JSONArray().put("root"));
+    config.put("principalProfiles", (Object) null);
+    saveMCPConfig(config);
     seedFullTextIndex();
     seedSampleRecords();
   }
@@ -333,6 +335,57 @@ class MCPServerPluginTest extends BaseGraphServerTest {
 
     final JSONObject adminAllowed = callTool("server_status", new JSONObject());
     assertThat(adminAllowed.getBoolean("isError", true)).isFalse();
+  }
+
+  @Test
+  void principalProfilesDifferentiateNamedUsersOnOneHttpEndpoint() throws Exception {
+    final String principalName = "mcp-profile-reader";
+    final String password = "principalProfilePass1!";
+    if (getServer(0).getSecurity().existsUser(principalName))
+      getServer(0).getSecurity().dropUser(principalName);
+    getServer(0).getSecurity().createUser(new JSONObject()
+        .put("name", principalName)
+        .put("password", getServer(0).getSecurity().encodePassword(password))
+        .put("databases", new JSONObject().put("graph", new JSONArray().put("admin"))));
+
+    try {
+      saveMCPConfig(new JSONObject()
+          .put("profile", "all")
+          .put("allowedUsers", new JSONArray().put("root").put(principalName))
+          .put("principalProfiles", new JSONObject().put(principalName, "rag")));
+
+      final JSONObject request = new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 22)
+          .put("method", "tools/list")
+          .put("params", new JSONObject());
+      assertThat(toolNames(mcpRequest(request))).contains("server_status", "execute_command");
+
+      final String principalAuth = getBasicAuth(principalName, password);
+      assertThat(toolNames(mcpRequest(request, principalAuth)))
+          .contains("sample_records", "vector_search", "full_text_search")
+          .doesNotContain("server_status", "execute_command");
+
+      final JSONObject denied = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 23)
+          .put("method", "tools/call")
+          .put("params", new JSONObject()
+              .put("name", "server_status")
+              .put("arguments", new JSONObject())), principalAuth)
+          .getJSONObject("result");
+      assertThat(denied.getBoolean("isError", false)).isTrue();
+
+      final JSONObject initialized = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 24)
+          .put("method", "initialize")
+          .put("params", new JSONObject()), principalAuth);
+      assertThat(initialized.getJSONObject("result").getString("instructions"))
+          .contains("retrieval and agent memory");
+    } finally {
+      getServer(0).getSecurity().dropUser(principalName);
+    }
   }
 
   @Test
@@ -1056,6 +1109,48 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       }
     } finally {
       // Cleanup: delete the token
+      getServer(0).getSecurity().getApiTokenConfiguration()
+          .deleteToken(tokenResult.getString("tokenHash"));
+    }
+  }
+
+  @Test
+  void apiTokenPrincipalProfileFiltersDiscoveryAndDirectCalls() throws Exception {
+    final JSONObject permissions = new JSONObject()
+        .put("types", new JSONObject()
+            .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))))
+        .put("database", new JSONArray());
+
+    final JSONObject tokenResult = getServer(0).getSecurity().getApiTokenConfiguration()
+        .createToken("profiletoken", "graph", 0, permissions);
+    final String tokenValue = tokenResult.getString("token");
+
+    try {
+      saveMCPConfig(new JSONObject()
+          .put("profile", "all")
+          .put("allowedUsers", new JSONArray().put("root").put("profiletoken"))
+          .put("principalProfiles", new JSONObject().put("apitoken:profiletoken", "rag")));
+
+      final String tokenAuth = "Bearer " + tokenValue;
+      final JSONObject listed = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 503)
+          .put("method", "tools/list")
+          .put("params", new JSONObject()), tokenAuth);
+      assertThat(toolNames(listed))
+          .contains("sample_records", "vector_search")
+          .doesNotContain("server_status", "execute_command");
+
+      final JSONObject denied = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 504)
+          .put("method", "tools/call")
+          .put("params", new JSONObject()
+              .put("name", "server_status")
+              .put("arguments", new JSONObject())), tokenAuth)
+          .getJSONObject("result");
+      assertThat(denied.getBoolean("isError", false)).isTrue();
+    } finally {
       getServer(0).getSecurity().getApiTokenConfiguration()
           .deleteToken(tokenResult.getString("tokenHash"));
     }
@@ -2407,9 +2502,13 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {
+    return mcpRequest(request, getBasicAuth());
+  }
+
+  private JSONObject mcpRequest(final JSONObject request, final String authorization) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getMcpUrl()).toURL().openConnection();
     connection.setRequestMethod("POST");
-    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Authorization", authorization);
     connection.setRequestProperty("Content-Type", "application/json");
     connection.setDoOutput(true);
 
@@ -2470,7 +2569,11 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   private static String getBasicAuth() {
+    return getBasicAuth("root", DEFAULT_PASSWORD_FOR_TESTS);
+  }
+
+  private static String getBasicAuth(final String username, final String password) {
     return "Basic " + Base64.getEncoder()
-        .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
+        .encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
   }
 }
