@@ -84,6 +84,10 @@ class CypherShortestPathInlineWhereTest extends TestHelper {
 
   /**
    * Node 4 is only reachable via a tag='bad' edge, so the inline WHERE must exclude it entirely.
+   * <p>
+   * Note: the {@code *1..3} bounds spelled out here and below are not enforced by either shortestPath
+   * evaluator (see the ShortestPathStep class Javadoc) - they read naturally but behave as a bare
+   * {@code *}. These tests exercise the relationship constraints, not the hop bounds.
    */
   @Test
   void matchFormInlineWhereRejectsUnreachableTarget() {

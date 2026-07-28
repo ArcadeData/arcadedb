@@ -82,10 +82,33 @@ two-bot approval.
 | 3. `EdgeConstraint` reuses a mutable evaluation row | No change needed - confirmed safe, the contract is documented on the class. |
 | 4. Expression-form `allShortestPaths` cardinality | No change - agreed it belongs in a separate issue. |
 
+### Cycle 3 - head `3ea5867e`
+
+`claude[bot]` re-reviewed, no blocking findings. `gemini-code-assist` did not respond in this window
+either (three consecutive windows), so the loop terminates on a reviewer timeout.
+
+| Finding | Outcome |
+|---|---|
+| 1. The `*1..3` in the tests is decorative since bounds are unenforced; add a note so a future reader is not misled | Applied. Note added to the first `*1..3` test. |
+| 2. Property map (`longValue()` coercion) and inline `WHERE` (exact numerics) can disagree on fractional values now that they sit side by side | No change - pre-existing, and changing it would move variable-length MATCH semantics. Listed as a follow-up candidate below. |
+| 3. `computeFilteredShortestPath` / `computeFilteredAllShortestPaths` are now `public static`, widening the step class surface | No change. Both callers are shortestPath evaluators and they live in different packages; the alternative is duplicating the BFS, which is the defect this PR removes. |
+| 4. `EdgeConstraint` mutable-row reuse | No change needed - confirmed safe and documented. |
+
+CI on the final head: `build-and-package`, all five e2e suites, CodeQL and `claude-review` pass.
+`Meterian client scan` fails on the pre-existing dependency advisories already present on `main`
+(this PR adds no dependencies).
+
 ## Follow-up candidates (not filed)
 
 - `shortestPath()` / `allShortestPaths()` ignore the `*min..max` hop bounds on every path.
 - `allShortestPaths()` in expression position returns a single path instead of every co-shortest path.
+- Inline property map and inline `WHERE` disagree on fractional numerics: the map coerces through
+  `longValue()` (so `{w: 1.5}` matches a stored `1`), the predicate compares exactly.
+
+## Final state
+
+`timeout` - `gemini-code-assist` did not review in any of the three windows. `claude[bot]` reviewed on
+every head and its final verdict is "looks good to merge". Merge remains the developer's decision.
 
 ## Test results
 
