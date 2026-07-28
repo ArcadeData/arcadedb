@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.EdgeConstraint;
@@ -39,7 +40,13 @@ import java.util.List;
  * The path pattern must:
  * - Have exactly 2 nodes (start and end)
  * - Have exactly 1 relationship (with variable length allowed)
- * - Both endpoints must be bound to variables
+ * - Both endpoints must already be bound to vertices in the current row
+ * <p>
+ * The last rule is what separates this from the {@code MATCH p = shortestPath(...)} spelling. That
+ * one searches for an unbound endpoint, because the planner binds it with a node scan and then emits
+ * one path per candidate; an expression yields a single value per row and cannot multiply rows that
+ * way. An unbound endpoint here therefore raises rather than returning null, so the unsupported
+ * shape stays distinguishable from a genuine "no path" answer.
  * <p>
  * This expression uses the existing SQLFunctionShortestPath for path computation.
  *
@@ -70,15 +77,27 @@ public class ShortestPathExpression implements Expression {
     final String startVar = startNode.getVariable();
     final String endVar = endNode.getVariable();
 
-    if (startVar == null || endVar == null) {
-      throw new IllegalArgumentException("shortestPath endpoints must be bound to variables");
-    }
+    // Both endpoints must already be bound in this row. The expression form deliberately does not
+    // search for an unbound endpoint: the MATCH form does that by having the planner bind it with a
+    // node scan and then emitting one path per candidate, which multiplies rows, and an expression
+    // yields a single value per row. Raising here keeps an unsupported shape distinguishable from a
+    // genuine "no path" answer, which is null (issue #5496).
+    if (startVar == null || startVar.isEmpty())
+      throw unboundEndpoint("the start endpoint declares no variable");
+    if (endVar == null || endVar.isEmpty())
+      throw unboundEndpoint("the end endpoint declares no variable");
+    if (!result.getPropertyNames().contains(startVar))
+      throw unboundEndpoint("'" + startVar + "' is not bound");
+    if (!result.getPropertyNames().contains(endVar))
+      throw unboundEndpoint("'" + endVar + "' is not bound");
 
     final Object startValue = result.getProperty(startVar);
     final Object endValue = result.getProperty(endVar);
 
     if (!(startValue instanceof Vertex) || !(endValue instanceof Vertex)) {
-      // If either endpoint is not resolved, return null (no path)
+      // The variable exists but does not hold a vertex, typically null from a non-matching OPTIONAL
+      // MATCH. Null propagates through the expression as it does elsewhere in Cypher, so this stays a
+      // null answer rather than an error: only a variable that is not bound at all is unsupported.
       return null;
     }
 
@@ -170,6 +189,17 @@ public class ShortestPathExpression implements Expression {
     final List<Object> allPathsList = new ArrayList<>(1);
     allPathsList.add(path);
     return allPathsList;
+  }
+
+  /**
+   * Builds the error raised when an endpoint is not bound to a vertex in the current row. The message
+   * names the offending endpoint and the spelling that does support searching for it, because the
+   * failure is a query-shape problem the author can fix rather than a data-dependent outcome.
+   */
+  private CommandExecutionException unboundEndpoint(final String detail) {
+    return new CommandExecutionException((allPaths ? "allShortestPaths()" : "shortestPath()")
+        + " as an expression requires both endpoints bound to vertices, but " + detail
+        + ". Use MATCH p = shortestPath(...) to search for an unbound endpoint.");
   }
 
   @Override
