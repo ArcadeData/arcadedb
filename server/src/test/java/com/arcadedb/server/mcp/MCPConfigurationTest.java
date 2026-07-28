@@ -396,6 +396,10 @@ class MCPConfigurationTest {
     assertThat(config.toJSON().has("principalProfiles")).isFalse();
   }
 
+  // The "without partial update" this asserts comes from field ordering: databases, profile and
+  // principalProfiles are parsed before updateFrom mutates anything, so rejecting one of them leaves every
+  // other setting alone. It is not general atomicity - the allow* booleans are still assigned inline, so an
+  // invalid boolean can commit the booleans that precede it. That is out of scope here.
   @Test
   void invalidPrincipalProfileIsRejectedWithoutPartialUpdate() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
@@ -423,10 +427,43 @@ class MCPConfigurationTest {
         .hasMessageContaining("must be a profile name");
 
     assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("allowInsert", true)
         .put("principalProfiles", "rag")))
-        .isInstanceOf(IllegalStateException.class);
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("principalProfiles").hasMessageContaining("must be an object");
+    assertThat(config.isAllowInsert()).isFalse();
     assertThat(config.getPrincipalToolProfile("retrieval-user"))
         .isEqualTo(MCPConfiguration.ToolProfile.RAG);
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject().put("databases", "graph")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("databases").hasMessageContaining("must be an object");
+  }
+
+  @Test
+  void apiTokenPrincipalProfileMatchesBareTokenName() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject().put("retrieval-token", "rag")));
+
+    // An allowedUsers entry accepts the bare token name, so the same spelling must select the profile too;
+    // otherwise an operator restricting a token would silently leave it on the wider global profile.
+    assertThat(config.isUserAllowed("apitoken:retrieval-token")).isFalse();
+    config.setAllowedUsers(List.of("retrieval-token"));
+    assertThat(config.isUserAllowed("apitoken:retrieval-token")).isTrue();
+    assertThat(config.getPrincipalToolProfile("apitoken:retrieval-token"))
+        .isEqualTo(MCPConfiguration.ToolProfile.RAG);
+
+    // The canonical entry stays authoritative when both spellings are configured.
+    config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject().put("apitoken:retrieval-token", "admin")));
+    assertThat(config.getPrincipalToolProfile("apitoken:retrieval-token"))
+        .isEqualTo(MCPConfiguration.ToolProfile.ADMIN);
+
+    // A named user is never matched by the token fallback.
+    assertThat(config.getPrincipalToolProfile("retrieval-token"))
+        .isEqualTo(MCPConfiguration.ToolProfile.RAG);
+    assertThat(config.getPrincipalToolProfile("apitoken:other-token")).isNull();
   }
 
   @Test

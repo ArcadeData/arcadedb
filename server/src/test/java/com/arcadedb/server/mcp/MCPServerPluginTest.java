@@ -1157,6 +1157,49 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void apiTokenPrincipalProfileAcceptsBareTokenName() throws Exception {
+    final JSONObject permissions = new JSONObject()
+        .put("types", new JSONObject()
+            .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))))
+        .put("database", new JSONArray());
+
+    final JSONObject tokenResult = getServer(0).getSecurity().getApiTokenConfiguration()
+        .createToken("baretoken", "graph", 0, permissions);
+    final String tokenValue = tokenResult.getString("token");
+
+    try {
+      // The bare token name is the spelling allowedUsers accepts, so a profile written the same way must apply.
+      saveMCPConfig(new JSONObject()
+          .put("profile", "all")
+          .put("allowedUsers", new JSONArray().put("root").put("baretoken"))
+          .put("principalProfiles", new JSONObject().put("baretoken", "rag")));
+
+      final String tokenAuth = "Bearer " + tokenValue;
+      final JSONObject listed = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 505)
+          .put("method", "tools/list")
+          .put("params", new JSONObject()), tokenAuth);
+      assertThat(toolNames(listed))
+          .contains("sample_records", "vector_search")
+          .doesNotContain("server_status", "execute_command");
+
+      final JSONObject denied = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 506)
+          .put("method", "tools/call")
+          .put("params", new JSONObject()
+              .put("name", "server_status")
+              .put("arguments", new JSONObject())), tokenAuth)
+          .getJSONObject("result");
+      assertThat(denied.getBoolean("isError", false)).isTrue();
+    } finally {
+      getServer(0).getSecurity().getApiTokenConfiguration()
+          .deleteToken(tokenResult.getString("tokenHash"));
+    }
+  }
+
+  @Test
   void apiTokenUserDeniedWhenNotInAllowedUsers() throws Exception {
     // Create an API token
     final JSONObject permissions = new JSONObject()
