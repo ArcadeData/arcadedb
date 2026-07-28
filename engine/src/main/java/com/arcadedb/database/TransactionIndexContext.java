@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
@@ -498,6 +499,15 @@ public class TransactionIndexContext {
             throw new DuplicatedKeyException(idx.getName(), Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
           } catch (final RecordNotFoundException e) {
+            // #5279: "not found" is only evidence of a dirty index when the record is missing from the COMMITTED
+            // state too. This transaction reads through its OWN image of the record's page, which can be older
+            // than the committed one - since concurrent inserts into the same bucket now take different slots of
+            // the same page, a transaction that already modified that page cannot see a record a concurrent
+            // transaction committed into it. Repairing then would silently delete a HEALTHY index entry and let a
+            // duplicate key through: the key is really taken, so fail like any other duplicate.
+            if (existsInCommittedState(firstEntry.getIdentity()))
+              throw new DuplicatedKeyException(idx.getName(), Arrays.toString(key.keyValues), firstEntry.getIdentity());
+
             // INDEX DIRTY: THE RECORD WAS DELETED OR ITS BUCKET IS GONE, REMOVE THE DANGLING ENTRY TO FIX THE INDEX
             LogManager.instance()
                 .log(this, Level.WARNING,
@@ -510,6 +520,16 @@ public class TransactionIndexContext {
       }
     }
 
+  }
+
+  /**
+   * Tells whether a record still lives at {@code rid} in the CURRENT COMMITTED state, ignoring what this
+   * transaction's own (possibly older) image of that page shows. Used to tell a genuinely dangling index entry from
+   * one this transaction simply cannot see yet (#5279).
+   */
+  private boolean existsInCommittedState(final RID rid) {
+    return database.getSchema().getFileByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket//
+        && bucket.existsRecordInCommittedPage(rid);
   }
 
   /**
