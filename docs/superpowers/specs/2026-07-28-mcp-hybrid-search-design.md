@@ -235,12 +235,11 @@ from `get_schema`, the schema Resource, or a `full_text_search` error message.
   "vectorIndexName": "Article[embedding]",
   "sparse": false,
   "scoring": "distance_lower_is_better:COSINE",
-  "fulltextIndexName": "Article[content]",   // only when the full-text leg ran
-  "similarity": "BM25",
-  "fusionStrategy": "RRF",
+  "fulltextIndexName": "Article[content]",   // fused responses only
+  "fusionStrategy": "RRF",                   // fused responses only
   "legs": {
     "vector":   { "count": 40 },
-    "fulltext": { "count": 27 },
+    "fulltext": { "count": 27, "indexName": "Article[content]", "similarity": "BM25" },
     "expand":   { "count": 133, "direction": "out", "edgeTypes": ["CITES"],
                   "maxDepth": 2, "truncated": false }
   },
@@ -274,6 +273,18 @@ truncation describes a filled window, never index cardinality:
 naming neither `fulltextQuery` nor `expand` cannot be fused: that response sets `fused` to false and
 its rows carry the vector leg's native `distance` (dense) or `score` (sparse) instead of `fusedScore`.
 Every other call sets `fused` to true and carries `fusedScore`.
+
+`fulltextIndexName` and `fusionStrategy` appear only on a fused response. The full-text index name and
+its similarity are always reported inside `legs.fulltext` whenever that leg ran, including when it
+matched nothing, so an unfused response still says which index was searched.
+
+**Each leg's score reaches `vector.fuse` under the key matching its direction.** The engine reads a
+value under `score` as a similarity and sign-flips only the value it reads under `distance`, so a
+dense vector leg - whose native value is a distance, lower being better - must be emitted under
+`distance`. Emitting it under `score` leaves `RRF` correct, because RRF is rank-only, while silently
+inverting the vector ranking under `DBSF` and `LINEAR`: the nearest neighbor normalizes to the bottom
+of the range and the farthest to the top. The sparse vector leg and the full-text leg are both
+similarities and are emitted under `score`.
 
 ## Caps
 
