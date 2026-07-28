@@ -38,7 +38,7 @@ class OrdinalVertexRefResolverTest {
 
   @Test
   void resolvesByPositionInBothAcceptedForms() {
-    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0);
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0, 0);
 
     resolver.put(null, 0, new RID(3, 100));
     resolver.put(null, 1, new RID(4, 200));
@@ -50,12 +50,12 @@ class OrdinalVertexRefResolverTest {
     // The form RemoteGraphBatch generates.
     assertThat(resolver.get("v0", 1)).isEqualTo(new RID(3, 100));
     assertThat(resolver.get("V1", 1)).isEqualTo(new RID(4, 200));
-    assertThat(new OrdinalVertexRefResolver(0).isEmpty()).isTrue();
+    assertThat(new OrdinalVertexRefResolver(0, 0).isEmpty()).isTrue();
   }
 
   @Test
   void growsBeyondTheHintedCapacity() {
-    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(4);
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(4, 0);
 
     for (int i = 0; i < 100_000; i++)
       resolver.put(null, i, new RID(i % 8, i));
@@ -67,7 +67,7 @@ class OrdinalVertexRefResolverTest {
 
   @Test
   void rejectsAReferenceThatIsNotAPosition() {
-    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0);
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0, 0);
     resolver.put(null, 0, new RID(1, 1));
 
     assertThatThrownBy(() -> resolver.get("__dk/address/abc", 42)).isInstanceOf(IllegalArgumentException.class)
@@ -79,7 +79,7 @@ class OrdinalVertexRefResolverTest {
 
   @Test
   void rejectsAReferenceToAVertexThatHasNotBeenLoadedYet() {
-    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0);
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0, 0);
     resolver.put(null, 0, new RID(1, 1));
 
     assertThatThrownBy(() -> resolver.get("7", 9)).isInstanceOf(IllegalArgumentException.class)
@@ -92,7 +92,7 @@ class OrdinalVertexRefResolverTest {
    */
   @Test
   void rejectsAVertexNumberedOutOfOrder() {
-    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0);
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0, 0);
 
     resolver.checkVertexId(null, 0, 1);     // no @id at all is the normal case
     resolver.checkVertexId("0", 0, 1);
@@ -106,7 +106,7 @@ class OrdinalVertexRefResolverTest {
 
   @Test
   void iteratesByPosition() {
-    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0);
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0, 0);
     resolver.put(null, 0, new RID(1, 10));
     resolver.put(null, 1, new RID(2, 20));
 
@@ -117,12 +117,40 @@ class OrdinalVertexRefResolverTest {
   }
 
   /**
+   * A client that splits one load into several requests keeps a single counter across all of them, so the payload of
+   * the second request does not start at 0. Everything below the base belongs to an earlier request and is the
+   * client's job to reference by RID.
+   */
+  @Test
+  void numbersThePayloadFromTheDeclaredBase() {
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(0, 50_000);
+
+    resolver.checkVertexId("v50000", 0, 1);
+    resolver.put("v50000", 0, new RID(3, 100));
+    resolver.put("v50001", 1, new RID(3, 101));
+
+    assertThat(resolver.get("50000", 1)).isEqualTo(new RID(3, 100));
+    assertThat(resolver.get("v50001", 1)).isEqualTo(new RID(3, 101));
+
+    assertThatThrownBy(() -> resolver.get("49999", 7)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("earlier request").hasMessageContaining("50000");
+    assertThatThrownBy(() -> resolver.get("50002", 7)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("only 2 vertices");
+    assertThatThrownBy(() -> resolver.checkVertexId("0", 0, 3)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("expected '50000'");
+
+    final Map<String, RID> seen = new LinkedHashMap<>();
+    resolver.forEach(seen::put);
+    assertThat(seen).containsExactly(Map.entry("50000", new RID(3, 100)), Map.entry("50001", new RID(3, 101)));
+  }
+
+  /**
    * The reason this resolver exists: no id is stored, so a vertex costs one int plus one long instead of the ~87
    * bytes an arbitrary temporary id needs.
    */
   @Test
   void costsTwelveBytesPerVertex() {
-    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(1_000_000);
+    final OrdinalVertexRefResolver resolver = new OrdinalVertexRefResolver(1_000_000, 0);
 
     for (int i = 0; i < 1_000_000; i++)
       resolver.put(null, i, new RID(1, i));
