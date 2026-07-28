@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.math;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -37,13 +37,13 @@ public class AbsFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
-      throw new CommandExecutionException("abs() requires exactly one argument");
+      throw new CommandParsingException("abs() requires exactly one argument");
     if (args[0] == null)
       return null;
     if (args[0] instanceof Byte || args[0] instanceof Short || args[0] instanceof Integer || args[0] instanceof Long)
       return Math.abs(((Number) args[0]).longValue());
     if (args[0] instanceof Number)
       return Math.abs(((Number) args[0]).doubleValue());
-    throw new CommandExecutionException("abs() requires a numeric argument");
+    throw new CommandParsingException("abs() requires a numeric argument");
   }
 }
