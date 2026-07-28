@@ -1997,11 +1997,18 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     for (int i = 0; i < results.length(); i++)
       assertThat(rids.add(results.getJSONObject(i).getString("rid"))).isTrue();
 
+    JSONObject h2 = null;
     for (int i = 0; i < results.length(); i++) {
       final JSONObject row = results.getJSONObject(i);
-      if ("h2".equals(row.getJSONObject("properties").getString("title")) && row.has("depth"))
-        assertThat(row.getInt("depth")).isEqualTo(1);
+      if ("h2".equals(row.getJSONObject("properties").getString("title")))
+        h2 = row;
     }
+    // h2 is reachable from h0 directly and through h1, so breadth-first discovery must place it at
+    // depth 1 and emit it exactly once.
+    assertThat(h2).isNotNull();
+    assertThat(h2.getInt("depth")).isEqualTo(1);
+    assertThat(h2.getJSONArray("path").length()).isEqualTo(2);
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
   }
 
   @Test
@@ -2022,6 +2029,39 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     final JSONArray results = payload.getJSONArray("results");
     for (int i = 0; i < results.length(); i++)
       assertThat(results.getJSONObject(i).getJSONObject("properties").getString("title")).isNotEqualTo("h4");
+
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
+
+    final Set<String> titles = new HashSet<>();
+    for (int i = 0; i < results.length(); i++)
+      titles.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+    // h1 and h2 hang off h0 by McpHybridCites and must be reached; h4 hangs off it by
+    // McpHybridMentions only and must not be.
+    assertThat(titles).contains("h1", "h2");
+    assertThat(titles).doesNotContain("h4");
+  }
+
+  @Test
+  void hybridSearchWithoutEdgeTypesTraversesEveryEdgeType() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("k", 10)));
+
+    final Set<String> titles = new HashSet<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      titles.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+
+    // Omitting edgeTypes traverses every edge type, so h4 arrives over McpHybridMentions alongside
+    // the McpHybridCites neighbors that the restricted traversal reaches.
+    assertThat(payload.getJSONObject("legs").getJSONObject("expand").getInt("count")).isGreaterThan(0);
+    assertThat(titles).contains("h1", "h2", "h4");
   }
 
   @Test
