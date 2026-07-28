@@ -185,7 +185,9 @@ public class HybridSearchTool {
                     .put("type", "object")
                     .put("description",
                         "Per-leg fusion weights. The expansion leg defaults to 0.5 because an arbitrary neighbor "
-                            + "should not outrank a direct match")
+                            + "should not outrank a direct match. A weight naming a leg the request does not ask for "
+                            + "is rejected; a weight for a leg that runs but matches nothing has no effect, and that "
+                            + "leg's zero row count is reported under 'legs'.")
                     .put("properties", new JSONObject()
                         .put("vector", new JSONObject().put("type", "number").put("default", 1.0))
                         .put("fulltext", new JSONObject().put("type", "number").put("default", 1.0))
@@ -412,12 +414,17 @@ public class HybridSearchTool {
     final StringBuilder sql = new StringBuilder(
         "SELECT @rid AS rid, $depth AS depth, $path AS path FROM (TRAVERSE ");
     sql.append(direction).append('(');
+    // TRUST BOUNDARY: these names are the only caller-supplied text in this statement, and they are
+    // safe to inline solely because validatedEdgeTypes rejected anything that is not an existing edge
+    // type or that carries a quote or backslash. Weakening that method reopens injection here.
     for (int i = 0; i < edgeTypes.size(); i++) {
       if (i > 0)
         sql.append(", ");
       sql.append('\'').append(edgeTypes.get(i)).append('\'');
     }
     sql.append(") FROM [");
+    // Seed RIDs are engine-derived, never caller text: they come from the retrieval legs' own result
+    // rows via MCPVectorLeg.toRID, and RID.toString renders only #<bucket>:<position>.
     for (int i = 0; i < seeds.size(); i++) {
       if (i > 0)
         sql.append(',');
