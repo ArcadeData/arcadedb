@@ -19,9 +19,11 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BinaryOperator;
@@ -46,6 +48,27 @@ import java.util.function.BinaryOperator;
 public final class CorrelatedSubqueryRewriter {
 
   private CorrelatedSubqueryRewriter() {
+  }
+
+  /**
+   * Builds the parameter map for a correlated subquery, pre-seeded with the outer query's own parameters.
+   * <p>
+   * The body runs as a standalone statement, so every {@code $param} it mentions is resolved against THIS
+   * map and not against the outer query's. Starting from an empty map left all of them unbound, and because
+   * an unbound parameter evaluates to null rather than raising, the subquery simply matched nothing and the
+   * three callers absorbed that into their neutral value - {@code EXISTS} false, {@code COUNT} 0,
+   * {@code COLLECT} empty. Silent and load-bearing: a de-duplicating
+   * {@code WHERE NOT EXISTS { MATCH (a)-[:E {id: $id}]->(b) } CREATE ...} guard degrades into an
+   * unconditional CREATE.
+   * <p>
+   * Seeded FIRST so that the bindings {@link #correlate} adds still win: an outer row variable has to keep
+   * shadowing a parameter of the same name, as it did before.
+   *
+   * @param context the outer command context, may be null when the expression is evaluated standalone
+   */
+  public static Map<String, Object> newParams(final CommandContext context) {
+    final Map<String, Object> outerParams = context != null ? context.getInputParameters() : null;
+    return outerParams == null || outerParams.isEmpty() ? new HashMap<>() : new HashMap<>(outerParams);
   }
 
   /**

@@ -23,7 +23,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -51,7 +50,7 @@ public class CountExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    final Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = CorrelatedSubqueryRewriter.newParams(context);
     final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__count_", params,
         (patterns, body) -> "MATCH " + patterns + ", " + body + " RETURN 1");
     long count = 0L;
