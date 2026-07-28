@@ -30,8 +30,10 @@ import com.arcadedb.server.http.handler.batch.BatchRecord;
 import com.arcadedb.server.http.handler.batch.BatchRecordStream;
 import com.arcadedb.server.http.handler.batch.CsvBatchRecordStream;
 import com.arcadedb.server.http.handler.batch.JsonlBatchRecordStream;
+import com.arcadedb.server.http.handler.batch.OrdinalVertexRefResolver;
+import com.arcadedb.server.http.handler.batch.TempIdVertexRefResolver;
+import com.arcadedb.server.http.handler.batch.VertexRefResolver;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.StringRidHashMap;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
@@ -60,7 +62,8 @@ import java.util.logging.Level;
  * - text/csv → CSV format
  * <p>
  * Input must contain vertices first, then edges. Vertices can have temporary IDs (@id) that
- * edges reference via @from/@to. Edges can also reference existing database RIDs (#bucket:pos).
+ * edges reference via @from/@to, or - with {@code refMode=ordinal} - be referenced by their position in the
+ * payload, which is what the largest loads want. Edges can also reference existing database RIDs (#bucket:pos).
  * <p>
  * Read timeout: the body is consumed while the load runs, so the pauses the worker thread takes inside a commit
  * (index compaction, replication of a large entry) count towards Undertow's read watchdog. For the duration of
@@ -107,6 +110,14 @@ import java.util.logging.Level;
  *   (issue #5470); on an embedded/standalone database it only trades memory for throughput
  * - idMapping (auto|true|false, default auto): whether the response echoes the temporary-id to RID mapping. See
  *   {@link #echoIdMapping}
+ * - refMode (id|ordinal, default id): how edges name the vertices they connect. {@code id} resolves the
+ *   {@code @from} / {@code @to} against the {@code @id} each vertex declared, which costs the id itself plus a hash
+ *   slot for every vertex of the request; {@code ordinal} resolves them against the 0-based POSITION of the vertex
+ *   in the payload, which stores no id at all - 12 bytes per vertex and an array read per edge instead of a hash
+ *   lookup. On a load of millions of vertices that is the difference between ~1.4GB and ~190MB of heap held until
+ *   the last edge is written (issue #5470)
+ * - expectedVertexCount (int, default 0): hint used to pre-size the vertex references, saving the copies of their
+ *   growth. Only a hint: the payload may carry more
  */
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
@@ -120,6 +131,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   private static final int        MAX_ID_MAPPING_IN_RESPONSE = 10_000;
   /** Temporary ids mapped before the first heap warning; every following warning doubles the threshold. */
   private static final int        ID_MAP_WARNING_THRESHOLD   = 250_000;
+  /** Ceiling for the {@code expectedVertexCount} hint, so a wrong one costs a doubling and not the whole heap. */
+  private static final int        MAX_PRESIZED_VERTICES      = 1 << 24;
   /** How far the tail of a short body is drained before deciding it is a live client rather than a cut upload. */
   private static final int        TRUNCATION_PROBE_BYTES     = 64 * 1024;
   private static final HttpClient HTTP_CLIENT                = HttpClient.newHttpClient();
@@ -197,7 +210,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final GraphBatch.Builder builder = database.batch();
       configureBuilder(exchange, builder);
 
-      return streamRecords(exchange, databaseName, isCsv, builder, inputStream, new StringRidHashMap(),
+      return streamRecords(exchange, databaseName, isCsv, builder, inputStream, newVertexRefResolver(exchange),
           System.currentTimeMillis(), parseVertexBatchSize(exchange));
     } finally {
       restoreConnectionReadTimeout(exchange, previousReadTimeout);
@@ -210,7 +223,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
       final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
-      final StringRidHashMap tempIdMap, final long startTime, final int vertexBatchSize) throws Exception {
+      final VertexRefResolver vertexRefs, final long startTime, final int vertexBatchSize) throws Exception {
 
     long verticesCreated = 0;
     long edgesCreated = 0;
@@ -227,16 +240,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       int nextIdMapWarning = ID_MAP_WARNING_THRESHOLD;
 
       while (stream.hasNext()) {
-        // The temporary-id map lives for the whole request: edges arriving at the end of the payload may reference
-        // any vertex loaded at the beginning, so nothing can be discarded early. Its size is therefore the memory
+        // The vertex references live for the whole request: edges arriving at the end of the payload may reference
+        // any vertex loaded at the beginning, so nothing can be discarded early. Their size is therefore the memory
         // ceiling of a streaming load, and a load big enough to hit it must say so in the log rather than die of an
         // OutOfMemoryError that leaves no trace but a closed connection (issue #5470).
-        if (tempIdMap.size() >= nextIdMapWarning) {
+        if (vertexRefs.size() >= nextIdMapWarning) {
           LogManager.instance().log(this, Level.WARNING,
-              "Batch load on database '%s' has resolved %d temporary ids so far, holding %d MB of heap that cannot be "
-                  + "released before the end of the request. Make sure the server heap is sized for it, or split the "
-                  + "payload into several requests referencing the vertices by RID",
-              null, databaseName, tempIdMap.size(), tempIdMap.retainedBytes() / (1024 * 1024));
+              "Batch load on database '%s' has mapped %d vertices so far, holding %d MB of heap that cannot be "
+                  + "released before the end of the request. Make sure the server heap is sized for it, or use "
+                  + "'refMode=ordinal' so the vertices are referenced by their position in the payload (12 bytes "
+                  + "each, no id to store)",
+              null, databaseName, vertexRefs.size(), vertexRefs.retainedBytes() / (1024 * 1024));
           nextIdMapWarning *= 2;
         }
 
@@ -245,31 +259,39 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         if (rec.kind == BatchRecord.Kind.EDGE) {
           // Transition to edge phase: flush remaining vertices
           if (!vertexPropsBatch.isEmpty()) {
-            verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, tempIdMap);
+            verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
+                verticesCreated);
           }
 
           // Process this first edge record
-          processEdge(batch, rec, tempIdMap, stream.getLineNumber());
+          processEdge(batch, rec, vertexRefs, stream.getLineNumber());
           edgesCreated++;
           break;
         }
 
+        // A payload that does not match the chosen refMode must fail on the vertex that breaks it, not later on an
+        // edge that cannot be resolved: the line number is what the client needs to fix its generator.
+        vertexRefs.checkVertexId(rec.tempId, (int) (verticesCreated + vertexPropsBatch.size()), stream.getLineNumber());
+
         // Accumulate vertex — flush when type changes or batch is full
         if (currentTypeName != null && !currentTypeName.equals(rec.typeName)) {
-          verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, tempIdMap);
+          verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
+              verticesCreated);
         }
         currentTypeName = rec.typeName;
         vertexPropsBatch.add(rec.copyProperties());
         vertexTempIds.add(rec.tempId);
 
         if (vertexPropsBatch.size() >= vertexBatchSize) {
-          verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, tempIdMap);
+          verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
+              verticesCreated);
         }
       }
 
       // Flush remaining vertices (e.g., vertex-only import or last batch before EOF)
       if (!vertexPropsBatch.isEmpty())
-        verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, tempIdMap);
+        verticesCreated += flushVertexBatch(batch, currentTypeName, vertexPropsBatch, vertexTempIds, vertexRefs,
+            verticesCreated);
 
       // Phase 2: Remaining edges
       while (stream.hasNext()) {
@@ -277,7 +299,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         if (rec.kind != BatchRecord.Kind.EDGE)
           throw new IllegalArgumentException("Expected edge record but got vertex at line " + stream.getLineNumber()
               + ". All vertices must appear before edges");
-        processEdge(batch, rec, tempIdMap, stream.getLineNumber());
+        processEdge(batch, rec, vertexRefs, stream.getLineNumber());
         edgesCreated++;
       }
 
@@ -358,14 +380,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     // Include temp ID mapping if any temp IDs were used, unless the load was too big for the mapping to be worth
     // (or even possible to) send back - see MAX_ID_MAPPING_IN_RESPONSE and the 'idMapping' parameter.
-    if (!tempIdMap.isEmpty()) {
-      if (echoIdMapping(exchange, tempIdMap.size())) {
+    if (!vertexRefs.isEmpty()) {
+      if (echoIdMapping(exchange, vertexRefs.size())) {
         final JSONObject mapping = new JSONObject();
-        tempIdMap.forEach((key, rid) -> mapping.put(key, rid.toString()));
+        vertexRefs.forEach((ref, rid) -> mapping.put(ref, rid.toString()));
         result.put("idMapping", mapping);
       } else {
         result.put("idMappingOmitted", true);
-        result.put("idMappingSize", tempIdMap.size());
+        result.put("idMappingSize", vertexRefs.size());
       }
     }
 
@@ -487,6 +509,33 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   }
 
   /**
+   * Builds the structure that resolves {@code @from} / {@code @to}, which is the memory ceiling of a streaming load
+   * (issue #5470). See the {@code refMode} and {@code expectedVertexCount} parameters.
+   */
+  private VertexRefResolver newVertexRefResolver(final HttpServerExchange exchange) {
+    final String value = getQueryParameter(exchange, "expectedVertexCount");
+    int expectedVertices = 0;
+    if (value != null) {
+      expectedVertices = Integer.parseInt(value);
+      if (expectedVertices < 0)
+        throw new IllegalArgumentException("expectedVertexCount cannot be negative, but was " + expectedVertices);
+      // A hint must never be able to allocate the server out of memory on its own: past this the structure simply
+      // grows by doubling, which costs one copy.
+      expectedVertices = Math.min(expectedVertices, MAX_PRESIZED_VERTICES);
+    }
+
+    final String refMode = getQueryParameter(exchange, "refMode");
+    if (refMode == null || refMode.isEmpty() || "id".equalsIgnoreCase(refMode))
+      return new TempIdVertexRefResolver(expectedVertices);
+    if ("ordinal".equalsIgnoreCase(refMode))
+      return new OrdinalVertexRefResolver(expectedVertices);
+
+    throw new IllegalArgumentException(
+        "Invalid refMode '" + refMode + "': expected 'id' (edges reference the @id of a vertex) or 'ordinal' "
+            + "(edges reference the 0-based position of a vertex in the payload)");
+  }
+
+  /**
    * Number of vertices accumulated before they are created and committed in a single transaction. On a
    * replicated database that transaction is shipped as one Raft entry, so a load of large records has to lower
    * it to stay below the maximum replicated entry size - which is exactly what the server suggests when it
@@ -564,31 +613,29 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   }
 
   private int flushVertexBatch(final GraphBatch batch, final String typeName,
-      final List<Object[]> propsBatch, final List<String> tempIds, final StringRidHashMap tempIdMap) {
+      final List<Object[]> propsBatch, final List<String> tempIds, final VertexRefResolver vertexRefs,
+      final long firstOrdinal) {
 
     final int count = propsBatch.size();
     final Object[][] propsArray = propsBatch.toArray(new Object[count][]);
     final RID[] rids = batch.createVertices(typeName, propsArray);
 
-    for (int i = 0; i < count; i++) {
-      final String tempId = tempIds.get(i);
-      if (tempId != null)
-        tempIdMap.put(tempId, rids[i]);
-    }
+    for (int i = 0; i < count; i++)
+      vertexRefs.put(tempIds.get(i), (int) (firstOrdinal + i), rids[i]);
 
     propsBatch.clear();
     tempIds.clear();
     return count;
   }
 
-  private void processEdge(final GraphBatch batch, final BatchRecord rec, final StringRidHashMap tempIdMap,
+  private void processEdge(final GraphBatch batch, final BatchRecord rec, final VertexRefResolver vertexRefs,
       final int lineNumber) {
-    final RID srcRID = resolveRef(rec.fromRef, tempIdMap, lineNumber);
-    final RID dstRID = resolveRef(rec.toRef, tempIdMap, lineNumber);
+    final RID srcRID = resolveRef(rec.fromRef, vertexRefs, lineNumber);
+    final RID dstRID = resolveRef(rec.toRef, vertexRefs, lineNumber);
     batch.newEdge(srcRID, rec.typeName, dstRID, rec.copyEdgeProperties());
   }
 
-  private RID resolveRef(final String ref, final StringRidHashMap tempIdMap, final int lineNumber) {
+  private RID resolveRef(final String ref, final VertexRefResolver vertexRefs, final int lineNumber) {
     if (ref.charAt(0) == '#') {
       // Existing RID reference
       final int colonIdx = ref.indexOf(':');
@@ -605,12 +652,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
     }
 
-    // Temporary ID reference
-    final RID rid = tempIdMap.get(ref);
-    if (rid == null)
-      throw new IllegalArgumentException("Unknown temporary ID '" + ref + "' at line " + lineNumber
-          + ". Vertices must appear before edges that reference them");
-    return rid;
+    // Temporary id or payload position, depending on refMode
+    return vertexRefs.get(ref, lineNumber);
   }
 
   private void configureBuilder(final HttpServerExchange exchange, final GraphBatch.Builder builder) {
