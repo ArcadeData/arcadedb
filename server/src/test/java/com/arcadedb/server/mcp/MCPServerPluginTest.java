@@ -1869,6 +1869,71 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchFusesVectorAndFullText() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("k", 6)));
+
+    assertThat(payload.getBoolean("fused")).isTrue();
+    assertThat(payload.getString("fusionStrategy")).isEqualTo("RRF");
+    assertThat(payload.getString("fulltextIndexName")).isEqualTo("McpHybridDoc[content]");
+    assertThat(payload.getJSONObject("legs").getJSONObject("fulltext").getInt("count")).isEqualTo(1);
+
+    final JSONArray results = payload.getJSONArray("results");
+    boolean sawFullTextSource = false;
+    for (int i = 0; i < results.length(); i++) {
+      final JSONObject row = results.getJSONObject(i);
+      assertThat(row.getDouble("fusedScore")).isGreaterThan(0.0);
+      assertThat(row.has("distance")).isFalse();
+      final JSONArray sources = row.getJSONArray("sources");
+      for (int s = 0; s < sources.length(); s++)
+        if ("fulltext".equals(sources.getString(s)))
+          sawFullTextSource = true;
+    }
+    // h5 matches 'gearbox' and is far from the probe vector, so it can only arrive via the full-text leg.
+    assertThat(sawFullTextSource).isTrue();
+  }
+
+  @Test
+  void hybridSearchWeightsShiftTheFusedOrder() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject fullTextHeavy = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "gearbox")
+        .put("weights", new JSONObject().put("vector", 0.01).put("fulltext", 100.0))
+        .put("k", 6)));
+
+    assertThat(fullTextHeavy.getJSONArray("results").getJSONObject(0)
+        .getJSONObject("properties").getString("title")).isEqualTo("h5");
+  }
+
+  @Test
+  void hybridSearchRejectsAnIncompleteFullTextLeg() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextQuery", "gearbox")
+        .put("k", 3));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("fulltextIndexName").contains("fulltextQuery");
+  }
+
+  @Test
   void fullTextSearchByIndexName() throws Exception {
     final JSONObject response = callTool("full_text_search", new JSONObject()
         .put("database", getDatabaseName())

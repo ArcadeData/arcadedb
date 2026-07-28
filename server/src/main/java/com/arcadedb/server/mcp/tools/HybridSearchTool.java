@@ -21,7 +21,11 @@ package com.arcadedb.server.mcp.tools;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -33,8 +37,12 @@ import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -61,6 +69,20 @@ public class HybridSearchTool {
    * its only ranking signal.
    */
   public record LegRow(RID rid, Double score) {
+  }
+
+  /**
+   * One fusion source: its display name, its rows in rank order, and the weight applied to every
+   * rank contribution it makes.
+   */
+  public record Leg(String name, List<LegRow> rows, float weight) {
+  }
+
+  /**
+   * Provenance for a row the expansion leg contributed: how many hops from its seed, and the RID
+   * path back to that seed including the seed itself.
+   */
+  public record ExpansionInfo(int depth, List<RID> path) {
   }
 
   public static JSONObject getDefinition() {
@@ -180,34 +202,54 @@ public class HybridSearchTool {
     final MCPVectorLeg.VectorLegQuery vectorQuery = MCPVectorLeg.build(database, args, "vectorIndexName", legLimit(k));
     final List<LegRow> vectorLeg = runVectorLeg(database, vectorQuery);
 
+    final JSONObject legs = new JSONObject()
+        .put("vector", new JSONObject().put("count", vectorLeg.size()));
+
+    final String strategy = strategyOf(args);
+    final List<LegRow> fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs);
+
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
         .setUseCollectionSize(false)
         .setUseCollectionSizeForEdges(false);
 
-    final JSONObject legs = new JSONObject()
-        .put("vector", new JSONObject().put("count", vectorLeg.size()));
+    final List<Leg> legList = new ArrayList<>(3);
+    legList.add(new Leg("vector", vectorLeg, weightOf(args, "vector", 1.0f)));
+    if (!fullTextLeg.isEmpty())
+      legList.add(new Leg("fulltext", fullTextLeg, weightOf(args, "fulltext", 1.0f)));
 
-    final JSONArray results = new JSONArray();
-    for (final LegRow row : vectorLeg) {
-      if (results.length() >= k)
-        break;
-      final Document document = lookup(database, row.rid());
-      if (document == null)
-        continue;
-      results.put(new JSONObject()
-          .put("rid", row.rid().toString())
-          .put(vectorQuery.sparse() ? "score" : "distance", row.score())
-          .put("sources", new JSONArray().put("vector"))
-          .put("properties", serializer.serializeDocument(document)));
-    }
-
-    return new JSONObject()
+    final JSONObject response = new JSONObject()
         .put("vectorIndexName", vectorQuery.index().typeIndex().getName())
         .put("sparse", vectorQuery.sparse())
         .put("scoring", vectorQuery.index().scoring())
-        .put("fused", false)
-        .put("legs", legs)
+        .put("legs", legs);
+
+    final JSONArray results;
+    if (legList.size() < 2) {
+      // Fusion needs at least two sources. Rather than fabricate a fused score from one leg, report the
+      // leg's own score under its native key and say plainly that no fusion happened.
+      results = new JSONArray();
+      for (final LegRow row : vectorLeg) {
+        if (results.length() >= k)
+          break;
+        final Document document = lookup(database, row.rid());
+        if (document == null)
+          continue;
+        results.put(new JSONObject()
+            .put("rid", row.rid().toString())
+            .put(vectorQuery.sparse() ? "score" : "distance", row.score())
+            .put("sources", new JSONArray().put("vector"))
+            .put("properties", serializer.serializeDocument(document)));
+      }
+      response.put("fused", false);
+    } else {
+      results = fuse(database, legList, strategy, k, serializer, Map.of());
+      response.put("fused", true).put("fusionStrategy", strategy);
+      if (legs.has("fulltext"))
+        response.put("fulltextIndexName", legs.getJSONObject("fulltext").getString("indexName"));
+    }
+
+    return response
         .put("truncated", results.length() >= k)
         .put("count", results.length())
         .put("results", results);
@@ -257,6 +299,166 @@ public class HybridSearchTool {
       throw invalidExpression("vector leg", e);
     }
     return rows;
+  }
+
+  private static List<LegRow> runFullTextLeg(final Database database, final JSONObject args, final int limit,
+      final JSONObject legs) {
+    final String indexName = args.getString("fulltextIndexName", null);
+    final String queryText = args.getString("fulltextQuery", null);
+    final boolean hasIndex = indexName != null && !indexName.isBlank();
+    final boolean hasQuery = queryText != null && !queryText.isBlank();
+
+    if (!hasIndex && !hasQuery)
+      return List.of();
+    // Half a leg is always a mistake, and silently dropping it would return a plausible-looking result
+    // set that quietly ignored what the caller asked for.
+    if (hasIndex != hasQuery)
+      throw new IllegalArgumentException(
+          "'fulltextIndexName' and 'fulltextQuery' must be supplied together. Give both to add the full-text leg, "
+              + "or neither to search without it.");
+
+    final TypeIndex typeIndex;
+    try {
+      typeIndex = FullTextSearch.resolveFullTextIndex(database, indexName);
+    } catch (final SchemaException e) {
+      throw new IllegalArgumentException("Full-text index '" + indexName + "' does not exist. Available full-text "
+          + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);
+    } catch (final CommandExecutionException e) {
+      throw new IllegalArgumentException("Index '" + indexName + "' is not a full-text index. Available full-text "
+          + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);
+    }
+
+    final Map<RID, Float> hits = FullTextSearch.search(typeIndex, queryText, limit);
+    final List<Map.Entry<RID, Float>> ranked = new ArrayList<>(hits.entrySet());
+    // Score descending, tie-broken by RID so tied hits rank deterministically rather than by hash order.
+    ranked.sort(Map.Entry.<RID, Float>comparingByValue().reversed().thenComparing(Map.Entry::getKey));
+
+    final List<LegRow> rows = new ArrayList<>(ranked.size());
+    for (final Map.Entry<RID, Float> hit : ranked)
+      rows.add(new LegRow(hit.getKey(), hit.getValue().doubleValue()));
+
+    legs.put("fulltext", new JSONObject()
+        .put("indexName", typeIndex.getName())
+        .put("similarity", FullTextSearch.getSimilarity(typeIndex))
+        .put("count", rows.size()));
+    return rows;
+  }
+
+  private static float weightOf(final JSONObject args, final String legName, final float fallback) {
+    final JSONObject weights = args.getJSONObject("weights", null);
+    if (weights == null)
+      return fallback;
+    final double value = weights.getDouble(legName, fallback);
+    if (!Double.isFinite(value) || value < 0.0)
+      throw new IllegalArgumentException("weights." + legName + " must be a finite number that is not negative");
+    return (float) value;
+  }
+
+  /**
+   * Hands the materialized legs to the engine's fusion function and shapes its output. Fusion scoring
+   * lives entirely in {@code vector.fuse}; nothing here re-derives a rank contribution.
+   */
+  private static JSONArray fuse(final Database database, final List<Leg> legList, final String strategy, final int k,
+      final JsonSerializer serializer, final Map<RID, ExpansionInfo> expansion) {
+    final Map<String, Object> parameters = new LinkedHashMap<>();
+    final StringBuilder sql = new StringBuilder("SELECT expand(`vector.fuse`(");
+    final List<Float> weights = new ArrayList<>(legList.size());
+
+    for (int i = 0; i < legList.size(); i++) {
+      final Leg leg = legList.get(i);
+      final List<Map<String, Object>> rows = new ArrayList<>(leg.rows().size());
+      for (final LegRow row : leg.rows()) {
+        final Map<String, Object> entry = new LinkedHashMap<>(2);
+        // The RID must go in as a RID: the fusion function reads @rid as a RID or a record reference
+        // and silently drops any row whose @rid is a string.
+        entry.put("@rid", row.rid());
+        if (row.score() != null)
+          entry.put("score", row.score());
+        rows.add(entry);
+      }
+      final String name = "l" + i;
+      parameters.put(name, rows);
+      weights.add(leg.weight());
+      if (i > 0)
+        sql.append(", ");
+      sql.append(':').append(name);
+    }
+
+    final Map<String, Object> options = new LinkedHashMap<>();
+    options.put("fusion", strategy);
+    options.put("weights", weights);
+    options.put("limit", k);
+    parameters.put("opts", options);
+    sql.append(", :opts))");
+
+    final Map<RID, Set<String>> sources = new HashMap<>();
+    for (final Leg leg : legList)
+      for (final LegRow row : leg.rows())
+        sources.computeIfAbsent(row.rid(), r -> new LinkedHashSet<>()).add(leg.name());
+
+    final QueryEngine.AnalyzedQuery analyzed;
+    try {
+      analyzed = database.getQueryEngine("sql").analyze(sql.toString());
+    } catch (final RuntimeException e) {
+      throw invalidExpression("fusion", e);
+    }
+    if (!analyzed.isIdempotent())
+      throw new SecurityException("Generated hybrid fusion is not read-only");
+
+    final JSONArray results = new JSONArray();
+    try {
+      final ResultSet analyzedResultSet = analyzed.execute(parameters);
+      try (final ResultSet resultSet = analyzedResultSet != null
+          ? analyzedResultSet
+          : database.query("sql", sql.toString(), parameters)) {
+        while (resultSet.hasNext() && results.length() < k) {
+          final Result row = resultSet.next();
+          final RID rid = MCPVectorLeg.toRID(row.getProperty("@rid"));
+          if (rid == null)
+            continue;
+          if (!(row.getProperty("score") instanceof final Number score))
+            continue;
+          final Object record = row.getProperty("record");
+          final Document document = record instanceof final Document candidate ? candidate : lookup(database, rid);
+          if (document == null)
+            continue;
+
+          final JSONArray sourceNames = new JSONArray();
+          for (final String name : sources.getOrDefault(rid, Set.of()))
+            sourceNames.put(name);
+
+          final JSONObject result = new JSONObject()
+              .put("rid", rid.toString())
+              .put("fusedScore", score)
+              .put("sources", sourceNames)
+              .put("properties", serializer.serializeDocument(document));
+
+          final ExpansionInfo info = expansion.get(rid);
+          if (info != null) {
+            result.put("depth", info.depth());
+            final JSONArray path = new JSONArray();
+            for (final RID step : info.path())
+              path.put(step.toString());
+            result.put("path", path);
+          }
+          results.put(result);
+        }
+      }
+    } catch (final SecurityException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      throw invalidExpression("fusion", e);
+    }
+    return results;
+  }
+
+  private static String strategyOf(final JSONObject args) {
+    final String raw = args.getString("fusionStrategy", "RRF");
+    final String strategy = raw.toUpperCase(Locale.ROOT);
+    if (!"RRF".equals(strategy) && !"DBSF".equals(strategy) && !"LINEAR".equals(strategy))
+      throw new IllegalArgumentException(
+          "Unknown fusionStrategy '" + raw + "'. Allowed: RRF, DBSF, LINEAR");
+    return strategy;
   }
 
   private static Document lookup(final Database database, final RID rid) {
