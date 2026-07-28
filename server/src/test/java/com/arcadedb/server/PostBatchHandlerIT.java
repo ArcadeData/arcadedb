@@ -574,6 +574,45 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * A load split across requests keeps one counter, so the second payload starts where the first stopped:
+   * {@code ordinalBase} tells the server where its numbering begins. This is what lets RemoteGraphBatch, whose
+   * counter spans every flush, use ordinal mode.
+   */
+  @Test
+  void ordinalBaseContinuesTheNumberingOfAnEarlierRequest() throws Exception {
+    testEachServer(serverIndex -> {
+      final String first = """
+          {"@type":"vertex","@class":"V1","id":840000}
+          {"@type":"vertex","@class":"V1","id":840001}
+          """;
+      final JSONObject result = postBatch(serverIndex, first, "application/x-ndjson", "refMode=ordinal");
+      assertThat(result.getJSONObject("idMapping").keySet()).containsExactlyInAnyOrder("0", "1");
+
+      // Second request: its own vertices are numbered from 2, and the edge points back at vertex 0 by RID.
+      final String firstRid = result.getJSONObject("idMapping").getString("0");
+      final String second = "{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":2,\"id\":840002}\n"
+          + "{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":2,\"@to\":\"" + firstRid + "\"}\n";
+
+      final JSONObject result2 = postBatch(serverIndex, second, "application/x-ndjson",
+          "refMode=ordinal&ordinalBase=2");
+      assertThat(result2.getInt("verticesCreated")).isEqualTo(1);
+      assertThat(result2.getInt("edgesCreated")).isEqualTo(1);
+      assertThat(result2.getJSONObject("idMapping").keySet()).containsExactly("2");
+
+      final JSONObject query = executeCommand(serverIndex, "sql",
+          "SELECT out('E1').id as target FROM V1 WHERE id = 840002");
+      assertThat(query.getJSONObject("result").getJSONArray("records").getJSONObject(0).getJSONArray("target")
+          .getInt(0)).isEqualTo(840000);
+
+      // A position that belongs to the earlier request cannot be resolved here: it must come as a RID.
+      final String dangling = "{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":3,\"id\":840003}\n"
+          + "{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":3,\"@to\":0}\n";
+      assertThat(postBatchError(serverIndex, dangling, "refMode=ordinal&ordinalBase=3").getString("error"))
+          .contains("earlier request");
+    });
+  }
+
   @Test
   void ordinalModeRejectsWhatItCannotResolve() throws Exception {
     testEachServer(serverIndex -> {

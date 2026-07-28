@@ -27,6 +27,11 @@ import java.util.Arrays;
  * {@code 1}, and an edge points at them with {@code "@from": 0} (the {@code v0} form our own client emits is
  * accepted too).
  * <p>
+ * A client that splits one logical load into several requests keeps a single counter across all of them, so the
+ * payload of the second request starts at a position that is not 0. {@code ordinalBase} declares where it starts;
+ * everything below it belongs to an earlier request and has to be referenced by RID, which is what the client
+ * already does for the vertices it has resolved.
+ * <p>
  * This is the shape a bulk load wants (issue #5470). There is no key to store and nothing to hash or compare: the
  * mapping is two primitive arrays indexed by the ordinal, so it costs <b>12 bytes per vertex</b> against ~87 for an
  * arbitrary temporary id (~190MB instead of ~1.4GB for 16M vertices), and resolving an edge is an array read
@@ -42,14 +47,16 @@ public class OrdinalVertexRefResolver implements VertexRefResolver {
 
   private static final int DEFAULT_CAPACITY = 4_096;
 
-  private int[]  bucketIds;
-  private long[] positions;
-  private int    size;
+  private final long   ordinalBase;
+  private       int[]  bucketIds;
+  private       long[] positions;
+  private       int    size;
 
-  public OrdinalVertexRefResolver(final int expectedVertices) {
+  public OrdinalVertexRefResolver(final int expectedVertices, final long ordinalBase) {
     final int capacity = expectedVertices > 0 ? expectedVertices : DEFAULT_CAPACITY;
     bucketIds = new int[capacity];
     positions = new long[capacity];
+    this.ordinalBase = ordinalBase;
   }
 
   @Override
@@ -72,13 +79,19 @@ public class OrdinalVertexRefResolver implements VertexRefResolver {
 
   @Override
   public RID get(final String ref, final int lineNumber) {
-    final int ordinal = parseOrdinal(ref, lineNumber);
-    if (ordinal >= size)
-      throw new IllegalArgumentException("Reference '" + ref + "' at line " + lineNumber + " points at vertex number "
-          + ordinal + " but only " + size + " vertices were loaded before it. Vertices must appear before the edges "
-          + "that reference them");
+    final long local = parseOrdinal(ref, lineNumber) - ordinalBase;
 
-    return new RID(bucketIds[ordinal], positions[ordinal]);
+    if (local < 0)
+      throw new IllegalArgumentException("Reference '" + ref + "' at line " + lineNumber + " points at a vertex of an "
+          + "earlier request: this payload starts at position " + ordinalBase + ", so anything before it has to be "
+          + "referenced by RID (#bucket:position)");
+
+    if (local >= size)
+      throw new IllegalArgumentException("Reference '" + ref + "' at line " + lineNumber + " points at vertex number "
+          + (ordinalBase + local) + " but only " + size + " vertices were loaded before it. Vertices must appear "
+          + "before the edges that reference them");
+
+    return new RID(bucketIds[(int) local], positions[(int) local]);
   }
 
   @Override
@@ -87,11 +100,11 @@ public class OrdinalVertexRefResolver implements VertexRefResolver {
       // The position in the payload is the id: declaring it is optional.
       return;
 
-    final int declared = parseOrdinal(tempId, lineNumber);
-    if (declared != ordinal)
+    final long declared = parseOrdinal(tempId, lineNumber);
+    if (declared != ordinalBase + ordinal)
       throw new IllegalArgumentException("Vertex at line " + lineNumber + " declares @id '" + tempId
-          + "' but with refMode=ordinal the vertices are numbered in payload order: expected '" + ordinal
-          + "' or no @id at all");
+          + "' but with refMode=ordinal the vertices are numbered in payload order: expected '"
+          + (ordinalBase + ordinal) + "' or no @id at all");
   }
 
   @Override
@@ -112,20 +125,20 @@ public class OrdinalVertexRefResolver implements VertexRefResolver {
   @Override
   public void forEach(final EntryConsumer consumer) {
     for (int i = 0; i < size; i++)
-      consumer.accept(Integer.toString(i), new RID(bucketIds[i], positions[i]));
+      consumer.accept(Long.toString(ordinalBase + i), new RID(bucketIds[i], positions[i]));
   }
 
   /**
    * Parses a vertex position, accepting both the bare number and the {@code v<number>} form that
    * {@code RemoteGraphBatch} generates.
    */
-  private static int parseOrdinal(final String ref, final int lineNumber) {
+  private static long parseOrdinal(final String ref, final int lineNumber) {
     final int start = !ref.isEmpty() && (ref.charAt(0) == 'v' || ref.charAt(0) == 'V') ? 1 : 0;
 
     if (start == ref.length())
       throw notAnOrdinal(ref, lineNumber);
 
-    int ordinal = 0;
+    long ordinal = 0;
     for (int i = start; i < ref.length(); i++) {
       final char c = ref.charAt(i);
       if (c < '0' || c > '9')

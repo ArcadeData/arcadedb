@@ -118,6 +118,10 @@ import java.util.logging.Level;
  *   the last edge is written (issue #5470)
  * - expectedVertexCount (int, default 0): hint used to pre-size the vertex references, saving the copies of their
  *   growth. Only a hint: the payload may carry more
+ * - ordinalBase (long, default 0): with {@code refMode=ordinal}, the position of the FIRST vertex of this payload.
+ *   A client that splits one load into several requests keeps a single counter across all of them, so the second
+ *   request starts where the first stopped; positions below the base belong to an earlier request and have to be
+ *   referenced by RID
  */
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
@@ -524,11 +528,22 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       expectedVertices = Math.min(expectedVertices, MAX_PRESIZED_VERTICES);
     }
 
+    final String base = getQueryParameter(exchange, "ordinalBase");
+    long ordinalBase = 0;
+    if (base != null) {
+      ordinalBase = Long.parseLong(base);
+      if (ordinalBase < 0)
+        throw new IllegalArgumentException("ordinalBase cannot be negative, but was " + ordinalBase);
+    }
+
     final String refMode = getQueryParameter(exchange, "refMode");
-    if (refMode == null || refMode.isEmpty() || "id".equalsIgnoreCase(refMode))
+    if (refMode == null || refMode.isEmpty() || "id".equalsIgnoreCase(refMode)) {
+      if (base != null)
+        throw new IllegalArgumentException("ordinalBase only applies to refMode=ordinal");
       return new TempIdVertexRefResolver(expectedVertices);
+    }
     if ("ordinal".equalsIgnoreCase(refMode))
-      return new OrdinalVertexRefResolver(expectedVertices);
+      return new OrdinalVertexRefResolver(expectedVertices, ordinalBase);
 
     throw new IllegalArgumentException(
         "Invalid refMode '" + refMode + "': expected 'id' (edges reference the @id of a vertex) or 'ordinal' "
