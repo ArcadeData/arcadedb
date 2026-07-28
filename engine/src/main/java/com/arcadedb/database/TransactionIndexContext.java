@@ -350,10 +350,21 @@ public class TransactionIndexContext {
         if (associatedBucketId >= 0)
           modifiedFiles.add(associatedBucketId);
 
+        // Only the UNIQUE indexes of the type need the all-buckets fan-out (#5499). A unique index is
+        // partitioned by the record's bucket, so a colliding key can sit in ANY bucket's sub-index and
+        // checkUniqueIndexKeys has to read the whole polymorphic TypeIndex - exactly the set locked here -
+        // for the check to be atomic against a concurrent inserter. A NOTUNIQUE sibling enforces no such
+        // cross-bucket invariant and is never read by that check; the only sub-index it can WRITE is its
+        // own, and that one is already covered by the getFileIds() call above, which runs for every index
+        // this transaction registered an entry for. Locking the siblings too multiplied the per-commit lock
+        // set by the number of indexes on the type - 6 indexes x 32 buckets = 192 exclusive locks to insert
+        // one edge in the report that surfaced this - and serialised every writer against every other one
+        // regardless of which keys or buckets they touched.
         final DocumentType type = schema.getType(index.getTypeName());
         for (final TypeIndex typeIndex : type.getAllIndexes(true))
-          for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
-            modifiedFiles.add(idx.getFileId());
+          if (typeIndex.isUnique())
+            for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
+              modifiedFiles.add(idx.getFileId());
       } else if (associatedBucketId >= 0)
         modifiedFiles.add(associatedBucketId);
     }
