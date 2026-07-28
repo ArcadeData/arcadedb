@@ -28,6 +28,7 @@ import com.arcadedb.server.mcp.tools.ExecuteCommandTool;
 import com.arcadedb.server.mcp.tools.FullTextSearchTool;
 import com.arcadedb.server.mcp.tools.GetSchemaTool;
 import com.arcadedb.server.mcp.tools.GetServerSettingsTool;
+import com.arcadedb.server.mcp.tools.HybridSearchTool;
 import com.arcadedb.server.mcp.tools.ListDatabasesTool;
 import com.arcadedb.server.mcp.tools.ProfilerStartTool;
 import com.arcadedb.server.mcp.tools.ProfilerStatusTool;
@@ -113,6 +114,7 @@ public class MCPDispatcher {
     TOOLS_LIST.put(SampleRecordsTool.getDefinition());
     TOOLS_LIST.put(VectorSearchTool.getDefinition());
     TOOLS_LIST.put(FullTextSearchTool.getDefinition());
+    TOOLS_LIST.put(HybridSearchTool.getDefinition());
     TOOLS_LIST.put(UpsertEntityTool.getDefinition());
     TOOLS_LIST.put(UpsertRelationshipTool.getDefinition());
     TOOLS_LIST.put(ServerStatusTool.getDefinition());
@@ -286,6 +288,7 @@ public class MCPDispatcher {
         case "sample_records" -> SampleRecordsTool.execute(server, user, args, config);
         case "vector_search" -> VectorSearchTool.execute(server, user, args, config);
         case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
+        case "hybrid_search" -> HybridSearchTool.execute(server, user, args, config);
         case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
         case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);
         case "server_status" -> ServerStatusTool.execute(server, user, args, config);
@@ -416,6 +419,7 @@ public class MCPDispatcher {
           + result.getInt("sampledTypes", 0) + " type(s)";
       case "vector_search" -> result.getInt("count", 0) + " neighbor(s)";
       case "full_text_search" -> result.getInt("count", 0) + " hit(s)";
+      case "hybrid_search" -> result.getInt("count", 0) + " fused hit(s)";
       case "upsert_entity", "upsert_relationship" -> result.getInt("count", 0) + " record(s)";
       case "server_status" -> "ok";
       case "profiler_start" -> result.getString("status", "ok");

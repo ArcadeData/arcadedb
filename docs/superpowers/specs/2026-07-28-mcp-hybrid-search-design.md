@@ -246,6 +246,7 @@ from `get_schema`, the schema Resource, or a `full_text_search` error message.
   },
   "count": 10,
   "truncated": true,
+  "fused": true,
   "results": [
     { "rid": "#12:3", "fusedScore": 0.0325, "sources": ["vector","fulltext"],
       "properties": { } },
@@ -268,6 +269,11 @@ truncation describes a filled window, never index cardinality:
 - `legs.expand.truncated` is `expandedRowCount >= MAX_EXPANSION` - the traversal hit its fan-out cap,
   so the neighborhood was explored only partially and narrowing `edgeTypes` or `maxDepth` will give a
   more complete picture of the part that matters.
+
+`fused` reports whether fusion actually ran. `vector.fuse` requires at least two sources, so a call
+naming neither `fulltextQuery` nor `expand` cannot be fused: that response sets `fused` to false and
+its rows carry the vector leg's native `distance` (dense) or `score` (sparse) instead of `fusedScore`.
+Every other call sets `fused` to true and carries `fusedScore`.
 
 ## Caps
 

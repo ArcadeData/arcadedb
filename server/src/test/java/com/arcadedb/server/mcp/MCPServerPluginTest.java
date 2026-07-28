@@ -19,6 +19,7 @@
 package com.arcadedb.server.mcp;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -171,6 +172,67 @@ class MCPServerPluginTest extends BaseGraphServerTest {
           .set("weights", new float[] { 0.2f, 0.6f })
           .save();
     });
+  }
+
+  private void seedHybridGraph() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("McpHybridDoc"))
+      return;
+
+    db.transaction(() -> {
+      db.command("sql", "CREATE VERTEX TYPE McpHybridDoc BUCKETS 1");
+      db.command("sql", "CREATE PROPERTY McpHybridDoc.title STRING");
+      db.command("sql", "CREATE PROPERTY McpHybridDoc.content STRING");
+      db.command("sql", "CREATE PROPERTY McpHybridDoc.embedding ARRAY_OF_FLOATS");
+      db.command("sql", """
+          CREATE INDEX ON McpHybridDoc (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }
+          """);
+      db.command("sql", "CREATE INDEX ON McpHybridDoc (content) FULL_TEXT");
+      db.command("sql", "CREATE EDGE TYPE McpHybridCites");
+      db.command("sql", "CREATE EDGE TYPE McpHybridMentions");
+
+      // h0 is the nearest neighbor of the probe vector and the root of the citation chain.
+      // h5 is the strongest full-text match for 'gearbox' and is not reachable from h0 at all,
+      // so the full-text leg and the expansion leg contribute disjoint rows.
+      final MutableVertex h0 = db.newVertex("McpHybridDoc").set("title", "h0")
+          .set("content", "graph traversal over connected documents")
+          .set("embedding", new float[] { 1.0f, 0.0f, 0.0f }).save();
+      final MutableVertex h1 = db.newVertex("McpHybridDoc").set("title", "h1")
+          .set("content", "vector similarity ranking")
+          .set("embedding", new float[] { 0.0f, 1.0f, 0.0f }).save();
+      final MutableVertex h2 = db.newVertex("McpHybridDoc").set("title", "h2")
+          .set("content", "reciprocal rank fusion")
+          .set("embedding", new float[] { 0.0f, 0.0f, 1.0f }).save();
+      final MutableVertex h3 = db.newVertex("McpHybridDoc").set("title", "h3")
+          .set("content", "breadth first expansion")
+          .set("embedding", new float[] { 0.5f, 0.5f, 0.0f }).save();
+      final MutableVertex h4 = db.newVertex("McpHybridDoc").set("title", "h4")
+          .set("content", "unrelated mention target")
+          .set("embedding", new float[] { 0.0f, 0.5f, 0.5f }).save();
+      final MutableVertex h5 = db.newVertex("McpHybridDoc").set("title", "h5")
+          .set("content", "gearbox gearbox gearbox")
+          .set("embedding", new float[] { 0.1f, 0.1f, 0.9f }).save();
+
+      // Chain h0 -> h1 -> h2 -> h3, plus a shortcut h0 -> h2 so h2 is reachable two ways,
+      // plus h0 -> h4 on a different edge type so edge filtering is observable.
+      h0.newEdge("McpHybridCites", h1).save();
+      h1.newEdge("McpHybridCites", h2).save();
+      h2.newEdge("McpHybridCites", h3).save();
+      h0.newEdge("McpHybridCites", h2).save();
+      h0.newEdge("McpHybridMentions", h4).save();
+      // h5 is deliberately left unconnected.
+      assertThat(h5.getIdentity()).isNotNull();
+    });
+  }
+
+  private static JSONArray probeVector() {
+    return new JSONArray().put(1.0).put(0.0).put(0.0);
+  }
+
+  private static JSONObject payloadOf(final JSONObject response) {
+    assertThat(response.getBoolean("isError", true)).isFalse();
+    return new JSONObject(response.getJSONArray("content").getJSONObject(0).getString("text"));
   }
 
   /**
@@ -1754,6 +1816,56 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(response.getBoolean("isError", false)).isTrue();
     assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
         .contains("'indexName' is required");
+  }
+
+  @Test
+  void hybridSearchIsRegisteredInHttpTransport() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 90)
+        .put("method", "tools/list")
+        .put("params", new JSONObject()));
+
+    assertThat(toolNames(response)).contains("hybrid_search");
+  }
+
+  @Test
+  void hybridSearchVectorOnlyReturnsTheVectorLegUnfused() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("k", 3)));
+
+    assertThat(payload.getString("vectorIndexName")).isEqualTo("McpHybridDoc[embedding]");
+    assertThat(payload.getBoolean("fused")).isFalse();
+    assertThat(payload.getBoolean("sparse")).isFalse();
+    assertThat(payload.getString("scoring")).startsWith("distance_lower_is_better");
+    assertThat(payload.getInt("count")).isEqualTo(3);
+    assertThat(payload.getJSONObject("legs").getJSONObject("vector").getInt("count")).isGreaterThanOrEqualTo(3);
+
+    final JSONObject first = payload.getJSONArray("results").getJSONObject(0);
+    assertThat(first.getJSONObject("properties").getString("title")).isEqualTo("h0");
+    assertThat(first.getDouble("distance")).isGreaterThanOrEqualTo(0.0);
+    assertThat(first.has("fusedScore")).isFalse();
+    assertThat(first.getJSONArray("sources").getString(0)).isEqualTo("vector");
+  }
+
+  @Test
+  void hybridSearchRejectsOutOfRangeK() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("k", 0));
+
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'k' must be between 1 and 1000");
   }
 
   @Test
