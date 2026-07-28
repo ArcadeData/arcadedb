@@ -95,15 +95,10 @@ public final class MCPVectorLeg {
    */
   public static VectorLegQuery build(final Database database, final JSONObject args, final String indexNameField,
       final int limit) {
+    validateArguments(args, indexNameField);
     final String indexName = MCPToolUtils.requireString(args, indexNameField);
     final boolean sparse = args.getBoolean("sparse", false);
     final Integer efSearch = args.has("efSearch") ? args.getInt("efSearch") : null;
-    if (efSearch != null && efSearch < 1)
-      throw new IllegalArgumentException("'efSearch' must be at least 1");
-    if (sparse && efSearch != null)
-      throw new IllegalArgumentException("'efSearch' applies only to dense LSM_VECTOR indexes");
-    if (!sparse && args.has("queryIndices"))
-      throw new IllegalArgumentException("'queryIndices' requires sparse=true");
 
     final String filter = normalizeFilter(args.getString("filter", null));
     final ResolvedVectorIndex resolved = resolveIndex(database, indexName, sparse);

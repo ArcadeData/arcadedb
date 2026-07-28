@@ -32,8 +32,10 @@ import java.io.DataOutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -2127,10 +2129,21 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("fulltextIndexName", "McpHybridDoc[content]")
         .put("fulltextQuery", "gearbox")
         .put("fusionStrategy", "LINEAR")
-        .put("k", 5)));
+        .put("k", 6)));
 
     assertThat(payload.getString("fusionStrategy")).isEqualTo("LINEAR");
     assertThat(payload.getBoolean("fused")).isTrue();
+
+    final List<String> order = new ArrayList<>();
+    final JSONArray results = payload.getJSONArray("results");
+    for (int i = 0; i < results.length(); i++)
+      order.add(results.getJSONObject(i).getJSONObject("properties").getString("title"));
+
+    // h0's embedding is the probe vector exactly, so under a score-normalizing strategy it must not
+    // sink below the records furthest from the probe. It does exactly that if a dense distance is
+    // fused as though it were a similarity.
+    assertThat(order).contains("h0");
+    assertThat(order.indexOf("h0")).isLessThan(order.indexOf("h2"));
   }
 
   @Test

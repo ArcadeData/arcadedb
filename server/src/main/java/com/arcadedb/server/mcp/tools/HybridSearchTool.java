@@ -77,10 +77,13 @@ public class HybridSearchTool {
   }
 
   /**
-   * One fusion source: its display name, its rows in rank order, and the weight applied to every
-   * rank contribution it makes.
+   * One fusion source: its display name, its rows in rank order, the weight applied to every rank
+   * contribution it makes, and the key its score must be emitted under. The engine reads a value
+   * under 'score' as a similarity and only sign-flips one read under 'distance', so a leg whose
+   * native value is a distance must say so or its ranking inverts under the score-normalizing
+   * strategies.
    */
-  public record Leg(String name, List<LegRow> rows, float weight) {
+  public record Leg(String name, List<LegRow> rows, float weight, String scoreKey) {
   }
 
   /**
@@ -88,6 +91,10 @@ public class HybridSearchTool {
    * path back to that seed including the seed itself.
    */
   public record ExpansionInfo(int depth, List<RID> path) {
+  }
+
+  /** The full-text leg's ranked rows together with the type its index is declared on. */
+  private record FullTextLeg(List<LegRow> rows, String typeName) {
   }
 
   public static JSONObject getDefinition() {
@@ -201,12 +208,18 @@ public class HybridSearchTool {
     MCPVectorLeg.validateArguments(args, "vectorIndexName");
 
     final String strategy = strategyOf(args);
+    final JSONObject expandArgs = requireExpandObject(args);
     // The expansion leg ranks by traversal order and carries no score, which the score-normalizing
     // strategies cannot consume. Rejecting here names the conflict; letting it through would surface
     // as a parse-level complaint about a source the caller never wrote.
-    if (args.getJSONObject("expand", null) != null && !"RRF".equals(strategy))
+    if (expandArgs != null && !"RRF".equals(strategy))
       throw new IllegalArgumentException("fusionStrategy " + strategy + " needs a score on every row, but the graph "
           + "expansion leg is ranked by traversal order and has none. Use RRF, or drop 'expand'.");
+    // The remaining expand and weights checks need no schema, so they are reported here too, before
+    // the vector leg spends a search on a request that was going to be rejected anyway.
+    if (expandArgs != null)
+      validateExpand(expandArgs);
+    validateWeights(args);
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
@@ -218,7 +231,7 @@ public class HybridSearchTool {
     final JSONObject legs = new JSONObject()
         .put("vector", new JSONObject().put("count", vectorLeg.size()));
 
-    final List<LegRow> fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs);
+    final FullTextLeg fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs);
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
@@ -226,15 +239,16 @@ public class HybridSearchTool {
         .setUseCollectionSizeForEdges(false);
 
     final List<Leg> legList = new ArrayList<>(3);
-    legList.add(new Leg("vector", vectorLeg, weightOf(args, "vector", 1.0f)));
-    if (!fullTextLeg.isEmpty())
-      legList.add(new Leg("fulltext", fullTextLeg, weightOf(args, "fulltext", 1.0f)));
+    legList.add(new Leg("vector", vectorLeg, weightOf(args, "vector", 1.0f), vectorQuery.sparse() ? "score" : "distance"));
+    if (!fullTextLeg.rows().isEmpty())
+      legList.add(new Leg("fulltext", fullTextLeg.rows(), weightOf(args, "fulltext", 1.0f), "score"));
 
-    final JSONObject expandArgs = args.getJSONObject("expand", null);
     Map<RID, ExpansionInfo> expansionInfo = Map.of();
     if (expandArgs != null) {
       requireVertexType(database, vectorQuery.index().typeIndex().getTypeName());
-      final Expansion expansion = runExpansionLeg(database, expandArgs, collectSeeds(vectorLeg, fullTextLeg));
+      if (!fullTextLeg.rows().isEmpty())
+        requireVertexType(database, fullTextLeg.typeName());
+      final Expansion expansion = runExpansionLeg(database, expandArgs, collectSeeds(vectorLeg, fullTextLeg.rows()));
       expansionInfo = expansion.info();
       legs.put("expand", new JSONObject()
           .put("direction", expandArgs.getString("direction", "out"))
@@ -243,7 +257,7 @@ public class HybridSearchTool {
           .put("truncated", expansion.truncated())
           .put("count", expansion.rows().size()));
       if (!expansion.rows().isEmpty())
-        legList.add(new Leg("expand", expansion.rows(), weightOf(args, "expand", 0.5f)));
+        legList.add(new Leg("expand", expansion.rows(), weightOf(args, "expand", 0.5f), "score"));
     }
 
     final JSONObject response = new JSONObject()
@@ -299,6 +313,59 @@ public class HybridSearchTool {
   }
 
   /**
+   * Reads 'expand' as a JSON object, or null when the caller omitted it. A present but non-object
+   * value (e.g. an array) would otherwise reach the underlying JSON library as an unguarded cast and
+   * surface as an opaque parser error instead of naming the argument that is wrong.
+   */
+  private static JSONObject requireExpandObject(final JSONObject args) {
+    final Object raw = args.opt("expand");
+    if (raw == null)
+      return null;
+    if (!(raw instanceof final JSONObject expand))
+      throw new IllegalArgumentException("'expand' must be an object with optional edgeTypes, direction, and maxDepth");
+    return expand;
+  }
+
+  /**
+   * Validates the expand fields that need no schema access: maxDepth within the server cap and a
+   * recognized direction. The single source both the early, pre-database check and the leg itself
+   * call, so the rule can never drift between the two call sites.
+   */
+  private static void validateExpand(final JSONObject expandArgs) {
+    final int maxDepth = expandArgs.getInt("maxDepth", 1);
+    if (maxDepth < 1 || maxDepth > MAX_DEPTH)
+      throw new IllegalArgumentException(
+          "expand.maxDepth must be between 1 and " + MAX_DEPTH + ", got " + maxDepth);
+
+    final String direction = expandArgs.getString("direction", "out");
+    if (!"out".equals(direction) && !"in".equals(direction) && !"both".equals(direction))
+      throw new IllegalArgumentException(
+          "expand.direction must be one of out, in, both, got '" + direction + "'");
+  }
+
+  /**
+   * Validates the weights map before any I/O: every key must name one of the three legs, and every
+   * supplied value must be finite and not negative. An unrecognized key would otherwise be silently
+   * ignored and the request would run at default weights with no sign the caller's override never
+   * took effect.
+   */
+  private static void validateWeights(final JSONObject args) {
+    final JSONObject weights = args.getJSONObject("weights", null);
+    if (weights == null)
+      return;
+    for (final String key : weights.keySet())
+      if (!"vector".equals(key) && !"fulltext".equals(key) && !"expand".equals(key))
+        throw new IllegalArgumentException("Unknown weights key '" + key + "'. Allowed: vector, fulltext, expand");
+    for (final String legName : List.of("vector", "fulltext", "expand")) {
+      if (!weights.has(legName))
+        continue;
+      final double value = weights.getDouble(legName, 0.0);
+      if (!Double.isFinite(value) || value < 0.0)
+        throw new IllegalArgumentException("weights." + legName + " must be a finite number that is not negative");
+    }
+  }
+
+  /**
    * Walks outward from the seeds and returns the nodes found, ranked by breadth-first discovery order.
    * <p>
    * The rows carry no score. Breadth-first order already encodes "closer to a retrieved record ranks
@@ -310,16 +377,9 @@ public class HybridSearchTool {
    */
   private static Expansion runExpansionLeg(final Database database, final JSONObject expandArgs,
       final List<RID> seeds) {
+    validateExpand(expandArgs);
     final int maxDepth = expandArgs.getInt("maxDepth", 1);
-    if (maxDepth < 1 || maxDepth > MAX_DEPTH)
-      throw new IllegalArgumentException(
-          "expand.maxDepth must be between 1 and " + MAX_DEPTH + ", got " + maxDepth);
-
     final String direction = expandArgs.getString("direction", "out");
-    if (!"out".equals(direction) && !"in".equals(direction) && !"both".equals(direction))
-      throw new IllegalArgumentException(
-          "expand.direction must be one of out, in, both, got '" + direction + "'");
-
     final List<String> edgeTypes = validatedEdgeTypes(database, expandArgs.getJSONArray("edgeTypes", null));
 
     if (seeds.isEmpty())
@@ -340,9 +400,10 @@ public class HybridSearchTool {
       sql.append(seeds.get(i).toString());
     }
     // The LIMIT applies inside the traversal, before the outer depth filter removes the seeds, so the
-    // seeds consume slots and the budget must cover them or the last expanded rows are lost.
+    // budget must cover the seeds the filter discards, plus one row beyond the cap so exhaustion (the
+    // stream ends exactly at the cap) can be distinguished from truncation (a row remains beyond it).
     sql.append("] MAXDEPTH ").append(maxDepth)
-        .append(" LIMIT ").append(seeds.size() + MAX_EXPANSION)
+        .append(" LIMIT ").append(seeds.size() + MAX_EXPANSION + 1)
         .append(" STRATEGY BREADTH_FIRST) WHERE $depth > 0");
 
     final QueryEngine.AnalyzedQuery analyzed;
@@ -432,20 +493,18 @@ public class HybridSearchTool {
   }
 
   /**
-   * Picks the records the expansion walks out from: every retrieval hit, in rank order, vector leg
-   * first, capped so a wide retrieval cannot turn into an unbounded traversal.
+   * Picks the records the expansion walks out from. The two retrieval legs are interleaved rather
+   * than concatenated: at a large enough k the vector leg alone would otherwise fill the seed cap
+   * and the full-text leg would never seed a traversal at all.
    */
-  private static List<RID> collectSeeds(final List<LegRow> vectorLeg, final List<LegRow> fullTextLeg) {
+  static List<RID> collectSeeds(final List<LegRow> vectorLeg, final List<LegRow> fullTextLeg) {
     final Set<RID> seeds = new LinkedHashSet<>();
-    for (final LegRow row : vectorLeg) {
-      if (seeds.size() >= MAX_SEEDS)
-        break;
-      seeds.add(row.rid());
-    }
-    for (final LegRow row : fullTextLeg) {
-      if (seeds.size() >= MAX_SEEDS)
-        break;
-      seeds.add(row.rid());
+    final int longest = Math.max(vectorLeg.size(), fullTextLeg.size());
+    for (int i = 0; i < longest && seeds.size() < MAX_SEEDS; i++) {
+      if (i < vectorLeg.size())
+        seeds.add(vectorLeg.get(i).rid());
+      if (seeds.size() < MAX_SEEDS && i < fullTextLeg.size())
+        seeds.add(fullTextLeg.get(i).rid());
     }
     return new ArrayList<>(seeds);
   }
@@ -499,7 +558,7 @@ public class HybridSearchTool {
     return rows;
   }
 
-  private static List<LegRow> runFullTextLeg(final Database database, final JSONObject args, final int limit,
+  private static FullTextLeg runFullTextLeg(final Database database, final JSONObject args, final int limit,
       final JSONObject legs) {
     final String indexName = args.getString("fulltextIndexName", null);
     final String queryText = args.getString("fulltextQuery", null);
@@ -507,7 +566,7 @@ public class HybridSearchTool {
     final boolean hasQuery = queryText != null && !queryText.isBlank();
 
     if (!hasIndex && !hasQuery)
-      return List.of();
+      return new FullTextLeg(List.of(), null);
     // Half a leg is always a mistake, and silently dropping it would return a plausible-looking result
     // set that quietly ignored what the caller asked for.
     if (hasIndex != hasQuery)
@@ -539,17 +598,18 @@ public class HybridSearchTool {
         .put("indexName", typeIndex.getName())
         .put("similarity", FullTextSearch.getSimilarity(typeIndex))
         .put("count", rows.size()));
-    return rows;
+    return new FullTextLeg(rows, typeIndex.getTypeName());
   }
 
+  /**
+   * Reads a leg's weight. {@link #validateWeights} has already rejected an unknown key or an invalid
+   * value by the time this runs, so this is a plain lookup.
+   */
   private static float weightOf(final JSONObject args, final String legName, final float fallback) {
     final JSONObject weights = args.getJSONObject("weights", null);
     if (weights == null)
       return fallback;
-    final double value = weights.getDouble(legName, fallback);
-    if (!Double.isFinite(value) || value < 0.0)
-      throw new IllegalArgumentException("weights." + legName + " must be a finite number that is not negative");
-    return (float) value;
+    return (float) weights.getDouble(legName, fallback);
   }
 
   /**
@@ -571,7 +631,7 @@ public class HybridSearchTool {
         // and silently drops any row whose @rid is a string.
         entry.put("@rid", row.rid());
         if (row.score() != null)
-          entry.put("score", row.score());
+          entry.put(leg.scoreKey(), row.score());
         rows.add(entry);
       }
       final String name = "l" + i;
