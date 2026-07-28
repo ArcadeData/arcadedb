@@ -1955,6 +1955,43 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchRejectsANonNumericWeight() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject response = callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("weights", new JSONObject().put("vector", "abc"))
+        .put("k", 3));
+
+    // A wrong-typed weight must be reported by the tool's own validation, not by the JSON layer's
+    // parse failure, which names neither the argument nor the rule it broke.
+    assertThat(response.getBoolean("isError", false)).isTrue();
+    assertThat(response.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("weights.vector").contains("finite number");
+  }
+
+  @Test
+  void hybridSearchReportsTheSeedCountItActuallyUsed() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("filter", "title = 'h0'")
+        .put("expand", new JSONObject().put("maxDepth", 1))
+        .put("k", 10)));
+
+    final JSONObject expand = payload.getJSONObject("legs").getJSONObject("expand");
+    // The filter leaves exactly one seed, so the reported count is checkable rather than incidental.
+    // seedsTruncated is derived from the same cap that HybridSearchSeedsTest pins directly; this
+    // fixture is far too small to drive it true, so it is not asserted here.
+    assertThat(expand.getInt("seedCount")).isEqualTo(1);
+  }
+
+  @Test
   void hybridSearchExpandsAlongTheGraphAndReportsPaths() throws Exception {
     seedHybridGraph();
 

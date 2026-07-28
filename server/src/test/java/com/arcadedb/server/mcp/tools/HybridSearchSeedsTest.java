@@ -43,13 +43,15 @@ class HybridSearchSeedsTest {
   }
 
   @Test
-  void seedListNeverExceedsTheCap() {
+  void seedListFillsExactlyToTheCap() {
     final List<LegRow> vectorLeg = rowsFor(1, HybridSearchTool.MAX_SEEDS * 2);
     final List<LegRow> fullTextLeg = rowsFor(2, HybridSearchTool.MAX_SEEDS * 2);
 
     final List<RID> seeds = HybridSearchTool.collectSeeds(vectorLeg, fullTextLeg);
 
-    assertThat(seeds.size()).isLessThanOrEqualTo(HybridSearchTool.MAX_SEEDS);
+    // Both legs offer far more than the cap, so the result must sit exactly on it. Asserting only an
+    // upper bound would hold just as well for an empty list and prove nothing about the cap.
+    assertThat(seeds.size()).isEqualTo(HybridSearchTool.MAX_SEEDS);
   }
 
   @Test

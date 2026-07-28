@@ -248,13 +248,18 @@ public class HybridSearchTool {
       requireVertexType(database, vectorQuery.index().typeIndex().getTypeName());
       if (!fullTextLeg.rows().isEmpty())
         requireVertexType(database, fullTextLeg.typeName());
-      final Expansion expansion = runExpansionLeg(database, expandArgs, collectSeeds(vectorLeg, fullTextLeg.rows()));
+      final List<RID> seeds = collectSeeds(vectorLeg, fullTextLeg.rows());
+      final Expansion expansion = runExpansionLeg(database, expandArgs, seeds);
       expansionInfo = expansion.info();
       legs.put("expand", new JSONObject()
           .put("direction", expandArgs.getString("direction", "out"))
           .put("edgeTypes", expandArgs.getJSONArray("edgeTypes", new JSONArray()))
           .put("maxDepth", expandArgs.getInt("maxDepth", 1))
           .put("truncated", expansion.truncated())
+          // The seed budget is reported alongside the fan-out budget. A thin neighborhood otherwise
+          // reads the same whether the graph was sparse or the retrieval legs simply out-ran the cap.
+          .put("seedCount", seeds.size())
+          .put("seedsTruncated", seeds.size() >= MAX_SEEDS)
           .put("count", expansion.rows().size()));
       if (!expansion.rows().isEmpty())
         legList.add(new Leg("expand", expansion.rows(), weightOf(args, "expand", 0.5f), "score"));
@@ -363,8 +368,10 @@ public class HybridSearchTool {
     for (final String legName : List.of("vector", "fulltext", "expand")) {
       if (!weights.has(legName))
         continue;
-      final double value = weights.getDouble(legName, 0.0);
-      if (!Double.isFinite(value) || value < 0.0)
+      // The type is checked before the value is read: reading a non-numeric weight straight through
+      // surfaces the JSON layer's own parse failure, which names neither the argument nor the rule.
+      if (!(weights.opt(legName) instanceof final Number number) || !Double.isFinite(number.doubleValue())
+          || number.doubleValue() < 0.0)
         throw new IllegalArgumentException("weights." + legName + " must be a finite number that is not negative");
     }
   }
