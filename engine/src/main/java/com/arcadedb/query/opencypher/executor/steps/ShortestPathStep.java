@@ -57,6 +57,10 @@ import java.util.Set;
  * - MATCH p = allShortestPaths((a)-[:KNOWS*]-(b))
  * <p>
  * Uses the existing SQLFunctionShortestPath for path computation.
+ * <p>
+ * Relationship constraints honoured on every hop: the type list, the direction, the inline property map
+ * and the inline WHERE predicate. The {@code *min..max} hop bounds are NOT enforced - every traversal here
+ * runs unbounded until it reaches the target - so {@code [:LINK*1..3]} currently behaves as {@code [:LINK*]}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

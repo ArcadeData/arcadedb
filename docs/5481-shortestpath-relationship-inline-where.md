@@ -69,6 +69,24 @@ https://github.com/ArcadeData/arcadedb/pull/5487
 | 2. `allShortestPaths()` in expression position returns one path while the `MATCH` form returns all co-shortest paths | No change - intentional. The expression form has always returned a single path; this PR only adds constraint enforcement and deliberately leaves cardinality untouched. Changing it belongs in its own issue. |
 | 3. `matchesProperties` duplicates the numeric-coercion rules of `GraphTraverser.matchesPropertyFilter` | Applied. Extracted `GraphTraverser.matchesPropertyFilter(Edge, Map)` as a static helper; the existing protected instance method delegates to it, and `EdgeConstraint` calls it. One definition now serves the variable-length MATCH traversers and both `shortestPath` evaluators. |
 
+### Cycle 2 - head `315b3533`
+
+`claude[bot]` re-reviewed: "Looks good to merge", no blocking findings. `gemini-code-assist` again did
+not respond inside the 15-minute window, so the loop ends on a reviewer timeout rather than a clean
+two-bot approval.
+
+| Finding | Outcome |
+|---|---|
+| 1. `*min..max` hop bounds are ignored by every `shortestPath` traversal, so the `*1..3` in the new tests is decorative | Documented. Added the invariant to the `ShortestPathStep` class Javadoc. Pre-existing (`SQLFunctionShortestPath` and the #5096 filtered path behave the same), out of scope here - worth a follow-up issue for actual bound enforcement. |
+| 2. `longValue()` coercion means `{w: 1.5}` compares as `1`, so the property map and the inline `WHERE` can disagree on fractional numerics | No change. Carried over verbatim by the extraction, not introduced here. Changing the coercion would alter variable-length MATCH semantics too. |
+| 3. `EdgeConstraint` reuses a mutable evaluation row | No change needed - confirmed safe, the contract is documented on the class. |
+| 4. Expression-form `allShortestPaths` cardinality | No change - agreed it belongs in a separate issue. |
+
+## Follow-up candidates (not filed)
+
+- `shortestPath()` / `allShortestPaths()` ignore the `*min..max` hop bounds on every path.
+- `allShortestPaths()` in expression position returns a single path instead of every co-shortest path.
+
 ## Test results
 
 `mvn test -Dtest='*ShortestPath*,*Cypher*,*OpenCypher*,*Traverse*,*Traversal*'` in `engine`:
