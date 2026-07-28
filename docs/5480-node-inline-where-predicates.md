@@ -113,22 +113,26 @@ https://github.com/ArcadeData/arcadedb/pull/5486
      reviewer flagged it as a non-regression; that evaluator is issue #5481, fixed separately.
 - `gemini-code-assist`: did not respond within the 15-minute per-cycle window.
 
-### Cycle 2 - head after the review fixes
+### Cycle 2 - head `1af2fe5f`
 
-- Pushed the two applied items above plus the extra variable-length test. Reviewer outcome for this
-  head is appended below once the bots report.
+- Pushed the two applied items above plus the extra variable-length test.
+- `claude[bot]`: re-reviewed, **no blocking items**. Confirmed the double-evaluation guard, the
+  allocation-free predicate-free path and the row hoisting. Two minor points: the same-hop
+  relationship-reference divergence recorded below (agreed it deserves its own issue), and a stale
+  test count in the PR description (corrected to 10).
+- `gemini-code-assist`: did not respond within the 15-minute per-cycle window, as in cycle 1.
 
 ## Deferred items
-
-Recorded in the (uncommitted) session note `docs/review-deferred-97ab46ec.md`:
 
 - A node inline predicate that references the relationship variable of the same hop, e.g.
   `[(a)-[r:E]->(x:A WHERE x.v > r.w) | x]`, sees `r` unbound on the comprehension path, because the
   evaluation row is copied from the bindings visible before the hop. The equivalent `MATCH`
   spelling hoists the predicate into the clause `WHERE`, where `r` is bound, so the two spellings
   can disagree for this shape. Out of scope for #5480 (the predicate being dropped entirely) and it
-  needs its own triage, including what `r` should mean on a variable-length hop. Worth a separate
-  issue.
+  needs its own triage, including what `r` should mean on a variable-length hop. On the
+  fixed-length path the edge is already in hand at the `matchesEndPattern` call, so binding it into
+  the node evaluation row would be cheap; the variable-length path is the part that needs a
+  semantic decision. Worth a separate issue.
 
 ## Final state
 
