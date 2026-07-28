@@ -123,8 +123,9 @@ fix was applied.
 | # | Head | Review outcome | Applied |
 |---|---|---|---|
 | 1 | `1ef55c671` | LGTM, two non-blocking observations | Scoped the `invalidPrincipalProfileIsRejectedWithoutPartialUpdate` claim with a comment - see below. Nothing else applied. |
+| 2 | `810a30832` | LGTM, two non-blocking observations | Nothing applied. One repeats cycle 1 and is agreed settled; the other rests on a wrong premise about `load()` - see below. |
 
-`gemini-code-assist` did not review this head; `claude[bot]` posted twice.
+`gemini-code-assist` did not review either head; `claude[bot]` posted three times.
 
 Observations raised and how they were resolved:
 
@@ -142,6 +143,23 @@ Observations raised and how they were resolved:
   parsed first. The behaviour predates this PR - the inline boolean block arrives with #5402 (`68d6596dc`) - so
   it is left alone here and the test now carries a comment stating exactly what it proves. Making `updateFrom`
   atomic for every field is the follow-up, tracked as #5482.
+
+- *`load()` now raises `IllegalArgumentException` where it used to raise `IllegalStateException`, so check
+  whether a caller keys on the type* (cycle 2). The conclusion - not a regression, no caller affected - is
+  right, but not for the reason given: neither exception ever escaped `load()`. Its `catch (Exception)` absorbs
+  both and falls back to defaults. Probed on `810a30832` against a `config/mcp-config.json` holding
+  `{"enabled": true, "principalProfiles": "rag"}`:
+
+  ```
+  load() threw nothing
+  WARNING  Corrupt MCP configuration file, using defaults:
+           MCP configuration field 'principalProfiles' must be an object
+  isEnabled() == false     // the whole file is discarded, including the valid "enabled": true
+  ```
+
+  So no caller can observe the exception type, and `ArcadeDBServer:314` - the only caller - invokes `load()`
+  bare. The one behavioural difference is the log line, which now names the offending field instead of
+  reporting Gson's `Not a JSON Object: "rag"`. Nothing applied.
 
 ## Known gaps
 
