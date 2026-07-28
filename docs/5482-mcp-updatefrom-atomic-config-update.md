@@ -43,8 +43,14 @@ on a non-array value. `MCPConfigHandler` catches only `IllegalArgumentException 
 2. New `stringListValue()` helper, mirroring the existing `objectValue()`: an explicitly null value still means
    "clear the list", any other non-array value is now an `IllegalArgumentException` and therefore a 400.
 
-The method stays `synchronized` and each field stays `volatile`, so a concurrent reader observes either the old
-or the new value and never a half-applied payload.
+The method stays `synchronized` and each field stays `volatile`. That is what guarantees a *rejected* payload
+commits nothing, and that a reader of any single field sees either the old value or the new one.
+
+It is deliberately not a cross-field snapshot. The commit block writes twelve fields one at a time and the
+getters are not synchronized, so a reader racing a *successful* update can still observe some fields updated and
+others not (`enabled` new while `allowedUsers` is still old, say). That is pre-existing behaviour, unchanged by
+this PR and out of its scope: closing it would mean holding every field in one immutable snapshot object swapped
+in by a single volatile write.
 
 ### Deliberately not done: the `booleanValue` exception type
 
@@ -77,6 +83,32 @@ it disclaimed is now general (acceptance criterion 3).
 Behaviour change for clients: a `POST /api/v1/mcp/config` carrying a non-array `allowedUsers` or
 `allowedOrigins` now returns 400 instead of 500. Every other rejection keeps the same status code, and every
 accepted payload behaves identically. No change to the on-disk format, and `load()` is untouched.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5515
+
+### Review cycles
+
+**Cycle 1 - `8ef50f23`.** `claude[bot]`: **LGTM**, no blocking findings. It confirmed the parse-then-assign
+shape composes with the existing merge helpers (they already build fresh maps via `new LinkedHashMap<>(current)`,
+so nothing is committed until the last throwing statement has run), and endorsed `stringListValue()` as
+consistent with the #5479 `objectValue()` pattern. Three non-blocking observations:
+
+1. *Applied.* The tracking doc claimed a concurrent reader "never [sees] a half-applied payload". That is true
+   per field but not across fields: the commit block writes twelve volatile fields one at a time and the getters
+   are unsynchronized, so a reader racing a **successful** update can see a mix. Verified against the source
+   (`isEnabled`, `isAllowReads`, `getAllowedUsers` are all unsynchronized) and corrected the wording above. No
+   code change: the behaviour is pre-existing and the rejected-payload guarantee this PR adds is unaffected.
+2. *No action.* Agreed the `booleanValue` / `IllegalArgumentException` inconsistency is correctly deferred.
+3. *No action.* Confirmed `stringListValue` keeping `array.getString(i)` preserves the prior coercion behaviour.
+
+`gemini-code-assist` did not review. It has been silent on every recent PR in this repository, so this is the
+expected outcome rather than a signal about the change.
+
+`codacy-production`: 0 new issues, 0 added complexity.
+
+**Cycle 2 - docs-only.** The observation-1 wording correction, carrying no source change.
 
 ## Follow-ups
 
