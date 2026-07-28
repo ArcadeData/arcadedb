@@ -36,6 +36,7 @@ import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
 import org.xnio.Options;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -67,7 +68,13 @@ import java.util.logging.Level;
  * the request that watchdog is therefore raised to {@code arcadedb.server.httpStreamingReadTimeout} instead of
  * {@code arcadedb.network.socketTimeout}, which still bounds every single blocking read and so keeps cutting off
  * a client that stops sending (issue #5470). A body that ends early is answered with HTTP 408 and the
- * partial-commit counts, never with a 200 carrying a truncated count.
+ * partial-commit counts, never with a 200 carrying a truncated count: both when the read fails outright and when
+ * the body simply stops before the announced {@code Content-Length}, which is what a fixed-length upload cut by a
+ * proxy looks like from here. The successful response carries {@code bytesRead} for the same reason.
+ * <p>
+ * Response: {@code verticesCreated}, {@code edgesCreated}, {@code elapsedMs}, {@code bytesRead} and, when temporary
+ * ids were used, {@code idMapping} - replaced by {@code idMappingOmitted} / {@code idMappingSize} past
+ * {@link #MAX_ID_MAPPING_IN_RESPONSE} entries, unless {@code idMapping=true} demands it.
  * <p>
  * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
  * failure mid-stream leaves earlier chunks durably committed. On a client-input error the response
@@ -99,11 +106,26 @@ import java.util.logging.Level;
  *   one transaction. On a replicated database that transaction becomes a single Raft entry, so this is the
  *   knob to lower when the server warns that a replicated entry approaches the maximum entry size
  *   (issue #5470); on an embedded/standalone database it only trades memory for throughput
+ * - idMapping (auto|true|false, default auto): whether the response echoes the temporary-id to RID mapping. See
+ *   {@link #echoIdMapping}
  */
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
-  private static final int        VERTEX_BATCH_SIZE = 10_000;
-  private static final HttpClient HTTP_CLIENT       = HttpClient.newHttpClient();
+  private static final int        VERTEX_BATCH_SIZE     = 10_000;
+  /**
+   * Above this many temporary ids the mapping is not echoed back. The response would otherwise hold a second full
+   * copy of the map, as JSON, in one string: a bulk load of millions of vertices turns the last step of a successful
+   * import into an OutOfMemoryError, and no client streaming that many records can consume a multi-GB object anyway
+   * (issue #5470).
+   */
+  private static final int        MAX_ID_MAPPING_IN_RESPONSE = 10_000;
+  /** Temporary ids mapped before the first heap warning; every following warning doubles the threshold. */
+  private static final int        ID_MAP_WARNING_THRESHOLD   = 250_000;
+  /** Order of magnitude of one {@code String -> RID} entry (key, RID and hash-map node) on a 64-bit JVM. */
+  private static final int        ID_MAP_ENTRY_BYTES         = 170;
+  /** How far the tail of a short body is drained before deciding it is a live client rather than a cut upload. */
+  private static final int        TRUNCATION_PROBE_BYTES     = 64 * 1024;
+  private static final HttpClient HTTP_CLIENT                = HttpClient.newHttpClient();
 
   public PostBatchHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -153,7 +175,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // UndertowInputStream captures the read timeout in effect at construction time and uses it to bound
     // every blocking read, so a client that stops sending is still cut off after
     // 'arcadedb.network.socketTimeout' while the asynchronous watchdog moves to the streaming budget.
-    final InputStream inputStream = exchange.getInputStream();
+    // The counter is what tells a body that ended early from one that ended (issue #5470): not every premature
+    // end of a request body surfaces as an IOException, and a load that silently stops half-way must never be
+    // answered with a 200.
+    final CountingInputStream inputStream = new CountingInputStream(exchange.getInputStream());
 
     // Applies to the forwarding path too: while the leader is busy the follower cannot drain the client
     // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
@@ -187,7 +212,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * {@link #execute} so the caller can restore the connection read timeout in a {@code finally} block.
    */
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
-      final boolean isCsv, final GraphBatch.Builder builder, final InputStream inputStream,
+      final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
       final Map<String, RID> tempIdMap, final long startTime, final int vertexBatchSize) throws Exception {
 
     long verticesCreated = 0;
@@ -202,8 +227,22 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       String currentTypeName = null;
       final List<Object[]> vertexPropsBatch = new ArrayList<>(vertexBatchSize);
       final List<String> vertexTempIds = new ArrayList<>(vertexBatchSize);
+      int nextIdMapWarning = ID_MAP_WARNING_THRESHOLD;
 
       while (stream.hasNext()) {
+        // The temporary-id map lives for the whole request: edges arriving at the end of the payload may reference
+        // any vertex loaded at the beginning, so nothing can be discarded early. Its size is therefore the memory
+        // ceiling of a streaming load, and a load big enough to hit it must say so in the log rather than die of an
+        // OutOfMemoryError that leaves no trace but a closed connection (issue #5470).
+        if (tempIdMap.size() >= nextIdMapWarning) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Batch load on database '%s' has resolved %d temporary ids so far, roughly %d MB of heap that cannot be "
+                  + "released before the end of the request. Make sure the server heap is sized for it, or split the "
+                  + "payload into several requests referencing the vertices by RID",
+              null, databaseName, tempIdMap.size(), (long) tempIdMap.size() * ID_MAP_ENTRY_BYTES / (1024 * 1024));
+          nextIdMapWarning *= 2;
+        }
+
         final BatchRecord rec = stream.next();
 
         if (rec.kind == BatchRecord.Kind.EDGE) {
@@ -261,6 +300,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // Downgrading a "do not retry" outcome to a retry-inviting 500 here would duplicate the very
       // committed chunks this change protects.
       final String message = e.getMessage() != null ? e.getMessage() : e.toString();
+
+      // A cut upload does not always look like an I/O error from up here: Undertow can hand the parser stale bytes
+      // from its own connection buffer once the peer is gone, which surfaces as a "malformed record" on a line the
+      // client never sent. Answering 400 there sends the user hunting through a file that is perfectly valid, so
+      // the missing bytes are checked first (issue #5470).
+      if (bodyEndedEarly(exchange, inputStream))
+        return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated,
+            "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
+                + " announced bytes were received, the last record read (" + message + ") is not part of the payload",
+            null);
+
       LogManager.instance().log(this, Level.WARNING,
           "Batch load on database '%s' failed after %d vertices and %d edges: %s",
           null, databaseName, verticesCreated, edgesCreated, message);
@@ -287,29 +337,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // reading (issue #5470). Never let this look like a completed load: reaching the end of the loop with a
       // truncated body would answer 200 with a partial count and the client would happily move on.
       final String message = e.getMessage() != null ? e.getMessage() : e.toString();
-      LogManager.instance().log(this, Level.WARNING,
-          "Batch load on database '%s' was interrupted after %d vertices and %d edges because the request body "
-              + "could not be read to the end: %s. If the server was busy (index compaction, replication of a large "
-              + "entry) raise '%s' (currently %d ms)",
-          null, databaseName, verticesCreated, edgesCreated, message,
-          GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT.getKey(),
-          httpServer.getServer().getConfiguration()
-              .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT));
-
-      final JSONObject error = new JSONObject();
-      error.put("error", "Request body was truncated after " + verticesCreated + " vertices and " + edgesCreated
-          + " edges: " + message);
-      error.put("exception", e.getClass().getName());
-      final String correlationId = getCorrelationId(exchange);
-      if (correlationId != null && !correlationId.isEmpty())
-        error.put("requestId", correlationId);
-      error.put("verticesCreated", verticesCreated);
-      error.put("edgesCreated", edgesCreated);
-      error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
-      // 408: the request was not fully received. The response often never reaches a client whose connection is
-      // already gone, but when it does it carries the counts needed to resume instead of restarting.
-      return new ExecutionResponse(408, error.toString());
+      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated, message, e.getClass().getName());
     }
+
+    // The stream ended without an error, but the client announced more than what arrived: a connection dropped
+    // between two chunks does not always surface as an IOException (a fixed-length body simply reaches EOF), and
+    // reporting 200 with a truncated count is the worst possible outcome - the client moves on believing the load
+    // completed.
+    if (bodyEndedEarly(exchange, inputStream))
+      return truncatedBody(exchange, databaseName, verticesCreated, edgesCreated,
+          "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
+              + " announced bytes were received", null);
 
     final long elapsed = System.currentTimeMillis() - startTime;
 
@@ -317,16 +355,139 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     result.put("verticesCreated", verticesCreated);
     result.put("edgesCreated", edgesCreated);
     result.put("elapsedMs", elapsed);
+    // How much of the upload the server actually consumed: on a chunked body there is nothing to compare it with
+    // server-side, so this is what lets a client verify that its whole file arrived (issue #5470).
+    result.put("bytesRead", inputStream.getBytesRead());
 
-    // Include temp ID mapping if any temp IDs were used
+    // Include temp ID mapping if any temp IDs were used, unless the load was too big for the mapping to be worth
+    // (or even possible to) send back - see MAX_ID_MAPPING_IN_RESPONSE and the 'idMapping' parameter.
     if (!tempIdMap.isEmpty()) {
-      final JSONObject mapping = new JSONObject();
-      for (final Map.Entry<String, RID> entry : tempIdMap.entrySet())
-        mapping.put(entry.getKey(), entry.getValue().toString());
-      result.put("idMapping", mapping);
+      if (echoIdMapping(exchange, tempIdMap.size())) {
+        final JSONObject mapping = new JSONObject();
+        for (final Map.Entry<String, RID> entry : tempIdMap.entrySet())
+          mapping.put(entry.getKey(), entry.getValue().toString());
+        result.put("idMapping", mapping);
+      } else {
+        result.put("idMappingOmitted", true);
+        result.put("idMappingSize", tempIdMap.size());
+      }
     }
 
     return new ExecutionResponse(200, result.toString());
+  }
+
+  /**
+   * Whether the request body provably stopped before the announced {@code Content-Length}, i.e. whether the load
+   * that just ended (successfully or on a malformed record) was working on a truncated payload.
+   * <p>
+   * Fewer bytes than announced is not enough on its own - a parse error also stops the reader early - so what is
+   * left of the stream is drained: reaching the end of it before the announced length proves the rest will never
+   * arrive. The drain is bounded because a genuinely malformed record can be followed by any amount of body the
+   * client is still sending; a truncated one is followed by at most what the server already has buffered. A chunked
+   * upload announces no length and is not checked here: it fails loudly by itself, because an unterminated chunked
+   * body IS an I/O error.
+   */
+  private boolean bodyEndedEarly(final HttpServerExchange exchange, final CountingInputStream inputStream) {
+    final long declaredLength = exchange.getRequestContentLength();
+    if (declaredLength < 0 || inputStream.getBytesRead() >= declaredLength
+        || exchange.getRequestHeaders().getFirst("Content-Encoding") != null)
+      return false;
+
+    final byte[] drain = new byte[8192];
+    long drained = 0;
+    try {
+      while (drained < TRUNCATION_PROBE_BYTES && inputStream.getBytesRead() < declaredLength) {
+        final int read = inputStream.read(drain, 0, drain.length);
+        if (read < 0)
+          return true;
+        drained += read;
+      }
+    } catch (final IOException e) {
+      // The connection is already gone: the announced bytes are not coming either way.
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether the temporary-id mapping is echoed back. {@code idMapping=auto} (the default) sends it only while it is
+   * small enough to be useful: a client that streams millions of vertices in one request cannot consume a mapping of
+   * the same size, and building it as one JSON string turns the last step of an otherwise successful import into an
+   * OutOfMemoryError (issue #5470). {@code idMapping=true} demands it whatever the size - which is what a client
+   * resolving edges across several requests (RemoteGraphBatch) needs - and {@code idMapping=false} never sends it.
+   */
+  private boolean echoIdMapping(final HttpServerExchange exchange, final int size) {
+    final String value = getQueryParameter(exchange, "idMapping");
+    if (value == null || value.isEmpty() || "auto".equalsIgnoreCase(value))
+      return size <= MAX_ID_MAPPING_IN_RESPONSE;
+    return Boolean.parseBoolean(value);
+  }
+
+  /**
+   * Answers a batch whose request body did not arrive in full with HTTP 408 and the partial-commit counters, so the
+   * client can resume instead of restarting - and never mistakes a half-loaded file for a completed load
+   * (issue #5470).
+   *
+   * @param exceptionClass class name of the I/O failure that cut the body, or {@code null} when the body simply
+   *                       ended before the announced length
+   */
+  private ExecutionResponse truncatedBody(final HttpServerExchange exchange, final String databaseName,
+      final long verticesCreated, final long edgesCreated, final String message, final String exceptionClass) {
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Batch load on database '%s' was interrupted after %d vertices and %d edges because the request body "
+            + "could not be read to the end: %s. If the server was busy (index compaction, replication of a large "
+            + "entry) raise '%s' (currently %d ms)",
+        null, databaseName, verticesCreated, edgesCreated, message,
+        GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT.getKey(),
+        httpServer.getServer().getConfiguration()
+            .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT));
+
+    final JSONObject error = new JSONObject();
+    error.put("error", "Request body was truncated after " + verticesCreated + " vertices and " + edgesCreated
+        + " edges: " + message);
+    if (exceptionClass != null)
+      error.put("exception", exceptionClass);
+    final String correlationId = getCorrelationId(exchange);
+    if (correlationId != null && !correlationId.isEmpty())
+      error.put("requestId", correlationId);
+    error.put("verticesCreated", verticesCreated);
+    error.put("edgesCreated", edgesCreated);
+    error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
+    // 408: the request was not fully received. The response often never reaches a client whose connection is
+    // already gone, but when it does it carries the counts needed to resume instead of restarting.
+    return new ExecutionResponse(408, error.toString());
+  }
+
+  /**
+   * Counts the bytes handed to the parser, so the handler can compare them with the announced {@code Content-Length}.
+   */
+  private static class CountingInputStream extends FilterInputStream {
+    private long bytesRead;
+
+    CountingInputStream(final InputStream in) {
+      super(in);
+    }
+
+    @Override
+    public int read() throws IOException {
+      final int read = super.read();
+      if (read >= 0)
+        ++bytesRead;
+      return read;
+    }
+
+    @Override
+    public int read(final byte[] b, final int off, final int len) throws IOException {
+      final int read = super.read(b, off, len);
+      if (read > 0)
+        bytesRead += read;
+      return read;
+    }
+
+    long getBytesRead() {
+      return bytesRead;
+    }
   }
 
   /**

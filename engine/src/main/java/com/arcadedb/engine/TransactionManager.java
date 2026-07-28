@@ -481,7 +481,22 @@ public class TransactionManager {
 
     LogManager.instance().log(this, Level.FINE, "- applying changes from txId=%d", null, tx.txId);
 
-    for (final WALFile.WALPage txPage : tx.pages) {
+    // One page can carry several segments in the same transaction, one per disjoint modified interval (issue #5470).
+    // They are written consecutively, so the run is gathered here and applied to a single page image: the version
+    // checks below then run once per page and the page reaches the disk once, exactly as with a single segment.
+    for (int s = 0; s < tx.pages.length; ) {
+      final WALFile.WALPage txPage = tx.pages[s];
+
+      final int firstSegment = s;
+      int lastSegment = s + 1;
+      while (lastSegment < tx.pages.length && tx.pages[lastSegment].fileId == txPage.fileId
+          && tx.pages[lastSegment].pageNumber == txPage.pageNumber
+          // Same target version: segments of one page always agree on it, while a hand-built entry that replays the
+          // same page at two versions (a partial replay) must keep going through the version checks one by one.
+          && tx.pages[lastSegment].currentPageVersion == txPage.currentPageVersion)
+        ++lastSegment;
+      s = lastSegment;
+
       final PaginatedComponentFile file;
 
       final PageId pageId = new PageId(database, txPage.fileId, txPage.pageNumber);
@@ -577,8 +592,11 @@ public class TransactionManager {
           // entire content region, so it is safe regardless of the gap; a partial one is rejected here
           // so the follower recovers via a full snapshot instead.
           final int deltaSize = txPage.changesTo - txPage.changesFrom + 1;
-          final boolean fullPage =
-              txPage.changesFrom == BasePage.PAGE_HEADER_SIZE && deltaSize == file.getPageSize() - BasePage.PAGE_HEADER_SIZE;
+          // A multi-segment page is by definition a partial delta (the gaps between its intervals were not shipped),
+          // so it never qualifies: forceApply entries are built page-at-a-time by the compaction serializer and
+          // always carry exactly one full-page segment.
+          final boolean fullPage = lastSegment - firstSegment == 1
+              && txPage.changesFrom == BasePage.PAGE_HEADER_SIZE && deltaSize == file.getPageSize() - BasePage.PAGE_HEADER_SIZE;
           if (!fullPage) {
             LogManager.instance().log(this, Level.SEVERE,
                 "Refusing forceApply of partial delta for page %s over a stale baseline (WAL v.%d, db v.%d) fileId=%d: bytes outside the delta range would stay stale while the version is forced forward. A full-page snapshot is required.",
@@ -597,8 +615,11 @@ public class TransactionManager {
 
         // IF VERSION IS THE SAME OR MAJOR, OVERWRITE THE PAGE
         final MutablePage modifiedPage = page.modify();
-        txPage.currentContent.rewind();
-        modifiedPage.writeByteArray(txPage.changesFrom - BasePage.PAGE_HEADER_SIZE, txPage.currentContent.getContent());
+        for (int k = firstSegment; k < lastSegment; ++k) {
+          final WALFile.WALPage segment = tx.pages[k];
+          segment.currentContent.rewind();
+          modifiedPage.writeByteArray(segment.changesFrom - BasePage.PAGE_HEADER_SIZE, segment.currentContent.getContent());
+        }
         modifiedPage.version = txPage.currentPageVersion;
         modifiedPage.setContentSize(txPage.currentPageSize);
         modifiedPage.updateMetadata();

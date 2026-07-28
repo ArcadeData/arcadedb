@@ -51,7 +51,12 @@ public class TrackableBinary extends Binary implements TrackableContent {
 
   public void move(final int startPosition, final int destPosition, final int length) {
     super.move(startPosition, destPosition, length);
-    updateModifiedRange(startPosition, destPosition + length);
+    if (length > 0)
+      // The bytes that change are the destination ones, so a move to the LEFT modifies from destPosition on. Marking
+      // from startPosition (what this did before) left the head of a left-shift untracked: harmless while the tracked
+      // range was the hull of everything the page touched, wrong now that the WAL ships the intervals themselves
+      // (issue #5470). Same accounting as MutablePage.move.
+      updateModifiedRange(Math.min(startPosition, destPosition), Math.max(startPosition, destPosition) + length - 1);
   }
 
   public Binary slice() {

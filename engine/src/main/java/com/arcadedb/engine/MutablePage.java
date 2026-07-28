@@ -34,9 +34,20 @@ import java.util.Arrays;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class MutablePage extends BasePage implements TrackableContent {
+  /**
+   * Maximum number of disjoint modified intervals tracked per page. Page layouts write at both ends (an LSM index
+   * page grows its sorted pointer array up from the header and its key/value content down from the tail; a bucket
+   * page does the same with its record pointer table), so two or three intervals cover the real cases. The extra
+   * slots absorb the occasional in-place update far from either end; past this budget the two closest intervals are
+   * merged, which only makes the tracking coarser (never wrong) and degrades at worst to the single-hull behavior
+   * this class had before issue #5470.
+   */
+  private static final int     MAX_MODIFIED_RANGES = 8;
   private static final byte[]  ZERO_BYTES_ARRAY;
-  private              int     modifiedRangeFrom = Integer.MAX_VALUE;
-  private              int     modifiedRangeTo   = -1;
+  // Sorted, disjoint and non-adjacent intervals as [from0,to0, from1,to1, ...]. One extra slot is kept free so an
+  // insertion can happen before the merge that puts the count back within budget.
+  private final        int[]   modifiedRanges      = new int[(MAX_MODIFIED_RANGES + 1) * 2];
+  private              int     modifiedRangeCount  = 0;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
@@ -192,9 +203,28 @@ public class MutablePage extends BasePage implements TrackableContent {
     return getPhysicalSize() - getContentSize();
   }
 
+  /**
+   * Returns the smallest interval that contains every modified byte, i.e. the hull of {@link #getModifiedRanges()}.
+   * Callers that must ship the changes (the WAL) use the individual intervals instead, because the hull of a page
+   * written at both ends covers the whole page (issue #5470).
+   */
   @Override
   public int[] getModifiedRange() {
-    return new int[] { modifiedRangeFrom, modifiedRangeTo };
+    if (modifiedRangeCount == 0)
+      return new int[] { Integer.MAX_VALUE, -1 };
+    return new int[] { modifiedRanges[0], modifiedRanges[modifiedRangeCount * 2 - 1] };
+  }
+
+  /**
+   * Returns the disjoint modified intervals as [from0,to0, from1,to1, ...] in ascending order, valid up to
+   * {@code 2 * }{@link #getModifiedRangeCount()}. The array is the live internal one: read it, never keep it.
+   */
+  public int[] getModifiedRanges() {
+    return modifiedRanges;
+  }
+
+  public int getModifiedRangeCount() {
+    return modifiedRangeCount;
   }
 
   @Override
@@ -203,10 +233,70 @@ public class MutablePage extends BasePage implements TrackableContent {
       throw new IllegalArgumentException(
           "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
 
-    if (start < modifiedRangeFrom)
-      modifiedRangeFrom = start;
-    if (end > modifiedRangeTo)
-      modifiedRangeTo = end;
+    if (modifiedRangeCount == 0) {
+      modifiedRanges[0] = start;
+      modifiedRanges[1] = end;
+      modifiedRangeCount = 1;
+      return;
+    }
+
+    // Locate the first interval that is not entirely before this one. Adjacency counts as an overlap: two intervals
+    // separated by nothing are cheaper to keep as one than to ship with a second 24-byte WAL segment header.
+    int i = 0;
+    while (i < modifiedRangeCount && modifiedRanges[i * 2 + 1] < start - 1)
+      ++i;
+
+    if (i == modifiedRangeCount || modifiedRanges[i * 2] > end + 1) {
+      insertModifiedRange(i, start, end);
+      return;
+    }
+
+    // Absorb interval i, then coalesce every following interval this write bridged over.
+    if (start < modifiedRanges[i * 2])
+      modifiedRanges[i * 2] = start;
+
+    int to = Math.max(modifiedRanges[i * 2 + 1], end);
+    int j = i + 1;
+    while (j < modifiedRangeCount && modifiedRanges[j * 2] <= to + 1) {
+      to = Math.max(to, modifiedRanges[j * 2 + 1]);
+      ++j;
+    }
+    modifiedRanges[i * 2 + 1] = to;
+
+    if (j > i + 1) {
+      System.arraycopy(modifiedRanges, j * 2, modifiedRanges, (i + 1) * 2, (modifiedRangeCount - j) * 2);
+      modifiedRangeCount -= j - i - 1;
+    }
+  }
+
+  /**
+   * Inserts a new interval at position {@code index}, keeping the array sorted. When the budget is exhausted the two
+   * closest intervals are merged: the gap between them is the only thing that gets shipped needlessly, so merging the
+   * smallest one loses the least.
+   */
+  private void insertModifiedRange(final int index, final int start, final int end) {
+    System.arraycopy(modifiedRanges, index * 2, modifiedRanges, (index + 1) * 2, (modifiedRangeCount - index) * 2);
+    modifiedRanges[index * 2] = start;
+    modifiedRanges[index * 2 + 1] = end;
+    ++modifiedRangeCount;
+
+    if (modifiedRangeCount <= MAX_MODIFIED_RANGES)
+      return;
+
+    int closest = 0;
+    int smallestGap = Integer.MAX_VALUE;
+    for (int k = 0; k < modifiedRangeCount - 1; ++k) {
+      final int gap = modifiedRanges[(k + 1) * 2] - modifiedRanges[k * 2 + 1];
+      if (gap < smallestGap) {
+        smallestGap = gap;
+        closest = k;
+      }
+    }
+
+    modifiedRanges[closest * 2 + 1] = modifiedRanges[(closest + 1) * 2 + 1];
+    System.arraycopy(modifiedRanges, (closest + 2) * 2, modifiedRanges, (closest + 1) * 2,
+        (modifiedRangeCount - closest - 2) * 2);
+    --modifiedRangeCount;
   }
 
   public WALFile getWALFile() {

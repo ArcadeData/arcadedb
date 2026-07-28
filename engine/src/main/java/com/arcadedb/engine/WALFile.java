@@ -317,62 +317,89 @@ public class WALFile extends LockContext {
     return -1;
   }
 
+  /**
+   * Serializes the changes of a transaction into the binary format shared by the WAL file and by the Raft entry that
+   * ships the transaction to the replicas.
+   * <p>
+   * A page contributes ONE SEGMENT PER DISJOINT MODIFIED INTERVAL, not one segment covering the hull of everything it
+   * touched (issue #5470). Page layouts write at both ends - an LSM index page appends its key/value content
+   * downwards from the tail while inserting the pointer into the sorted array that grows up from the header - so the
+   * hull of a page that received a handful of keys is the whole page. Charging the WAL a full 256KB index page (or a
+   * 64KB bucket page) per touched page made the size of a transaction a function of how many pages it touched
+   * rather than of how much data it wrote: on a replicated database a bulk load of small records produced tens of MB
+   * per Raft entry and hit the maximum entry size no matter how small the batch was made.
+   * <p>
+   * The reader is unchanged: segments are applied in order, and several segments of the same page simply carry the
+   * same target version - {@code TransactionManager.applyChanges} groups them and applies them to one page image.
+   */
   public static Binary writeTransactionToBuffer(final List<MutablePage> pages, final long txId) {
     // COMPUTE TOTAL TXLOG SEGMENT SIZE
     int segmentSize = 0;
+    int segments = 0;
     for (final MutablePage newPage : pages) {
-      final int[] deltaRange = newPage.getModifiedRange();
-      final int deltaSize = deltaRange[1] - deltaRange[0] + 1;
+      final int[] ranges = newPage.getModifiedRanges();
+      final int rangeCount = newPage.getModifiedRangeCount();
+      segments += rangeCount;
 
-      final long totalSizeCheck = 0L + TX_HEADER_SIZE + TX_FOOTER_SIZE + segmentSize + PAGE_HEADER_SIZE + deltaSize; // USE A LONG TO CHECK THE BOUNDARIES
-      if (totalSizeCheck > Integer.MAX_VALUE)
-        throw new TransactionException("Transaction buffer bigger than " + FileUtils.getSizeAsString(Integer.MAX_VALUE)
-            + ". Split the big transaction in smaller transactions. This transaction will be roll backed");
+      for (int r = 0; r < rangeCount; ++r) {
+        final int deltaSize = ranges[r * 2 + 1] - ranges[r * 2] + 1;
 
-      segmentSize += PAGE_HEADER_SIZE + deltaSize;
+        final long totalSizeCheck = 0L + TX_HEADER_SIZE + TX_FOOTER_SIZE + segmentSize + PAGE_HEADER_SIZE + deltaSize; // USE A LONG TO CHECK THE BOUNDARIES
+        if (totalSizeCheck > Integer.MAX_VALUE)
+          throw new TransactionException("Transaction buffer bigger than " + FileUtils.getSizeAsString(Integer.MAX_VALUE)
+              + ". Split the big transaction in smaller transactions. This transaction will be roll backed");
+
+        segmentSize += PAGE_HEADER_SIZE + deltaSize;
+      }
     }
 
     final Binary bufferChanges = new Binary(TX_HEADER_SIZE + TX_FOOTER_SIZE + segmentSize);
     bufferChanges.setAutoResizable(false);
 
-    // WRITE TX HEADER (TXID, TIMESTAMP, PAGES, SEGMENT-SIZE)
+    // WRITE TX HEADER (TXID, TIMESTAMP, PAGE SEGMENTS, SEGMENT-SIZE)
     bufferChanges.putLong(txId);
     bufferChanges.putLong(System.currentTimeMillis());
-    bufferChanges.putInt(pages.size());
+    bufferChanges.putInt(segments);
     bufferChanges.putInt(segmentSize);
 
     assert bufferChanges.position() == TX_HEADER_SIZE;
 
     // WRITE ALL PAGES SEGMENTS
     for (final MutablePage newPage : pages) {
-      final int[] deltaRange = newPage.getModifiedRange();
+      final int[] ranges = newPage.getModifiedRanges();
+      final int rangeCount = newPage.getModifiedRangeCount();
 
-      assert deltaRange[0] > -1 && deltaRange[1] < newPage.getPhysicalSize();
+      for (int r = 0; r < rangeCount; ++r) {
+        final int rangeFrom = ranges[r * 2];
+        final int rangeTo = ranges[r * 2 + 1];
 
-      final int deltaSize = deltaRange[1] - deltaRange[0] + 1;
-      if (deltaSize < 1)
-        throw new TransactionException(
-            "Invalid modified range for page " + newPage.getPageId() + " v" + newPage.version + ": deltaRange=[" + deltaRange[0]
-                + "," + deltaRange[1] + "] deltaSize=" + deltaSize + " pageSize=" + newPage.getPhysicalSize());
+        assert rangeFrom > -1 && rangeTo < newPage.getPhysicalSize();
 
-      LogManager.instance()
-          .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null, newPage.getPageId(), newPage.version + 1,
-              deltaRange[0], deltaRange[1], txId, Thread.currentThread().threadId());
+        final int deltaSize = rangeTo - rangeFrom + 1;
+        if (deltaSize < 1)
+          throw new TransactionException(
+              "Invalid modified range for page " + newPage.getPageId() + " v" + newPage.version + ": deltaRange=[" + rangeFrom
+                  + "," + rangeTo + "] deltaSize=" + deltaSize + " pageSize=" + newPage.getPhysicalSize());
 
-      bufferChanges.putInt(newPage.getPageId().getFileId());
-      bufferChanges.putInt(newPage.getPageId().getPageNumber());
-      bufferChanges.putInt(deltaRange[0]);
-      bufferChanges.putInt(deltaRange[1]);
-      bufferChanges.putInt(newPage.version + 1);
-      bufferChanges.putInt(newPage.getContentSize());
+        LogManager.instance()
+            .log(WALFile.class, Level.FINE, "Writing page %s v%d range %d-%d into buffer (txId=%d threadId=%d)", null,
+                newPage.getPageId(), newPage.version + 1, rangeFrom, rangeTo, txId, Thread.currentThread().threadId());
 
-      bufferChanges.size(bufferChanges.position() + deltaSize);
+        bufferChanges.putInt(newPage.getPageId().getFileId());
+        bufferChanges.putInt(newPage.getPageId().getPageNumber());
+        bufferChanges.putInt(rangeFrom);
+        bufferChanges.putInt(rangeTo);
+        bufferChanges.putInt(newPage.version + 1);
+        bufferChanges.putInt(newPage.getContentSize());
 
-      final ByteBuffer newPageBuffer = newPage.getContent();
-      newPageBuffer.position(deltaRange[0]);
-      newPageBuffer.get(bufferChanges.getContent(), bufferChanges.position(), deltaSize);
+        bufferChanges.size(bufferChanges.position() + deltaSize);
 
-      bufferChanges.position(bufferChanges.position() + deltaSize);
+        final ByteBuffer newPageBuffer = newPage.getContent();
+        newPageBuffer.position(rangeFrom);
+        newPageBuffer.get(bufferChanges.getContent(), bufferChanges.position(), deltaSize);
+
+        bufferChanges.position(bufferChanges.position() + deltaSize);
+      }
     }
 
     // WRITE TX FOOTER (MAGIC NUMBER)

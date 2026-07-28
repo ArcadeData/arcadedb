@@ -2656,10 +2656,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Deserializes a WAL transaction from raw bytes using the WALFile binary format.
    * <p>
-   * Format: txId (long), timestamp (long), pageCount (int), segmentSize (int),
-   * then for each page: fileId (int), pageNumber (int), changesFrom (int),
+   * Format: txId (long), timestamp (long), segmentCount (int), segmentSize (int),
+   * then for each page segment: fileId (int), pageNumber (int), changesFrom (int),
    * changesTo (int), currentPageVersion (int), currentPageSize (int),
    * delta bytes (changesTo - changesFrom + 1).
+   * <p>
+   * One page contributes one segment per disjoint modified interval (issue #5470), so the same page can appear
+   * several times, consecutively and at the same target version; {@code TransactionManager.applyChanges} folds them
+   * back into a single page image.
    */
   static WALFile.WALTransaction deserializeWalTransaction(final byte[] data) {
     final ByteBuffer buf = ByteBuffer.wrap(data);

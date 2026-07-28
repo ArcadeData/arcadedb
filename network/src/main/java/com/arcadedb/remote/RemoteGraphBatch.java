@@ -81,6 +81,10 @@ public class RemoteGraphBatch implements AutoCloseable {
   RemoteGraphBatch(final RemoteDatabase database, final Map<String, String> queryParams, final int flushEvery) {
     this.database = database;
     this.queryParams = queryParams;
+    // Edges buffered in a later flush reference vertices created by an earlier one, so this client cannot work
+    // without the mapping and asks for it explicitly: the endpoint stops echoing it on its own past a size no
+    // client could consume in one response (issue #5470).
+    this.queryParams.put("idMapping", "true");
     this.flushEvery = flushEvery;
     this.buffer = new StringBuilder(DEFAULT_BUFFER_SIZE);
     this.resolvedBucketIds = new int[INITIAL_MAPPING_CAPACITY];
@@ -170,6 +174,12 @@ public class RemoteGraphBatch implements AutoCloseable {
     totalVerticesCreated += response.getLong("verticesCreated");
     totalEdgesCreated += response.getLong("edgesCreated");
     totalElapsedMs += response.getLong("elapsedMs");
+
+    if (response.getBoolean("idMappingOmitted", false))
+      // Never resolve edges against a mapping that is not there: it would silently drop every cross-flush edge.
+      throw new IllegalStateException(
+          "The server did not return the temporary-id mapping of the last flush (" + response.getInt("idMappingSize", 0)
+              + " ids). Lower flushEvery so each request stays within what the server echoes back");
 
     // Store resolved temp ID → RID mapping for cross-flush edge references
     if (response.has("idMapping")) {

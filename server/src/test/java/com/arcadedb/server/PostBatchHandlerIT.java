@@ -494,6 +494,35 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #5470: the response used to echo the whole temporary-id mapping whatever its size, so a bulk load of
+   * millions of vertices built a second copy of the map as one JSON string and died of an OutOfMemoryError at the
+   * very last step of an otherwise successful import. Past 10,000 ids the mapping is replaced by its size, and a
+   * client that needs it anyway (RemoteGraphBatch resolving edges across requests) asks for it explicitly.
+   */
+  @Test
+  void aHugeIdMappingIsOmittedUnlessTheClientAsksForIt() throws Exception {
+    final int vertices = 10_001;
+
+    final JSONObject omitted = postBatch(0, hugeBody(vertices, 700_000), "application/x-ndjson", "");
+    assertThat(omitted.getInt("verticesCreated")).isEqualTo(vertices);
+    assertThat(omitted.has("idMapping")).isFalse();
+    assertThat(omitted.getBoolean("idMappingOmitted")).isTrue();
+    assertThat(omitted.getInt("idMappingSize")).isEqualTo(vertices);
+
+    // Fresh ids: V1.id is unique, so the second load must not repeat the first one's values.
+    final JSONObject requested = postBatch(0, hugeBody(vertices, 800_000), "application/x-ndjson", "idMapping=true");
+    assertThat(requested.getJSONObject("idMapping").keySet()).hasSize(vertices);
+  }
+
+  private String hugeBody(final int vertices, final int firstId) {
+    final StringBuilder body = new StringBuilder(vertices * 64);
+    for (int i = 0; i < vertices; i++)
+      body.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"@id\":\"big").append(firstId + i).append("\",\"id\":")
+          .append(firstId + i).append("}\n");
+    return body.toString();
+  }
+
   private JSONObject postBatch(final int serverIndex, final String body, final String contentType,
       final String queryParams) throws Exception {
     final HttpURLConnection conn = openBatchConnection(serverIndex, contentType, queryParams);
