@@ -188,6 +188,28 @@ public class MaterializedViewImpl implements MaterializedView {
     }
   }
 
+  /**
+   * Releases ownership after a pass that failed. Returns {@code true} if a request had been
+   * registered during that pass and is therefore being discarded.
+   * <p>
+   * The release is a CAS rather than a plain write for the same reason as
+   * {@link #finishRefreshPassAndCheckPending()}: a plain write would clobber a request registered
+   * concurrently, losing it without the requester ever learning. The request is not retried here - a
+   * pass that just failed would most likely fail again, and retrying a persistent failure would spin -
+   * so the caller reports the discard and leaves the view in a non-VALID status, making the staleness
+   * visible instead of silent.
+   */
+  public boolean releaseRefreshAfterFailure() {
+    while (true) {
+      if (refreshState.compareAndSet(REFRESH_RUNNING, REFRESH_IDLE))
+        return false;
+      if (refreshState.compareAndSet(REFRESH_RUNNING_PENDING, REFRESH_IDLE))
+        return true;
+      if (refreshState.get() == REFRESH_IDLE)
+        return false;
+    }
+  }
+
   @Override
   public long getRefreshCount() {
     return refreshCount.get();

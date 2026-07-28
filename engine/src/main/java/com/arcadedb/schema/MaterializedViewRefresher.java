@@ -59,10 +59,16 @@ public class MaterializedViewRefresher {
       view.recordRefreshError();
       view.setStatus(MaterializedViewStatus.ERROR);
       // Ownership is released here rather than in a finally: the success path already released it,
-      // atomically with the check for a pending request.
-      view.endRefresh();
+      // atomically with the check for a pending request. This release is a CAS too, so a request
+      // registered during the failing pass is discarded deliberately rather than clobbered - the
+      // status above leaves that staleness visible instead of silent.
+      final boolean discardedPendingRequest = view.releaseRefreshAfterFailure();
       LogManager.instance().log(MaterializedViewRefresher.class, Level.SEVERE,
           "Error refreshing materialized view '%s': %s", e, view.getName(), e.getMessage());
+      if (discardedPendingRequest)
+        LogManager.instance().log(MaterializedViewRefresher.class, Level.WARNING,
+            "A refresh requested during the failed refresh of materialized view '%s' was not run; the view is left in status %s",
+            null, view.getName(), view.getStatus());
       throw e;
     }
   }

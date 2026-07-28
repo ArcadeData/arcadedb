@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -101,6 +102,28 @@ class MaterializedViewConcurrentRefreshTest extends TestHelper {
     }
   }
 
+  /**
+   * A pass that fails must not silently swallow a request registered while it ran: releasing
+   * ownership with a plain write would clobber it, leaving the view stale with nobody aware.
+   */
+  @Test
+  void aFailedPassReportsTheRequestItDiscardsInsteadOfClobberingIt() {
+    final MaterializedViewImpl view = newView("FailedPassView");
+
+    assertThat(view.tryBeginRefresh()).isTrue();
+    assertThat(view.markRefreshPendingIfRunning()).isTrue();
+
+    assertThat(view.releaseRefreshAfterFailure())
+        .as("the discarded request must be reported, not silently dropped").isTrue();
+    assertThat(view.tryBeginRefresh()).as("ownership must still be released").isTrue();
+    view.endRefresh();
+
+    // With no request outstanding there is nothing to report.
+    assertThat(view.tryBeginRefresh()).isTrue();
+    assertThat(view.releaseRefreshAfterFailure()).isFalse();
+  }
+
+  @Tag("slow")
   @Test
   void concurrentWritersLeaveTheViewReflectingEveryCommit() throws Exception {
     database.transaction(() -> database.getSchema().createDocumentType("ConcurrentSource"));
