@@ -122,6 +122,14 @@ public class PatternComprehensionExpression implements Expression {
       return;
     }
 
+    // Inline WHERE predicate on the leading node, e.g. [(a WHERE a.v = 1)-[:E]->(x) | x]. Only the
+    // first hop needs the check here: every later hop starts from the previous hop's end node, which
+    // matchesEndPattern already validated, and an uncorrelated start is validated while iterating
+    // candidates in traverseUncorrelatedStart.
+    if (hopIndex == 0 && knownStartVertex == null
+        && !matchesNodeWhereExpression(startVertex, startNodePattern, currentResult, context))
+      return;
+
     // Add start vertex to path at first hop
     if (hopIndex == 0 && pathVariable != null)
       pathElements.add(startVertex);
@@ -143,7 +151,7 @@ public class PatternComprehensionExpression implements Expression {
       final int maxHops = relPattern.getEffectiveMaxHops();
 
       // Zero-length path: start and end are the same vertex (only valid if matches end pattern)
-      if (minHops == 0 && matchesEndPattern(startVertex, endNodePattern, baseResult, context)) {
+      if (minHops == 0 && matchesEndPattern(startVertex, endNodePattern, baseResult, currentResult, context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, null);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, startVertex);
       }
@@ -185,7 +193,7 @@ public class PatternComprehensionExpression implements Expression {
     for (final Record record : candidates) {
       if (!(record instanceof Vertex candidate))
         continue;
-      if (!matchesStartPattern(candidate, startNodePattern, context))
+      if (!matchesStartPattern(candidate, startNodePattern, currentResult, context))
         continue;
 
       final ResultInternal candidateResult = new ResultInternal();
@@ -203,9 +211,11 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   /**
-   * Returns true if a vertex matches the start node pattern's labels and inline properties.
+   * Returns true if a vertex matches the start node pattern's labels, inline properties and inline
+   * {@code WHERE} predicate.
    */
-  private boolean matchesStartPattern(final Vertex vertex, final NodePattern startNodePattern, final CommandContext context) {
+  private boolean matchesStartPattern(final Vertex vertex, final NodePattern startNodePattern, final Result currentResult,
+      final CommandContext context) {
     if (startNodePattern.hasLabels()) {
       for (final String label : startNodePattern.getLabels()) {
         if (!Labels.hasLabel(vertex, label))
@@ -218,7 +228,7 @@ public class PatternComprehensionExpression implements Expression {
           return false;
       }
     }
-    return true;
+    return matchesNodeWhereExpression(vertex, startNodePattern, currentResult, context);
   }
 
   /**
@@ -285,7 +295,7 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.add(nextVertex);
       }
 
-      if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult, context)) {
+      if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult, currentResult, context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern, edge);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, nextVertex);
       }
@@ -303,7 +313,7 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   private boolean matchesEndPattern(final Vertex vertex, final NodePattern endNodePattern, final Result baseResult,
-      final CommandContext context) {
+      final Result currentResult, final CommandContext context) {
     if (endNodePattern.hasLabels()) {
       for (final String label : endNodePattern.getLabels()) {
         if (!Labels.hasLabel(vertex, label))
@@ -323,7 +333,30 @@ public class PatternComprehensionExpression implements Expression {
       if (bound instanceof Vertex boundVertex && !boundVertex.getIdentity().equals(vertex.getIdentity()))
         return false;
     }
-    return true;
+    // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x] (issue #5480)
+    return matchesNodeWhereExpression(vertex, endNodePattern, currentResult, context);
+  }
+
+  /**
+   * Returns true if a vertex satisfies the node pattern's inline {@code WHERE} predicate, e.g. the
+   * {@code WHERE x.v = 2} in {@code [(a)-[:E]->(x:A WHERE x.v = 2) | x]}. Mirrors the enforcement
+   * done by the regular MATCH path, where the same predicate is hoisted into the clause WHERE, so
+   * both spellings filter identically.
+   *
+   * @param bindings variables visible to the predicate. They are copied into a private evaluation
+   *                 row on which the node variable is bound to the candidate, leaving the caller's
+   *                 row untouched.
+   */
+  private boolean matchesNodeWhereExpression(final Vertex vertex, final NodePattern nodePattern, final Result bindings,
+      final CommandContext context) {
+    if (nodePattern == null || !nodePattern.hasWhereExpression())
+      return true;
+
+    final ResultInternal evalRow = copyBindings(bindings);
+    final String variable = nodePattern.getVariable();
+    if (variable != null && !variable.isEmpty())
+      evalRow.setProperty(variable, vertex);
+    return nodePattern.getWhereExpression().evaluate(evalRow, context);
   }
 
   /**
@@ -448,7 +481,7 @@ public class PatternComprehensionExpression implements Expression {
         continue;
       }
 
-      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult, context))
+      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult, currentResult, context))
         continue;
 
       // Build result with matched variables

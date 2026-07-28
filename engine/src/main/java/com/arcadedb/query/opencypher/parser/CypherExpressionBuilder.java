@@ -2512,7 +2512,14 @@ class CypherExpressionBuilder {
         properties = parseMapProperties(ctx.properties().map());
     }
 
-    return new NodePattern(variable, labels, properties, propertiesParameterName);
+    // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x]. Parsed
+    // as a generic expression and coerced to a predicate, mirroring the relationship form below, so
+    // comparisons, AND/OR/NOT and boolean-typed properties are all covered.
+    BooleanExpression whereExpression = null;
+    if (ctx.expression() != null)
+      whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
+
+    return new NodePattern(variable, labels, null, properties, propertiesParameterName, false, whereExpression);
   }
 
   /**
