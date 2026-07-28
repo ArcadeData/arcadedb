@@ -141,7 +141,7 @@ Observations raised and how they were resolved:
   parsed up front. The test's payload is rejected atomically only because the invalid field is one of the three
   parsed first. The behaviour predates this PR - the inline boolean block arrives with #5402 (`68d6596dc`) - so
   it is left alone here and the test now carries a comment stating exactly what it proves. Making `updateFrom`
-  atomic for every field is the follow-up.
+  atomic for every field is the follow-up, tracked as #5482.
 
 ## Known gaps
 
@@ -154,8 +154,9 @@ Observations raised and how they were resolved:
 - **`principalProfiles` is undocumented.** The MCP reference page lives in the separate
   `ArcadeData/arcadedb-docs` repository at `src/main/asciidoc/reference/mcp/mcp.adoc` and documents
   the `mcp-config.json` keys. It does not mention `principalProfiles`, nor the `profile` key from
-  #5402, nor the `databases` key from #5401. A docs PR is owed there.
+  #5402, nor the `databases` key from #5401, and it never mentions the Resources surface from #4865.
+  Tracked as #5483.
 - **`updateFrom` is not atomic across every field.** Raised in review and confirmed: the `allow*` booleans are
   assigned inline, so a payload whose invalid field is a boolean commits the booleans that precede it before
   throwing. Pre-existing since #5402 and untouched here. The fix is to parse every field into locals before
-  assigning any, mirroring what `databases`, `profile` and `principalProfiles` already do.
+  assigning any, mirroring what `databases`, `profile` and `principalProfiles` already do. Tracked as #5482.
