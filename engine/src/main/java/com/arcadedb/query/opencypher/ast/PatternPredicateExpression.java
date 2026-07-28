@@ -34,7 +34,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Predicate;
 
 /**
  * Represents a pattern predicate expression in a WHERE clause.
@@ -150,7 +149,7 @@ public class PatternPredicateExpression implements BooleanExpression {
         true, true);
     // Inline WHERE, e.g. EXISTS { (a)-[r:E*1..2 WHERE r.tag = 'ok']->(x) }: every traversed
     // relationship must satisfy it, as in the MATCH spelling.
-    traverser.withEdgePredicate(buildRelationshipPredicate(relPattern, result, context));
+    traverser.withEdgePredicate(relPattern.buildInlineWherePredicate(result, context));
 
     // Get the end node (if bound)
     final NodePattern endNodePattern = pathPattern.getNode(1);
@@ -365,33 +364,6 @@ public class PatternPredicateExpression implements BooleanExpression {
     if (relPattern == null || !relPattern.hasWhereExpression())
       return true;
     return matchesInlineWhere(relPattern.getWhereExpression(), relPattern.getVariable(), edge, row, context);
-  }
-
-  /**
-   * Builds the per-relationship predicate a variable-length traversal applies for an inline
-   * {@code WHERE}. Unlike {@link #matchesInlineWhere}, which rebuilds its scope on every call, the
-   * enclosing bindings are copied once and only the relationship variable is rebound per candidate
-   * edge, because a traversal evaluates this once per relationship it walks. Returns null when the
-   * pattern declares no predicate, leaving the traversal free of per-edge evaluation.
-   */
-  private Predicate<Edge> buildRelationshipPredicate(final RelationshipPattern relPattern, final Result row,
-      final CommandContext context) {
-    if (relPattern == null || !relPattern.hasWhereExpression())
-      return null;
-
-    final BooleanExpression where = relPattern.getWhereExpression();
-    final ResultInternal scope = new ResultInternal();
-    if (row != null)
-      for (final String property : row.getPropertyNames())
-        scope.setProperty(property, row.getProperty(property));
-
-    final String variable = relPattern.getVariable();
-    final boolean bindRelationship = variable != null && !variable.isEmpty();
-    return edge -> {
-      if (bindRelationship)
-        scope.setProperty(variable, edge);
-      return where.evaluate(scope, context);
-    };
   }
 
   /**
