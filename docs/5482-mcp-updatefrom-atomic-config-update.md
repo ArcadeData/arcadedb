@@ -108,10 +108,35 @@ expected outcome rather than a signal about the change.
 
 `codacy-production`: 0 new issues, 0 added complexity.
 
-**Cycle 2 - docs-only.** The observation-1 wording correction, carrying no source change.
+**Cycle 2 - `76f5c953`.** Docs-only: the observation-1 wording correction, carrying no source change.
+`claude[bot]`: **LGTM** again. It re-derived the atomicity argument independently and confirmed the composition
+is "correct, not accidental", and accepted the corrected concurrency wording. Two non-blocking observations,
+both of which explicitly recommend leaving the code alone:
+
+1. *No action, as advised.* The commit block self-assigns fields absent from the payload (`allowedUsers =
+   updatedAllowedUsers` where both are the same reference). A redundant volatile store, harmless, and the
+   reviewer preferred the uniform block over `json.has(...)`-guarded writes for readability. Agreed.
+2. *Recorded as a follow-up.* `load()` keeps the old inline-assignment shape, so the two methods could drift.
+   Deferring is fine because `load()` is wrapped in a `catch (Exception)` fallback to defaults and a partially
+   applied file is not client-observable the way a 400 response is. See Follow-ups below.
+
+It also confirmed conformance to `CLAUDE.md` (imports over FQNs, `final` on locals and params, fluent
+`assertThat` assertions, tracking doc matching the `docs/NNNN-*.md` convention) and flagged no performance or
+security concerns.
+
+`gemini-code-assist` did not review either cycle.
+
+### Final state
+
+`clean-approval` - two consecutive `claude[bot]` LGTMs with zero blocking findings, an empty working tree and no
+deferred items. The `resolve-issue-with-review` gate nominally also requires `gemini-code-assist`, which has
+been silent on every recent PR in this repository; its absence carries no signal about this change.
+
+**Merge is the developer's decision. This workflow does not merge PRs.**
 
 ## Follow-ups
 
 - Align `booleanValue` to `IllegalArgumentException` (cosmetic, see above).
 - `load()` retains its own inline-assignment shape, but it is guarded by a `catch (Exception)` that falls back
-  to defaults, and a partially applied file is not client-observable the way a 400 response is.
+  to defaults, and a partially applied file is not client-observable the way a 400 response is. Raised again in
+  cycle-2 review as a drift risk now that `updateFrom` has moved to parse-then-assign; worth its own issue.
