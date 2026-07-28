@@ -147,6 +147,9 @@ public class PatternPredicateExpression implements BooleanExpression {
         relPattern.getDirection(), types, null,
         relPattern.getEffectiveMinHops(), relPattern.getEffectiveMaxHops(),
         true, true);
+    // Inline WHERE, e.g. EXISTS { (a)-[r:E*1..2 WHERE r.tag = 'ok']->(x) }: every traversed
+    // relationship must satisfy it, as in the MATCH spelling.
+    traverser.withEdgePredicate(relPattern.buildInlineWherePredicate(result, context));
 
     // Get the end node (if bound)
     final NodePattern endNodePattern = pathPattern.getNode(1);

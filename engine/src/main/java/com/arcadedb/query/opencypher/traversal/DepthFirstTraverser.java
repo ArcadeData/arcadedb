@@ -157,6 +157,9 @@ public class DepthFirstTraverser extends GraphTraverser {
           if (!matchesPropertyFilter(edge))
             continue;
 
+          if (!matchesEdgePredicate(edge))
+            continue;
+
           // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
           if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
             continue;

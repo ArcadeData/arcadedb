@@ -18,9 +18,15 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.graph.Edge;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
+
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /**
  * Represents a relationship pattern in a Cypher query.
@@ -163,6 +169,44 @@ public class RelationshipPattern implements PatternElement {
    */
   public boolean hasWhereExpression() {
     return whereExpression != null;
+  }
+
+  /**
+   * Builds the per-relationship predicate for this pattern's inline {@code WHERE}, e.g. the
+   * {@code WHERE r.tag = 'ok'} in {@code -[r:E*1..2 WHERE r.tag = 'ok']->}. Every evaluator that
+   * hands a variable-length traversal its edge predicate builds it here, so the rule for
+   * constructing the evaluation scope has a single definition and the MATCH and EXISTS spellings
+   * cannot drift apart.
+   * <p>
+   * The enclosing bindings are copied once, so the predicate can reference variables from the outer
+   * scope, and only the relationship variable is rebound per candidate edge. Returns null when the
+   * pattern declares no predicate, which lets a traversal skip per-edge evaluation entirely.
+   * <p>
+   * The returned predicate mutates a captured row and is therefore not thread-safe: callers build a
+   * fresh one per source row and variable-length traversal is single-threaded. Parallelizing a
+   * traversal would require giving each worker its own predicate instance.
+   *
+   * @param row     bindings visible where the pattern appears, may be null
+   * @param context command context the predicate is evaluated in
+   *
+   * @return predicate every traversed relationship must satisfy, or null if unconstrained
+   */
+  public Predicate<Edge> buildInlineWherePredicate(final Result row, final CommandContext context) {
+    if (whereExpression == null)
+      return null;
+
+    final ResultInternal scope = new ResultInternal();
+    if (row != null)
+      for (final String property : row.getPropertyNames())
+        scope.setProperty(property, row.getProperty(property));
+
+    final BooleanExpression where = whereExpression;
+    final boolean bindRelationship = variable != null && !variable.isEmpty();
+    return edge -> {
+      if (bindRelationship)
+        scope.setProperty(variable, edge);
+      return where.evaluate(scope, context);
+    };
   }
 
   /**
