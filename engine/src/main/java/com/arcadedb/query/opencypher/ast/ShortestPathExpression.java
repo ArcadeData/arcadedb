@@ -86,9 +86,12 @@ public class ShortestPathExpression implements Expression {
       throw unboundEndpoint("the start endpoint declares no variable");
     if (endVar == null || endVar.isEmpty())
       throw unboundEndpoint("the end endpoint declares no variable");
-    if (!result.getPropertyNames().contains(startVar))
+    // hasProperty rather than getPropertyNames().contains: the latter allocates a set of every name
+    // on the row, twice, on the valid both-bound path. Both answer the same question here, including
+    // for a name mapped to null, which is the distinction the null-propagation branch below relies on.
+    if (!result.hasProperty(startVar))
       throw unboundEndpoint("'" + startVar + "' is not bound");
-    if (!result.getPropertyNames().contains(endVar))
+    if (!result.hasProperty(endVar))
       throw unboundEndpoint("'" + endVar + "' is not bound");
 
     final Object startValue = result.getProperty(startVar);
