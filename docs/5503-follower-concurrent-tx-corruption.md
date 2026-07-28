@@ -121,7 +121,21 @@ becoming flakier is a plausible - if unproven - interaction worth watching in CI
   round trip, so this is symmetric, but a write-heavy follower workload will see lower throughput and
   more retries. That is the correct trade against silent corruption; writes routed to the leader are
   unaffected.
+- **New failure mode for follower writers: `LockTimeoutException`.** Because the locks are now held across
+  the round trip and the apply wait, concurrent writers to the same bucket can exhaust
+  `COMMIT_LOCK_TIMEOUT` (5000 ms by default) where previously a replica took no locks at all. It is
+  retryable - `LockTimeoutException` extends `NeedRetryException`, as does
+  `ConcurrentModificationException` - but an application that only caught the latter on follower writes
+  will now see the former. Worth a release note.
 - `db.transaction(...)` on a follower now implies read-your-writes on that node, which it did not before.
+- **If the apply wait times out**, the locks are released with the local pages still behind, which is the
+  pre-#5503 condition. `waitForAppliedIndex` already logs, but as a READ_YOUR_WRITES *consistency*
+  warning, which reads like a stale-read risk rather than a corruption one; the replica branch therefore
+  logs its own WARNING naming the risk and pointing at state machine apply lag.
+- `lockFilesFromChanges()` includes `indexChanges.addFilesToLock(...)`, so replicas now take locks on index
+  files even though `indexChanges.commit()` stays leader-only. Harmless for correctness, and it keeps the
+  late-joiner union check consistent, but it is extra contention on index files for follower writes - and
+  another reason the `indexChanges`-on-replica question below deserves its own issue.
 - Not addressed here: `indexChanges.commit()` is still skipped on a replica, so it is worth confirming
   separately whether index entries for follower-originated writes are produced by the leader as the
   comment claims. That is orthogonal to this corruption and out of scope.

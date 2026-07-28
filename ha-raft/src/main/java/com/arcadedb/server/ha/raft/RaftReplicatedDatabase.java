@@ -471,10 +471,27 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // would read that stale version, pass its own version check and ship a delta stamped with the same
       // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
       // the replica's own commit index still trails the leader here, so waiting for it would not cover
-      // the entry just written. On timeout the wait returns silently, leaving the pre-#5503 behaviour.
+      // the entry just written.
+      //
+      // The field is read directly instead of through requireRaftServer(): the cluster has already
+      // committed this transaction, so a server that disappeared under a concurrent shutdown must not
+      // turn into a NeedRetryException telling the caller to retry a write that is durably committed.
       final RaftHAServer raft = raftHAServer;
-      if (raft != null && committedLogIndex > 0)
+      if (raft != null && committedLogIndex > 0) {
         raft.waitForAppliedIndex(committedLogIndex);
+
+        // The wait degrades to best-effort on timeout, and releasing the locks below with the pages still
+        // behind is exactly the pre-#5503 condition. waitForAppliedIndex does log, but as a READ_YOUR_WRITES
+        // consistency warning, which reads like a stale-read risk rather than a page-corruption one - so say
+        // plainly here what is being risked and what to look at.
+        final long applied = raft.getLastAppliedIndex();
+        if (applied < committedLogIndex)
+          LogManager.instance().log(this, Level.WARNING,
+              "Replica commit on database '%s' is releasing its commit locks before entry %d was applied locally "
+                  + "(applied=%d). Concurrent transactions on these files can now validate against stale page "
+                  + "versions - the condition behind issue #5503. Investigate the state machine apply lag.",
+              getName(), committedLogIndex, applied);
+      }
       payload.tx().reset();
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       ctx.popIfNotLastTransaction();
