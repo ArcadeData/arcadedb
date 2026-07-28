@@ -23,6 +23,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -80,7 +81,33 @@ public final class HAReplicationMetrics implements MeterBinder {
         .description("Number of followers the leader is currently tracking. 0 when not leader.")
         .register(registry);
 
+    bindPendingPhase2Gauges(registry);
     bindPerFollowerGauges(registry);
+  }
+
+  /**
+   * Registers the phase-2 hold gauges (issue #5410). A locally-originated entry that Raft committed
+   * but this node has not written yet holds the snapshot checkpoint back so it stays replayable
+   * (issue #5407). A hold that never clears pins Raft log purging until the node restarts, which
+   * surfaces to operators as a Raft log that stops shrinking (issue #5345). Without these gauges the
+   * only signal is a throttled WARNING emitted at most once per compaction interval.
+   */
+  private void bindPendingPhase2Gauges(final MeterRegistry registry) {
+    Gauge.builder("arcadedb.ha.phase2.pending", () -> pendingPhase2().pending())
+        .description("Local phase-2 applies still holding the Raft snapshot checkpoint back. "
+            + "Sustained non-zero means log compaction is pinned until this node restarts.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.phase2.oldest_held_ms", () -> pendingPhase2().oldestHeldMs())
+        .description("Age (ms) of the oldest phase-2 hold; 0 when none. A value that keeps growing "
+            + "identifies a stuck hold rather than ordinary in-flight commits.")
+        .baseUnit("milliseconds")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.phase2.lowest_replay_floor", () -> pendingPhase2().lowestReplayFloor())
+        .description("Raft index past which the log cannot be purged while a phase-2 hold is "
+            + "outstanding; -1 when nothing is held.")
+        .register(registry);
   }
 
   /**
@@ -139,6 +166,14 @@ public final class HAReplicationMetrics implements MeterBinder {
       if (plugin instanceof HAReplicationStatsProvider provider)
         return provider.getHAReplicationStats();
     return new HAReplicationStats(false, -1, -1, 0);
+  }
+
+  /** Phase-2 hold state from the started HA plugin, or "nothing held" when HA is disabled. */
+  private PendingPhase2Stats pendingPhase2() {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof HAReplicationStatsProvider provider)
+        return provider.getPendingPhase2Stats();
+    return new PendingPhase2Stats(0, 0, -1);
   }
 
   /** Per-follower samples from the started HA plugin, or empty when HA is disabled / not the leader. */

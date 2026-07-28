@@ -213,6 +213,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public PendingPhase2Stats getPendingPhase2Stats() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getPendingPhase2Stats() : new PendingPhase2Stats(0, 0, -1);
+  }
+
+  @Override
   public String getLeaderName() {
     return raftHAServer != null ? raftHAServer.getLeaderName() : null;
   }
