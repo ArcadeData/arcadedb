@@ -152,7 +152,8 @@ public class PatternComprehensionExpression implements Expression {
 
       // Zero-length path: start and end are the same vertex (only valid if matches end pattern)
       if (minHops == 0
-          && matchesEndPattern(startVertex, endNodePattern, baseResult, inlineWhereRow(endNodePattern, currentResult), context)) {
+          && matchesEndPattern(startVertex, endNodePattern, baseResult, inlineWhereRow(endNodePattern, currentResult),
+              relPattern, null, context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, null);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, startVertex);
       }
@@ -302,7 +303,8 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.add(nextVertex);
       }
 
-      if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult, nodeWhereEvalRow, context)) {
+      if (nextHop >= minHops
+          && matchesEndPattern(nextVertex, endNodePattern, baseResult, nodeWhereEvalRow, relPattern, edge, context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern, edge);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, nextVertex);
       }
@@ -320,7 +322,8 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   private boolean matchesEndPattern(final Vertex vertex, final NodePattern endNodePattern, final Result baseResult,
-      final ResultInternal whereEvalRow, final CommandContext context) {
+      final ResultInternal whereEvalRow, final RelationshipPattern relPattern, final Edge edge,
+      final CommandContext context) {
     if (endNodePattern.hasLabels()) {
       for (final String label : endNodePattern.getLabels()) {
         if (!Labels.hasLabel(vertex, label))
@@ -340,7 +343,15 @@ public class PatternComprehensionExpression implements Expression {
       if (bound instanceof Vertex boundVertex && !boundVertex.getIdentity().equals(vertex.getIdentity()))
         return false;
     }
-    // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x] (issue #5480)
+    // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x] (issue #5480).
+    // The predicate may also reference the relationship variable bound by this same hop, as in
+    // (x:A WHERE x.v > r.w), so that binding is published before the predicate is evaluated. The
+    // relationship of a zero-length hop is null, leaving the variable unbound as the pattern implies.
+    if (whereEvalRow != null && edge != null) {
+      final String relVariable = relPattern.getVariable();
+      if (relVariable != null && !relVariable.isEmpty())
+        whereEvalRow.setProperty(relVariable, edge);
+    }
     return matchesNodeWhereExpression(vertex, endNodePattern, whereEvalRow, context);
   }
 
@@ -501,7 +512,7 @@ public class PatternComprehensionExpression implements Expression {
         continue;
       }
 
-      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult, nodeWhereEvalRow, context))
+      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult, nodeWhereEvalRow, relPattern, edge, context))
         continue;
 
       // Build result with matched variables
