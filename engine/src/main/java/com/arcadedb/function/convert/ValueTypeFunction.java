@@ -20,12 +20,8 @@ package com.arcadedb.function.convert;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import java.util.List;
-import java.util.Map;
 
 /**
  * valueType() function - returns a string representation of the type of a value.
@@ -44,21 +40,8 @@ public class ValueTypeFunction implements StatelessFunction {
     if (args.length != 1)
       throw new CommandExecutionException("valueType() requires exactly one argument");
     final Object value = args[0];
-    return switch (value) {
-      case null -> "NULL";
-      case Long l -> "INTEGER NOT NULL";
-      case Integer i -> "INTEGER NOT NULL";
-      case Short s -> "INTEGER NOT NULL";
-      case Byte b -> "INTEGER NOT NULL";
-      case Double d -> "FLOAT NOT NULL";
-      case Float f -> "FLOAT NOT NULL";
-      case String s -> "STRING NOT NULL";
-      case Boolean b -> "BOOLEAN NOT NULL";
-      case Vertex vertex -> "NODE NOT NULL";
-      case Edge edge -> "RELATIONSHIP NOT NULL";
-      case List list -> "LIST<ANY> NOT NULL";
-      case Map map -> "MAP NOT NULL";
-      default -> value.getClass().getSimpleName().toUpperCase() + " NOT NULL";
-    };
+    if (value == null)
+      return "NULL";
+    return CypherFunctionHelper.cypherTypeName(value) + " NOT NULL";
   }
 }

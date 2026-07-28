@@ -18,7 +18,9 @@
  */
 package com.arcadedb.function.cypher;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -29,13 +31,16 @@ import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -46,6 +51,71 @@ public final class CypherFunctionHelper {
 
   private CypherFunctionHelper() {
     // utility class
+  }
+
+  /**
+   * Returns the Cypher name of the runtime type of a value: INTEGER, FLOAT, STRING, BOOLEAN, LIST&lt;ANY&gt;, MAP,
+   * NODE, RELATIONSHIP or NULL. Used to phrase type errors (and by valueType()) with the vocabulary of the
+   * language instead of Java class names.
+   */
+  public static String cypherTypeName(final Object value) {
+    return switch (value) {
+      case null -> "NULL";
+      case Long ignored -> "INTEGER";
+      case Integer ignored -> "INTEGER";
+      case Short ignored -> "INTEGER";
+      case Byte ignored -> "INTEGER";
+      case Double ignored -> "FLOAT";
+      case Float ignored -> "FLOAT";
+      case String ignored -> "STRING";
+      case Boolean ignored -> "BOOLEAN";
+      case Vertex ignored -> "NODE";
+      case Edge ignored -> "RELATIONSHIP";
+      case List ignored -> "LIST<ANY>";
+      case Map ignored -> "MAP";
+      default -> value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase();
+    };
+  }
+
+  /**
+   * Resolves the single argument of a LIST-typed Cypher function (head(), last(), tail(), ...) to a List.
+   * <p>
+   * Cypher declares those functions as {@code f(list :: LIST<ANY>)}, so anything that is not a list is a
+   * client-facing type error in Neo4j and Memgraph: answering {@code null} instead would make a wrong query
+   * look like a successful one with no value (issue #5476). {@code null} is the one exception, because Cypher
+   * null semantics propagate it through every function.
+   *
+   * @return the argument as a List, or {@code null} when the argument itself is {@code null}
+   *
+   * @throws CommandSemanticException when the argument is neither {@code null} nor a list
+   */
+  public static List<Object> requireListArgument(final Object value, final String functionName) {
+    if (value == null)
+      return null;
+
+    // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
+    final List<Object> list = MultiValue.getMultiValueAsList(value);
+    if (list != null)
+      return list;
+
+    // Lazily-produced sequences are lists too, once materialized. Identifiable is excluded on purpose: a
+    // record is a NODE/RELATIONSHIP even when it happens to be iterable.
+    if (!(value instanceof Identifiable)) {
+      if (value instanceof Iterable<?> iterable)
+        return materialize(iterable.iterator());
+      if (value instanceof Iterator<?> iterator)
+        return materialize(iterator);
+    }
+
+    throw new CommandSemanticException(
+        "Type mismatch: " + functionName + "() expects a LIST<ANY> argument but got " + cypherTypeName(value));
+  }
+
+  private static List<Object> materialize(final Iterator<?> iterator) {
+    final List<Object> list = new ArrayList<>();
+    while (iterator.hasNext())
+      list.add(iterator.next());
+    return list;
   }
 
   /**
