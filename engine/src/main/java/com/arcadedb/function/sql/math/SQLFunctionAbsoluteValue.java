@@ -54,6 +54,8 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
     } else if (inputValue instanceof Integer integer) {
       result = Math.abs(integer);
     } else if (inputValue instanceof Long long1) {
+      if (long1 == Long.MIN_VALUE)
+        throw new ArithmeticException("abs(Long.MIN_VALUE) overflow");
       result = Math.abs(long1);
     } else if (inputValue instanceof Short short1) {
       result = (short) Math.abs(short1);
