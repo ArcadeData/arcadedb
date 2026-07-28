@@ -415,10 +415,14 @@ public class PageManager extends LockContext {
    * Runs AFTER the WAL append (#4936): from the caller's perspective the transaction is committed once the
    * WAL is durable, and a failure here leaves the WAL to replay the pages on recovery. Releasing the global
    * PageManager lock between the two halves is safe only because the caller serializes committers per page
-   * by other means. Two regimes exist: on a leader (commit1stPhase(true)) the per-file commit locks are held
-   * until reset(), so no other transaction can validate, bump or publish these pages in the gap; on an HA
-   * follower (commit1stPhase(false)) lockedFiles is EMPTY and it is the single-threaded Raft apply in
-   * RaftReplicatedDatabase that provides the serialization - do not rely on file locks being held there.
+   * by other means: commit1stPhase holds the per-file commit locks until reset(), so no other transaction can
+   * validate, bump or publish these pages in the gap.
+   * <p>
+   * A replica used to be exempt from that (lockedFiles was left EMPTY, on the assumption that the
+   * single-threaded Raft apply serialized everything), but the apply only orders the WRITE side: concurrent
+   * local transactions still validated against the same base page version and each shipped a delta stamped
+   * with the same next version, which the state machine spliced together. Replicas now take the same locks
+   * and hold them until their entry has been applied locally (#5503).
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
