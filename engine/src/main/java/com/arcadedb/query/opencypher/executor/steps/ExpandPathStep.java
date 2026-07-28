@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -28,7 +29,6 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
-import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
@@ -309,7 +309,9 @@ public class ExpandPathStep extends AbstractExecutionStep {
         pattern.getTypes().toArray(new String[0]) :
         null;
 
-    final Map<String, Object> props = pattern.hasProperties() ? pattern.getProperties() : null;
+    // Resolved against this row before the traversal starts: a traverser cannot resolve a parameter or a
+    // row-dependent value itself, and resolving here also keeps that work out of the per-edge loop.
+    final Map<String, Object> props = InlineProperties.resolveAll(pattern.getProperties(), currentResult, context);
 
     final Direction direction = directionOverride != null ? directionOverride : pattern.getDirection();
 
@@ -422,44 +424,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
   }
 
   private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {
-    for (final Map.Entry<String, Object> entry : targetNodePattern.getProperties().entrySet()) {
-      final Object actual = vertex.get(entry.getKey());
-      Object expected = entry.getValue();
-
-      // Evaluate Expression-based property values (e.g., variable references from a prior WITH)
-      if (expected instanceof Expression && currentResult != null)
-        expected = ((Expression) expected).evaluate(currentResult, context);
-
-      // Resolve parameter references (e.g., $country -> actual value from context)
-      if (expected instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
-        if (context.getInputParameters() != null)
-          expected = context.getInputParameters().get(paramName);
-      } else if (expected instanceof String) {
-        final String s = (String) expected;
-        // Legacy parameter reference encoded as "$name"
-        if (s.startsWith("$") && s.length() > 1) {
-          final String paramName = s.substring(1);
-          if (context.getInputParameters() != null) {
-            final Object paramValue = context.getInputParameters().get(paramName);
-            if (paramValue != null)
-              expected = paramValue;
-          }
-        }
-      }
-
-      if (actual == null)
-        return false;
-      if (!actual.equals(expected)) {
-        // Numeric type-safe comparison (Integer vs Long, etc.)
-        if (actual instanceof Number && expected instanceof Number) {
-          if (((Number) actual).longValue() != ((Number) expected).longValue())
-            return false;
-        } else
-          return false;
-      }
-    }
-    return true;
+    return InlineProperties.matches(vertex, targetNodePattern.getProperties(), currentResult, context);
   }
 
   @Override

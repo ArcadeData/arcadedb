@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -456,7 +457,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       if (rel == null)
         return null;
 
-      final Map<String, Object> properties = resolveProperties(rel, context);
+      final Map<String, Object> properties = resolveProperties(rel, currentRow, context);
       final BooleanExpression whereExpression = rel.getWhereExpression();
       if (properties == null && whereExpression == null)
         return null;
@@ -488,12 +489,15 @@ public class ShortestPathStep extends AbstractExecutionStep {
     /**
      * Returns the inline property map declared by the relationship, or {@code null} when there is none.
      * A map supplied as a bare parameter (e.g. {@code -[:LINK* $props]->}) is resolved against the query
-     * parameters here, so the parameter form constrains the traversal exactly like an inline map.
+     * parameters here, so the parameter form constrains the traversal exactly like an inline map. The
+     * values of an inline map are resolved too, so a {@code $param} or a row-dependent expression written
+     * inside it filters on what it stands for instead of matching nothing (issue #5501).
      */
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> resolveProperties(final RelationshipPattern rel, final CommandContext context) {
+    private static Map<String, Object> resolveProperties(final RelationshipPattern rel, final Result currentRow,
+        final CommandContext context) {
       if (!rel.getProperties().isEmpty())
-        return rel.getProperties();
+        return InlineProperties.resolveAll(rel.getProperties(), currentRow, context);
 
       final String parameterName = rel.getPropertiesParameterName();
       if (parameterName == null || context == null || context.getInputParameters() == null)
