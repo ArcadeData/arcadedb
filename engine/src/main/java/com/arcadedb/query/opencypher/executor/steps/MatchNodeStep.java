@@ -28,8 +28,9 @@ import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.opencypher.executor.PartitionPruning;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -40,7 +41,6 @@ import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
-import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -571,28 +571,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final String propertyName = entry.getKey();
       Object propertyValue = entry.getValue();
 
-      // Resolve parameter references
-      if (propertyValue instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) propertyValue).getName();
-        if (context.getInputParameters() != null) {
-          final Object paramValue = context.getInputParameters().get(paramName);
-          if (paramValue != null)
-            propertyValue = paramValue;
-        }
-      }
-      // Resolve dynamic expressions (e.g., e.src_id from UNWIND) against the current input result.
-      else if (propertyValue instanceof Expression) {
-        if (currentInputResult != null)
-          propertyValue = evaluator.evaluate((Expression) propertyValue, currentInputResult, context);
-        else {
-          // No input row: a parameter map field like $edge_data.uuid still resolves from the context.
-          // If it can't resolve (a genuinely row-dependent expression), skip the index and fall back to
-          // scan, preserving the previous no-row behavior. Issue #4909.
-          propertyValue = evaluator.evaluate((Expression) propertyValue, EMPTY_RESULT, context);
-          if (propertyValue == null)
-            return null;
-        }
-      }
+      // Resolve parameters and dynamic expressions (e.g., e.src_id from UNWIND) against the current input
+      // result. A parameter map field like $edge_data.uuid resolves from the context alone, so a bare MATCH
+      // with no input row still reaches the index (issue #4909); a value that does not resolve gives up on
+      // the index rather than looking up a null key, and the scan that follows filters identically.
+      propertyValue = InlineProperties.resolve(propertyValue, currentInputResult, context);
+      if (propertyValue == null)
+        return null;
 
       properties.put(propertyName, propertyValue);
     }
@@ -901,57 +886,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private boolean matchesProperties(final Vertex vertex, final Result currentResult) {
-    if (!pattern.hasProperties()) {
-      return true; // No property filters
-    }
-
-    // Check each property filter
-    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
-      final String key = entry.getKey();
-      Object expectedValue = entry.getValue();
-
-      // Evaluate Expression-based property values (e.g., event.year, or a parameter map field like
-      // $edge_data.uuid). Parameter-based expressions resolve from the context alone, so a bare MATCH
-      // with no input row still binds; an empty result makes row-dependent lookups return null
-      // gracefully, which is no worse than the previous no-match behavior. Issue #4909.
-      if (expectedValue instanceof Expression)
-        expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult != null ? currentResult : EMPTY_RESULT, context);
-
-      // Resolve parameter references (e.g., $username -> actual value from context)
-      if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expectedValue).getName();
-        if (context.getInputParameters() != null)
-          expectedValue = context.getInputParameters().get(paramName);
-      } else if (expectedValue instanceof String) {
-        final String strValue = (String) expectedValue;
-
-        // Legacy parameter reference encoded as "$name"
-        if (strValue.startsWith("$") && strValue.length() > 1) {
-          final String paramName = strValue.substring(1);
-          if (context.getInputParameters() != null) {
-            final Object paramValue = context.getInputParameters().get(paramName);
-            if (paramValue != null)
-              expectedValue = paramValue;
-          }
-        }
-      }
-
-      final Object actualValue = vertex.get(key);
-
-      // Compare values with numeric coercion
-      if (actualValue == null)
-        return false;
-      if (!actualValue.equals(expectedValue)) {
-        // Numeric type-safe comparison (Integer vs Long)
-        if (actualValue instanceof Number && expectedValue instanceof Number) {
-          if (((Number) actualValue).longValue() != ((Number) expectedValue).longValue())
-            return false;
-        } else
-          return false;
-      }
-    }
-
-    return true;
+    // A row-dependent value evaluated without an input row resolves to null and therefore matches nothing,
+    // which is no worse than the previous no-match behavior; a parameter still resolves from the context
+    // alone, so a bare MATCH with no input row keeps binding (issue #4909).
+    return InlineProperties.matches(vertex, pattern.getProperties(), currentResult, context);
   }
 
   @Override

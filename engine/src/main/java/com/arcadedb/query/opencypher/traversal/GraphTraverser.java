@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.traversal;
 
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.utility.RidHashSet;
@@ -213,13 +214,16 @@ public abstract class GraphTraverser {
   }
 
   /**
-   * Checks an edge against an inline {@code {prop: value}} filter map. Single definition of the
-   * comparison rules (including the Integer/Long numeric coercion) so every evaluator that enforces an
-   * inline relationship property map - the variable-length MATCH traversers and both shortestPath()
-   * evaluators - stays in agreement.
+   * Checks an edge against an inline {@code {prop: value}} filter map, using the same comparison rules as
+   * every other pattern evaluator ({@link InlineProperties#matchesResolvedValue}).
+   * <p>
+   * The filter values must already be resolved: a traverser has neither the query parameters nor the row
+   * a dynamic value would be evaluated against, so the caller resolves the map once per row through
+   * {@link InlineProperties#resolveAll} before handing it over. Filtering on the declared values instead
+   * silently matched nothing whenever the map held anything but a literal (issue #5501).
    *
    * @param edge    edge to check
-   * @param filters property constraints, may be null or empty
+   * @param filters resolved property constraints, may be null or empty
    *
    * @return true if edge matches all property filters (or no filters set)
    */
@@ -228,15 +232,7 @@ public abstract class GraphTraverser {
       return true;
 
     for (final Map.Entry<String, Object> entry : filters.entrySet()) {
-      final Object actual = edge.get(entry.getKey());
-      final Object expected = entry.getValue();
-      if (actual == null)
-        return false;
-      // Handle numeric type coercion (Integer vs Long)
-      if (actual instanceof Number && expected instanceof Number) {
-        if (((Number) actual).longValue() != ((Number) expected).longValue())
-          return false;
-      } else if (!actual.equals(expected))
+      if (!InlineProperties.matchesResolvedValue(edge.get(entry.getKey()), entry.getValue()))
         return false;
     }
     return true;

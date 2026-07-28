@@ -28,12 +28,11 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.executor.SelfLoops;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.Direction;
-import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
-import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -47,7 +46,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -501,7 +499,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               continue;
 
             // Filter by inline relationship properties if specified
-            if (pattern.hasProperties() && !matchesEdgeProperties(edge))
+            if (pattern.hasProperties() && !matchesEdgeProperties(edge, lastResult))
               continue;
 
             // Filter by inline WHERE predicate on the relationship (e.g., [r:KNOWS WHERE r.since < 2019])
@@ -892,46 +890,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     return true;
   }
 
-  /** Checks if the target vertex satisfies the inline property map; Expression values are evaluated against currentResult. */
+  /** Checks if the target vertex satisfies the inline property map; dynamic values are resolved against currentResult. */
   private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {
-    if (targetNodePattern == null || !targetNodePattern.hasProperties())
-      return true;
-
-    for (final Map.Entry<String, Object> entry : targetNodePattern.getProperties().entrySet()) {
-      final Object actual = vertex.get(entry.getKey());
-      Object expected = entry.getValue();
-
-      // Evaluate Expression-based property values (e.g., variable references from a prior WITH)
-      if (expected instanceof Expression && currentResult != null)
-        expected = ((Expression) expected).evaluate(currentResult, context);
-
-      // Resolve parameter references (e.g., $param -> actual value from context)
-      if (expected instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
-        if (context.getInputParameters() != null)
-          expected = context.getInputParameters().get(paramName);
-      } else if (expected instanceof String) {
-        final String s = (String) expected;
-        // Legacy parameter reference encoded as "$name"
-        if (s.startsWith("$") && s.length() > 1) {
-          final String paramName = s.substring(1);
-          if (context.getInputParameters() != null) {
-            final Object paramValue = context.getInputParameters().get(paramName);
-            if (paramValue != null)
-              expected = paramValue;
-          }
-        }
-      }
-
-      if (actual == null || !actual.equals(expected)) {
-        if (actual instanceof Number && expected instanceof Number) {
-          if (((Number) actual).longValue() != ((Number) expected).longValue())
-            return false;
-        } else
-          return false;
-      }
-    }
-    return true;
+    return targetNodePattern == null
+        || InlineProperties.matches(vertex, targetNodePattern.getProperties(), currentResult, context);
   }
 
   /**
@@ -989,43 +951,13 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
-   * Checks if an edge matches the inline property filters.
+   * Checks if an edge matches the inline property filters, e.g. the {@code {transactionId: row.id}} in
+   * {@code UNWIND $rows AS row MATCH (a)-[t:TRANSFER {transactionId: row.id}]->(b)}. Resolved against the
+   * current row, so a value that is not a literal - a parameter, a variable bound earlier, a property of
+   * an UNWIND row - filters on what it stands for instead of matching nothing (issue #5501).
    */
-  private boolean matchesEdgeProperties(final Edge edge) {
-    if (!pattern.hasProperties())
-      return true;
-
-    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
-      final Object actual = edge.get(entry.getKey());
-      Object expected = entry.getValue();
-
-      // Resolve parameter references (e.g., $param -> actual value from context)
-      if (expected instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expected).getName();
-        if (context.getInputParameters() != null)
-          expected = context.getInputParameters().get(paramName);
-      } else if (expected instanceof String) {
-        final String s = (String) expected;
-        // Legacy parameter reference encoded as "$name"
-        if (s.startsWith("$") && s.length() > 1) {
-          final String paramName = s.substring(1);
-          if (context.getInputParameters() != null) {
-            final Object paramValue = context.getInputParameters().get(paramName);
-            if (paramValue != null)
-              expected = paramValue;
-          }
-        }
-      }
-
-      if (actual == null || !actual.equals(expected)) {
-        if (actual instanceof Number && expected instanceof Number) {
-          if (((Number) actual).longValue() != ((Number) expected).longValue())
-            return false;
-        } else
-          return false;
-      }
-    }
-    return true;
+  private boolean matchesEdgeProperties(final Edge edge, final Result currentResult) {
+    return InlineProperties.matches(edge, pattern.getProperties(), currentResult, context);
   }
 
   /**

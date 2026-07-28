@@ -23,8 +23,8 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
-import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -143,8 +143,11 @@ public class PatternPredicateExpression implements BooleanExpression {
     final List<String> typesList = relPattern.getTypes();
     final String[] types = typesList != null && !typesList.isEmpty() ? typesList.toArray(new String[0]) : null;
 
+    // Inline property map, e.g. the {tag:'ok'} in (a)-[:E*1..2 {tag:'ok'}]->(b): every traversed
+    // relationship must carry it, as in the MATCH and EXISTS { } spellings. Handing the traverser no map
+    // at all dropped the constraint and made the predicate true for any path of the right shape.
     final VariableLengthPathTraverser traverser = new VariableLengthPathTraverser(
-        relPattern.getDirection(), types, null,
+        relPattern.getDirection(), types, InlineProperties.resolveAll(relPattern.getProperties(), result, context),
         relPattern.getEffectiveMinHops(), relPattern.getEffectiveMaxHops(),
         true, true);
     // Inline WHERE, e.g. EXISTS { (a)-[r:E*1..2 WHERE r.tag = 'ok']->(x) }: every traversed
@@ -321,7 +324,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       return true;
     if (!matchesTargetLabels(vertex, nodePattern.getLabels()))
       return false;
-    if (!matchesTargetProperties(vertex, nodePattern, context))
+    if (!matchesTargetProperties(vertex, nodePattern, row, context))
       return false;
     return matchesInlineWhere(nodePattern.getWhereExpression(), nodePattern.getVariable(), vertex, row, context);
   }
@@ -346,11 +349,12 @@ public class PatternPredicateExpression implements BooleanExpression {
    * Check if a vertex matches the inline property constraints on a node pattern, e.g. {name: 'Germany'}.
    * If no property constraints are specified, returns true.
    */
-  private boolean matchesTargetProperties(final Vertex vertex, final NodePattern nodePattern, final CommandContext context) {
+  private boolean matchesTargetProperties(final Vertex vertex, final NodePattern nodePattern, final Result row,
+      final CommandContext context) {
     if (nodePattern == null || !nodePattern.hasProperties())
       return true;
 
-    return matchesInlineProperties(vertex, nodePattern.getProperties(), context);
+    return InlineProperties.matches(vertex, nodePattern.getProperties(), row, context);
   }
 
   /**
@@ -359,7 +363,7 @@ public class PatternPredicateExpression implements BooleanExpression {
    */
   private boolean matchesRelationship(final Edge edge, final RelationshipPattern relPattern, final Result row,
       final CommandContext context) {
-    if (!matchesRelationshipProperties(edge, relPattern, context))
+    if (!matchesRelationshipProperties(edge, relPattern, row, context))
       return false;
     if (relPattern == null || !relPattern.hasWhereExpression())
       return true;
@@ -392,7 +396,8 @@ public class PatternPredicateExpression implements BooleanExpression {
    * e.g. {@code -[:R {w: 999}]->}. If no property constraints are specified, returns true.
    * Enforces the {@code {k: v}} filter inside {@code exists()} patterns (issue #5109).
    */
-  private boolean matchesRelationshipProperties(final Edge edge, final RelationshipPattern relPattern, final CommandContext context) {
+  private boolean matchesRelationshipProperties(final Edge edge, final RelationshipPattern relPattern, final Result row,
+      final CommandContext context) {
     if (relPattern == null || !relPattern.hasProperties())
       return true;
 
@@ -405,57 +410,7 @@ public class PatternPredicateExpression implements BooleanExpression {
         properties = (Map<String, Object>) paramValue;
     }
 
-    return matchesInlineProperties(edge, properties, context);
-  }
-
-  /**
-   * Check if a record (vertex or edge) matches a map of inline property constraints.
-   * If no property constraints are specified, returns true.
-   */
-  private boolean matchesInlineProperties(final Document record, final Map<String, Object> properties,
-      final CommandContext context) {
-    if (properties == null || properties.isEmpty())
-      return true;
-
-    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final String key = entry.getKey();
-      Object expectedValue = entry.getValue();
-
-      // Resolve parameter references (e.g., $name -> actual value from context)
-      if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
-        final String paramName = ((CypherASTBuilder.ParameterReference) expectedValue).getName();
-        if (context != null && context.getInputParameters() != null)
-          expectedValue = context.getInputParameters().get(paramName);
-      } else if (expectedValue instanceof String) {
-        final String strValue = (String) expectedValue;
-        if (strValue.startsWith("$")) {
-          final String paramName = strValue.substring(1);
-          if (context != null && context.getInputParameters() != null) {
-            final Object paramValue = context.getInputParameters().get(paramName);
-            if (paramValue != null)
-              expectedValue = paramValue;
-          }
-        } else if (strValue.length() >= 2
-            && ((strValue.charAt(0) == '\'' && strValue.charAt(strValue.length() - 1) == '\'')
-                || (strValue.charAt(0) == '"' && strValue.charAt(strValue.length() - 1) == '"'))) {
-          // Strip surrounding quotes left in place by the AST builder for string literals
-          expectedValue = strValue.substring(1, strValue.length() - 1);
-        }
-      }
-
-      final Object actualValue = record.get(key);
-      if (actualValue == null)
-        return false;
-      if (!actualValue.equals(expectedValue)) {
-        // Numeric type-safe comparison (Integer vs Long)
-        if (actualValue instanceof Number && expectedValue instanceof Number) {
-          if (((Number) actualValue).longValue() != ((Number) expectedValue).longValue())
-            return false;
-        } else
-          return false;
-      }
-    }
-    return true;
+    return InlineProperties.matches(edge, properties, row, context);
   }
 
   /**
