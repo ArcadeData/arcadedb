@@ -85,11 +85,13 @@ public class RaftTransactionBroker {
 
   /**
    * Replicates a transaction (WAL data + bucket deltas) via Raft consensus.
+   *
+   * @return the Raft log index the entry committed at, or -1 when it is not known
    */
-  public void replicateTransaction(final String dbName, final byte[] walData,
+  public long replicateTransaction(final String dbName, final byte[] walData,
       final Map<Integer, Integer> bucketDeltas) {
     final ByteString entry = RaftLogEntryCodec.encodeTxEntry(dbName, walData, bucketDeltas);
-    groupCommitter.submitAndWait(entry.toByteArray());
+    return groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**

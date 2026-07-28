@@ -166,7 +166,12 @@ class RaftGroupCommitter {
     return messageSizeMax;
   }
 
-  void submitAndWait(final byte[] entry) {
+  /**
+   * @return the Raft log index the entry committed at, or -1 when it is not known. Callers that must
+   * observe their own write locally (a replica, whose pages are written asynchronously by the state
+   * machine) wait for this index; see {@code RaftReplicatedDatabase} and issue #5503.
+   */
+  long submitAndWait(final byte[] entry) {
     // Pre-check the entry against the maximum size the cluster can actually replicate - the SMALLER
     // of arcadedb.ha.grpcMessageSizeMax and arcadedb.ha.appendBufferSize (see
     // RaftPropertiesBuilder.maxReplicatedEntrySize). Dispatching an oversized entry is far worse than
@@ -282,6 +287,8 @@ class RaftGroupCommitter {
     } catch (final Exception e) {
       throw dispatchAware(pending, "Group commit failed: " + e.getMessage());
     }
+
+    return pending.logIndex;
   }
 
   /**
@@ -513,6 +520,7 @@ class RaftGroupCommitter {
           }
         }
 
+        batch.get(i).logIndex = reply.getLogIndex();
         batch.get(i).future.complete(null); // success - after ALL check
       } catch (final InterruptedException ie) {
         // The flusher was interrupted (client refresh after leader churn, or shutdown) while
@@ -582,6 +590,11 @@ class RaftGroupCommitter {
     final byte[]                       entry;
     final CompletableFuture<Exception> future = new CompletableFuture<>();
     final AtomicInteger                state  = new AtomicInteger(PENDING);
+
+    // Raft log index this entry landed at, published by the flusher before it completes the future so
+    // the submitting thread can wait for its OWN entry to be applied locally (#5503). Stays -1 on every
+    // failure path, where there is no committed index to wait for.
+    volatile long logIndex = -1;
 
     CancellablePendingEntry(final byte[] entry) {
       this.entry = entry;

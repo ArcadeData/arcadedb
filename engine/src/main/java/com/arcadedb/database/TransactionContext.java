@@ -1222,31 +1222,31 @@ public class TransactionContext implements Transaction {
     try {
       // #4937: explicit-lock mode captured before checkExplicitLocks nulls explicitLockedFiles, so the
       // late-joiner block below can still tell an explicit-lock transaction from an auto-locked one.
-      boolean explicitLockMode = false;
-      if (isLeader) {
-        // Determine files to lock — must include files from updatedRecords
-        if (updatedRecords != null)
-          for (final Record rec : updatedRecords.values()) {
-            final RID rid = rec.getIdentity();
-            ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
-          }
+      // Determine files to lock — must include files from updatedRecords
+      if (updatedRecords != null)
+        for (final Record rec : updatedRecords.values()) {
+          final RID rid = rec.getIdentity();
+          ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
+        }
 
-        final IntHashSet modifiedFiles = lockFilesFromChanges();
+      // #5503: replicas lock the modified files too. The page-version validation below is a
+      // check-then-act, and the lock is what makes it atomic against other local committers. A replica
+      // used to skip it, so two concurrent transactions validated against the same base version and both
+      // shipped a delta stamped with the same next version; the state machine applied the first and then
+      // re-applied the second onto it through the equal-version repair path (#4926), splicing two partial
+      // page images together and dropping the records the first delta carried.
+      final IntHashSet modifiedFiles = lockFilesFromChanges();
 
-        // checkExplicitLocks nulls explicitLockedFiles on success, so remember the mode now for the
-        // late-joiner check further down (#4937): otherwise that check always sees null and would
-        // silently expand an explicit-lock transaction's lock set, defeating the explicit-locking contract.
-        explicitLockMode = explicitLockedFiles != null;
+      // checkExplicitLocks nulls explicitLockedFiles on success, so remember the mode now for the
+      // late-joiner check further down (#4937): otherwise that check always sees null and would
+      // silently expand an explicit-lock transaction's lock set, defeating the explicit-locking contract.
+      final boolean explicitLockMode = explicitLockedFiles != null;
 
-        if (explicitLockedFiles != null)
-          checkExplicitLocks(modifiedFiles);
-        else
-          // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
-          lockedFiles = lockFilesInOrder(modifiedFiles);
-
-      } else
-        // IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION
-        lockedFiles = new ArrayList<>();
+      if (explicitLockedFiles != null)
+        checkExplicitLocks(modifiedFiles);
+      else
+        // LOCK FILES IN ORDER (TO AVOID DEADLOCK)
+        lockedFiles = lockFilesInOrder(modifiedFiles);
 
       // Process updatedRecords AFTER acquiring locks
       if (updatedRecords != null) {
@@ -1292,7 +1292,7 @@ public class TransactionContext implements Transaction {
       // and re-acquire the UNION in order (lock-ordering discipline forbids acquiring extra locks in
       // place). The version checks below run after this block, so anything that changed while unlocked
       // fails validation with the standard retriable ConcurrentModificationException.
-      if (isLeader && lockedFiles != null) {
+      if (lockedFiles != null) {
         // Fast path first: in the overwhelmingly common case every touched file is already locked, and this
         // is one of the hottest paths in the engine - detect late joiners with a plain scan (no allocation,
         // no boxing) and only build the union set when one is actually found.

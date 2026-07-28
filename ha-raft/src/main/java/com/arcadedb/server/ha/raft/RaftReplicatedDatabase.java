@@ -419,9 +419,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   void replicateAndCommitLocally(final ReplicationPayload payload, final boolean leader,
       final ArcadeStateMachine stateMachine, final long phase2Ticket) {
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
+    long committedLogIndex = -1;
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getTransactionBroker().replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
+      committedLogIndex = raft.getTransactionBroker()
+          .replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
     } catch (final MajorityCommittedAllFailedException e) {
       // MAJORITY committed (applyTransaction fired with origin-skip, lastAppliedIndex advanced)
       // but ALL-quorum watch failed. We MUST apply locally to prevent permanent divergence.
@@ -463,6 +465,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // --- PHASE 2 (read lock on leader): quorum reached, apply locally ---
     if (!leader) {
       releasePhase2Ticket(stateMachine, phase2Ticket);
+      // #5503: this replica never runs phase 2 - the state machine writes the pages asynchronously - so
+      // the local page cache still holds the pre-commit version of every page this transaction touched.
+      // reset() below releases the commit locks taken in phase 1, and the next transaction to take them
+      // would read that stale version, pass its own version check and ship a delta stamped with the same
+      // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
+      // the replica's own commit index still trails the leader here, so waiting for it would not cover
+      // the entry just written. On timeout the wait returns silently, leaving the pre-#5503 behaviour.
+      final RaftHAServer raft = raftHAServer;
+      if (raft != null && committedLogIndex > 0)
+        raft.waitForAppliedIndex(committedLogIndex);
       payload.tx().reset();
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       ctx.popIfNotLastTransaction();
