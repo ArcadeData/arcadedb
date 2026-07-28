@@ -111,6 +111,14 @@ public class TransactionContext implements Transaction {
   private       Map<Long, SlotRebaseBuffer>          slotRebaseByPage;
   private       LongHashSet                          slotRebasePoisonedPages;
   private       boolean                              slotMerge;
+  // #5279: the insert slots this transaction claimed on EXISTING bucket pages, so concurrent inserts into the same
+  // page get different slots (hence different RIDs) and commute instead of conflicting. Held in parallel primitive
+  // arrays - grown by doubling and reused across transactions - so inserting N records allocates nothing per record,
+  // and released as a block when the transaction ends (see releaseInsertSlotReservations).
+  private       LocalBucket[]                        insertReservationBuckets;
+  private       int[]                                insertReservationPages;
+  private       int[]                                insertReservationSlots;
+  private       int                                  insertReservationCount;
   // Per-transaction soft cap on the bytes retained for the slot merge and the running total: once exceeded the
   // merge is disabled for the rest of the transaction so heap stays bounded on a very large transaction.
   private       long                                 slotMergeMaxBytes;
@@ -157,6 +165,10 @@ public class TransactionContext implements Transaction {
   private volatile Object                             requester;
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
+
+  // #5279: above this many tracked insert reservations the parallel arrays are dropped instead of being reused, so a
+  // one-off bulk insert does not keep its (per-record) tracking arrays alive on a long-lived transaction context.
+  private static final int MAX_RETAINED_INSERT_RESERVATIONS = 8192;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -791,6 +803,56 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Registers an insert slot {@link LocalBucket} handed to this transaction on an existing page, so it is given
+   * back when the transaction ends - whatever the outcome (issue #5279). Called once per created record
+   * that lands on a reused page; a record on a brand-new page needs no reservation because the page number itself is
+   * already reserved atomically.
+   */
+  public void trackInsertSlotReservation(final LocalBucket bucket, final int pageNumber, final int slot) {
+    if (insertReservationBuckets == null) {
+      insertReservationBuckets = new LocalBucket[16];
+      insertReservationPages = new int[16];
+      insertReservationSlots = new int[16];
+    } else if (insertReservationCount == insertReservationBuckets.length) {
+      final int newSize = insertReservationCount * 2;
+      insertReservationBuckets = Arrays.copyOf(insertReservationBuckets, newSize);
+      insertReservationPages = Arrays.copyOf(insertReservationPages, newSize);
+      insertReservationSlots = Arrays.copyOf(insertReservationSlots, newSize);
+    }
+
+    insertReservationBuckets[insertReservationCount] = bucket;
+    insertReservationPages[insertReservationCount] = pageNumber;
+    insertReservationSlots[insertReservationCount] = slot;
+    ++insertReservationCount;
+  }
+
+  /**
+   * Gives every insert slot this transaction claimed back to its bucket. Must run on EVERY transaction teardown path
+   * (commit, rollback and kill): a leaked reservation would keep a slot of a live page permanently unusable.
+   */
+  private void releaseInsertSlotReservations() {
+    for (int i = 0; i < insertReservationCount; i++) {
+      final LocalBucket bucket = insertReservationBuckets[i];
+      insertReservationBuckets[i] = null;
+      try {
+        bucket.releaseInsertSlot(insertReservationPages[i], insertReservationSlots[i]);
+      } catch (final Exception e) {
+        // A RELEASE FAILURE (E.G. THE BUCKET WAS DROPPED MEANWHILE) MUST NEVER ABORT THE TRANSACTION TEARDOWN
+        LogManager.instance()
+            .log(this, Level.FINE, "Error on releasing the insert slot reservation of page %d", e, insertReservationPages[i]);
+      }
+    }
+    insertReservationCount = 0;
+
+    if (insertReservationBuckets != null && insertReservationBuckets.length > MAX_RETAINED_INSERT_RESERVATIONS) {
+      // A HUGE BULK INSERT MUST NOT LEAVE ITS ARRAYS BEHIND ON A THREAD-LOCAL, REUSED TRANSACTION CONTEXT
+      insertReservationBuckets = null;
+      insertReservationPages = null;
+      insertReservationSlots = null;
+    }
+  }
+
+  /**
    * Records a brand-new record inserted into a FREE slot of an EXISTING page as rebasable: at commit, a
    * page-version conflict caused only by concurrent writes to OTHER slots of that page can be resolved by
    * replaying this insert on the newer committed page. No-op when the feature is off or the page is poisoned.
@@ -871,6 +933,20 @@ public class TransactionContext implements Transaction {
       // short-circuits so the set is not consulted anyway; keeping it costs nothing and avoids any assumption
       // that a poisoned page could become rebasable again after the feature disables mid-transaction.
     }
+  }
+
+  /**
+   * True when {@code slot} of page (fileId, pageNumber) holds a record this transaction CREATED and is tracked as a
+   * rebasable insert. Lets the update path recognise a write to a record of its own making: it has no committed
+   * pre-image, so it must keep insert semantics (#5279) - and, for the record kinds normally left to the
+   * edge-append merge, it is the ONLY mechanism that can replay it, since the edge merge cannot rebase a chunk the
+   * committed page does not contain yet.
+   */
+  public boolean isSlotTrackedAsInsert(final int fileId, final int pageNumber, final int slot) {
+    if (!slotMerge || slotRebaseByPage == null)
+      return false;
+    final SlotRebaseBuffer buffer = slotRebaseByPage.get(packPageKey(fileId, pageNumber));
+    return buffer != null && buffer.insertedSlots.contains(slot);
   }
 
   /**
@@ -983,6 +1059,7 @@ public class TransactionContext implements Transaction {
       database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
       lockedFiles = null;
     }
+    releaseInsertSlotReservations();
     modifiedPages = null;
     newPages = null;
     edgeAppendsBySegment = null;
@@ -1561,6 +1638,7 @@ public class TransactionContext implements Transaction {
     }
 
     indexChanges.reset();
+    releaseInsertSlotReservations();
 
     modifiedPages = null;
     newPages = null;
