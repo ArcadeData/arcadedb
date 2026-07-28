@@ -1936,6 +1936,25 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   @Test
+  void hybridSearchReportsTheFullTextIndexEvenWhenThatLegMatchesNothing() throws Exception {
+    seedHybridGraph();
+
+    final JSONObject payload = payloadOf(callTool("hybrid_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("vectorIndexName", "McpHybridDoc[embedding]")
+        .put("queryVector", probeVector())
+        .put("fulltextIndexName", "McpHybridDoc[content]")
+        .put("fulltextQuery", "zzznosuchterm")
+        .put("k", 3)));
+
+    // A leg that matched nothing cannot become a fusion source, so the response is unfused. It must
+    // still name the index that was searched, or the caller cannot tell an empty leg from an absent one.
+    assertThat(payload.getBoolean("fused")).isFalse();
+    assertThat(payload.getString("fulltextIndexName")).isEqualTo("McpHybridDoc[content]");
+    assertThat(payload.getJSONObject("legs").getJSONObject("fulltext").getInt("count")).isEqualTo(0);
+  }
+
+  @Test
   void hybridSearchExpandsAlongTheGraphAndReportsPaths() throws Exception {
     seedHybridGraph();
 

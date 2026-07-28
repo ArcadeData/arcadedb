@@ -287,9 +287,13 @@ public class HybridSearchTool {
     } else {
       results = fuse(database, legList, strategy, k, serializer, expansionInfo);
       response.put("fused", true).put("fusionStrategy", strategy);
-      if (legs.has("fulltext"))
-        response.put("fulltextIndexName", legs.getJSONObject("fulltext").getString("indexName"));
     }
+
+    // The index name is reported whenever the full-text leg ran, including when it matched nothing and
+    // so could not become a fusion source. A caller comparing a fused and an unfused response would
+    // otherwise see the field appear and disappear for a reason unrelated to which index was searched.
+    if (legs.has("fulltext"))
+      response.put("fulltextIndexName", legs.getJSONObject("fulltext").getString("indexName"));
 
     return response
         .put("truncated", results.length() >= k)
@@ -433,7 +437,11 @@ public class HybridSearchTool {
           rows.add(new LegRow(rid, null));
           info.put(rid, new ExpansionInfo(depth.intValue(), readPath(row.getProperty("path"), rid)));
         }
-        return new Expansion(rows, info, rows.size() >= MAX_EXPANSION && resultSet.hasNext());
+        // Truncation reports a filled window, not a probe of what lies beyond it: rows the loop skips
+        // as duplicates or seeds still consume the stream, so asking whether anything remains can
+        // report false at the boundary. A filled window is the only state in which more neighbors may
+        // exist, which is the same convention the top-level flag and vector_search already use.
+        return new Expansion(rows, info, rows.size() >= MAX_EXPANSION);
       }
     } catch (final SecurityException e) {
       throw e;
