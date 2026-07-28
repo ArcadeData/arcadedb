@@ -127,7 +127,7 @@ public class PatternComprehensionExpression implements Expression {
     // matchesEndPattern already validated, and an uncorrelated start is validated while iterating
     // candidates in traverseUncorrelatedStart.
     if (hopIndex == 0 && knownStartVertex == null
-        && !matchesNodeWhereExpression(startVertex, startNodePattern, currentResult, context))
+        && !matchesNodeWhereExpression(startVertex, startNodePattern, inlineWhereRow(startNodePattern, currentResult), context))
       return;
 
     // Add start vertex to path at first hop
@@ -151,7 +151,8 @@ public class PatternComprehensionExpression implements Expression {
       final int maxHops = relPattern.getEffectiveMaxHops();
 
       // Zero-length path: start and end are the same vertex (only valid if matches end pattern)
-      if (minHops == 0 && matchesEndPattern(startVertex, endNodePattern, baseResult, currentResult, context)) {
+      if (minHops == 0
+          && matchesEndPattern(startVertex, endNodePattern, baseResult, inlineWhereRow(endNodePattern, currentResult), context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, null);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, startVertex);
       }
@@ -190,10 +191,14 @@ public class PatternComprehensionExpression implements Expression {
       candidates = collectAllVertices(context);
     }
 
+    // Row reused across every candidate vertex, for the same reason as the edge expansions below:
+    // only the node variable changes per candidate, so the enclosing bindings are copied once.
+    final ResultInternal whereEvalRow = inlineWhereRow(startNodePattern, currentResult);
+
     for (final Record record : candidates) {
       if (!(record instanceof Vertex candidate))
         continue;
-      if (!matchesStartPattern(candidate, startNodePattern, currentResult, context))
+      if (!matchesStartPattern(candidate, startNodePattern, whereEvalRow, context))
         continue;
 
       final ResultInternal candidateResult = new ResultInternal();
@@ -214,7 +219,7 @@ public class PatternComprehensionExpression implements Expression {
    * Returns true if a vertex matches the start node pattern's labels, inline properties and inline
    * {@code WHERE} predicate.
    */
-  private boolean matchesStartPattern(final Vertex vertex, final NodePattern startNodePattern, final Result currentResult,
+  private boolean matchesStartPattern(final Vertex vertex, final NodePattern startNodePattern, final ResultInternal whereEvalRow,
       final CommandContext context) {
     if (startNodePattern.hasLabels()) {
       for (final String label : startNodePattern.getLabels()) {
@@ -228,7 +233,7 @@ public class PatternComprehensionExpression implements Expression {
           return false;
       }
     }
-    return matchesNodeWhereExpression(vertex, startNodePattern, currentResult, context);
+    return matchesNodeWhereExpression(vertex, startNodePattern, whereEvalRow, context);
   }
 
   /**
@@ -263,6 +268,8 @@ public class PatternComprehensionExpression implements Expression {
     // changes per edge, so the enclosing bindings are copied once. Stays null when the pattern
     // carries no inline WHERE, leaving the common path allocation-free.
     final ResultInternal whereEvalRow = relPattern.hasWhereExpression() ? copyBindings(currentResult) : null;
+    // Same reuse for the end node's inline WHERE: only the node variable changes per candidate.
+    final ResultInternal nodeWhereEvalRow = inlineWhereRow(endNodePattern, currentResult);
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
@@ -295,7 +302,7 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.add(nextVertex);
       }
 
-      if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult, currentResult, context)) {
+      if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult, nodeWhereEvalRow, context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern, edge);
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, nextVertex);
       }
@@ -313,7 +320,7 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   private boolean matchesEndPattern(final Vertex vertex, final NodePattern endNodePattern, final Result baseResult,
-      final Result currentResult, final CommandContext context) {
+      final ResultInternal whereEvalRow, final CommandContext context) {
     if (endNodePattern.hasLabels()) {
       for (final String label : endNodePattern.getLabels()) {
         if (!Labels.hasLabel(vertex, label))
@@ -334,7 +341,18 @@ public class PatternComprehensionExpression implements Expression {
         return false;
     }
     // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x] (issue #5480)
-    return matchesNodeWhereExpression(vertex, endNodePattern, currentResult, context);
+    return matchesNodeWhereExpression(vertex, endNodePattern, whereEvalRow, context);
+  }
+
+  /**
+   * Builds the row an inline node {@code WHERE} predicate is evaluated against: a private copy of
+   * the bindings visible at that point, on which the node variable is later rebound per candidate.
+   * Returns {@code null} when the pattern carries no predicate, leaving the common path
+   * allocation-free. Callers hoist the call out of their candidate loop so a high-fan-out expansion
+   * copies the bindings once rather than once per candidate.
+   */
+  private static ResultInternal inlineWhereRow(final NodePattern nodePattern, final Result bindings) {
+    return nodePattern != null && nodePattern.hasWhereExpression() ? copyBindings(bindings) : null;
   }
 
   /**
@@ -343,20 +361,20 @@ public class PatternComprehensionExpression implements Expression {
    * done by the regular MATCH path, where the same predicate is hoisted into the clause WHERE, so
    * both spellings filter identically.
    *
-   * @param bindings variables visible to the predicate. They are copied into a private evaluation
-   *                 row on which the node variable is bound to the candidate, leaving the caller's
-   *                 row untouched.
+   * @param whereEvalRow the row produced by {@link #inlineWhereRow(NodePattern, Result)} for this
+   *                     pattern. The node variable is rebound on it for each candidate, so the
+   *                     caller's own row is never mutated. Only read when the pattern actually
+   *                     declares a predicate, so a {@code null} row is fine otherwise.
    */
-  private boolean matchesNodeWhereExpression(final Vertex vertex, final NodePattern nodePattern, final Result bindings,
-      final CommandContext context) {
+  private boolean matchesNodeWhereExpression(final Vertex vertex, final NodePattern nodePattern,
+      final ResultInternal whereEvalRow, final CommandContext context) {
     if (nodePattern == null || !nodePattern.hasWhereExpression())
       return true;
 
-    final ResultInternal evalRow = copyBindings(bindings);
     final String variable = nodePattern.getVariable();
     if (variable != null && !variable.isEmpty())
-      evalRow.setProperty(variable, vertex);
-    return nodePattern.getWhereExpression().evaluate(evalRow, context);
+      whereEvalRow.setProperty(variable, vertex);
+    return nodePattern.getWhereExpression().evaluate(whereEvalRow, context);
   }
 
   /**
@@ -463,6 +481,8 @@ public class PatternComprehensionExpression implements Expression {
     // changes per edge, so the enclosing bindings are copied once. Stays null when the pattern
     // carries no inline WHERE, leaving the common path allocation-free.
     final ResultInternal whereEvalRow = relPattern.hasWhereExpression() ? copyBindings(currentResult) : null;
+    // Same reuse for the end node's inline WHERE: only the node variable changes per candidate.
+    final ResultInternal nodeWhereEvalRow = inlineWhereRow(endNodePattern, currentResult);
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
@@ -481,7 +501,7 @@ public class PatternComprehensionExpression implements Expression {
         continue;
       }
 
-      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult, currentResult, context))
+      if (!matchesEndPattern(targetVertex, endNodePattern, baseResult, nodeWhereEvalRow, context))
         continue;
 
       // Build result with matched variables

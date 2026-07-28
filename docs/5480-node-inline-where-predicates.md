@@ -46,12 +46,15 @@ Two files, both minimal:
    like the relationship form directly below it: `new BooleanCoercionExpression(parseExpression(ctx.expression()))`,
    passed to the full `NodePattern` constructor.
 
-2. `ast/PatternComprehensionExpression` now enforces it. A new private helper
-   `matchesNodeWhereExpression(vertex, nodePattern, bindings, context)` copies the visible bindings
-   into a private evaluation row, binds the node variable to the candidate vertex and evaluates the
-   predicate. It is called from the three places a node is accepted:
+2. `ast/PatternComprehensionExpression` now enforces it. `inlineWhereRow(nodePattern, bindings)`
+   builds a private evaluation row by copying the visible bindings once per expansion (and returns
+   `null` when the pattern carries no predicate), and `matchesNodeWhereExpression(vertex,
+   nodePattern, whereEvalRow, context)` rebinds the node variable on that row per candidate and
+   evaluates the predicate. This mirrors the `whereEvalRow` reuse the relationship form already
+   used, so a high-fan-out expansion copies the bindings once rather than once per candidate. The
+   check is called from the three places a node is accepted:
    - `matchesEndPattern(...)` - every hop's target node (fixed-length, variable-length and the
-     zero-length case), which now also receives `currentResult` for the evaluation scope.
+     zero-length case), which now also receives the hoisted evaluation row.
    - `matchesStartPattern(...)` - candidates of an uncorrelated leading node.
    - `traversePattern(...)` - the leading node of the first hop when it is resolved from an
      outer-scope binding. Later hops start from the previous hop's end node, already validated by
@@ -63,18 +66,19 @@ predicate-free path stays allocation-free.
 
 ## Tests
 
-`engine/src/test/java/com/arcadedb/query/opencypher/Issue5480NodeInlineWhereTest.java` - 9 tests:
+`engine/src/test/java/com/arcadedb/query/opencypher/Issue5480NodeInlineWhereTest.java` - 10 tests:
 
 - plain `MATCH`: single node, both endpoints of a path, inline combined with a clause-level `WHERE`
 - `EXISTS {}`: pattern-only form and explicit-`MATCH` form, matching and non-matching predicate
 - `COUNT {}`: predicate applied, and control without predicate
-- pattern comprehension: target node, uncorrelated/anchor node, inline combined with the
+- pattern comprehension: target node, uncorrelated/anchor node, a variable-length hop (which
+  exercises the reused evaluation row across candidates), and inline combined with the
   comprehension's trailing `WHERE`
 
 Verification:
 
-- `mvn -o test -Dtest=Issue5480NodeInlineWhereTest` - 9/9 pass (3 of the 9 failed before the fix)
-- `mvn -o test -Dtest='com.arcadedb.query.opencypher.**'` - 7578 tests, 0 failures. The only 3
+- `mvn -o test -Dtest=Issue5480NodeInlineWhereTest` - 10/10 pass (3 failed before the fix)
+- `mvn -o test -Dtest='com.arcadedb.query.opencypher.**'` - 7579 tests, 0 failures. The only 3
   errors are `OpenCypherCustomFunctionTest` GraalVM polyglot `NoClassDefFoundError`s, reproduced
   identically on a stashed (unmodified) tree, so they are environmental and pre-existing.
 
@@ -90,3 +94,43 @@ Verification:
 
 Silent wrong answers become correct answers. Any query using `[(a)-[:R]->(x:L WHERE ...) | x]` in
 `size()`, `count()`, aggregation or a projection previously saw the unfiltered set.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5486
+
+## Review cycles
+
+### Cycle 1 - head `97ab46ec`
+
+- `claude[bot]`: reviewed, **no blocking items**, three minor suggestions.
+  1. GC pressure - the end-node check re-copied the bindings per candidate instead of once per
+     expansion like the relationship form. **Applied** (`inlineWhereRow(...)` hoisted out of the
+     candidate loops), plus a variable-length regression test that would catch a stale-row bug.
+  2. Test class javadoc listed `shortestPath` among the covered contexts although no such test
+     exists. **Applied** - javadoc rewritten to name the three covered contexts and point at #5481.
+  3. `ShortestPathExpression` now receives a parsed-but-ignored node predicate. **No change** - the
+     reviewer flagged it as a non-regression; that evaluator is issue #5481, fixed separately.
+- `gemini-code-assist`: did not respond within the 15-minute per-cycle window.
+
+### Cycle 2 - head after the review fixes
+
+- Pushed the two applied items above plus the extra variable-length test. Reviewer outcome for this
+  head is appended below once the bots report.
+
+## Deferred items
+
+Recorded in the (uncommitted) session note `docs/review-deferred-97ab46ec.md`:
+
+- A node inline predicate that references the relationship variable of the same hop, e.g.
+  `[(a)-[r:E]->(x:A WHERE x.v > r.w) | x]`, sees `r` unbound on the comprehension path, because the
+  evaluation row is copied from the bindings visible before the hop. The equivalent `MATCH`
+  spelling hoists the predicate into the clause `WHERE`, where `r` is bound, so the two spellings
+  can disagree for this shape. Out of scope for #5480 (the predicate being dropped entirely) and it
+  needs its own triage, including what `r` should mean on a variable-length hop. Worth a separate
+  issue.
+
+## Final state
+
+`timeout` - `gemini-code-assist` did not review either head within the per-cycle window.
+`claude[bot]` reviewed with no blocking items and its actionable suggestions were applied.

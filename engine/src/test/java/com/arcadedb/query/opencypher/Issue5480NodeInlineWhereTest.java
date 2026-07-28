@@ -35,9 +35,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression test for GitHub issue #5480.
  * <p>
  * A node inline {@code WHERE} predicate - the {@code WHERE n.v = 2} in {@code (n:A WHERE n.v = 2)} -
- * must filter candidate nodes in every context that accepts the syntax: plain {@code MATCH},
- * {@code EXISTS {}} subqueries, pattern comprehensions and {@code shortestPath}. Before the fix the
- * predicate was parsed but silently discarded, so every candidate node matched.
+ * must filter candidate nodes in plain {@code MATCH}, in {@code EXISTS {}} / {@code COUNT {}}
+ * subqueries and in pattern comprehensions. Before the fix the predicate was parsed but silently
+ * discarded by the pattern-comprehension parser path, so every candidate node matched.
+ * <p>
+ * {@code shortestPath} is deliberately not covered here: that evaluator ignores inline predicates
+ * altogether and is tracked by issue #5481.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -135,6 +138,15 @@ class Issue5480NodeInlineWhereTest {
   void patternComprehensionAppliesNodeInlineWhereOnTheAnchorNode() {
     assertThat(queryInt("MATCH (a:A {v:1}) RETURN size([(a WHERE a.v = 99)-[:E]->(x:A) | x]) AS c", "c")).isEqualTo(0);
     assertThat(queryInt("MATCH (a:A {v:1}) RETURN size([(a WHERE a.v = 1)-[:E]->(x:A) | x]) AS c", "c")).isEqualTo(2);
+  }
+
+  @Test
+  void patternComprehensionAppliesNodeInlineWhereOnAVariableLengthHop() {
+    // The evaluation row is reused across candidates of one expansion, so a predicate that matches
+    // only some of them must still reject the others.
+    assertThat(queryInt("MATCH (a:A {v:1}) RETURN size([(a)-[:E*1..2]->(x:A WHERE x.v = 3) | x]) AS c", "c"))
+        .isEqualTo(1);
+    assertThat(queryInt("MATCH (a:A {v:1}) RETURN size([(a)-[:E*1..2]->(x:A) | x]) AS c", "c")).isEqualTo(2);
   }
 
   @Test
