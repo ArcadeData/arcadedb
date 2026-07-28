@@ -20,8 +20,8 @@ package com.arcadedb.function.coll;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,6 +29,9 @@ import java.util.List;
 
 /**
  * tail() function - returns all elements except the first.
+ * <p>
+ * Signature: {@code tail(list :: LIST<ANY>) :: LIST<ANY>}. A non-list argument is a type error, not an
+ * empty list (issue #5476); {@code null} propagates to {@code null} (issue #3920).
  */
 public class TailFunction implements StatelessFunction {
   @Override
@@ -40,12 +43,9 @@ public class TailFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
       throw new CommandExecutionException("tail() requires exactly one argument");
-    if (args[0] == null)
+    final List<Object> list = CypherFunctionHelper.requireListArgument(args[0], "tail");
+    if (list == null)
       return null;
-    // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
-    final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
-    if (list != null)
-      return list.size() <= 1 ? Collections.emptyList() : new ArrayList<>(list.subList(1, list.size()));
-    return Collections.emptyList();
+    return list.size() <= 1 ? Collections.emptyList() : new ArrayList<>(list.subList(1, list.size()));
   }
 }
