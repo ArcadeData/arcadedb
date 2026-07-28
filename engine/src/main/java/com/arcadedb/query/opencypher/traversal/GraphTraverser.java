@@ -177,10 +177,25 @@ public abstract class GraphTraverser {
    * @return true if edge matches all property filters (or no filters set)
    */
   protected boolean matchesPropertyFilter(final Edge edge) {
-    if (edgePropertyFilters.isEmpty())
+    return matchesPropertyFilter(edge, edgePropertyFilters);
+  }
+
+  /**
+   * Checks an edge against an inline {@code {prop: value}} filter map. Single definition of the
+   * comparison rules (including the Integer/Long numeric coercion) so every evaluator that enforces an
+   * inline relationship property map - the variable-length MATCH traversers and both shortestPath()
+   * evaluators - stays in agreement.
+   *
+   * @param edge    edge to check
+   * @param filters property constraints, may be null or empty
+   *
+   * @return true if edge matches all property filters (or no filters set)
+   */
+  public static boolean matchesPropertyFilter(final Edge edge, final Map<String, Object> filters) {
+    if (filters == null || filters.isEmpty())
       return true;
 
-    for (final Map.Entry<String, Object> entry : edgePropertyFilters.entrySet()) {
+    for (final Map.Entry<String, Object> entry : filters.entrySet()) {
       final Object actual = edge.get(entry.getKey());
       final Object expected = entry.getValue();
       if (actual == null)

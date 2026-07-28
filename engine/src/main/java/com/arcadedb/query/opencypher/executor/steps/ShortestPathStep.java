@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -451,7 +452,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       if (rel == null)
         return null;
 
-      final Map<String, Object> properties = rel.getProperties().isEmpty() ? null : rel.getProperties();
+      final Map<String, Object> properties = resolveProperties(rel, context);
       final BooleanExpression whereExpression = rel.getWhereExpression();
       if (properties == null && whereExpression == null)
         return null;
@@ -471,7 +472,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
      * Returns true when the edge satisfies every declared constraint.
      */
     public boolean matches(final Edge edge) {
-      if (properties != null && !matchesProperties(edge))
+      if (!GraphTraverser.matchesPropertyFilter(edge, properties))
         return false;
       if (whereExpression == null)
         return true;
@@ -481,23 +482,25 @@ public class ShortestPathStep extends AbstractExecutionStep {
     }
 
     /**
-     * Checks an edge against the inline property map. Uses the same numeric-coercion rules as
-     * {@code GraphTraverser.matchesPropertyFilter} so a filtered shortestPath() behaves identically to a
-     * variable-length MATCH pattern carrying the same {@code {prop: value}} constraint.
+     * Returns the inline property map declared by the relationship, or {@code null} when there is none.
+     * A map supplied as a bare parameter (e.g. {@code -[:LINK* $props]->}) is resolved against the query
+     * parameters here, so the parameter form constrains the traversal exactly like an inline map.
      */
-    private boolean matchesProperties(final Edge edge) {
-      for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-        final Object actual = edge.get(entry.getKey());
-        final Object expected = entry.getValue();
-        if (actual == null)
-          return false;
-        if (actual instanceof Number && expected instanceof Number) {
-          if (((Number) actual).longValue() != ((Number) expected).longValue())
-            return false;
-        } else if (!actual.equals(expected))
-          return false;
-      }
-      return true;
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> resolveProperties(final RelationshipPattern rel, final CommandContext context) {
+      if (!rel.getProperties().isEmpty())
+        return rel.getProperties();
+
+      final String parameterName = rel.getPropertiesParameterName();
+      if (parameterName == null || context == null || context.getInputParameters() == null)
+        return null;
+
+      final Object parameterValue = context.getInputParameters().get(parameterName);
+      if (!(parameterValue instanceof Map))
+        return null;
+
+      final Map<String, Object> resolved = (Map<String, Object>) parameterValue;
+      return resolved.isEmpty() ? null : resolved;
     }
   }
 

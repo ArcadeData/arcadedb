@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for https://github.com/ArcadeData/arcadedb/issues/5481
@@ -139,6 +141,22 @@ class CypherShortestPathInlineWhereTest extends TestHelper {
         .as("contradictory property map and inline WHERE cannot both be satisfied").isZero();
   }
 
+  /**
+   * A parameter map cannot be a predicate in a MATCH pattern, so the MATCH form rejects it up front
+   * rather than dropping it: there is no silent-drop gap to close on this path.
+   */
+  @Test
+  void matchFormRejectsParameterisedPropertyMap() {
+    assertThatThrownBy(() -> database.query("opencypher",
+        """
+            MATCH (a:Node {id: 1}), (b:Node {id: 4})
+            MATCH p = shortestPath((a)-[:LINK*1..3 $props]->(b))
+            RETURN count(p) AS c""",
+        Map.of("props", Map.of("tag", "ok"))))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Parameters cannot be used as predicates");
+  }
+
   @Test
   void matchFormAllShortestPathsAppliesInlineWhere() {
     final ResultSet rs = database.query("opencypher",
@@ -230,6 +248,19 @@ class CypherShortestPathInlineWhereTest extends TestHelper {
 
     assertThat(rs.hasNext()).isTrue();
     assertThat(ids(rs)).containsExactly(1L, 2L, 3L);
+  }
+
+  @Test
+  void expressionFormAppliesParameterisedPropertyMap() {
+    final ResultSet rs = database.query("opencypher",
+        """
+            MATCH (a:Node {id: 1}), (b:Node {id: 4})
+            RETURN shortestPath((a)-[:LINK*1..3 $props]->(b)) AS p""",
+        Map.of("props", Map.of("tag", "ok")));
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Object>getProperty("p"))
+        .as("a $props relationship property map must be enforced on the expression form too").isNull();
   }
 
   @Test

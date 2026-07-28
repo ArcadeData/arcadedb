@@ -52,6 +52,30 @@ covers the full 2x2 matrix (both evaluators x property map / inline `WHERE`), pl
 `allShortestPaths`, the combination of both constraints, `$parameter` predicates, and unconstrained
 control cases.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5487
+
+## Review cycles
+
+### Cycle 1 - head `2fcad506`
+
+`claude[bot]` reviewed (no blocking findings). `gemini-code-assist` did not respond inside the
+15-minute window.
+
+| Finding | Outcome |
+|---|---|
+| 1. A relationship property map supplied as a bare parameter (`-[:LINK* $props]->`) is still dropped | Partly applied. Verified: on the `MATCH` form there is no gap - `CypherASTBuilder.validateNoParameterProperties` rejects a parameter map in a `MATCH` pattern at parse time (`InvalidParameterUse`), so it can never be silently dropped. The expression form is not covered by that validation, and there `$props` really was dropped; `EdgeConstraint.from` now resolves it from the query parameters. Both behaviors are pinned by tests. |
+| 2. `allShortestPaths()` in expression position returns one path while the `MATCH` form returns all co-shortest paths | No change - intentional. The expression form has always returned a single path; this PR only adds constraint enforcement and deliberately leaves cardinality untouched. Changing it belongs in its own issue. |
+| 3. `matchesProperties` duplicates the numeric-coercion rules of `GraphTraverser.matchesPropertyFilter` | Applied. Extracted `GraphTraverser.matchesPropertyFilter(Edge, Map)` as a static helper; the existing protected instance method delegates to it, and `EdgeConstraint` calls it. One definition now serves the variable-length MATCH traversers and both `shortestPath` evaluators. |
+
+## Test results
+
+`mvn test -Dtest='*ShortestPath*,*Cypher*,*OpenCypher*,*Traverse*,*Traversal*'` in `engine`:
+6646 tests, 0 failures. The 3 errors are `OpenCypherCustomFunctionTest` GraalVM
+`polyglot.Engine$ImplHolder` `NoClassDefFound`, verified pre-existing on the base commit with the
+change stashed.
+
 ## Scope note
 
 Sibling work is fixing relationship inline `WHERE` in other contexts (node inline `WHERE`, #5480).
