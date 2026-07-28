@@ -286,7 +286,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
-              currentPaths = createTraverser().traversePaths(sourceVertex);
+              currentPaths = createTraverser(lastResult).traversePaths(sourceVertex);
             } else {
               currentPaths = null;
             }
@@ -304,7 +304,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
   /**
    * Creates a traverser for this pattern.
    */
-  private VariableLengthPathTraverser createTraverser() {
+  private VariableLengthPathTraverser createTraverser(final Result currentResult) {
     final String[] types = pattern.hasTypes() ?
         pattern.getTypes().toArray(new String[0]) :
         null;
@@ -313,16 +313,21 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
     final Direction direction = directionOverride != null ? directionOverride : pattern.getDirection();
 
-    if (pathMode != null)
-      return new VariableLengthPathTraverser(
-          direction, types, props,
-          pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
-          true, useBFS, pathMode);
+    final VariableLengthPathTraverser traverser = pathMode != null ?
+        new VariableLengthPathTraverser(
+            direction, types, props,
+            pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
+            true, useBFS, pathMode) :
+        new VariableLengthPathTraverser(
+            direction, types, props,
+            pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
+            true, useBFS);
 
-    return new VariableLengthPathTraverser(
-        direction, types, props,
-        pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
-        true, useBFS);
+    // Inline WHERE, e.g. -[r:E*1..2 WHERE r.tag = 'ok']->: every traversed relationship must satisfy
+    // it, matching the inline property map and the clause-level all(e IN r WHERE ...) spelling. Built
+    // per source row so the predicate sees that row's bindings.
+    traverser.withEdgePredicate(pattern.buildInlineWherePredicate(currentResult, context));
+    return traverser;
   }
 
   /**

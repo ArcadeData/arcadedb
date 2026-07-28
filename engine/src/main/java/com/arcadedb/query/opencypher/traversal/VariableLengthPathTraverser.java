@@ -87,28 +87,24 @@ public class VariableLengthPathTraverser extends GraphTraverser {
 
   @Override
   public Iterator<Vertex> traverse(final Vertex startVertex) {
-    if (useBFS) {
-      final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, pathMode);
-      return bfs.traverse(startVertex);
-    } else {
-      final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, pathMode);
-      return dfs.traverse(startVertex);
-    }
+    return delegate().traverse(startVertex);
   }
 
   @Override
   public Iterator<TraversalPath> traversePaths(final Vertex startVertex) {
-    if (useBFS) {
-      final BreadthFirstTraverser bfs = new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, pathMode);
-      return bfs.traversePaths(startVertex);
-    } else {
-      final DepthFirstTraverser dfs = new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters,
-          minHops, maxHops, trackPaths, pathMode);
-      return dfs.traversePaths(startVertex);
-    }
+    return delegate().traversePaths(startVertex);
+  }
+
+  /**
+   * Builds the strategy this traverser delegates to. The inline {@code WHERE} predicate is forwarded
+   * to it: the delegate does the per-edge walking, so a predicate left behind here would be silently
+   * dropped for every variable-length pattern.
+   */
+  private GraphTraverser delegate() {
+    final GraphTraverser strategy = useBFS ?
+        new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode) :
+        new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode);
+    return strategy.withEdgePredicate(edgePredicate);
   }
 
   /**
