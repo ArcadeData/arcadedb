@@ -19,7 +19,9 @@
 package com.arcadedb.function.coll;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -38,14 +40,13 @@ public class RangeFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length < 2 || args.length > 3)
       throw new CommandExecutionException("range() requires 2 or 3 arguments: range(start, end) or range(start, end, step)");
-    // Validate that arguments are integers, not floats
+    // Validate that arguments are integers, not floats. These are client-side type errors, so they carry a
+    // CommandSemanticException (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5477.
     for (int i = 0; i < args.length; i++) {
-      if (args[i] instanceof Double || args[i] instanceof Float)
-        throw new CommandExecutionException("InvalidArgumentType: range() requires integer arguments, got float for argument " + (i + 1));
       if (args[i] == null)
-        throw new CommandExecutionException("InvalidArgumentType: range() does not accept null arguments");
-      if (!(args[i] instanceof Number))
-        throw new CommandExecutionException("InvalidArgumentType: range() requires integer arguments, got " + args[i].getClass().getSimpleName());
+        throw new CommandSemanticException("Type mismatch: range() does not accept a null argument");
+      if (!(args[i] instanceof Number) || args[i] instanceof Double || args[i] instanceof Float)
+        throw CypherFunctionHelper.typeMismatch("range", "an INTEGER", args[i]);
     }
     final long start = ((Number) args[0]).longValue();
     final long end = ((Number) args[1]).longValue();

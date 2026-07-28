@@ -96,6 +96,25 @@ public final class CypherFunctionHelper {
     if (value == null)
       return null;
 
+    final List<Object> list = asListOrNull(value);
+    if (list != null)
+      return list;
+
+    throw typeMismatch(functionName, "a LIST<ANY>", value);
+  }
+
+  /**
+   * Returns the value as a List when Cypher considers it a LIST, or {@code null} when it is anything else, so the caller can
+   * decide whether that is a type error (head(), last(), tail()) or just another accepted shape (size(), which also takes
+   * STRING and MAP).
+   * <p>
+   * A MAP is not a LIST here: iterating a map yields nothing meaningful for a list function. Functions that do accept maps
+   * handle them before calling this method.
+   */
+  public static List<Object> asListOrNull(final Object value) {
+    if (value == null || value instanceof Map)
+      return null;
+
     // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
     final List<Object> list = MultiValue.getMultiValueAsList(value);
     if (list != null)
@@ -110,8 +129,23 @@ public final class CypherFunctionHelper {
         return materialize(iterator);
     }
 
-    throw new CommandSemanticException(
-        "Type mismatch: " + functionName + "() expects a LIST<ANY> argument but got " + cypherTypeName(value));
+    return null;
+  }
+
+  /**
+   * Builds the error raised when a function is handed an argument outside its input domain, e.g. {@code size(42)}
+   * (issue #5477) or {@code head(42)} (issue #5476). Answering {@code null} instead would be indistinguishable from legal
+   * Cypher null propagation, so a wrong query would look like a successful one. A {@link CommandSemanticException} makes the
+   * HTTP layer report 400 Bad Request with this message rather than a 500.
+   *
+   * @param functionName  function name without parentheses, e.g. {@code "size"}
+   * @param expectedTypes the input domain, phrased for the message, e.g. {@code "a STRING, a LIST<ANY> or a MAP"}
+   * @param value         the offending argument (never {@code null}: null propagation is not a type error)
+   */
+  public static CommandSemanticException typeMismatch(final String functionName, final String expectedTypes,
+      final Object value) {
+    return new CommandSemanticException(
+        "Type mismatch: " + functionName + "() expects " + expectedTypes + " argument but got " + cypherTypeName(value));
   }
 
   private static List<Object> materialize(final Iterator<?> iterator) {

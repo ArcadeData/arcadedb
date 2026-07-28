@@ -20,6 +20,7 @@ package com.arcadedb.function.misc;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
@@ -46,7 +47,8 @@ public class IsEmptyFunction implements StatelessFunction {
       return ((String) args[0]).isEmpty();
     if (args[0] instanceof Map)
       return ((Map<?, ?>) args[0]).isEmpty();
-    throw new CommandExecutionException("isEmpty() requires a LIST, MAP, or STRING argument, got " +
-        args[0].getClass().getSimpleName());
+    // Same classification as size(): an argument outside the input domain is the client's mistake, so it must be a
+    // CommandSemanticException (HTTP 400), not a CommandExecutionException (HTTP 500). See issue #5477.
+    throw CypherFunctionHelper.typeMismatch("isEmpty", "a STRING, a LIST<ANY> or a MAP", args[0]);
   }
 }
