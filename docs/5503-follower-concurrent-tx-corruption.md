@@ -121,6 +121,20 @@ becoming flakier is a plausible - if unproven - interaction worth watching in CI
   round trip, so this is symmetric, but a write-heavy follower workload will see lower throughput and
   more retries. That is the correct trade against silent corruption; writes routed to the leader are
   unaffected.
+- **Lock hold time now exceeds `COMMIT_LOCK_TIMEOUT` by a wide margin.** With defaults, a replica holds a
+  bucket's commit lock for `submitAndWait` (up to `2 * quorumTimeout` = 20 s, plus the grace window) plus
+  the apply wait (up to `quorumTimeout` = 10 s), while other writers give up on that lock after
+  `COMMIT_LOCK_TIMEOUT` = 5 s. On a healthy cluster the apply is sub-millisecond and none of this is
+  observable, but under leader churn or apply lag same-bucket writers serialize and burn retries. Note the
+  20 s half is not new and not replica-specific: the leader has always held its commit locks across
+  `submitAndWait`. What is new is that replicas hold locks at all, plus the apply wait.
+
+  **Shortening the apply wait was considered and rejected.** It looks attractive - the wait is a purely
+  local catch-up, not a quorum operation, so 10 s is generous - but the timeout path is precisely the path
+  that releases the locks with stale pages and reopens the corruption window. A shorter bound makes the
+  dangerous branch *more* reachable to buy back a few seconds of lock contention, which is the wrong
+  direction for a silent-corruption fix. The wait stays at `quorumTimeout`, the timeout is loudly logged,
+  and the contention is accepted and documented instead.
 - **New failure mode for follower writers: `LockTimeoutException`.** Because the locks are now held across
   the round trip and the apply wait, concurrent writers to the same bucket can exhaust
   `COMMIT_LOCK_TIMEOUT` (5000 ms by default) where previously a replica took no locks at all. It is

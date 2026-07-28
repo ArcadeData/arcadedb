@@ -484,8 +484,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // behind is exactly the pre-#5503 condition. waitForAppliedIndex does log, but as a READ_YOUR_WRITES
         // consistency warning, which reads like a stale-read risk rather than a page-corruption one - so say
         // plainly here what is being risked and what to look at.
+        // getLastAppliedIndex() reports -1 ("unknown") while an in-place restart re-initializes the Ratis
+        // division (#5271). That is not a race with another committer, so do not raise the alarm for it -
+        // the wait above will simply have run its full deadline, which is inherent to the restart window.
         final long applied = raft.getLastAppliedIndex();
-        if (applied < committedLogIndex)
+        if (applied >= 0 && applied < committedLogIndex)
           LogManager.instance().log(this, Level.WARNING,
               "Replica commit on database '%s' is releasing its commit locks before entry %d was applied locally "
                   + "(applied=%d). Concurrent transactions on these files can now validate against stale page "
