@@ -777,6 +777,16 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
+   * Returns the fixed stride, in bytes, that one sample occupies in a data page. Note that a row is
+   * <em>written</em> packed: a STRING column stores its actual bytes but reserves
+   * {@code 2 + MAX_STRING_BYTES} in the stride, so on a tag-heavy schema the stride is much wider than
+   * the row content (issue #5519).
+   */
+  public int getRowSize() {
+    return rowSize;
+  }
+
+  /**
    * Returns the maximum number of samples that fit in one data page.
    */
   public int getMaxSamplesPerPage() {
