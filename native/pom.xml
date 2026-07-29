@@ -34,7 +34,7 @@
 
     <properties>
         <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
-        <native-maven-plugin.version>0.10.6</native-maven-plugin.version>
+        <native-maven-plugin.version>1.1.6</native-maven-plugin.version>
         <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
