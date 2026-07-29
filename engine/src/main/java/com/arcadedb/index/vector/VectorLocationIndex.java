@@ -37,8 +37,9 @@ import java.util.stream.IntStream;
  * Uses absolute file offsets for direct random access without loading full pages.
  * <p>
  * Only live vectors are resident: once an id is tombstoned its location is released and the id survives as a single
- * bit (see {@link DeletedIds}), so the footprint follows the number of live vectors and not the number of writes
- * (issue #5516).
+ * bit (see {@link DeletedIds}), so the ~90 bytes a location costs follow the number of live vectors and not the
+ * number of writes (issue #5516). What still follows the writes is one bit per id handed out since the last graph
+ * rebuild - 1.2MB for the 9.3M ids that used to cost 970MB.
  * <p>
  * Used by LSMVectorIndex to implement lazy-loading of vectors from disk.
  *
@@ -69,8 +70,17 @@ public class VectorLocationIndex {
    * workload and is enough to tell "tombstoned" from "evicted from a bounded cache" (which must be reloaded from
    * the pages) and to know whether a persisted graph carries stale ordinals.
    * <p>
+   * The array is sized by the highest id handed out since the last {@link #clear()}, not by the number of live
+   * vectors: ids are preserved across a compaction rather than renumbered. Every graph rebuild (and therefore every
+   * compaction) releases it, so it grows only across the writes between two rebuilds.
+   * <p>
    * Writes are serialized on this object; reads are lock-free over a volatile array snapshot, matching the
-   * weakly-consistent semantics the {@link ConcurrentHashMap} backing {@code locations} already has.
+   * weakly-consistent semantics the {@link ConcurrentHashMap} backing {@code locations} already has. Every mutation
+   * republishes {@code bits} even when it did not resize the array: setting a bit is a plain array store, and a
+   * reader's volatile read of {@code bits} only synchronizes-with a write to that field, so without the
+   * re-publication the reader has no happens-before edge to the new bit and can keep missing it. A missed bit is
+   * not benign - it is a stale "not deleted" answer on the reconstruction path, which then scans the pages and
+   * finds the id's first (pre-tombstone) entry, resurrecting the vector this set exists to bury.
    */
   private static final class DeletedIds {
     private volatile long[] bits  = EMPTY_BITS;
@@ -91,15 +101,15 @@ public class VectorLocationIndex {
         return;
       final int word = id >>> 6;
       long[] current = bits;
-      if (word >= current.length) {
+      if (word >= current.length)
         current = Arrays.copyOf(current, Math.max(word + 1, current.length * 2));
-        bits = current;
-      }
+
       final long mask = 1L << id;
       if ((current[word] & mask) == 0) {
         current[word] |= mask;
         count++;
       }
+      bits = current; // publishes the bit above to every lock-free reader
     }
 
     synchronized void remove(final int id) {
@@ -113,6 +123,7 @@ public class VectorLocationIndex {
       if ((current[word] & mask) != 0) {
         current[word] &= ~mask;
         count--;
+        bits = current; // publishes the cleared bit to every lock-free reader
       }
     }
 

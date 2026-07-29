@@ -390,9 +390,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     for (final VectorEntryForGraphBuild entry : liveEntries)
       if (entry.absoluteFileOffset < 0 || entry.entryLength <= 0) {
         // A recovery fallback (document scan / in-memory recovery) contributed entries that are not on any page, so
-        // they cannot be copied byte for byte. Rebuilding the graph is still correct; compaction retries next time.
-        LogManager.instance().log(this, Level.INFO,
-            "Skipping compaction of vector index '%s': the live set contains vectors recovered outside the index pages",
+        // they cannot be copied byte for byte. Rebuilding the graph is still correct, and COMPACT INDEX reports the
+        // index as not compacted, but an operator who asked for space back is not getting it: say so at WARNING.
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping compaction of vector index '%s': the live set contains vectors recovered outside the index "
+                + "pages, so no space was reclaimed. Retry once a rebuild has persisted them",
             indexName);
         return;
       }

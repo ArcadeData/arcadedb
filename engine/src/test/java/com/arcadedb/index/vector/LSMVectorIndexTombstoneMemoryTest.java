@@ -19,6 +19,9 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -124,6 +127,37 @@ class LSMVectorIndexTombstoneMemoryTest extends TestHelper {
 
     // The vertices that survived are still searchable (the deleted ones are the first 30).
     assertSearchWorks(50);
+  }
+
+  /**
+   * A transaction that does NOT replay its queued index operations - a replica, where the index pages arrive with
+   * the leader's changes - must keep applying the vector update during the record-serialization step of its commit.
+   * The queue-instead-of-apply optimization that removes the double indexing is gated on that flag precisely so
+   * this path is left alone; dropping the guard would silently lose the update here, since nothing would replay it.
+   */
+  @Test
+  void anUpdateStillLandsWhenTheTransactionDoesNotReplayItsIndexQueue() {
+    createSchema();
+    database.transaction(() -> database.command("sql", "INSERT INTO Doc SET id = 'r1', embedding = ?", embedding(1, 0)));
+
+    final LSMVectorIndex index = getVectorIndex();
+    final int idsBefore = index.getVectorIndex().getNextId();
+
+    // Commit the update the way a replica does: 1st phase told it is not the leader, so TransactionIndexContext
+    // never replays the operations queued during the transaction.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    db.begin();
+    final MutableDocument doc = database.query("sql", "SELECT FROM Doc WHERE id = 'r1'").next().getRecord().get().asVertex()
+        .modify();
+    doc.set("embedding", embedding(1, 1));
+    doc.save();
+    final TransactionContext tx = db.getTransaction();
+    tx.commit2ndPhase(tx.commit1stPhase(false));
+
+    assertThat(index.getVectorIndex().getNextId())
+        .as("the replica applies the update itself: exactly one new vector id, and not zero")
+        .isEqualTo(idsBefore + 1);
+    assertThat(index.countEntries()).as("still one live vector for the RID").isEqualTo(1);
   }
 
   @Test
