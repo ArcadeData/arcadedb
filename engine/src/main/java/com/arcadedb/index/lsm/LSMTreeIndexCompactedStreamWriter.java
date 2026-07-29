@@ -202,6 +202,9 @@ final class LSMTreeIndexCompactedStreamWriter {
 
     final int seriesRootPage = rootPage.getPageId().getPageNumber();
     final int seriesPages = newPagesInSeries.size();
+    // Taken from the last data page, exactly as the reader will take it, so a filter can only ever answer for the
+    // series it was built from - see LSMTreeIndexCompacted.seriesFingerprint.
+    final int seriesFingerprint = lastPage != null ? compactedIndex.seriesFingerprint(lastPage) : 0;
 
     final List<MutablePage> modifiedPages = new ArrayList<>(newPagesInSeries);
     modifiedPages.add(database.getPageManager().updatePageVersion(rootPage, true));
@@ -209,7 +212,7 @@ final class LSMTreeIndexCompactedStreamWriter {
 
     // Only now that the series is on disk: a filter that reached the directory first would answer for pages a failed
     // write never produced.
-    publishBloomFilter(seriesRootPage, seriesPages);
+    publishBloomFilter(seriesRootPage, seriesPages, seriesFingerprint);
 
     rootPage = null;
     rootPageBuffer = null;
@@ -269,7 +272,7 @@ final class LSMTreeIndexCompactedStreamWriter {
    * Hands the accumulated hashes to the filter component, creating it on first use. A failure to write a filter is
    * logged and dropped: it costs a lookup, never a row.
    */
-  private void publishBloomFilter(final int seriesRootPage, final int seriesPages) {
+  private void publishBloomFilter(final int seriesRootPage, final int seriesPages, final int seriesFingerprint) {
     final long[] hashes = bloomHashes;
     final int count = bloomKeyCount;
 
@@ -280,7 +283,8 @@ final class LSMTreeIndexCompactedStreamWriter {
       return;
 
     try {
-      compactedIndex.getOrCreateBloomFilter().publish(seriesRootPage, seriesPages, hashes, count, bloomFalsePositiveRate);
+      compactedIndex.getOrCreateBloomFilter()
+          .publish(seriesRootPage, seriesPages, seriesFingerprint, hashes, count, bloomFalsePositiveRate);
     } catch (final Exception e) {
       LogManager.instance().log(mainIndex, Level.WARNING,
           "Cannot create the bloom filter of index '%s' (error=%s)", null, mainIndex.getName(), e.toString());

@@ -39,7 +39,7 @@ import com.arcadedb.utility.RidHashSet;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
@@ -90,11 +90,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    */
   private static final ThreadLocal<Binary> BLOOM_KEY_BUFFER = ThreadLocal.withInitial(Binary::new);
 
-  /** Series a bloom filter spared this file from reading. What the feature is worth, in the only unit that matters. */
-  private final AtomicLong bloomSkippedSeries = new AtomicLong();
-
-  /** Series still read after a probe, whether the key was there or the filter answered a false positive. */
-  private final AtomicLong bloomProbedSeries = new AtomicLong();
+  /**
+   * Series a bloom filter spared this file from reading - what the feature is worth, in the only unit that matters -
+   * and series still read after a probe, because the key was there or the filter returned a false positive.
+   * <p>
+   * {@link LongAdder} rather than {@code AtomicLong}: these are bumped once per series per lookup, and a bulk load
+   * runs that concurrently across every thread it has. A single contended cache line is not something to add to the
+   * path whose cost this feature exists to remove; reads are diagnostics and can afford the sum.
+   */
+  private final LongAdder bloomSkippedSeries = new LongAdder();
+  private final LongAdder bloomProbedSeries  = new LongAdder();
 
   /**
    * Called at cloning time.
@@ -610,13 +615,13 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       pageNumber -= rootPageCount;
 
       if (useFilters) {
-        if (!filters.mightContain(pageNumber, rootPageCount, keyHash)) {
+        if (!filters.mightContain(pageNumber, rootPageCount, seriesFingerprint(lastPage), keyHash)) {
           // THE SERIES PROVABLY DOES NOT HOLD THE KEY: SKIP ITS ROOT AND DATA PAGES ENTIRELY
-          bloomSkippedSeries.incrementAndGet();
+          bloomSkippedSeries.increment();
           --pageNumber;
           continue;
         }
-        bloomProbedSeries.incrementAndGet();
+        bloomProbedSeries.increment();
       }
 
       final PageId pageId = new PageId(database, file.getFileId(), pageNumber);
@@ -782,6 +787,20 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return problems;
   }
 
+  /**
+   * A cheap identity for a compacted series, taken from the header of its LAST data page - the page the lookup path
+   * has already read to learn how long the series is, so this costs no extra I/O on either side.
+   * <p>
+   * It exists because a bloom filter entry names its series by POSITION, and a position can be reused: an aborted
+   * compaction round leaves its pages unreachable and a later round writes a different series over them. Page count
+   * alone can coincide; ending with the same number of entries occupying the same bytes as well is not something two
+   * different series do by accident. Defined once here so the compaction and the lookup can never compute it
+   * differently.
+   */
+  int seriesFingerprint(final BasePage lastPageOfSeries) {
+    return getCount(lastPageOfSeries) * 31 + getValuesFreePosition(lastPageOfSeries);
+  }
+
   /** The per-series bloom filters of this file, or null when it has none. */
   public LSMTreeIndexBloomFilter getBloomFilter() {
     return bloomFilter;
@@ -798,19 +817,19 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
   /** Series a bloom filter spared this file from reading since it was loaded (#5517). */
   public long getBloomSkippedSeries() {
-    return bloomSkippedSeries.get();
+    return bloomSkippedSeries.sum();
   }
 
   /** Series read despite being probed: they held the key, or the filter returned a false positive. */
   public long getBloomProbedSeries() {
-    return bloomProbedSeries.get();
+    return bloomProbedSeries.sum();
   }
 
   @Override
   public Map<String, Long> getStats() {
     final Map<String, Long> stats = super.getStats();
-    stats.put("bloomSkippedSeries", bloomSkippedSeries.get());
-    stats.put("bloomProbedSeries", bloomProbedSeries.get());
+    stats.put("bloomSkippedSeries", bloomSkippedSeries.sum());
+    stats.put("bloomProbedSeries", bloomProbedSeries.sum());
     return stats;
   }
 

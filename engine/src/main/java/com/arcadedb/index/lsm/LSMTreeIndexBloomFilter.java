@@ -59,10 +59,20 @@ import java.util.logging.Level;
  * page 0 would simply not travel, leaving followers with a directory that disagrees with their own bits.
  * <p>
  * A directory page is {@code [magic][formatVersion][entryCount][checksum]} followed by {@value #DIRECTORY_ENTRY_SIZE}-byte
- * entries {@code [seriesRootPage][seriesPages][firstFilterPage][filterPages][slotsPerBlock][probes][keys]}. A series'
+ * entries {@code [seriesRootPage][seriesPages][seriesFingerprint][firstFilterPage][filterPages][slotsPerBlock][probes][keys]}. A series'
  * bits are split into {@code filterPages} independent BLOCKS of one page each and a key is routed to exactly one block,
  * so a probe reads ONE {@value #PAGE_SIZE}-byte page however large the series is - see {@link #PAGE_SIZE} for why the
  * filter does not inherit the index's much larger page.
+ * <p>
+ * <b>Identity, and what a DOWNGRADE does.</b> An entry names its series by position, so it also carries the series'
+ * page count and a fingerprint of its last data page; both are re-checked live on every probe, and either one
+ * disagreeing means "search the series". That matters because a build that predates this component does not know the
+ * {@code .bfidx} extension at all: it opens the database, compacts, and never touches the filter file. Its incremental
+ * rounds only APPEND series, so the entries it leaves behind still describe the series they were built from - but a
+ * round it rolls back can free a position that a later round reuses, and then only the shape and the fingerprint stand
+ * between a stale entry and a series it knows nothing about. Downgrading across this feature and back is therefore not
+ * free, and {@code arcadedb.indexBloomFilterRate=0} on the upgraded build (or a full compaction, which writes a new
+ * file the old entries cannot name) is the way to make it so.
  * <p>
  * <b>The rule that must not break.</b> A false positive costs the lookup that would have happened anyway; a false
  * NEGATIVE hides data - a lookup skipped, a record reported missing, a unique-index duplicate check letting a duplicate
@@ -97,9 +107,9 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
   static final int HASH_SEED = 0x5bf1e995;
 
   private static final int MAGIC                 = 0x424C4F4D; // "BLOM"
-  private static final int FORMAT_VERSION        = 1;
+  private static final int FORMAT_VERSION        = 2;
   private static final int DIRECTORY_HEADER_SIZE = 4 * Binary.INT_SERIALIZED_SIZE;
-  private static final int DIRECTORY_ENTRY_SIZE  = 7 * Binary.INT_SERIALIZED_SIZE;
+  private static final int DIRECTORY_ENTRY_SIZE  = 8 * Binary.INT_SERIALIZED_SIZE;
 
   /**
    * Pages to look back through for the newest directory when the last page of the file is not one, i.e. after a crash
@@ -123,8 +133,8 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
   private volatile Map<Integer, Entry> directory = Map.of();
 
   /** One published filter. Immutable once built. */
-  record Entry(int seriesRootPage, int seriesPages, int firstFilterPage, int filterPages, int slotsPerBlock, int probes,
-               int keys) {
+  record Entry(int seriesRootPage, int seriesPages, int seriesFingerprint, int firstFilterPage, int filterPages,
+               int slotsPerBlock, int probes, int keys) {
   }
 
   /** Constructor used when a compaction creates the filter file. */
@@ -225,6 +235,7 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
     for (final Entry entry : entries) {
       hash = hash * 31 + entry.seriesRootPage();
       hash = hash * 31 + entry.seriesPages();
+      hash = hash * 31 + entry.seriesFingerprint();
       hash = hash * 31 + entry.firstFilterPage();
       hash = hash * 31 + entry.filterPages();
       hash = hash * 31 + entry.slotsPerBlock();
@@ -238,15 +249,19 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
    * TRUE when the series MAY hold the key and must be searched. The answer is TRUE for everything this file does not
    * know about, so the caller can call it unconditionally.
    *
-   * @param seriesRootPage root page of the series, its identity within the compacted file
-   * @param seriesPages    data pages of the series, checked against the published entry so a filter built for a
-   *                       DIFFERENT series that once lived at this root page (an aborted compaction round whose pages
-   *                       were later reused) cannot be mistaken for this one
-   * @param keyHash        the key hashed by {@link #hashKey}
+   * @param seriesRootPage    root page of the series, its position within the compacted file
+   * @param seriesPages       data pages of the series
+   * @param seriesFingerprint {@code LSMTreeIndexCompacted.seriesFingerprint} of the series' last data page - a page
+   *                          the reader has already read to get {@code seriesPages}, so this costs no I/O
+   * @param keyHash           the key hashed by {@link #hashKey}
    */
-  boolean mightContain(final int seriesRootPage, final int seriesPages, final long keyHash) {
+  boolean mightContain(final int seriesRootPage, final int seriesPages, final int seriesFingerprint, final long keyHash) {
+    // A directory entry names a series by WHERE it sits, and a position can be reused: an aborted compaction round
+    // leaves its pages unreachable and the next round writes a different series over them. The shape and the
+    // fingerprint together are what make an entry answer only for the series it was built from - a stale one would
+    // filter a series by another's keys, which hides rows.
     final Entry entry = directory.get(seriesRootPage);
-    if (entry == null || entry.seriesPages() != seriesPages)
+    if (entry == null || entry.seriesPages() != seriesPages || entry.seriesFingerprint() != seriesFingerprint)
       return true;
 
     try {
@@ -278,8 +293,8 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
    * @param hashes the {@link #hashKey} of every key of the series, in any order, duplicates allowed
    * @param count  how many of {@code hashes} are populated
    */
-  void publish(final int seriesRootPage, final int seriesPages, final long[] hashes, final int count,
-      final double falsePositiveRate) {
+  void publish(final int seriesRootPage, final int seriesPages, final int seriesFingerprint, final long[] hashes,
+      final int count, final double falsePositiveRate) {
     if (count < 1)
       return;
 
@@ -314,7 +329,8 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
       if (!verifyNoFalseNegatives(filters, hashes, count, filterPages, seriesRootPage))
         return;
 
-      final Entry entry = new Entry(seriesRootPage, seriesPages, firstFilterPage, filterPages, slotsPerBlock, probes, count);
+      final Entry entry = new Entry(seriesRootPage, seriesPages, seriesFingerprint, firstFilterPage, filterPages,
+          slotsPerBlock, probes, count);
 
       for (final MutablePage block : blocks)
         database.getPageManager().updatePageVersion(block, true);
@@ -450,6 +466,7 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
       int pos = DIRECTORY_HEADER_SIZE + i * DIRECTORY_ENTRY_SIZE;
       pos += page.writeInt(pos, entry.seriesRootPage());
       pos += page.writeInt(pos, entry.seriesPages());
+      pos += page.writeInt(pos, entry.seriesFingerprint());
       pos += page.writeInt(pos, entry.firstFilterPage());
       pos += page.writeInt(pos, entry.filterPages());
       pos += page.writeInt(pos, entry.slotsPerBlock());
@@ -468,6 +485,7 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
     int pos = DIRECTORY_HEADER_SIZE + index * DIRECTORY_ENTRY_SIZE;
     final int seriesRootPage = page.readInt(pos);
     final int seriesPages = page.readInt(pos += Binary.INT_SERIALIZED_SIZE);
+    final int seriesFingerprint = page.readInt(pos += Binary.INT_SERIALIZED_SIZE);
     final int firstFilterPage = page.readInt(pos += Binary.INT_SERIALIZED_SIZE);
     final int filterPages = page.readInt(pos += Binary.INT_SERIALIZED_SIZE);
     final int slotsPerBlock = page.readInt(pos += Binary.INT_SERIALIZED_SIZE);
@@ -480,7 +498,8 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
         || firstFilterPage + filterPages > getTotalPages())
       return null;
 
-    return new Entry(seriesRootPage, seriesPages, firstFilterPage, filterPages, slotsPerBlock, probes, keys);
+    return new Entry(seriesRootPage, seriesPages, seriesFingerprint, firstFilterPage, filterPages, slotsPerBlock,
+        probes, keys);
   }
 
   /**
