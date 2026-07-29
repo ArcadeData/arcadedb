@@ -48,20 +48,25 @@ class VectorLocationIndexRidReverseTest {
     assertThat(index.getVectorIdsForRid(rid1)).containsExactly(id1);
     assertThat(index.getVectorIdsForRid(new RID(9, 9))).isEmpty();
 
-    // Simulate an embedding update on rid0: a new id is added and the old one is tombstoned (kept resident).
+    // Simulate an embedding update on rid0: a new id is added and the old one is tombstoned. Since issue #5516 the
+    // tombstoned id keeps no location and no reverse-index slot: only the live id is mapped to the RID.
     final int id0b = index.addVector(false, 300, rid0);
     index.markDeleted(id0);
 
-    final int[] rid0Ids = index.getVectorIdsForRid(rid0);
-    assertThat(rid0Ids).hasSize(2);
-    assertThat(Arrays.stream(rid0Ids).boxed()).contains(id0, id0b);
+    assertThat(index.getVectorIdsForRid(rid0)).containsExactly(id0b);
+    assertThat(index.getLocation(id0)).isNull();
+    assertThat(index.isDeleted(id0)).isTrue();
+    assertThat(index.getDeletedCount()).isEqualTo(1);
+    assertThat(index.size()).as("only the live vectors stay resident").isEqualTo(2);
 
-    // The reverse index still mirrors the primary map exactly (deleted entries stay resident until compaction).
+    // The reverse index still mirrors the primary map exactly.
     assertReverseMirrorsPrimary(index);
 
     index.clear();
     assertThat(index.getVectorIdsForRid(rid0)).isEmpty();
     assertThat(index.getVectorIdsForRid(rid1)).isEmpty();
+    assertThat(index.getDeletedCount()).isEqualTo(0);
+    assertThat(index.isDeleted(id0)).isFalse();
   }
 
   @Test

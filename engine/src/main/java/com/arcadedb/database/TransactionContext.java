@@ -136,6 +136,9 @@ public class TransactionContext implements Transaction {
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
   private       STATUS                               status                = STATUS.INACTIVE;
+  // Whether the 1st phase in progress ends by replaying the queued index operations (leader only). See
+  // isIndexChangesReplayed().
+  private       boolean                              indexChangesReplayed  = true;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
@@ -1218,6 +1221,9 @@ public class TransactionContext implements Transaction {
     // Without this, concurrent updateRecordNoLock calls could both load the same page
     // at the same version, bypassing MVCC version checks.
     status = STATUS.COMMIT_1ST_PHASE;
+    // Only the leader replays the queued index operations below: on a replica the index pages arrive with the
+    // leader's changes. An index that skips work during this phase because "the replay will do it" must know.
+    this.indexChangesReplayed = isLeader;
 
     try {
       // #4937: explicit-lock mode captured before checkExplicitLocks nulls explicitLockedFiles, so the
@@ -1694,6 +1700,18 @@ public class TransactionContext implements Transaction {
 
   public STATUS getStatus() {
     return status;
+  }
+
+  /**
+   * Whether the index operations queued on this transaction are replayed at the end of the 1st commit phase. True on
+   * a leader (and on any non-replicated database); false on a replica, where the index pages come from the leader's
+   * changes and {@link TransactionIndexContext#commit()} is never invoked. An index consulted during
+   * {@link STATUS#COMMIT_1ST_PHASE} - the phase that re-runs {@code DocumentIndexer.updateDocument} while
+   * serializing the records updated in this transaction - uses this to tell whether it can leave the work to the
+   * replay instead of applying it a second time (issue #5516).
+   */
+  public boolean isIndexChangesReplayed() {
+    return indexChangesReplayed;
   }
 
   public void setStatus(final STATUS status) {
