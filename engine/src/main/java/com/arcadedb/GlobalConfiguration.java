@@ -574,6 +574,19 @@ public enum GlobalConfiguration {
       -1 for smaller datasets.""",
       Integer.class, -1),
 
+  VECTOR_INDEX_COMPACTION_BLOAT_FACTOR("arcadedb.vectorIndex.compactionBloatFactor", SCOPE.DATABASE,
+      """
+      How much bigger than its live vectors an LSM_VECTOR data file may get before it compacts itself. \
+      The file is append-only - an update writes a new vector plus a tombstone for the one it replaces, a delete \
+      writes a tombstone - so it grows with the number of writes while the live set stays the same size; a \
+      compaction rewrites it holding the live vectors only. 3 means "reclaim once about two thirds of the file is \
+      garbage". Lower reclaims sooner and rewrites more often, higher lets the file grow further and rewrites in \
+      bigger, rarer passes. Each pass is a full graph rebuild plus a sequential copy of the live vectors, and it \
+      holds the index write lock for that copy. Set to 0 to compact only on an explicit COMPACT INDEX; \
+      arcadedb.indexCompactionMinPagesSchedule gates it too, and 0 there disables automatic compaction for every \
+      index type.""",
+      Integer.class, 3),
+
   VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE("arcadedb.vectorIndex.graphBuildCacheSize", SCOPE.DATABASE,
       """
       Maximum number of vectors to cache in memory during HNSW graph building. \

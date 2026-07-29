@@ -26,6 +26,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
@@ -4204,19 +4205,89 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Schedules a compaction when the data file has grown well past what its live vectors need.
+   * <p>
+   * The file is append-only: an update writes a new vector plus a tombstone for the one it supersedes, a delete
+   * writes a tombstone, and nothing reclaims either - so a workload that keeps re-embedding the same vectors grows
+   * the file without bound while the live set stays the same size. That was the other half of issue #5516, the half
+   * a heap dump cannot show, and leaving it to an operator remembering to run COMPACT INDEX is not a fix.
+   * <p>
+   * The trigger is the garbage ratio rather than a page count, because a vector compaction is not the cheap merge an
+   * LSM-tree compaction is: it rebuilds the graph and rewrites the file, so it has to pay for itself in reclaimed
+   * space. The work happens on the async executor - never on the committing thread - and goes through
+   * {@link #compact()}, so it is the same replication-safe path an explicit COMPACT INDEX takes.
+   */
   public void onAfterCommit() {
-    // DISABLED: Compaction for vector indexes is currently disabled
-    // Vector indexes don't benefit much from compaction since vectors are rarely updated
-    // Re-enable once compaction properly handles uninitialized pages
+    if (!isCompactionDue())
+      return;
 
-    // Check if compaction should be triggered after commit
-    // Operations are applied immediately during TransactionIndexContext replay (not buffered here)
-    // if (minPagesToScheduleACompaction > 1 && currentMutablePages.get() >= minPagesToScheduleACompaction) {
-    //   LogManager.instance()
-    //       .log(this, Level.FINE, "Scheduled compaction of vector index '%s' (currentMutablePages=%d totalPages=%d)",
-    //           null, getComponentName(), currentMutablePages.get(), getTotalPages());
-    //   ((com.arcadedb.database.async.DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
-    // }
+    try {
+      // scheduleCompaction() inside async().compact() flips AVAILABLE -> COMPACTION_SCHEDULED, so a second commit
+      // arriving while one is still pending is a no-op instead of a queue of redundant rewrites.
+      ((DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
+    } catch (final Exception e) {
+      // A closing database (async executor already shut down) must not fail the commit that just succeeded: the
+      // file stays as it is and the next commit, or an explicit COMPACT INDEX, picks it up.
+      LogManager.instance().log(this, Level.FINE, "Could not schedule the compaction of vector index '%s': %s",
+          indexName, e.getMessage());
+    }
+  }
+
+  /**
+   * Whether the data file holds enough garbage to be worth rewriting: at least
+   * {@link GlobalConfiguration#VECTOR_INDEX_COMPACTION_BLOAT_FACTOR} times the pages its live vectors need.
+   * <p>
+   * Runs after every commit, so it only reads counters already in memory - the page count and the number of
+   * resident locations - and never touches a page.
+   */
+  private boolean isCompactionDue() {
+    if (minPagesToScheduleACompaction <= 0)
+      // Automatic compaction disabled for every index type.
+      return false;
+
+    final int bloatFactor = getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_COMPACTION_BLOAT_FACTOR);
+    if (bloatFactor <= 0)
+      // Explicit COMPACT INDEX only.
+      return false;
+
+    final int totalPages = getTotalPages();
+    if (totalPages < minPagesToScheduleACompaction)
+      // Too small to be worth a rewrite whatever its garbage ratio is.
+      return false;
+
+    final int pagesForLiveSet = estimatePagesForLiveSet();
+    if (pagesForLiveSet < 1)
+      return false;
+
+    return totalPages >= (long) pagesForLiveSet * bloatFactor;
+  }
+
+  /**
+   * Pages the live vectors alone would occupy, derived from the entry layout {@code persistVectorWithLocation}
+   * writes. An estimate on purpose: it feeds a ratio against a configurable factor, so being a few percent out
+   * moves when a compaction happens, never whether the result is correct.
+   */
+  private int estimatePagesForLiveSet() {
+    final int liveVectors = vectorIndex.size();
+    if (liveVectors < 1)
+      return 0;
+
+    // vectorId + bucketId + position are variable-length; 4+4+8 is their upper bound. Plus the deleted flag and the
+    // quantization-type byte, both always written.
+    int entrySize = 4 + 4 + 8 + 1 + 1;
+    switch (metadata.quantizationType) {
+    case INT8 -> entrySize += 4 + calculateQuantizedSize(metadata.dimensions, metadata.quantizationType) + 8;
+    case BINARY -> entrySize += 4 + calculateQuantizedSize(metadata.dimensions, metadata.quantizationType) + 4;
+    default -> {
+      // NONE and PRODUCT keep the vector in the document, so the page entry is just the header above.
+    }
+    }
+
+    final int usablePerPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - HEADER_BASE_SIZE;
+    final int entriesPerPage = Math.max(1, usablePerPage / entrySize);
+    return (liveVectors + entriesPerPage - 1) / entriesPerPage;
   }
 
   @Override
@@ -5080,6 +5151,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public int getCurrentMutablePages() {
     return currentMutablePages.get();
+  }
+
+  /** The pages the live vectors alone would need - exposed so a test can express its threshold in those terms. */
+  int estimatePagesForLiveSetForTest() {
+    return estimatePagesForLiveSet();
   }
 
   /**
