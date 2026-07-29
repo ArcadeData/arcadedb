@@ -372,6 +372,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final Memtable mtSnapshot = memtable.get();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
 
+    // Splitting off globally: return before touching the pool at all. getInstance() would build a
+    // ThreadPoolExecutor that this JVM has just been told it will never use, which an embedded
+    // deployment that disabled the feature should not be paying for.
+    if (GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger() == 1)
+      return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, null);
+
     // Registered for the whole call, split or not: the split decision is made against how many
     // queries are running, and a query that stays serial still occupies its caller's thread.
     final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
@@ -441,8 +447,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     if (ctx == null)
       return false;
-    final TransactionContext tx = ctx.getLastTransaction();
-    return tx != null && tx.isActive() && tx.hasChanges();
+    // Every transaction on the stack, not just the innermost. begin() on an already-active
+    // transaction pushes a nested one, so a caller can sit in a fresh inner transaction with no
+    // changes of its own while an outer one holds modified pages. Asking only the innermost would
+    // report "clean" and let the query split, and the workers - reading committed pages through a
+    // context of their own - would silently not see the outer transaction's writes. That is the
+    // exact class of bug this guard exists to remove, so it has to look at all of them.
+    for (int i = 0; i < ctx.transactions.size(); i++) {
+      final TransactionContext tx = ctx.transactions.get(i);
+      if (tx != null && tx.isActive() && tx.hasChanges())
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -696,6 +712,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final Memtable mtSnapshot = memtable.get();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
 
+    // Grouped queries never split, but they are still load: they run a full traversal on their
+    // caller's thread and compete for the same cores. Leaving them unregistered would let a plain
+    // topK arriving alongside heavy grouped traffic see an idle gate, split, and take throughput
+    // from them - which is precisely what the gate exists to prevent, merely from a source it could
+    // not see. Registered only when splitting is enabled at all, for the same reason as topK.
+    final boolean registerLoad = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger() != 1;
+    final SparseVectorScoringPool pool = registerLoad ? SparseVectorScoringPool.getInstance() : null;
+    if (pool != null)
+      pool.queryStarted();
+
     final DimCursor[] cursors = new DimCursor[queryDims.length];
     try {
       for (int i = 0; i < queryDims.length; i++)
@@ -705,6 +731,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       for (final DimCursor c : cursors)
         if (c != null)
           c.close();
+      if (pool != null)
+        pool.queryFinished();
     }
   }
 

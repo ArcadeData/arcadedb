@@ -527,6 +527,68 @@ class ParallelRangeTopKTest extends TestHelper {
     }
   }
 
+  @Test
+  void anOuterTransactionsUncommittedChangesStillBlockTheSplit() throws Exception {
+    final int previousPartitions = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    final long previousMin = GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong();
+    try {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(4);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(1L);
+
+      final Map<RID, Map<Integer, Float>> corpus = buildCorpus(SMALL_DOCS, 21L, false);
+      final int[] queryDims = new int[DIMS];
+      final float[] queryWeights = new float[DIMS];
+      for (int d = 0; d < DIMS; d++) {
+        queryDims[d] = d;
+        queryWeights[d] = 1.0f;
+      }
+
+      database.getSchema().createDocumentType("OuterTxProbe");
+
+      try (final PaginatedSparseVectorEngine engine = new PaginatedSparseVectorEngine((DatabaseInternal) database,
+          "idx4085nestedtx", SegmentParameters.builder().weightQuantization(WeightQuantization.FP32).build())) {
+        database.transaction(() -> {
+          for (final var doc : corpus.entrySet())
+            for (final var dw : doc.getValue().entrySet())
+              engine.put(dw.getKey(), doc.getKey(), dw.getValue());
+          engine.flush();
+        });
+
+        final List<RidScore> expected = engine.topK(queryDims, queryWeights, K);
+        final long splitsWhenClean = engine.partitionedQueryCount();
+        assertThat(splitsWhenClean).as("a clean caller must split, or the rest proves nothing").isPositive();
+
+        database.begin();
+        try {
+          // Dirty the OUTER transaction, then open a nested one that is itself clean. Asking only
+          // the innermost transaction whether it has changes would answer "no" here and let the
+          // query split, and a worker reading committed pages through its own context would not see
+          // what the outer transaction has written.
+          database.newDocument("OuterTxProbe").set("k", 1).save();
+          database.begin();
+          try {
+            engine.topK(queryDims, queryWeights, K);
+            assertThat(engine.partitionedQueryCount())
+                .as("a nested-clean caller over a dirty outer transaction must not split")
+                .isEqualTo(splitsWhenClean);
+          } finally {
+            database.rollback();
+          }
+        } finally {
+          if (database.isTransactionActive())
+            database.rollback();
+        }
+
+        // And once everything is rolled back it splits again, so the guard is not simply stuck on.
+        assertSameResult(engine.topK(queryDims, queryWeights, K), expected, "after the transaction ended");
+        assertThat(engine.partitionedQueryCount()).isGreaterThan(splitsWhenClean);
+      }
+    } finally {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previousPartitions);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(previousMin);
+    }
+  }
+
   // ---------- helpers ----------
 
   /**
