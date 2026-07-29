@@ -1,0 +1,334 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+    SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+    SPDX-License-Identifier: Apache-2.0
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.arcadedb</groupId>
+        <artifactId>arcadedb-parent</artifactId>
+        <version>26.8.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>arcadedb-native</artifactId>
+    <packaging>jar</packaging>
+
+    <properties>
+        <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
+        <native-maven-plugin.version>0.10.6</native-maven-plugin.version>
+        <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <!--
+            GraalVM polyglot/Truffle version used ONLY for the native image build. It MUST match the
+            native-image builder (GraalVM CE 25.0.2) shipped with the local GRAALVM_HOME, otherwise
+            the in-image Truffle feature (TruffleBaseFeature.afterRegistration) fails at build time
+            with NoSuchMethodError OptimizedTruffleRuntime.getLoopNodeFactory() because the SVM
+            Truffle runtime bundled in the builder is compiled against a different Truffle API than
+            the one the engine pulls transitively (25.1.3). Pinning here (native module only) leaves
+            the JVM engine build untouched while letting the JS language embed into the image.
+        -->
+        <native.graalvm.version>25.0.2</native.graalvm.version>
+        <!--
+            Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
+            Activates the native-static profile below, which appends the fully-static musl
+            native-image buildArgs (static linking, libc=musl). Produces a scratch-compatible
+            binary. See native.mostlystatic below for the linux/arm64 counterpart, which cannot
+            use this mode (no musl static JDK libs for aarch64 - oracle/graal#4645).
+        -->
+        <native.static>false</native.static>
+        <!--
+            Flag plumbed through by the CI matrix (native-image.yml) for the linux/arm64 job.
+            Activates the native-mostly-static profile below. See that profile's comment for why
+            linux/arm64 uses a different build mode than linux/amd64's native.static.
+        -->
+        <native.mostlystatic>false</native.mostlystatic>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.graalvm.sdk</groupId>
+                <artifactId>graal-sdk</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.sdk</groupId>
+                <artifactId>collections</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.sdk</groupId>
+                <artifactId>nativeimage</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.sdk</groupId>
+                <artifactId>word</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.sdk</groupId>
+                <artifactId>jniutils</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.polyglot</groupId>
+                <artifactId>polyglot</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.js</groupId>
+                <artifactId>js-language</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.regex</groupId>
+                <artifactId>regex</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.truffle</groupId>
+                <artifactId>truffle-api</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.truffle</groupId>
+                <artifactId>truffle-runtime</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.truffle</groupId>
+                <artifactId>truffle-compiler</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.shadowed</groupId>
+                <artifactId>icu4j</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.shadowed</groupId>
+                <artifactId>xz</artifactId>
+                <version>${native.graalvm.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-console</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-studio</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-graphql</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-postgresw</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-redisw</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-mongodbw</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-bolt</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-grpcw</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <extensions>
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>1.7.1</version>
+            </extension>
+        </extensions>
+        <plugins>
+            <plugin>
+                <groupId>org.graalvm.buildtools</groupId>
+                <artifactId>native-maven-plugin</artifactId>
+                <version>${native-maven-plugin.version}</version>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <id>build-native</id>
+                        <goals><goal>compile-no-fork</goal></goals>
+                        <phase>package</phase>
+                    </execution>
+                </executions>
+                <configuration>
+                    <mainClass>${mainClass}</mainClass>
+                    <imageName>${imageName}</imageName>
+                    <metadataRepository>
+                        <enabled>true</enabled>
+                    </metadataRepository>
+                    <buildArgs>
+                        <buildArg>--no-fallback</buildArg>
+                        <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                        <buildArg>--enable-url-protocols=http,https</buildArg>
+                        <buildArg>--add-modules=jdk.incubator.vector</buildArg>
+                        <!-- Undertow/XNIO: HostName reads the machine hostname eagerly; must be deferred to run time. -->
+                        <buildArg>--initialize-at-run-time=org.wildfly.common.net.HostName</buildArg>
+                        <!-- slf4j API, helpers, providers and the JUL binding must all initialize at build time,
+                             otherwise LoggerFactory (build-time init) drags run-time-default provider objects
+                             (SubstituteServiceProvider/NOP_FallbackServiceProvider) into the image heap and aborts. -->
+                        <buildArg>--initialize-at-build-time=org.slf4j,org.slf4j.helpers,org.slf4j.spi,org.slf4j.event,org.slf4j.jul</buildArg>
+                        <!-- Netty holds JNI/native and static state that must not be snapshotted at build time. -->
+                        <buildArg>--initialize-at-run-time=io.netty</buildArg>
+                        <!-- Embed all classpath resources (Studio assets, config templates, Lucene codecs). Tighten later. -->
+                        <buildArg>-H:IncludeResources=.*</buildArg>
+                        <!--
+                            GraalJS embeds in the image (Truffle runtime compilation active). Six GraalJS builtins
+                            (Atomics.* and TypedArray.prototype.set) reach java.lang.invoke.MethodHandle.linkToStatic,
+                            which Truffle blocklists for partial evaluation, aborting the build. These are AOT-only
+                            concerns for Truffle-compiled JS call targets; ArcadeDB's own SQL/Cypher/HTTP engine is
+                            plain AOT native code and is unaffected. Relaxing the check lets the image build with JS
+                            available (Task 5 finalizes JS). Caveat for Task 5: Atomics/SharedArrayBuffer and some
+                            TypedArray.set paths are unverified when their JS call target gets runtime-compiled.
+                        -->
+                        <buildArg>-H:-TruffleCheckBlockListMethods</buildArg>
+                        <buildArg>-H:-TruffleCheckBlackListedMethods</buildArg>
+                    </buildArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+            Activated by -Dnative.static=true (see native-image.yml's two required Linux jobs, which
+            install and configure the musl+zlib toolchain before invoking Maven - see the "Set up
+            musl toolchain" step). Appends the static and libc=musl native-image flags to the base
+            native-maven-plugin buildArgs declared above, producing a fully statically-linked
+            (musl-libc) executable that runs on `scratch`. combine.children="append" is required
+            here: the plugin's buildArgs element is declared with multiple buildArg children in the
+            base build/plugins block above, and Maven's default Xpp3Dom merge for a profile plugin
+            configuration with the same groupId/artifactId is a positional merge (dominant child at
+            index N overrides recessive child at index N) rather than a union; without
+            combine.children="append" the two buildArg elements below would silently replace two of
+            the base build's flags instead of extending the list. This scoping also keeps the default
+            dynamic-linked build used on macOS/Windows (and any future non-static Linux job)
+            unaffected.
+        -->
+        <profile>
+            <id>native-static</id>
+            <activation>
+                <property>
+                    <name>native.static</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <configuration>
+                            <buildArgs combine.children="append">
+                                <buildArg>--static</buildArg>
+                                <buildArg>--libc=musl</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Activated by -Dnative.mostlystatic=true (see native-image.yml's linux/arm64 job).
+            Appends -H:+StaticExecutableWithDynamicLibC to the base native-maven-plugin buildArgs
+            declared above, producing a "mostly-static" executable: everything is statically
+            linked except glibc itself, which stays dynamically loaded at runtime (glibc's own
+            NSS name-service-switch mechanism requires dlopen, which is incompatible with a fully
+            static glibc link - this is GraalVM's documented middle ground for glibc targets that
+            can't go fully static).
+
+            linux/arm64 needs this different mode instead of native-static's fully static musl
+            build because GraalVM CE ships no static musl JDK libraries for aarch64: the
+            graalvm-community-jdk-25.0.2 linux-aarch64 release tarball has
+            lib/static/linux-aarch64/glibc but not lib/static/linux-aarch64/musl (linux-amd64 ships
+            both) - see oracle/graal#4645 (closed not-planned). The resulting binary needs a glibc
+            runtime (a tiny distroless glibc base image), not `scratch`, unlike native-static's
+            fully static musl output - see native/src/main/docker/Dockerfile.native.distroless
+            and docs/native-image.md.
+
+            combine.children="append" is required for the same reason documented on native-static
+            above: Maven's default profile/base plugin-configuration merge for a repeated
+            <buildArg> element is positional, not a union, so an unmarked <buildArgs> here would
+            silently replace one of the base build's flags instead of adding a new one.
+
+            Mutually exclusive with native-static by convention, not by XML constraint: the CI
+            matrix sets exactly one of -Dnative.static=true / -Dnative.mostlystatic=true per Linux
+            leg, never both. Neither property defaults to true, so this profile - like
+            native-static - is inactive on the default dynamic-linked build used on macOS/Windows.
+        -->
+        <profile>
+            <id>native-mostly-static</id>
+            <activation>
+                <property>
+                    <name>native.mostlystatic</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <configuration>
+                            <buildArgs combine.children="append">
+                                <buildArg>-H:+StaticExecutableWithDynamicLibC</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>
