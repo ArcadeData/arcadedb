@@ -61,8 +61,8 @@ import java.util.logging.Level;
  * A directory page is {@code [magic][formatVersion][entryCount][checksum]} followed by {@value #DIRECTORY_ENTRY_SIZE}-byte
  * entries {@code [seriesRootPage][seriesPages][firstFilterPage][filterPages][slotsPerBlock][probes][keys]}. A series'
  * bits are split into {@code filterPages} independent BLOCKS of one page each and a key is routed to exactly one block,
- * so a probe reads ONE page however large the series is. Blocks are big enough (a 64 KB page holds ~500k bits, i.e.
- * ~54k keys at 1%) that the occupancy skew of a blocked filter is negligible.
+ * so a probe reads ONE {@value #PAGE_SIZE}-byte page however large the series is - see {@link #PAGE_SIZE} for why the
+ * filter does not inherit the index's much larger page.
  * <p>
  * <b>The rule that must not break.</b> A false positive costs the lookup that would have happened anyway; a false
  * NEGATIVE hides data - a lookup skipped, a record reported missing, a unique-index duplicate check letting a duplicate
@@ -79,6 +79,19 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
 
   /** Suffix appended to the compacted index component name; the pair is resolved by name at schema-load time. */
   static final String NAME_SUFFIX = "_bf";
+
+  /**
+   * Page size of the filter file, deliberately NOT the index's.
+   * <p>
+   * A probe reads exactly one page, so the page size IS the I/O cost of a probe - and an LSM index defaults to 256 KB
+   * pages, which would have the filter read as much as the data page it exists to avoid. It also decides the waste:
+   * every series rounds its bits up to a page and spends one more on its directory, so at 256 KB a small series cost
+   * 512 KB to describe with 30 KB of bits.
+   * <p>
+   * 8 KB is small enough that both of those disappear and large enough that a block still holds ~6.8k keys at 1%, so
+   * the occupancy skew of the blocked layout stays under 2% - and one directory page still lists 291 series.
+   */
+  static final int PAGE_SIZE = 8_192;
 
   /** Seed of the key hash. Changing it invalidates every filter on disk, so it travels with {@link #FORMAT_VERSION}. */
   static final int HASH_SEED = 0x5bf1e995;
@@ -503,7 +516,7 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
    * Creates the filter file of a compacted index, or opens the one it already has.
    */
   static LSMTreeIndexBloomFilter createOrLoad(final LSMTreeIndexCompacted compacted) throws IOException {
-    return createOrLoad(compacted.getDatabase(), compacted.getName() + NAME_SUFFIX, compacted.getPageSize());
+    return createOrLoad(compacted.getDatabase(), compacted.getName() + NAME_SUFFIX, PAGE_SIZE);
   }
 
   static LSMTreeIndexBloomFilter createOrLoad(final DatabaseInternal database, final String name, final int pageSize)
