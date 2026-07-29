@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
@@ -446,6 +447,34 @@ class DictionaryMultiPageTest extends TestHelper {
       assertThat(dictionary.getIdByName(entry.getKey(), false)).as("id of '%s' after reload", entry.getKey())
           .isEqualTo(entry.getValue());
       assertThat(dictionary.getNameById(entry.getValue())).isEqualTo(entry.getKey());
+    }
+  }
+
+  /**
+   * A page the count claims but that is not on disk must stop the load, not be invented. Inventing it is not merely masked
+   * corruption: an empty page contributes zero names, so every name after it would come back with an id lower by however many
+   * the missing page held, and those ids are embedded in records. A partial replication replay, which writes a high page number
+   * without the ones before it, is how the count gets ahead of the file.
+   * <p>
+   * Runs against its own database, dropped at the end, because it deliberately leaves the page count inconsistent.
+   */
+  @Test
+  void aDictionaryPageThatIsClaimedButMissingFailsLoudly() {
+    final Database other = TestHelper.createDatabase(getDatabasePath() + "_claimedButMissing");
+    try {
+      final Dictionary dictionary = other.getSchema().getDictionary();
+      dictionary.getIdByName("aNameOnPageZero", true);
+      assertThat(dictionary.getTotalPages()).isEqualTo(1);
+
+      // CLAIM TWO PAGES THAT WERE NEVER WRITTEN
+      dictionary.updatePageCount(3);
+
+      assertThatThrownBy(dictionary::reload)
+          .isInstanceOf(DatabaseMetadataException.class)
+          .hasMessageContaining("is truncated")
+          .hasMessageContaining("page 1 of 3");
+    } finally {
+      other.drop();
     }
   }
 

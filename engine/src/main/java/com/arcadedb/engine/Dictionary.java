@@ -474,10 +474,22 @@ public class Dictionary extends PaginatedComponent {
       final int totalPages = Math.max(1, pageCount.get());
 
       for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber) {
-        // createIfNotExists IS LOAD BEARING, NOT A DEFAULT: PAIRED WITH THE FLOOR ABOVE IT MATERIALISES PAGE 0 OF A FILE THAT
-        // IS SHORTER THAN ONE PAGE (KILLED MID-WRITE), WHICH IS WHAT THE SINGLE-PAGE READER USED TO DO
-        final BasePage page = database.getPageManager()
-            .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
+        // createIfNotExists ONLY FOR PAGE 0, WHERE IT IS LOAD BEARING: PAIRED WITH THE FLOOR ABOVE IT MATERIALISES PAGE 0 OF A
+        // FILE SHORTER THAN ONE PAGE (KILLED MID-WRITE), WHICH IS WHAT THE SINGLE-PAGE READER DID.
+        //
+        // FOR EVERY LATER PAGE IT IS OFF, SO A PAGE THAT pageCount CLAIMS BUT THAT IS NOT THERE FAILS INSTEAD OF BEING INVENTED.
+        // AN INVENTED PAGE IS NOT MERELY MASKED CORRUPTION: IT CONTRIBUTES ZERO NAMES, WHICH SHIFTS EVERY NAME AFTER IT DOWN BY
+        // AS MANY IDS AS THE MISSING PAGE HELD, AND IDS ARE EMBEDDED IN RECORDS. SILENTLY RENUMBERING IS THE ONE OUTCOME THIS
+        // CLASS EXISTS TO PREVENT, SO A GAP HAS TO BE LOUD.
+        final BasePage page;
+        try {
+          page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, pageNumber == 0);
+        } catch (final IllegalArgumentException e) {
+          throw new DatabaseMetadataException(
+              "Schema dictionary of database '" + database.getName() + "' is truncated: page " + pageNumber + " of " + totalPages
+                  + " is missing. Reading on would silently renumber every name stored after it", e);
+        }
 
         page.setBufferPosition(DICTIONARY_HEADER_SIZE);
         while (page.getBufferPosition() < page.getContentSize())

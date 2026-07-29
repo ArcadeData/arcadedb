@@ -65,6 +65,21 @@ disk. Bumping it on first rollover was considered and rejected:
 So the version records what wrote the file, and the operational signal that a database has left single-page
 territory is the INFO line logged when page 1 is created.
 
+### How to tell whether a database has rolled over
+
+The log line is emitted once, when it happens, so it is no help for a database you are looking at after the
+fact. The durable answer is the file size: the dictionary is one page per `pageSize` bytes, and `pageSize`
+is in the file name.
+
+```
+$ ls -l <database>/dictionary.*.dict
+-rw-r--r--  1 arcadedb  arcadedb  131072  dictionary.0.65536.v1.dict
+```
+
+131072 / 65536 = 2 pages, so this database has rolled over and cannot be read by a build without multi-page
+support. A file of exactly `pageSize` bytes (or less) is still single-page and remains downgradable. This is
+worth checking before rolling a cluster back to an older build.
+
 ## Upgrade notes
 
 **Single node.** Nothing to do. An existing database keeps its page size and its `v0` file name, and gains
