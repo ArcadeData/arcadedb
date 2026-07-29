@@ -30,9 +30,12 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -321,6 +324,88 @@ class DictionaryMultiPageTest extends TestHelper {
     }
 
     assertThat(dictionary().getIdByName("beforeTheDowngrade", false)).isNotEqualTo(-1);
+  }
+
+  /**
+   * updateName validates before it mutates, and this is the case that proves it has to. Renaming a name that is also a type
+   * name is refused with an IllegalArgumentException, which is not an IOException, so updateName's own repairing catch does not
+   * fire; and no dictionary page has been written yet, so the rollback does not arm its reload either. Nothing would repair a
+   * half-applied rename, so the rename must not start.
+   */
+  @Test
+  void aRenameRefusedBecauseTheNameIsATypeLeavesTheDictionaryConsistent() {
+    fillPages(2);
+    database.getSchema().createDocumentType("Shared");
+
+    final Dictionary dictionary = dictionary();
+    final int id = dictionary.getIdByName("Shared", false);
+    assertThat(id).as("the type name is in the dictionary").isNotEqualTo(-1);
+
+    assertThatThrownBy(() -> database.transaction(() -> dictionary.updateName("Shared", "Renamed")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("used as a type name");
+
+    // BOTH DIRECTIONS STILL AGREE, WITHOUT AN UNRELATED RELOAD HAVING TO COME ALONG AND REPAIR THEM
+    assertThat(dictionary.getIdByName("Shared", false)).isEqualTo(id);
+    assertThat(dictionary.getNameById(id)).isEqualTo("Shared");
+    assertThat(dictionary.getIdByName("Renamed", false)).isEqualTo(-1);
+  }
+
+  /**
+   * The class reasons carefully about threads: appends serialise on this component's monitor while reload() runs on threads
+   * that do not hold it. Nothing exercised that under contention, and a rollover is where it would hurt, since two threads
+   * computing the tail page at once is what would renumber entries.
+   */
+  @Test
+  void concurrentAppendsAcrossARolloverKeepEveryIdUnique() throws Exception {
+    final Dictionary dictionary = dictionary();
+    final int threads = 4;
+    final int namesPerThread = 250;
+
+    final CountDownLatch startLine = new CountDownLatch(1);
+    final List<Thread> workers = new ArrayList<>();
+    final Map<String, Integer> assigned = new ConcurrentHashMap<>();
+    final List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+
+    for (int t = 0; t < threads; ++t) {
+      final int worker = t;
+      final Thread thread = new Thread(() -> {
+        try {
+          startLine.await();
+          for (int i = 0; i < namesPerThread; ++i) {
+            final String candidate = name(worker * namesPerThread + i);
+            assigned.put(candidate, dictionary.getIdByName(candidate, true));
+          }
+        } catch (final Throwable e) {
+          failures.add(e);
+        }
+      }, "dictionary-appender-" + t);
+      workers.add(thread);
+      thread.start();
+    }
+
+    startLine.countDown();
+    for (final Thread thread : workers)
+      thread.join();
+
+    assertThat(failures).isEmpty();
+
+    final int total = threads * namesPerThread;
+    assertThat(assigned).hasSize(total);
+    assertThat(dictionary.getTotalPages()).as("the fixture has to actually roll over").isGreaterThan(1);
+    // NO TWO NAMES SHARE AN ID, AND THE IDS COVER EXACTLY 0..total-1 WITH THE ENTRIES THAT WERE ALREADY THERE
+    assertThat(new HashSet<>(assigned.values())).hasSize(total);
+
+    for (final Map.Entry<String, Integer> entry : assigned.entrySet())
+      assertThat(dictionary.getNameById(entry.getValue())).isEqualTo(entry.getKey());
+
+    // AND THE IDS HANDED OUT UNDER CONTENTION MATCH THE ORDER THE NAMES ACTUALLY LANDED IN ON THE PAGES
+    dictionary.reload();
+    for (final Map.Entry<String, Integer> entry : assigned.entrySet()) {
+      assertThat(dictionary.getIdByName(entry.getKey(), false)).as("id of '%s' after reload", entry.getKey())
+          .isEqualTo(entry.getValue());
+      assertThat(dictionary.getNameById(entry.getValue())).isEqualTo(entry.getKey());
+    }
   }
 
   /**

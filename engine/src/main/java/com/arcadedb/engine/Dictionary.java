@@ -210,34 +210,40 @@ public class Dictionary extends PaginatedComponent {
       // NOTHING TO DO. WITHOUT THIS THE LOOP BELOW WOULD NEVER FIND ITS TERMINATION CONDITION
       return;
 
-    // VALIDATED BEFORE ANYTHING IS MUTATED: THE REWRITE BELOW EDITS THE IN-RAM VIEW FIRST, AND A newName TOO BIG FOR A PAGE
-    // WOULD OTHERWISE LEAVE IT RENAMED BUT UNWRITTEN UNTIL THE CALLER'S ROLLBACK HAPPENED TO REPAIR IT. EVERY OTHER NAME IS
-    // ALREADY STORED ON A PAGE OF THIS SIZE, SO newName IS THE ONLY ONE THAT CAN FAIL
+    // EVERY VALIDATION RUNS BEFORE ANY MUTATION, AND NONE OF THEM NEEDS THE MUTATION TO HAVE HAPPENED. THIS ORDER IS THE WHOLE
+    // POINT: THESE THROW IllegalArgumentException / DatabaseMetadataException, WHICH THE catch BELOW DOES NOT HANDLE (IT ONLY
+    // CATCHES IOException), AND NO DICTIONARY PAGE HAS BEEN TOUCHED YET, SO TransactionContext.rollback() DOES NOT ARM ITS
+    // REPAIRING reload() EITHER. MUTATING FIRST WOULD LEAVE THE IN-RAM VIEW RENAMED IN THE LIST AND MISSING FROM THE MAP UNTIL
+    // SOME UNRELATED RELOAD CAME ALONG.
+
+    // newName IS THE ONLY NAME THAT CAN BE TOO BIG: EVERY OTHER ONE IS ALREADY STORED ON A PAGE OF THIS SIZE
     checkNameFitsAPage(newName, spaceRequiredBy(newName.getBytes(DatabaseFactory.getDefaultCharset())));
+
+    // CHEAPEST FIRST, AND IT DEPENDS ONLY ON oldName, SO IT DOES NOT EVEN NEED THE SCAN BELOW
+    for (final DocumentType t : database.getSchema().getTypes())
+      if (oldName.equals(t.getName()))
+        throw new IllegalArgumentException(
+            "Cannot rename the item '" + oldName + "' in the dictionary because it has been used as a type name");
 
     final List<String> dictionary = entries.names();
     final ConcurrentMap<String, Integer> dictionaryMap = entries.ids();
 
+    // READ-ONLY SCAN. ONE PASS: THE OLD indexOf()-UNTIL-GONE LOOP RE-SCANNED THE WHOLE LIST PER OCCURRENCE, AND ONLY TERMINATED
+    // BECAUSE THE NAMES DIFFER, SINCE WITH oldName EQUAL TO newName EVERY SCAN FOUND WHAT THE PREVIOUS set() HAD JUST WRITTEN.
+    // THE EARLY RETURN ABOVE STILL COVERS THAT CASE, BUT SCANNING BY INDEX MAKES IT IMPOSSIBLE BY CONSTRUCTION
+    final List<Integer> oldIndexes = new ArrayList<>();
+    for (int i = 0; i < dictionary.size(); ++i)
+      if (oldName.equals(dictionary.get(i)))
+        oldIndexes.add(i);
+
+    if (oldIndexes.isEmpty())
+      throw new IllegalArgumentException("Item '" + oldName + "' not found in the dictionary");
+
     try {
+      // VALIDATION IS OVER: FROM HERE ON THE ONLY WAY OUT IS AN IOException, WHICH THE catch REPAIRS WITH A reload()
       dictionaryMap.remove(oldName);
-
-      // ONE PASS. THE OLD indexOf()-UNTIL-GONE LOOP RE-SCANNED THE WHOLE LIST PER OCCURRENCE, AND ONLY TERMINATED BECAUSE THE
-      // NAMES DIFFER: WITH oldName EQUAL TO newName EVERY SCAN FOUND WHAT THE PREVIOUS set() HAD JUST WRITTEN. THE EARLY RETURN
-      // ABOVE STILL COVERS THAT CASE, BUT SCANNING BY INDEX MAKES IT IMPOSSIBLE BY CONSTRUCTION RATHER THAN BY GUARD
-      final List<Integer> oldIndexes = new ArrayList<>();
-      for (int i = 0; i < dictionary.size(); ++i)
-        if (oldName.equals(dictionary.get(i))) {
-          oldIndexes.add(i);
-          dictionary.set(i, newName);
-        }
-
-      if (oldIndexes.isEmpty())
-        throw new IllegalArgumentException("Item '" + oldName + "' not found in the dictionary");
-
-      for (final DocumentType t : database.getSchema().getTypes())
-        if (oldName.equals(t.getName()))
-          throw new IllegalArgumentException(
-              "Cannot rename the item '" + oldName + "' in the dictionary because it has been used as a type name");
+      for (final int oldIndex : oldIndexes)
+        dictionary.set(oldIndex, newName);
 
       // REWRITE THE WHOLE DICTIONARY FROM PAGE 0 IN THE SAME ORDER, SO NO ID MOVES. THE TOTAL SIZE CAN SHRINK OR GROW, SO PAGES
       // ARE ADDED AS NEEDED AND THE ONES THE NEW CONTENT NO LONGER REACHES ARE EMPTIED: reload() WALKS EVERY COMMITTED PAGE, AND
