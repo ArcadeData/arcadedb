@@ -123,10 +123,22 @@ No code changes were required. No items were deferred.
 
 `clean-approval` on the reviewer that responded, with `gemini-code-assist` timing out.
 
-CI on `d5cb727` at the time of writing: `build-and-package`, `builder-tests`, CodeQL, Codacy and the
-Go, JS, Java, C# and Python e2e suites all green. The long-running `unit-tests`, `slow-unit-tests`,
-`integration-tests`, `ha-integration-tests` and `studio-e2e-tests` jobs were still in flight and must
-be confirmed before merge. The `Meterian client scan` job fails, which is a dependency-vulnerability
-scan unrelated to this change - no dependency was added or changed.
+### CI on `b325309`
+
+Green: `build-and-package`, `builder-tests`, `studio-e2e-tests`, CodeQL (all six languages), Codacy,
+and the Go, JS, Java, C# and Python e2e suites.
+
+Three jobs are red, and **all three fail identically on unrelated PRs**, so none is caused by this
+change. This change touches only `SQLFunctionStandardDeviation.getResult()`; none of the failing
+tests exercises an aggregate function.
+
+| Job | Failing test | Evidence it is pre-existing |
+|---|---|---|
+| `slow-unit-tests` | `EdgeAppendMergeRaceTest.addersRemoversAndReadersOnOneHotVertex` - `ConcurrentModificationException` on a hot-vertex edge append | Same test, same exception on PR #5537. This is the supernode edge-append page conflict documented in `engine/CLAUDE.md`. |
+| `integration-tests` | `Issue4141SessionManagementIT` (2 tests) - HTTP 400 from `/api/v1/command/graph` | Byte-identical failure on PR #5537 and on PR #5536, which is already merged to `main`. |
+| `Meterian client scan` | n/a | Dependency-vulnerability scan; no dependency was added or changed. |
+
+`unit-tests` and `ha-integration-tests` had not reported at the time of writing and should be
+confirmed before merge.
 
 Merge remains the developer's decision.
