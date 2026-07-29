@@ -43,6 +43,12 @@
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
         <buildnumber-maven-plugin.version>3.3.0</buildnumber-maven-plugin.version>
+        <!-- Drives both the antlr4-maven-plugin that generates the engine's own grammar
+             and the matching antlr4-runtime, so the generator and runtime versions must
+             stay equal. Free to track the latest ANTLR and should keep doing so.
+             Intentionally independent of gremlin/pom.xml, which is frozen at 4.9.1 by
+             TinkerPop; see the comment there and #5535 before assuming the two should
+             converge. -->
         <antlr4.version>4.13.2</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
         <cucumber.version>7.34.6</cucumber.version>
