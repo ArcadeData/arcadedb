@@ -142,10 +142,24 @@ public final class CorrelatedSubqueryRewriter {
         quote = c;
         continue;
       }
-      if (matchesAnyKeywordAt(upper, i, UPDATE_CLAUSE_KEYWORDS, UPDATE_KEYWORD_FIRST_CHAR))
+      final int keywordLength = matchedKeywordLengthAt(upper, i, UPDATE_CLAUSE_KEYWORDS, UPDATE_KEYWORD_FIRST_CHAR);
+      if (keywordLength > 0 && !isMapKeyAt(upper, i + keywordLength))
         return true;
     }
     return false;
+  }
+
+  /**
+   * Tells whether the keyword just matched is really a map key such as {@code {set : 1}}.
+   * <p>
+   * {@link #matchesKeywordAt} already rejects a keyword glued to its colon ({@code {set: 1}}), but
+   * the key may be separated from it by whitespace, and no update clause is ever followed by a colon.
+   */
+  private static boolean isMapKeyAt(final String upper, final int afterKeyword) {
+    int pos = afterKeyword;
+    while (pos < upper.length() && Character.isWhitespace(upper.charAt(pos)))
+      pos++;
+    return pos < upper.length() && upper.charAt(pos) == ':';
   }
 
   /**
@@ -399,15 +413,25 @@ public final class CorrelatedSubqueryRewriter {
    */
   private static boolean matchesAnyKeywordAt(final String upper, final int pos, final String[] keywords,
       final boolean[] firstChars) {
+    return matchedKeywordLengthAt(upper, pos, keywords, firstChars) > 0;
+  }
+
+  /**
+   * Length of the keyword matching at {@code pos}, or -1 when none does. Callers that only need a
+   * yes/no answer use {@link #matchesAnyKeywordAt}; the length is for those that have to look at what
+   * follows the keyword.
+   */
+  private static int matchedKeywordLengthAt(final String upper, final int pos, final String[] keywords,
+      final boolean[] firstChars) {
     if (pos >= upper.length())
-      return false;
+      return -1;
     final char first = upper.charAt(pos);
     if (first < firstChars.length && !firstChars[first])
-      return false;
+      return -1;
     for (final String keyword : keywords)
       if (matchesKeywordAt(upper, pos, keyword))
-        return true;
-    return false;
+        return keyword.length();
+    return -1;
   }
 
   private static boolean isCypherIdentifierChar(final char c) {

@@ -71,7 +71,7 @@ correctly derived table rather than borrowing the boundary one. Still derived, n
 
 New regression test
 `engine/src/test/java/com/arcadedb/query/opencypher/Issue5541SubqueryUpdateClauseGuardTest.java`,
-11 tests.
+12 tests.
 
 Proven to fail before the fix: with the helper added but the three guards still naive, 6 of the 9
 failed, each with the exact reported `InvalidClauseComposition` exception - the `COUNT`, `EXISTS`,
@@ -88,12 +88,13 @@ longer identifiers that merely start with a keyword.
 The openCypher TCK scenario that requires rejection - `ExistentialSubquery2.feature` scenario [3],
 "Full existential subquery with update clause should fail" - continues to pass.
 
-Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7713 tests, 0 failures, and the
-full `engine` module suite, 10168 tests, 0 failures.
+Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7714 tests, 0 failures, and the
+full `engine` module suite, 10169 tests, 0 failures. Both suites were re-measured after each review
+cycle changed the predicate, rather than carried forward.
 
 Both totals reconcile exactly against the last measured run of the previous branch (7695 openCypher /
 10150 engine): +7 for `OpenCypherStDevEmptyInputTest`, which reached `main` after that branch point,
-and +11 for the new class here. Compared per class, no pre-existing test class changed its count, so
+and +12 for the new class here. Compared per class, no pre-existing test class changed its count, so
 the fix moved nothing it should not have. That puts the current `main` baseline at 7702 openCypher /
 10157 engine.
 
@@ -134,6 +135,32 @@ Declined, with the reason recorded in code: comments are not skipped by the scan
 keyword inside a `//` or `/* */` comment still trips the guard. That blind spot predates this change
 (the old `contains("SET ")` had it too) and is not widened here; fixing it means teaching the scanner
 comment syntax, which is beyond this bug.
+
+**Cycle 2** - `de4a9b78` - claude[bot], no blocking findings, two actionable points.
+
+The first was that the PR description still argued for leaving `INSERT` out while the code and the
+doc had it in. Correct, and the description was rewritten to present the rejection as the intentional
+behavior change it is rather than deny it.
+
+The second was a suspected false positive on a map key separated from its colon by whitespace, e.g.
+`{set : 1}`. `matchesKeywordAt` rejects a keyword glued to its colon, but the reviewer noted the
+check looks only at the immediately following character. Probed, and it is real - and it is the same
+class of defect this PR exists to fix:
+
+```
+MATCH (n:T {set : 1}) RETURN n                        -> parses, runs, returns no rows
+RETURN COUNT { MATCH (n:T {set : 1}) RETURN n } AS v  -> InvalidClauseComposition
+```
+
+The grammar accepts that shape; only the guard rejected it. `containsUpdateClause` now looks past any
+whitespace after a matched keyword and treats a following colon as a map key, since no update clause
+is ever followed by one. `matchesAnyKeywordAt` was split so the matched keyword's length is available
+for that lookahead, and tests cover both the false positive and that a genuine clause with extra
+whitespace (`MATCH (n)   SET   n.x = 1`) is still caught.
+
+Noted, no action: `containsUpdateClause` calls `toUpperCase()` without a `Locale`. That matches
+`startsWithClauseKeyword` and `injectWhereConditions` beside it, so the Turkish-locale caveat is
+engine-wide rather than introduced here; changing one of the three would be the inconsistency.
 
 ## Follow-ups
 

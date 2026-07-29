@@ -135,6 +135,21 @@ class Issue5541SubqueryUpdateClauseGuardTest {
     assertThat(scalar("MATCH (n:T) RETURN count(n) AS v")).isEqualTo(4L);
   }
 
+  /**
+   * A map key spelled like an update clause is data, not a clause. The grammar accepts
+   * {@code MATCH (n:T {set : 1}) RETURN n} standalone, so the guard must accept it too.
+   */
+  @Test
+  void mapKeyNamedLikeAnUpdateClauseIsNotAClause() {
+    assertThat(scalar("RETURN COUNT { MATCH (n:T {set : 1}) RETURN n } AS v")).isEqualTo(0L);
+    assertThat(scalar("RETURN COUNT { MATCH (n:T {create : 1}) RETURN n } AS v")).isEqualTo(0L);
+    assertThat(scalar("RETURN EXISTS { MATCH (n:T {set : 1}) RETURN n } AS v")).isEqualTo(false);
+
+    // The lookahead must not swallow a genuine clause that merely has extra whitespace
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n)   SET   n.x = 1")).isTrue();
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) REMOVE n:T")).isTrue();
+  }
+
   @Test
   void backtickIdentifiersEscapeByDoublingNotByBackslash() {
     // A doubled backtick closes and reopens the quote, so the SET after it is still inside data
@@ -162,6 +177,9 @@ class Issue5541SubqueryUpdateClauseGuardTest {
     assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) RETURN n.set")).isFalse();
     assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n)-[r:SET_BY]->(m) RETURN r")).isFalse();
     assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n {create: 1}) RETURN n")).isFalse();
+    // ... including when whitespace separates the key from its colon
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n {set : 1}) RETURN n")).isFalse();
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n {create  :  1}) RETURN n")).isFalse();
 
     // Genuine update clauses
     assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) SET n.x = 1")).isTrue();
