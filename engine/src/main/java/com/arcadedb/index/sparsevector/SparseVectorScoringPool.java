@@ -237,6 +237,18 @@ public final class SparseVectorScoringPool {
   }
 
   /**
+   * Whether the queries already in flight on caller threads can keep this pool's worth of threads
+   * busy without any help, which is the point at which splitting stops paying for itself.
+   * <p>
+   * Deliberately the only place this comparison is written. Both the gate that refuses a split and
+   * the warning that reports one granted anyway ask this question, and they have to agree by
+   * construction rather than by two authors keeping two expressions in step.
+   */
+  private boolean callersAloneCanSaturate() {
+    return inFlightQueries.get() * CALLER_LOAD_GATE_FACTOR > executor.getMaximumPoolSize();
+  }
+
+  /**
    * Claim up to {@code desired} workers for a range fan-out, returning how many were actually granted
    * (possibly 0). The caller must hand back exactly what it was granted with
    * {@link #releaseWorkers(int)}.
@@ -261,7 +273,7 @@ public final class SparseVectorScoringPool {
     // and gives up throughput for it. Refusing to split once the callers alone can keep the pool's
     // worth of threads busy is what makes the default safe under load, and it costs nothing when
     // idle - one caller against 18 workers splits all the way.
-    if (inFlightQueries.get() * CALLER_LOAD_GATE_FACTOR > ceiling)
+    if (callersAloneCanSaturate())
       return 0;
     // Work on the pool that never went through a reservation - the per-bucket fan-out submits
     // straight to the executor - still occupies workers, so it counts against what is grantable or a
@@ -344,8 +356,10 @@ public final class SparseVectorScoringPool {
   public void warnExplicitSplitUnderLoad(final int partitions) {
     final int ceiling = executor.getMaximumPoolSize();
     final int inFlight = inFlightQueries.get();
-    if (inFlight * 2 <= ceiling)
-      // The adaptive gate would have allowed this too, so the explicit setting changed nothing here.
+    // The same predicate the gate itself uses, not a copy of it. This warning's entire claim is
+    // "the adaptive default would have refused this", so a second expression here would start
+    // lying the moment the gate is tuned - the one thing naming the factor was meant to prevent.
+    if (!callersAloneCanSaturate())
       return;
     final long now = System.currentTimeMillis();
     final long last = lastExplicitSplitWarnMs.get();

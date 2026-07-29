@@ -299,7 +299,8 @@ function displayMetrics() {
   // tasks.caller_run_fallbacks. The sparse-vector pool adds pool.reserved, queries.in_flight and
   // queries.split, which explain its per-query decision to parallelise or not (#4085).
   var ex = serverData.metrics.executors || {};
-  var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring" };
+  var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring",
+      "parallel_scan": "Parallel Scan Producers" };
   var executorPoolNames = Object.keys(ex).sort();
   var executorsHtml = "";
   for (var i = 0; i < executorPoolNames.length; i++) {
