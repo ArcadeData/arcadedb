@@ -222,3 +222,10 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # Every file in /e2e-go is a *_test.go, so the module declares only three
+    # direct requirements (neo4j-go-driver, testify, testcontainers-go) and
+    # everything else is marked `// indirect`. Without this, version updates
+    # only ever consider those three, and the transitive tree silently drifts
+    # however far behind the direct deps' own floors allow.
+    allow:
+      - dependency-type: "all"
