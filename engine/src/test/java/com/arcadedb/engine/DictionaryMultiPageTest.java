@@ -259,6 +259,42 @@ class DictionaryMultiPageTest extends TestHelper {
   }
 
   /**
+   * The reason reload() walks the COMMITTED page count instead of getTotalPages(). A rolled-back transaction still has its own
+   * page counter set when TransactionContext.rollback() reloads the dictionary, so reading that counter would walk a page that
+   * was never committed and rebuild the dictionary from content that is being thrown away.
+   * <p>
+   * updateName is what reaches this: it runs inside the CALLER's transaction and both modifies existing pages and adds new
+   * ones, so a dictionary page lands in modifiedPages (which is what arms the reload on rollback) while the growth is still
+   * uncommitted. An append through getIdByName cannot, because it only ever adds a page and never modifies one.
+   */
+  @Test
+  void aRolledBackTransactionThatGrewTheDictionaryLeavesItIntact() {
+    final int added = fillPages(2);
+    final Dictionary dictionary = dictionary();
+    final int pagesBefore = dictionary.getTotalPages();
+
+    final String huge = "z".repeat(dictionary.getPageSize() - BasePage.PAGE_HEADER_SIZE - Binary.INT_SERIALIZED_SIZE - 8);
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      dictionary.updateName(name(1), huge);
+      assertThat(dictionary.getTotalPages()).as("the rename has to grow the dictionary for this test to mean anything")
+          .isGreaterThan(pagesBefore);
+      throw new IllegalStateException("rolled back on purpose");
+    })).isInstanceOf(IllegalStateException.class);
+
+    // THE GROWTH IS GONE AND THE IN-RAM VIEW, WHICH updateName HAD ALREADY EDITED, WAS REPAIRED BY THE ROLLBACK RELOAD
+    assertThat(dictionary.getTotalPages()).isEqualTo(pagesBefore);
+    assertThat(dictionary.getIdByName(huge, false)).isEqualTo(-1);
+    assertAllNamesResolve(added);
+
+    reopenDatabase();
+
+    assertThat(dictionary().getTotalPages()).isEqualTo(pagesBefore);
+    assertThat(dictionary().getDictionaryMap()).hasSize(added);
+    assertAllNamesResolve(added);
+  }
+
+  /**
    * A dictionary written by a future ArcadeDB would be read as if it had this layout, silently. Opening the database has to fail
    * loudly instead. Exercised the way it would really happen, through the load path, by renaming the file to a higher version.
    */

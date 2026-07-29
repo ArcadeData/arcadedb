@@ -38,8 +38,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
- * Maps every type name, property name and enumerated string value of a database to a small integer id, which is what records
- * carry instead of the name itself.
+ * Maps names to small integer ids, which is what records carry instead of the name itself.
+ * <br>
+ * Only identifiers are ever ADDED here: type names and property names, the callers that pass {@code create=true} to
+ * {@link #getIdByName}. A string VALUE is only ever looked up with {@code create=false}, and is stored as a reference when it
+ * happens to match an entry already present (see {@code BinarySerializer.serializeProperties}). User data therefore never
+ * enters the dictionary, and the per-name size limit below only ever applies to identifiers.
  * <br>
  * PAGE = [itemCount(int:4)][name(string)]* , where a name is a 1-3 byte varint length followed by its UTF-8 bytes. Every page
  * has the same shape, page 0 included, so a dictionary written before multi-page support (which is exactly one such page) loads
@@ -375,13 +379,18 @@ public class Dictionary extends PaginatedComponent {
       // (~150ms FOR 48K ENTRIES, PAID ON EVERY OPEN, EVERY ROLLBACK OF A DICTIONARY TX AND EVERY REPLICATED DICTIONARY CHANGE).
       final List<String> loaded = new ArrayList<>();
 
-      // THE COMMITTED PAGE COUNT, NOT getTotalPages(): reload() REBUILDS THE IN-RAM VIEW FROM DURABLE STATE, AND
-      // TransactionContext.rollback() CALLS IT WHILE THE TRANSACTION'S OWN PAGE COUNTER STILL COUNTS PAGES THAT ARE BEING
-      // THROWN AWAY. THE FLOOR OF 1 KEEPS THE PRE-MULTI-PAGE BEHAVIOUR OF ALWAYS READING PAGE 0 OF A NON-EMPTY FILE.
+      // COMMITTED STATE ON BOTH COUNTS, WHICH IS THE WHOLE CONTRACT OF THIS METHOD: EVERY CALLER (LOAD, ROLLBACK, AND THE TWO
+      // POST-COMMIT REPLICATION PATHS) WANTS WHAT IS DURABLE, NEVER WHAT A TRANSACTION IS CURRENTLY HOLDING.
+      //
+      // getTotalPages() WOULD COUNT PAGES A ROLLING-BACK TRANSACTION IS THROWING AWAY, AND TransactionContext.getPage() WOULD
+      // RETURN THAT TRANSACTION'S OWN DIRTY COPY (IT CHECKS modifiedPages FIRST), SO A ROLLBACK WOULD REBUILD THE DICTIONARY
+      // FROM EXACTLY THE CONTENT BEING DISCARDED. READ THROUGH THE PAGE MANAGER INSTEAD, AND COUNT WITH pageCount, WHICH ONLY
+      // ADVANCES ON COMMIT. THE FLOOR OF 1 KEEPS THE PRE-MULTI-PAGE BEHAVIOUR OF ALWAYS READING PAGE 0 OF A NON-EMPTY FILE.
       final int totalPages = Math.max(1, pageCount.get());
 
       for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber) {
-        final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
+        final BasePage page = database.getPageManager()
+            .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
 
         page.setBufferPosition(DICTIONARY_HEADER_SIZE);
         while (page.getBufferPosition() < page.getContentSize())
