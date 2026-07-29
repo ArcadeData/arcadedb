@@ -221,16 +221,15 @@ public class Dictionary extends PaginatedComponent {
     try {
       dictionaryMap.remove(oldName);
 
+      // ONE PASS. THE OLD indexOf()-UNTIL-GONE LOOP RE-SCANNED THE WHOLE LIST PER OCCURRENCE, AND ONLY TERMINATED BECAUSE THE
+      // NAMES DIFFER: WITH oldName EQUAL TO newName EVERY SCAN FOUND WHAT THE PREVIOUS set() HAD JUST WRITTEN. THE EARLY RETURN
+      // ABOVE STILL COVERS THAT CASE, BUT SCANNING BY INDEX MAKES IT IMPOSSIBLE BY CONSTRUCTION RATHER THAN BY GUARD
       final List<Integer> oldIndexes = new ArrayList<>();
-      while (true) {
-        final int oldIndex = dictionary.indexOf(oldName);
-        if (oldIndex == -1)
-          break;
-
-        oldIndexes.add(oldIndex);
-
-        dictionary.set(oldIndex, newName);
-      }
+      for (int i = 0; i < dictionary.size(); ++i)
+        if (oldName.equals(dictionary.get(i))) {
+          oldIndexes.add(i);
+          dictionary.set(i, newName);
+        }
 
       if (oldIndexes.isEmpty())
         throw new IllegalArgumentException("Item '" + oldName + "' not found in the dictionary");

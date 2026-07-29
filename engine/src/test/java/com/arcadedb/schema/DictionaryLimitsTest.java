@@ -39,17 +39,21 @@ class DictionaryLimitsTest extends TestHelper {
   /**
    * Filling far past one page used to end in "no space left in dictionary file". It has to just keep working now, with every id
    * still resolvable in both directions.
+   * <p>
+   * Sized by what it has to prove, not by a round number: every name costs its own nested transaction, so 3,000 padded names
+   * cross four pages and keep the test well under a second even on a slow CI runner. Twenty thousand of them proved nothing
+   * more and only bought 20,000 WAL commits.
    */
   @Test
   void fillingWellPastOnePageKeepsWorking() {
     final Dictionary dictionary = database.getSchema().getDictionary();
 
-    final int total = 20_000;
+    final int total = 3_000;
     for (int i = 0; i < total; ++i)
       dictionary.getIdByName(name(i), true);
 
     assertThat((long) total * 100).as("the fixture has to be bigger than a single page").isGreaterThan(dictionary.getPageSize());
-    assertThat(dictionary.getTotalPages()).isGreaterThan(1);
+    assertThat(dictionary.getTotalPages()).as("several pages, not just a rollover").isGreaterThanOrEqualTo(4);
     assertThat(dictionary.getDictionaryMap()).hasSize(total);
 
     for (int i = 0; i < total; ++i) {
