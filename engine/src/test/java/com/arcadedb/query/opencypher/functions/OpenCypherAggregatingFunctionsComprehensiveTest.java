@@ -329,7 +329,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
     final ResultSet result = database.command("opencypher",
         "UNWIND [null, null] AS val RETURN stDev(val) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isEqualTo(0.0);
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
   // ==================== stDevP() Tests ====================
@@ -350,7 +350,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
     final ResultSet result = database.command("opencypher",
         "UNWIND [null, null] AS val RETURN stDevP(val) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isEqualTo(0.0);
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
   // ==================== sum() Tests ====================
@@ -530,7 +530,7 @@ class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
     final ResultSet result = database.command("opencypher",
         "UNWIND [null, null] AS val RETURN stdev_samp(val) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isEqualTo(0.0);
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 
   // ==================== stdev_pop() Tests (alias of stDevP()) ====================
@@ -551,6 +551,6 @@ class OpenCypherAggregatingFunctionsComprehensiveTest extends TestHelper {
     final ResultSet result = database.command("opencypher",
         "UNWIND [null, null] AS val RETURN stdev_pop(val) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    assertThat(((Number) result.next().getProperty("result")).doubleValue()).isEqualTo(0.0);
+    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
   }
 }
