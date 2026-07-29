@@ -80,6 +80,9 @@ public class CountExpression implements Expression {
   private static String wrapNonMatchBody(final String patterns, final String body) {
     if (CorrelatedSubqueryRewriter.startsWithClauseKeyword(body))
       return "MATCH " + patterns + " " + body;
+    // Defensive mirror of EXISTS: a bare pattern is normalized into "MATCH ... RETURN 1" when the
+    // expression is built, so the correlation takes the leading-MATCH path and never arrives here.
+    // Kept so the wrapper stays correct if that normalization ever moves.
     return "MATCH " + patterns + ", " + body + " RETURN 1";
   }
 

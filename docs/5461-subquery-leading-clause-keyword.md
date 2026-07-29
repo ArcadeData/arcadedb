@@ -95,6 +95,33 @@ that bare-pattern bodies are still wrapped into a `MATCH`.
 Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7693 tests, 0 failures, plus the
 full `engine` module suite.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5540
+
+### Review cycles
+
+**Cycle 1** - `a5cc23d` - claude[bot]: no blocking findings. It independently traced and confirmed
+the three correctness properties the fix depends on: a `WHERE`-before-`UNWIND` corruption is not
+reachable (a `whereCondition` is only ever produced alongside a `matchPattern`, so
+`injectMatchPatterns` always runs first), adding `MATCH`/`OPTIONAL` to the boundary list handles
+multi-`MATCH` bodies correctly, and `COLLECT` needs no wrapper change because its `WITH *` shape
+already tolerates any leading clause. Three minor non-blocking notes, dispositioned below.
+
+## Follow-ups
+
+- **Applied in cycle 1.** The bare-pattern branch of `CountExpression.wrapNonMatchBody` is
+  unreachable, because a bare pattern is normalized into `MATCH ... RETURN 1` at build time before
+  `correlate` runs. Verified (single construction site) and documented with a comment rather than
+  deleted, so the branch stays correct if that normalization ever moves.
+- **Not addressed, pre-existing.** The `subquery.toUpperCase().contains("RETURN ")` test that decides
+  whether a body needs a synthesized `RETURN` is a naive substring match and would false-positive on
+  a string literal such as `WHERE x = 'RETURN '`. It predates this change and correcting it needs its
+  own literal-aware scan and tests; it is only touched here incidentally.
+- **No action, informational.** The mutating keywords in `CLAUSE_KEYWORDS` are inert on the
+  `COUNT`/`EXISTS` parse-time path, since update clauses are rejected before it. They are carried for
+  completeness of the shared list and for boundary detection.
+
 ## Impact
 
 Any `COUNT { }` or `EXISTS { }` whose body opens with `UNWIND`, `CALL`, `OPTIONAL MATCH` or `FOREACH`
