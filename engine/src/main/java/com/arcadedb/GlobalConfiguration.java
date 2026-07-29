@@ -339,8 +339,11 @@ public enum GlobalConfiguration {
       saturated one keeps its throughput. Measured on an 18-worker box at 500k documents: one \
       client 13.7 -> 3.1 ms p50, four clients 13.6 -> 4.1 ms with 61% more throughput, sixteen \
       clients within 5% of serial throughput. Any explicit value above 1 opts out of that \
-      self-throttling and splits regardless of load, which is a throughput risk on a busy server. \
-      Re-read on every query.""",
+      self-throttling and splits regardless of load. That is a throughput risk on a busy server, \
+      and it is paid by the forcing query too: measured independently at 16 concurrent clients, a \
+      forced 8-way split returned 0.76x the throughput of no split at all with a median 1.75x \
+      worse, while compressing the tail (p99/p50 1.5x against 5.2x). Force it for tail \
+      predictability under load; leave it at 0 for median or throughput. Re-read on every query.""",
       Integer.class, 0),
 
   SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING("arcadedb.sparseVectorScoringMinPostingsForPartitioning", SCOPE.JVM,
