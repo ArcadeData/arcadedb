@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BinaryOperator;
 import java.util.stream.Stream;
@@ -103,7 +104,7 @@ public final class CorrelatedSubqueryRewriter {
    * surfaces only as a silently wrong {@code COUNT} of 0 or {@code EXISTS} of false (issue #5461).
    */
   public static boolean startsWithClauseKeyword(final String body) {
-    return matchesAnyKeywordAt(body.trim().toUpperCase(), 0, CLAUSE_KEYWORDS, BOUNDARY_KEYWORD_FIRST_CHAR);
+    return matchesAnyKeywordAt(body.trim().toUpperCase(Locale.ROOT), 0, CLAUSE_KEYWORDS, BOUNDARY_KEYWORD_FIRST_CHAR);
   }
 
   /**
@@ -122,7 +123,7 @@ public final class CorrelatedSubqueryRewriter {
    * spot predates this scan and is not widened by it.
    */
   public static boolean containsUpdateClause(final String body) {
-    final String upper = body.toUpperCase();
+    final String upper = body.toUpperCase(Locale.ROOT);
     char quote = 0;
 
     for (int i = 0; i < upper.length(); i++) {
@@ -143,23 +144,41 @@ public final class CorrelatedSubqueryRewriter {
         continue;
       }
       final int keywordLength = matchedKeywordLengthAt(upper, i, UPDATE_CLAUSE_KEYWORDS, UPDATE_KEYWORD_FIRST_CHAR);
-      if (keywordLength > 0 && !isMapKeyAt(upper, i + keywordLength))
+      if (keywordLength > 0 && opensAClauseAt(upper, i + keywordLength))
         return true;
     }
     return false;
   }
 
   /**
-   * Tells whether the keyword just matched is really a map key such as {@code {set : 1}}.
+   * Tells whether the keyword just matched is followed by something a write clause can actually take,
+   * rather than being an identifier that happens to be spelled like one.
    * <p>
-   * {@link #matchesKeywordAt} already rejects a keyword glued to its colon ({@code {set: 1}}), but
-   * the key may be separated from it by whitespace, and no update clause is ever followed by a colon.
+   * None of these keywords is reserved in this grammar - {@code RETURN 1 AS set} and
+   * {@code RETURN 1 AS insert} both parse - so a scan that accepts any word boundary flags an alias
+   * as a write. A clause is followed by its pattern or target, so only whitespace or an immediately
+   * following {@code (} qualifies: that keeps {@code SET n.x = 1}, {@code DELETE n} and the
+   * space-less {@code CREATE(n)}, while rejecting an alias at the end of the body or before a comma.
+   * <p>
+   * A colon disqualifies it again, because the keyword is then a map key: {@link #matchesKeywordAt}
+   * already rejects the glued {@code {set: 1}}, and this catches {@code {set : 1}}.
+   * <p>
+   * What this cannot separate is an alias that is itself followed by a clause, as in
+   * {@code WITH 1 AS set RETURN set} - lexically identical to {@code SET n.x = 1}. Telling those
+   * apart needs clause position from the parse tree rather than a text scan.
    */
-  private static boolean isMapKeyAt(final String upper, final int afterKeyword) {
+  private static boolean opensAClauseAt(final String upper, final int afterKeyword) {
+    if (afterKeyword >= upper.length())
+      return false;
+    if (upper.charAt(afterKeyword) == '(')
+      return true;
+    if (!Character.isWhitespace(upper.charAt(afterKeyword)))
+      return false;
+
     int pos = afterKeyword;
     while (pos < upper.length() && Character.isWhitespace(upper.charAt(pos)))
       pos++;
-    return pos < upper.length() && upper.charAt(pos) == ':';
+    return pos < upper.length() && upper.charAt(pos) != ':';
   }
 
   /**
@@ -298,7 +317,7 @@ public final class CorrelatedSubqueryRewriter {
    */
   public static String injectWhereConditions(final String query, final String conditions) {
     // NOTE: upper must not be trimmed - every index below addresses both strings interchangeably
-    final String upper = query.toUpperCase();
+    final String upper = query.toUpperCase(Locale.ROOT);
     int scanStart = 0;
     while (scanStart < upper.length() && Character.isWhitespace(upper.charAt(scanStart)))
       scanStart++;

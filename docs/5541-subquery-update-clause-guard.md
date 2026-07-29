@@ -58,10 +58,18 @@ Two deliberate choices:
 - **Nesting is not tracked.** Unlike `injectWhereConditions`, the scan does not skip bracketed
   constructs. A write nested inside one - `CALL { ... CREATE ... }` - is still a write and must still
   be rejected. Only literals are exempt, which is exactly the reported false positive.
-- **Word boundaries make the guard slightly stronger, not weaker.** The old scan required a trailing
-  space, so `CREATE(n)` slipped through; the boundary check catches it. Conversely `n.createdAt`,
-  `n.set`, `[r:SET_BY]` and `{create: 1}` are correctly *not* clauses, via the existing rejection of
-  `.`, `:` and `$` prefixes and of identifier characters on either side.
+- **A word boundary alone is not enough; the keyword must also open a clause.** None of the six
+  keywords is reserved in this grammar - `RETURN 1 AS set` and `RETURN 1 AS insert` both parse - so
+  matching on a word boundary alone flags an alias as a write. The guard additionally requires the
+  keyword to be followed by whitespace or an immediate `(`, which is what a clause takes. That keeps
+  `SET n.x = 1`, `DELETE n` and the space-less `CREATE(n)` that the original trailing-space scan
+  missed, while leaving an alias at the end of a body or before a comma alone. `n.createdAt`,
+  `n.set`, `[r:SET_BY]`, `{create: 1}` and `{set : 1}` are excluded by the surrounding-character
+  rules.
+
+  What no text scan can separate is an alias that is itself followed by a clause, as in
+  `WITH 1 AS set RETURN set`, which is lexically identical to `SET n.x = 1`. That needs clause
+  position from the parse tree and is recorded on the method rather than guessed at.
 
 The first-character pre-filter table introduced in #5540 is now built by a shared `firstCharTable`
 helper and passed to `matchesAnyKeywordAt` explicitly, so the update-keyword scan gets its own
@@ -71,7 +79,7 @@ correctly derived table rather than borrowing the boundary one. Still derived, n
 
 New regression test
 `engine/src/test/java/com/arcadedb/query/opencypher/Issue5541SubqueryUpdateClauseGuardTest.java`,
-12 tests.
+14 tests.
 
 Proven to fail before the fix: with the helper added but the three guards still naive, 6 of the 9
 failed, each with the exact reported `InvalidClauseComposition` exception - the `COUNT`, `EXISTS`,
@@ -88,13 +96,13 @@ longer identifiers that merely start with a keyword.
 The openCypher TCK scenario that requires rejection - `ExistentialSubquery2.feature` scenario [3],
 "Full existential subquery with update clause should fail" - continues to pass.
 
-Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7714 tests, 0 failures, and the
-full `engine` module suite, 10169 tests, 0 failures. Both suites were re-measured after each review
+Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7717 tests, 0 failures, and the
+full `engine` module suite, 10172 tests, 0 failures. Both suites were re-measured after each review
 cycle changed the predicate, rather than carried forward.
 
 Both totals reconcile exactly against the last measured run of the previous branch (7695 openCypher /
 10150 engine): +7 for `OpenCypherStDevEmptyInputTest`, which reached `main` after that branch point,
-and +12 for the new class here. Compared per class, no pre-existing test class changed its count, so
+and +15 for the new class here. Compared per class, no pre-existing test class changed its count, so
 the fix moved nothing it should not have. That puts the current `main` baseline at 7702 openCypher /
 10157 engine.
 
@@ -158,9 +166,45 @@ is ever followed by one. `matchesAnyKeywordAt` was split so the matched keyword'
 for that lookahead, and tests cover both the false positive and that a genuine clause with extra
 whitespace (`MATCH (n)   SET   n.x = 1`) is still caught.
 
-Noted, no action: `containsUpdateClause` calls `toUpperCase()` without a `Locale`. That matches
-`startsWithClauseKeyword` and `injectWhereConditions` beside it, so the Turkish-locale caveat is
-engine-wide rather than introduced here; changing one of the three would be the inconsistency.
+Noted, no action at the time: `containsUpdateClause` calls `toUpperCase()` without a `Locale`. That
+matched the two sibling methods, so changing one of the three looked like the inconsistency. Cycle 3
+raised it again and pointed at the right answer - change all three - which is what happened; see
+below.
+
+**Cycle 3** - `c2c65869` - claude[bot], LGTM, no blocking findings. Both remaining minor notes were
+probed rather than accepted, and both turned out to be real, one of them a regression this branch had
+introduced.
+
+*Locale.* Confirmed, and it is specifically reachable through this branch's own `INSERT` addition:
+
+```
+"insert".toUpperCase() in tr-TR              -> INSERT with a dotted capital I
+containsUpdateClause("insert (n:T)") in tr-TR -> false      (a lowercase write slips past)
+containsUpdateClause("match (n) set ...")     -> true       (SET has no i, so it is unaffected)
+```
+
+`INSERT` is the one update keyword containing an `i`, so adding it in cycle 1 is what made the
+pre-existing locale sloppiness bite. All three `toUpperCase()` calls in the class now pass
+`Locale.ROOT`, and a test asserts the predicate under a Turkish default locale.
+
+*Keyword as an identifier.* The review flagged this as speculative, worth checking "only if `INSERT`
+turns out to be usable as an identifier". It is - and so are the other five, which the review assumed
+were reserved:
+
+```
+RETURN 1 AS set / create / delete / merge / remove / insert   -> all accepted
+```
+
+That makes the alias case real, and it was a **regression introduced by this branch**. The original
+scan required a trailing space, so a body ending `... RETURN 1 AS set` did not match `"SET "` and was
+allowed; the word-boundary match - praised in cycles 1 and 2 as a strengthening - matches at the end
+of a token and rejected it. Verified before the fix: `set`, `create` and `insert` used as aliases
+inside `COUNT { }` all threw.
+
+`containsUpdateClause` now also requires the keyword to be followed by whitespace or an immediate
+`(`, which is what a clause takes and an alias at the end of a body or before a comma does not. The
+space-less `CREATE(n)` improvement survives. Tested across all six keywords, in both the alias and
+the genuine-clause shape.
 
 ## Follow-ups
 

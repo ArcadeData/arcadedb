@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -148,6 +149,45 @@ class Issue5541SubqueryUpdateClauseGuardTest {
     // The lookahead must not swallow a genuine clause that merely has extra whitespace
     assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n)   SET   n.x = 1")).isTrue();
     assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) REMOVE n:T")).isTrue();
+  }
+
+  /**
+   * None of the update keywords is reserved in this grammar - {@code RETURN 1 AS set} parses - so an
+   * alias spelled like one must not be read as a clause. A scan that accepts any word boundary flags
+   * it; the guard requires the keyword to be followed by whitespace or {@code (}, as a clause is.
+   */
+  @Test
+  void anAliasSpelledLikeAnUpdateClauseIsNotAClause() {
+    for (final String keyword : new String[] { "set", "create", "delete", "merge", "remove", "insert" }) {
+      assertThat(scalar("RETURN COUNT { MATCH (n:T) RETURN 1 AS " + keyword + " } AS v"))
+          .as("alias named %s", keyword).isEqualTo(4L);
+      assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) RETURN 1 AS " + keyword))
+          .as("alias named %s", keyword).isFalse();
+      assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) RETURN 1 AS " + keyword + ", 2 AS b"))
+          .as("alias named %s before a comma", keyword).isFalse();
+    }
+
+    // A space-less write is still a write, which the original trailing-space scan missed
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("CREATE(n:T)")).isTrue();
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) DELETE n")).isTrue();
+  }
+
+  /**
+   * The scan uppercases the body to compare against ASCII keywords, so it must not depend on the
+   * default locale. In a Turkish locale {@code "insert".toUpperCase()} yields a dotted capital I,
+   * which does not match {@code INSERT} and let a lowercase write through.
+   */
+  @Test
+  void keywordMatchingIsIndependentOfTheDefaultLocale() {
+    final Locale original = Locale.getDefault();
+    try {
+      Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+      assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("insert (n:T)")).isTrue();
+      assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("match (n) set n.x = 1")).isTrue();
+      assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("unwind [1] AS y RETURN y")).isTrue();
+    } finally {
+      Locale.setDefault(original);
+    }
   }
 
   @Test
