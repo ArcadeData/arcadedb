@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
+# linux/arm64 ONLY. Packages the mostly-static glibc binary built by native-image.yml's
+# linux/arm64 job (-Dnative.mostlystatic=true, native/pom.xml's native-mostly-static profile:
+# -H:+StaticExecutableWithDynamicLibC). Everything is statically linked except glibc itself,
+# which is loaded dynamically at runtime (matching glibc's own NSS/dlopen requirements), so this
+# binary needs a glibc runtime - unlike the fully-static musl amd64 binary, which needs nothing
+# and runs on `scratch` (see Dockerfile.native.scratch). GraalVM CE ships no static musl JDK
+# libraries for aarch64 (oracle/graal#4645, closed not-planned), so the fully-static/musl
+# combination cannot link on this architecture; -H:+StaticExecutableWithDynamicLibC is GraalVM's
+# documented fallback for exactly this case.
+#
+# distroless/base-debian12 provides glibc, libssl and a CA-certificate bundle already baked in -
+# no separate ca-certificates COPY needed here, unlike Dockerfile.native.scratch - but no shell
+# and no package manager: the same "no JAVA_OPTS wrapper script" constraint documented in
+# Dockerfile.native.scratch's ENTRYPOINT comment applies here too. The `:nonroot` tag additionally
+# bakes in a non-root `nonroot:nonroot` (65532:65532) user/group, so - unlike scratch, which has
+# no /etc/passwd at all - this image runs non-root by default with no --user override needed.
+#
+# Pinned by digest (in addition to the :nonroot tag, kept for readability) to match the JVM
+# Dockerfile's supply-chain posture: a floating tag can be repointed upstream without notice,
+# while the digest guarantees the exact image content this Dockerfile was validated against.
+# Resolve the current digest with:
+#   docker buildx imagetools inspect gcr.io/distroless/base-debian12:nonroot --format '{{.Manifest.Digest}}'
+#
+# Tiny builder stage: distroless/base has no shell/mkdir/chown to create the VOLUME directories
+# below owned by the nonroot (65532:65532) runtime user, so pre-create them here and COPY the
+# resulting tree in. Pinned by digest, matching the base image's own pin above.
+FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
+RUN mkdir -p /skel/databases /skel/backups /skel/replication /skel/log && \
+    chown -R 65532:65532 /skel
+
+FROM gcr.io/distroless/base-debian12:nonroot@sha256:6c806311d31c11d364a8d13a022af5a48f29e43bd585ad6b51f1bb447f83d239
+
+LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
+
+# Build-time inputs staged into the build context by native-image.yml's `docker` job (see its
+# "Stage build context" step, arm64 leg):
+#   ./arcadedb -> the linux/arm64 mostly-static binary, from artifact arcadedb-native-linux-arm64
+#   ./config   -> config templates, copied verbatim from package/src/main/config
+COPY --chown=nonroot:nonroot config /home/arcadedb/config
+COPY --chown=nonroot:nonroot --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
+COPY --from=dirs --chown=65532:65532 /skel/ /home/arcadedb/
+
+WORKDIR /home/arcadedb
+
+VOLUME [ "/home/arcadedb/config" ]
+VOLUME [ "/home/arcadedb/databases" ]
+VOLUME [ "/home/arcadedb/backups" ]
+VOLUME [ "/home/arcadedb/replication" ]
+VOLUME [ "/home/arcadedb/log" ]
+
+# ArcadeDB HTTP API & Studio
+EXPOSE 2480
+# ArcadeDB binary protocol (replication)
+EXPOSE 2424
+# PostgreSQL wire protocol
+EXPOSE 5432
+# Redis wire protocol
+EXPOSE 6379
+# MongoDB wire protocol
+EXPOSE 27017
+# Neo4j Bolt wire protocol
+EXPOSE 7687
+# gRPC service
+EXPOSE 50051
+
+# distroless/base has no shell either, so the same exec-form, no-wrapper-script constraints as
+# Dockerfile.native.scratch's ENTRYPOINT apply here (see its comment for the full rationale).
+# `:nonroot` already runs as UID 65532 by default, so - unlike the scratch image - no --user
+# override is required at `docker run` time. See docs/native-image.md for a full worked example.
+ENTRYPOINT ["/home/arcadedb/bin/arcadedb", \
+  "-Dorg.jline.terminal.dumb=true", \
+  "-Djava.util.logging.config.file=/home/arcadedb/config/arcadedb-log.properties"]
