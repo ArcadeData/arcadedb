@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The sibling {@code runWithCompactionReplication} always guarded the same two thread-locals with
  * {@code walEntries.isEmpty()} included; the asymmetry between the two was the defect.
  */
+@Tag("slow")
 class Issue5492SchemaWalNotShippedIT extends BaseRaftHATest {
 
   private static final String TYPE_NAME = "SchemaWalDoc";
