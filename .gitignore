@@ -558,6 +558,17 @@ dist
 *.lsmvecidx
 *.metadata.json
 
+# E2E harness test output
+# Playwright writes playwright-report/ (html reporter) and test-results/
+# (screenshots, videos, traces) on every local run; blob-report/ appears when
+# sharding. Both e2e-studio and e2e-js emit JUnit XML into reports/. All are
+# regenerated per run and must never be committed.
+e2e-studio/playwright-report/
+e2e-studio/test-results/
+e2e-studio/blob-report/
+e2e-studio/reports/
+e2e-js/reports/
+
 notes.txt
 /.claude/worktrees
 .worktrees/
