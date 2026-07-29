@@ -581,16 +581,29 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         // LocalDatabase.checkDatabaseIsOpen, which creates one as a side effect for any thread that
         // reaches a checked database method first: that is what keeps the per-bucket fan-out working
         // today, and it is luck rather than design - the scoring path does not otherwise need it.
-        // Same init/remove pair the parallel bucket scan in FetchFromTypeExecutionStep uses.
-        // The context is a fresh one rather than the caller's: TransactionContext caches the pages it
-        // hands out in plain HashMaps, so several workers sharing one would corrupt it. Reading
+        //
+        // Create-only-if-absent, and tear down only what this task created, exactly as
+        // checkDatabaseIsOpen does it. This task does NOT always run on a worker: the pool's queue is
+        // bounded and its rejection policy is caller-runs, so once the queue fills, a submitted range
+        // executes inline on the submitting thread - which is the user's, inside the user's
+        // transaction. An unconditional init() there takes DatabaseContext.init's "ROLLBACK PREVIOUS
+        // TXS" branch and silently rolls the caller's transaction back, and the removeContext below
+        // would then wipe the context the rest of the query still needs. The identical init/remove
+        // pair in FetchFromTypeExecutionStep is safe only because its pool has an unbounded queue and
+        // never runs a task on the caller.
+        //
+        // The context stays a fresh one rather than the caller's: TransactionContext caches the pages
+        // it hands out in plain HashMaps, so several workers sharing one would corrupt it. Reading
         // committed pages through a fresh context is equivalent here because a caller holding
         // uncommitted changes is not allowed to fan out at all - see planPartitionBoundaries.
-        DatabaseContext.INSTANCE.init(database);
+        final boolean contextCreated = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath()) == null;
+        if (contextCreated)
+          DatabaseContext.INSTANCE.init(database);
         try {
           return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, start, end);
         } finally {
-          DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+          if (contextCreated)
+            DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
         }
       }));
     }
@@ -610,7 +623,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
     for (final Future<List<RidScore>> f : futures) {
       try {
-        if (timeoutSeconds <= 0) {
+        // A range that has already finished is always harvested, deadline or not. The caller scores
+        // its own range before getting here, so it can legitimately consume the whole budget on work
+        // that succeeded; failing the query then, while every worker range sits complete and waiting
+        // to be read, would be a timeout reported for nothing that is actually outstanding. The
+        // deadline governs waiting, not collecting.
+        if (timeoutSeconds <= 0 || f.isDone()) {
           ranges.add(f.get());
         } else {
           final long remainingNs = deadlineNs - System.nanoTime();

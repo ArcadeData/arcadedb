@@ -20,6 +20,7 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
@@ -431,6 +432,73 @@ class ParallelRangeTopKTest extends TestHelper {
       GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previousPartitions);
       GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(previousMin);
       GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.setValue(previousTimeout);
+    }
+  }
+
+  @Test
+  void aRangeForcedOntoTheCallerThreadLeavesTheCallersTransactionAlone() throws Exception {
+    final int previousPartitions = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    final long previousMin = GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong();
+    final CountDownLatch release = new CountDownLatch(1);
+    try {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(2);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(1L);
+
+      final Map<RID, Map<Integer, Float>> corpus = buildCorpus(SMALL_DOCS, 12L, false);
+      final int[] queryDims = new int[DIMS];
+      final float[] queryWeights = new float[DIMS];
+      for (int d = 0; d < DIMS; d++) {
+        queryDims[d] = d;
+        queryWeights[d] = 1.0f;
+      }
+
+      try (final PaginatedSparseVectorEngine engine = new PaginatedSparseVectorEngine((DatabaseInternal) database,
+          "idx4085callerruns", SegmentParameters.builder().weightQuantization(WeightQuantization.FP32).build())) {
+        database.transaction(() -> {
+          for (final var doc : corpus.entrySet())
+            for (final var dw : doc.getValue().entrySet())
+              engine.put(dw.getKey(), doc.getKey(), dw.getValue());
+          engine.flush();
+        });
+
+        final List<RidScore> expected = engine.topK(queryDims, queryWeights, K);
+
+        // Saturate the pool - every worker busy AND every queue slot taken - so the next submission
+        // is rejected and the pool's caller-runs policy executes it inline on the submitting thread.
+        // That thread is the one inside the transaction below, which is the whole point: the range
+        // task then runs somewhere that already has a database context.
+        final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
+        final ExecutorService executor = pool.getExecutorService();
+        final int toBlock = pool.getMaxParallelism() + pool.getPoolStats().queueCapacityRemaining();
+        for (int i = 0; i < toBlock; i++)
+          executor.submit(() -> {
+            release.await();
+            return null;
+          });
+
+        database.begin();
+        try {
+          // No uncommitted changes, so the query is still allowed to split; the range it submits is
+          // rejected by the saturated pool and runs right here.
+          final List<RidScore> got = engine.topK(queryDims, queryWeights, K);
+          assertSameResult(got, expected, "range forced through caller-runs");
+
+          // The real damage an unconditional DatabaseContext.init() does here: it takes the
+          // "ROLLBACK PREVIOUS TXS" branch and silently rolls back the caller's transaction, then the
+          // matching removeContext wipes the context the rest of the query still needs.
+          assertThat(database.isTransactionActive())
+              .as("the caller's transaction must survive a range that ran on its own thread").isTrue();
+          assertThat(DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath()))
+              .as("the caller's database context must not be torn down under it").isNotNull();
+        } finally {
+          if (database.isTransactionActive())
+            database.rollback();
+        }
+      }
+    } finally {
+      release.countDown();
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previousPartitions);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(previousMin);
     }
   }
 
