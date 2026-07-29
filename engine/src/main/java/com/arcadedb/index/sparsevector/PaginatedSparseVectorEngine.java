@@ -176,6 +176,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   static final int MIN_BLOCKS_PER_PARTITION = 4;
 
   /**
+   * Ceiling on how far an explicit {@code sparseVectorScoringMaxPartitions} may oversubscribe the
+   * scoring pool. The setting exists to opt out of the load gate, not out of arithmetic: each range
+   * costs a full cursor stack, and past a small multiple of the pool there is no thread free to run
+   * it, so the extra ranges buy queueing and memory rather than parallelism.
+   */
+  static final int EXPLICIT_PARTITION_OVERSUBSCRIPTION = 4;
+
+  /**
    * Queries that took the partitioned path (issue #4085). Whether a query is split depends on how
    * busy the scoring pool was at that instant, so this is the only way to tell after the fact which
    * shape actually ran - results are identical either way by design, which is exactly what makes the
@@ -503,11 +511,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     // The caller scores one range itself, so only the other ranges need a worker. Claiming them up
     // front - rather than sizing the split from how idle the pool looks - is what keeps concurrent
     // queries from all deciding to split against the same instantaneously-free capacity.
-    int partitions;
+    final int partitions;
     if (configured > 1) {
       // An explicit setting is an operator opting into the CPU cost, so it is granted whether or not
       // the pool is busy. It still registers the claim, so auto-mode queries running alongside see it.
-      partitions = Math.min(configured, byLayout);
+      // Clamped all the same: the knob is "do not throttle me", not "let me open a thousand cursor
+      // stacks", and past a small multiple of the pool there are no threads left to run them anyway.
+      partitions = Math.min(Math.min(configured, byLayout), pool.getMaxParallelism() * EXPLICIT_PARTITION_OVERSUBSCRIPTION);
       pool.reserveWorkers(partitions - 1);
     } else {
       final int wanted = Math.min(pool.getMaxParallelism(), byLayout) - 1;
@@ -520,13 +530,23 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       partitions = granted + 1;
     }
 
-    final RID[] boundaries = new RID[partitions - 1];
-    final int blocks = widest.blockCount();
-    for (int i = 1; i < partitions; i++) {
-      final int b = (int) ((long) blocks * i / partitions);
-      boundaries[i - 1] = new RID(widest.blockFirstBucketId(b), widest.blockFirstPosition(b));
+    // Everything past the claim releases it on the way out if it fails. The boundary walk touches
+    // in-memory block metadata only and cannot currently throw, but this method reads segment
+    // metadata and is declared to throw, so a future edit that adds a page read here would otherwise
+    // leak the claim permanently - silently shrinking what every later query believes is free, with
+    // nothing failing to point at it.
+    try {
+      final RID[] boundaries = new RID[partitions - 1];
+      final int blocks = widest.blockCount();
+      for (int i = 1; i < partitions; i++) {
+        final int b = (int) ((long) blocks * i / partitions);
+        boundaries[i - 1] = new RID(widest.blockFirstBucketId(b), widest.blockFirstPosition(b));
+      }
+      return boundaries;
+    } catch (final RuntimeException | Error e) {
+      pool.releaseWorkers(partitions - 1);
+      throw e;
     }
-    return boundaries;
   }
 
   /**

@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 import com.arcadedb.schema.LocalSchema;
 
@@ -35,10 +36,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Correctness of the intra-query parallel top-K introduced in issue #4085: a query may be split into
@@ -365,6 +369,69 @@ class ParallelRangeTopKTest extends TestHelper {
     assertThat(pool.getInFlightQueries()).isZero();
     assertThat(pool.tryReserveWorkers(1)).as("capacity must come back once the callers drain").isEqualTo(1);
     pool.releaseWorkers(1);
+  }
+
+  @Test
+  void aRangeThatNeverGetsAWorkerFailsTheQueryOnTheDeadline() throws Exception {
+    final int previousPartitions = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    final long previousMin = GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong();
+    final int previousTimeout = GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch occupied = new CountDownLatch(1);
+    final List<Future<?>> hogs = new ArrayList<>();
+    try {
+      // Explicit split, so the load gate does not veto it while the pool is deliberately jammed.
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(2);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(1L);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.setValue(1);
+
+      final Map<RID, Map<Integer, Float>> corpus = buildCorpus(SMALL_DOCS, 8L, false);
+      final int[] queryDims = new int[DIMS];
+      final float[] queryWeights = new float[DIMS];
+      for (int d = 0; d < DIMS; d++) {
+        queryDims[d] = d;
+        queryWeights[d] = 1.0f;
+      }
+
+      try (final PaginatedSparseVectorEngine engine = new PaginatedSparseVectorEngine((DatabaseInternal) database,
+          "idx4085deadline", SegmentParameters.builder().weightQuantization(WeightQuantization.FP32).build())) {
+        database.transaction(() -> {
+          for (final var doc : corpus.entrySet())
+            for (final var dw : doc.getValue().entrySet())
+              engine.put(dw.getKey(), doc.getKey(), dw.getValue());
+          engine.flush();
+        });
+
+        // Jam every worker so the query's range can be submitted but never started. Deterministic:
+        // the deadline is what ends the query, not a race between it and the scoring.
+        final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
+        final ExecutorService executor = pool.getExecutorService();
+        for (int i = 0; i < pool.getMaxParallelism(); i++) {
+          hogs.add(executor.submit(() -> {
+            occupied.countDown();
+            release.await();
+            return null;
+          }));
+        }
+        assertThat(occupied.await(10, TimeUnit.SECONDS)).as("a worker must have picked up the block").isTrue();
+
+        assertThatThrownBy(() -> engine.topK(queryDims, queryWeights, K))
+            .isInstanceOf(IndexException.class)
+            .hasMessageContaining("timed out")
+            .hasMessageContaining(GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey());
+
+        // A failed fan-out must still hand its claim back, or splitting quietly dies for good.
+        release.countDown();
+        for (final Future<?> f : hogs)
+          f.get(10, TimeUnit.SECONDS);
+        assertThat(pool.getReservedWorkers()).as("a timed-out query must release its claim").isZero();
+      }
+    } finally {
+      release.countDown();
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previousPartitions);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(previousMin);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.setValue(previousTimeout);
+    }
   }
 
   // ---------- helpers ----------

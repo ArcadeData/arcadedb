@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
+import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -121,7 +122,7 @@ class MultiBucketSealedSegmentFanoutTest extends TestHelper {
       assertThat(sealed).as("every bucket must have sealed at least one segment").isGreaterThanOrEqualTo(BUCKETS);
     });
 
-    final long completedBefore = com.arcadedb.index.sparsevector.SparseVectorScoringPool.getInstance().getPoolStats()
+    final long completedBefore = SparseVectorScoringPool.getInstance().getPoolStats()
         .completedTasks();
     final int[] queryIdx = docIndices.getFirst();
     final float[] queryVal = docValues.getFirst();
@@ -149,7 +150,7 @@ class MultiBucketSealedSegmentFanoutTest extends TestHelper {
       }
     });
 
-    final long completedAfter = com.arcadedb.index.sparsevector.SparseVectorScoringPool.getInstance().getPoolStats()
+    final long completedAfter = SparseVectorScoringPool.getInstance().getPoolStats()
         .completedTasks();
     assertThat(completedAfter).as("fan-out must have dispatched (before=%d after=%d)", completedBefore, completedAfter)
         .isGreaterThan(completedBefore);

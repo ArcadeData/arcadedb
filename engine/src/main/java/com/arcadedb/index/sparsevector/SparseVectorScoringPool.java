@@ -108,8 +108,10 @@ public final class SparseVectorScoringPool {
   private final ThreadPoolExecutor executor;
   /** Workers claimed by in-flight range fan-outs; see {@link #tryReserveWorkers(int)}. */
   private final AtomicInteger      reservedWorkers      = new AtomicInteger();
-  /** Sparse-vector top-K calls in flight JVM-wide, split or not; see {@link #queryStarted()}. */
+  /** Caller-thread top-K calls in flight JVM-wide, split or not; see {@link #queryStarted()}. */
   private final AtomicInteger      inFlightQueries      = new AtomicInteger();
+  /** Top-K calls running on a worker, i.e. the per-bucket fan-out. Occupy capacity, never split. */
+  private final AtomicInteger      poolThreadQueries    = new AtomicInteger();
   /** Cumulative queries that were split into RID ranges rather than run on the caller thread. */
   private final AtomicLong         splitQueries         = new AtomicLong();
   private final AtomicLong         callerRunCount       = new AtomicLong();
@@ -245,9 +247,19 @@ public final class SparseVectorScoringPool {
     // idle - one caller against 18 workers splits all the way.
     if (inFlightQueries.get() * 2 > ceiling)
       return 0;
+    // Work on the pool that never went through a reservation - the per-bucket fan-out submits
+    // straight to the executor - still occupies workers, so it counts against what is grantable or a
+    // split would oversubscribe against it.
+    //
+    // Counted rather than read from ThreadPoolExecutor.getActiveCount(), which looks like the
+    // obvious source and is a trap: it takes the pool's main lock and walks the worker set, so every
+    // query serializes on it. Measured at 16 concurrent clients, with splitting almost entirely
+    // gated off, it cost 29% of throughput on its own - a decision path more expensive than the
+    // decision. Two atomic reads do the same job.
+    final int onPool = poolThreadQueries.get();
     while (true) {
       final int current = reservedWorkers.get();
-      final int free = ceiling - current;
+      final int free = ceiling - current - onPool;
       if (free <= 0)
         return 0;
       final int grant = Math.min(desired, free);
@@ -261,13 +273,27 @@ public final class SparseVectorScoringPool {
    * pair it with {@link #queryFinished()}. Counting queries rather than tasks is the point: the
    * concurrency that matters for the split decision arrives on caller threads, which never touch
    * this pool unless a query decides to fan out.
+   * <p>
+   * <b>Queries already running on a worker are counted separately.</b> The per-bucket fan-out submits
+   * one {@code topK} per bucket, so a single user query against an 8-bucket type would otherwise
+   * register as eight and trip the load gate for unrelated queries on an otherwise quiet box. Those
+   * eight are real load, but of a different kind: they occupy workers, which
+   * {@link #tryReserveWorkers(int)} subtracts from what it can grant, whereas the caller-thread count
+   * measures the load nothing else can see. Splitting the two keeps each honest. The pairing stays
+   * symmetric either way, since a thread's pool membership never changes.
    */
   public void queryStarted() {
-    inFlightQueries.incrementAndGet();
+    if (isPoolThread())
+      poolThreadQueries.incrementAndGet();
+    else
+      inFlightQueries.incrementAndGet();
   }
 
   public void queryFinished() {
-    inFlightQueries.decrementAndGet();
+    if (isPoolThread())
+      poolThreadQueries.decrementAndGet();
+    else
+      inFlightQueries.decrementAndGet();
   }
 
   /** Sparse-vector top-K calls currently executing across the JVM. Test and diagnostics hook. */

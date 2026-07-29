@@ -149,6 +149,13 @@ final class RidScoreMinHeap {
    * Admission stays the primitive {@code >} test in {@link #offer}: a DAAT traversal produces
    * candidates in ascending RID order, so a candidate arriving later always loses a tie against
    * anything already retained and can never displace it.
+   * <p>
+   * <b>This applies to every query, not only split ones.</b> The ordering lives in the collector, so
+   * a database with splitting disabled entirely gets it too. That is a visible change for anyone
+   * whose scores tie: the retained set was previously whichever of the tied documents the heap array
+   * happened to hold at the root, and is now the lowest RIDs. The new answer is the better one - the
+   * old one was not stable across insertion orders - but it is not opt-in, and a result set that
+   * ties on score can differ from a previous release.
    */
   private int compareEntry(final float score, final RID rid, final int idx) {
     final int c = Float.compare(score, scores[idx]);
