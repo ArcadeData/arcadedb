@@ -336,6 +336,71 @@ class MCPConfigurationTest {
   }
 
   @Test
+  void invalidBooleanIsRejectedWithoutPartialUpdate() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.load();
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", "yes")))
+        .isInstanceOf(JSONException.class)
+        .hasMessageContaining("allowReads").hasMessageContaining("boolean");
+
+    assertThat(config.isEnabled()).isFalse();
+    assertThat(config.isAllowReads()).isTrue();
+  }
+
+  @Test
+  void invalidBooleanLeavesEveryOtherSettingUnchanged() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(new JSONObject()
+        .put("principalProfiles", new JSONObject().put("retrieval-user", "rag")));
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("enabled", true)
+        .put("allowInsert", true)
+        .put("allowAdmin", "maybe")
+        .put("profile", "admin")
+        .put("principalProfiles", new JSONObject().put("retrieval-user", "admin"))
+        .put("allowedUsers", new JSONArray().put("editor"))
+        .put("allowedOrigins", new JSONArray().put("https://app.example.com"))))
+        .isInstanceOf(JSONException.class)
+        .hasMessageContaining("allowAdmin").hasMessageContaining("boolean");
+
+    assertThat(config.isEnabled()).isFalse();
+    assertThat(config.isAllowInsert()).isFalse();
+    assertThat(config.isAllowAdmin()).isFalse();
+    assertThat(config.getToolProfile()).isEqualTo(MCPConfiguration.ToolProfile.ALL);
+    assertThat(config.getPrincipalToolProfile("retrieval-user"))
+        .isEqualTo(MCPConfiguration.ToolProfile.RAG);
+    assertThat(config.getAllowedUsers()).containsExactly("root");
+    assertThat(config.getAllowedOrigins()).isEmpty();
+  }
+
+  @Test
+  void nonArrayUserAndOriginListsAreRejectedWithoutPartialUpdate() {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("allowInsert", true)
+        .put("allowedUsers", "editor")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("allowedUsers").hasMessageContaining("must be an array");
+
+    assertThat(config.isAllowInsert()).isFalse();
+    assertThat(config.getAllowedUsers()).containsExactly("root");
+
+    assertThatThrownBy(() -> config.updateFrom(new JSONObject()
+        .put("allowInsert", true)
+        .put("allowedOrigins", "https://app.example.com")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("allowedOrigins").hasMessageContaining("must be an array");
+
+    assertThat(config.isAllowInsert()).isFalse();
+    assertThat(config.getAllowedOrigins()).isEmpty();
+  }
+
+  @Test
   void profileNamesAreCaseInsensitive() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
 
@@ -396,10 +461,6 @@ class MCPConfigurationTest {
     assertThat(config.toJSON().has("principalProfiles")).isFalse();
   }
 
-  // The "without partial update" this asserts comes from field ordering: databases, profile and
-  // principalProfiles are parsed before updateFrom mutates anything, so rejecting one of them leaves every
-  // other setting alone. It is not general atomicity - the allow* booleans are still assigned inline, so an
-  // invalid boolean can commit the booleans that precede it. That is out of scope here.
   @Test
   void invalidPrincipalProfileIsRejectedWithoutPartialUpdate() {
     final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);

@@ -78,11 +78,12 @@
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.5</testcontainers.version>
-        <logback-classic.version>1.6.0</logback-classic.version>
+        <logback-classic.version>1.6.1</logback-classic.version>
         <micrometer.version>1.17.0</micrometer.version>
         <micrometer-tracing.version>1.7.0</micrometer-tracing.version>
         <opentelemetry.version>1.64.0</opentelemetry.version>
         <postgres.version>42.7.13</postgres.version>
+        <jackson.version>2.22.1</jackson.version>
 
         <assertj-core.version>3.27.7</assertj-core.version>
         <junit.jupiter.version>6.1.2</junit.jupiter.version>
@@ -499,6 +500,17 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- Pin the whole Jackson family through the BOM. Transitive deps (swagger-core in the
+                 server module, gremlin in the graph modules) drag in split Jackson versions, which
+                 both reopens fixed deserialization CVEs and risks mixing databind against an older
+                 jackson-core than it was compiled for. One managed version keeps the family aligned. -->
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <!-- OpenTelemetry + Micrometer Tracing BOMs: consumed only by the optional `tracing`
                  module so the OTel SDK stays off the core/server compile classpath. -->
             <dependency>
@@ -738,6 +750,12 @@
             <properties>
                 <exclude.tests>**/gremlin/**/*.java</exclude.tests>
             </properties>
+        </profile>
+        <profile>
+            <id>native</id>
+            <modules>
+                <module>native</module>
+            </modules>
         </profile>
 
     </profiles>

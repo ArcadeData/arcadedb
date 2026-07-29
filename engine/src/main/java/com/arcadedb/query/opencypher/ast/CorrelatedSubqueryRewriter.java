@@ -23,10 +23,13 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BinaryOperator;
+import java.util.stream.Stream;
 
 /**
  * Shared text rewriting used by the three subquery expressions - {@code EXISTS { }},
@@ -46,8 +49,136 @@ import java.util.function.BinaryOperator;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class CorrelatedSubqueryRewriter {
+  /**
+   * Keywords that can open a Cypher subquery body. Anything else is a bare pattern, and only a bare
+   * pattern may be wrapped into a synthesized {@code MATCH}. {@code OPTIONAL} covers
+   * {@code OPTIONAL MATCH}, {@code LOAD} covers {@code LOAD CSV} and {@code DETACH} covers
+   * {@code DETACH DELETE}.
+   */
+  private static final String[] CLAUSE_KEYWORDS = { "MATCH", "OPTIONAL", "WITH", "RETURN", "UNWIND", "CALL", "FOREACH",
+      "LOAD", "USE", "FINISH", "CREATE", "MERGE", "SET", "DELETE", "DETACH", "REMOVE", "INSERT" };
+
+  /**
+   * Keywords that close the pattern of the MATCH a correlation condition is injected into: every
+   * clause keyword, plus the sub-clauses that can trail a projection. {@code WHERE} is deliberately
+   * absent - it is the one keyword the injection merges into rather than stops at.
+   */
+  private static final String[] CLAUSE_BOUNDARY_KEYWORDS = Stream.concat(Arrays.stream(CLAUSE_KEYWORDS),
+      Stream.of("ORDER", "SKIP", "LIMIT", "UNION")).toArray(String[]::new);
+
+  /**
+   * Clauses that write, and so may not appear in the read-only subquery expressions. {@code DELETE}
+   * also covers {@code DETACH DELETE}. {@code INSERT} is here because this engine treats it as a
+   * synonym of {@code CREATE} - {@code ClauseDispatcher.handleInsert} builds a {@code CreateClause} -
+   * so leaving it out let a body that is plainly a write reach the executor, where it produced the
+   * expression's neutral value instead of an error.
+   */
+  private static final String[] UPDATE_CLAUSE_KEYWORDS = { "CREATE", "MERGE", "SET", "DELETE", "REMOVE", "INSERT" };
+
+  /**
+   * First letters of each keyword array, so a per-character scan rejects a position with one array
+   * read instead of walking every keyword. Derived, never hand-maintained: the whole point of this
+   * class is that hand-maintained copies of the keyword list drift.
+   */
+  private static final boolean[] BOUNDARY_KEYWORD_FIRST_CHAR = firstCharTable(CLAUSE_BOUNDARY_KEYWORDS);
+
+  private static final boolean[] UPDATE_KEYWORD_FIRST_CHAR = firstCharTable(UPDATE_CLAUSE_KEYWORDS);
 
   private CorrelatedSubqueryRewriter() {
+  }
+
+  private static boolean[] firstCharTable(final String[] keywords) {
+    final boolean[] table = new boolean[128];
+    for (final String keyword : keywords)
+      table[keyword.charAt(0)] = true;
+    return table;
+  }
+
+  /**
+   * Tells whether a subquery body opens with a clause keyword rather than with a bare pattern.
+   * <p>
+   * Callers use this to decide whether the body still needs a synthesized {@code MATCH} in front of
+   * it. The list has to stay complete: an unlisted keyword makes its clause look like a pattern, and
+   * the resulting {@code MATCH UNWIND [1, 2] AS y RETURN y RETURN 1} does not parse. Because the
+   * three subquery expressions absorb a failed body into their neutral value, that misclassification
+   * surfaces only as a silently wrong {@code COUNT} of 0 or {@code EXISTS} of false (issue #5461).
+   */
+  public static boolean startsWithClauseKeyword(final String body) {
+    return matchesAnyKeywordAt(body.trim().toUpperCase(Locale.ROOT), 0, CLAUSE_KEYWORDS, BOUNDARY_KEYWORD_FIRST_CHAR);
+  }
+
+  /**
+   * Tells whether a subquery body contains a write clause, which the three read-only subquery
+   * expressions must reject.
+   * <p>
+   * Only a keyword written as a clause counts: the scan skips string literals and backtick-quoted
+   * identifiers, and requires a word boundary. The guard used to be a bare
+   * {@code toUpperCase().contains("SET ")}, which could not tell a clause from ordinary user data, so
+   * a read-only {@code WHERE n.name = 'SET x'} was rejected as an update (issue #5541).
+   * <p>
+   * Nesting is deliberately not tracked: a write nested inside a bracketed construct - {@code CALL {
+   * ... CREATE ... }} - is still a write, and must still be rejected.
+   * <p>
+   * Comments are not skipped, so an update keyword inside one is still read as a clause. That blind
+   * spot predates this scan and is not widened by it.
+   */
+  public static boolean containsUpdateClause(final String body) {
+    final String upper = body.toUpperCase(Locale.ROOT);
+    char quote = 0;
+
+    for (int i = 0; i < upper.length(); i++) {
+      final char c = upper.charAt(i);
+
+      if (quote != 0) {
+        // Inside a string literal or quoted identifier: only its closing quote matters. Backslash
+        // escapes apply to string literals only - a backtick-quoted identifier escapes a literal
+        // backtick by doubling it, which this toggle handles on its own (close then reopen).
+        if (c == '\\' && quote != '`')
+          i++;
+        else if (c == quote)
+          quote = 0;
+        continue;
+      }
+      if (c == '\'' || c == '"' || c == '`') {
+        quote = c;
+        continue;
+      }
+      final int keywordLength = matchedKeywordLengthAt(upper, i, UPDATE_CLAUSE_KEYWORDS, UPDATE_KEYWORD_FIRST_CHAR);
+      if (keywordLength > 0 && opensAClauseAt(upper, i + keywordLength))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Tells whether the keyword just matched is followed by something a write clause can actually take,
+   * rather than being an identifier that happens to be spelled like one.
+   * <p>
+   * None of these keywords is reserved in this grammar - {@code RETURN 1 AS set} and
+   * {@code RETURN 1 AS insert} both parse - so a scan that accepts any word boundary flags an alias
+   * as a write. A clause is followed by its pattern or target, so only whitespace or an immediately
+   * following {@code (} qualifies: that keeps {@code SET n.x = 1}, {@code DELETE n} and the
+   * space-less {@code CREATE(n)}, while rejecting an alias at the end of the body or before a comma.
+   * <p>
+   * A colon disqualifies it again, because the keyword is then a map key: {@link #matchesKeywordAt}
+   * already rejects the glued {@code {set: 1}}, and this catches {@code {set : 1}}.
+   * <p>
+   * What this cannot separate is an alias that is itself followed by a clause, as in
+   * {@code WITH 1 AS set RETURN set} - lexically identical to {@code SET n.x = 1}. Telling those
+   * apart needs clause position from the parse tree rather than a text scan.
+   */
+  private static boolean opensAClauseAt(final String upper, final int afterKeyword) {
+    if (afterKeyword >= upper.length())
+      return false;
+    if (upper.charAt(afterKeyword) == '(')
+      return true;
+    if (!Character.isWhitespace(upper.charAt(afterKeyword)))
+      return false;
+
+    int pos = afterKeyword;
+    while (pos < upper.length() && Character.isWhitespace(upper.charAt(pos)))
+      pos++;
+    return pos < upper.length() && upper.charAt(pos) != ':';
   }
 
   /**
@@ -186,7 +317,7 @@ public final class CorrelatedSubqueryRewriter {
    */
   public static String injectWhereConditions(final String query, final String conditions) {
     // NOTE: upper must not be trimmed - every index below addresses both strings interchangeably
-    final String upper = query.toUpperCase();
+    final String upper = query.toUpperCase(Locale.ROOT);
     int scanStart = 0;
     while (scanStart < upper.length() && Character.isWhitespace(upper.charAt(scanStart)))
       scanStart++;
@@ -226,9 +357,7 @@ public final class CorrelatedSubqueryRewriter {
 
       if (matchesKeywordAt(upper, i, "WHERE") && topWherePos < 0)
         topWherePos = i;
-      else if (clauseStart < 0 && (matchesKeywordAt(upper, i, "WITH") || matchesKeywordAt(upper, i, "RETURN")
-          || matchesKeywordAt(upper, i, "ORDER") || matchesKeywordAt(upper, i, "SKIP")
-          || matchesKeywordAt(upper, i, "LIMIT") || matchesKeywordAt(upper, i, "UNION")))
+      else if (clauseStart < 0 && matchesAnyKeywordAt(upper, i, CLAUSE_BOUNDARY_KEYWORDS, BOUNDARY_KEYWORD_FIRST_CHAR))
         clauseStart = i;
 
       // Stop once we find a non-WHERE clause keyword
@@ -294,6 +423,34 @@ public final class CorrelatedSubqueryRewriter {
         return false;
     }
     return true;
+  }
+
+  /**
+   * {@code firstChars} must be a table built from a superset of {@code keywords} - see
+   * {@link #firstCharTable} - so that it can never reject a position one of them would have matched.
+   * {@link #CLAUSE_BOUNDARY_KEYWORDS} is such a superset of {@link #CLAUSE_KEYWORDS}.
+   */
+  private static boolean matchesAnyKeywordAt(final String upper, final int pos, final String[] keywords,
+      final boolean[] firstChars) {
+    return matchedKeywordLengthAt(upper, pos, keywords, firstChars) > 0;
+  }
+
+  /**
+   * Length of the keyword matching at {@code pos}, or -1 when none does. Callers that only need a
+   * yes/no answer use {@link #matchesAnyKeywordAt}; the length is for those that have to look at what
+   * follows the keyword.
+   */
+  private static int matchedKeywordLengthAt(final String upper, final int pos, final String[] keywords,
+      final boolean[] firstChars) {
+    if (pos >= upper.length())
+      return -1;
+    final char first = upper.charAt(pos);
+    if (first < firstChars.length && !firstChars[first])
+      return -1;
+    for (final String keyword : keywords)
+      if (matchesKeywordAt(upper, pos, keyword))
+        return keyword.length();
+    return -1;
   }
 
   private static boolean isCypherIdentifierChar(final char c) {

@@ -52,7 +52,7 @@ public class CountExpression implements Expression {
   public Object evaluate(final Result result, final CommandContext context) {
     final Map<String, Object> params = CorrelatedSubqueryRewriter.newParams(context);
     final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__count_", params,
-        (patterns, body) -> "MATCH " + patterns + ", " + body + " RETURN 1");
+        CountExpression::wrapNonMatchBody);
     long count = 0L;
     try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
       while (resultSet.hasNext()) {
@@ -67,6 +67,23 @@ public class CountExpression implements Expression {
       return 0L;
     }
     return count;
+  }
+
+  /**
+   * Builds the correlated query when the body does not start with MATCH.
+   * <p>
+   * A body that opens with another clause keyword only needs the extra patterns prepended as their own
+   * MATCH; comma-splicing them into the body's first clause instead produced the unparseable
+   * {@code MATCH (n), UNWIND n.tags AS t RETURN t} and the failure was absorbed as a count of zero.
+   * A bare pattern body is joined to the injected patterns as a further pattern of the same MATCH.
+   */
+  private static String wrapNonMatchBody(final String patterns, final String body) {
+    if (CorrelatedSubqueryRewriter.startsWithClauseKeyword(body))
+      return "MATCH " + patterns + " " + body;
+    // Defensive mirror of EXISTS: a bare pattern is normalized into "MATCH ... RETURN 1" when the
+    // expression is built, so the correlation takes the leading-MATCH path and never arrives here.
+    // Kept so the wrapper stays correct if that normalization ever moves.
+    return "MATCH " + patterns + ", " + body + " RETURN 1";
   }
 
   @Override

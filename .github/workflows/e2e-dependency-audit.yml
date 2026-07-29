@@ -1,0 +1,107 @@
+# E2E harness dependency audit
+#
+# The e2e-js and e2e-studio projects are test harnesses; nothing they install
+# ships in an ArcadeDB distribution. Their dependency risk is therefore split
+# in two, and this workflow treats the halves differently:
+#
+#   runtime scope (--omit=dev)  -> BLOCKING. Currently zero findings in both
+#                                  projects, so the gate is meaningful rather
+#                                  than decorative.
+#   development scope           -> REPORTED to the job summary, never blocking.
+#
+# A blocking gate over the full tree would be permanently red: brace-expansion
+# CVE-2026-14257 is vulnerable at <= 5.0.7 and patched only in 5.0.8, there is
+# no 2.x backport, and minimatch 5/9 pin ^2.x. npm audit "fixes" it by
+# proposing jest@25 and testcontainers@7, a five-major downgrade. Do not take
+# that suggestion, and never run npm audit fix --force here.
+
+name: "E2E Dependency Audit"
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "e2e-js/package*.json"
+      - "e2e-studio/package*.json"
+      - ".github/workflows/e2e-dependency-audit.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "e2e-js/package*.json"
+      - "e2e-studio/package*.json"
+      - ".github/workflows/e2e-dependency-audit.yml"
+  schedule:
+    - cron: "0 6 * * 1"  # Every Monday at 6 AM UTC
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: "Audit ${{ matrix.project }}"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Node 24.9+ required: testcontainers@12 pulls archiver@8 (pure ESM),
+          # and Jest's require(ESM) bridge only works on Node 24.9+.
+          - project: e2e-js
+            node-version: "24"
+          - project: e2e-studio
+            node-version: "22"
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+          cache-dependency-path: "${{ matrix.project }}/package-lock.json"
+
+      - name: Verify the lockfile is installable and in sync
+        run: npm ci --ignore-scripts
+
+      - name: Audit runtime-scope dependencies (blocking)
+        run: |
+          echo "Auditing runtime-scope dependencies of ${{ matrix.project }}."
+          npm audit --omit=dev --audit-level=high
+
+      - name: Report development-scope findings (non-blocking)
+        if: always()
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          npm audit --json > audit.json || true
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          project = os.environ["PROJECT"]
+          with open("audit.json") as fh:
+              data = json.load(fh)
+          counts = data.get("metadata", {}).get("vulnerabilities", {})
+          print(f"### {project}: development-scope audit\n")
+          print("| severity | count |")
+          print("| --- | --- |")
+          for key in ("critical", "high", "moderate", "low", "info"):
+              print(f"| {key} | {counts.get(key, 0)} |")
+          vulns = data.get("vulnerabilities", {})
+          if vulns:
+              print("\n<details><summary>Affected packages</summary>\n")
+              for name in sorted(vulns):
+                  print(f"- `{name}` ({vulns[name]['severity']})")
+              print("\n</details>")
+          print(
+              "\nDevelopment-scope findings do not fail this job. These packages "
+              "run only in CI against inputs the repository controls. See the "
+              "header of `.github/workflows/e2e-dependency-audit.yml` for the "
+              "unfixable brace-expansion advisory.\n"
+          )
+          PY
+          rm -f audit.json

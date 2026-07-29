@@ -1825,19 +1825,14 @@ class CypherExpressionBuilder {
       subquery = originalText.substring(7, originalText.length() - 1).trim(); // fallback
 
     // Check for update clauses inside EXISTS (not allowed)
-    final String upper = subquery.toUpperCase();
-    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ") ||
-        upper.contains("MERGE ") || upper.contains("REMOVE "))
+    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: Existential subquery cannot contain update clauses");
 
     // If it's a pattern without MATCH, add MATCH prefix
-    final String upperTrimmed = subquery.toUpperCase();
-    if (!upperTrimmed.startsWith("MATCH")
-        && !upperTrimmed.startsWith("WITH")
-        && !upperTrimmed.startsWith("RETURN")) {
+    if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN true";
-    } else if (!upperTrimmed.contains("RETURN ")) {
+    } else if (!subquery.toUpperCase().contains("RETURN ")) {
       // Full subquery without RETURN — add RETURN true
       subquery = subquery + " RETURN true";
     }
@@ -1862,9 +1857,7 @@ class CypherExpressionBuilder {
       subquery = originalText.substring(8, originalText.length() - 1).trim(); // fallback "COLLECT{" prefix
 
     // Update clauses are not allowed inside a COLLECT subquery
-    final String upper = subquery.toUpperCase();
-    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ")
-        || upper.contains("MERGE ") || upper.contains("REMOVE "))
+    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
 
@@ -1889,19 +1882,14 @@ class CypherExpressionBuilder {
     else
       subquery = originalText.substring(6, originalText.length() - 1).trim(); // fallback "COUNT{" prefix
 
-    final String upper = subquery.toUpperCase();
-    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ")
-        || upper.contains("MERGE ") || upper.contains("REMOVE "))
+    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: COUNT subquery cannot contain update clauses");
 
     // Pattern-only form: wrap with MATCH and add RETURN 1 so the outer evaluator can count rows.
-    final String upperTrimmed = subquery.toUpperCase();
-    if (!upperTrimmed.startsWith("MATCH")
-        && !upperTrimmed.startsWith("WITH")
-        && !upperTrimmed.startsWith("RETURN")) {
+    if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN 1";
-    } else if (!upperTrimmed.contains("RETURN ")) {
+    } else if (!subquery.toUpperCase().contains("RETURN ")) {
       subquery = subquery + " RETURN 1";
     }
 

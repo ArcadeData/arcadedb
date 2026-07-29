@@ -194,6 +194,9 @@ curl -fsSL https://github.com/ArcadeData/arcadedb/releases/download/26.3.1/arcad
 Available optional modules: `console`, `gremlin`, `studio`, `redisw`, `mongodbw`, `postgresw`, `grpcw`, `graphql`, `metrics`. The
 builder supports interactive mode, Docker image generation, and offline builds from local Maven repositories.
 
+An experimental GraalVM **native-image** build (fast startup, low RAM, no JVM required) is also available - see
+[docs/native-image.md](docs/native-image.md) for prerequisites, the build/target matrix, and Docker usage.
+
 ### Java Versions
 
 Starting from ArcadeDB 24.4.1 code is compatible with Java 21.

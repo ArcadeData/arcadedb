@@ -38,8 +38,9 @@ public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
   @Override
   public Object getResult() {
     final Object variance = super.getResult();
-    if (variance != null)
-      return Math.sqrt((Double) variance);
-    return 0.0;
+    if (variance == null)
+      // no observations: null keeps an empty input distinguishable from a zero-dispersion one
+      return null;
+    return Math.sqrt((Double) variance);
   }
 }
