@@ -684,6 +684,87 @@ class ParallelRangeTopKTest extends TestHelper {
     }
   }
 
+  /**
+   * Equivalence with a live memtable under the query.
+   * <p>
+   * Every other engine-level test here flushes before querying, so the memtable leg of the merged
+   * cursor is empty in all of them and the split has only ever been asserted against sealed
+   * segments. It splits over a populated memtable too: the guard only refuses when the <i>caller</i>
+   * holds uncommitted changes, and postings committed by an earlier transaction are not that.
+   * <p>
+   * There is a reason to expect this to hold - the ranges partition the RID space whatever the
+   * postings are stored in, and the memtable's looser per-term ceiling can only prune more
+   * conservatively, never wrongly - but "expected to hold" is what the rest of this class exists to
+   * stop us relying on. The memtable is also the one source that reports no finite block boundary,
+   * so it is the leg where the block-skip machinery behaves differently from a segment.
+   */
+  @Test
+  void aQueryOverALiveMemtableSplitsAndStillMatchesTheSerialResult() throws Exception {
+    final int previousPartitions = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    final long previousMin = GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong();
+    try {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(1L);
+
+      final Map<RID, Map<Integer, Float>> sealed = buildCorpus(SMALL_DOCS, 77L, false);
+      // A second, disjoint slice of the RID space that stays in the memtable, interleaved with the
+      // sealed one so ranges straddle both sources rather than each landing in a single leg.
+      final TreeMap<RID, Map<Integer, Float>> live = new TreeMap<>(SparseSegmentBuilder::compareRid);
+      final Random rnd = new Random(78L);
+      for (int i = 0; i < SMALL_DOCS / 4; i++) {
+        final TreeMap<Integer, Float> doc = new TreeMap<>();
+        for (int d = 0; d < DIMS; d++)
+          if (rnd.nextFloat() < 0.5f / (d + 1))
+            doc.put(d, 0.90f + rnd.nextFloat() * 0.10f);
+        if (!doc.isEmpty())
+          live.put(new RID(0, 2L + i * 4L), doc);
+      }
+
+      final int[] queryDims = new int[DIMS];
+      final float[] queryWeights = new float[DIMS];
+      for (int d = 0; d < DIMS; d++) {
+        queryDims[d] = d;
+        queryWeights[d] = 1.0f;
+      }
+
+      try (final PaginatedSparseVectorEngine engine = new PaginatedSparseVectorEngine((DatabaseInternal) database,
+          "idx4085memtable", SegmentParameters.builder().weightQuantization(WeightQuantization.FP32).build())) {
+        database.transaction(() -> {
+          for (final var doc : sealed.entrySet())
+            for (final var dw : doc.getValue().entrySet())
+              engine.put(dw.getKey(), doc.getKey(), dw.getValue());
+          engine.flush();
+        });
+        // Committed in its own transaction and deliberately NOT flushed, so by query time these are
+        // committed postings living in the memtable and the caller is clean.
+        database.transaction(() -> {
+          for (final var doc : live.entrySet())
+            for (final var dw : doc.getValue().entrySet())
+              engine.put(dw.getKey(), doc.getKey(), dw.getValue());
+        });
+
+        assertThat(engine.memtablePostings())
+            .as("the memtable must actually be carrying postings, or this test proves nothing").isPositive();
+        assertThat(engine.segmentCount()).as("and there must be a sealed segment to merge them against").isPositive();
+
+        GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(1);
+        final List<RidScore> serial = engine.topK(queryDims, queryWeights, K);
+        assertThat(serial).isNotEmpty();
+        final long splitsBefore = engine.partitionedQueryCount();
+
+        for (final int partitions : new int[] { 2, 4, 8 }) {
+          GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(partitions);
+          assertSameResult(engine.topK(queryDims, queryWeights, K), serial, "live memtable, split=" + partitions);
+        }
+        assertThat(engine.partitionedQueryCount())
+            .as("the query must really have split over the memtable, not quietly stayed serial")
+            .isEqualTo(splitsBefore + 3);
+      }
+    } finally {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previousPartitions);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(previousMin);
+    }
+  }
+
   // ---------- helpers ----------
 
   /**
