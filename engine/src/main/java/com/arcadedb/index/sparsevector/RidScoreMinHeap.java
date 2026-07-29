@@ -134,12 +134,36 @@ final class RidScoreMinHeap {
       out.add(new RidScore(rids[i], scores[i]));
   }
 
+  /**
+   * Heap order: lowest score first and, among equal scores, <b>highest RID first</b>, so the entry
+   * sitting at the root - the one an accepted candidate evicts - is always the one the total order
+   * "score descending, then RID ascending" ranks last.
+   * <p>
+   * The RID leg only ever decides ties, but it is what makes the retained set deterministic. Without
+   * it, a heap holding several entries on the same score evicts whichever of them the array layout
+   * happens to put at the root, so the same query over the same data could keep a different one
+   * depending on the order candidates arrived in. That is invisible while there is one traversal, and
+   * becomes visible the moment a query is split into ranges scored independently (issue #4085): the
+   * merged result has to be the one the serial scan would have produced, ties included.
+   * <p>
+   * Admission stays the primitive {@code >} test in {@link #offer}: a DAAT traversal produces
+   * candidates in ascending RID order, so a candidate arriving later always loses a tie against
+   * anything already retained and can never displace it.
+   */
+  private int compareEntry(final float score, final RID rid, final int idx) {
+    final int c = Float.compare(score, scores[idx]);
+    if (c != 0)
+      return c;
+    // Reversed on purpose: the larger RID is the "smaller" heap entry, i.e. the first to be evicted.
+    return SparseSegmentBuilder.compareRid(rids[idx], rid);
+  }
+
   private void siftUp(int i) {
     final RID rid = rids[i];
     final float score = scores[i];
     while (i > 0) {
       final int parent = (i - 1) >>> 1;
-      if (Float.compare(score, scores[parent]) >= 0)
+      if (compareEntry(score, rid, parent) >= 0)
         break;
       rids[i] = rids[parent];
       scores[i] = scores[parent];
@@ -156,9 +180,9 @@ final class RidScoreMinHeap {
     while (i < half) {
       int child = (i << 1) + 1;
       final int right = child + 1;
-      if (right < size && Float.compare(scores[right], scores[child]) < 0)
+      if (right < size && compareEntry(scores[right], rids[right], child) < 0)
         child = right;
-      if (Float.compare(score, scores[child]) <= 0)
+      if (compareEntry(score, rid, child) <= 0)
         break;
       rids[i] = rids[child];
       scores[i] = scores[child];

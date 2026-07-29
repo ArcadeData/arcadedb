@@ -55,13 +55,25 @@ import java.util.logging.Level;
  * returns a correct top-K. The fallback count is exposed via {@link #getPoolStats()} so
  * dashboards can surface saturation.
  * <p>
- * <b>Wired since #4085.</b> {@code SQLFunctionVectorSparseNeighbors} fans out per-bucket
- * {@code topK} calls onto this pool when a query targets multiple buckets (partitioned types,
- * or types with multiple physical buckets). Within a single bucket's index the scoring still
- * runs serially - per-segment RID-range partitioning was investigated but deferred because the
- * absolute gain is small relative to network + serialization overhead at the latencies the
- * serial 10M benchmark already lands at. The pool is sized through the
- * {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_POOL_THREADS} / {@code _QUEUE_SIZE} knobs.
+ * <b>Two kinds of work land here (#4085).</b> {@code SQLFunctionVectorSparseNeighbors} fans out
+ * per-bucket {@code topK} calls when a query targets multiple buckets (partitioned types, or types
+ * with multiple physical buckets), and {@link PaginatedSparseVectorEngine#topK} splits a single
+ * index's traversal into RID ranges. The two never nest: a fan-out already running on a worker will
+ * not split again, which {@link #isPoolThread()} enforces, because a nested fan-out on a bounded
+ * queue deadlocks rather than degrading.
+ * <p>
+ * <b>Range splitting is not free, which is why it is adaptive.</b> Each range prunes against its own
+ * top-K watermark instead of the global one, so it does more work than its share - about 1.9x total
+ * CPU for an 8-way split on a learned-sparse corpus. A query claims the workers it wants up front
+ * ({@link #tryReserveWorkers(int)}), and the claim is refused once the queries already in flight can
+ * keep the pool's worth of threads busy by themselves. Measured on an 18-worker box at 500k
+ * documents: one client 13.7 -> 3.1 ms p50 with every query split, four clients 13.6 -> 4.1 ms and
+ * throughput up 61%, sixteen clients within 5% of serial throughput with 2 queries out of 8289
+ * split. So the split shows up when there are cores going spare and steps out of the way when there
+ * are not. The pool is sized
+ * through the {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_POOL_THREADS} / {@code _QUEUE_SIZE}
+ * knobs, and the split through {@code SPARSE_VECTOR_SCORING_MAX_PARTITIONS} /
+ * {@code _MIN_POSTINGS_FOR_PARTITIONING}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -81,7 +93,23 @@ public final class SparseVectorScoringPool {
   /** Floor for the auto-sized thread count when {@code SPARSE_VECTOR_SCORING_POOL_THREADS=0}. */
   private static final int DEFAULT_THREADS_FLOOR = 2;
 
+  /**
+   * Marks a thread as belonging to this pool. Read by {@link #isPoolThread()} to stop a fan-out
+   * from nesting inside another one, which on a pool with a bounded queue is a deadlock rather
+   * than a slowdown: the outer tasks occupy every worker and block waiting on inner tasks that sit
+   * in the queue with nobody left to run them. The caller-runs rejection policy does not save it,
+   * because the queue accepts long before it rejects.
+   * <p>
+   * Set on the worker itself rather than per task so it survives whatever the task does, and so a
+   * task that spawns further work inherits nothing it should not.
+   */
+  private static final ThreadLocal<Boolean> POOL_THREAD = new ThreadLocal<>();
+
   private final ThreadPoolExecutor executor;
+  /** Workers claimed by in-flight range fan-outs; see {@link #tryReserveWorkers(int)}. */
+  private final AtomicInteger      reservedWorkers      = new AtomicInteger();
+  /** Sparse-vector top-K calls in flight JVM-wide, split or not; see {@link #queryStarted()}. */
+  private final AtomicInteger      inFlightQueries      = new AtomicInteger();
   private final AtomicLong         callerRunCount       = new AtomicLong();
   // Throttle for the WARNING log emitted on saturation: at most one entry per minute. Same
   // shape as the QueryEngineManager pool's throttle - operators see one nudge in the console
@@ -122,7 +150,10 @@ public final class SparseVectorScoringPool {
         60L, TimeUnit.SECONDS,
         new LinkedBlockingQueue<>(queueSize),
         r -> {
-          final Thread t = new Thread(r, "ArcadeDB-SparseVectorScorer-" + workerSeq.incrementAndGet());
+          final Thread t = new Thread(() -> {
+            POOL_THREAD.set(Boolean.TRUE);
+            r.run();
+          }, "ArcadeDB-SparseVectorScorer-" + workerSeq.incrementAndGet());
           t.setDaemon(true);
           return t;
         },
@@ -172,6 +203,91 @@ public final class SparseVectorScoringPool {
    */
   public int getMaxParallelism() {
     return executor.getMaximumPoolSize();
+  }
+
+  /**
+   * True when the calling thread is one of this pool's workers, i.e. when it is already executing a
+   * fan-out task. Callers use it to refuse to fan out again - see {@link #POOL_THREAD}. Also true on
+   * a thread that ran a task inline through the caller-runs policy only if that thread is itself a
+   * worker; a plain caller running a rejected task stays a non-pool thread, which is correct: it has
+   * a whole worker's worth of nothing else to do.
+   */
+  public static boolean isPoolThread() {
+    return Boolean.TRUE.equals(POOL_THREAD.get());
+  }
+
+  /**
+   * Claim up to {@code desired} workers for a range fan-out, returning how many were actually granted
+   * (possibly 0). The caller must hand back exactly what it was granted with
+   * {@link #releaseWorkers(int)}.
+   * <p>
+   * <b>Why a reservation instead of just reading how busy the pool is.</b> Splitting a query buys
+   * latency by burning extra CPU - each range prunes against its own weaker watermark - so it is only
+   * worth doing with capacity nobody else wants. Sizing that from {@link ThreadPoolExecutor#getActiveCount()}
+   * looked sufficient and measured otherwise: at 16 concurrent clients on an 18-worker pool it still
+   * split 57% of queries and gave up 14% of throughput, because every client samples an
+   * instantaneously-idle pool at the same moment and they all decide to split. A reservation is a
+   * claim rather than an observation, so the capacity a query is about to use is already gone from
+   * the next query's view of it.
+   */
+  public int tryReserveWorkers(final int desired) {
+    if (desired <= 0)
+      return 0;
+    final int ceiling = executor.getMaximumPoolSize();
+    // Callers are the load the pool cannot see. A query runs on its caller's thread, so N concurrent
+    // queries already occupy N threads before a single task is submitted, and getActiveCount() stays
+    // near zero right up until the machine is full. Measured on an 18-worker box: at 16 concurrent
+    // clients the pool looks idle at every sampling instant, splits a third of the queries anyway,
+    // and gives up throughput for it. Refusing to split once the callers alone can keep the pool's
+    // worth of threads busy is what makes the default safe under load, and it costs nothing when
+    // idle - one caller against 18 workers splits all the way.
+    if (inFlightQueries.get() * 2 > ceiling)
+      return 0;
+    while (true) {
+      final int current = reservedWorkers.get();
+      final int free = ceiling - current;
+      if (free <= 0)
+        return 0;
+      final int grant = Math.min(desired, free);
+      if (reservedWorkers.compareAndSet(current, current + grant))
+        return grant;
+    }
+  }
+
+  /**
+   * Registers a sparse-vector top-K as in flight, whatever shape it ends up taking. Callers must
+   * pair it with {@link #queryFinished()}. Counting queries rather than tasks is the point: the
+   * concurrency that matters for the split decision arrives on caller threads, which never touch
+   * this pool unless a query decides to fan out.
+   */
+  public void queryStarted() {
+    inFlightQueries.incrementAndGet();
+  }
+
+  public void queryFinished() {
+    inFlightQueries.decrementAndGet();
+  }
+
+  /** Sparse-vector top-K calls currently executing across the JVM. Test and diagnostics hook. */
+  public int getInFlightQueries() {
+    return inFlightQueries.get();
+  }
+
+  /** Unconditional claim, for an operator who configured an explicit partition count. */
+  public void reserveWorkers(final int count) {
+    if (count > 0)
+      reservedWorkers.addAndGet(count);
+  }
+
+  /** Hands back workers claimed through {@link #tryReserveWorkers} / {@link #reserveWorkers}. */
+  public void releaseWorkers(final int count) {
+    if (count > 0)
+      reservedWorkers.addAndGet(-count);
+  }
+
+  /** Workers currently claimed by in-flight range fan-outs. Test and diagnostics hook. */
+  public int getReservedWorkers() {
+    return reservedWorkers.get();
   }
 
   public PoolStats getPoolStats() {
