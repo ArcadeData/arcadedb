@@ -49,14 +49,17 @@ class LSMVectorIndexPageParser {
     final boolean deleted;
     final long absoluteFileOffset;
     final boolean isCompacted;
+    /** Size in bytes of the whole entry on the page, so it can be copied verbatim during a compaction. */
+    final int entryLength;
 
     VectorEntry(final int vectorId, final RID rid, final boolean deleted,
-        final long absoluteFileOffset, final boolean isCompacted) {
+        final long absoluteFileOffset, final boolean isCompacted, final int entryLength) {
       this.vectorId = vectorId;
       this.rid = rid;
       this.deleted = deleted;
       this.absoluteFileOffset = absoluteFileOffset;
       this.isCompacted = isCompacted;
+      this.entryLength = entryLength;
     }
   }
 
@@ -97,6 +100,7 @@ class LSMVectorIndexPageParser {
         // Parse entries
         int currentOffset = headerSize;
         for (int i = 0; i < numberOfEntries; i++) {
+          final int entryStartOffset = currentOffset;
           final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
           // Read variable-sized vectorId
@@ -127,7 +131,8 @@ class LSMVectorIndexPageParser {
           // we assume old format and don't consume the byte.
           currentOffset = skipQuantizationData(page, currentOffset, deleted);
 
-          consumer.accept(new VectorEntry(vectorId, rid, deleted, entryFileOffset, isCompacted));
+          consumer.accept(
+              new VectorEntry(vectorId, rid, deleted, entryFileOffset, isCompacted, currentOffset - entryStartOffset));
           entriesRead++;
         }
       } catch (final Exception e) {

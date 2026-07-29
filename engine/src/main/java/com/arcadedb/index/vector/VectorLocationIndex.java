@@ -36,6 +36,11 @@ import java.util.stream.IntStream;
  * <p>
  * Uses absolute file offsets for direct random access without loading full pages.
  * <p>
+ * Only live vectors are resident: once an id is tombstoned its location is released and the id survives as a single
+ * bit (see {@link DeletedIds}), so the ~90 bytes a location costs follow the number of live vectors and not the
+ * number of writes (issue #5516). What still follows the writes is one bit per id handed out since the last graph
+ * rebuild - 1.2MB for the 9.3M ids that used to cost 970MB.
+ * <p>
  * Used by LSMVectorIndex to implement lazy-loading of vectors from disk.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -43,13 +48,96 @@ import java.util.stream.IntStream;
 public class VectorLocationIndex {
   private final Map<Integer, VectorLocation> locations;
   // Reverse index RID -> vector ids, mirroring the keys stored in `locations`. Lets remove(keys, rid) resolve the
-  // vector ids for a single RID in O(k) instead of scanning every id in the index (issue #5318). A RID maps to more
-  // than one id when its vector is updated: the update assigns a new id and tombstones the previous one, so both ids
-  // stay resident (and in this map) until a compaction rebuild clears the index. Kept perfectly in sync with
-  // `locations`: entries are added on addVector/addOrUpdate, dropped on FIFO eviction (bounded mode) and clear().
+  // vector ids for a single RID in O(k) instead of scanning every id in the index (issue #5318). Kept perfectly in
+  // sync with `locations`: entries are added on addVector/addOrUpdate, dropped when an id is tombstoned, on FIFO
+  // eviction (bounded mode) and on clear().
   private final Map<RID, int[]>              ridToVectorIds;
+  // Ids whose location was dropped because they were tombstoned: 1 bit per id instead of a resident VectorLocation
+  // (issue #5516). See DeletedIds.
+  private final DeletedIds                   deletedIds;
   private final AtomicInteger                nextId;
   private final int                          maxSize;
+
+  /**
+   * Compact set of the vector ids that have been tombstoned, one bit per id (issue #5516).
+   * <p>
+   * A tombstoned id is dead: its vector was superseded by a new id (update) or removed (delete), and the tombstone
+   * is persisted on the index pages, so nothing needs its offset ever again - all the readers treat "no location"
+   * exactly like "deleted location". Keeping the {@link VectorLocation} (plus its RID, its {@code Integer} key, the
+   * map node and its slot in the reverse index: ~90 bytes) resident only to carry a boolean made memory grow with
+   * the number of writes instead of with the number of live vectors: re-embedding 4K vectors every few minutes
+   * accumulated 9.3M locations, ~970MB of heap, before the process died. One bit per id costs ~1.2MB for the same
+   * workload and is enough to tell "tombstoned" from "evicted from a bounded cache" (which must be reloaded from
+   * the pages) and to know whether a persisted graph carries stale ordinals.
+   * <p>
+   * The array is sized by the highest id handed out since the last {@link #clear()}, not by the number of live
+   * vectors: ids are preserved across a compaction rather than renumbered. Every graph rebuild (and therefore every
+   * compaction) releases it, so it grows only across the writes between two rebuilds.
+   * <p>
+   * Writes are serialized on this object; reads are lock-free over a volatile array snapshot, matching the
+   * weakly-consistent semantics the {@link ConcurrentHashMap} backing {@code locations} already has. Every mutation
+   * republishes {@code bits} even when it did not resize the array: setting a bit is a plain array store, and a
+   * reader's volatile read of {@code bits} only synchronizes-with a write to that field, so without the
+   * re-publication the reader has no happens-before edge to the new bit and can keep missing it. A missed bit is
+   * not benign - it is a stale "not deleted" answer on the reconstruction path, which then scans the pages and
+   * finds the id's first (pre-tombstone) entry, resurrecting the vector this set exists to bury.
+   */
+  private static final class DeletedIds {
+    private volatile long[] bits  = EMPTY_BITS;
+    private volatile int    count = 0;
+
+    private static final long[] EMPTY_BITS = new long[0];
+
+    boolean contains(final int id) {
+      if (id < 0)
+        return false;
+      final long[] snapshot = bits;
+      // `1L << id` shifts by id & 63 (JLS 15.19), which is the bit within the word `id >>> 6` selects.
+      final int word = id >>> 6;
+      return word < snapshot.length && (snapshot[word] & (1L << id)) != 0;
+    }
+
+    synchronized void add(final int id) {
+      if (id < 0)
+        return;
+      final int word = id >>> 6;
+      long[] current = bits;
+      if (word >= current.length)
+        current = Arrays.copyOf(current, Math.max(word + 1, current.length * 2));
+
+      final long mask = 1L << id;
+      if ((current[word] & mask) == 0) {
+        current[word] |= mask;
+        count++;
+        // A grown array always lands here (its words start at zero), so the resize is published too.
+        bits = current; // publishes the bit above to every lock-free reader
+      }
+    }
+
+    synchronized void remove(final int id) {
+      if (id < 0)
+        return;
+      final int word = id >>> 6;
+      final long[] current = bits;
+      if (word >= current.length)
+        return;
+      final long mask = 1L << id;
+      if ((current[word] & mask) != 0) {
+        current[word] &= ~mask;
+        count--;
+        bits = current; // publishes the cleared bit to every lock-free reader
+      }
+    }
+
+    synchronized void clear() {
+      bits = EMPTY_BITS;
+      count = 0;
+    }
+
+    int size() {
+      return count;
+    }
+  }
 
   /**
    * Represents the physical location of a vector on disk.
@@ -119,6 +207,7 @@ public class VectorLocationIndex {
       this.ridToVectorIds = new ConcurrentHashMap<>(initialCapacity);
       this.locations = new ConcurrentHashMap<>(initialCapacity);
     }
+    this.deletedIds = new DeletedIds();
     this.nextId = new AtomicInteger(0);
   }
 
@@ -148,6 +237,10 @@ public class VectorLocationIndex {
   /**
    * Add or update a vector location with a specific ID.
    * Used during loading from pages (LSM style: later entries override earlier ones).
+   * <p>
+   * A tombstone ({@code deleted == true}) does NOT become a resident entry: the id is recorded in the compact
+   * deleted-id set and any location it had is released (issue #5516). {@link #getLocation(int)} then answers
+   * {@code null} for it, which every reader already treats as "deleted".
    *
    * @param id                 The vector ID
    * @param isCompacted        True if the vector is in the compacted file, false if in mutable file
@@ -157,17 +250,27 @@ public class VectorLocationIndex {
    */
   public void addOrUpdate(final int id, final boolean isCompacted, final long absoluteFileOffset, final RID rid,
       final boolean deleted) {
-    final VectorLocation loc = new VectorLocation(isCompacted, absoluteFileOffset, rid, deleted);
-    if (maxSize > 0) {
-      synchronized (locations) {
-        // Only register the id in the reverse index the first time it appears: later addOrUpdate calls (LSM overrides,
-        // tombstone flips) reuse the same id with the same RID, so re-adding would create duplicate reverse entries.
+    if (deleted) {
+      removeLocation(id);
+      deletedIds.add(id);
+    } else {
+      // LSM merge-on-read: a live entry read after a tombstone for the same id wins (it cannot happen through the
+      // write path, which never reuses an id, but page order is the authority here).
+      if (deletedIds.contains(id))
+        deletedIds.remove(id);
+
+      final VectorLocation loc = new VectorLocation(isCompacted, absoluteFileOffset, rid, false);
+      if (maxSize > 0) {
+        synchronized (locations) {
+          // Only register the id in the reverse index the first time it appears: later addOrUpdate calls (LSM
+          // overrides) reuse the same id with the same RID, so re-adding would create duplicate reverse entries.
+          if (locations.put(id, loc) == null)
+            addToRidIndex(rid, id);
+        }
+      } else {
         if (locations.put(id, loc) == null)
           addToRidIndex(rid, id);
       }
-    } else {
-      if (locations.put(id, loc) == null)
-        addToRidIndex(rid, id);
     }
 
     // Update nextId if this ID is higher than current
@@ -272,15 +375,58 @@ public class VectorLocationIndex {
   }
 
   /**
-   * Mark a vector as deleted (LSM tombstone).
-   * Does not remove the entry - maintains LSM semantics.
+   * Mark a vector as deleted (LSM tombstone). The location is released and the id is remembered in the compact
+   * deleted-id set (issue #5516): a tombstoned id is never read back, and the tombstone itself is persisted on the
+   * index pages by the caller, so keeping the location resident only costs heap.
+   * <p>
+   * An id that is not resident is left alone: in bounded-cache mode that means "evicted", not "deleted", and
+   * flagging it would hide a live vector.
    *
    * @param vectorId The vector ID to mark as deleted
    */
   public void markDeleted(final int vectorId) {
-    final VectorLocation loc = locations.get(vectorId);
-    if (loc != null)
-      locations.put(vectorId, new VectorLocation(loc.isCompacted, loc.absoluteFileOffset, loc.rid, true));
+    if (removeLocation(vectorId) != null)
+      deletedIds.add(vectorId);
+  }
+
+  /**
+   * Return whether the given id has been tombstoned, without touching the pages. Tells a dead id from one merely
+   * evicted from a bounded cache, which must instead be reconstructed by scanning the pages.
+   *
+   * @param vectorId The vector ID
+   *
+   * @return true if the id is tombstoned
+   */
+  public boolean isDeleted(final int vectorId) {
+    return deletedIds.contains(vectorId);
+  }
+
+  /**
+   * Number of tombstoned ids seen since the index was loaded or cleared. A value greater than zero means the
+   * persisted graph's ordinals no longer match the live vector set (issue #3135).
+   */
+  public int getDeletedCount() {
+    return deletedIds.size();
+  }
+
+  /**
+   * Drop a location, keeping the reverse index in sync.
+   *
+   * @return the removed location, or null if the id was not resident
+   */
+  private VectorLocation removeLocation(final int vectorId) {
+    if (maxSize > 0) {
+      synchronized (locations) {
+        final VectorLocation removed = locations.remove(vectorId);
+        if (removed != null)
+          removeFromRidIndex(removed.rid, vectorId);
+        return removed;
+      }
+    }
+    final VectorLocation removed = locations.remove(vectorId);
+    if (removed != null)
+      removeFromRidIndex(removed.rid, vectorId);
+    return removed;
   }
 
   /**
@@ -306,6 +452,10 @@ public class VectorLocationIndex {
 
   /**
    * Get a stream of active (non-deleted) vector IDs.
+   * <p>
+   * Since issue #5516 no resident location carries {@code deleted == true} - a tombstoned id keeps no location at
+   * all - so this returns the same set as {@link #getAllVectorIds()}. The filter stays as the definition of
+   * "active": it is what a location loaded straight from a page (which can carry the flag) has to pass.
    *
    * @return Stream of active vector IDs
    */
@@ -389,6 +539,7 @@ public class VectorLocationIndex {
       locations.clear();
       ridToVectorIds.clear();
     }
+    deletedIds.clear();
     nextId.set(0);
   }
 }
