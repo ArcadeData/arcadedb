@@ -138,10 +138,12 @@ dependency manifest (four Java files, one test, one doc). Every other gate - Cod
   unreachable, because a bare pattern is normalized into `MATCH ... RETURN 1` at build time before
   `correlate` runs. Verified (single construction site) and documented with a comment rather than
   deleted, so the branch stays correct if that normalization ever moves.
-- **Not addressed, pre-existing.** The `subquery.toUpperCase().contains("RETURN ")` test that decides
-  whether a body needs a synthesized `RETURN` is a naive substring match and would false-positive on
-  a string literal such as `WHERE x = 'RETURN '`. It predates this change and correcting it needs its
-  own literal-aware scan and tests; it is only touched here incidentally.
+- **Investigated, not a defect.** Both review cycles flagged the
+  `subquery.toUpperCase().contains("RETURN ")` test as a naive substring match that would
+  false-positive on a literal such as `WHERE x = 'RETURN y'`. Probed directly: it does not produce a
+  wrong answer. `COUNT { MATCH (n:T) WHERE n.name = 'RETURN y' }` returns the true count (2 of 3
+  rows), because a `MATCH`-only body executes fine without the synthesized `RETURN`. The substring
+  match is imprecise but currently harmless, so nothing was filed for it.
 - **No action, informational.** The mutating keywords in `CLAUSE_KEYWORDS` are inert on the
   `COUNT`/`EXISTS` parse-time path, since update clauses are rejected before it. They are carried for
   completeness of the shared list and for boundary detection.
@@ -160,11 +162,13 @@ dependency manifest (four Java files, one test, one doc). Every other gate - Cod
   (`database.query(...)`), which exceeds two short-string allocations by orders of magnitude. Removing
   the allocation would also mean either duplicating the word-boundary logic or adding a
   case-insensitive variant of it, and duplicated keyword logic is precisely what caused this bug.
-- **Not addressed, pre-existing (same class as this bug).** The update-clause guards in all three
-  parse methods (`upper.contains("SET ")`, `"CREATE "`, ...) are naive substring scans with the exact
-  blind spot fixed here: a literal or property name containing `SET ` false-matches. Worth its own
-  issue together with the `contains("RETURN ")` item above, so the literal-aware cleanup is not lost
-  now that keyword scanning is consistent everywhere else.
+- **Filed as #5541.** The update-clause guards in all three parse methods
+  (`upper.contains("SET ")`, `"CREATE "`, ...) are naive substring scans with the exact blind spot
+  fixed here. Confirmed by direct probe: `COUNT { MATCH (n:T) WHERE n.name = 'SET x' RETURN n }`
+  throws `InvalidClauseComposition: COUNT subquery cannot contain update clauses` for a read-only
+  body, and `EXISTS` and `COLLECT` fail identically. Left out of this PR to keep it scoped; unlike
+  #5461 it throws rather than returning a silent neutral value, so it is visible rather than
+  data-corrupting.
 
 ## Impact
 
