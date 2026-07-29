@@ -340,13 +340,14 @@ public enum GlobalConfiguration {
       client 13.7 -> 3.1 ms p50, four clients 13.6 -> 4.1 ms with 61% more throughput, sixteen \
       clients within 5% of serial throughput. Any explicit value above 1 opts out of that \
       self-throttling and splits regardless of load. That is a throughput risk on a busy server, \
-      and it is paid by the forcing query too: measured independently at 16 concurrent clients, a \
-      forced 8-way split returned 0.76x the throughput of no split at all with a median 1.75x \
-      worse. What it did buy at that load is a lower tail, p99 297 ms against 579 ms. So the \
-      forced setting inverts as concurrency rises - a clear win on median while the box is quiet, \
-      a median and throughput loss once it is busy, and a tail win throughout. Force it for \
-      tail-sensitive traffic; leave it at 0 for anything else. The crossover is hardware and \
-      workload specific, so no number for it is given here. Re-read on every query.""",
+      and it is paid by the forcing query too. Measured at 16 concurrent clients on an 18-thread \
+      pool, 1M documents: a forced 8-way split returned 0.52x the throughput of no split at all, a \
+      median 1.85x worse and a p99 2.5x worse, for 1.9x the CPU per query. Above light concurrency \
+      there is no regime where forcing wins - not median, not throughput, not tail - because a \
+      query's own ranges start queueing behind its neighbours'. It is worth setting only when a \
+      single query at a time must be as fast as possible and nothing else is running; for anything \
+      else 0 is faster on every measure. The crossover is hardware and workload specific, so no \
+      number for it is given here. Re-read on every query.""",
       Integer.class, 0),
 
   SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING("arcadedb.sparseVectorScoringMinPostingsForPartitioning", SCOPE.JVM,

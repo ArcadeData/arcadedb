@@ -109,6 +109,20 @@ public final class SparseVectorScoringPool {
   private static final int CALLER_LOAD_GATE_FACTOR = 2;
 
   /**
+   * How far the ranges of concurrently forced splits may oversubscribe the pool before the setting is
+   * assumed to be working against the query that asked for it.
+   * <p>
+   * Mechanistic rather than a client count: {@code inFlight * partitions} ranges competing for
+   * {@code ceiling} workers is when a query's own ranges start queueing behind its neighbours', which
+   * is what turns the split from a latency win into a latency loss. Two independent harnesses put the
+   * crossover at this factor - between 4 and 8 clients forcing 8 ranges on 18 workers, and around 4
+   * clients forcing 8 on 12 - and it is a rough shape rather than a prediction, which is why it drives
+   * only a log line and never a decision. The crossover itself is hardware and workload specific and
+   * is deliberately not quoted in the setting's documentation.
+   */
+  private static final int SELF_DEFEATING_OVERSUBSCRIPTION = 2;
+
+  /**
    * Marks a thread as belonging to this pool. Read by {@link #isPoolThread()} to stop a fan-out
    * from nesting inside another one, which on a pool with a bounded queue is a deadlock rather
    * than a slowdown: the outer tasks occupy every worker and block waiting on inner tasks that sit
@@ -356,22 +370,30 @@ public final class SparseVectorScoringPool {
   public void warnExplicitSplitUnderLoad(final int partitions) {
     final int ceiling = executor.getMaximumPoolSize();
     final int inFlight = inFlightQueries.get();
-    // The same predicate the gate itself uses, not a copy of it. This warning's entire claim is
-    // "the adaptive default would have refused this", so a second expression here would start
-    // lying the moment the gate is tuned - the one thing naming the factor was meant to prevent.
-    if (!callersAloneCanSaturate())
+    // Two independent reasons to speak, and the contention one alone is not enough.
+    //
+    // callersAloneCanSaturate is "the adaptive default would have refused this", asked through the
+    // same predicate the gate uses rather than a copy of it, so tuning the gate cannot make this
+    // warning lie. But it only trips once callers alone could keep the pool busy - half the pool's
+    // worth of queries - and the measured point where a forced split starts making the FORCING
+    // query slower arrives earlier than that. On an 18-thread pool the gate needs 10 queries in
+    // flight; the crossover sat between 4 and 8. So a purely contention-based trigger stays silent
+    // through the region where the setting has already turned against the person who set it.
+    final boolean wouldHaveBeenRefused = callersAloneCanSaturate();
+    final boolean defeatsItself =
+        (long) inFlight * partitions > (long) ceiling * SELF_DEFEATING_OVERSUBSCRIPTION;
+    if (!wouldHaveBeenRefused && !defeatsItself)
       return;
     final long now = System.currentTimeMillis();
     final long last = lastExplicitSplitWarnMs.get();
     if (now - last > SATURATION_WARN_INTERVAL_MS && lastExplicitSplitWarnMs.compareAndSet(last, now))
       LogManager.instance().log(this, Level.WARNING,
           "Sparse-vector top-K split into %d ranges by an explicit %s=%d with %d queries in flight (including this one) on a "
-              + "%d-thread pool. The adaptive default (0) would have kept this query on its caller thread. Splitting costs roughly 2x "
-              + "the CPU for an 8-way split (measured 1.89x here, 1.98x independently), and under load THIS query pays too, not only "
-              + "its neighbours: measured at 16 concurrent clients, a forced 8-way split returned 0.76x the throughput of no split at "
-              + "all and a median 1.75x worse. What it did buy is a lower tail - p99 297 ms against 579 ms - so forcing the split is a "
-              + "reasonable choice for tail-sensitive traffic and the wrong one for median or throughput. Set %s=0 to let the engine "
-              + "decide per query.",
+              + "%d-thread pool. The adaptive default (0) would have kept this query on its caller thread, and past a handful of "
+              + "concurrent queries a forced split stops helping anything at all: measured at 16 concurrent clients on an 18-thread "
+              + "pool, a forced 8-way split returned 0.52x the throughput of no split, a median 1.85x worse AND a p99 2.5x worse, for "
+              + "1.9x the CPU per query. There is no regime above light concurrency where this setting wins - not median, not "
+              + "throughput, not tail. Set %s=0 to let the engine decide per query.",
           partitions, GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getKey(),
           GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger(), inFlight, ceiling,
           GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getKey(),
