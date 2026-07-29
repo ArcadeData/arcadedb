@@ -101,3 +101,47 @@ in-process Raft cluster:
 Step 3 fails before the fix because the write never leaves the leader; step 4 fails because the
 follower's page version now trails by one. Both are asserted so the test distinguishes "write lost"
 from "write lost *and* the cluster subsequently diverges".
+
+Confirmed failing before the fix (`expected: 2L`, follower held 1 record) and passing after. The test
+carries `@Tag("slow")`; the ha-raft integration job passes no `-DexcludedGroups`, and the
+`integration` profile only flips `skipITs`, so the tag does not hide it from CI.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/5537 - opened as `Refs #5492`, deliberately not `Closes`.
+
+### Review cycles
+
+| Cycle | Head | Outcome |
+|---|---|---|
+| 1 | `8c810cb73` | `claude[bot]`: fix endorsed, one actionable item - add `@Tag("slow")` to match the two sibling tests using `TEST_WAL_GAP_COUNTER`. Verified the tag does not exclude the test from CI, then applied. Codacy 0 issues. |
+| 2 | `6aad86a66` | `claude[bot]`: nothing blocking. Independently confirmed `walOnlyEntry` and `sealedOnlyEntry` are mutually exclusive by construction and that multi-chunk splits stay covered by `deliveryOnlyEntry`. Two optional remarks, no action. |
+
+Final state: `clean-approval` at cycle 2. `gemini-code-assist` stayed silent, consistent with its
+behaviour on the last several PRs in this repo.
+
+One factual slip in the cycle-2 review, recorded so it is not propagated: it attributed the test's
+41.7 s -> 18.1 s speedup to the follower `load()`-skip. It is the leader fix - before it, the test
+burned the full 30 s convergence deadline waiting for a write that never arrived. The `load()`-skip
+has no measured payoff in this test.
+
+## CI verdict
+
+Both tests that mattered passed on CI: `Issue5492SchemaWalNotShippedIT` (14.8 s) and
+`Issue5297PolymorphicCountIT` (11.9 s). The latter had failed once in a local full-suite run; that
+was local flakiness on a 97%-full disk, not a regression.
+
+The remaining red jobs were each checked against a `main` baseline run rather than assumed benign:
+
+- **`ha-integration-tests`** - fails on `main` too (4 failures there, 5 here). The failing sets are
+  largely *disjoint in both directions*: `RaftCommandReadConsistencyIT` and
+  `RaftReadConsistencyBookmarkIT` fail on `main` but pass here, while
+  `RaftReplicationChangeSchemaIT`, `RemoteStickyConnectionStrategyIT` and
+  `RaftHTTP2ServersCreateReplicatedDatabaseIT` do the reverse. All three of the latter pass locally
+  on this branch, and their signature is `DatabaseIsClosedException` during teardown - a shutdown
+  race, not a divergence. `RaftReplicationChangeSchemaIT` was checked specifically because schema
+  replication is this change's own path.
+- **`slow-unit-tests`** - `EdgeAppendMergeRaceTest`, an engine-module concurrency race. This PR
+  changes zero engine code, so it cannot be implicated.
+- **`integration-tests`** - fails on `main` too, and its module list explicitly excludes `ha-raft`.
+- **`Meterian client scan`** - fails on `main` on 5 of the last 5 runs; no dependency is added here.
