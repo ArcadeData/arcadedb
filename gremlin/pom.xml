@@ -41,6 +41,7 @@
         <commons-configuration2.version>2.15.1</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
         <commons-lang3.version>3.20.0</commons-lang3.version>
+        <ivy.version>2.6.0</ivy.version>
         <!-- Both properties below are dictated by TinkerPop, not chosen by ArcadeDB.
              Do not raise either one without upgrading gremlin.version first; see #5535. -->
 
@@ -187,6 +188,16 @@
             <groupId>org.yaml</groupId>
             <artifactId>snakeyaml</artifactId>
             <version>${snakeyaml.version}</version>
+        </dependency>
+
+        <!-- ARCADEDB DOES NOT USE THIS LIBRARY BUT GREMLIN DOES: gremlin-groovy pulls Ivy in to
+             back Groovy's Grape dependency loader. TinkerPop 3.8.1 resolves 2.5.3, which is
+             affected by the PackagerResolver path traversal
+             https://nvd.nist.gov/vuln/detail/CVE-2026-26032 -->
+        <dependency>
+            <groupId>org.apache.ivy</groupId>
+            <artifactId>ivy</artifactId>
+            <version>${ivy.version}</version>
         </dependency>
 
         <dependency>
