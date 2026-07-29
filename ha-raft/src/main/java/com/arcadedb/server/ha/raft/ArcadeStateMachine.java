@@ -1545,6 +1545,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // that would leave the new files unregistered in the schema.
     final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
 
+    // A commit that ran inside a recordFileChanges() callback but created no file and left the schema
+    // version untouched ships as a SCHEMA_ENTRY carrying nothing but WAL, because the buffering in
+    // RaftReplicatedDatabase.commit() is what preserves ordering against the enclosing DDL. Such an
+    // entry has nothing for load() to pick up - applyChanges below already updates page counts through
+    // getFileByIdIfExists() - so the reload is pure cost on the single Raft apply thread, where it
+    // re-instantiates every TimeSeries engine and closes shard executors with a 30s awaitTermination.
+    // Same reasoning as sealedOnlyEntry above.
+    final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
+        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty())
+        && (decoded.sealedFileBlobs() == null || decoded.sealedFileBlobs().isEmpty())
+        && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
+
     try {
       if (decoded.filesToAdd() != null)
         createNewFiles(db, decoded.filesToAdd());
@@ -1598,9 +1610,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       // Reload schema after WAL pages are on disk so new index files have valid content
       // and are correctly registered (page counts, type links, in-memory structures).
-      // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above) and for
-      // delivery-only chunks of a split schema change (see deliveryOnlyEntry above).
-      if (!sealedOnlyEntry && !deliveryOnlyEntry)
+      // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above), for
+      // delivery-only chunks of a split schema change (see deliveryOnlyEntry above) and for WAL-only
+      // entries (see walOnlyEntry above).
+      if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry)
         db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
     } catch (final IOException e) {

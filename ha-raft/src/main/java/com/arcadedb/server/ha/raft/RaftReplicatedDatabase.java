@@ -1476,7 +1476,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // Send schema changes via Raft so replicas have the files before WAL pages arrive.
       // Embedded walEntries carry the initial page writes (e.g. index root pages) so
       // replicas apply them immediately after creating the files - in the correct order.
-      if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged) {
+      //
+      // walEntries must be part of this condition. commit() above already ran commit2ndPhase, so the
+      // pages are on the leader; this buffer holds the ONLY copy that can reach a follower, and the
+      // finally block clears it. A callback that writes records without creating a file or moving the
+      // schema version would otherwise leave followers trailing by exactly those page versions, and the
+      // next ordinary transaction touching one of those pages fails on them with WALVersionGapException,
+      // marking the database diverged. The sibling runWithCompactionReplication guards the same buffers
+      // with walEntries.isEmpty() included.
+      if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()) {
         final RaftHAServer raft = requireRaftServer();
         raft.getTransactionBroker().replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas);
         HALog.log(this, HALog.DETAILED,
