@@ -65,6 +65,18 @@ public final class CorrelatedSubqueryRewriter {
   private static final String[] CLAUSE_BOUNDARY_KEYWORDS = Stream.concat(Arrays.stream(CLAUSE_KEYWORDS),
       Stream.of("ORDER", "SKIP", "LIMIT", "UNION")).toArray(String[]::new);
 
+  /**
+   * First letters of {@link #CLAUSE_BOUNDARY_KEYWORDS}, so the per-character boundary scan rejects a
+   * position with one array read instead of walking every keyword. Derived, never hand-maintained:
+   * the whole point of this class is that hand-maintained copies of the keyword list drift.
+   */
+  private static final boolean[] BOUNDARY_KEYWORD_FIRST_CHAR = new boolean[128];
+
+  static {
+    for (final String keyword : CLAUSE_BOUNDARY_KEYWORDS)
+      BOUNDARY_KEYWORD_FIRST_CHAR[keyword.charAt(0)] = true;
+  }
+
   private CorrelatedSubqueryRewriter() {
   }
 
@@ -325,7 +337,17 @@ public final class CorrelatedSubqueryRewriter {
     return true;
   }
 
+  /**
+   * The first-char table is built from {@link #CLAUSE_BOUNDARY_KEYWORDS}, which is a superset of
+   * {@link #CLAUSE_KEYWORDS}, so it is a sound pre-filter for either array: it can never reject a
+   * position one of them would have matched.
+   */
   private static boolean matchesAnyKeywordAt(final String upper, final int pos, final String[] keywords) {
+    if (pos >= upper.length())
+      return false;
+    final char first = upper.charAt(pos);
+    if (first < BOUNDARY_KEYWORD_FIRST_CHAR.length && !BOUNDARY_KEYWORD_FIRST_CHAR[first])
+      return false;
     for (final String keyword : keywords)
       if (matchesKeywordAt(upper, pos, keyword))
         return true;

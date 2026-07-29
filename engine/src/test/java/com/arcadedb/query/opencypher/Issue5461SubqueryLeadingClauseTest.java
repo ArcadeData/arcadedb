@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.opencypher.ast.CorrelatedSubqueryRewriter;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Regression test for GitHub issue #5461.
@@ -133,6 +135,23 @@ class Issue5461SubqueryLeadingClauseTest {
     for (final Result row : results)
       pairs.add(row.<Number>getProperty("x").intValue() + "," + row.<Number>getProperty("y").intValue());
     assertThat(pairs).containsExactly("1,1", "1,2", "2,1", "2,2", "3,1", "3,2");
+  }
+
+  @Test
+  void clauseKeywordTestClassifiesBodiesWithoutThrowing() {
+    // The clause-keyword test indexes the first character, so a blank body must not throw.
+    assertThatCode(() -> CorrelatedSubqueryRewriter.startsWithClauseKeyword("")).doesNotThrowAnyException();
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("")).isFalse();
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("   ")).isFalse();
+
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("UNWIND [1] AS y RETURN y")).isTrue();
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("unwind [1] AS y RETURN y")).isTrue();
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("OPTIONAL MATCH (n) RETURN n")).isTrue();
+
+    // Bare patterns must stay classified as patterns, including one bound to a keyword-prefixed name
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("(a)-[:KNOWS]->(b)")).isFalse();
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("matches = (a)-->(b)")).isFalse();
+    assertThat(CorrelatedSubqueryRewriter.startsWithClauseKeyword("returns = (a)-->(b)")).isFalse();
   }
 
   @Test

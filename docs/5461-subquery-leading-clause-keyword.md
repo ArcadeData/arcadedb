@@ -108,6 +108,11 @@ reachable (a `whereCondition` is only ever produced alongside a `matchPattern`, 
 multi-`MATCH` bodies correctly, and `COLLECT` needs no wrapper change because its `WITH *` shape
 already tolerates any leading clause. Three minor non-blocking notes, dispositioned below.
 
+**Cycle 2** - `0a8ed53` - claude[bot]: LGTM, no blocking findings. Four minor notes, dispositioned
+below. One of them (`INSERT` is not a standard openCypher clause) was checked against the grammar and
+is incorrect: `Cypher25Parser.g4` defines `insertClause : INSERT insertPatternList` and lists it among
+the clause alternatives, so `INSERT` belongs in the list and was kept.
+
 ## Follow-ups
 
 - **Applied in cycle 1.** The bare-pattern branch of `CountExpression.wrapNonMatchBody` is
@@ -121,6 +126,18 @@ already tolerates any leading clause. Three minor non-blocking notes, dispositio
 - **No action, informational.** The mutating keywords in `CLAUSE_KEYWORDS` are inert on the
   `COUNT`/`EXISTS` parse-time path, since update clauses are rejected before it. They are carried for
   completeness of the shared list and for boundary detection.
+- **Applied in cycle 2.** The boundary scan walked all 21 keywords at every unnested character
+  position. It now rejects a position on a single `boolean[]` read keyed by the first character. The
+  table is derived from `CLAUSE_BOUNDARY_KEYWORDS` at class init, so it cannot drift from the list
+  the way the three original copies did, and because that array is a superset of `CLAUSE_KEYWORDS` it
+  is a sound pre-filter for both callers. Indexing the first character also made a blank body throw,
+  so `matchesAnyKeywordAt` now bounds-checks and a unit test covers it - verified non-vacuous by
+  removing the check and watching the test fail with `StringIndexOutOfBoundsException`.
+- **Not addressed, pre-existing (same class as this bug).** The update-clause guards in all three
+  parse methods (`upper.contains("SET ")`, `"CREATE "`, ...) are naive substring scans with the exact
+  blind spot fixed here: a literal or property name containing `SET ` false-matches. Worth its own
+  issue together with the `contains("RETURN ")` item above, so the literal-aware cleanup is not lost
+  now that keyword scanning is consistent everywhere else.
 
 ## Impact
 
