@@ -184,6 +184,19 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   static final int EXPLICIT_PARTITION_OVERSUBSCRIPTION = 4;
 
   /**
+   * A decided split: where the cuts go, and how many workers were actually claimed for it.
+   * <p>
+   * The two travel together because they are not derivable from each other. An explicit partition
+   * count is honoured in full but its claim saturates at the pool ceiling, so the reservation can be
+   * smaller than {@code boundaries.length} - and releasing the wrong number is not a visible failure,
+   * it is a counter that drifts until splitting stops happening for reasons nobody can see. Carrying
+   * the figure the pool actually recorded is what makes the reserve and the release the same number
+   * by construction rather than by two places computing it alike.
+   */
+  private record PartitionPlan(RID[] boundaries, int reservedWorkers) {
+  }
+
+  /**
    * Queries that took the partitioned path (issue #4085). Whether a query is split depends on how
    * busy the scoring pool was at that instant, so this is the only way to tell after the fact which
    * shape actually ran - results are identical either way by design, which is exactly what makes the
@@ -383,16 +396,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
     pool.queryStarted();
     try {
-      final RID[] boundaries = planPartitionBoundaries(queryDims, segSnapshot);
-      if (boundaries != null) {
+      final PartitionPlan plan = planPartitionBoundaries(queryDims, segSnapshot);
+      if (plan != null) {
         partitionedQueries.incrementAndGet();
         pool.querySplit();
         try {
-          return parallelTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, boundaries);
+          return parallelTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, plan.boundaries());
         } finally {
-          // Hand the claimed capacity back on every exit, including a timeout or a failed range:
-          // leaking it would permanently shrink what later queries believe the pool has free.
-          pool.releaseWorkers(boundaries.length);
+          // Hand back exactly what the pool recorded, not what the split asked for: leaking it would
+          // permanently shrink what later queries believe is free, and over-releasing would let them
+          // over-claim. Either way the damage is a silent drift in a number nothing else checks.
+          pool.releaseWorkers(plan.reservedWorkers());
         }
       }
 
@@ -498,7 +512,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * document is still scored exactly once. Only the speedup suffers, and it shows up as one range
    * finishing long after its siblings.
    */
-  private RID[] planPartitionBoundaries(final int[] queryDims, final PaginatedSegmentReader[] segSnapshot) throws IOException {
+  private PartitionPlan planPartitionBoundaries(final int[] queryDims, final PaginatedSegmentReader[] segSnapshot)
+      throws IOException {
     final int configured = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
     if (configured == 1 || segSnapshot.length == 0)
       return null;
@@ -535,13 +550,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     // front - rather than sizing the split from how idle the pool looks - is what keeps concurrent
     // queries from all deciding to split against the same instantaneously-free capacity.
     final int partitions;
+    final int reserved;
     if (configured > 1) {
-      // An explicit setting is an operator opting into the CPU cost, so it is granted whether or not
-      // the pool is busy. It still registers the claim, so auto-mode queries running alongside see it.
-      // Clamped all the same: the knob is "do not throttle me", not "let me open a thousand cursor
-      // stacks", and past a small multiple of the pool there are no threads left to run them anyway.
+      // An explicit setting is an operator opting into the CPU cost, so the split itself is granted
+      // whether or not the pool is busy - it never yields. Clamped for sanity all the same: the knob
+      // is "do not throttle me", not "let me open a thousand cursor stacks", and past a small
+      // multiple of the pool there are no threads left to run them anyway.
       partitions = Math.min(Math.min(configured, byLayout), pool.getMaxParallelism() * EXPLICIT_PARTITION_OVERSUBSCRIPTION);
-      pool.reserveWorkers(partitions - 1);
+      // The claim, unlike the split, is capped at what the pool can hold, and may come back smaller
+      // than asked or zero. Claiming more would suppress splitting for every concurrent query for
+      // this one's whole duration, on the strength of ranges that are queued rather than running.
+      reserved = pool.reserveWorkers(partitions - 1);
       pool.warnExplicitSplitUnderLoad(partitions);
     } else {
       final int wanted = Math.min(pool.getMaxParallelism(), byLayout) - 1;
@@ -552,6 +571,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         return null;
       }
       partitions = granted + 1;
+      reserved = granted;
     }
 
     // Everything past the claim hands it back unless it reaches the caller. The boundary walk
@@ -574,10 +594,10 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         boundaries[i - 1] = new RID(widest.blockFirstBucketId(b), widest.blockFirstPosition(b));
       }
       handedOff = true;
-      return boundaries;
+      return new PartitionPlan(boundaries, reserved);
     } finally {
       if (!handedOff)
-        pool.releaseWorkers(partitions - 1);
+        pool.releaseWorkers(reserved);
     }
   }
 

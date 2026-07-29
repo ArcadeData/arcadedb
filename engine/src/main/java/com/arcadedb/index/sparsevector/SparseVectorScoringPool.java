@@ -374,10 +374,33 @@ public final class SparseVectorScoringPool {
           GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getKey());
   }
 
-  /** Unconditional claim, for an operator who configured an explicit partition count. */
-  public void reserveWorkers(final int count) {
-    if (count > 0)
-      reservedWorkers.addAndGet(count);
+  /**
+   * Claim for an operator who configured an explicit partition count: granted whether or not the pool
+   * is busy, but never beyond what the pool can actually hold.
+   * <p>
+   * Saturates at the pool ceiling rather than adding blindly. An explicit setting means "do not
+   * throttle me", and it still does not - the caller splits into the ranges it asked for whatever
+   * this returns, including 0. What it must not do is <i>claim</i> capacity that does not exist: the
+   * count is what every other query's gate reads, and a query recording four times the pool's worth
+   * of workers would stop every concurrent query from splitting for its whole duration, far beyond
+   * the contention it actually causes. Past the ceiling the extra ranges are queued, not running, so
+   * counting them would describe parallelism the machine is not providing.
+   *
+   * @return the number actually recorded, which the caller must hand back with
+   *         {@link #releaseWorkers(int)} - not the number it asked for.
+   */
+  public int reserveWorkers(final int count) {
+    if (count <= 0)
+      return 0;
+    final int ceiling = executor.getMaximumPoolSize();
+    while (true) {
+      final int current = reservedWorkers.get();
+      final int granted = Math.min(count, ceiling - current);
+      if (granted <= 0)
+        return 0;
+      if (reservedWorkers.compareAndSet(current, current + granted))
+        return granted;
+    }
   }
 
   /** Hands back workers claimed through {@link #tryReserveWorkers} / {@link #reserveWorkers}. */

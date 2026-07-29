@@ -765,6 +765,80 @@ class ParallelRangeTopKTest extends TestHelper {
     }
   }
 
+  @Test
+  void anExplicitClaimSaturatesAtThePoolCeilingButTheSplitStillHappens() throws Exception {
+    final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
+    final int ceiling = pool.getMaxParallelism();
+    final int baseline = pool.getReservedWorkers();
+
+    // The claim is capped: asking for far more than the pool holds records only what it can hold.
+    final int granted = pool.reserveWorkers(ceiling * 10);
+    try {
+      assertThat(granted).as("an explicit claim must saturate at the pool ceiling").isEqualTo(ceiling - baseline);
+      assertThat(pool.getReservedWorkers())
+          .as("reserved workers must never exceed the ceiling, however many ranges were asked for")
+          .isEqualTo(ceiling);
+      // And with the pool fully claimed, a further claim records nothing rather than going negative
+      // or overflowing past the ceiling.
+      assertThat(pool.reserveWorkers(ceiling)).as("a fully claimed pool grants nothing").isZero();
+      assertThat(pool.getReservedWorkers()).isEqualTo(ceiling);
+    } finally {
+      pool.releaseWorkers(granted);
+    }
+    assertThat(pool.getReservedWorkers()).as("the claim must return to baseline").isEqualTo(baseline);
+  }
+
+  @Test
+  void anExplicitSplitDoesNotYieldToAFullyClaimedPool() throws Exception {
+    final int previousPartitions = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    final long previousMin = GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong();
+    final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
+    int hogged = 0;
+    try {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(4);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(1L);
+
+      final Map<RID, Map<Integer, Float>> corpus = buildCorpus(SMALL_DOCS, 91L, false);
+      final int[] queryDims = new int[DIMS];
+      final float[] queryWeights = new float[DIMS];
+      for (int d = 0; d < DIMS; d++) {
+        queryDims[d] = d;
+        queryWeights[d] = 1.0f;
+      }
+
+      try (final PaginatedSparseVectorEngine engine = new PaginatedSparseVectorEngine((DatabaseInternal) database,
+          "idx4085explicit", SegmentParameters.builder().weightQuantization(WeightQuantization.FP32).build())) {
+        database.transaction(() -> {
+          for (final var doc : corpus.entrySet())
+            for (final var dw : doc.getValue().entrySet())
+              engine.put(dw.getKey(), doc.getKey(), dw.getValue());
+          engine.flush();
+        });
+
+        final List<RidScore> expected = engine.topK(queryDims, queryWeights, K);
+        final long splitsBefore = engine.partitionedQueryCount();
+
+        // Claim the entire pool on behalf of someone else. An adaptive query would go serial here;
+        // an explicit one is an operator saying "do not throttle me", so it must still split.
+        hogged = pool.tryReserveWorkers(pool.getMaxParallelism());
+        assertThat(hogged).isPositive();
+        final int reservedWhileHogged = pool.getReservedWorkers();
+
+        assertSameResult(engine.topK(queryDims, queryWeights, K), expected, "explicit split, pool fully claimed");
+        assertThat(engine.partitionedQueryCount())
+            .as("an explicit split must not yield to a busy pool").isEqualTo(splitsBefore + 1);
+        // ...and it must not have inflated the count on the way through, which is what would have
+        // suppressed splitting for every other query on the box.
+        assertThat(pool.getReservedWorkers())
+            .as("an explicit split must not leave the ceiling exceeded").isEqualTo(reservedWhileHogged);
+      }
+    } finally {
+      pool.releaseWorkers(hogged);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previousPartitions);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(previousMin);
+    }
+  }
+
   // ---------- helpers ----------
 
   /**
