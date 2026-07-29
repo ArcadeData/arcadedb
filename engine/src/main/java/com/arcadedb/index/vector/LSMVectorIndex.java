@@ -4730,7 +4730,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Existing metrics
     stats.put("totalVectors", (long) vectorIndex.size());
     stats.put("activeVectors", vectorIndex.getActiveCount());
-    stats.put("deletedVectors", (long) vectorIndex.size() - vectorIndex.getActiveCount());
+    // Ask the deleted-id set instead of subtracting: a tombstoned id keeps no resident location since issue #5516,
+    // so size() - activeCount() is always 0 now and this stat would report "no deletions" on an index full of them.
+    stats.put("deletedVectors", (long) vectorIndex.getDeletedCount());
     stats.put("dimensions", (long) metadata.dimensions);
     stats.put("maxConnections", (long) metadata.maxConnections);
     stats.put("beamWidth", (long) metadata.beamWidth);

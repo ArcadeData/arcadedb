@@ -126,6 +126,37 @@ class LSMVectorIndexCompactionTest extends TestHelper {
     assertNeighborIsSelf(VERTICES - 1, "after compaction + reopen");
   }
 
+  /**
+   * A compaction swaps in a new data file, and the index must be named after it everywhere it is observable: its own
+   * name, the name the schema keys its entry by, and the name it serializes. Every node names a vector index after
+   * the file it holds - a follower rebuilds it from the file the leader shipped - so a leader that keeps answering
+   * its creation name describes an index no other node has, and the cluster's schemas diverge. That failure only
+   * reproduces across nodes (RaftIndexCompactionReplicationIT#lsmVectorCompactionReplication catches it); this is
+   * the single-node guard for the same invariant, so a regression does not need a cluster to be noticed.
+   */
+  @Test
+  void theIndexIdentityFollowsTheCompactedFile() {
+    createSchema();
+    insertVertices();
+    for (int cycle = 1; cycle <= CYCLES; cycle++)
+      updateAllVertices(cycle);
+
+    final LSMVectorIndex index = vectorIndex();
+    final String nameBefore = index.getName();
+
+    database.command("sql", "COMPACT INDEX `Doc[embedding]`");
+
+    final String component = index.getComponent().getName();
+    assertThat(component).as("compaction must have swapped in a new data file").isNotEqualTo(nameBefore);
+    assertThat(index.getName()).as("the index is named after its current component").isEqualTo(component);
+    assertThat(index.getMostRecentFileName()).as("the schema keys its entry by this").isEqualTo(component);
+    assertThat(index.toJSON().getString("indexName")).as("and serializes the same name").isEqualTo(component);
+
+    // The file the name points at is the one that exists on disk.
+    assertThat(new File(database.getDatabasePath()).listFiles((dir, n) -> n.startsWith(component + ".")))
+        .as("the component named by the index must exist on disk").isNotEmpty();
+  }
+
   // ------------------------------------------------------------------------------------------------- helpers
 
   private void createSchema() {

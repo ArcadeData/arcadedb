@@ -109,8 +109,9 @@ public class VectorLocationIndex {
       if ((current[word] & mask) == 0) {
         current[word] |= mask;
         count++;
+        // A grown array always lands here (its words start at zero), so the resize is published too.
+        bits = current; // publishes the bit above to every lock-free reader
       }
-      bits = current; // publishes the bit above to every lock-free reader
     }
 
     synchronized void remove(final int id) {
