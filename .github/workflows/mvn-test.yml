@@ -415,7 +415,7 @@ jobs:
       - name: E2E Node.js Tests
         working-directory: e2e-js
         run: |
-          npm install
+          npm ci
           npm test
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -467,7 +467,7 @@ jobs:
       - name: Install Playwright Browsers
         working-directory: e2e-studio
         run: |
-          npm install
+          npm ci
           npm run install-browsers
 
       - name: E2E Studio Tests
