@@ -1,6 +1,7 @@
 # 5459 - `stdev()` / `stdevP()` return `0.0` for empty input instead of `NULL`
 
 Issue: https://github.com/ArcadeData/arcadedb/issues/5459
+PR: https://github.com/ArcadeData/arcadedb/pull/5539
 
 ## Problem
 
@@ -104,3 +105,28 @@ mvn -pl engine -Dtest='com.arcadedb.function.**.*Test,com.arcadedb.query.opencyp
 - Callers that treated the old `0.0` as a sentinel for the empty case will now receive `NULL`. This is
   the intended correction and matches every other ArcadeDB aggregate as well as Neo4j `2026.05.0`+.
 - No other module references `stddev`/`stdev`; the change is contained to the engine.
+
+## Review cycles
+
+### Cycle 1 - head `d5cb727`
+
+Initial push: the fix, the new regression test, the four corrected assertions, and this doc.
+
+| Reviewer | Outcome |
+|---|---|
+| `claude[bot]` | **LGTM.** Verified the inheritance chain covers all four Cypher spellings plus SQL `stddev()`/`stddevp()`, confirmed the `n == 1` path is correctly untouched, and independently confirmed no other test in the tree depends on the old `0.0`. One non-blocking nit about an assertion idiom that is pre-existing local style in the modified file - no action taken, matching the surrounding file was deliberate. |
+| `gemini-code-assist` | No response within the polling window. Consistent with this repository's recent history, where gemini has not responded to any PR head. |
+
+No code changes were required. No items were deferred.
+
+## Final state
+
+`clean-approval` on the reviewer that responded, with `gemini-code-assist` timing out.
+
+CI on `d5cb727` at the time of writing: `build-and-package`, `builder-tests`, CodeQL, Codacy and the
+Go, JS, Java, C# and Python e2e suites all green. The long-running `unit-tests`, `slow-unit-tests`,
+`integration-tests`, `ha-integration-tests` and `studio-e2e-tests` jobs were still in flight and must
+be confirmed before merge. The `Meterian client scan` job fails, which is a dependency-vulnerability
+scan unrelated to this change - no dependency was added or changed.
+
+Merge remains the developer's decision.
