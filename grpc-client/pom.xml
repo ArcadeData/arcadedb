@@ -33,10 +33,6 @@
     <packaging>jar</packaging>
     <name>ArcadeDB gRPC Client</name>
 
-    <properties>
-        <jackson-databind.version>2.22.1</jackson-databind.version>
-    </properties>
-
     <dependencies>
 
         <dependency>
@@ -156,7 +152,6 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>${jackson-databind.version}</version>
             <scope>provided</scope>
         </dependency>
 
