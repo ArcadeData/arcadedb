@@ -117,7 +117,8 @@ class LSMTreeBloomFilterBenchmark {
     }
   }
 
-  private record Layout(int series, long compactedBytes, long filterBytes, long keys) {
+  private record Layout(int series, long compactedBytes, int compactedPages, int compactedPageSize,
+                        long filterBytes, int filterPages, int filterPageSize, long keys) {
   }
 
   @Test
@@ -184,7 +185,8 @@ class LSMTreeBloomFilterBenchmark {
       final LSMTreeIndexBloomFilter filter = compacted.getBloomFilter();
       assertThat(filter).as("the build must have produced a bloom filter file").isNotNull();
 
-      return new Layout(compacted.getSeriesCount(), compacted.getOSFile().length(), filter.getOSFile().length(), entries);
+      return new Layout(compacted.getSeriesCount(), compacted.getOSFile().length(), compacted.getTotalPages(),
+          compacted.getPageSize(), filter.getOSFile().length(), filter.getTotalPages(), filter.getPageSize(), entries);
     }
   }
 
@@ -251,8 +253,8 @@ class LSMTreeBloomFilterBenchmark {
             ----------------------------------------
             entries              : %,d (unique index, 1 bucket)
             compacted series     : %d
-            compacted index      : %s
-            bloom filter file    : %s  (%.2f bytes/key, %.1f%% of the index)
+            compacted index      : %s in %,d pages of %,d B
+            bloom filter file    : %s in %,d pages of %,d B  (%.2f bytes/key, %.1f%% of the index)
             build + compaction   : %.1f s
             lookups per timing   : %,d
 
@@ -278,8 +280,10 @@ class LSMTreeBloomFilterBenchmark {
             adds on top of that is avoided I/O, and it grows with the ratio of index size to cache.
 
             """,
-        entries, layout.series(), FileUtils.getSizeAsString(layout.compactedBytes()),
-        FileUtils.getSizeAsString(layout.filterBytes()), layout.filterBytes() / (double) layout.keys(),
+        entries, layout.series(),
+        FileUtils.getSizeAsString(layout.compactedBytes()), layout.compactedPages(), layout.compactedPageSize(),
+        FileUtils.getSizeAsString(layout.filterBytes()), layout.filterPages(), layout.filterPageSize(),
+        layout.filterBytes() / (double) layout.keys(),
         100d * layout.filterBytes() / layout.compactedBytes(), buildSeconds, lookups,
 
         smallCacheMB, FileUtils.getSizeAsString(smallOn.effectiveCacheRAM()),
