@@ -29,6 +29,7 @@ import com.arcadedb.utility.CollectionUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -88,15 +89,25 @@ public class Dictionary extends PaginatedComponent {
   private static final int    DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
 
   /**
-   * The name list and the name->id map are replaced together by {@link #reload()}, which runs on threads that do not hold this
+   * The names and the name-&gt;id map are replaced together by {@link #reload()}, which runs on threads that do not hold this
    * component's monitor (transaction rollback and replication apply). Publishing them as one immutable pair through a single
    * volatile field is what makes a reader either see both halves of the old snapshot or both halves of the new one, and is
    * what gives the reader a happens-before edge with the rebuild at all.
+   * <br>
+   * {@code names} is an array with spare capacity rather than a {@link CopyOnWriteArrayList}, and {@code size} is how much of it
+   * is live. A COW list copies its whole backing array on every append, so growing a dictionary of N names cost N^2/2 element
+   * copies: ~150ms and 4.6Gb of copying at the 48K names that used to be the hard ceiling, and quadratically worse without one.
+   * Removing that ceiling is exactly what this class now does, so the append had to stop being O(n).
+   * <br>
+   * An append writes {@code names[size]} and then publishes a new {@code Entries} with {@code size + 1}. Mutating the shared
+   * array before the volatile write is safe both ways round: a reader holding the older snapshot has the smaller size and never
+   * looks at that slot, and a reader that sees the new snapshot sees the slot through the volatile write's happens-before edge.
+   * Growth doubles the array, so appends stay amortised O(1) while reads stay a volatile read plus an array index.
    */
-  private record Entries(List<String> names, ConcurrentMap<String, Integer> ids) {
+  private record Entries(String[] names, int size, ConcurrentMap<String, Integer> ids) {
   }
 
-  private volatile Entries entries = new Entries(new CopyOnWriteArrayList<>(), new ConcurrentHashMap<>(1024));
+  private volatile Entries entries = new Entries(new String[64], 0, new ConcurrentHashMap<>(1024));
 
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
@@ -151,7 +162,7 @@ public class Dictionary extends PaginatedComponent {
           final AtomicInteger newPos = new AtomicInteger();
 
           database.transaction(() -> {
-            newPos.set(entries.names().size());
+            newPos.set(entries.size());
             addItemToPage(name);
           }, false);
 
@@ -159,8 +170,8 @@ public class Dictionary extends PaginatedComponent {
           current = entries;
 
           if (current.ids().putIfAbsent(name, newPos.get()) == null) {
-            current.names().add(name);
-            if (current.names().size() != newPos.get() + 1) {
+            final int appended = appendName(current, name);
+            if (appended != newPos.get() + 1) {
               try {
                 reload();
               } catch (final IOException e) {
@@ -180,12 +191,30 @@ public class Dictionary extends PaginatedComponent {
     return pos;
   }
 
-  public String getNameById(final int nameId) {
-    final List<String> names = entries.names();
-    if (nameId < 0 || nameId >= names.size())
-      throw new IllegalArgumentException("Dictionary item with id " + nameId + " is not valid (total=" + names.size() + ")");
+  /**
+   * Appends one name to the in-RAM view and publishes it, returning the new total. Amortised O(1): see {@link Entries} for why
+   * the slot is written before the volatile publish and why that is safe for readers holding either snapshot.
+   * <p>
+   * Callers hold this component's monitor.
+   */
+  private int appendName(final Entries current, final String name) {
+    String[] names = current.names();
+    final int size = current.size();
 
-    final String itemName = names.get(nameId);
+    if (size == names.length)
+      names = Arrays.copyOf(names, names.length * 2);
+
+    names[size] = name;
+    entries = new Entries(names, size + 1, current.ids());
+    return size + 1;
+  }
+
+  public String getNameById(final int nameId) {
+    final Entries current = entries;
+    if (nameId < 0 || nameId >= current.size())
+      throw new IllegalArgumentException("Dictionary item with id " + nameId + " is not valid (total=" + current.size() + ")");
+
+    final String itemName = current.names()[nameId];
     if (itemName == null)
       throw new IllegalArgumentException("Dictionary item with id " + nameId + " was not found");
 
@@ -242,15 +271,16 @@ public class Dictionary extends PaginatedComponent {
         throw new IllegalArgumentException(
             "Cannot rename the item '" + oldName + "' in the dictionary because it has been used as a type name");
 
-    final List<String> dictionary = entries.names();
-    final ConcurrentMap<String, Integer> dictionaryMap = entries.ids();
+    final Entries current = entries;
+    final int total = current.size();
+    final ConcurrentMap<String, Integer> dictionaryMap = current.ids();
 
     // READ-ONLY SCAN. ONE PASS: THE OLD indexOf()-UNTIL-GONE LOOP RE-SCANNED THE WHOLE LIST PER OCCURRENCE, AND ONLY TERMINATED
     // BECAUSE THE NAMES DIFFER, SINCE WITH oldName EQUAL TO newName EVERY SCAN FOUND WHAT THE PREVIOUS set() HAD JUST WRITTEN.
     // THE EARLY RETURN ABOVE STILL COVERS THAT CASE, BUT SCANNING BY INDEX MAKES IT IMPOSSIBLE BY CONSTRUCTION
     final List<Integer> oldIndexes = new ArrayList<>();
-    for (int i = 0; i < dictionary.size(); ++i)
-      if (oldName.equals(dictionary.get(i)))
+    for (int i = 0; i < total; ++i)
+      if (oldName.equals(current.names()[i]))
         oldIndexes.add(i);
 
     if (oldIndexes.isEmpty())
@@ -258,9 +288,16 @@ public class Dictionary extends PaginatedComponent {
 
     try {
       // VALIDATION IS OVER: FROM HERE ON THE ONLY WAY OUT IS AN IOException, WHICH THE catch REPAIRS WITH A reload()
-      dictionaryMap.remove(oldName);
+      //
+      // THE RENAME GOES ONTO A COPY RATHER THAN INTO THE LIVE ARRAY. AN APPEND ONLY EVER WRITES A SLOT PAST THE PUBLISHED SIZE,
+      // SO IT CAN SHARE ITS ARRAY WITH OLDER READERS; A RENAME REWRITES A SLOT THEY ARE ALREADY READING, WHICH WOULD NEED A
+      // HAPPENS-BEFORE EDGE THEY DO NOT HAVE. ONE COPY PER RENAME IS NOTHING NEXT TO THE FULL PAGE REWRITE BELOW.
+      final String[] renamed = Arrays.copyOf(current.names(), current.names().length);
       for (final int oldIndex : oldIndexes)
-        dictionary.set(oldIndex, newName);
+        renamed[oldIndex] = newName;
+
+      dictionaryMap.remove(oldName);
+      entries = new Entries(renamed, total, dictionaryMap);
 
       // REWRITE THE WHOLE DICTIONARY FROM PAGE 0 IN THE SAME ORDER, SO NO ID MOVES. THE TOTAL SIZE CAN SHRINK OR GROW, SO PAGES
       // ARE ADDED AS NEEDED AND THE ONES THE NEW CONTENT NO LONGER REACHES ARE EMPTIED: reload() WALKS EVERY COMMITTED PAGE, AND
@@ -268,7 +305,9 @@ public class Dictionary extends PaginatedComponent {
       int pageNumber = 0;
       MutablePage page = resetPageForRewrite(pageNumber);
 
-      for (final String d : dictionary) {
+      // BOUNDED BY total, NOT BY renamed.length: THE ARRAY CARRIES SPARE CAPACITY FOR FUTURE APPENDS AND THOSE SLOTS ARE NULL
+      for (int i = 0; i < total; ++i) {
+        final String d = renamed[i];
         final byte[] property = d.getBytes(DatabaseFactory.getDefaultCharset());
         final int required = spaceRequiredBy(property);
         // newName WAS ALREADY CHECKED ABOVE AND THE OTHERS FIT BY CONSTRUCTION: THIS ONLY CATCHES A CORRUPT PAGE, AND SAYS SO
@@ -358,13 +397,19 @@ public class Dictionary extends PaginatedComponent {
     updateCounters(page);
 
     if (pageNumber == 1)
-      // THE ONE MOMENT IN A DATABASE'S LIFE WHEN IT STOPS BEING READABLE BY A BUILD WITHOUT MULTI-PAGE SUPPORT. LEAVING A
-      // BREADCRUMB HERE IS WHAT LETS AN OPERATOR CORRELATE A FOLLOWER LATER REPORTING "Dictionary item with id N is not valid"
-      // WITH THIS EVENT. INFO, NOT WARNING: NOTHING IS WRONG, AND A WARNING ON HEALTHY GROWTH IS HOW LOGS BECOME UNREADABLE
-      LogManager.instance().log(this, Level.INFO,
-          "Database '%s' schema dictionary grew beyond its first page. Any replica or tool running a build without multi-page "
-              + "dictionary support can no longer read this database: upgrade followers before, or together with, the leader",
-          null, database.getName());
+      // THE ONE MOMENT IN A DATABASE'S LIFE WHEN IT STOPS BEING READABLE BY A BUILD WITHOUT MULTI-PAGE SUPPORT. THE BREADCRUMB
+      // IS WHAT LETS AN OPERATOR CORRELATE A FOLLOWER LATER REPORTING "Dictionary item with id N is not valid" WITH THIS EVENT.
+      //
+      // ON COMMIT, NOT HERE: THIS RUNS INSIDE A TRANSACTION THAT CAN STILL ROLL BACK, AND updateName GROWS INSIDE THE CALLER'S
+      // TRANSACTION, SO LOGGING EAGERLY WOULD ANNOUNCE A ROLLOVER THAT NEVER HAPPENED. A BREADCRUMB THAT LIES IS WORSE THAN NO
+      // BREADCRUMB. THE KEY MAKES IT ONE LINE PER TRANSACTION EVEN IF SEVERAL PAGES ARE ADDED, AND ROLLBACK DISCARDS IT.
+      //
+      // INFO, NOT WARNING: NOTHING IS WRONG, AND WARNINGS ON HEALTHY GROWTH ARE HOW LOGS STOP BEING READ
+      database.getTransaction().addAfterCommitCallbackIfAbsent("dictionaryRolledOver",
+          () -> LogManager.instance().log(this, Level.INFO,
+              "Database '%s' schema dictionary grew beyond its first page. Any replica or tool running a build without "
+                  + "multi-page dictionary support can no longer read this database: upgrade followers before, or together "
+                  + "with, the leader", null, database.getName()));
 
     return page;
   }
@@ -413,9 +458,10 @@ public class Dictionary extends PaginatedComponent {
       return;
 
     } else {
-      // LOAD THE DICTIONARY IN RAM. THE NAMES ARE COLLECTED IN AN ARRAYLIST AND THE COPY-ON-WRITE LIST IS BUILT ONCE FROM IT:
-      // APPENDING TO A CopyOnWriteArrayList COPIES THE WHOLE BACKING ARRAY PER ITEM, MAKING THIS QUADRATIC ON THE ENTRY COUNT
-      // (~150ms FOR 48K ENTRIES, PAID ON EVERY OPEN, EVERY ROLLBACK OF A DICTIONARY TX AND EVERY REPLICATED DICTIONARY CHANGE).
+      // LOAD THE DICTIONARY IN RAM. COLLECTED IN AN ARRAYLIST BECAUSE THE ENTRY COUNT IS NOT KNOWN UNTIL THE LAST PAGE HAS BEEN
+      // READ, THEN COPIED INTO THE PUBLISHED ARRAY ONCE. THIS USED TO APPEND STRAIGHT INTO A CopyOnWriteArrayList, WHICH COPIED
+      // THE WHOLE BACKING ARRAY PER ENTRY AND MADE THE LOAD QUADRATIC: ~150ms FOR 48K ENTRIES, PAID ON EVERY OPEN, EVERY
+      // ROLLBACK OF A DICTIONARY TRANSACTION AND EVERY REPLICATED DICTIONARY CHANGE.
       final List<String> loaded = new ArrayList<>();
 
       // COMMITTED STATE ON BOTH COUNTS, WHICH IS THE WHOLE CONTRACT OF THIS METHOD: EVERY CALLER (LOAD, ROLLBACK, AND THE TWO
@@ -444,7 +490,13 @@ public class Dictionary extends PaginatedComponent {
       for (int i = 0; i < size; ++i)
         newDictionaryMap.putIfAbsent(loaded.get(i), i);
 
-      this.entries = new Entries(new CopyOnWriteArrayList<>(loaded), newDictionaryMap);
+      // SPARE CAPACITY SO THE FIRST APPEND AFTER A RELOAD DOES NOT IMMEDIATELY HAVE TO GROW THE ARRAY. reload() RUNS ON THE
+      // ROLLBACK AND REPLICATION PATHS, SO APPENDS RIGHT AFTER ONE ARE THE NORMAL CASE RATHER THAN THE EXCEPTION
+      final String[] names = new String[Math.max(64, size + (size >> 2))];
+      for (int i = 0; i < size; ++i)
+        names[i] = loaded.get(i);
+
+      this.entries = new Entries(names, size, newDictionaryMap);
     }
   }
 

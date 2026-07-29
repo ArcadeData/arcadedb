@@ -298,6 +298,47 @@ class DictionaryMultiPageTest extends TestHelper {
   }
 
   /**
+   * The compatibility guarantee in the forward direction, which {@link #pageZeroKeepsTheLegacySinglePageLayout} only covers in
+   * reverse: a single-page dictionary carrying the pre-multi-page format version is opened by this code, read in full, and then
+   * rolled over. The file is relabelled rather than synthesised because the two formats are byte-identical for one page - the
+   * version in the name is the only thing that differs, which is precisely the claim being tested.
+   */
+  @Test
+  void aDictionaryLabelledWithThePreviousFormatVersionLoadsAndThenRollsOver() {
+    final int before = 40;
+    for (int i = 0; i < before; ++i)
+      dictionary().getIdByName(name(i), true);
+    assertThat(dictionary().getTotalPages()).as("the fixture has to still be a single page").isEqualTo(1);
+
+    database.close();
+
+    final File databaseDirectory = new File(getDatabasePath());
+    final File[] dictionaryFiles = databaseDirectory.listFiles((dir, fileName) -> fileName.endsWith("." + Dictionary.DICT_EXT));
+    assertThat(dictionaryFiles).hasSize(1);
+    final File current = dictionaryFiles[0];
+    final File legacy = new File(databaseDirectory, current.getName().replaceFirst("\\.v\\d+\\.", ".v0."));
+    assertThat(current.renameTo(legacy)).isTrue();
+
+    database = factory.open();
+
+    // IT LOADED, IN FULL, WITH NO MIGRATION
+    assertThat(dictionary().getDictionaryMap()).hasSize(before);
+    assertAllNamesResolve(before);
+
+    // AND IT GROWS FROM THERE, KEEPING EVERY ID IT ARRIVED WITH
+    int added = before;
+    while (dictionary().getTotalPages() < 3) {
+      dictionary().getIdByName(name(added), true);
+      ++added;
+    }
+    assertAllNamesResolve(added);
+
+    reopenDatabase();
+    assertThat(dictionary().getDictionaryMap()).hasSize(added);
+    assertAllNamesResolve(added);
+  }
+
+  /**
    * A dictionary written by a future ArcadeDB would be read as if it had this layout, silently. Opening the database has to fail
    * loudly instead. Exercised the way it would really happen, through the load path, by renaming the file to a higher version.
    */
