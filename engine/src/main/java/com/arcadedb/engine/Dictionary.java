@@ -76,6 +76,12 @@ public class Dictionary extends PaginatedComponent {
   public static final  int    DEF_PAGE_SIZE          = 65_536;
   /**
    * v0 is single page, v1 rolls over. The reader handles both, the version only marks what wrote the file.
+   * <br>
+   * It is stamped at creation and never changed, so a v0 database that later rolls over keeps saying v0. That is deliberate:
+   * this number lives in the FILE NAME, so bumping it at runtime means renaming a live component file, which
+   * {@link PaginatedComponent#rename} can only do behind a full flush barrier and which would race replication shipping pages
+   * by file id. It would also buy nothing, because a build old enough to be at risk does not validate this field at all - it
+   * would open a v1 file just as happily. The signal that a database has rolled over is the INFO logged when page 1 is created.
    */
   private static final int    CURRENT_VERSION        = 1;
   // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES

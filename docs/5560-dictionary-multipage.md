@@ -49,6 +49,22 @@ names); a string value is only ever looked up with `create=false`, so user data 
 `CURRENT_VERSION` goes to 1, with a guard refusing a dictionary written by a newer ArcadeDB rather than
 misreading it as this layout.
 
+### Why the version is not bumped when an existing database first rolls over
+
+The version is stamped at creation, so a `v0` database that later grows past page 0 keeps saying `v0` on
+disk. Bumping it on first rollover was considered and rejected:
+
+- The version is part of the **file name** (`dictionary.0.65536.v1.dict`). Changing it at runtime means
+  renaming a live component file. `PaginatedComponent.rename` can only do that behind a full flush barrier
+  (`waitAllPagesOfDatabaseAreFlushed`), and doing it from inside an append transaction would race
+  replication, which ships pages by file id, and leave follower file names diverged from the leader's.
+- It would protect nothing. `ComponentFactory` passes the parsed version straight through without
+  validating it, so a build old enough to be at risk opens a `v1` file just as happily as a `v0` one. The
+  guard added here only helps a *newer* format meeting *this* reader.
+
+So the version records what wrote the file, and the operational signal that a database has left single-page
+territory is the INFO line logged when page 1 is created.
+
 ## Upgrade notes
 
 **Single node.** Nothing to do. An existing database keeps its page size and its `v0` file name, and gains
