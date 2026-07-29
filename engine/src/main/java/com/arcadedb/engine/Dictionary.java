@@ -180,20 +180,6 @@ public class Dictionary extends PaginatedComponent {
   }
 
   /**
-   * Bytes still available on the page names are currently appended to, length prefix included. Not a capacity: once it runs out
-   * the next name opens a new page. Useful to size a write that should, or should not, cross a page boundary.
-   */
-  public int getAvailableSpaceInLastPage() {
-    try {
-      final BasePage lastPage = database.getTransaction()
-          .getPage(new PageId(database, file.getFileId(), getTotalPages() - 1), pageSize);
-      return freeSpaceIn(lastPage);
-    } catch (final IOException e) {
-      throw new SchemaException("Error on reading the database schema dictionary", e);
-    }
-  }
-
-  /**
    * Updates a name. The update will impact the entire database with both properties and values (if used as ENUM). The update is valid only if the name has not been used as type name.
    *
    * @param oldName The old name to rename. Must be already present in the schema dictionary
@@ -212,6 +198,11 @@ public class Dictionary extends PaginatedComponent {
     if (oldName.equals(newName))
       // NOTHING TO DO. WITHOUT THIS THE LOOP BELOW WOULD NEVER FIND ITS TERMINATION CONDITION
       return;
+
+    // VALIDATED BEFORE ANYTHING IS MUTATED: THE REWRITE BELOW EDITS THE IN-RAM VIEW FIRST, AND A newName TOO BIG FOR A PAGE
+    // WOULD OTHERWISE LEAVE IT RENAMED BUT UNWRITTEN UNTIL THE CALLER'S ROLLBACK HAPPENED TO REPAIR IT. EVERY OTHER NAME IS
+    // ALREADY STORED ON A PAGE OF THIS SIZE, SO newName IS THE ONLY ONE THAT CAN FAIL
+    checkNameFitsAPage(newName, spaceRequiredBy(newName.getBytes(DatabaseFactory.getDefaultCharset())));
 
     final List<String> dictionary = entries.names();
     final ConcurrentMap<String, Integer> dictionaryMap = entries.ids();
@@ -247,6 +238,8 @@ public class Dictionary extends PaginatedComponent {
       for (final String d : dictionary) {
         final byte[] property = d.getBytes(DatabaseFactory.getDefaultCharset());
         final int required = spaceRequiredBy(property);
+        // newName WAS ALREADY CHECKED ABOVE AND THE OTHERS FIT BY CONSTRUCTION: THIS ONLY CATCHES A CORRUPT PAGE, AND SAYS SO
+        // INSTEAD OF LETTING writeString() FAIL WITH A RAW PAGE-BOUNDARY ERROR
         checkNameFitsAPage(d, required);
 
         if (freeSpaceIn(page) < required)
@@ -268,7 +261,7 @@ public class Dictionary extends PaginatedComponent {
       } catch (final IOException ioException) {
         LogManager.instance().log(this, Level.SEVERE, "Error on reloading dictionary", ioException);
       }
-      throw new SchemaException("Error on updating name in dictionary");
+      throw new SchemaException("Error on updating name in dictionary", e);
     }
   }
 

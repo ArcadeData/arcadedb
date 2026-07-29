@@ -27,6 +27,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -222,6 +223,68 @@ class DictionaryMultiPageTest extends TestHelper {
     for (int i = 0; i < added; ++i)
       if (i != renamedId)
         assertThat(dictionary().getIdByName(name(i), false)).as("id of entry %d after reopen", i).isEqualTo(i);
+  }
+
+  /**
+   * The other half of the rewrite: renaming to a name that no longer fits the pages the dictionary already has must ADD one.
+   * The shrink branch is covered above; this is the {@code pageNumber >= getTotalPages()} branch of resetPageForRewrite.
+   */
+  @Test
+  void updateNameGrowingBeyondTheExistingPagesAddsOne() {
+    final int added = fillPages(3);
+    final Dictionary dictionary = dictionary();
+    final int pagesBefore = dictionary.getTotalPages();
+    final int renamedId = dictionary.getIdByName(name(1), false);
+
+    // ALMOST A WHOLE PAGE ON ITS OWN, SO THE RE-LAYOUT CANNOT POSSIBLY FIT IN THE PAGES THAT ARE ALREADY THERE
+    final String huge = "z".repeat(dictionary.getPageSize() - BasePage.PAGE_HEADER_SIZE - Binary.INT_SERIALIZED_SIZE - 8);
+
+    database.transaction(() -> dictionary.updateName(name(1), huge));
+
+    assertThat(dictionary.getTotalPages()).as("the rewrite had to grow the file").isGreaterThan(pagesBefore);
+    assertThat(dictionary.getNameById(renamedId)).isEqualTo(huge);
+    assertThat(dictionary.getIdByName(huge, false)).isEqualTo(renamedId);
+
+    for (int i = 0; i < added; ++i)
+      if (i != renamedId)
+        assertThat(dictionary.getIdByName(name(i), false)).as("id of entry %d after the rename", i).isEqualTo(i);
+
+    reopenDatabase();
+
+    assertThat(dictionary().getDictionaryMap()).hasSize(added);
+    assertThat(dictionary().getNameById(renamedId)).isEqualTo(huge);
+    for (int i = 0; i < added; ++i)
+      if (i != renamedId)
+        assertThat(dictionary().getIdByName(name(i), false)).as("id of entry %d after reopen", i).isEqualTo(i);
+  }
+
+  /**
+   * A dictionary written by a future ArcadeDB would be read as if it had this layout, silently. Opening the database has to fail
+   * loudly instead. Exercised the way it would really happen, through the load path, by renaming the file to a higher version.
+   */
+  @Test
+  void aDictionaryFromANewerFormatIsRefusedInsteadOfMisread() {
+    dictionary().getIdByName("beforeTheDowngrade", true);
+    database.close();
+
+    final File databaseDirectory = new File(getDatabasePath());
+    final File[] dictionaryFiles = databaseDirectory.listFiles((dir, fileName) -> fileName.endsWith("." + Dictionary.DICT_EXT));
+    assertThat(dictionaryFiles).hasSize(1);
+
+    final File current = dictionaryFiles[0];
+    final File fromTheFuture = new File(databaseDirectory, current.getName().replaceFirst("\\.v\\d+\\.", ".v99."));
+    assertThat(current.renameTo(fromTheFuture)).isTrue();
+
+    try {
+      assertThatThrownBy(() -> factory.open()).hasStackTraceContaining("format version 99");
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(getDatabasePath())).isNull();
+    } finally {
+      // PUT IT BACK AND REOPEN, SO THE HARNESS CAN DROP THE DATABASE AT THE END OF THE TEST
+      assertThat(fromTheFuture.renameTo(current)).isTrue();
+      database = factory.open();
+    }
+
+    assertThat(dictionary().getIdByName("beforeTheDowngrade", false)).isNotEqualTo(-1);
   }
 
   /**
