@@ -118,6 +118,9 @@ import java.util.logging.Level;
  *   the last edge is written (issue #5470)
  * - expectedVertexCount (int, default 0): hint used to pre-size the vertex references, saving the copies of their
  *   growth. Only a hint: the payload may carry more
+ * - expectedRecords (long, default none): how many records (vertices plus edges) the payload carries. When given,
+ *   a load that ends with a different count is reported as incomplete instead of successful - the only way to catch
+ *   a chunked upload that stopped early, since a chunked body announces no length
  * - ordinalBase (long, default 0): with {@code refMode=ordinal}, the position of the FIRST vertex of this payload.
  *   A client that splits one load into several requests keeps a single counter across all of them, so the second
  *   request starts where the first stopped; positions below the base belong to an earlier request and have to be
@@ -215,7 +218,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       configureBuilder(exchange, builder);
 
       return streamRecords(exchange, databaseName, isCsv, builder, inputStream, newVertexRefResolver(exchange),
-          System.currentTimeMillis(), parseVertexBatchSize(exchange));
+          System.currentTimeMillis(), parseVertexBatchSize(exchange), parseExpectedRecords(exchange));
     } finally {
       restoreConnectionReadTimeout(exchange, previousReadTimeout);
     }
@@ -227,7 +230,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
       final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
-      final VertexRefResolver vertexRefs, final long startTime, final int vertexBatchSize) throws Exception {
+      final VertexRefResolver vertexRefs, final long startTime, final int vertexBatchSize,
+      final long expectedRecords) throws Exception {
 
     long verticesCreated = 0;
     long edgesCreated = 0;
@@ -372,6 +376,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           "only " + inputStream.getBytesRead() + " of the " + exchange.getRequestContentLength()
               + " announced bytes were received", null);
 
+    // A chunked upload announces no length, so the only thing that can prove it arrived whole is the client saying
+    // how much it was going to send. Without it a body that ends early - because the producer feeding the stream
+    // stopped, not because the connection broke - is indistinguishable from a complete one and is answered 200 with
+    // a partial count, which is how a load can silently import a fraction of a file (issue #5470).
+    final long records = verticesCreated + edgesCreated;
+    if (expectedRecords >= 0 && records != expectedRecords)
+      return recordCountMismatch(exchange, databaseName, verticesCreated, edgesCreated, expectedRecords, records);
+
     final long elapsed = System.currentTimeMillis() - startTime;
 
     final JSONObject result = new JSONObject();
@@ -465,9 +477,44 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         httpServer.getServer().getConfiguration()
             .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_READ_TIMEOUT));
 
+    // 408: the request was not fully received. The response often never reaches a client whose connection is
+    // already gone, but when it does it carries the counts needed to resume instead of restarting.
+    return partialPayloadResponse(exchange, 408,
+        "Request body was truncated after " + verticesCreated + " vertices and " + edgesCreated + " edges: " + message,
+        exceptionClass, verticesCreated, edgesCreated);
+  }
+
+  /**
+   * Answers a load whose record count does not match what the client declared with {@code expectedRecords}. Fewer
+   * records than promised is a payload that ended early - answered like any other truncation, so a client can resume
+   * - while more records than promised means the request and its declaration disagree and repeating it blindly would
+   * make things worse, hence a 400 (issue #5470).
+   */
+  private ExecutionResponse recordCountMismatch(final HttpServerExchange exchange, final String databaseName,
+      final long verticesCreated, final long edgesCreated, final long expectedRecords, final long records) {
+
+    final boolean truncated = records < expectedRecords;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Batch load on database '%s' declared %d records but %s: %d loaded (%d vertices and %d edges). The payload "
+            + "was not what the client announced, so it is reported as incomplete instead of successful",
+        null, databaseName, expectedRecords, truncated ? "fewer arrived" : "more arrived", records, verticesCreated,
+        edgesCreated);
+
+    return partialPayloadResponse(exchange, truncated ? 408 : 400,
+        "Expected " + expectedRecords + " records but " + records + " were received (" + verticesCreated
+            + " vertices and " + edgesCreated + " edges)", null, verticesCreated, edgesCreated);
+  }
+
+  /**
+   * The response shared by every "what arrived is not the whole payload" outcome: the counts have to be
+   * machine-parsable, because the load is not atomic and the client needs them to reconcile.
+   */
+  private ExecutionResponse partialPayloadResponse(final HttpServerExchange exchange, final int status,
+      final String message, final String exceptionClass, final long verticesCreated, final long edgesCreated) {
+
     final JSONObject error = new JSONObject();
-    error.put("error", "Request body was truncated after " + verticesCreated + " vertices and " + edgesCreated
-        + " edges: " + message);
+    error.put("error", message);
     if (exceptionClass != null)
       error.put("exception", exceptionClass);
     final String correlationId = getCorrelationId(exchange);
@@ -476,9 +523,22 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     error.put("verticesCreated", verticesCreated);
     error.put("edgesCreated", edgesCreated);
     error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
-    // 408: the request was not fully received. The response often never reaches a client whose connection is
-    // already gone, but when it does it carries the counts needed to resume instead of restarting.
-    return new ExecutionResponse(408, error.toString());
+    return new ExecutionResponse(status, error.toString());
+  }
+
+  /**
+   * Number of records (vertices plus edges, blank lines excluded) the client states the payload carries, or
+   * {@code -1} when it does not. See {@link #recordCountMismatch}.
+   */
+  private long parseExpectedRecords(final HttpServerExchange exchange) {
+    final String value = getQueryParameter(exchange, "expectedRecords");
+    if (value == null)
+      return -1;
+
+    final long expectedRecords = Long.parseLong(value);
+    if (expectedRecords < 0)
+      throw new IllegalArgumentException("expectedRecords cannot be negative, but was " + expectedRecords);
+    return expectedRecords;
   }
 
   /**

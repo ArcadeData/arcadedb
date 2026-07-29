@@ -643,6 +643,60 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #5470: a chunked upload announces no length, so the only thing that can prove it arrived whole is the
+   * client saying how much it was going to send. Without it, a body that ends early because the producer feeding
+   * the stream stopped - not because the connection broke - looks exactly like a complete one and is answered 200
+   * with a partial count.
+   */
+  @Test
+  void expectedRecordsTurnsAShortPayloadIntoAFailure() throws Exception {
+    testEachServer(serverIndex -> {
+      final String body = """
+          {"@type":"vertex","@class":"V1","@id":"er1","id":850000}
+          {"@type":"vertex","@class":"V1","@id":"er2","id":850001}
+          {"@type":"edge","@class":"E1","@from":"er1","@to":"er2"}
+          """;
+
+      // The count matches: nothing changes.
+      final JSONObject ok = postBatch(serverIndex, body, "application/x-ndjson", "expectedRecords=3");
+      assertThat(ok.getInt("verticesCreated")).isEqualTo(2);
+      assertThat(ok.getInt("edgesCreated")).isEqualTo(1);
+
+      // Fewer records than declared: the payload ended early, so it is answered like any other truncation - 408
+      // with the counts, which is what a client needs to resume.
+      final String shortBody = """
+          {"@type":"vertex","@class":"V1","id":850010}
+          {"@type":"vertex","@class":"V1","id":850011}
+          """;
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "expectedRecords=1000");
+      writeBody(conn, shortBody);
+      conn.connect();
+      assertThat(conn.getResponseCode()).isEqualTo(408);
+
+      final JSONObject truncated = new JSONObject(readError(conn));
+      conn.disconnect();
+      assertThat(truncated.getString("error")).contains("Expected 1000 records but 2 were received");
+      assertThat(truncated.getLong("verticesCreated")).isEqualTo(2);
+      assertThat(truncated.getBoolean("partialCommit")).isTrue();
+
+      // More records than declared: the request and its declaration disagree, and repeating it blindly would make
+      // things worse. V1.id is unique, so every post below carries its own ids.
+      final String excess = """
+          {"@type":"vertex","@class":"V1","@id":"er3","id":850020}
+          {"@type":"vertex","@class":"V1","@id":"er4","id":850021}
+          {"@type":"edge","@class":"E1","@from":"er3","@to":"er4"}
+          """;
+      assertThat(postBatchError(serverIndex, excess, "expectedRecords=2").getString("error"))
+          .contains("Expected 2 records but 3 were received");
+
+      final String negative = """
+          {"@type":"vertex","@class":"V1","id":850030}
+          """;
+      assertThat(postBatchError(serverIndex, negative, "expectedRecords=-1").getString("error")).isNotEmpty();
+    });
+  }
+
   private JSONObject postBatchError(final int serverIndex, final String body, final String queryParams)
       throws Exception {
     final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", queryParams);
