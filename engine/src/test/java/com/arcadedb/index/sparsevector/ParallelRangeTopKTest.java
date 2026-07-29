@@ -59,6 +59,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * per-range heap and the final merge therefore rank on "score descending, then RID ascending", and
  * the tie test below fails without that.
  * <p>
+ * <b>Where the claim stops.</b> Rounding and the tie-break are not independent, so "identical list"
+ * holds for distinct scores and for ties that survive rounding intact, not universally: two
+ * documents that tie exactly in one shape can sit an ulp apart in the other, and at the k boundary
+ * an ulp decides which is kept. The RID tie-break cannot reach that case, because it only orders
+ * scores that are still equal after rounding. What holds without qualification is that the split
+ * never returns a worse answer - same count, rank-for-rank indistinguishable scores, nothing below
+ * the serial k-th - which is what
+ * {@link #aPlateauOfNearTiesAtTheBoundaryStillReturnsAnEquallyGoodResult} pins.
+ * <p>
  * The other thing asserted here is that a fan-out never nests. A scoring-pool worker that split its
  * own query again would fill the pool with tasks waiting on tasks that nothing is left to run - a
  * deadlock, not a slowdown, and one the caller-runs rejection policy does not catch because the
@@ -84,6 +93,8 @@ class ParallelRangeTopKTest extends TestHelper {
    * CI job into a failed test, which is the difference between a diagnosis and an hour of nothing.
    */
   private static final int SATURATION_RELEASE_TIMEOUT_SECONDS = 60;
+  /** Wide enough to cover float summation-order differences, far below any real score gap. */
+  private static final float TIE_EPSILON = 1e-4f;
 
   @Test
   void rangePartitionedScoringReproducesTheSerialResult() throws Exception {
@@ -150,6 +161,90 @@ class ParallelRangeTopKTest extends TestHelper {
         assertSameResult(BmwScorer.mergeRanges(ranges, K), serial, "tied partitions=" + partitions);
       }
     });
+  }
+
+  /**
+   * The one case where the split may legitimately keep a different document than the serial scan,
+   * and therefore the case that says what the equivalence claim actually is.
+   * <p>
+   * A plateau of documents with mathematically equal scores straddles the k-th place, built from
+   * weights that are not exactly representable so the order MaxScore sums a document's terms in can
+   * move its total by an ulp. That order follows the essential/non-essential split, which a range
+   * reaches at a different watermark than the whole scan, so two documents that tie exactly in one
+   * shape can sit an ulp apart in the other - and at the k boundary an ulp decides which is kept.
+   * The RID tie-break cannot save this: it only breaks ties between scores that are still equal
+   * after rounding.
+   * <p>
+   * So the guarantee is not "identical RIDs in all cases". It is that the split never returns a
+   * <i>worse</i> answer: the same number of documents, rank for rank indistinguishable in score,
+   * and never one that ranks below the serial k-th. That is what is asserted here. The existing
+   * tie test uses exactly-representable weights, which deliberately removes the rounding and pins
+   * the tie-break on its own; this one puts the rounding back.
+   */
+  @Test
+  void aPlateauOfNearTiesAtTheBoundaryStillReturnsAnEquallyGoodResult() throws Exception {
+    final int previousPartitions = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    final long previousMin = GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong();
+    try {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(1L);
+
+      // Weights chosen so no partial sum is exact in binary floating point.
+      final float[] awkward = { 0.1f, 0.3f, 0.7f, 0.05f, 0.15f, 0.35f, 0.45f, 0.55f, 0.65f, 0.85f, 0.95f, 0.25f };
+      final TreeMap<RID, Map<Integer, Float>> corpus = new TreeMap<>(SparseSegmentBuilder::compareRid);
+      // Background: enough postings for the split to engage, all scoring well below the plateau.
+      for (int i = 0; i < SMALL_DOCS; i++) {
+        final TreeMap<Integer, Float> doc = new TreeMap<>();
+        for (int d = 0; d < 4; d++)
+          doc.put(d, 0.01f);
+        corpus.put(new RID(0, 1L + i), doc);
+      }
+      // The plateau: many more documents than k, every one carrying the identical heavy weights, so
+      // their true scores are equal and only rounding can separate them.
+      for (int i = 0; i < K * 5; i++) {
+        final TreeMap<Integer, Float> doc = new TreeMap<>();
+        for (int d = 0; d < awkward.length; d++)
+          doc.put(d, awkward[d]);
+        corpus.put(new RID(0, 1L + (long) SMALL_DOCS + i * 7L), doc);
+      }
+
+      final int[] queryDims = new int[awkward.length];
+      final float[] queryWeights = new float[awkward.length];
+      for (int d = 0; d < awkward.length; d++) {
+        queryDims[d] = d;
+        queryWeights[d] = 1.0f;
+      }
+
+      try (final PaginatedSparseVectorEngine engine = new PaginatedSparseVectorEngine((DatabaseInternal) database,
+          "idx4085plateau", SegmentParameters.builder().weightQuantization(WeightQuantization.FP32).build())) {
+        database.transaction(() -> {
+          for (final var doc : corpus.entrySet())
+            for (final var dw : doc.getValue().entrySet())
+              engine.put(dw.getKey(), doc.getKey(), dw.getValue());
+          engine.flush();
+        });
+
+        GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(1);
+        final List<RidScore> serial = engine.topK(queryDims, queryWeights, K);
+        assertThat(serial).hasSize(K);
+
+        for (final int partitions : new int[] { 2, 4, 8 }) {
+          GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(partitions);
+          final List<RidScore> split = engine.topK(queryDims, queryWeights, K);
+
+          assertThat(split).as("split=%d must return as many documents", partitions).hasSameSizeAs(serial);
+          final float worstSerial = serial.getLast().score();
+          for (int i = 0; i < serial.size(); i++) {
+            assertThat(split.get(i).score()).as("split=%d rank %d must be indistinguishable in score", partitions, i)
+                .isCloseTo(serial.get(i).score(), Offset.offset(TIE_EPSILON));
+            assertThat(split.get(i).score()).as("split=%d rank %d must not rank below the serial k-th", partitions, i)
+                .isGreaterThanOrEqualTo(worstSerial - TIE_EPSILON);
+          }
+        }
+      }
+    } finally {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previousPartitions);
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.setValue(previousMin);
+    }
   }
 
   @Test

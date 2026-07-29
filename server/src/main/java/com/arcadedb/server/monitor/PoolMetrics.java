@@ -124,8 +124,11 @@ public final class PoolMetrics implements MeterBinder {
         .description("Sparse-vector scoring: workers currently claimed by in-flight range splits").tags(tags)
         .register(registry);
     Gauge.builder("arcadedb.executor.queries.in_flight", () -> pool.getInFlightQueries())
-        .description("Sparse-vector scoring: top-K queries executing right now, split or serial. "
-            + "Once these can keep the pool busy on their own, queries stop splitting and run on their caller's thread.")
+        .description("Sparse-vector scoring: top-K queries executing on caller threads right now, split or serial - the "
+            + "number the split gate is compared against. Once these alone can keep the pool busy, queries stop splitting "
+            + "and run on their caller's thread. Deliberately excludes queries already running on a worker (the per-bucket "
+            + "fan-out), which occupy capacity rather than competing for it and show up under pool.active instead; counting "
+            + "them here would let one multi-bucket query read as several and gate unrelated ones.")
         .tags(tags).register(registry);
     Gauge.builder("arcadedb.executor.queries.split", () -> pool.getSplitQueryCount())
         .description("Sparse-vector scoring: cumulative top-K queries split into parallel RID ranges since startup. "
