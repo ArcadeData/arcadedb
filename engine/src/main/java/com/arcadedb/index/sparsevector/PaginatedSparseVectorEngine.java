@@ -554,11 +554,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       partitions = granted + 1;
     }
 
-    // Everything past the claim releases it on the way out if it fails. The boundary walk touches
-    // in-memory block metadata only and cannot currently throw, but this method reads segment
-    // metadata and is declared to throw, so a future edit that adds a page read here would otherwise
-    // leak the claim permanently - silently shrinking what every later query believes is free, with
-    // nothing failing to point at it.
+    // Everything past the claim hands it back unless it reaches the caller. The boundary walk
+    // touches in-memory block metadata only and cannot currently throw, but this method reads
+    // segment metadata and is declared to throw, so a future edit that adds a page read here would
+    // otherwise leak the claim permanently - silently shrinking what every later query believes is
+    // free, with nothing failing to point at it.
+    //
+    // Written as a handed-off flag rather than a catch clause on purpose. Enumerating exception
+    // types is how this guard fails quietly: the obvious "catch (RuntimeException | Error)" does not
+    // intercept the IOException that the page read it was written for would actually throw. A
+    // finally covers every abrupt exit - checked, unchecked, Error - and any future early return
+    // that forgets about the claim.
+    boolean handedOff = false;
     try {
       final RID[] boundaries = new RID[partitions - 1];
       final int blocks = widest.blockCount();
@@ -566,10 +573,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         final int b = (int) ((long) blocks * i / partitions);
         boundaries[i - 1] = new RID(widest.blockFirstBucketId(b), widest.blockFirstPosition(b));
       }
+      handedOff = true;
       return boundaries;
-    } catch (final RuntimeException | Error e) {
-      pool.releaseWorkers(partitions - 1);
-      throw e;
+    } finally {
+      if (!handedOff)
+        pool.releaseWorkers(partitions - 1);
     }
   }
 
