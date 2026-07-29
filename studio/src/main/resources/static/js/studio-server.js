@@ -321,7 +321,9 @@ function displayMetrics() {
     executorsHtml += "<td class='" + fallbackCellClass + "'>" + fallbacks.toLocaleString() + "</td>";
     // Split-decision columns (#4085). Only the sparse-vector pool decides per query whether to
     // parallelise, so a pool that does not report them shows "-" rather than a zero that would read
-    // as "nothing is splitting" when the concept simply does not apply.
+    // as "nothing is splitting" when the concept simply does not apply. "Queries Split" is the
+    // decision, not the outcome: under caller-runs a submitted range executes inline on the caller,
+    // so it pairs with the Caller-Run Fallbacks column to the left.
     executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "pool.reserved") + "</td>";
     executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "queries.in_flight") + "</td>";
     executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "queries.split") + "</td>";

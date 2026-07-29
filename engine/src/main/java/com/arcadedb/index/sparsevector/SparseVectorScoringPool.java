@@ -123,6 +123,7 @@ public final class SparseVectorScoringPool {
   // first saturation event.
   private static final long        SATURATION_WARN_INTERVAL_MS = 60_000L;
   private final AtomicLong         lastSaturationWarnMs = new AtomicLong(0L);
+  private final AtomicLong         lastExplicitSplitWarnMs = new AtomicLong(0L);
 
   private SparseVectorScoringPool() {
     // 0 = auto-size to available cores (with a floor of {@link #DEFAULT_THREADS_FLOOR}). Any
@@ -313,6 +314,35 @@ public final class SparseVectorScoringPool {
   /** Cumulative queries split into RID ranges since JVM start. */
   public long getSplitQueryCount() {
     return splitQueries.get();
+  }
+
+  /**
+   * Throttled WARNING for a split that only happened because an operator configured an explicit
+   * partition count, at a moment the adaptive default would have refused it.
+   * <p>
+   * Behaviour is unchanged - an explicit setting is a deliberate "do not throttle me" and is still
+   * honoured. The point is that the setting is JVM-wide and long-lived, so whoever configured it
+   * months ago is rarely the person watching latency today; without a signal, the trade it makes
+   * (throughput for latency, under exactly the load where that hurts) is invisible. Same 60-second
+   * throttle as the saturation warning, so a busy server gets one nudge rather than a stream.
+   */
+  public void warnExplicitSplitUnderLoad(final int partitions) {
+    final int ceiling = executor.getMaximumPoolSize();
+    final int inFlight = inFlightQueries.get();
+    if (inFlight * 2 <= ceiling)
+      // The adaptive gate would have allowed this too, so the explicit setting changed nothing here.
+      return;
+    final long now = System.currentTimeMillis();
+    final long last = lastExplicitSplitWarnMs.get();
+    if (now - last > SATURATION_WARN_INTERVAL_MS && lastExplicitSplitWarnMs.compareAndSet(last, now))
+      LogManager.instance().log(this, Level.WARNING,
+          "Sparse-vector top-K split into %d ranges by an explicit %s=%d while %d queries were already in flight on a %d-thread pool. "
+              + "The adaptive default (0) would have kept this query on its caller thread: splitting costs roughly 1.9x the CPU for an "
+              + "8-way split, which buys latency on an idle machine and takes throughput from other queries on a busy one. "
+              + "Set %s=0 to let the engine decide per query.",
+          partitions, GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getKey(),
+          GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger(), inFlight, ceiling,
+          GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getKey());
   }
 
   /** Unconditional claim, for an operator who configured an explicit partition count. */

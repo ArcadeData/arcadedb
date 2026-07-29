@@ -128,7 +128,10 @@ public final class PoolMetrics implements MeterBinder {
             + "Once these can keep the pool busy on their own, queries stop splitting and run on their caller's thread.")
         .tags(tags).register(registry);
     Gauge.builder("arcadedb.executor.queries.split", () -> pool.getSplitQueryCount())
-        .description("Sparse-vector scoring: cumulative top-K queries split into parallel RID ranges since startup")
+        .description("Sparse-vector scoring: cumulative top-K queries split into parallel RID ranges since startup. "
+            + "Counts the decision, not the outcome: a range submitted to a full queue runs inline on the caller under the "
+            + "caller-runs policy, so a query counted here can still have executed serially. Read alongside "
+            + "tasks.caller_run_fallbacks, which is where that shows up.")
         .tags(tags).register(registry);
   }
 

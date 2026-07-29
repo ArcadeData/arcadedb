@@ -474,6 +474,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * the same number of that dim's postings. That is a better proxy for "same amount of work" than
    * cutting the RID space into equal spans, which goes lopsided as soon as a range of RIDs has been
    * deleted or was never dense. Reading them touches in-memory block metadata only - no page reads.
+   * <p>
+   * It is a balance heuristic, not a guarantee, and it reads one dim of one segment. On an index with
+   * several live segments - a freshly loaded one, before compaction has merged them - that segment's
+   * layout need not represent the global RID distribution, and the ranges can come out uneven.
+   * Correctness does not depend on it: the ranges still partition the RID space disjointly and every
+   * document is still scored exactly once. Only the speedup suffers, and it shows up as one range
+   * finishing long after its siblings.
    */
   private RID[] planPartitionBoundaries(final int[] queryDims, final PaginatedSegmentReader[] segSnapshot) throws IOException {
     final int configured = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
@@ -519,6 +526,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // stacks", and past a small multiple of the pool there are no threads left to run them anyway.
       partitions = Math.min(Math.min(configured, byLayout), pool.getMaxParallelism() * EXPLICIT_PARTITION_OVERSUBSCRIPTION);
       pool.reserveWorkers(partitions - 1);
+      pool.warnExplicitSplitUnderLoad(partitions);
     } else {
       final int wanted = Math.min(pool.getMaxParallelism(), byLayout) - 1;
       final int granted = pool.tryReserveWorkers(wanted);
