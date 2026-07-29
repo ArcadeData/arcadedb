@@ -118,4 +118,107 @@ class BufferBloomFilterCorrectnessTest {
     for (int i = 0; i < 1_000; i++)
       assertThat(bf.mightContain(i)).isTrue();
   }
+
+  @Test
+  void slotsMustBeAMultipleOfEightAndProbesAtLeastOne() {
+    assertThatThrownBy(() -> new BufferBloomFilter(new Binary(128), 100, 23))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("multiplier of 8");
+    assertThatThrownBy(() -> new BufferBloomFilter(new Binary(128), 64, 23, 0))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("at least one probe");
+  }
+
+  /**
+   * The filter shares its buffer with whatever the caller put around it - a page header, the next filter of the
+   * same page - so it must never touch a byte outside the {@code ceil(slots / 8)} it was given. This is the
+   * failure #4960 was about, and the only way to see it is to watch the bytes beyond the region.
+   */
+  @Test
+  void neverWritesOutsideItsRegion() {
+    final int slots = 64;
+    final int region = slots / 8;
+    final Binary buffer = new Binary(region * 4);
+    buffer.size(region * 4);
+
+    final byte guard = (byte) 0xA5;
+    for (int i = region; i < region * 4; i++)
+      buffer.putByte(i, guard);
+
+    final BufferBloomFilter bf = new BufferBloomFilter(buffer, slots, 23, 8);
+    for (int i = 0; i < 100_000; i++)
+      bf.add(i);
+
+    for (int i = region; i < region * 4; i++)
+      assertThat(buffer.getByte(i)).as("byte %d past the %d-byte region", i, region).isEqualTo(guard);
+  }
+
+  /**
+   * A filter is worth persisting only if the same bytes answer the same way when read back, so the outcome must
+   * depend on nothing but the buffer, the slot count, the seed and the probes.
+   */
+  @Test
+  void theSameBytesAnswerTheSameWay() {
+    final int slots = 4_096;
+    final Binary buffer = new Binary(slots / 8);
+    buffer.size(slots / 8);
+
+    final BufferBloomFilter writer = new BufferBloomFilter(buffer, slots, 23, 4);
+    for (int i = 0; i < 500; i++)
+      writer.add(i);
+
+    // Same region, rebuilt as a reader would after loading the page.
+    final Binary reloaded = new Binary(buffer.toByteArray());
+    final BufferBloomFilter reader = new BufferBloomFilter(reloaded, slots, 23, 4);
+
+    for (int i = 0; i < 500; i++)
+      assertThat(reader.mightContain(i)).as("value %d", i).isTrue();
+
+    int agreed = 0;
+    for (int i = 500; i < 5_000; i++)
+      if (writer.mightContain(i) == reader.mightContain(i))
+        ++agreed;
+    assertThat(agreed).isEqualTo(4_500);
+
+    // A different seed is a different filter: the seed has to reach the hash.
+    final BufferBloomFilter otherSeed = new BufferBloomFilter(reloaded, slots, 24, 4);
+    int same = 0;
+    for (int i = 0; i < 500; i++)
+      if (otherSeed.mightContain(i))
+        ++same;
+    assertThat(same).as("a filter read with the wrong seed cannot report every key as present").isLessThan(500);
+  }
+
+  @Test
+  void anEmptyFilterHoldsNothing() {
+    final int slots = 4_096;
+    final BufferBloomFilter bf = new BufferBloomFilter(new Binary(slots / 8), slots, 23, 4);
+
+    for (int i = 0; i < 10_000; i++)
+      assertThat(bf.mightContain(i)).as("value %d", i).isFalse();
+  }
+
+  /**
+   * Hashing an int must not allocate on a read path, and the allocation-free form must produce exactly the hash the
+   * 4-byte array produced before - otherwise a filter written by one and read by the other silently loses keys.
+   */
+  @Test
+  void theIntHashMatchesTheByteArrayItReplaces() {
+    final int slots = 1 << 14;
+    final int seed = 23;
+    final BufferBloomFilter viaInt = new BufferBloomFilter(new Binary(slots / 8), slots, seed, 4);
+    final BufferBloomFilter viaBytes = new BufferBloomFilter(new Binary(slots / 8), slots, seed, 4);
+
+    for (int i = -2_000; i < 2_000; i++) {
+      viaInt.add(i);
+      viaBytes.add(new byte[] { (byte) (i >>> 24), (byte) (i >>> 16), (byte) (i >>> 8), (byte) i }, 4);
+    }
+
+    for (int i = -2_000; i < 2_000; i++)
+      assertThat(viaInt.mightContain(i)).as("value %d", i)
+          .isEqualTo(viaBytes.mightContain(new byte[] { (byte) (i >>> 24), (byte) (i >>> 16), (byte) (i >>> 8), (byte) i }, 4));
+
+    // The two filters must be bit-identical, not merely in agreement on the keys they hold.
+    for (int i = 2_000; i < 20_000; i++)
+      assertThat(viaInt.mightContain(i)).as("absent value %d", i).isEqualTo(
+          viaBytes.mightContain(new byte[] { (byte) (i >>> 24), (byte) (i >>> 16), (byte) (i >>> 8), (byte) i }, 4));
+  }
 }
