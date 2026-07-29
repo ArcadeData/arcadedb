@@ -66,18 +66,28 @@ public final class CorrelatedSubqueryRewriter {
       Stream.of("ORDER", "SKIP", "LIMIT", "UNION")).toArray(String[]::new);
 
   /**
-   * First letters of {@link #CLAUSE_BOUNDARY_KEYWORDS}, so the per-character boundary scan rejects a
-   * position with one array read instead of walking every keyword. Derived, never hand-maintained:
-   * the whole point of this class is that hand-maintained copies of the keyword list drift.
+   * Clauses that write, and so may not appear in the read-only subquery expressions. {@code DELETE}
+   * also covers {@code DETACH DELETE}.
    */
-  private static final boolean[] BOUNDARY_KEYWORD_FIRST_CHAR = new boolean[128];
+  private static final String[] UPDATE_CLAUSE_KEYWORDS = { "CREATE", "MERGE", "SET", "DELETE", "REMOVE" };
 
-  static {
-    for (final String keyword : CLAUSE_BOUNDARY_KEYWORDS)
-      BOUNDARY_KEYWORD_FIRST_CHAR[keyword.charAt(0)] = true;
-  }
+  /**
+   * First letters of each keyword array, so a per-character scan rejects a position with one array
+   * read instead of walking every keyword. Derived, never hand-maintained: the whole point of this
+   * class is that hand-maintained copies of the keyword list drift.
+   */
+  private static final boolean[] BOUNDARY_KEYWORD_FIRST_CHAR = firstCharTable(CLAUSE_BOUNDARY_KEYWORDS);
+
+  private static final boolean[] UPDATE_KEYWORD_FIRST_CHAR = firstCharTable(UPDATE_CLAUSE_KEYWORDS);
 
   private CorrelatedSubqueryRewriter() {
+  }
+
+  private static boolean[] firstCharTable(final String[] keywords) {
+    final boolean[] table = new boolean[128];
+    for (final String keyword : keywords)
+      table[keyword.charAt(0)] = true;
+    return table;
   }
 
   /**
@@ -90,7 +100,44 @@ public final class CorrelatedSubqueryRewriter {
    * surfaces only as a silently wrong {@code COUNT} of 0 or {@code EXISTS} of false (issue #5461).
    */
   public static boolean startsWithClauseKeyword(final String body) {
-    return matchesAnyKeywordAt(body.trim().toUpperCase(), 0, CLAUSE_KEYWORDS);
+    return matchesAnyKeywordAt(body.trim().toUpperCase(), 0, CLAUSE_KEYWORDS, BOUNDARY_KEYWORD_FIRST_CHAR);
+  }
+
+  /**
+   * Tells whether a subquery body contains a write clause, which the three read-only subquery
+   * expressions must reject.
+   * <p>
+   * Only a keyword written as a clause counts: the scan skips string literals and backtick-quoted
+   * identifiers, and requires a word boundary. The guard used to be a bare
+   * {@code toUpperCase().contains("SET ")}, which could not tell a clause from ordinary user data, so
+   * a read-only {@code WHERE n.name = 'SET x'} was rejected as an update (issue #5541).
+   * <p>
+   * Nesting is deliberately not tracked: a write nested inside a bracketed construct - {@code CALL {
+   * ... CREATE ... }} - is still a write, and must still be rejected.
+   */
+  public static boolean containsUpdateClause(final String body) {
+    final String upper = body.toUpperCase();
+    char quote = 0;
+
+    for (int i = 0; i < upper.length(); i++) {
+      final char c = upper.charAt(i);
+
+      if (quote != 0) {
+        // Inside a string literal or quoted identifier: only its (non-escaped) closing quote matters
+        if (c == '\\')
+          i++;
+        else if (c == quote)
+          quote = 0;
+        continue;
+      }
+      if (c == '\'' || c == '"' || c == '`') {
+        quote = c;
+        continue;
+      }
+      if (matchesAnyKeywordAt(upper, i, UPDATE_CLAUSE_KEYWORDS, UPDATE_KEYWORD_FIRST_CHAR))
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -269,7 +316,7 @@ public final class CorrelatedSubqueryRewriter {
 
       if (matchesKeywordAt(upper, i, "WHERE") && topWherePos < 0)
         topWherePos = i;
-      else if (clauseStart < 0 && matchesAnyKeywordAt(upper, i, CLAUSE_BOUNDARY_KEYWORDS))
+      else if (clauseStart < 0 && matchesAnyKeywordAt(upper, i, CLAUSE_BOUNDARY_KEYWORDS, BOUNDARY_KEYWORD_FIRST_CHAR))
         clauseStart = i;
 
       // Stop once we find a non-WHERE clause keyword
@@ -338,15 +385,16 @@ public final class CorrelatedSubqueryRewriter {
   }
 
   /**
-   * The first-char table is built from {@link #CLAUSE_BOUNDARY_KEYWORDS}, which is a superset of
-   * {@link #CLAUSE_KEYWORDS}, so it is a sound pre-filter for either array: it can never reject a
-   * position one of them would have matched.
+   * {@code firstChars} must be a table built from a superset of {@code keywords} - see
+   * {@link #firstCharTable} - so that it can never reject a position one of them would have matched.
+   * {@link #CLAUSE_BOUNDARY_KEYWORDS} is such a superset of {@link #CLAUSE_KEYWORDS}.
    */
-  private static boolean matchesAnyKeywordAt(final String upper, final int pos, final String[] keywords) {
+  private static boolean matchesAnyKeywordAt(final String upper, final int pos, final String[] keywords,
+      final boolean[] firstChars) {
     if (pos >= upper.length())
       return false;
     final char first = upper.charAt(pos);
-    if (first < BOUNDARY_KEYWORD_FIRST_CHAR.length && !BOUNDARY_KEYWORD_FIRST_CHAR[first])
+    if (first < firstChars.length && !firstChars[first])
       return false;
     for (final String keyword : keywords)
       if (matchesKeywordAt(upper, pos, keyword))
