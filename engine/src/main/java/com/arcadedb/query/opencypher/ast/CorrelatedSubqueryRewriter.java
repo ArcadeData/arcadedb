@@ -23,10 +23,12 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BinaryOperator;
+import java.util.stream.Stream;
 
 /**
  * Shared text rewriting used by the three subquery expressions - {@code EXISTS { }},
@@ -46,8 +48,37 @@ import java.util.function.BinaryOperator;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class CorrelatedSubqueryRewriter {
+  /**
+   * Keywords that can open a Cypher subquery body. Anything else is a bare pattern, and only a bare
+   * pattern may be wrapped into a synthesized {@code MATCH}. {@code OPTIONAL} covers
+   * {@code OPTIONAL MATCH}, {@code LOAD} covers {@code LOAD CSV} and {@code DETACH} covers
+   * {@code DETACH DELETE}.
+   */
+  private static final String[] CLAUSE_KEYWORDS = { "MATCH", "OPTIONAL", "WITH", "RETURN", "UNWIND", "CALL", "FOREACH",
+      "LOAD", "USE", "FINISH", "CREATE", "MERGE", "SET", "DELETE", "DETACH", "REMOVE", "INSERT" };
+
+  /**
+   * Keywords that close the pattern of the MATCH a correlation condition is injected into: every
+   * clause keyword, plus the sub-clauses that can trail a projection. {@code WHERE} is deliberately
+   * absent - it is the one keyword the injection merges into rather than stops at.
+   */
+  private static final String[] CLAUSE_BOUNDARY_KEYWORDS = Stream.concat(Arrays.stream(CLAUSE_KEYWORDS),
+      Stream.of("ORDER", "SKIP", "LIMIT", "UNION")).toArray(String[]::new);
 
   private CorrelatedSubqueryRewriter() {
+  }
+
+  /**
+   * Tells whether a subquery body opens with a clause keyword rather than with a bare pattern.
+   * <p>
+   * Callers use this to decide whether the body still needs a synthesized {@code MATCH} in front of
+   * it. The list has to stay complete: an unlisted keyword makes its clause look like a pattern, and
+   * the resulting {@code MATCH UNWIND [1, 2] AS y RETURN y RETURN 1} does not parse. Because the
+   * three subquery expressions absorb a failed body into their neutral value, that misclassification
+   * surfaces only as a silently wrong {@code COUNT} of 0 or {@code EXISTS} of false (issue #5461).
+   */
+  public static boolean startsWithClauseKeyword(final String body) {
+    return matchesAnyKeywordAt(body.trim().toUpperCase(), 0, CLAUSE_KEYWORDS);
   }
 
   /**
@@ -226,9 +257,7 @@ public final class CorrelatedSubqueryRewriter {
 
       if (matchesKeywordAt(upper, i, "WHERE") && topWherePos < 0)
         topWherePos = i;
-      else if (clauseStart < 0 && (matchesKeywordAt(upper, i, "WITH") || matchesKeywordAt(upper, i, "RETURN")
-          || matchesKeywordAt(upper, i, "ORDER") || matchesKeywordAt(upper, i, "SKIP")
-          || matchesKeywordAt(upper, i, "LIMIT") || matchesKeywordAt(upper, i, "UNION")))
+      else if (clauseStart < 0 && matchesAnyKeywordAt(upper, i, CLAUSE_BOUNDARY_KEYWORDS))
         clauseStart = i;
 
       // Stop once we find a non-WHERE clause keyword
@@ -294,6 +323,13 @@ public final class CorrelatedSubqueryRewriter {
         return false;
     }
     return true;
+  }
+
+  private static boolean matchesAnyKeywordAt(final String upper, final int pos, final String[] keywords) {
+    for (final String keyword : keywords)
+      if (matchesKeywordAt(upper, pos, keyword))
+        return true;
+    return false;
   }
 
   private static boolean isCypherIdentifierChar(final char c) {
