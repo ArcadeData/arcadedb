@@ -1825,9 +1825,7 @@ class CypherExpressionBuilder {
       subquery = originalText.substring(7, originalText.length() - 1).trim(); // fallback
 
     // Check for update clauses inside EXISTS (not allowed)
-    final String upper = subquery.toUpperCase();
-    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ") ||
-        upper.contains("MERGE ") || upper.contains("REMOVE "))
+    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: Existential subquery cannot contain update clauses");
 
@@ -1859,9 +1857,7 @@ class CypherExpressionBuilder {
       subquery = originalText.substring(8, originalText.length() - 1).trim(); // fallback "COLLECT{" prefix
 
     // Update clauses are not allowed inside a COLLECT subquery
-    final String upper = subquery.toUpperCase();
-    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ")
-        || upper.contains("MERGE ") || upper.contains("REMOVE "))
+    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
 
@@ -1886,9 +1882,7 @@ class CypherExpressionBuilder {
     else
       subquery = originalText.substring(6, originalText.length() - 1).trim(); // fallback "COUNT{" prefix
 
-    final String upper = subquery.toUpperCase();
-    if (upper.contains("SET ") || upper.contains("CREATE ") || upper.contains("DELETE ")
-        || upper.contains("MERGE ") || upper.contains("REMOVE "))
+    if (CorrelatedSubqueryRewriter.containsUpdateClause(subquery))
       throw new CommandParsingException(
           "InvalidClauseComposition: COUNT subquery cannot contain update clauses");
 
