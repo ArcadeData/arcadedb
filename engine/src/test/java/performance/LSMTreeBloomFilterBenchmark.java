@@ -168,12 +168,21 @@ class LSMTreeBloomFilterBenchmark {
       database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { PROPERTY_NAME })
           .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
 
+      // Insert in a PERMUTED key order, not ascending.
+      //
+      // A compaction round slices the mutable pages by RAM, and mutable pages fill in insertion order - so if keys
+      // arrive ascending, every series ends up owning a disjoint slice of the key space and a series' root page alone
+      // rules out almost every lookup, for free. That is the shape of a load keyed by a counter or a timestamp, and
+      // the one where these filters have least to offer. A load keyed by an email, a UUID or any business id arrives
+      // in no key order at all, every series spans the whole range, and the root page rules out nothing - which is the
+      // workload #5470 reported and the one this measures.
+      final int stride = permutationStride(entries);
       for (int from = 0; from < entries; from += INSERT_BATCH) {
         final int batchStart = from;
         final int batchEnd = Math.min(entries, from + INSERT_BATCH);
         database.transaction(() -> {
           for (int i = batchStart; i < batchEnd; i++)
-            database.newDocument(TYPE_NAME).set(PROPERTY_NAME, key(i)).save();
+            database.newDocument(TYPE_NAME).set(PROPERTY_NAME, key((int) ((long) i * stride % entries))).save();
         });
       }
 
@@ -203,7 +212,7 @@ class LSMTreeBloomFilterBenchmark {
       final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties(PROPERTY_NAME).getFirst();
       final LSMTreeIndexCompacted compacted = compactedOf(typeIndex);
 
-      assertThat(compacted.getBloomFilter() != null).as("filters attached when enabled=%s", filtersEnabled)
+      assertThat(compacted.isBloomFilterEnabled()).as("filters consulted when enabled=%s", filtersEnabled)
           .isEqualTo(filtersEnabled);
 
       // Warm the JIT and let the cache reach the steady state this regime allows.
@@ -273,11 +282,15 @@ class LSMTreeBloomFilterBenchmark {
               present lookups  off %,12.0f/s  on %,12.0f/s   %.2fx
               series           %,d skipped of %,d probed
 
-            How to read this. The ABSENT rows are the experiment - a bulk load's duplicate check, which by
-            definition misses in every series. PRESENT is the control the filters cannot help and must not hurt.
+            How to read this. ABSENT is a bulk load's duplicate check, which by definition misses in every series.
+            PRESENT still gains, because a key lives in ONE series and the filters spare the reader the others -
+            the gain is smaller only because that one series must be read whatever happens.
             Compare the two cache regimes to separate the two effects: whatever speedup survives with the whole
             index RESIDENT is CPU (root and leaf binary searches not performed); whatever the CONSTRAINED regime
             adds on top of that is avoided I/O, and it grows with the ratio of index size to cache.
+            Both depend on series' key ranges OVERLAPPING, which is what a business-keyed load produces. Keys that
+            arrive already ascending give each series a disjoint slice that its root page alone rules out, and
+            there the filters have little left to save - see the permuted insertion order above.
 
             """,
         entries, layout.series(),
@@ -348,6 +361,18 @@ class LSMTreeBloomFilterBenchmark {
     } finally {
       cursor.close();
     }
+  }
+
+  /** A stride coprime with {@code entries}, so {@code i * stride % entries} walks every key exactly once. */
+  private static int permutationStride(final int entries) {
+    int stride = Math.max(1, entries / 3 + 1);
+    while (gcd(stride, entries) != 1)
+      ++stride;
+    return stride;
+  }
+
+  private static int gcd(final int a, final int b) {
+    return b == 0 ? a : gcd(b, a % b);
   }
 
   private static double seconds(final long nanos) {

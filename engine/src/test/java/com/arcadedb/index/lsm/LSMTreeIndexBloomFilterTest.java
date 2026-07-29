@@ -20,6 +20,9 @@ package com.arcadedb.index.lsm;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Binary;
+import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.BufferBloomFilter;
 import com.arcadedb.engine.MurmurHash;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -159,6 +162,54 @@ class LSMTreeIndexBloomFilterTest extends TestHelper {
     db.getPageManager().updatePageVersion(page, true);
     filter.updatePageCount(pageNumber + 1);
     db.getPageManager().writePages(List.of(page), false);
+  }
+
+  /**
+   * The probe used on the lookup path reads bits straight off the page to avoid allocating, and therefore repeats the
+   * bit arithmetic of the instance form instead of sharing it. The two MUST answer identically: if they ever drifted,
+   * keys written through one and read through the other would go missing.
+   */
+  @Test
+  void theStaticProbeAgreesWithTheInstanceOne() throws Exception {
+    final int keys = 20_000;
+    final LSMTreeIndexBloomFilter filter = newFilter("static-vs-instance");
+    filter.publish(6, 2, hashes(keys, "p-"), keys, 0.01);
+
+    final LSMTreeIndexBloomFilter.Entry entry = filter.readDirectoryPage(filter.getTotalPages() - 1).get(6);
+    assertThat(entry).isNotNull();
+
+    int agreed = 0;
+    for (int i = 0; i < 40_000; i++) {
+      // Half present, half absent, so both answers are exercised.
+      final long hash = i < keys ? hash("p-" + i) : hash("q-" + i);
+      final int block = blockOfSameWayTheComponentDoes(hash, entry.filterPages());
+      final BasePage page = ((DatabaseInternal) database).getPageManager()
+          .getImmutablePage(new PageId((DatabaseInternal) database, filter.getFileId(),
+              entry.firstFilterPage() + block), PAGE_SIZE, false, false);
+
+      final boolean viaPage = BufferBloomFilter.mightContainHash(page, entry.slotsPerBlock(), entry.probes(), hash);
+      final boolean viaInstance = new BufferBloomFilter(new Binary(page.slice()), entry.slotsPerBlock(),
+          LSMTreeIndexBloomFilter.HASH_SEED, entry.probes()).mightContainHash(hash);
+
+      assertThat(viaPage).as("hash %d", hash).isEqualTo(viaInstance);
+      if (viaPage)
+        ++agreed;
+    }
+
+    assertThat(agreed).as("the probe must answer TRUE for the keys it holds, not for nothing").isGreaterThan(keys / 2);
+  }
+
+  /** Mirrors the component's block routing, so the test addresses the page the component would. */
+  private static int blockOfSameWayTheComponentDoes(final long hash, final int filterPages) {
+    if (filterPages == 1)
+      return 0;
+    long mixed = hash;
+    mixed ^= mixed >>> 30;
+    mixed *= 0xbf58476d1ce4e5b9L;
+    mixed ^= mixed >>> 27;
+    mixed *= 0x94d049bb133111ebL;
+    mixed ^= mixed >>> 31;
+    return (int) Long.remainderUnsigned(mixed, filterPages);
   }
 
   /** A series with no filter must be searched, not skipped. */

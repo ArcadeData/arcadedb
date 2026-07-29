@@ -571,7 +571,11 @@ public enum GlobalConfiguration {
       Target false-positive rate of the bloom filter an index compaction writes for every compacted series, so a point \
       lookup can skip a series that provably does not hold the key without reading any of its pages. Costs about 1.2 \
       bytes per key at the default 1%; a false positive only costs the page read that would have happened anyway. \
-      0 = disabled, and filters already on disk are then ignored.""",
+      Most useful when compacted series overlap in key range, i.e. keys that do not arrive already sorted (an email, \
+      a UUID, any business id); keys inserted in ascending order give each series a disjoint range that its root page \
+      already rules out. One directory page holds ~291 series, after which further series are published without a \
+      filter until a full compaction collapses the count - so a very wide index can show a high bloomProbedSeries. \
+      0 = disabled; filters already on disk are then ignored from the next database open.""",
       Float.class, 0.01f),
 
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,

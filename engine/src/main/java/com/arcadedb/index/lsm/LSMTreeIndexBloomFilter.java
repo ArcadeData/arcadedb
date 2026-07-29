@@ -251,11 +251,16 @@ public class LSMTreeIndexBloomFilter extends PaginatedComponent {
 
     try {
       final int block = blockOf(keyHash, entry.filterPages());
-      final BasePage page = database.getTransaction()
-          .getPage(new PageId(database, getFileId(), entry.firstFilterPage() + block), pageSize);
+      // Read OUTSIDE the transaction, and allocation-free. Outside, because nothing ever modifies a filter page inside
+      // a transaction - they are written only by a compaction, which runs outside one - so pulling them into the
+      // caller's tracked page set would grow every write transaction's working set for nothing. Allocation-free,
+      // because this runs once per series per lookup and a bulk load performs both millions of times.
+      final BasePage page = database.getPageManager()
+          .getImmutablePage(new PageId(database, getFileId(), entry.firstFilterPage() + block), pageSize, false, false);
+      if (page == null)
+        return true;
 
-      return new BufferBloomFilter(new Binary(page.slice()), entry.slotsPerBlock(), HASH_SEED, entry.probes())
-          .mightContainHash(keyHash);
+      return BufferBloomFilter.mightContainHash(page, entry.slotsPerBlock(), entry.probes(), keyHash);
 
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Cannot probe the bloom filter of series %d in '%s' (error=%s)", null,

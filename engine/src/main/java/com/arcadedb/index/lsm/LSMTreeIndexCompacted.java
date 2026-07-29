@@ -73,8 +73,22 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    */
   private volatile LSMTreeIndexBloomFilter bloomFilter = null;
 
-  /** Scratch buffers for the bloom key hash, one per thread: {@code writeKeys} is not reentrant on a shared Binary. */
-  private final ThreadLocal<Binary> bloomKeyBuffer = ThreadLocal.withInitial(Binary::new);
+  /**
+   * Whether lookups CONSULT the filters, captured from the configured rate when the index is loaded. Separate from
+   * {@link #bloomFilter} being present: the component is always adopted so a compaction can publish into the file the
+   * index already owns, even when reads are turned off.
+   */
+  private volatile boolean bloomFilterEnabled = true;
+
+  /**
+   * Scratch buffer for the bloom key hash, one per THREAD and shared by every index - deliberately static.
+   * <p>
+   * A per-instance ThreadLocal would leave one Binary pinned in every worker thread's map for every compacted index
+   * object ever created, and a full compaction creates a new one each time: the classic ThreadLocal residue, unbounded
+   * across indexes and threads. One buffer per thread is enough because it is filled and consumed inside a single
+   * {@link #bloomHashOfKey} call, which calls nothing that could re-enter it.
+   */
+  private static final ThreadLocal<Binary> BLOOM_KEY_BUFFER = ThreadLocal.withInitial(Binary::new);
 
   /** Series a bloom filter spared this file from reading. What the feature is worth, in the only unit that matters. */
   private final AtomicLong bloomSkippedSeries = new AtomicLong();
@@ -560,10 +574,27 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       effectivePageCount = mainPageCount;
     }
 
-    // #5517: hashed once, probed against every series' filter below. Long.MIN_VALUE means "not hashable" (a partial or
-    // null key), and every series is then searched exactly as before.
+    // #5517: hashed ONCE here and probed against every series' filter below. The flag is separate from the hash and is
+    // set ONLY once a hash has actually been produced: every long is a legal hash, so no value of it could stand for
+    // "absent", and probing with a hash that is not the key's would skip series that hold it - a false negative, the
+    // one thing this must never do. Anything that cannot be hashed - a partial key, a null component, a value that
+    // fails to serialize - searches every series exactly as before #5517.
     final LSMTreeIndexBloomFilter filters = bloomFilter;
-    final long keyHash = filters != null ? bloomHashOfKey(convertedKeys) : Long.MIN_VALUE;
+    long keyHash = 0L;
+    boolean useFilters = false;
+    if (filters != null && bloomFilterEnabled && isBloomHashable(convertedKeys)) {
+      try {
+        final Binary serialized = serializeKeyForHashing(BLOOM_KEY_BUFFER.get(), convertedKeys);
+        if (serialized != null) {
+          keyHash = LSMTreeIndexBloomFilter.hashKey(serialized);
+          useFilters = true;
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE,
+            "Cannot hash the lookup key of index '%s' for its bloom filters, searching every series (error=%s)", null,
+            componentName, e.toString());
+      }
+    }
 
     for (int pageNumber = effectivePageCount - 1; pageNumber > 0; ) {
       final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
@@ -578,7 +609,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       pageNumber -= rootPageCount;
 
-      if (keyHash != Long.MIN_VALUE) {
+      if (useFilters) {
         if (!filters.mightContain(pageNumber, rootPageCount, keyHash)) {
           // THE SERIES PROVABLY DOES NOT HOLD THE KEY: SKIP ITS ROOT AND DATA PAGES ENTIRELY
           bloomSkippedSeries.incrementAndGet();
@@ -756,6 +787,15 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return bloomFilter;
   }
 
+  /**
+   * Whether lookups consult the filters. FALSE with {@code arcadedb.indexBloomFilterRate} at 0, in which case the
+   * component may still be attached (so a compaction publishes into the file this index already owns) but is never
+   * read. Captured at load: changing the rate at runtime affects writing immediately and reading at the next open.
+   */
+  public boolean isBloomFilterEnabled() {
+    return bloomFilterEnabled && bloomFilter != null;
+  }
+
   /** Series a bloom filter spared this file from reading since it was loaded (#5517). */
   public long getBloomSkippedSeries() {
     return bloomSkippedSeries.get();
@@ -782,22 +822,33 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     if (bloomFilter != null)
       return;
 
-    // A rate of 0 means "off", and off has to mean the filters on disk are not consulted either - otherwise there is
-    // no way to answer whether a lookup result depends on them.
-    if (database.getConfiguration().getValueAsFloat(GlobalConfiguration.INDEX_BLOOM_FILTER_RATE) <= 0)
-      return;
-
+    // Adopt the component whatever the configured rate is. The rate decides whether the filters are CONSULTED (see
+    // bloomFilterEnabled below), not whether this index knows about its own file: leaving it unadopted would let a
+    // later compaction - after the rate is raised at runtime - create a SECOND physical file for the same logical
+    // name, orphaning the first and making the name ambiguous at the next open.
     final Component component = database.getSchema().getEmbedded()
         .getFileByName(getName() + LSMTreeIndexBloomFilter.NAME_SUFFIX);
     if (component instanceof LSMTreeIndexBloomFilter filter) {
       filter.loadDirectory();
       bloomFilter = filter;
     }
+
+    // A rate of 0 means "off", and off has to mean the filters on disk are not consulted either - otherwise there is
+    // no way to answer whether a lookup result depends on them. Read once, here: this gates a per-lookup path, and a
+    // configuration lookup per lookup is exactly the kind of cost this feature exists to remove.
+    bloomFilterEnabled = database.getConfiguration().getValueAsFloat(GlobalConfiguration.INDEX_BLOOM_FILTER_RATE) > 0;
   }
 
-  /** Creates the filter component on first use of a compaction that has a filter to write. */
+  /**
+   * The filter component to publish into, adopting the one already registered for this index before creating a new
+   * file - a second file for the same logical name would orphan the first and make the name ambiguous at load.
+   */
   LSMTreeIndexBloomFilter getOrCreateBloomFilter() throws IOException {
     LSMTreeIndexBloomFilter filter = bloomFilter;
+    if (filter == null) {
+      attachBloomFilter();
+      filter = bloomFilter;
+    }
     if (filter == null) {
       filter = LSMTreeIndexBloomFilter.createOrLoad(this);
       bloomFilter = filter;
@@ -806,23 +857,18 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   /**
-   * The bloom hash of a lookup key, or {@link Long#MIN_VALUE} when the key cannot be hashed - a partial key, a null
-   * component, an unserializable value. The caller then searches every series, which is what it did before #5517.
+   * Whether a key can be hashed for the filters at all. A partial key is a RANGE and no hash answers for a range; a
+   * null component is not something the filters were built over. Both fall back to searching every series.
    */
-  private long bloomHashOfKey(final Object[] convertedKeys) {
-    if (convertedKeys == null)
-      return Long.MIN_VALUE;
+  private boolean isBloomHashable(final Object[] convertedKeys) {
+    if (convertedKeys == null || convertedKeys.length != binaryKeyTypes.length)
+      return false;
 
     for (final Object key : convertedKeys)
       if (key == null)
-        return Long.MIN_VALUE;
+        return false;
 
-    try {
-      final Binary serialized = serializeKeyForHashing(bloomKeyBuffer.get(), convertedKeys);
-      return serialized == null ? Long.MIN_VALUE : LSMTreeIndexBloomFilter.hashKey(serialized);
-    } catch (final Exception e) {
-      return Long.MIN_VALUE;
-    }
+    return true;
   }
 
   @Override

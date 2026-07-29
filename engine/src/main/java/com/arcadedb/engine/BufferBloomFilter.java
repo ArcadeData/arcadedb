@@ -145,6 +145,29 @@ public class BufferBloomFilter {
     return testHashBits(hash);
   }
 
+  /**
+   * The same probe against a filter that lives in a page, without wrapping it in anything.
+   * <p>
+   * A caller that probes one filter per series, per record, on a bulk load cannot afford the slice, the {@link Binary}
+   * and the filter instance that reading it through the constructor would cost - that is millions of short-lived
+   * objects on the very path the filter exists to make cheaper. The page's own accessors are content-relative, exactly
+   * like the {@code Binary} an instance would wrap, so the bytes addressed here are the bytes {@link #addHash} wrote.
+   * <p>
+   * This deliberately repeats the loop of {@link #testHashBits} rather than sharing it, because the two read from
+   * different sources; {@code theStaticProbeAgreesWithTheInstanceOne} pins them to the same answer, and a divergence
+   * between them would be a false negative.
+   */
+  public static boolean mightContainHash(final BasePage page, final int slots, final int probes, final long hash) {
+    final int first = (int) (hash >>> 32);
+    final int step = (int) hash | 1;
+    for (int i = 0; i < probes; i++) {
+      final int bit = (int) Math.floorMod(first + (long) i * step, slots);
+      if (((page.readByte(bit / 8) >> (bit % 8)) & 1) == 0)
+        return false;
+    }
+    return true;
+  }
+
   public int getSlots() {
     return capacity;
   }
