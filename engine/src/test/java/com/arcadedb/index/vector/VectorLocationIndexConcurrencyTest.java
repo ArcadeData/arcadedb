@@ -200,6 +200,11 @@ class VectorLocationIndexConcurrencyTest {
     assertThat(index.getActiveVectorIds().anyMatch(id -> id == id1)).isFalse();
     assertThat(index.getActiveVectorIds().anyMatch(id -> id == id0)).isTrue();
     assertThat(index.getActiveVectorIds().anyMatch(id -> id == id2)).isTrue();
-    assertThat(index.getAllVectorIds().count()).isEqualTo(3);
+
+    // Since issue #5516 a tombstoned id keeps no resident location: it is tracked as one bit in the deleted-id set.
+    assertThat(index.getAllVectorIds().count()).isEqualTo(2);
+    assertThat(index.getLocation(id1)).isNull();
+    assertThat(index.isDeleted(id1)).isTrue();
+    assertThat(index.getDeletedCount()).isEqualTo(1);
   }
 }

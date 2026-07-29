@@ -926,10 +926,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // deleted vectors, the new ordinalToVectorId array will have different indices.
       // This causes NPE when JVector tries to access vectors using stale ordinals.
       // Solution: Rebuild graph from scratch if any deleted entries exist.
-      final boolean hasDeletedVectors = vectorIndex.getAllVectorIds().anyMatch(id -> {
-        final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
-        return loc != null && loc.deleted;
-      });
+      final boolean hasDeletedVectors = vectorIndex.getDeletedCount() > 0;
       if (hasDeletedVectors) {
         LogManager.instance().log(this, Level.INFO,
             """
@@ -2259,9 +2256,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int mutableEntries = loadVectorsFromFile(getFileId(), getTotalPages(), false);
       entriesRead += mutableEntries;
 
-      // Compute nextId from the maximum vector ID found across both files
+      // Compute nextId from the maximum vector ID found across both files. Tombstoned ids are not resident
+      // (issue #5516) but they were still handed out, so the location index's own high-water mark - which every
+      // addOrUpdate advances, tombstones included - is what guarantees an id is never reused.
       maxVectorId = vectorIndex.getAllVectorIds().max().orElse(-1);
-      nextId.set(maxVectorId + 1);
+      nextId.set(Math.max(maxVectorId + 1, vectorIndex.getNextId()));
 
       LogManager.instance().log(this, Level.FINE,
           "loadVectorsFromPages DONE: Loaded " + vectorIndex.size() + " vector locations (" + entriesRead
@@ -2460,8 +2459,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Persist deletion tombstones for deleted vectors.
    * Writes deleted entries to pages so they persist across restarts (LSM style).
+   *
+   * @param deletedIds The ids just tombstoned, all belonging to {@code rid}
+   * @param rid        The RID the tombstoned ids point to. Passed in because the locations are released as soon as
+   *                   they are tombstoned (issue #5516), so it can no longer be read back from the location index.
    */
-  private void persistDeletionTombstones(final List<Integer> deletedIds) {
+  private void persistDeletionTombstones(final List<Integer> deletedIds, final RID rid) {
     try {
       if (deletedIds.isEmpty())
         return;
@@ -2480,14 +2483,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Append deletion tombstones to pages
       for (final Integer vectorId : deletedIds) {
-        final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-        if (loc == null)
-          continue;
-
         // Calculate variable entry size for this specific entry
         final int vectorIdSize = Binary.getNumberSpace(vectorId);
-        final int bucketIdSize = Binary.getNumberSpace(loc.rid.getBucketId());
-        final int positionSize = Binary.getNumberSpace(loc.rid.getPosition());
+        final int bucketIdSize = Binary.getNumberSpace(rid.getBucketId());
+        final int positionSize = Binary.getNumberSpace(rid.getPosition());
         // FIX #3722: Include +1 for quantization type byte to match the format expected by
         // LSMVectorIndexPageParser.parsePages() which always calls skipQuantizationData()
         final int entrySize = vectorIdSize + positionSize + bucketIdSize + 1 + 1; // +1 deleted byte +1 quantType byte
@@ -2531,8 +2530,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Write deletion tombstone sequentially using variable-sized encoding
         int bytesWritten = 0;
         bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, vectorId);
-        bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, loc.rid.getBucketId());
-        bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, loc.rid.getPosition());
+        bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getBucketId());
+        bytesWritten += currentPage.writeNumber(offsetFreeContent + bytesWritten, rid.getPosition());
         bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, (byte) 1); // Mark as deleted
         // FIX #3722: Write quantization type byte (NONE for tombstones) to match the entry format
         // expected by LSMVectorIndexPageParser.skipQuantizationData(). Without this byte, the parser
@@ -3676,6 +3675,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void put(final Object[] keys, final RID[] values) {
+    put(keys, values, false);
+  }
+
+  /**
+   * Replay entry point: the operation was already queued on the transaction, apply it to the index now.
+   */
+  @Override
+  public void putReplay(final Object[] keys, final RID[] rids) {
+    put(keys, rids, true);
+  }
+
+  private void put(final Object[] keys, final RID[] values, final boolean replay) {
     // Track insert metrics
     final long startTime = System.currentTimeMillis();
     metrics.incrementInsertOperations();
@@ -3713,12 +3724,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + keys[0].getClass().getSimpleName() + " of length " + vector.length);
 
       final RID rid = values[0];
-      final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
 
-      if (txStatus == TransactionContext.STATUS.BEGUN) {
-        // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
-        // Wrap vector in ComparableVector for TransactionIndexContext's TreeMap
-        // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
+      if (!replay && isTransactionalCall()) {
+        // Queue on TransactionIndexContext for file locking and transaction tracking.
+        // Wrap vector in ComparableVector for TransactionIndexContext's TreeMap.
+        // TransactionIndexContext will replay this operation during commit, which will hit the else branch below.
         getDatabase().getTransaction()
             .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.ADD,
                 new Object[] { new ComparableVector(vector) }, rid);
@@ -3758,12 +3768,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     } finally {
       // Track insert latency (only for actual writes, not transaction registration)
-      final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
-      if (txStatus != TransactionContext.STATUS.BEGUN) {
+      if (replay || !isTransactionalCall()) {
         final long elapsed = System.currentTimeMillis() - startTime;
         metrics.addInsertLatency(elapsed);
       }
     }
+  }
+
+  /**
+   * Whether this call must be queued on the transaction instead of being applied to the index right away.
+   * <p>
+   * Every index entry of a transaction is applied once, by {@code TransactionIndexContext.commit()}. Both the write
+   * phase of a transaction (BEGUN) and the record-serialization step of its commit (COMMIT_1ST_PHASE, which re-runs
+   * {@code DocumentIndexer.updateDocument} for every record updated in the transaction) therefore only queue.
+   * Including COMMIT_1ST_PHASE matters here and not for the other index types: an LSM key/value entry re-applied
+   * twice collapses into the same key, while a vector put mints a NEW vector id every time, so the second pass used
+   * to leave one extra vector plus one extra tombstone per updated record - doubling the growth of the index file
+   * and of the in-memory location index on every re-embedding cycle (issue #5516). The replay itself comes in
+   * through {@link #putReplay}/{@link #removeReplay} and bypasses this check.
+   * <p>
+   * A replica never replays the queue (the index pages arrive with the leader's changes), so there the commit-time
+   * call stays the one that applies the change.
+   */
+  private boolean isTransactionalCall() {
+    final TransactionContext tx = getDatabase().getTransaction();
+    final TransactionContext.STATUS txStatus = tx.getStatus();
+    return txStatus == TransactionContext.STATUS.BEGUN ||
+        (txStatus == TransactionContext.STATUS.COMMIT_1ST_PHASE && tx.isIndexChangesReplayed());
   }
 
   /**
@@ -3860,13 +3891,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void remove(final Object[] keys, final Identifiable value) {
-    final RID rid = value.getIdentity();
-    final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
+    remove(keys, value, false);
+  }
 
-    if (txStatus == TransactionContext.STATUS.BEGUN) {
-      // During BEGUN: Register with TransactionIndexContext for file locking and transaction tracking
-      // Use a dummy ComparableVector since we don't have the vector value for removes
-      // TransactionIndexContext will replay this operation during commit, which will hit the else branch below
+  /**
+   * Replay entry point: the operation was already queued on the transaction, apply it to the index now.
+   */
+  @Override
+  public void removeReplay(final Object[] keys, final Identifiable rid) {
+    remove(keys, rid, true);
+  }
+
+  private void remove(final Object[] keys, final Identifiable value, final boolean replay) {
+    final RID rid = value.getIdentity();
+
+    if (!replay && isTransactionalCall()) {
+      // Queue on TransactionIndexContext for file locking and transaction tracking.
+      // Use a dummy ComparableVector since we don't have the vector value for removes.
+      // TransactionIndexContext will replay this operation during commit, which will hit the else branch below.
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
               new Object[] { new ComparableVector(new float[metadata.dimensions]) }, rid);
@@ -3894,7 +3936,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Persist deletion tombstones
         if (!deletedIds.isEmpty()) {
-          persistDeletionTombstones(deletedIds);
+          persistDeletionTombstones(deletedIds, rid);
 
           // Remove matching entries from delta buffer
           if (!deltaVectors.isEmpty())
@@ -5351,6 +5393,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (loc != null) {
       return loc;
     }
+
+    // A tombstoned id has no location by design (issue #5516): nothing to reconstruct, and scanning the pages for it
+    // would return its pre-tombstone entry (page order returns the first match), resurrecting a deleted vector.
+    if (vectorIndex.isDeleted(vectorId))
+      return null;
 
     // Cache miss - reconstruct by scanning pages (expensive but rare for LRU cache)
     loc = reconstructLocationFromPages(vectorId);
