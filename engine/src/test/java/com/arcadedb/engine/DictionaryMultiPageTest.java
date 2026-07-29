@@ -1,0 +1,272 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.schema.DocumentType;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * The dictionary used to live in page 0 alone, which capped a database at whatever names fitted in one page. These tests pin the
+ * behaviour that replaces that cap: names roll over to a new page, ids stay put across the rollover and across a reopen, and a
+ * database written before multi-page support (which is exactly a dictionary of one page) still reads byte for byte.
+ * <p>
+ * In package {@code com.arcadedb.engine} on purpose: verifying the on-page layout needs the component's file id and page size.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class DictionaryMultiPageTest extends TestHelper {
+  /**
+   * Long enough that a few hundred names cross several pages, short enough to stay a plausible identifier length.
+   */
+  private static final int NAME_LENGTH = 500;
+
+  private static String name(final int i) {
+    final String prefix = "p" + i + "_";
+    return prefix + "x".repeat(NAME_LENGTH - prefix.length());
+  }
+
+  private Dictionary dictionary() {
+    return database.getSchema().getDictionary();
+  }
+
+  /**
+   * Adds names until the dictionary spans at least {@code pages} pages, and returns how many it added.
+   */
+  private int fillPages(final int pages) {
+    final Dictionary dictionary = dictionary();
+    int added = 0;
+    while (dictionary.getTotalPages() < pages) {
+      dictionary.getIdByName(name(added), true);
+      ++added;
+    }
+    return added;
+  }
+
+  private void assertAllNamesResolve(final int total) {
+    final Dictionary dictionary = dictionary();
+    for (int i = 0; i < total; ++i) {
+      assertThat(dictionary.getIdByName(name(i), false)).as("id of entry %d", i).isEqualTo(i);
+      assertThat(dictionary.getNameById(i)).as("name of id %d", i).isEqualTo(name(i));
+    }
+  }
+
+  @Test
+  void namesRollOverToNewPagesInsteadOfBeingRefused() {
+    final Dictionary dictionary = dictionary();
+    assertThat(dictionary.getTotalPages()).isEqualTo(1);
+
+    final int added = fillPages(3);
+
+    assertThat(dictionary.getTotalPages()).isGreaterThanOrEqualTo(3);
+    // MORE NAMES THAN ONE PAGE COULD EVER HOLD, WHICH IS THE WHOLE POINT
+    assertThat((long) added * NAME_LENGTH).isGreaterThan(dictionary.getPageSize());
+    assertThat(dictionary.getDictionaryMap()).hasSize(added);
+    assertAllNamesResolve(added);
+  }
+
+  @Test
+  void idsSurviveAReopen() {
+    final int added = fillPages(3);
+    final Map<String, Integer> before = new LinkedHashMap<>(dictionary().getDictionaryMap());
+
+    reopenDatabase();
+
+    assertThat(dictionary().getDictionaryMap()).isEqualTo(before);
+    assertAllNamesResolve(added);
+    assertThat(dictionary().getTotalPages()).isGreaterThanOrEqualTo(3);
+  }
+
+  /**
+   * The compatibility guarantee: page 0 is written exactly as a pre-multi-page ArcadeDB wrote it, so an existing database (whose
+   * dictionary is one page) loads unchanged. Reads page 0 with the old single-page algorithm and checks it yields the first
+   * names, in order, starting at id 0.
+   */
+  @Test
+  void pageZeroKeepsTheLegacySinglePageLayout() {
+    final int added = fillPages(2);
+    final Dictionary dictionary = dictionary();
+
+    final List<String> onPageZero = new ArrayList<>();
+    database.transaction(() -> {
+      try {
+        final BasePage page = ((DatabaseInternal) database).getTransaction()
+            .getPage(new PageId((DatabaseInternal) database, dictionary.getFileId(), 0), dictionary.getPageSize());
+        // THE PRE-MULTI-PAGE READER: SKIP THE 4 BYTE LEGACY COUNTER, THEN READ STRINGS UP TO THE CONTENT SIZE
+        page.setBufferPosition(Binary.INT_SERIALIZED_SIZE);
+        while (page.getBufferPosition() < page.getContentSize())
+          onPageZero.add(page.readString());
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
+
+    assertThat(onPageZero).isNotEmpty();
+    assertThat(onPageZero.size()).isLessThan(added);
+    for (int i = 0; i < onPageZero.size(); ++i)
+      assertThat(onPageZero.get(i)).as("legacy read of id %d", i).isEqualTo(name(i));
+  }
+
+  /**
+   * A name is never split over two pages, so one that cannot fit an empty page can never be stored. That has to be said clearly
+   * rather than surface as a page-boundary error, and it must leave the dictionary usable.
+   */
+  @Test
+  void aNameTooBigForAnEmptyPageIsRejectedAndLeavesTheDictionaryUsable() {
+    final Dictionary dictionary = dictionary();
+    dictionary.getIdByName("before", true);
+
+    final String tooBig = "y".repeat(dictionary.getPageSize());
+
+    assertThatThrownBy(() -> dictionary.getIdByName(tooBig, true))
+        .isInstanceOf(DatabaseMetadataException.class)
+        .hasMessageContaining("cannot fit");
+
+    assertThat(dictionary.getIdByName(tooBig, false)).isEqualTo(-1);
+    assertThat(dictionary.getIdByName("before", false)).isNotEqualTo(-1);
+    dictionary.getIdByName("after", true);
+    assertThat(dictionary.getNameById(dictionary.getIdByName("after", false))).isEqualTo("after");
+  }
+
+  /**
+   * Rollover has to survive the serializer round trip, not just the dictionary API: property names are stored as dictionary ids
+   * inside every record.
+   */
+  @Test
+  void documentsWithPropertyNamesSpanningPagesReadBack() {
+    final int propertiesPerDocument = 20;
+    final int documents = 30;
+
+    final DocumentType type = database.getSchema().createDocumentType("Wide");
+    assertThat(type).isNotNull();
+
+    database.transaction(() -> {
+      for (int d = 0; d < documents; ++d) {
+        final MutableDocument doc = database.newDocument("Wide");
+        doc.set("docId", d);
+        for (int p = 0; p < propertiesPerDocument; ++p)
+          doc.set(name(d * propertiesPerDocument + p), "v" + d + "_" + p);
+        doc.save();
+      }
+    });
+
+    assertThat(dictionary().getTotalPages()).isGreaterThan(1);
+
+    reopenDatabase();
+
+    database.transaction(() -> {
+      database.scanType("Wide", true, record -> {
+        final int d = record.asDocument().getInteger("docId");
+        for (int p = 0; p < propertiesPerDocument; ++p)
+          assertThat(record.asDocument().getString(name(d * propertiesPerDocument + p))).isEqualTo("v" + d + "_" + p);
+        return true;
+      });
+    });
+  }
+
+  /**
+   * updateName rewrites the whole dictionary. Across pages that means re-laying it out from page 0 and emptying whatever pages
+   * the shorter content no longer reaches, otherwise a stale tail page would re-add its old names on the next reload.
+   */
+  @Test
+  void updateNameRewritesEveryPage() {
+    final int added = fillPages(3);
+    final Dictionary dictionary = dictionary();
+    final int renamedId = dictionary.getIdByName(name(1), false);
+
+    database.transaction(() -> dictionary.updateName(name(1), "short"));
+
+    assertThat(dictionary.getNameById(renamedId)).isEqualTo("short");
+    assertThat(dictionary.getIdByName("short", false)).isEqualTo(renamedId);
+    assertThat(dictionary.getIdByName(name(1), false)).isEqualTo(-1);
+
+    // EVERY OTHER ENTRY KEPT ITS ID
+    for (int i = 0; i < added; ++i)
+      if (i != renamedId)
+        assertThat(dictionary.getIdByName(name(i), false)).as("id of entry %d after the rename", i).isEqualTo(i);
+
+    reopenDatabase();
+
+    assertThat(dictionary().getDictionaryMap()).hasSize(added);
+    assertThat(dictionary().getNameById(renamedId)).isEqualTo("short");
+    for (int i = 0; i < added; ++i)
+      if (i != renamedId)
+        assertThat(dictionary().getIdByName(name(i), false)).as("id of entry %d after reopen", i).isEqualTo(i);
+  }
+
+  /**
+   * The follower path: a replicated transaction that carries a brand new dictionary page has to create it and make its names
+   * visible, which only happens if the post-apply reload walks every page rather than page 0.
+   */
+  @Test
+  void aReplicatedNewDictionaryPageIsVisibleAfterApplyChanges() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final Dictionary dictionary = dictionary();
+
+    final int entriesBefore = dictionary.getDictionaryMap().size();
+    final int newPageNumber = dictionary.getTotalPages();
+
+    // BUILD THE PAGE IMAGE THE LEADER WOULD HAVE SHIPPED: THE 4 BYTE LEGACY COUNTER FOLLOWED BY ONE NAME
+    final String replicated = "replicatedName";
+    final Binary image = new Binary();
+    image.putInt(0);
+    image.putBytes(replicated.getBytes(DatabaseFactory.getDefaultCharset()));
+    image.flip();
+    final byte[] content = image.toByteArray();
+
+    final WALFile.WALPage walPage = new WALFile.WALPage();
+    walPage.fileId = dictionary.getFileId();
+    walPage.pageNumber = newPageNumber;
+    walPage.currentPageVersion = 1;
+    walPage.changesFrom = BasePage.PAGE_HEADER_SIZE;
+    walPage.changesTo = BasePage.PAGE_HEADER_SIZE + content.length - 1;
+    walPage.currentPageSize = content.length;
+    walPage.currentContent = new Binary(content);
+
+    final WALFile.WALTransaction walTx = new WALFile.WALTransaction();
+    walTx.txId = 987654;
+    walTx.timestamp = System.currentTimeMillis();
+    walTx.pages = new WALFile.WALPage[] { walPage };
+
+    assertThat(db.getTransactionManager().applyChanges(walTx, Collections.emptyMap(), false)).isTrue();
+
+    assertThat(dictionary.getTotalPages()).isEqualTo(newPageNumber + 1);
+    assertThat(dictionary.getDictionaryMap()).hasSize(entriesBefore + 1);
+    assertThat(dictionary.getIdByName(replicated, false)).isEqualTo(entriesBefore);
+    assertThat(dictionary.getNameById(entriesBefore)).isEqualTo(replicated);
+
+    // AND THE NEXT LOCALLY ADDED NAME CONTINUES AFTER IT INSTEAD OF OVERWRITING IT
+    assertThat(dictionary.getIdByName("afterReplication", true)).isEqualTo(entriesBefore + 1);
+    assertThat(dictionary.getNameById(entriesBefore)).isEqualTo(replicated);
+  }
+}

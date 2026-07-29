@@ -38,18 +38,35 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
- * HEADER = [itemCount(int:4),pageSize(int:4)] CONTENT-PAGES = [propertyName(string)]
+ * Maps every type name, property name and enumerated string value of a database to a small integer id, which is what records
+ * carry instead of the name itself.
  * <br>
- * The whole dictionary lives in page 0: the maximum total size of the names it can hold is
- * {@code pageSize - BasePage.PAGE_HEADER_SIZE - DICTIONARY_HEADER_SIZE} bytes, each name costing its UTF-8 length plus a
- * 1-3 byte varint prefix. With the default page size that is ~327Kb of names, i.e. tens of thousands of entries.
- * Entries are only ever appended and are never reclaimed.
+ * PAGE = [itemCount(int:4)][name(string)]* , where a name is a 1-3 byte varint length followed by its UTF-8 bytes. Every page
+ * has the same shape, page 0 included, so a dictionary written before multi-page support (which is exactly one such page) loads
+ * unchanged.
+ * <br>
+ * <b>An id is the ordinal of the name in page order</b>, and that id is written inside records on disk. The layout is therefore
+ * strictly append-only across pages: names are only ever added to the LAST page, a page that has been left behind is never
+ * revisited even when it still has room, and nothing is ever removed. Writing into an earlier page would renumber every name
+ * after it and silently repoint every record that referenced them.
+ * <br>
+ * A name is never split over two pages, so the tail of a page is left unused when the next name does not fit: at identifier
+ * lengths that is well under 1% of the file. The only hard limit left is a single name larger than one page.
  * <br>
  */
 public class Dictionary extends PaginatedComponent {
-  public static final  String DICT_EXT        = "dict";
-  public static final  int    DEF_PAGE_SIZE   = 65536 * 5;
-  private static final int    CURRENT_VERSION = 0;
+  public static final String DICT_EXT = "dict";
+  /**
+   * Before multi-page support this was 65536 * 5, sized only to make the one available page hold as many names as possible.
+   * Now that pages roll over, the page is sized like the rest of the engine instead: a new name dirties and eventually flushes
+   * one page, so a smaller page is five times less write amplification per name. Existing databases keep the page size they
+   * were created with, which is read back from the file name.
+   */
+  public static final  int    DEF_PAGE_SIZE          = 65_536;
+  /**
+   * v0 is single page, v1 rolls over. The reader handles both, the version only marks what wrote the file.
+   */
+  private static final int    CURRENT_VERSION        = 1;
   // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
   private static final int    DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
 
@@ -94,6 +111,11 @@ public class Dictionary extends PaginatedComponent {
       final ComponentFile.MODE mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
+    if (version > CURRENT_VERSION)
+      // A NEWER LAYOUT WOULD BE READ AS IF IT WERE THIS ONE, SILENTLY. REFUSE INSTEAD OF GUESSING
+      throw new DatabaseMetadataException(
+          "Dictionary '" + filePath + "' was written with format version " + version + ", which this version of ArcadeDB cannot "
+              + "read (latest known is " + CURRENT_VERSION + ")");
     reload();
   }
 
@@ -158,12 +180,14 @@ public class Dictionary extends PaginatedComponent {
   }
 
   /**
-   * Returns the bytes still available in the dictionary page for new names, prefix included.
+   * Bytes still available on the page names are currently appended to, length prefix included. Not a capacity: once it runs out
+   * the next name opens a new page. Useful to size a write that should, or should not, cross a page boundary.
    */
-  public int getAvailableSpace() {
+  public int getAvailableSpaceInLastPage() {
     try {
-      final BasePage header = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
-      return header.getMaxContentSize() - header.getContentSize();
+      final BasePage lastPage = database.getTransaction()
+          .getPage(new PageId(database, file.getFileId(), getTotalPages() - 1), pageSize);
+      return freeSpaceIn(lastPage);
     } catch (final IOException e) {
       throw new SchemaException("Error on reading the database schema dictionary", e);
     }
@@ -214,19 +238,25 @@ public class Dictionary extends PaginatedComponent {
           throw new IllegalArgumentException(
               "Cannot rename the item '" + oldName + "' in the dictionary because it has been used as a type name");
 
-      final MutablePage header = database.getTransaction()
-          .getPageToModify(new PageId(database, file.getFileId(), 0), pageSize, false);
-
-      header.clearContent();
-      updateCounters(header);
+      // REWRITE THE WHOLE DICTIONARY FROM PAGE 0 IN THE SAME ORDER, SO NO ID MOVES. THE TOTAL SIZE CAN SHRINK OR GROW, SO PAGES
+      // ARE ADDED AS NEEDED AND THE ONES THE NEW CONTENT NO LONGER REACHES ARE EMPTIED: reload() WALKS EVERY COMMITTED PAGE, AND
+      // A STALE TAIL PAGE LEFT BEHIND WOULD RE-ADD ITS OLD NAMES ON THE NEXT LOAD.
+      int pageNumber = 0;
+      MutablePage page = resetPageForRewrite(pageNumber);
 
       for (final String d : dictionary) {
         final byte[] property = d.getBytes(DatabaseFactory.getDefaultCharset());
+        final int required = spaceRequiredBy(property);
+        checkNameFitsAPage(d, required);
 
-        checkSpaceLeft(header, property, dictionary.size());
+        if (freeSpaceIn(page) < required)
+          page = resetPageForRewrite(++pageNumber);
 
-        header.writeString(header.getContentSize(), d);
+        page.writeString(page.getContentSize(), d);
       }
+
+      for (int stale = pageNumber + 1; stale < getTotalPages(); ++stale)
+        resetPageForRewrite(stale);
 
       final Integer newIndex = dictionaryMap.get(newName);
       if (newIndex == null)
@@ -242,40 +272,97 @@ public class Dictionary extends PaginatedComponent {
     }
   }
 
+  /**
+   * Empties the given page, creating it when the rewrite needs more pages than the dictionary currently has, and leaves it with
+   * only the legacy counter so it is ready to receive names.
+   */
+  private MutablePage resetPageForRewrite(final int pageNumber) throws IOException {
+    if (pageNumber >= getTotalPages())
+      return addPage(pageNumber);
+
+    final MutablePage page = database.getTransaction()
+        .getPageToModify(new PageId(database, file.getFileId(), pageNumber), pageSize, false);
+    page.clearContent();
+    updateCounters(page);
+    return page;
+  }
+
   private void addItemToPage(final String propertyName) {
     if (!database.isTransactionActive())
       throw new SchemaException("Error on adding new item to the database schema dictionary because no transaction was active");
 
     final byte[] property = propertyName.getBytes(DatabaseFactory.getDefaultCharset());
+    final int required = spaceRequiredBy(property);
+    checkNameFitsAPage(propertyName, required);
 
-    final MutablePage header;
     try {
-      header = database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), 0), pageSize, false);
+      final int totalPages = getTotalPages();
+      final MutablePage target;
 
-      checkSpaceLeft(header, property, entries.names().size());
+      if (totalPages == 0)
+        // NO PAGE AT ALL, WHICH HAPPENS WHEN THE DATABASE WAS KILLED BEFORE THE HEADER PAGE REACHED DISK
+        target = addPage(0);
+      else {
+        // ONLY THE LAST PAGE IS EVER APPENDED TO, EVEN WHEN AN EARLIER ONE STILL HAS ROOM: SEE THE CLASS JAVADOC ON WHY
+        // FILLING A GAP WOULD RENUMBER EVERY NAME AFTER IT.
+        final int lastPageNumber = totalPages - 1;
+        final PageId lastPageId = new PageId(database, file.getFileId(), lastPageNumber);
 
-      header.writeString(header.getContentSize(), propertyName);
+        // READ BEFORE DECIDING: getPageToModify() WOULD ENLIST THE PAGE AS MODIFIED EVEN WHEN THE NAME DOES NOT FIT, BUMPING ITS
+        // VERSION AND REWRITING IT AT COMMIT FOR NOTHING, AND MAKING IT FALSE-CONFLICT WITH CONCURRENT TRANSACTIONS.
+        final BasePage lastPage = database.getTransaction().getPage(lastPageId, pageSize);
+
+        target = freeSpaceIn(lastPage) >= required ?
+            database.getTransaction().getPageToModify(lastPageId, pageSize, false) :
+            addPage(lastPageNumber + 1);
+      }
+
+      target.writeString(target.getContentSize(), propertyName);
 
     } catch (final IOException e) {
-      throw new SchemaException("Error on adding new item to the database schema dictionary");
+      throw new SchemaException("Error on adding new item to the database schema dictionary", e);
     }
   }
 
   /**
-   * The dictionary is a single page, so the free space is what is left of the page content area. Both the varint length prefix
-   * that {@link MutablePage#writeString} emits and the 8 bytes of page header have to be accounted for: overestimating the
-   * space by even one byte turns the actionable "no space left in dictionary" into a raw "cannot write outside the page space".
+   * Appends an empty page to the dictionary, initialised with the legacy counter every page carries.
    */
-  private void checkSpaceLeft(final BasePage header, final byte[] name, final int items) {
-    final int required = Binary.getUnsignedNumberSpace(name.length) + name.length;
-    if (header.getMaxContentSize() - header.getContentSize() < required)
+  private MutablePage addPage(final int pageNumber) {
+    final MutablePage page = database.getTransaction().addPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
+    updateCounters(page);
+    return page;
+  }
+
+  /**
+   * What one name occupies on a page: the varint length prefix that {@link MutablePage#writeString} emits, plus the UTF-8 bytes.
+   */
+  private static int spaceRequiredBy(final byte[] name) {
+    return Binary.getUnsignedNumberSpace(name.length) + name.length;
+  }
+
+  /**
+   * Free bytes left on a page. {@link BasePage#getMaxContentSize()} already excludes the page header, unlike
+   * {@link BasePage#getAvailableContentSize()} which over-reports by exactly that header.
+   */
+  private static int freeSpaceIn(final BasePage page) {
+    return page.getMaxContentSize() - page.getContentSize();
+  }
+
+  /**
+   * Names never span pages, so one that does not fit an empty page can never be stored, no matter how many pages there are.
+   */
+  private void checkNameFitsAPage(final String name, final int required) {
+    final int usable = pageSize - BasePage.PAGE_HEADER_SIZE - DICTIONARY_HEADER_SIZE;
+    if (required > usable)
       throw new DatabaseMetadataException(
-          "No space left in dictionary file (items=" + items + ", pageSize=" + pageSize + "). The dictionary holds every type "
-              + "name, property name and enumerated string value ever used in this database and entries are never reclaimed");
+          "Dictionary item '" + (name.length() > 64 ? name.substring(0, 64) + "..." : name) + "' needs " + required
+              + " bytes and cannot fit in a dictionary page of " + pageSize + " bytes (usable " + usable
+              + "): a name is never split across pages");
   }
 
   private void updateCounters(final MutablePage header) {
-    // THIS IS LEGACY CODE CONTAINING THE NUMBER OF ITEMS. NOW THE ITEMS ARE DIRECTLY READ FORM THE PAGE
+    // THIS IS LEGACY CODE CONTAINING THE NUMBER OF ITEMS. NOW THE ITEMS ARE DIRECTLY READ FORM THE PAGE. IT IS STILL WRITTEN ON
+    // EVERY PAGE, PAGE 0 INCLUDED, SO THAT ALL PAGES HAVE ONE SHAPE AND A PRE-MULTI-PAGE FILE NEEDS NO SPECIAL CASE
     header.writeInt(0, 0);
   }
 
@@ -290,16 +377,23 @@ public class Dictionary extends PaginatedComponent {
       return;
 
     } else {
-      final BasePage header = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
-
       // LOAD THE DICTIONARY IN RAM. THE NAMES ARE COLLECTED IN AN ARRAYLIST AND THE COPY-ON-WRITE LIST IS BUILT ONCE FROM IT:
       // APPENDING TO A CopyOnWriteArrayList COPIES THE WHOLE BACKING ARRAY PER ITEM, MAKING THIS QUADRATIC ON THE ENTRY COUNT
       // (~150ms FOR 48K ENTRIES, PAID ON EVERY OPEN, EVERY ROLLBACK OF A DICTIONARY TX AND EVERY REPLICATED DICTIONARY CHANGE).
       final List<String> loaded = new ArrayList<>();
 
-      header.setBufferPosition(DICTIONARY_HEADER_SIZE);
-      for (int i = 0; header.getBufferPosition() < header.getContentSize(); ++i)
-        loaded.add(header.readString());
+      // THE COMMITTED PAGE COUNT, NOT getTotalPages(): reload() REBUILDS THE IN-RAM VIEW FROM DURABLE STATE, AND
+      // TransactionContext.rollback() CALLS IT WHILE THE TRANSACTION'S OWN PAGE COUNTER STILL COUNTS PAGES THAT ARE BEING
+      // THROWN AWAY. THE FLOOR OF 1 KEEPS THE PRE-MULTI-PAGE BEHAVIOUR OF ALWAYS READING PAGE 0 OF A NON-EMPTY FILE.
+      final int totalPages = Math.max(1, pageCount.get());
+
+      for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber) {
+        final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
+
+        page.setBufferPosition(DICTIONARY_HEADER_SIZE);
+        while (page.getBufferPosition() < page.getContentSize())
+          loaded.add(page.readString());
+      }
 
       final int size = loaded.size();
 

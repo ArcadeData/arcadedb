@@ -20,49 +20,39 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.exception.DatabaseMetadataException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Pins the boundaries of the schema dictionary: it lives in one page, it never reclaims an entry, and it has to say so when it
- * runs out of room instead of leaking a raw page-boundary error.
+ * Pins the boundaries of the schema dictionary: entries are never reclaimed, and both directions of the mapping survive a
+ * reload. Page rollover has its own test, {@link com.arcadedb.engine.DictionaryMultiPageTest}.
  */
 class DictionaryLimitsTest extends TestHelper {
   /**
-   * Names are padded so a handful of thousands of them, rather than tens of thousands, exhaust the page.
+   * Names are padded so a few thousand of them, rather than tens of thousands, cross a page boundary.
    */
   private static String name(final int i) {
     return ("p" + i).concat("x".repeat(100));
   }
 
+  /**
+   * Filling far past one page used to end in "no space left in dictionary file". It has to just keep working now, with every id
+   * still resolvable in both directions.
+   */
   @Test
-  void runningOutOfPageSpaceIsReportedAsADictionaryError() {
+  void fillingWellPastOnePageKeepsWorking() {
     final Dictionary dictionary = database.getSchema().getDictionary();
 
-    int inserted = 0;
-    DatabaseMetadataException failure = null;
-    try {
-      for (int i = 0; i < 100_000; ++i) {
-        dictionary.getIdByName(name(i), true);
-        ++inserted;
-      }
-    } catch (final DatabaseMetadataException e) {
-      failure = e;
-    }
+    final int total = 20_000;
+    for (int i = 0; i < total; ++i)
+      dictionary.getIdByName(name(i), true);
 
-    assertThat(failure).as("the dictionary is bounded by its single page and must eventually refuse a name").isNotNull();
-    assertThat(failure.getMessage()).contains("No space left in dictionary file");
-    assertThat(failure.getMessage()).contains("items=" + inserted);
+    assertThat((long) total * 100).as("the fixture has to be bigger than a single page").isGreaterThan(dictionary.getPageSize());
+    assertThat(dictionary.getTotalPages()).isGreaterThan(1);
+    assertThat(dictionary.getDictionaryMap()).hasSize(total);
 
-    // THE WHOLE PAGE MINUS THE PAGE HEADER AND THE LEGACY COUNTER IS USABLE, AND THE REFUSAL HAPPENS ONLY AT THE VERY END
-    assertThat(dictionary.getAvailableSpace()).isLessThan(102 + 1);
-
-    // THE FAILED INSERT ROLLED BACK CLEANLY: EVERYTHING ACCEPTED SO FAR IS STILL RESOLVABLE IN BOTH DIRECTIONS
-    assertThat(dictionary.getDictionaryMap()).hasSize(inserted);
-    for (int i = 0; i < inserted; ++i) {
+    for (int i = 0; i < total; ++i) {
       final int id = dictionary.getIdByName(name(i), false);
       assertThat(id).isEqualTo(i);
       assertThat(dictionary.getNameById(id)).isEqualTo(name(i));
