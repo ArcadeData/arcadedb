@@ -192,11 +192,22 @@ public class Dictionary extends PaginatedComponent {
 
   /**
    * Updates a name. The update will impact the entire database with both properties and values (if used as ENUM). The update is valid only if the name has not been used as type name.
+   * <br>
+   * <b>Cost:</b> the whole dictionary is re-laid out from page 0, so this dirties every dictionary page and puts them all in the
+   * caller's transaction. The WAL commit therefore grows with the size of the dictionary, not with the one name that changed. It
+   * used to touch page 0 alone, when page 0 was the whole dictionary.
+   * <br>
+   * <b>Concurrency:</b> synchronized on the same monitor as the {@link #getIdByName} create path, because both mutate the shared
+   * {@code entries} snapshot and the same pages. That serialises the in-RAM edit, which is the part that has no other protection:
+   * a concurrent append would otherwise read a half-renamed list. It does NOT make the two atomic against each other on disk -
+   * this method writes inside the CALLER's transaction and does not commit, so an append that commits in between is resolved the
+   * usual way, by the page version check raising {@link com.arcadedb.exception.ConcurrentModificationException} on whichever
+   * commits second. There is no production caller today; anything wiring a live rename should hold a schema-level lock too.
    *
    * @param oldName The old name to rename. Must be already present in the schema dictionary
    * @param newName The new name. Can be already present in the schema dictionary
    */
-  public void updateName(final String oldName, final String newName) {
+  public synchronized void updateName(final String oldName, final String newName) {
     if (!database.isTransactionActive())
       throw new SchemaException("Error on adding new item to the database schema dictionary because no transaction was active");
 
@@ -339,6 +350,16 @@ public class Dictionary extends PaginatedComponent {
   private MutablePage addPage(final int pageNumber) {
     final MutablePage page = database.getTransaction().addPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
     updateCounters(page);
+
+    if (pageNumber == 1)
+      // THE ONE MOMENT IN A DATABASE'S LIFE WHEN IT STOPS BEING READABLE BY A BUILD WITHOUT MULTI-PAGE SUPPORT. LEAVING A
+      // BREADCRUMB HERE IS WHAT LETS AN OPERATOR CORRELATE A FOLLOWER LATER REPORTING "Dictionary item with id N is not valid"
+      // WITH THIS EVENT. INFO, NOT WARNING: NOTHING IS WRONG, AND A WARNING ON HEALTHY GROWTH IS HOW LOGS BECOME UNREADABLE
+      LogManager.instance().log(this, Level.INFO,
+          "Database '%s' schema dictionary grew beyond its first page. Any replica or tool running a build without multi-page "
+              + "dictionary support can no longer read this database: upgrade followers before, or together with, the leader",
+          null, database.getName());
+
     return page;
   }
 
