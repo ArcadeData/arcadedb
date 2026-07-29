@@ -19,7 +19,9 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -105,6 +107,26 @@ class SQLFunctionAbsoluteValueTest {
     assertThat((short) 10).isEqualTo(result);
   }
 
+  /**
+   * BYTE is a persisted ArcadeDB type, but this function had no branch for it at all, so
+   * {@code abs()} over a BYTE property failed with "Argument to absolute value must be a number".
+   */
+  @Test
+  void positiveByte() {
+    function.execute(null, null, null, new Object[] { (byte) 10 }, null);
+    final Object result = function.getResult();
+    assertThat(result instanceof Byte).isTrue();
+    assertThat(result).isEqualTo((byte) 10);
+  }
+
+  @Test
+  void negativeByte() {
+    function.execute(null, null, null, new Object[] { (byte) -10 }, null);
+    final Object result = function.getResult();
+    assertThat(result instanceof Byte).isTrue();
+    assertThat(result).isEqualTo((byte) 10);
+  }
+
   @Test
   void positiveDouble() {
     function.execute(null, null, null, new Object[] { 10.5D }, null);
@@ -174,11 +196,127 @@ class SQLFunctionAbsoluteValueTest {
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[]{"abc"}, null)).isInstanceOf(IllegalArgumentException.class);
   }
 
+  /**
+   * Issue #5494. This function preserves the input type, so every fixed-width signed branch has a
+   * value whose magnitude it cannot represent: {@code Math.abs(MIN_VALUE)} wraps around and returns
+   * the negative input unchanged. Fail the query instead of returning a negative "absolute value".
+   */
+  @Test
+  void longMinValueOverflows() {
+    assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { Long.MIN_VALUE }, null))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("long overflow");
+  }
+
+  @Test
+  void integerMinValueOverflows() {
+    assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { Integer.MIN_VALUE }, null))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("integer overflow");
+  }
+
+  @Test
+  void shortMinValueOverflows() {
+    assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { Short.MIN_VALUE }, null))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("short overflow");
+  }
+
+  @Test
+  void byteMinValueOverflows() {
+    assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { Byte.MIN_VALUE }, null))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("byte overflow");
+  }
+
+  /**
+   * The guard must fire on exactly one value per type, never one early.
+   */
+  @Test
+  void minValuePlusOneIsStillComputedForEveryIntegralType() {
+    function.execute(null, null, null, new Object[] { Long.MIN_VALUE + 1 }, null);
+    assertThat(function.getResult()).isEqualTo(Long.MAX_VALUE);
+
+    function.execute(null, null, null, new Object[] { Integer.MIN_VALUE + 1 }, null);
+    assertThat(function.getResult()).isEqualTo(Integer.MAX_VALUE);
+
+    function.execute(null, null, null, new Object[] { (short) (Short.MIN_VALUE + 1) }, null);
+    assertThat(function.getResult()).isEqualTo(Short.MAX_VALUE);
+
+    function.execute(null, null, null, new Object[] { (byte) (Byte.MIN_VALUE + 1) }, null);
+    assertThat(function.getResult()).isEqualTo(Byte.MAX_VALUE);
+  }
+
+  /**
+   * Every numeric ArcadeDB {@link Type} must round-trip through {@code abs()} keeping its own type,
+   * so a future numeric type cannot silently fall through to the "not a number" error the way BYTE did.
+   */
+  @Test
+  void everyNumericTypeIsHandledAndKeepsItsType() {
+    final Object[] negatives = { (byte) -1, (short) -1, -1, -1L, -1.0F, -1.0D, new BigInteger("-1"), new BigDecimal("-1") };
+    final Class<?>[] expected = { Byte.class, Short.class, Integer.class, Long.class, Float.class, Double.class, BigInteger.class,
+        BigDecimal.class };
+
+    for (int i = 0; i < negatives.length; i++) {
+      function.execute(null, null, null, new Object[] { negatives[i] }, null);
+      assertThat(function.getResult()).isInstanceOf(expected[i]);
+      assertThat(((Number) function.getResult()).intValue()).isEqualTo(1);
+    }
+  }
+
+  /**
+   * Arbitrary-precision types have no unrepresentable magnitude, so the guard must not leak into them.
+   */
+  @Test
+  void arbitraryPrecisionTypesAreUnaffected() {
+    function.execute(null, null, null, new Object[] { BigInteger.valueOf(Long.MIN_VALUE) }, null);
+    assertThat(function.getResult()).isEqualTo(BigInteger.valueOf(Long.MIN_VALUE).negate());
+
+    function.execute(null, null, null, new Object[] { new BigDecimal(BigInteger.valueOf(Long.MIN_VALUE)) }, null);
+    assertThat(function.getResult()).isEqualTo(new BigDecimal(BigInteger.valueOf(Long.MIN_VALUE).negate()));
+  }
+
   @Test
   void fromQuery() throws Exception {
     TestHelper.executeInNewDatabase("./target/databases/testAbsFunction", db -> {
       final ResultSet result = db.query("sql", "select abs(-45.4) as abs");
       assertThat(((Number) result.next().getProperty("abs")).floatValue()).isEqualTo(45.4F);
+    });
+  }
+
+  /**
+   * End-to-end through the SQL engine. A {@code Long.MIN_VALUE} literal cannot be used here: the SQL
+   * parser rejects it while reading the unsigned digits ("Invalid integer: 9223372036854775808"), so
+   * the value has to reach {@code abs()} as a stored property - which is also how it would arrive in
+   * a real query.
+   */
+  @Test
+  void fromQueryOverStoredLongMinValue() throws Exception {
+    TestHelper.executeInNewDatabase("./target/databases/testAbsFunctionOverflow", db -> {
+      db.getSchema().createDocumentType("Sample").createProperty("v", Type.LONG);
+      db.transaction(() -> db.newDocument("Sample").set("v", Long.MIN_VALUE).save());
+
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = db.query("sql", "select abs(v) as abs from Sample")) {
+          rs.next().getProperty("abs");
+        }
+      }).isInstanceOf(CommandExecutionException.class).hasMessageContaining("long overflow");
+    });
+  }
+
+  /**
+   * End-to-end witness for the missing BYTE branch: this query used to fail outright with
+   * "Argument to absolute value must be a number" on a perfectly ordinary BYTE column.
+   */
+  @Test
+  void fromQueryOverStoredByte() throws Exception {
+    TestHelper.executeInNewDatabase("./target/databases/testAbsFunctionByte", db -> {
+      db.getSchema().createDocumentType("Sample").createProperty("v", Type.BYTE);
+      db.transaction(() -> db.newDocument("Sample").set("v", (byte) -7).save());
+
+      try (final ResultSet rs = db.query("sql", "select abs(v) as abs from Sample")) {
+        assertThat(rs.next().<Byte>getProperty("abs")).isEqualTo((byte) 7);
+      }
     });
   }
 }
