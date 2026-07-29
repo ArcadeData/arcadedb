@@ -2,6 +2,11 @@ name: Native Image
 
 on:
   workflow_dispatch:
+    inputs:
+      include_macos:
+        description: "Also build the macOS arm64 leg (uses a PAID Larger Runner). Off by default; tick it only to validate that leg before a release."
+        type: boolean
+        default: false
   release:
     types: [published]
 
@@ -12,8 +17,55 @@ permissions:
   contents: read
 
 jobs:
+  # The build matrix is computed here instead of written inline so the macOS arm64 leg can be added
+  # CONDITIONALLY. macOS arm64 runs on `macos-15-xlarge`, a PAID "Larger Runners" Apple-Silicon label
+  # (the free macos-15, ~7 GB RAM, OOM-thrashes this GraalJS-embedded native image for 40+ minutes -
+  # native-image wants ~80% of system RAM against a ~630 MB build heap, which does not fit; the xlarge
+  # runner has the headroom it needs). To avoid burning paid minutes on routine runs, that leg is only
+  # added to the matrix on a published `release`, or on a manual dispatch that explicitly ticks
+  # `include_macos`. On an ordinary dispatch it is absent from the matrix entirely, so no paid runner
+  # is ever allocated (gating the STEPS instead would still allocate and bill the runner). The three
+  # always-on legs - linux/amd64, linux/arm64 (both required) and windows/amd64 (best-effort) - build
+  # on free runners. There is no free hosted x64 macOS runner (GitHub retired macos-13) and no free
+  # Windows-on-ARM runner, and native-image cannot cross-compile, so each target builds on its own
+  # runner of that OS+arch. `linkmode` selects the build/link mode consumed by the "Set up musl
+  # toolchain" and "Build native image" steps and native/pom.xml's profiles:
+  #   musl-static    - linux/amd64: fully static, musl libc (-Dnative.static=true). Runs on `scratch`
+  #                    - see native/src/main/docker/Dockerfile.native.scratch.
+  #   mostly-static  - linux/arm64: static except glibc itself (-Dnative.mostlystatic=true). GraalVM CE
+  #                    ships no static musl JDK libs for aarch64 (oracle/graal#4645), so the amd64
+  #                    leg's fully-static musl mode cannot link here. Needs a glibc runtime - see
+  #                    native/src/main/docker/Dockerfile.native.distroless.
+  #   dynamic        - windows/amd64 and macos/arm64: ordinary dynamically-linked build (neither ships
+  #                    on a Docker image; macOS is release artifact only, see "Attach to release").
+  setup:
+    name: Compute build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - name: Assemble matrix (add paid macOS leg only on release / opt-in dispatch)
+        id: set
+        shell: bash
+        run: |
+          set -euo pipefail
+          include='[
+            {"runner":"ubuntu-latest","os_name":"linux","arch":"amd64","required":true,"linkmode":"musl-static"},
+            {"runner":"ubuntu-24.04-arm","os_name":"linux","arch":"arm64","required":true,"linkmode":"mostly-static"},
+            {"runner":"windows-latest","os_name":"windows","arch":"amd64","required":false,"linkmode":"dynamic"}
+          ]'
+          if [ "${{ github.event_name }}" = "release" ] || [ "${{ inputs.include_macos }}" = "true" ]; then
+            include="$(jq -c '. + [{"runner":"macos-15-xlarge","os_name":"macos","arch":"arm64","required":false,"linkmode":"dynamic"}]' <<<"$include")"
+            echo "macOS arm64 leg INCLUDED (event=${{ github.event_name }}, include_macos=${{ inputs.include_macos }})"
+          else
+            include="$(jq -c '.' <<<"$include")"
+            echo "macOS arm64 leg EXCLUDED (ordinary dispatch; tick include_macos or publish a release to build it)"
+          fi
+          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.os_name }}-${{ matrix.arch }}
+    needs: setup
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.required == false }}
     # Scoped write: the "Attach to release" step uploads assets via `gh release upload`.
@@ -21,30 +73,7 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
-      matrix:
-        # Only linux/amd64, linux/arm64, and windows/amd64 are built in CI. macOS is not built here:
-        # there is no free hosted x64 macOS runner (GitHub retired macos-13; macos-15-intel is a paid
-        # "Larger Runners" label not enabled here that fails at setup), and the free macos-15 (arm64,
-        # ~7 GB RAM) cannot build this native image without thrashing swap for 40+ minutes -
-        # native-image wants ~80% of system RAM and this image's build heap is ~630 MB, which does not
-        # fit. macOS arm64 binaries are a fast local build instead (`mvn -Pnative ...`; see
-        # docs/native-image.md). There is likewise no free Windows-on-ARM runner. Native-image cannot
-        # cross-compile, so each target builds on its own runner.
-        # linkmode distinguishes the two Linux build modes (see the "Set up musl toolchain" and
-        # "Build native image" steps below, and native/pom.xml's native-static/native-mostly-static
-        # profiles):
-        #   musl-static    - linux/amd64: fully static, musl libc (-Dnative.static=true). Runs on
-        #                     `scratch` - see native/src/main/docker/Dockerfile.native.scratch.
-        #   mostly-static  - linux/arm64: static except glibc itself (-Dnative.mostlystatic=true).
-        #                     GraalVM CE ships no static musl JDK libs for aarch64
-        #                     (oracle/graal#4645), so the amd64 leg's fully-static musl mode
-        #                     cannot link here. Needs a glibc runtime - see
-        #                     native/src/main/docker/Dockerfile.native.distroless.
-        #   dynamic        - Windows: ordinary dynamically-linked build, unchanged.
-        include:
-          - { runner: ubuntu-latest,    os_name: linux,   arch: amd64, required: true,  linkmode: musl-static   }
-          - { runner: ubuntu-24.04-arm, os_name: linux,   arch: arm64, required: true,  linkmode: mostly-static }
-          - { runner: windows-latest,   os_name: windows, arch: amd64, required: false, linkmode: dynamic       }
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -157,10 +186,17 @@ jobs:
         shell: bash
         run: |
           cd native/target
+          # Populate the array with a portable while-read loop rather than `mapfile`/`readarray`
+          # (bash 4+): GitHub's macOS runners can resolve `shell: bash` to the system bash 3.2, which
+          # has neither. This loop is equivalent and works on bash 3.2 (macOS), Git Bash (Windows) and
+          # Linux alike.
+          CANDIDATES=()
           if [ "${{ matrix.os_name }}" = "windows" ]; then
-            mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*.exe' -print | sed 's|^\./||')
+            while IFS= read -r f; do CANDIDATES+=("$f"); done \
+              < <(find . -maxdepth 1 -type f -name 'arcadedb-*.exe' -print | sed 's|^\./||')
           else
-            mapfile -t CANDIDATES < <(find . -maxdepth 1 -type f -name 'arcadedb-*' -perm -u+x -print | sed 's|^\./||')
+            while IFS= read -r f; do CANDIDATES+=("$f"); done \
+              < <(find . -maxdepth 1 -type f -name 'arcadedb-*' -perm -u+x -print | sed 's|^\./||')
           fi
           if [ "${#CANDIDATES[@]}" -ne 1 ]; then
             echo "::error::expected exactly one native binary in native/target, found ${#CANDIDATES[@]}"
