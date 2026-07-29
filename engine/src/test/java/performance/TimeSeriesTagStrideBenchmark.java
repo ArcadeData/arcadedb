@@ -55,9 +55,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Run explicitly with
  * {@code ./mvnw -pl engine -Dtest=TimeSeriesTagStrideBenchmark -Dgroups=benchmark test}.
  * Override the batch size with {@code -Darcadedb.tagStrideBenchmark.rows=50000} to reproduce the batch
- * size quoted on those issues. The default is deliberately smaller: a wide-stride arm writes
- * {@code rows / 25} pages of 64 KB per batch, so 50k rows costs roughly 1 GB under {@code target/}
- * across the three arms.
+ * size quoted on those issues. The default is deliberately smaller: at the default 64 KB page size a
+ * wide-stride arm writes {@code rows / 25} pages per batch, so 50k rows costs roughly 1 GB under
+ * {@code target/} across the three arms.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -68,7 +68,6 @@ class TimeSeriesTagStrideBenchmark extends TestHelper {
   private static final int      WARMUP        = 1;
   private static final int      MEASURED      = 3;
   private static final long     BASE_TS       = 1_700_000_000_000L;
-  private static final int      PAGE_SIZE     = 65_536;
   private static final String[] TSBS_TAGS     = { "host_42", "us-west-2", "us-west-2b", "87", "Ubuntu16.10", "x64", "NYC",
       "19", "1", "production" };
   private static final String[] TSBS_TAG_NAMES = { "hostname", "region", "datacenter", "rack", "os", "arch", "team",
@@ -109,8 +108,8 @@ class TimeSeriesTagStrideBenchmark extends TestHelper {
     // Same tag content, one ninth of the stride: page traffic is.
     assertThat(narrow.medianNanos() * 2).isLessThan(wide.medianNanos());
 
-    // Structural, deterministic on any host: a 64 KB page holds an order of magnitude fewer rows once
-    // ten tag columns each reserve 258 bytes they do not use.
+    // Structural rather than timing-based, so these hold on any host: a page holds an order of
+    // magnitude fewer rows once ten tag columns each reserve 258 bytes they do not use.
     assertThat(wide.rowsPerPage()).isEqualTo(wideBig.rowsPerPage());
     assertThat(wide.rowsPerPage() * 8).isLessThan(narrow.rowsPerPage());
     assertThat(wide.pageTrafficAmplification()).isGreaterThan(10);
@@ -219,19 +218,23 @@ class TimeSeriesTagStrideBenchmark extends TestHelper {
       return (rows + rowsPerPage() - 1L) / rowsPerPage();
     }
 
+    private long pageTrafficBytesPerBatch() {
+      return pagesPerBatch() * bucket.getPageSize();
+    }
+
     /**
      * How many bytes of page are moved, through the buffer pool and through the WAL, for every byte of
      * sample data actually stored. The WAL ships the whole used region of each page because
      * {@code MutablePage.MAX_MODIFIED_RANGES} is 8 and the row writes are scattered at stride distance.
      */
     private long pageTrafficAmplification() {
-      return pagesPerBatch() * PAGE_SIZE / payloadBytesPerBatch;
+      return pageTrafficBytesPerBatch() / payloadBytesPerBatch;
     }
 
     private void report() {
       System.out.printf(Locale.ROOT, "%-22s %8d %11d %10d %12s %18s %8.1f%n", name, bucket.getRowSize(), rowsPerPage(),
           pagesPerBatch(), format(payloadBytesPerBatch),
-          format(pagesPerBatch() * PAGE_SIZE) + " (" + pageTrafficAmplification() + "x)", medianNanos() / 1_000_000.0);
+          format(pageTrafficBytesPerBatch()) + " (" + pageTrafficAmplification() + "x)", medianNanos() / 1_000_000.0);
     }
 
     private String format(final long bytes) {
