@@ -566,6 +566,14 @@ public enum GlobalConfiguration {
       "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. 0 = disabled",
       Integer.class, 10),
 
+  INDEX_BLOOM_FILTER_RATE("arcadedb.indexBloomFilterRate", SCOPE.DATABASE,
+      """
+      Target false-positive rate of the bloom filter an index compaction writes for every compacted series, so a point \
+      lookup can skip a series that provably does not hold the key without reading any of its pages. Costs about 1.2 \
+      bytes per key at the default 1%; a false positive only costs the page read that would have happened anyway. \
+      0 = disabled, and filters already on disk are then ignored.""",
+      Float.class, 0.01f),
+
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
       Maximum number of vector locations to cache in memory per vector index. \

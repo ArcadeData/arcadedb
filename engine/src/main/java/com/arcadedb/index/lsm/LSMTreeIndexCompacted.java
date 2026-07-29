@@ -18,12 +18,14 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -37,6 +39,7 @@ import com.arcadedb.utility.RidHashSet;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
@@ -63,6 +66,21 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    * zero (see LSMTreeIndex's retired-file handling).
    */
   private final AtomicInteger activeCursors = new AtomicInteger();
+
+  /**
+   * Per-series bloom filters over this file (#5517), or null when the file has none - because the feature is off, the
+   * file predates it, or a compaction could not write one. Volatile: a compaction publishes it while lookups read it.
+   */
+  private volatile LSMTreeIndexBloomFilter bloomFilter = null;
+
+  /** Scratch buffers for the bloom key hash, one per thread: {@code writeKeys} is not reentrant on a shared Binary. */
+  private final ThreadLocal<Binary> bloomKeyBuffer = ThreadLocal.withInitial(Binary::new);
+
+  /** Series a bloom filter spared this file from reading. What the feature is worth, in the only unit that matters. */
+  private final AtomicLong bloomSkippedSeries = new AtomicLong();
+
+  /** Series still read after a probe, whether the key was there or the filter answered a false positive. */
+  private final AtomicLong bloomProbedSeries = new AtomicLong();
 
   /**
    * Called at cloning time.
@@ -542,6 +560,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       effectivePageCount = mainPageCount;
     }
 
+    // #5517: hashed once, probed against every series' filter below. Long.MIN_VALUE means "not hashable" (a partial or
+    // null key), and every series is then searched exactly as before.
+    final LSMTreeIndexBloomFilter filters = bloomFilter;
+    final long keyHash = filters != null ? bloomHashOfKey(convertedKeys) : Long.MIN_VALUE;
+
     for (int pageNumber = effectivePageCount - 1; pageNumber > 0; ) {
       final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
@@ -554,6 +577,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       }
 
       pageNumber -= rootPageCount;
+
+      if (keyHash != Long.MIN_VALUE) {
+        if (!filters.mightContain(pageNumber, rootPageCount, keyHash)) {
+          // THE SERIES PROVABLY DOES NOT HOLD THE KEY: SKIP ITS ROOT AND DATA PAGES ENTIRELY
+          bloomSkippedSeries.incrementAndGet();
+          --pageNumber;
+          continue;
+        }
+        bloomProbedSeries.incrementAndGet();
+      }
 
       final PageId pageId = new PageId(database, file.getFileId(), pageNumber);
       final BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
@@ -716,6 +749,89 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
 
     return problems;
+  }
+
+  /** The per-series bloom filters of this file, or null when it has none. */
+  public LSMTreeIndexBloomFilter getBloomFilter() {
+    return bloomFilter;
+  }
+
+  /** Series a bloom filter spared this file from reading since it was loaded (#5517). */
+  public long getBloomSkippedSeries() {
+    return bloomSkippedSeries.get();
+  }
+
+  /** Series read despite being probed: they held the key, or the filter returned a false positive. */
+  public long getBloomProbedSeries() {
+    return bloomProbedSeries.get();
+  }
+
+  @Override
+  public Map<String, Long> getStats() {
+    final Map<String, Long> stats = super.getStats();
+    stats.put("bloomSkippedSeries", bloomSkippedSeries.get());
+    stats.put("bloomProbedSeries", bloomProbedSeries.get());
+    return stats;
+  }
+
+  /**
+   * Links the {@code .bfidx} component written for this file, resolved by name after the whole schema is loaded (every
+   * component is registered by then, and the pair is created together so the names cannot drift).
+   */
+  public void attachBloomFilter() {
+    if (bloomFilter != null)
+      return;
+
+    // A rate of 0 means "off", and off has to mean the filters on disk are not consulted either - otherwise there is
+    // no way to answer whether a lookup result depends on them.
+    if (database.getConfiguration().getValueAsFloat(GlobalConfiguration.INDEX_BLOOM_FILTER_RATE) <= 0)
+      return;
+
+    final Component component = database.getSchema().getEmbedded()
+        .getFileByName(getName() + LSMTreeIndexBloomFilter.NAME_SUFFIX);
+    if (component instanceof LSMTreeIndexBloomFilter filter) {
+      filter.loadDirectory();
+      bloomFilter = filter;
+    }
+  }
+
+  /** Creates the filter component on first use of a compaction that has a filter to write. */
+  LSMTreeIndexBloomFilter getOrCreateBloomFilter() throws IOException {
+    LSMTreeIndexBloomFilter filter = bloomFilter;
+    if (filter == null) {
+      filter = LSMTreeIndexBloomFilter.createOrLoad(this);
+      bloomFilter = filter;
+    }
+    return filter;
+  }
+
+  /**
+   * The bloom hash of a lookup key, or {@link Long#MIN_VALUE} when the key cannot be hashed - a partial key, a null
+   * component, an unserializable value. The caller then searches every series, which is what it did before #5517.
+   */
+  private long bloomHashOfKey(final Object[] convertedKeys) {
+    if (convertedKeys == null)
+      return Long.MIN_VALUE;
+
+    for (final Object key : convertedKeys)
+      if (key == null)
+        return Long.MIN_VALUE;
+
+    try {
+      final Binary serialized = serializeKeyForHashing(bloomKeyBuffer.get(), convertedKeys);
+      return serialized == null ? Long.MIN_VALUE : LSMTreeIndexBloomFilter.hashKey(serialized);
+    } catch (final Exception e) {
+      return Long.MIN_VALUE;
+    }
+  }
+
+  @Override
+  public void drop() throws IOException {
+    final LSMTreeIndexBloomFilter filter = bloomFilter;
+    bloomFilter = null;
+    if (filter != null)
+      filter.dropQuietly();
+    super.drop();
   }
 
   void onCursorOpened() {

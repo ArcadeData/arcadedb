@@ -859,6 +859,20 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return findEntryOfSameKey(currentPageBuffer, keys, startIndexArray, mid, mid + 1, count, 1);
   }
 
+  /**
+   * Serializes a key into {@code scratch} exactly as {@link #writeKeys} writes it into a page, so a hash of those
+   * bytes means the same thing on the compaction path and on the lookup path (#5517). Returns null - "not hashable" -
+   * for anything but a complete key, because a partial key is a range and no hash can answer for a range.
+   */
+  Binary serializeKeyForHashing(final Binary scratch, final Object[] convertedKeys) {
+    if (convertedKeys == null || convertedKeys.length != binaryKeyTypes.length)
+      return null;
+
+    scratch.clear();
+    writeKeys(scratch, convertedKeys);
+    return scratch;
+  }
+
   private void writeKeys(final Binary buffer, final Object[] keys) {
     // WRITE KEYS
     for (int i = 0; i < binaryKeyTypes.length; ++i) {
