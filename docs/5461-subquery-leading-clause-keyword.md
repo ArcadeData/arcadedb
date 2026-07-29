@@ -82,18 +82,25 @@ prepends the patterns as their own MATCH clause when the body starts with a clau
 ## Verification
 
 New regression test `engine/src/test/java/com/arcadedb/query/opencypher/Issue5461SubqueryLeadingClauseTest.java`,
-10 tests. Every one of them was confirmed failing before the fix: 5 failures on the first run, then 1
-remaining correlated failure that isolated the second defect, and the no-`RETURN` case checked
-separately by restoring the old three-keyword whitelist (0 instead of 2).
+11 tests. Every one of them was confirmed failing before the fix: 5 failures on the first run, then 1
+remaining correlated failure that isolated the second defect, the no-`RETURN` case checked separately
+by restoring the old three-keyword whitelist (0 instead of 2), and the classifier unit test checked
+by removing the bounds check (`StringIndexOutOfBoundsException`).
+
+A first attempt at that last test asserted `COUNT { }` did not throw. It passed with and without the
+bounds check - `COUNT { }` never reaches the classifier - so it was replaced with a direct call to
+the public method rather than kept as coverage it did not provide.
 
 Coverage: `COUNT`/`EXISTS`/`COLLECT` with an `UNWIND`-first body across list sizes 0-3; the issue's
 per-outer-row case; bodies opening with `CALL` and `OPTIONAL MATCH`; an `UNWIND`-first body with no
 `RETURN` of its own; the correlated `MATCH (n:T) ... COUNT { UNWIND n.tags AS t ... }` form; the
-`WITH 1 AS dummy` and `RETURN 1` controls from the issue; the returning-`CALL {}` repro; and a guard
-that bare-pattern bodies are still wrapped into a `MATCH`.
+`WITH 1 AS dummy` and `RETURN 1` controls from the issue; the returning-`CALL {}` repro; a guard that
+bare-pattern bodies are still wrapped into a `MATCH`; and the classifier itself against blank bodies
+and patterns bound to keyword-prefixed variables (`matches = (a)-->(b)`).
 
-Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7693 tests, 0 failures, plus the
-full `engine` module suite.
+Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7695 tests, 0 failures, and the
+full `engine` module suite, 10150 tests, 0 failures. The opencypher count reconciles against a
+measured `main` baseline of 7684 plus this branch's 11 new tests.
 
 ## Pull request
 
@@ -112,6 +119,18 @@ already tolerates any leading clause. Three minor non-blocking notes, dispositio
 below. One of them (`INSERT` is not a standard openCypher clause) was checked against the grammar and
 is incorrect: `Cypher25Parser.g4` defines `insertClause : INSERT insertPatternList` and lists it among
 the clause alternatives, so `INSERT` belongs in the list and was kept.
+
+**Cycle 3** - `a550352` - claude[bot]: no blocking issues. It confirmed the first-char pre-filter is
+sound for both callers (derived from the superset array, and non-ASCII first chars fall through to
+the full scan), and that the bounds check closes the empty-body case. Three minor notes, all
+declined with reasons below.
+
+### CI note
+
+`Meterian client scan` fails on this PR with a security score of 0. It is **not caused by this
+change**: the same check fails identically on PRs #5539, #5536 and #5534, and this branch touches no
+dependency manifest (four Java files, one test, one doc). Every other gate - Codacy, CodeQL,
+`claude-review`, setup - passes.
 
 ## Follow-ups
 
@@ -133,6 +152,14 @@ the clause alternatives, so `INSERT` belongs in the list and was kept.
   is a sound pre-filter for both callers. Indexing the first character also made a blank body throw,
   so `matchesAnyKeywordAt` now bounds-checks and a unit test covers it - verified non-vacuous by
   removing the check and watching the test fail with `StringIndexOutOfBoundsException`.
+- **Declined in cycle 3, with a correction.** `startsWithClauseKeyword` allocates a
+  `trim().toUpperCase()` copy per call. The review placed this off the row-scan hot path; that is not
+  quite right - `CountExpression`/`ExistsExpression` call it through `wrapNonMatchBody`, which runs
+  once per outer row for a correlated subquery. It is still not worth changing: each of those outer
+  rows already pays for a complete standalone parse and execution of the subquery
+  (`database.query(...)`), which exceeds two short-string allocations by orders of magnitude. Removing
+  the allocation would also mean either duplicating the word-boundary logic or adding a
+  case-insensitive variant of it, and duplicated keyword logic is precisely what caused this bug.
 - **Not addressed, pre-existing (same class as this bug).** The update-clause guards in all three
   parse methods (`upper.contains("SET ")`, `"CREATE "`, ...) are naive substring scans with the exact
   blind spot fixed here: a literal or property name containing `SET ` false-matches. Worth its own
