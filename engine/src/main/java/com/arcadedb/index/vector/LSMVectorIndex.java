@@ -146,7 +146,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // enough to never matter and large enough that a small index is fully resident from the first query.
   private static final int MIN_SEARCH_CACHE_SIZE = 8_192;
 
-  private final String                 indexName;
+  // Not final: a compaction swaps in a new data file, and this index is named after its component - see
+  // getMostRecentFileName(). Every node names the index after the file it holds, so the leader has to
+  // follow its own rename or its schema stops matching the followers that rebuilt it from that file.
+  private volatile String              indexName;
   protected     LSMVectorIndexMutable  mutable;
   private final ReentrantReadWriteLock lock;
   LSMVectorIndexMetadata metadata; // Package-private for Phase 2 access from ArcadePageVectorValues and
@@ -436,6 +439,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final List<MutablePage> newPages = new ArrayList<>();
         final int pageSize = getPageSize();
+        final int pageSizeContent = pageSize - BasePage.PAGE_HEADER_SIZE - HEADER_BASE_SIZE;
         MutablePage page = null;
         int pageNum = -1;
         int freeContent = 0;
@@ -443,6 +447,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final byte[] buffer = new byte[maxEntryLength(sorted)];
 
         for (final VectorEntryForGraphBuild entry : sorted) {
+          // Every entry came off a page of this same size, so it fits in a fresh one. Check it anyway: if a future
+          // change ever let the pages shrink under an existing index, the loop below would create a new page and
+          // then write straight past its end, and a compaction that silently corrupts is the worst possible one.
+          if (entry.entryLength > pageSizeContent)
+            throw new IndexException(
+                "Cannot compact vector index '" + indexName + "': entry of vector " + entry.vectorId + " is "
+                    + entry.entryLength + " bytes and does not fit in a " + pageSizeContent + " byte page");
+
           if (page == null || page.getMaxContentSize() - freeContent < entry.entryLength) {
             if (page != null) {
               // Seal the page just filled: only the last page of the file stays open for new writes.
@@ -487,6 +499,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         previousMutable = mutable;
         previousCompacted = compactedSubIndex;
         mutable = newMutable;
+        indexName = newMutable.getName();
         compactedSubIndex = null;
         currentInsertPageNum = newPages.size() - 1;
         currentMutablePages.set(1);
@@ -4303,7 +4316,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public String getMostRecentFileName() {
-    return indexName;
+    // The CURRENT component, not the name this index was created with. The schema keys its index entries by this
+    // (LocalDocumentType.toJSON) and a compaction swaps in a new data file with a new name, so answering the
+    // creation name leaves the leader's schema pointing at a file that no longer exists while a follower - which
+    // rebuilds the index from the file it received - names it correctly, and the two schemas diverge. Same
+    // contract as LSMTreeIndex.getMostRecentFileName().
+    return mutable.getName();
   }
 
   @Override
@@ -4441,10 +4459,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // two as one pass is what keeps them from disagreeing about which vectors are live - a standalone compactor
       // with its own merge rules used to resurrect deleted vectors and duplicate updated ones.
       //
-      // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine
-      // flush: the recording session captures registerFile + page writes, the synthetic WAL ships
-      // the new component to followers atomically with the leader's commit. waitAllPagesOfDatabaseAreFlushed
-      // is needed because the pages are written with asyncFlush=true.
+      // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine flush: the
+      // recording session captures registerFile + the page writes + the drop of the files they replace, and the
+      // synthetic WAL ships the new component to followers atomically with the leader's commit. The compacted
+      // pages are written synchronously, so the wait below is not what makes THEM durable: it is the guard that
+      // the session ships nothing still pending from the rest of the rebuild (#4928).
       final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
         final int fileIdBefore = getFileId();
         buildGraphFromScratch(null, true);
@@ -4480,8 +4499,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("type", getType());
     json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
 
-    // Add vector-specific metadata
-    json.put("indexName", indexName);
+    // Add vector-specific metadata. The name is the CURRENT component, not the one this instance was built with:
+    // a compaction swaps the data file, and a node that reloads the index from the file it received names it after
+    // that file. Serializing the creation name instead would make the leader's schema and its followers' differ by
+    // this field alone after every compaction. Nothing reads it back - it is informational, which is why
+    // LSMTreeIndex writes no name at all.
+    json.put("indexName", getMostRecentFileName());
     json.put("typeName", metadata.typeName);
     json.put("properties", metadata.propertyNames);
     json.put("dimensions", metadata.dimensions);
@@ -5048,20 +5071,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   public String getIdPropertyName() {
     return metadata.idPropertyName;
-  }
-
-  /**
-   * Gets the compacted sub-index, if any.
-   */
-  public LSMVectorIndexCompacted getSubIndex() {
-    return compactedSubIndex;
-  }
-
-  /**
-   * Sets the compacted sub-index.
-   */
-  public void setSubIndex(final LSMVectorIndexCompacted subIndex) {
-    this.compactedSubIndex = subIndex;
   }
 
   /**

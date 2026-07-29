@@ -109,43 +109,11 @@ public class LSMVectorIndexCompacted extends PaginatedComponent {
   }
 
   /**
-   * Creates a new immutable page for compacted data.
-   * Entries are written sequentially starting from headerSize (no pointer table).
-   */
-  protected MutablePage createNewPage(final int compactedPageNumberOfSeries) {
-    final int txPageCounter = getTotalPages();
-    // Create MutablePage directly (compaction happens outside transaction context)
-    final MutablePage currentPage = new MutablePage(new PageId(database, getFileId(), txPageCounter), pageSize);
-
-    // Calculate header size first
-    final int headerSize = getHeaderSize(txPageCounter);
-
-    int pos = 0;
-
-    // offsetFreeContent starts right after header (entries grow forward sequentially)
-    pos += currentPage.writeInt(pos, headerSize);
-    // numberOfEntries (initially 0)
-    pos += currentPage.writeInt(pos, 0);
-    // mutable flag (IMMUTABLE for compacted pages)
-    pos += currentPage.writeByte(pos, (byte) 0);
-
-    // If page 0, write metadata
-    if (txPageCounter == 0) {
-      pos += currentPage.writeInt(pos, dimensions);
-      pos += currentPage.writeInt(pos, similarityFunction.ordinal());
-      pos += currentPage.writeInt(pos, maxConnections);
-      currentPage.writeInt(pos, beamWidth);
-    }
-
-    // Manually update page count (following LSMTreeIndexCompacted pattern)
-    updatePageCount(txPageCounter + 1);
-
-    return currentPage;
-  }
-
-  /**
    * Gets all vector entries from this compacted index.
-   * Used during merge operations.
+   * <p>
+   * Nothing writes a compacted component any more - a compaction rewrites the single data file and drops the
+   * component (issue #5516 follow-up) - but databases compacted by an older build still carry one, so it stays
+   * readable. This is the only typed reader for such a file.
    */
   public Map<Integer, VectorEntry> getAllVectors() {
     final Map<Integer, VectorEntry> vectors = new HashMap<>();

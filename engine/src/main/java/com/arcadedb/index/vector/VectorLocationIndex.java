@@ -92,6 +92,7 @@ public class VectorLocationIndex {
       if (id < 0)
         return false;
       final long[] snapshot = bits;
+      // `1L << id` shifts by id & 63 (JLS 15.19), which is the bit within the word `id >>> 6` selects.
       final int word = id >>> 6;
       return word < snapshot.length && (snapshot[word] & (1L << id)) != 0;
     }
@@ -450,6 +451,10 @@ public class VectorLocationIndex {
 
   /**
    * Get a stream of active (non-deleted) vector IDs.
+   * <p>
+   * Since issue #5516 no resident location carries {@code deleted == true} - a tombstoned id keeps no location at
+   * all - so this returns the same set as {@link #getAllVectorIds()}. The filter stays as the definition of
+   * "active": it is what a location loaded straight from a page (which can carry the flag) has to pass.
    *
    * @return Stream of active vector IDs
    */
