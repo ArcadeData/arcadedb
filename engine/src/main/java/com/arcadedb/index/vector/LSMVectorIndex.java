@@ -94,6 +94,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -366,21 +367,246 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Rewrite the index data file keeping only the live entries, and swap it in: this is what a compaction of an
+   * LSM_VECTOR index is. Entries are copied verbatim (the quantized payload is never re-quantized) and keep their
+   * vector id, so no id is reused and the graph ordinals rebuilt right after stay valid.
+   * <p>
+   * The whole rewrite runs under the index write lock. A compaction is an explicit maintenance operation, its cost
+   * is one sequential pass over the live vectors, and blocking writers for it is the price of not having to
+   * reconcile entries that arrive while the file is being replaced.
+   * <p>
+   * Both old files - the previous data file and the legacy compacted component, if the index still has one - are
+   * dropped afterwards, leaving the index with a single data file. That is what actually returns the space to the
+   * filesystem: leaving the old file behind was why compaction used to make the index bigger, not smaller.
+   *
+   * @param liveEntries the live set, re-pointed in place at the new file
+   */
+  private void rewriteDataFileWithLiveEntries(final Collection<VectorEntryForGraphBuild> liveEntries) {
+    if (liveEntries.isEmpty()) {
+      LogManager.instance().log(this, Level.INFO, "Skipping compaction of vector index '%s': no live vectors", indexName);
+      return;
+    }
+
+    for (final VectorEntryForGraphBuild entry : liveEntries)
+      if (entry.absoluteFileOffset < 0 || entry.entryLength <= 0) {
+        // A recovery fallback (document scan / in-memory recovery) contributed entries that are not on any page, so
+        // they cannot be copied byte for byte. Rebuilding the graph is still correct; compaction retries next time.
+        LogManager.instance().log(this, Level.INFO,
+            "Skipping compaction of vector index '%s': the live set contains vectors recovered outside the index pages",
+            indexName);
+        return;
+      }
+
+    final DatabaseInternal database = getDatabase();
+    if (database.isTransactionActive())
+      throw new IllegalStateException("Cannot compact vector index '" + indexName + "' inside a transaction");
+
+    final int oldFileId = getFileId();
+    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(oldFileId, 0,
+        Thread.currentThread());
+    if (locked == LockManager.LOCK_STATUS.NO)
+      throw new IllegalStateException("Cannot compact vector index '" + indexName + "': cannot lock file " + oldFileId);
+
+    int newFileId = -1;
+    LSMVectorIndexMutable previousMutable = null;
+    LSMVectorIndexCompacted previousCompacted = null;
+
+    try {
+      lock.writeLock().lock();
+      try {
+        final int last_ = getComponentName().lastIndexOf('_');
+        final String newName = getComponentName().substring(0, last_) + "_" + System.nanoTime();
+
+        final LSMVectorIndexMutable newMutable = new LSMVectorIndexMutable(database, newName,
+            database.getDatabasePath() + File.separator + newName, mutable.getDatabase().getMode(), getPageSize(),
+            PaginatedComponent.TEMP_EXT + LSMVectorIndexMutable.FILE_EXT);
+        newMutable.setMainIndex(this);
+        database.getSchema().getEmbedded().registerFile(newMutable);
+        newFileId = newMutable.getFileId();
+
+        if (database.getTransactionManager().tryLockFile(newFileId, 0, Thread.currentThread()) == LockManager.LOCK_STATUS.NO)
+          throw new IllegalStateException(
+              "Cannot compact vector index '" + indexName + "': cannot lock the new file " + newFileId);
+
+        // Copy the live entries, in vector id order, into freshly built pages of the new file.
+        final List<VectorEntryForGraphBuild> sorted = new ArrayList<>(liveEntries);
+        sorted.sort((a, b) -> Integer.compare(a.vectorId, b.vectorId));
+
+        final List<MutablePage> newPages = new ArrayList<>();
+        final int pageSize = getPageSize();
+        MutablePage page = null;
+        int pageNum = -1;
+        int freeContent = 0;
+        int entriesInPage = 0;
+        final byte[] buffer = new byte[maxEntryLength(sorted)];
+
+        for (final VectorEntryForGraphBuild entry : sorted) {
+          if (page == null || page.getMaxContentSize() - freeContent < entry.entryLength) {
+            if (page != null) {
+              // Seal the page just filled: only the last page of the file stays open for new writes.
+              page.writeByte(OFFSET_MUTABLE, (byte) 0);
+              newPages.add(page);
+            }
+            page = new MutablePage(new PageId(database, newFileId, ++pageNum), pageSize);
+            page.writeInt(OFFSET_FREE_CONTENT, HEADER_BASE_SIZE);
+            page.writeInt(OFFSET_NUM_ENTRIES, 0);
+            page.writeByte(OFFSET_MUTABLE, (byte) 1);
+            freeContent = HEADER_BASE_SIZE;
+            entriesInPage = 0;
+          }
+
+          readRawEntry(entry, buffer);
+          page.writeByteArray(freeContent, buffer, 0, entry.entryLength);
+
+          // Re-point the entry at its new home before anything downstream reads it back.
+          entry.absoluteFileOffset = (long) pageNum * pageSize + BasePage.PAGE_HEADER_SIZE + freeContent;
+          entry.isCompacted = false;
+
+          freeContent += entry.entryLength;
+          entriesInPage++;
+          page.writeInt(OFFSET_FREE_CONTENT, freeContent);
+          page.writeInt(OFFSET_NUM_ENTRIES, entriesInPage);
+        }
+        newPages.add(page); // the last page stays mutable: new vectors append to it
+
+        final List<MutablePage> versionedPages = new ArrayList<>(newPages.size());
+        for (final MutablePage p : newPages) {
+          // A page built outside a transaction carries no content size, and updatePageVersion persists exactly that
+          // in the page header: without this the pages reload as empty and the whole index reads as lost.
+          p.setContentSize(p.getMaxContentSize());
+          versionedPages.add(database.getPageManager().updatePageVersion(p, true));
+        }
+        database.getPageManager().writePages(versionedPages, false);
+
+        newMutable.updatePageCount(newPages.size());
+        newMutable.removeTempSuffix();
+
+        // SWAP: from here on every reader sees the compacted file
+        previousMutable = mutable;
+        previousCompacted = compactedSubIndex;
+        mutable = newMutable;
+        compactedSubIndex = null;
+        currentInsertPageNum = newPages.size() - 1;
+        currentMutablePages.set(1);
+
+        ((LocalSchema) database.getSchema()).setMigratedFileId(oldFileId, newFileId);
+        database.getSchema().getEmbedded().saveConfiguration();
+
+        LogManager.instance().log(this, Level.INFO,
+            "Compacted vector index '%s': %d live vectors in %d pages (was file %d, now file %d)",
+            indexName, sorted.size(), newPages.size(), oldFileId, newFileId);
+
+      } catch (final IOException | InterruptedException e) {
+        if (e instanceof InterruptedException)
+          Thread.currentThread().interrupt();
+        throw new IndexException("Error compacting vector index '" + indexName + "'", e);
+      } finally {
+        lock.writeLock().unlock();
+      }
+
+      // Drop the replaced files OUTSIDE the write lock, as the LSM-tree compaction does: deleteFile also purges
+      // their pages from the page cache, and a reader that captured the old component must be able to finish.
+      dropReplacedComponent(previousMutable);
+      dropReplacedComponent(previousCompacted);
+
+    } finally {
+      if (newFileId > -1)
+        database.getTransactionManager().unlockFile(newFileId, Thread.currentThread());
+      if (locked == LockManager.LOCK_STATUS.YES)
+        database.getTransactionManager().unlockFile(oldFileId, Thread.currentThread());
+    }
+  }
+
+  private static int maxEntryLength(final List<VectorEntryForGraphBuild> entries) {
+    int max = 0;
+    for (final VectorEntryForGraphBuild e : entries)
+      if (e.entryLength > max)
+        max = e.entryLength;
+    return max;
+  }
+
+  /** Read the raw bytes of an entry from the file it currently lives in, into the first {@code entryLength} bytes. */
+  private void readRawEntry(final VectorEntryForGraphBuild entry, final byte[] buffer) {
+    final int pageSize = getPageSize();
+    final int pageNum = (int) (entry.absoluteFileOffset / pageSize);
+    final int contentOffset = (int) (entry.absoluteFileOffset % pageSize) - BasePage.PAGE_HEADER_SIZE;
+    final int fileId = entry.isCompacted ? compactedSubIndex.getFileId() : getFileId();
+
+    try {
+      final BasePage page = getDatabase().getPageManager()
+          .getImmutablePage(new PageId(getDatabase(), fileId, pageNum), pageSize, false, false);
+      page.readByteArray(contentOffset, buffer, 0, entry.entryLength);
+    } catch (final IOException e) {
+      throw new IndexException(
+          "Error reading vector " + entry.vectorId + " of index '" + indexName + "' while compacting", e);
+    }
+  }
+
+  /** Delete a data file that a compaction replaced, with its pages and its schema registration. */
+  private void dropReplacedComponent(final PaginatedComponent component) {
+    if (component == null)
+      return;
+    final DatabaseInternal database = getDatabase();
+    try {
+      if (database.isOpen()) {
+        database.getPageManager().deleteFile(database, component.getFileId());
+        database.getFileManager().dropFile(component.getFileId());
+        database.getSchema().getEmbedded().removeFile(component.getFileId());
+      } else {
+        final File file = component.getOSFile();
+        if (file != null && file.exists() && !file.delete())
+          LogManager.instance().log(this, Level.WARNING, "Error deleting replaced index file '%s'", file.getPath());
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error dropping the file replaced by the compaction of '%s': %s",
+          indexName, e.getMessage());
+    }
+  }
+
+  /**
+   * Merge one page entry into the live set being rebuilt, applying LSM merge-on-read: the highest vector id for a
+   * RID wins, and on a tie the entry read later wins (pages are parsed in write order). A winning tombstone removes
+   * the RID from the live set instead of adding it.
+   */
+  private static void mergeEntryIntoLiveSet(final Map<RID, VectorEntryForGraphBuild> liveSet,
+      final LSMVectorIndexPageParser.VectorEntry entry, final boolean isCompacted) {
+    final VectorEntryForGraphBuild existing = liveSet.get(entry.rid);
+    if (existing != null && entry.vectorId < existing.vectorId)
+      return; // superseded by a newer vector for the same RID
+
+    if (entry.deleted)
+      liveSet.remove(entry.rid);
+    else
+      liveSet.put(entry.rid,
+          new VectorEntryForGraphBuild(entry.vectorId, entry.rid, isCompacted, entry.absoluteFileOffset,
+              entry.entryLength));
+  }
+
+  /**
    * Helper class for collecting vector entries during graph build.
    * Used to avoid race conditions with concurrent VectorLocationIndex modifications.
    */
   private static class VectorEntryForGraphBuild {
-    final int     vectorId;
-    final RID     rid;
-    final boolean isCompacted;
-    final long    absoluteFileOffset;
+    final int vectorId;
+    final RID rid;
+    // Not final: a compaction rewrites the data file underneath the live set and re-points these at the new file.
+    boolean   isCompacted;
+    long      absoluteFileOffset;
+    /** Size of the entry on its page, or -1 when it was recovered from a document instead of read from a page. */
+    final int entryLength;
 
     VectorEntryForGraphBuild(final int vectorId, final RID rid, final boolean isCompacted,
         final long absoluteFileOffset) {
+      this(vectorId, rid, isCompacted, absoluteFileOffset, -1);
+    }
+
+    VectorEntryForGraphBuild(final int vectorId, final RID rid, final boolean isCompacted,
+        final long absoluteFileOffset, final int entryLength) {
       this.vectorId = vectorId;
       this.rid = rid;
       this.isCompacted = isCompacted;
       this.absoluteFileOffset = absoluteFileOffset;
+      this.entryLength = entryLength;
     }
   }
 
@@ -1069,7 +1295,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Force rebuild from on-disk pages, bypassing mutation thresholds and lazy-load behavior.
       graphState = GraphState.LOADING;
       mutationsSinceSerialize.set(0);
-      buildGraphFromScratchWithRetry(graphCallback);
+      buildGraphFromScratchWithRetry(graphCallback, false);
     } finally {
       status.set(INDEX_STATUS.AVAILABLE);
     }
@@ -1095,18 +1321,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * After building, persists the graph to disk and transitions to IMMUTABLE state.
    */
   private void buildGraphFromScratch() {
-    buildGraphFromScratch(null);
+    buildGraphFromScratch(null, false);
   }
 
   /**
    * Build graph from scratch with optional progress callback.
    *
-   * @param graphCallback Optional callback for graph build progress
+   * @param graphCallback   Optional callback for graph build progress
+   * @param compactDataFile When true the index data file is also rewritten with only the live entries, which is how
+   *                        {@code COMPACT INDEX} reclaims the superseded ones. Automatic rebuilds pass false: they
+   *                        run unattended and must not swap files under the writers.
    */
-  private void buildGraphFromScratch(final GraphBuildCallback graphCallback) {
+  private void buildGraphFromScratch(final GraphBuildCallback graphCallback, final boolean compactDataFile) {
     // buildGraphFromScratchWithRetry() reads pages directly and rebuilds vectorIndex
     // No need to reload here - just call the retry logic directly
-    buildGraphFromScratchWithRetry(graphCallback);
+    buildGraphFromScratchWithRetry(graphCallback, compactDataFile);
   }
 
   /**
@@ -1115,7 +1344,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @param graphCallback Optional callback for graph build progress
    */
-  private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback) {
+  private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback, final boolean compactDataFile) {
     // Serialize graph builds for this index. The index write lock used to do this implicitly by covering the
     // whole preparation phase; now that the O(index size) validation runs unlocked (issue #5391), two builds
     // could interleave their vectorIndex re-sync and their ordinal-map publication and leave a searcher with an
@@ -1123,13 +1352,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // and inserts never touch it, so it does not reintroduce the stall.
     graphBuildLock.lock();
     try {
-      buildGraphFromScratchExclusively(graphCallback);
+      buildGraphFromScratchExclusively(graphCallback, compactDataFile);
     } finally {
       graphBuildLock.unlock();
     }
   }
 
-  private void buildGraphFromScratchExclusively(final GraphBuildCallback graphCallback) {
+  private void buildGraphFromScratchExclusively(final GraphBuildCallback graphCallback, final boolean compactDataFile) {
     // Reset live builder — full rebuild creates a new graph with different ordinal mapping
     if (liveBuilder != null) {
       try {
@@ -1190,35 +1419,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final DatabaseInternal database = getDatabase();
 
-    // Read from compacted sub-index if it exists
+    // Read from compacted sub-index if it exists, then from the mutable one: pages are parsed in write order, so
+    // merging them with "the entry of highest id wins, ties go to the later one" reproduces the LSM read semantics.
+    // A tombstone carries the SAME id as the entry it kills, which is why ties must go to the later entry: dropping
+    // tombstones here (as this loop used to do) left every deleted RID in the live set, so the next rebuild put the
+    // deleted vectors back into the graph and into the location index.
     if (compactedSubIndex != null) {
       LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
           getPageSize(), true, entry -> {
             totalEntriesRead[0]++;
-            if (entry.deleted) {
+            if (entry.deleted)
               filteredDeletedVectors[0]++;
-              return;
-            }
-            // Keep latest (highest ID) vector for each RID
-            final VectorEntryForGraphBuild existing = ridToLatestVector.get(entry.rid);
-            if (existing == null || entry.vectorId > existing.vectorId)
-              ridToLatestVector.put(entry.rid,
-                  new VectorEntryForGraphBuild(entry.vectorId, entry.rid, true, entry.absoluteFileOffset));
+            mergeEntryIntoLiveSet(ridToLatestVector, entry, true);
           });
     }
 
-    // Read from mutable index
+    // Read from mutable index (its entries are newer than the compacted ones)
     LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, entry -> {
       totalEntriesRead[0]++;
-      if (entry.deleted) {
+      if (entry.deleted)
         filteredDeletedVectors[0]++;
-        return;
-      }
-      // Keep latest (highest ID) vector for each RID (mutable entries override compacted)
-      final VectorEntryForGraphBuild existing = ridToLatestVector.get(entry.rid);
-      if (existing == null || entry.vectorId > existing.vectorId)
-        ridToLatestVector.put(entry.rid,
-            new VectorEntryForGraphBuild(entry.vectorId, entry.rid, false, entry.absoluteFileOffset));
+      mergeEntryIntoLiveSet(ridToLatestVector, entry, false);
     });
 
     // Build ordinal mapping from deduplicated vectors read directly from pages
@@ -1304,6 +1525,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
               ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
       }
     }
+
+    // COMPACTION (issue #5516 follow-up): the live set just computed IS the compacted content of this index, so
+    // when the caller asked for a compaction the data file is rewritten here, from the very same set the graph is
+    // about to be built on. Doing it in the rebuild instead of in a separate compactor is what keeps the two from
+    // disagreeing on what "live" means. Entries are re-pointed at the new file below, so everything downstream
+    // (validation, preload, vectorIndex re-sync, graph build) transparently uses the compacted file.
+    if (compactDataFile)
+      rewriteDataFileWithLiveEntries(ridToLatestVector.values());
 
     // Rebuild ordinal mapping (may have changed after document scan fallback)
     final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
@@ -4205,18 +4434,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     try {
-      LogManager.instance().log(this, Level.INFO, "compact() calling LSMVectorIndexCompactor.compact()");
+      // Compaction IS a rebuild that also rewrites the data file: the rebuild already reads every page, resolves
+      // the LSM merge and produces the live set, so the compacted content is exactly what it computes. Running the
+      // two as one pass is what keeps them from disagreeing about which vectors are live - a standalone compactor
+      // with its own merge rules used to resurrect deleted vectors and duplicate updated ones.
+      //
       // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine
       // flush: the recording session captures registerFile + page writes, the synthetic WAL ships
       // the new component to followers atomically with the leader's commit. waitAllPagesOfDatabaseAreFlushed
-      // is needed because LSMVectorIndexCompactor calls writePages(..., asyncFlush=true).
+      // is needed because the pages are written with asyncFlush=true.
       final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
-        final boolean compactSuccess = LSMVectorIndexCompactor.compact(this);
+        final int fileIdBefore = getFileId();
+        buildGraphFromScratch(null, true);
         // If the bounded wait gives up (#4928), the shipped component could contain unflushed (zero) pages:
         // fail the compaction, it is rescheduled later.
         if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
           throw new IOException("Vector index compaction aborted: pages are still pending flush after the no-progress timeout");
-        return compactSuccess;
+        // The data file is swapped only when the rewrite actually ran (it is skipped on an empty or
+        // partially-recovered live set), so the file id is what says whether anything was compacted.
+        return getFileId() != fileIdBefore;
       });
       if (success) {
         // Track successful compaction
@@ -4735,7 +4971,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     try {
       // Build graph from scratch (already reads from pages)
-      buildGraphFromScratchWithRetry(graphCallback);
+      buildGraphFromScratchWithRetry(graphCallback, false);
 
       // Persist graph with chunking callback
       final ChunkCommitCallback chunkCallback = bytesWritten -> {
@@ -4834,101 +5070,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Atomically replaces this index with a new one that has the compacted sub-index.
-   * Copies remaining mutable pages from startingFromPage onwards to the new index.
-   *
-   * @param startingFromPage The first page to copy from current index
-   * @param compactedIndex   The compacted sub-index to attach
-   *
-   * @return The new index file ID
-   */
-  protected LSMVectorIndexMutable splitIndex(final int startingFromPage, final LSMVectorIndexCompacted compactedIndex)
-      throws IOException, InterruptedException {
-
-    final DatabaseInternal database = getDatabase();
-    if (database.isTransactionActive())
-      throw new IllegalStateException("Cannot replace compacted index because a transaction is active");
-
-    final int fileId = getFileId();
-    final LockManager.LOCK_STATUS locked = getDatabase().getTransactionManager().tryLockFile(fileId, 0,
-        Thread.currentThread());
-
-    if (locked == LockManager.LOCK_STATUS.NO)
-      throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
-
-    final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
-
-    try {
-      lock.writeLock().lock();
-      try {
-        // Create new index file with compacted sub-index
-        final int last_ = getComponentName().lastIndexOf('_');
-        final String newName = getComponentName().substring(0, last_) + "_" + System.nanoTime();
-
-        final LSMVectorIndexMutable newMutableIndex = new LSMVectorIndexMutable(database, newName,
-            database.getDatabasePath() + File.separator + newName, mutable.getDatabase().getMode(),
-            mutable.getPageSize(),
-            PaginatedComponent.TEMP_EXT + LSMVectorIndexMutable.FILE_EXT);
-
-        database.getSchema().getEmbedded().registerFile(newMutableIndex);
-
-        // LOCK NEW FILE
-        database.getTransactionManager().tryLockFile(newMutableIndex.getFileId(), 0, Thread.currentThread());
-        lockedNewFileId.set(newMutableIndex.getFileId());
-
-        final List<MutablePage> modifiedPages = new ArrayList<>();
-
-        // Copy remaining mutable pages from old index to new index
-        final int pagesToCopy = getTotalPages() - startingFromPage;
-        for (int i = 0; i < pagesToCopy; i++) {
-          final BasePage currentPage = getDatabase().getTransaction()
-              .getPage(new PageId(getDatabase(), fileId, i + startingFromPage), getPageSize());
-
-          // Copy the entire page content
-          final MutablePage newPage = new MutablePage(new PageId(getDatabase(), newMutableIndex.getFileId(), i + 1),
-              getPageSize());
-
-          final ByteBuffer oldContent = currentPage.getContent();
-          oldContent.rewind();
-          newPage.getContent().put(oldContent);
-
-          modifiedPages.add(getDatabase().getPageManager().updatePageVersion(newPage, true));
-        }
-
-        // Write all pages
-        if (!modifiedPages.isEmpty())
-          getDatabase().getPageManager().writePages(modifiedPages, false);
-
-        // SWAP OLD WITH NEW INDEX IN EXCLUSIVE LOCK (NO READ/WRITE ARE POSSIBLE IN THE MEANTIME)
-        newMutableIndex.removeTempSuffix();
-
-        mutable = newMutableIndex;
-
-        // Set the compacted sub-index on the main index
-        this.compactedSubIndex = compactedIndex;
-
-        // Update schema with file migration
-        ((LocalSchema) getDatabase().getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId());
-
-        getDatabase().getSchema().getEmbedded().saveConfiguration();
-        return newMutableIndex;
-
-      } finally {
-        lock.writeLock().unlock();
-      }
-
-    } finally {
-      final int lockedFile = lockedNewFileId.get();
-      if (lockedFile != -1)
-        getDatabase().getTransactionManager().unlockFile(lockedFile, Thread.currentThread());
-
-      if (locked == LockManager.LOCK_STATUS.YES)
-        getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
-    }
-  }
-
-  /**
-   * Get the VectorLocationIndex (used by compactor to reload after compaction)
+   * Get the VectorLocationIndex (used by the tests to inspect the resident locations)
    */
   protected VectorLocationIndex getVectorIndex() {
     return vectorIndex;
@@ -5035,22 +5177,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
           .log(this, Level.SEVERE, "Error applying replicated page update for index %s: %s", e, indexName,
               e.getMessage());
     }
-  }
-
-  /**
-   * Reload vectors from pages after compaction.
-   * Called by compactor after splitIndex to refresh VectorLocationIndex with new file structure.
-   */
-  protected void loadVectorsFromPagesAfterCompaction() {
-    loadVectorsFromPages();
-  }
-
-  /**
-   * Rebuild graph index after compaction.
-   * Called by compactor after reloading VectorLocationIndex.
-   */
-  protected void rebuildGraphAfterCompaction() {
-    initializeGraphIndex();
   }
 
   /**

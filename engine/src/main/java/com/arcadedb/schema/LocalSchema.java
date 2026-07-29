@@ -1782,6 +1782,12 @@ public class LocalSchema implements Schema {
                         NULL_STRATEGY.ERROR;
 
                     index.setNullStrategy(nullStrategy);
+                    // Apply the persisted definition, exactly as the by-name path above does. An LSM-tree index
+                    // carries its key types in its own file header and survives without this, but an index whose
+                    // whole definition lives in schema.json - a vector index with its dimensions, similarity and
+                    // quantization - comes up empty when its file is relinked under a new name after a compaction:
+                    // with dimensions still 0 the component skips loading its vectors at the end of this load.
+                    index.setMetadata(entry.getValue());
                     // Carry the manual TypeIndex name (issue #4139) onto the metadata for the
                     // orphan-relinking path too. addIndexInternal reads this when minting the
                     // TypeIndex; without this hop, an index file renamed by compaction loses its
