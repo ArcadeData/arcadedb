@@ -67,9 +67,7 @@ public class ExistsExpression implements Expression {
    * A bare pattern body becomes the predicate of the injected MATCH.
    */
   private static String wrapNonMatchBody(final String patterns, final String body) {
-    final String upper = body.toUpperCase();
-    if (upper.startsWith("RETURN") || upper.startsWith("WITH") || upper.startsWith("UNWIND")
-        || upper.startsWith("CALL") || upper.startsWith("OPTIONAL"))
+    if (CorrelatedSubqueryRewriter.startsWithClauseKeyword(body))
       return "MATCH " + patterns + " " + body;
     return "MATCH " + patterns + " WHERE " + body;
   }

@@ -1832,12 +1832,9 @@ class CypherExpressionBuilder {
           "InvalidClauseComposition: Existential subquery cannot contain update clauses");
 
     // If it's a pattern without MATCH, add MATCH prefix
-    final String upperTrimmed = subquery.toUpperCase();
-    if (!upperTrimmed.startsWith("MATCH")
-        && !upperTrimmed.startsWith("WITH")
-        && !upperTrimmed.startsWith("RETURN")) {
+    if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN true";
-    } else if (!upperTrimmed.contains("RETURN ")) {
+    } else if (!subquery.toUpperCase().contains("RETURN ")) {
       // Full subquery without RETURN — add RETURN true
       subquery = subquery + " RETURN true";
     }
@@ -1896,12 +1893,9 @@ class CypherExpressionBuilder {
           "InvalidClauseComposition: COUNT subquery cannot contain update clauses");
 
     // Pattern-only form: wrap with MATCH and add RETURN 1 so the outer evaluator can count rows.
-    final String upperTrimmed = subquery.toUpperCase();
-    if (!upperTrimmed.startsWith("MATCH")
-        && !upperTrimmed.startsWith("WITH")
-        && !upperTrimmed.startsWith("RETURN")) {
+    if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN 1";
-    } else if (!upperTrimmed.contains("RETURN ")) {
+    } else if (!subquery.toUpperCase().contains("RETURN ")) {
       subquery = subquery + " RETURN 1";
     }
 
