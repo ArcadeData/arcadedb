@@ -73,6 +73,17 @@ class ParallelRangeTopKTest extends TestHelper {
   /** Enough postings on the widest dim to cut into ranges, without paying to build a big corpus. */
   private static final int SMALL_DOCS = 6_000;
   private static final int K     = 10;
+  /**
+   * Ceiling on how many blocking tasks a saturation loop will submit. Purely a runaway guard: the
+   * loop stops when the queue reports full, and this stops it looping forever if that never happens.
+   */
+  private static final int SATURATION_SUBMIT_LIMIT = 10_000;
+  /**
+   * How long a saturation task waits before giving up. The tests always release the latch in a
+   * finally, so this only matters when something has already gone wrong - and then it turns a hung
+   * CI job into a failed test, which is the difference between a diagnosis and an hour of nothing.
+   */
+  private static final int SATURATION_RELEASE_TIMEOUT_SECONDS = 60;
 
   @Test
   void rangePartitionedScoringReproducesTheSerialResult() throws Exception {
@@ -410,7 +421,10 @@ class ParallelRangeTopKTest extends TestHelper {
         for (int i = 0; i < pool.getMaxParallelism(); i++) {
           hogs.add(executor.submit(() -> {
             occupied.countDown();
-            release.await();
+            // Same guard as the caller-runs test: never block the submitting thread, and never
+            // block unboundedly, so a mis-sized saturation cannot wedge the run.
+            if (SparseVectorScoringPool.isPoolThread())
+              release.await(SATURATION_RELEASE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             return null;
           }));
         }
@@ -469,12 +483,23 @@ class ParallelRangeTopKTest extends TestHelper {
         // task then runs somewhere that already has a database context.
         final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
         final ExecutorService executor = pool.getExecutorService();
-        final int toBlock = pool.getMaxParallelism() + pool.getPoolStats().queueCapacityRemaining();
-        for (int i = 0; i < toBlock; i++)
+        // Submit until the queue reports itself full rather than computing a count up front: the
+        // count is read from a racing snapshot, and overshooting it by even one is not a slow test
+        // but a permanently stuck one. An over-submitted task is rejected and the caller-runs policy
+        // runs it HERE, on this thread, where awaiting a latch released in a finally this thread can
+        // no longer reach hangs the JVM until CI times out. The guard below is what makes the task
+        // safe to run anywhere; this loop is what stops it happening in the first place.
+        int guard = 0;
+        while (pool.getPoolStats().queueCapacityRemaining() > 0 && guard++ < SATURATION_SUBMIT_LIMIT)
           executor.submit(() -> {
-            release.await();
+            // Only block when actually on a worker. A task that finds itself on the submitting
+            // thread was rejected, and blocking there is exactly the deadlock described above.
+            if (SparseVectorScoringPool.isPoolThread())
+              release.await(SATURATION_RELEASE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             return null;
           });
+        assertThat(guard).as("the pool must actually be saturated for this test to mean anything")
+            .isLessThan(SATURATION_SUBMIT_LIMIT);
 
         database.begin();
         try {
