@@ -365,13 +365,13 @@ public final class SparseVectorScoringPool {
     final long last = lastExplicitSplitWarnMs.get();
     if (now - last > SATURATION_WARN_INTERVAL_MS && lastExplicitSplitWarnMs.compareAndSet(last, now))
       LogManager.instance().log(this, Level.WARNING,
-          "Sparse-vector top-K split into %d ranges by an explicit %s=%d while %d queries were already in flight on a %d-thread pool. "
-              + "The adaptive default (0) would have kept this query on its caller thread. Splitting costs roughly 2x the CPU for an "
-              + "8-way split (measured 1.89x here, 1.98x independently), and under load that is paid by THIS query too, not only by its "
-              + "neighbours: at 16 concurrent clients a forced 8-way split measured 0.76x the throughput of no split at all, with a "
-              + "median 1.75x worse. It does compress the tail - p99/p50 1.5x against 5.2x - so if tail predictability is what you are "
-              + "buying, this is the trade; if it is median or throughput, %s=0 is faster. "
-              + "Set %s=0 to let the engine decide per query.",
+          "Sparse-vector top-K split into %d ranges by an explicit %s=%d with %d queries in flight (including this one) on a "
+              + "%d-thread pool. The adaptive default (0) would have kept this query on its caller thread. Splitting costs roughly 2x "
+              + "the CPU for an 8-way split (measured 1.89x here, 1.98x independently), and under load THIS query pays too, not only "
+              + "its neighbours: measured at 16 concurrent clients, a forced 8-way split returned 0.76x the throughput of no split at "
+              + "all and a median 1.75x worse. What it did buy is a lower tail - p99 297 ms against 579 ms - so forcing the split is a "
+              + "reasonable choice for tail-sensitive traffic and the wrong one for median or throughput. Set %s=0 to let the engine "
+              + "decide per query.",
           partitions, GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getKey(),
           GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger(), inFlight, ceiling,
           GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getKey(),
