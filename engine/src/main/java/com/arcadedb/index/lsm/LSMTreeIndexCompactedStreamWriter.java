@@ -44,7 +44,9 @@ final class LSMTreeIndexCompactedStreamWriter {
 
   /**
    * A series whose key hashes would need more than this much heap is written without a bloom filter: the 8 bytes per
-   * key are transient, but a compaction must not trade a correct index for an optimisation.
+   * key are transient, but a compaction must not trade a correct index for an optimisation. At the cap the accumulator
+   * peaks at 64 MB (plus one doubling in flight), against a compaction that is already holding whole pages per input
+   * cursor.
    */
   private static final int MAX_BLOOM_KEYS_PER_SERIES = 8_000_000;
 
@@ -245,11 +247,22 @@ final class LSMTreeIndexCompactedStreamWriter {
     if (bloomHashes == null)
       return;
 
-    final Binary serialized = compactedIndex.serializeKeyForHashing(bloomKeyContent, convertedKeys);
-    if (serialized == null)
+    // A key that reaches a page WITHOUT reaching the filter is a false negative, so anything that stops this key from
+    // being hashed must abandon the whole series' filter - never skip the key and publish the rest. And it must not
+    // propagate either: a compaction that produced correct index pages cannot be failed by an optimisation.
+    final long hash;
+    try {
+      final Binary serialized = compactedIndex.serializeKeyForHashing(bloomKeyContent, convertedKeys);
+      if (serialized == null)
+        throw new IllegalStateException("the key is not hashable");
+      hash = LSMTreeIndexBloomFilter.hashKey(serialized);
+    } catch (final Exception e) {
+      LogManager.instance().log(mainIndex, Level.WARNING,
+          "Cannot hash a key of index '%s' for its bloom filter: the series is written WITHOUT one (error=%s)", null,
+          mainIndex.getName(), e.toString());
+      bloomHashes = null;
       return;
-
-    final long hash = LSMTreeIndexBloomFilter.hashKey(serialized);
+    }
     if (bloomKeyCount > 0 && hash == bloomLastHash)
       return;
 
