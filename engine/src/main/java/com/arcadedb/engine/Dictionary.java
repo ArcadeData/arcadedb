@@ -55,7 +55,14 @@ import java.util.logging.Level;
  * after it and silently repoint every record that referenced them.
  * <br>
  * A name is never split over two pages, so the tail of a page is left unused when the next name does not fit: at identifier
- * lengths that is well under 1% of the file. The only hard limit left is a single name larger than one page.
+ * lengths that is well under 1% of the file. The only hard limit left is a single name larger than one page, which caps one
+ * identifier at {@code pageSize - BasePage.PAGE_HEADER_SIZE - DICTIONARY_HEADER_SIZE} bytes: ~65Kb on a dictionary created with
+ * the current {@link #DEF_PAGE_SIZE}, against ~327Kb on one created before it was reduced. Existing databases keep their page
+ * size, so only new ones see the lower cap, and no realistic identifier comes close to either.
+ * <br>
+ * <b>Upgrade order in a cluster:</b> a follower still running a build without multi-page support reads page 0 only, so once a
+ * database has rolled over, replicated pages beyond the first leave that follower reporting "Dictionary item with id N is not
+ * valid". Followers have to be upgraded before, or together with, the leader. See {@code docs/5560-dictionary-multipage.md}.
  * <br>
  */
 public class Dictionary extends PaginatedComponent {
@@ -389,6 +396,8 @@ public class Dictionary extends PaginatedComponent {
       final int totalPages = Math.max(1, pageCount.get());
 
       for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber) {
+        // createIfNotExists IS LOAD BEARING, NOT A DEFAULT: PAIRED WITH THE FLOOR ABOVE IT MATERIALISES PAGE 0 OF A FILE THAT
+        // IS SHORTER THAN ONE PAGE (KILLED MID-WRITE), WHICH IS WHAT THE SINGLE-PAGE READER USED TO DO
         final BasePage page = database.getPageManager()
             .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
 
