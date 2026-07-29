@@ -337,6 +337,13 @@ public class MCPConfiguration implements MCPPermissions {
     return json;
   }
 
+  /**
+   * Applies a partial configuration update atomically: every field is parsed and validated into a local before the
+   * first one is assigned, so a payload rejected on any field leaves the configuration exactly as it was. Assigning
+   * inline would let a client see a {@code 400} from {@link MCPConfigHandler} while an earlier field of the same
+   * payload had already taken effect, with no way to tell which prefix was applied short of re-reading the
+   * configuration.
+   */
   public synchronized void updateFrom(final JSONObject json) {
     final Map<String, DatabaseOverride> updatedDatabaseOverrides = json.has("databases")
         ? mergeDatabaseOverrides(databaseOverrides, objectValue(json, "databases"))
@@ -347,42 +354,33 @@ public class MCPConfiguration implements MCPPermissions {
     final Map<String, ToolProfile> updatedPrincipalProfiles = json.has("principalProfiles")
         ? mergePrincipalProfiles(principalProfiles, objectValue(json, "principalProfiles"))
         : principalProfiles;
+    final boolean updatedEnabled = json.has("enabled") ? booleanValue(json, "enabled") : enabled;
+    final boolean updatedAllowReads = json.has("allowReads") ? booleanValue(json, "allowReads") : allowReads;
+    final boolean updatedAllowInsert = json.has("allowInsert") ? booleanValue(json, "allowInsert") : allowInsert;
+    final boolean updatedAllowUpdate = json.has("allowUpdate") ? booleanValue(json, "allowUpdate") : allowUpdate;
+    final boolean updatedAllowDelete = json.has("allowDelete") ? booleanValue(json, "allowDelete") : allowDelete;
+    final boolean updatedAllowSchemaChange =
+        json.has("allowSchemaChange") ? booleanValue(json, "allowSchemaChange") : allowSchemaChange;
+    final boolean updatedAllowAdmin = json.has("allowAdmin") ? booleanValue(json, "allowAdmin") : allowAdmin;
+    final List<String> updatedAllowedUsers = json.has("allowedUsers")
+        ? new CopyOnWriteArrayList<>(stringListValue(json, "allowedUsers"))
+        : allowedUsers;
+    final List<String> updatedAllowedOrigins = json.has("allowedOrigins")
+        ? new CopyOnWriteArrayList<>(stringListValue(json, "allowedOrigins"))
+        : allowedOrigins;
 
-    if (json.has("enabled"))
-      enabled = booleanValue(json, "enabled");
-    if (json.has("allowReads"))
-      allowReads = booleanValue(json, "allowReads");
-    if (json.has("allowInsert"))
-      allowInsert = booleanValue(json, "allowInsert");
-    if (json.has("allowUpdate"))
-      allowUpdate = booleanValue(json, "allowUpdate");
-    if (json.has("allowDelete"))
-      allowDelete = booleanValue(json, "allowDelete");
-    if (json.has("allowSchemaChange"))
-      allowSchemaChange = booleanValue(json, "allowSchemaChange");
-    if (json.has("allowAdmin"))
-      allowAdmin = booleanValue(json, "allowAdmin");
+    enabled = updatedEnabled;
+    allowReads = updatedAllowReads;
+    allowInsert = updatedAllowInsert;
+    allowUpdate = updatedAllowUpdate;
+    allowDelete = updatedAllowDelete;
+    allowSchemaChange = updatedAllowSchemaChange;
+    allowAdmin = updatedAllowAdmin;
     databaseOverrides = updatedDatabaseOverrides;
     toolProfile = updatedProfile;
     principalProfiles = updatedPrincipalProfiles;
-    if (json.has("allowedUsers")) {
-      final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
-      // Treat explicit null as an empty list (client intent to clear all users)
-      final List<String> users = new ArrayList<>();
-      if (usersArray != null)
-        for (int i = 0; i < usersArray.length(); i++)
-          users.add(usersArray.getString(i));
-      allowedUsers = new CopyOnWriteArrayList<>(users);
-    }
-    if (json.has("allowedOrigins")) {
-      final JSONArray originsArray = json.getJSONArray("allowedOrigins", null);
-      // Treat explicit null as an empty list (client intent to clear all extra origins)
-      final List<String> origins = new ArrayList<>();
-      if (originsArray != null)
-        for (int i = 0; i < originsArray.length(); i++)
-          origins.add(originsArray.getString(i));
-      allowedOrigins = new CopyOnWriteArrayList<>(origins);
-    }
+    allowedUsers = updatedAllowedUsers;
+    allowedOrigins = updatedAllowedOrigins;
   }
 
   private File getConfigFile() {
@@ -583,6 +581,24 @@ public class MCPConfiguration implements MCPPermissions {
     if (value instanceof JSONObject object)
       return object;
     throw new IllegalArgumentException("MCP configuration field '" + name + "' must be an object");
+  }
+
+  /**
+   * Reads a list of strings, mapping an explicitly null value to an empty list (the caller's clear-everything intent)
+   * and any other non-array value to a rejected update. Reading it through {@code getJSONArray} instead would let a
+   * malformed payload surface as an internal error rather than a client error.
+   */
+  private static List<String> stringListValue(final JSONObject json, final String name) {
+    if (json.isNull(name))
+      return List.of();
+    final Object value = json.opt(name);
+    if (!(value instanceof JSONArray array))
+      throw new IllegalArgumentException("MCP configuration field '" + name + "' must be an array of strings");
+
+    final List<String> result = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++)
+      result.add(array.getString(i));
+    return result;
   }
 
   private static boolean booleanValue(final JSONObject json, final String name) {
