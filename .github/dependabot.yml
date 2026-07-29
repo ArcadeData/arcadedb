@@ -1,4 +1,16 @@
 version: 2
+
+# Alert triage note
+# -----------------
+# The repository's Dependabot auto-triage rule dismisses development-scope
+# alerts for CWE-400 / CWE-770 / CWE-835 / CWE-674 (resource exhaustion), but
+# NOT CWE-407 (inefficient algorithmic complexity) or CWE-22. That gap is why
+# ReDoS-class advisories against test-only packages such as brace-expansion and
+# js-yaml still surface as open alerts even though they are unreachable from any
+# shipped artifact. Widening the rule to include CWE-407 for development scope
+# is a Security -> Dependabot -> auto-triage rules setting in the GitHub UI and
+# cannot be expressed in this file.
+
 updates:
   - package-ecosystem: "maven"
     directory: "/"
@@ -116,20 +128,43 @@ updates:
           - "patch"
 
   # E2E JavaScript Testing Dependencies
+  #
+  # Everything here is test-harness only and never ships in a distribution.
+  # Jest and testcontainers drag in a wide transitive tree (glob, minimatch,
+  # brace-expansion, babel), so ungrouped patch bumps exhaust the PR limit and
+  # bury the updates that matter. Group minor/patch into one PR per week and
+  # let majors open individually, matching the /e2e-go convention.
   - package-ecosystem: "npm"
     directory: "/e2e-js"
     schedule:
       interval: weekly
       day: "sunday"
     open-pull-requests-limit: 10
+    groups:
+      e2e-js-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # E2E Studio Testing Dependencies
+  #
+  # Playwright and testcontainers only; test-harness scope, never shipped.
+  # Grouped for the same reason as /e2e-js above.
   - package-ecosystem: "npm"
     directory: "/e2e-studio"
     schedule:
       interval: weekly
       day: "sunday"
     open-pull-requests-limit: 10
+    groups:
+      e2e-studio-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # E2E Python Testing Dependencies
   - package-ecosystem: "uv"
