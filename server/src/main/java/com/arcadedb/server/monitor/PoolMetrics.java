@@ -78,6 +78,7 @@ public final class PoolMetrics implements MeterBinder {
         () -> svsp.getPoolStats().queueCapacityRemaining(),
         () -> svsp.getPoolStats().completedTasks(),
         () -> svsp.getPoolStats().callerRunFallbacks());
+    bindSparseVectorSplit(registry, svsp);
 
     // Dedicated pool for the BLOCKING parallel-scan producers (issues #4948/#4950): unbounded task queue by
     // design (backpressure comes from each query's bounded result queue), so callerRunFallbacks is always 0
@@ -99,6 +100,36 @@ public final class PoolMetrics implements MeterBinder {
         .description("Cumulative ghost (dangling) edges skipped during graph traversal since startup. "
             + "Sustained growth indicates a data-integrity anomaly, e.g. incomplete HA replication or a partially rolled-back transaction.")
         .register(registry);
+  }
+
+  /**
+   * Three extra gauges on the {@code sparse_vector} row that explain the pool's own numbers
+   * (issue #4085).
+   * <p>
+   * A sparse-vector top-K decides per query whether to split itself into RID ranges, and a query
+   * that stays serial never touches the pool at all. Without these, an idle {@code sparse_vector}
+   * row is ambiguous in a way an operator cannot resolve: nobody is querying, everybody is querying
+   * but the load gate has switched splitting off, the queries are too small to qualify, or something
+   * is broken - all four look the same. {@code queries.in_flight} separates "no queries" from "no
+   * splitting", {@code queries.split} confirms splitting has ever happened, and {@code pool.reserved}
+   * shows the capacity currently claimed, which is what the gate decides against.
+   * <p>
+   * Registered only for this pool. The other pools take work as it is handed to them and have no
+   * equivalent decision to explain, so their rows leave these blank rather than reporting a
+   * meaningless zero.
+   */
+  private static void bindSparseVectorSplit(final MeterRegistry registry, final SparseVectorScoringPool pool) {
+    final Tags tags = Tags.of(Tag.of("pool", "sparse_vector"));
+    Gauge.builder("arcadedb.executor.pool.reserved", () -> pool.getReservedWorkers())
+        .description("Sparse-vector scoring: workers currently claimed by in-flight range splits").tags(tags)
+        .register(registry);
+    Gauge.builder("arcadedb.executor.queries.in_flight", () -> pool.getInFlightQueries())
+        .description("Sparse-vector scoring: top-K queries executing right now, split or serial. "
+            + "Once these can keep the pool busy on their own, queries stop splitting and run on their caller's thread.")
+        .tags(tags).register(registry);
+    Gauge.builder("arcadedb.executor.queries.split", () -> pool.getSplitQueryCount())
+        .description("Sparse-vector scoring: cumulative top-K queries split into parallel RID ranges since startup")
+        .tags(tags).register(registry);
   }
 
   private static void bindPool(final MeterRegistry registry, final String poolTag, final String description,

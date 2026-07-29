@@ -372,6 +372,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       final RID[] boundaries = planPartitionBoundaries(queryDims, segSnapshot);
       if (boundaries != null) {
         partitionedQueries.incrementAndGet();
+        pool.querySplit();
         try {
           return parallelTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, boundaries);
         } finally {

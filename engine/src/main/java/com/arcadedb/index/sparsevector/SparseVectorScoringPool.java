@@ -110,6 +110,8 @@ public final class SparseVectorScoringPool {
   private final AtomicInteger      reservedWorkers      = new AtomicInteger();
   /** Sparse-vector top-K calls in flight JVM-wide, split or not; see {@link #queryStarted()}. */
   private final AtomicInteger      inFlightQueries      = new AtomicInteger();
+  /** Cumulative queries that were split into RID ranges rather than run on the caller thread. */
+  private final AtomicLong         splitQueries         = new AtomicLong();
   private final AtomicLong         callerRunCount       = new AtomicLong();
   // Throttle for the WARNING log emitted on saturation: at most one entry per minute. Same
   // shape as the QueryEngineManager pool's throttle - operators see one nudge in the console
@@ -271,6 +273,20 @@ public final class SparseVectorScoringPool {
   /** Sparse-vector top-K calls currently executing across the JVM. Test and diagnostics hook. */
   public int getInFlightQueries() {
     return inFlightQueries.get();
+  }
+
+  /**
+   * Records that a query was split into RID ranges. Counted here rather than only per index so an
+   * operator can tell "nothing is splitting" apart from "nothing is querying" - the two look
+   * identical on the pool's own gauges, since a query that stays serial never touches this pool.
+   */
+  public void querySplit() {
+    splitQueries.incrementAndGet();
+  }
+
+  /** Cumulative queries split into RID ranges since JVM start. */
+  public long getSplitQueryCount() {
+    return splitQueries.get();
   }
 
   /** Unconditional claim, for an operator who configured an explicit partition count. */
