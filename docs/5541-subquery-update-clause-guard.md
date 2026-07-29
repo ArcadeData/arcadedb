@@ -44,8 +44,8 @@ visible rather than data-corrupting.
 `CorrelatedSubqueryRewriter` gains the update-clause list and one public predicate, next to the
 clause-keyword list it already owns:
 
-- `UPDATE_CLAUSE_KEYWORDS` - `CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`. `DELETE` also covers
-  `DETACH DELETE`.
+- `UPDATE_CLAUSE_KEYWORDS` - `CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`, `INSERT`. `DELETE` also
+  covers `DETACH DELETE`; on `INSERT` see the review-cycle note below.
 - `containsUpdateClause(body)` - walks the body once, skipping string literals and backtick-quoted
   identifiers (including backslash escapes), and matches only on a word boundary through the existing
   `matchesKeywordAt`.
@@ -71,7 +71,7 @@ correctly derived table rather than borrowing the boundary one. Still derived, n
 
 New regression test
 `engine/src/test/java/com/arcadedb/query/opencypher/Issue5541SubqueryUpdateClauseGuardTest.java`,
-9 tests.
+11 tests.
 
 Proven to fail before the fix: with the helper added but the three guards still naive, 6 of the 9
 failed, each with the exact reported `InvalidClauseComposition` exception - the `COUNT`, `EXISTS`,
@@ -88,20 +88,55 @@ longer identifiers that merely start with a keyword.
 The openCypher TCK scenario that requires rejection - `ExistentialSubquery2.feature` scenario [3],
 "Full existential subquery with update clause should fail" - continues to pass.
 
-Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7711 tests, 0 failures, and the
-full `engine` module suite, 10166 tests, 0 failures.
+Regression run: the full `com.arcadedb.query.opencypher.**` suite, 7713 tests, 0 failures, and the
+full `engine` module suite, 10168 tests, 0 failures.
 
 Both totals reconcile exactly against the last measured run of the previous branch (7695 openCypher /
 10150 engine): +7 for `OpenCypherStDevEmptyInputTest`, which reached `main` after that branch point,
-and +9 for the new class here. Compared per class, no pre-existing test class changed its count, so
+and +11 for the new class here. Compared per class, no pre-existing test class changed its count, so
 the fix moved nothing it should not have. That puts the current `main` baseline at 7702 openCypher /
 10157 engine.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5542
+
+### Review cycles
+
+**Cycle 1** - `e173e070` - claude[bot], no blocking findings but one substantive challenge: that
+leaving `INSERT` out let a real write execute inside a read-only subquery. The code half of the claim
+checked out - `ClauseDispatcher.handleInsert` routes to `visitInsertClause`, which builds a
+`CreateClause`, so `INSERT` genuinely is `CREATE` in this engine.
+
+The consequence half did not. Probed directly against the branch:
+
+```
+COUNT   { INSERT (m:T {name:'leaked-count'})   RETURN m }  ->  0
+EXISTS  { INSERT (m:T {name:'leaked-exists'})  RETURN m }  ->  false
+COLLECT { INSERT (m:T {name:'leaked-collect'}) RETURN m }  ->  []
+total :T nodes afterwards = 2, unchanged; leaked nodes = 0
+```
+
+No write reaches storage. What happens instead is the #5461 failure mode: the body fails downstream
+and each expression absorbs it into its neutral value, so the query silently answers `0` instead of
+raising. So this was not the data-integrity gap it was reported to be - but `INSERT` was still added,
+for the better reason that it converts a silently wrong answer into a proper error and stops
+`CLAUSE_KEYWORDS` and `UPDATE_CLAUSE_KEYWORDS` disagreeing about whether `INSERT` writes. The earlier
+"it parses on `main` today" objection was weak once it was clear those queries answer `0` today.
+
+Also applied from cycle 1: backslash escaping no longer applies inside backtick-quoted identifiers,
+where Cypher escapes a literal backtick by doubling it rather than with a backslash. The review
+called this cosmetic and suggested only correcting the comment; the one-character fix is strictly
+more correct than the comment, so the behavior was fixed instead. Covered by a test in which the
+backslash form would otherwise swallow the closing backtick and hide a genuine trailing `SET`.
+
+Declined, with the reason recorded in code: comments are not skipped by the scan, so an update
+keyword inside a `//` or `/* */` comment still trips the guard. That blind spot predates this change
+(the old `contains("SET ")` had it too) and is not widened here; fixing it means teaching the scanner
+comment syntax, which is beyond this bug.
+
 ## Follow-ups
 
-- **Out of scope, deliberately.** `INSERT` is a real ArcadeDB clause (`Cypher25Parser.g4` defines
-  `insertClause`) and is a write, but it was not in the original guard. Adding it would reject
-  queries that parse today, which is a behavior change beyond this bug. Noted, not changed.
 - **Investigated under #5461, not a defect.** The neighbouring
   `subquery.toUpperCase().contains("RETURN ")` test in `parseCountExpression` /
   `parseExistsExpression` is also an imprecise substring match, but it does not produce a wrong

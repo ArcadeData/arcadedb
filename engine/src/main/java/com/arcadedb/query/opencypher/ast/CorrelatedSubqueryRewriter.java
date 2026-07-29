@@ -67,9 +67,12 @@ public final class CorrelatedSubqueryRewriter {
 
   /**
    * Clauses that write, and so may not appear in the read-only subquery expressions. {@code DELETE}
-   * also covers {@code DETACH DELETE}.
+   * also covers {@code DETACH DELETE}. {@code INSERT} is here because this engine treats it as a
+   * synonym of {@code CREATE} - {@code ClauseDispatcher.handleInsert} builds a {@code CreateClause} -
+   * so leaving it out let a body that is plainly a write reach the executor, where it produced the
+   * expression's neutral value instead of an error.
    */
-  private static final String[] UPDATE_CLAUSE_KEYWORDS = { "CREATE", "MERGE", "SET", "DELETE", "REMOVE" };
+  private static final String[] UPDATE_CLAUSE_KEYWORDS = { "CREATE", "MERGE", "SET", "DELETE", "REMOVE", "INSERT" };
 
   /**
    * First letters of each keyword array, so a per-character scan rejects a position with one array
@@ -114,6 +117,9 @@ public final class CorrelatedSubqueryRewriter {
    * <p>
    * Nesting is deliberately not tracked: a write nested inside a bracketed construct - {@code CALL {
    * ... CREATE ... }} - is still a write, and must still be rejected.
+   * <p>
+   * Comments are not skipped, so an update keyword inside one is still read as a clause. That blind
+   * spot predates this scan and is not widened by it.
    */
   public static boolean containsUpdateClause(final String body) {
     final String upper = body.toUpperCase();
@@ -123,8 +129,10 @@ public final class CorrelatedSubqueryRewriter {
       final char c = upper.charAt(i);
 
       if (quote != 0) {
-        // Inside a string literal or quoted identifier: only its (non-escaped) closing quote matters
-        if (c == '\\')
+        // Inside a string literal or quoted identifier: only its closing quote matters. Backslash
+        // escapes apply to string literals only - a backtick-quoted identifier escapes a literal
+        // backtick by doubling it, which this toggle handles on its own (close then reopen).
+        if (c == '\\' && quote != '`')
           i++;
         else if (c == quote)
           quote = 0;

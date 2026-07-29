@@ -115,6 +115,34 @@ class Issue5541SubqueryUpdateClauseGuardTest {
         .hasMessageContaining("InvalidClauseComposition");
   }
 
+  /**
+   * INSERT is a synonym of CREATE in this engine, so a body opening with it is a write. It used to
+   * slip past the guard and reach the executor, which absorbed it into the expression's neutral
+   * value - a silent 0 rather than an error. No row was ever written, but the answer was wrong.
+   */
+  @Test
+  void insertIsRejectedAsAnUpdateClause() {
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN COUNT { INSERT (m:T {name:'x'}) RETURN m } AS v"))
+        .hasMessageContaining("InvalidClauseComposition");
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN EXISTS { INSERT (m:T {name:'x'}) RETURN m } AS v"))
+        .hasMessageContaining("InvalidClauseComposition");
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN COLLECT { INSERT (m:T {name:'x'}) RETURN m } AS v"))
+        .hasMessageContaining("InvalidClauseComposition");
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("INSERT (m:T)")).isTrue();
+
+    // ... but INSERT inside a literal is still just data
+    assertThat(scalar("RETURN COUNT { MATCH (n:T) WHERE n.name = 'INSERT here' RETURN n } AS v")).isEqualTo(0L);
+    assertThat(scalar("MATCH (n:T) RETURN count(n) AS v")).isEqualTo(4L);
+  }
+
+  @Test
+  void backtickIdentifiersEscapeByDoublingNotByBackslash() {
+    // A doubled backtick closes and reopens the quote, so the SET after it is still inside data
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) WHERE n.`a``b SET c` = 1 RETURN n")).isFalse();
+    // A backslash is not an escape inside a backtick identifier, so it must not swallow the closer
+    assertThat(CorrelatedSubqueryRewriter.containsUpdateClause("MATCH (n) WHERE n.`a\\` = 1 SET n.x = 2")).isTrue();
+  }
+
   @Test
   void rejectedUpdateSubqueryLeavesTheDataUntouched() {
     assertThatThrownBy(() -> database.query("opencypher", "RETURN COUNT { CREATE (m:T {name:'leaked'}) RETURN m } AS v"))
