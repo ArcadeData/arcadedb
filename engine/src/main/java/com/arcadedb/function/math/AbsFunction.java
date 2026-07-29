@@ -41,10 +41,13 @@ public class AbsFunction implements StatelessFunction {
     if (args[0] == null)
       return null;
     if (args[0] instanceof Byte || args[0] instanceof Short || args[0] instanceof Integer || args[0] instanceof Long) {
-      final long val = ((Number) args[0]).longValue();
-      if (val == Long.MIN_VALUE)
-        throw new ArithmeticException("abs(Long.MIN_VALUE) overflow");
-      return Math.abs(val);
+      try {
+        // absExact() fails on Long.MIN_VALUE, whose magnitude is not representable in a signed 64-bit
+        // integer and which Math.abs() would silently return unchanged - a negative "absolute value".
+        return Math.absExact(((Number) args[0]).longValue());
+      } catch (final ArithmeticException e) {
+        throw new CommandExecutionException("long overflow", e);
+      }
     }
     if (args[0] instanceof Number)
       return Math.abs(((Number) args[0]).doubleValue());
