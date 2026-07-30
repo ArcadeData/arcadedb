@@ -676,6 +676,10 @@ public class TransactionContext implements Transaction {
    * way that does not commute with a concurrent append (edge removal, new-chunk allocation, bulk load). Tracked
    * appends on that page are ignored at commit (the conflict check below excludes poisoned pages), so a rebase
    * can never silently re-derive the page from committed-state + appends. No-op when the feature is off.
+   * <p>
+   * Since #5596 this is the fast, precise opt-OUT, no longer the only line of defence: the merge additionally
+   * requires the page to PROVE that every byte this transaction wrote there was declared replayable by it (see
+   * {@link MutablePage#beginCoveredWrite(int)}), so a forgotten call here costs a retry, not a lost write.
    */
   public void poisonEdgeAppendPage(final RID segmentRID) {
     if (!edgeAppendMerge)
@@ -717,25 +721,59 @@ public class TransactionContext implements Transaction {
     return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
   }
 
-  private boolean isRebasableEdgeAppendPage(final PageId pageId) {
+  /**
+   * True when an in-chunk append to {@code segmentRID} was registered by {@link #trackEdgeAppend} in this
+   * transaction, i.e. the commit-time edge-append merge is able to replay it. Used by the writer
+   * ({@link LocalBucket}) to declare the segment's page write as covered by that merge (#5596).
+   */
+  public boolean isEdgeAppendTracked(final RID segmentRID) {
+    return edgeAppendMerge && edgeAppendsBySegment != null && edgeAppendsBySegment.containsKey(segmentRID);
+  }
+
+  /**
+   * True when an edge-append merge write to page (fileId, pageNumber) has already been poisoned in this transaction.
+   */
+  public boolean isEdgeAppendPagePoisoned(final int fileId, final int pageNumber) {
+    return edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(packPageKey(fileId, pageNumber));
+  }
+
+  private boolean isRebasableEdgeAppendPage(final MutablePage page) {
     if (!edgeAppendMerge || edgeAppendsBySegment == null)
       return false;
+    final PageId pageId = page.getPageId();
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
     if (edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(key))
       return false;
     // Is at least one tracked segment on this (conflicting) page? Computing the segment page keys here, on the
     // rare conflict path, is what keeps the append hot path free of allocation.
+    boolean tracked = false;
     for (final RID segmentRID : edgeAppendsBySegment.keySet())
-      if (edgeSegmentPageKey(segmentRID) == key)
-        return true;
-    return false;
+      if (edgeSegmentPageKey(segmentRID) == key) {
+        tracked = true;
+        break;
+      }
+    if (!tracked)
+      return false;
+
+    // #5596: the rebase drops this transaction's whole image of the page, so it is sound only when every byte this
+    // transaction wrote there was declared replayable by THIS merge. A writer that forgot to poison the page (or
+    // never knew the merge exists) leaves at least one undeclared byte behind and is refused here - a retry instead
+    // of a silently lost write. Logged because it is also the signal that a writer is missing its poison call.
+    if (!page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE)) {
+      LogManager.instance().log(this, Level.FINE,
+          "Edge-append merge declined page %s: it carries changes no tracked append accounts for", pageId);
+      return false;
+    }
+    return true;
   }
 
   /**
    * Replays this transaction's tracked in-chunk appends for {@code pageId} on top of the current committed
    * version of that page, resolving a version conflict that was caused solely by concurrent appends to the
    * same edge-list chunk(s). Runs only on the leader/embedded commit, while the edge file's commit lock is
-   * held (so the current version is stable), and only for pages whose every modification was a tracked append.
+   * held (so the current version is stable), and only for pages whose every modification was a tracked append -
+   * an eligibility {@link #isRebasableEdgeAppendPage(MutablePage)} verifies against the page itself rather than
+   * trusting every writer to have excluded itself (#5596).
    *
    * @return the freshly rebased page, ready to be version-checked and committed.
    *
@@ -964,6 +1002,10 @@ public class TransactionContext implements Transaction {
    * a way that is not a single-slot insert, in-page update or plain-record delete (a placeholder or multi-page
    * record, a record that had to spill out of the page). Any tracked slots on it are dropped so a rebase can never
    * silently re-derive the page from committed-state + our slot writes. No-op when the feature is off.
+   * <p>
+   * As on the edge-append side, since #5596 this is the fast, precise opt-OUT and not the only line of defence:
+   * {@link #isRebasableSlotPage(MutablePage)} also requires the page to prove that every byte this transaction
+   * wrote there was declared replayable by this merge (see {@link MutablePage#beginCoveredWrite(int)}).
    */
   public void poisonSlotRebasePage(final int fileId, final int pageNumber) {
     if (!slotMerge)
@@ -1016,13 +1058,24 @@ public class TransactionContext implements Transaction {
     return slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(packPageKey(fileId, pageNumber));
   }
 
-  private boolean isRebasableSlotPage(final PageId pageId) {
+  private boolean isRebasableSlotPage(final MutablePage page) {
     if (!slotMerge || slotRebaseByPage == null)
       return false;
+    final PageId pageId = page.getPageId();
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
     if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
       return false;
-    return slotRebaseByPage.containsKey(key);
+    if (!slotRebaseByPage.containsKey(key))
+      return false;
+
+    // #5596: same coverage proof as the edge-append merge - the page is re-derived from the tracked slot writes
+    // alone, so any byte written outside a slot-merge declaration disqualifies it.
+    if (!page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)) {
+      LogManager.instance().log(this, Level.FINE,
+          "Slot merge declined page %s: it carries changes no tracked slot write accounts for", pageId);
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -1448,12 +1501,12 @@ public class TransactionContext implements Transaction {
           // committed version instead of failing the whole transaction. The edge file's commit lock is held
           // here, so the current version stays stable across the rebase performed after the loop (rebasing here
           // would structurally modify modifiedPages while iterating it).
-          if (isLeader && isRebasableEdgeAppendPage(p.getPageId())) {
+          if (isLeader && isRebasableEdgeAppendPage(p)) {
             if (pagesToRebase == null)
               pagesToRebase = new ArrayList<>();
             pagesToRebase.add(p.getPageId());
             it.remove();
-          } else if (isLeader && isRebasableSlotPage(p.getPageId())) {
+          } else if (isLeader && isRebasableSlotPage(p)) {
             // Disjoint-slot merge (#5381): the conflict is only because a concurrent commit touched OTHER slots
             // of this page; replay this transaction's slot writes on the newer committed page (after the loop).
             if (slotPagesToRebase == null)
