@@ -3,6 +3,40 @@
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
 they land during the 26.8.1 development cycle, so the release notes are ready at tag time.
 
+### Fixes
+
+#### Concurrent writes to unrelated records of the same page no longer conflict
+
+ArcadeDB detects write conflicts per *page*, so two transactions that touched the same bucket page raised a
+`ConcurrentModificationException` even when they wrote completely unrelated records that merely happened to
+share it. On a type with few buckets and many concurrent writers this made a retry pointless: the retry ran
+straight into the same collision ([#5279](https://github.com/ArcadeData/arcadedb/issues/5279)).
+
+Both halves of that are gone in 26.8.1:
+
+- **Inserts** into one page now reserve their slot per in-flight transaction, so concurrent inserts get
+  different positions (and different RIDs) instead of all being handed the same one, and the commit-time
+  disjoint-slot merge replays them on top of each other.
+- **Updates** are replayed by that same merge whenever they stayed inside the page, which now includes a
+  record that GREW - a longer string, one more property - and not only an overwrite of the same size or
+  smaller. Growth is the normal update shape, so leaving it out kept concurrent updates of unrelated records
+  conflicting for good.
+
+Measured on the reported workload (one single bucket, `attempts=1`, no retry):
+
+| Scenario | Before | After |
+|---|---|---|
+| Concurrent inserts | ~1750 conflicts / 2000 | 0 |
+| Concurrent sub-graph creation (6 vertices + 5 edges per transaction) | ~270 / 320 | 0 |
+| 10 transactions updating 10 different records of one page | 9 failed / 10 | 0 |
+| Sustained updates, 8 writers on their own records of one page | ~2083 / 2880 | 0 |
+
+A `ConcurrentModificationException` is still raised - by design - when two transactions really write the
+**same** record: a byte-for-byte pre-image check makes sure no concurrent write is ever silently overwritten.
+The same goes for the write shapes no merge can replay (a delete, a placeholder or multi-page record, a
+record that has to spill out of its page). Nothing changes for single-writer workloads, and no application
+change is needed. The merge can be switched off with `arcadedb.txPageSlotMerge=false`.
+
 ### New Features
 
 #### Bloom filters on compacted LSM indexes (enabled by default)

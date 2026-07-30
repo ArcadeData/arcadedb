@@ -2,12 +2,16 @@
 
 Guidance for working under `engine/`. This file records things the code does not tell you, or actively misleads you about. It is not a tour of the module - use `Glob` and the package names for that.
 
-## Concurrency: the conflict unit is the PAGE, not the record
+## Concurrency: the conflict unit is the PAGE, and two commit-time merges take it back to the record
 
-`PageManager.checkPageVersion()` compares the transaction's page version against `getMostRecentVersionOfPage()`. Any other committed transaction that touched that page raises `ConcurrentModificationException`, **whether or not the records overlap**. Two consequences that surprise people:
+`PageManager.checkPageVersion()` compares the transaction's page version against `getMostRecentVersionOfPage()`. Any other committed transaction that touched that page raises `ConcurrentModificationException`, **whether or not the records overlap** - `LocalBucket.findAvailableSpace` deliberately packs unrelated records into the same page, and `EdgeLinkedList.add` makes two edges into one supernode touch the same chunk even though appends commute.
 
-- **Concurrent inserts false-conflict.** `LocalBucket.findAvailableSpace` deliberately packs new records into an existing free page, filling the lowest page ID first. N threads inserting at once pick the same page, all bump its version, and only one commit survives. The records were destined for different slots and never really conflicted.
-- **Supernode edge appends genuinely conflict.** `EdgeLinkedList.add` modifies the last segment chunk in place plus the vertex record. Two edges into the same supernode touch the same pages even though appends are logically commutative. Adding buckets cannot help: one vertex is one set of pages.
+Two mechanisms undo that false verdict at commit time, both leader/embedded-only and both running while the file's commit lock is held (see `TransactionContext.commit1stPhase`):
+
+- **`GRAPH_EDGE_APPEND_MERGE`** replays this transaction's in-chunk edge appends on the newer committed edge-list page.
+- **`TX_PAGE_SLOT_MERGE`** (#5381, #5279) replays this transaction's per-slot record writes on the newer committed bucket page: inserts into free slots, and updates that stayed **inside** the page - an overwrite of the same size or smaller, or a growth the page could host by shifting the records that follow (`LocalBucket.growRecordInPage`, shared with the replay so both grow a record identically). `LocalBucket` also reserves the insert slot per in-flight transaction, so concurrent inserts into one page get different slots (hence different RIDs) instead of all being handed the same one.
+
+What still raises a `ConcurrentModificationException`: two transactions writing the **same** record (by design - the byte-for-byte pre-image check catches it and the application must reload), a delete, a placeholder or multi-page record, a record that had to spill out of its page, and any page its owner poisoned with one of those.
 
 `ConcurrentModificationException extends NeedRetryException`, so retry is the designed response. **Retry safety is asymmetric:** on retry an INSERT gets a fresh slot and RID from `findAvailableSpace`, so nothing is overwritten and retrying is safe. For UPDATE, blind retry can overwrite a concurrent write - re-read first.
 
