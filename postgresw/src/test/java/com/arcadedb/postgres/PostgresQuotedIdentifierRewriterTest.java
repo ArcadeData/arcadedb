@@ -43,6 +43,18 @@ public class PostgresQuotedIdentifierRewriterTest {
   }
 
   @Test
+  void backslashInAQuotedNameIsEscapedOnTheWayOut() {
+    // inside a back-tick identifier a backslash escapes the character that follows it, so a backslash carried over from a
+    // Postgres double-quoted name has to be doubled or the engine reads `My\\Type` as MyType
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT FROM \"My\\Type\"")).isEqualTo("SELECT FROM `My\\\\Type`");
+  }
+
+  @Test
+  void backTickInAQuotedNameIsEscapedOnTheWayOut() {
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT FROM \"Back`Tick\"")).isEqualTo("SELECT FROM `Back\\`Tick`");
+  }
+
+  @Test
   void qualifiedIdentifiersAreTranslated() {
     assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"c\".\"name\" FROM Character AS \"c\"")).isEqualTo(
         "SELECT `c`.`name` FROM Character AS `c`");

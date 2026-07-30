@@ -369,7 +369,7 @@ function saveRecordEditor() {
     } else
       sqlValue = "'" + current.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
 
-    setParts.push("`" + prop + "` = " + sqlValue);
+    setParts.push(quoteSqlName(prop) + " = " + sqlValue);
   });
 
   // Collect deleted properties (REMOVE)
@@ -377,7 +377,7 @@ function saveRecordEditor() {
   var curr = globalRecordEditorState.properties;
   for (var p in orig) {
     if (!curr.hasOwnProperty(p))
-      removeParts.push("`" + p + "`");
+      removeParts.push(quoteSqlName(p));
   }
 
   if (setParts.length === 0 && removeParts.length === 0) {

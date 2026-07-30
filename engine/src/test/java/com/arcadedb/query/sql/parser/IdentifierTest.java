@@ -55,11 +55,13 @@ class IdentifierTest {
 
   @Test
   void backslashWithoutBackTickPreserved() {
-    // A literal backslash not followed by a back-tick must be left untouched by getStringValue()
+    // A literal backslash in a name survives the round-trip through getStringValue()
     final Identifier identifier = new Identifier("na\\me");
 
     assertThat(identifier.getStringValue()).isEqualTo("na\\me");
-    assertThat(identifier.getValue()).isEqualTo("na\\me");
+    // getValue() is the escaped form, so the backslash is itself escaped: leaving it bare would make the closing back-tick of
+    // `na\me` ambiguous once the value is emitted back into SQL
+    assertThat(identifier.getValue()).isEqualTo("na\\\\me");
   }
 
   @Test

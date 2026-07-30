@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
@@ -479,7 +480,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Number limit = (Number) del.get("limit");
           final boolean single = limit != null && limit.intValue() == 1;
 
-          final StringBuilder sql = new StringBuilder("DELETE FROM `").append(collectionName).append('`');
+          final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
           appendWhere(sql, q);
           if (single)
             sql.append(" LIMIT 1");
@@ -556,7 +557,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!database.getSchema().existsType(collectionName) || u == null)
       return 0;
 
-    final StringBuilder sql = new StringBuilder("UPDATE `").append(collectionName).append('`');
+    final StringBuilder sql = new StringBuilder("UPDATE ").append(Identifier.quote(collectionName));
     appendUpdateOperations(sql, u);
     appendWhere(sql, q);
     if (!multi)
@@ -637,12 +638,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         for (final String field : operand.keySet()) {
           if (i++ > 0)
             sql.append(", ");
-          sql.append('`').append(field).append('`');
+          sql.append(MongoDBToSqlTranslator.quoteFieldPath(field));
         }
       }
       case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet())
-          sql.append(" SET `").append(f.getKey()).append("` += ").append((Number) f.getValue());
+          sql.append(" SET ").append(MongoDBToSqlTranslator.quoteFieldPath(f.getKey())).append(" += ").append((Number) f.getValue());
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }

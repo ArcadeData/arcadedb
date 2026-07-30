@@ -56,7 +56,19 @@ public class Identifier extends SimpleNode {
   }
 
   /**
-   * returns the value as is, with back-ticks quoted with backslash
+   * builds an identifier from the SQL spelling of a back-tick quoted name, outer back-ticks included. Going through the
+   * {@link #Identifier(String)} constructor first would run the inner text through {@link #escape(String)} only to discard the
+   * result on the following {@link #setQuotedStringValue(String)}.
+   */
+  public static Identifier quoted(final String spelling) {
+    final Identifier identifier = new Identifier(-1);
+    identifier.setQuotedStringValue(spelling);
+    return identifier;
+  }
+
+  /**
+   * returns the value in escaped form, ready to be emitted between back-ticks: both back-ticks and backslashes carry a leading
+   * backslash. Use {@link #getStringValue()} for the plain name, which is what schema lookups take.
    *
    * @return
    */
@@ -65,16 +77,12 @@ public class Identifier extends SimpleNode {
   }
 
   /**
-   * returns the plain string representation of this identifier, with quoting removed from back-ticks
+   * returns the plain string representation of this identifier, with the escaping removed
    *
    * @return
    */
   public String getStringValue() {
-    if (value == null)
-      return null;
-    // reverse the escaping applied by setStringValue(): turn `\`` back into a plain back-tick, leaving
-    // any other backslash untouched so names that legitimately contain a backslash are preserved
-    return value.replace("\\`", "`");
+    return unescape(value);
   }
 
   /**
@@ -84,17 +92,78 @@ public class Identifier extends SimpleNode {
    * @param s
    */
   public void setStringValue(final String s) {
-    if (s == null)
-      value = null;
-    else if (s.contains("`"))
-      value = s.replace("`", "\\`");
-    else
-      value = s;
+    value = escape(s);
   }
 
+  /**
+   * sets the value from the SQL spelling of a back-tick quoted identifier, outer back-ticks included. The inner text is already in
+   * escaped form, so it is stored verbatim: escaping it again would turn every {@code \`} into {@code \\`} and grow one backslash
+   * per parse -> re-emit cycle.
+   */
   public void setQuotedStringValue(final String s) {
     quoted = true;
-    setStringValue(s.substring(1, s.length() - 1));
+    value = s.substring(1, s.length() - 1);
+  }
+
+  /**
+   * returns the SQL spelling of a name: the name escaped and wrapped in back-ticks, safe to embed in a statement whatever
+   * characters it carries. Callers that build SQL text by hand should route every schema object name through this.
+   */
+  public static String quote(final String name) {
+    return "`" + escape(name) + "`";
+  }
+
+  /**
+   * escapes the two characters that carry meaning inside a back-tick quoted identifier, each with a leading backslash. A backslash
+   * has to be escaped as well, otherwise a name ending with one would swallow the closing back-tick.
+   */
+  static String escape(final String s) {
+    if (s == null)
+      return null;
+
+    int escapes = 0;
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if (c == '`' || c == '\\')
+        ++escapes;
+    }
+
+    if (escapes == 0)
+      // by far the common case: nothing to escape, so keep the original instance
+      return s;
+
+    final StringBuilder buffer = new StringBuilder(s.length() + escapes);
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if (c == '`' || c == '\\')
+        buffer.append('\\');
+      buffer.append(c);
+    }
+    return buffer.toString();
+  }
+
+  /**
+   * reverses {@link #escape(String)}: a backslash consumes the character that follows it.
+   */
+  static String unescape(final String s) {
+    if (s == null)
+      return null;
+
+    final int firstEscape = s.indexOf('\\');
+    if (firstEscape < 0)
+      // by far the common case: nothing was escaped, so keep the original instance
+      return s;
+
+    final StringBuilder buffer = new StringBuilder(s.length());
+    buffer.append(s, 0, firstEscape);
+    for (int i = firstEscape; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if (c == '\\' && i + 1 < s.length())
+        buffer.append(s.charAt(++i));
+      else
+        buffer.append(c);
+    }
+    return buffer.toString();
   }
 
   @Override

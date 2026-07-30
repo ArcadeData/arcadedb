@@ -168,9 +168,13 @@ function escapeHtml(unsafe) {
 /**
  * Wraps a schema object name (bucket, index, type) in back-ticks so it can be embedded in a SQL command even when it carries
  * characters that are not valid in a bare identifier - e.g. the comma in the auto-derived compound-index name `Type[propA,propB]`.
+ *
+ * Inside a back-tick quoted identifier a backslash escapes the character that follows it, so both metacharacters have to be
+ * escaped. Escaping only the back-tick would leave a name ending in a backslash able to consume the closing back-tick, and the
+ * SQL that followed the identifier would be absorbed into the name.
  */
 function quoteSqlName(name) {
-  return "`" + String(name).replace(/`/g, "\\`") + "`";
+  return "`" + String(name).replace(/[\\`]/g, "\\$&") + "`";
 }
 
 function arrayRemove(array, predicate) {
