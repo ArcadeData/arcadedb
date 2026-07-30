@@ -23,6 +23,7 @@ import com.arcadedb.server.http.handler.openapi.AuthApiSpec;
 import com.arcadedb.server.http.handler.openapi.CoreApiSpec;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.SecurityAdminApiSpec;
+import com.arcadedb.server.http.handler.openapi.TimeSeriesApiSpec;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Paths;
@@ -54,7 +55,8 @@ public class OpenApiSpecGenerator {
   private static final List<OpenApiContributor> CONTRIBUTORS = List.of(//
       new CoreApiSpec(), //
       new AuthApiSpec(), //
-      new SecurityAdminApiSpec());
+      new SecurityAdminApiSpec(), //
+      new TimeSeriesApiSpec());
 
   private final HttpServer httpServer;
 
