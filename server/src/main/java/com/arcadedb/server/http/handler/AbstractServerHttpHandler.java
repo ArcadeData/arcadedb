@@ -644,6 +644,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Drops every cached timer. A cached {@link Timer} is bound to the registries backing
+   * {@code Metrics.globalRegistry} when it was built, so it must not outlive them: recording into a meter
+   * whose backing registry is gone silently discards the sample. Called when the server dismantles the
+   * metrics subsystem, so the next server generation rebuilds its timers from scratch.
+   */
+  public static void invalidateTimerCache() {
+    HTTP_REQUEST_TIMERS.clear();
+  }
+
+  /**
    * Resolves (and caches) the {@code arcadedb.http.requests} RED timer for the given bounded tag tuple.
    * Building the timer once per distinct {@code method|path|status|db} tuple and reusing it removes the
    * per-request {@code Timer.Builder}/{@code Tags}/{@code Meter.Id} allocation and registry hash lookup

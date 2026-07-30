@@ -404,7 +404,7 @@ BUCKET_NUMBER_IDENTIFIER: B U C K E T COLON INTEGER_LITERAL;
 // user-supplied name may carry (spaces, colons, ...).
 SCHEMA_IDENTIFIER: S C H E M A COLON IDENTIFIER (COLON (SCHEMA_QUOTED_NAME_PART | SCHEMA_NAME_PART))?;
 fragment SCHEMA_NAME_PART: (LETTER | [0-9] | '_' | '[' | ']' | '.' | '-' | ',')+;
-fragment SCHEMA_QUOTED_NAME_PART: BACKTICK ( ~[`] | '\\`' )+ BACKTICK;
+fragment SCHEMA_QUOTED_NAME_PART: BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK;
 
 // URL Identifiers
 HTTP_URL: 'http://' URL_CHAR+;
@@ -493,8 +493,11 @@ IDENTIFIER
     : (DOLLAR | LETTER) PART_LETTER*
     ;
 
+// A backslash always escapes the character that follows it, so `\\` is a literal backslash and '\\`' a literal back-tick. Letting
+// a bare backslash stand for itself would make the closing back-tick ambiguous: `T\` could read as an unterminated name whose
+// back-tick was escaped, and the lexer would run past the intended end of the token and absorb the SQL that follows it.
 QUOTED_IDENTIFIER
-    : BACKTICK ( ~[`] | '\\`' )+ BACKTICK
+    : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK
     ;
 
 fragment LETTER: [A-Z_a-z];

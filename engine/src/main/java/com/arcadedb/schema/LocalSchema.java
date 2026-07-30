@@ -37,6 +37,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
+import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -59,6 +60,7 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
+import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -143,10 +145,14 @@ public class LocalSchema implements Schema {
         new LSMTreeIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
         new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
+    componentFactory.registerComponent(LSMTreeIndexBloomFilter.FILE_EXT,
+        new LSMTreeIndexBloomFilter.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(SparseSegmentComponent.FILE_EXT,
         new SparseSegmentComponent.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(TimeSeriesTagDictionary.DICT_EXT,
+        new TimeSeriesTagDictionary.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(HashIndexBucket.UNIQUE_INDEX_EXT,
         new HashIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(HashIndexBucket.NOTUNIQUE_INDEX_EXT,
@@ -242,6 +248,9 @@ public class LocalSchema implements Schema {
       if (f != null)
         f.onAfterSchemaLoad();
 
+    // Every component is registered by now, which is what resolving a filter to its compacted index by name needs.
+    attachBloomFilters(snapshot);
+
     if (mode == ComponentFile.MODE.READ_WRITE)
       sweepOrphanCompactedIndexFiles(snapshot);
 
@@ -249,7 +258,19 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Drops compacted index files that no mutable index claimed during the load. A crash between a
+   * Links every {@code .bfidx} bloom filter component (#5517) to the compacted index it was written for, matching it
+   * by name. Only a compacted index the load claimed gets one: an orphan is about to be dropped anyway, and an
+   * unattached filter is inert, since nothing but its compacted index ever probes it.
+   */
+  private void attachBloomFilters(final List<Component> snapshot) {
+    for (final Component component : snapshot)
+      if (component instanceof LSMTreeIndexCompacted compacted && compacted.getMainIndex() != null)
+        compacted.attachBloomFilter();
+  }
+
+  /**
+   * Drops compacted index files that no mutable index claimed during the load, together with the bloom filter files
+   * that describe them. A crash between a
    * compaction's publication (schema saved, the mutable header already pointing at its CURRENT compacted
    * file) and the physical drop of a replaced or aborted compacted file leaves the stale file on disk; the
    * directory scan re-registers it at the next open, but nothing references it anymore, leaking its space
@@ -259,6 +280,17 @@ public class LocalSchema implements Schema {
    */
   private void sweepOrphanCompactedIndexFiles(final List<Component> snapshot) {
     for (final Component component : snapshot) {
+      if (component instanceof LSMTreeIndexBloomFilter filter) {
+        // A filter is owned by exactly one compacted index; without it nothing can ever read the file again.
+        final Component owner = filter.getOwnerName() != null ? getFileByName(filter.getOwnerName()) : null;
+        if (!(owner instanceof LSMTreeIndexCompacted compactedOwner) || compactedOwner.getMainIndex() == null) {
+          LogManager.instance().log(this, Level.INFO,
+              "Dropping orphan index bloom filter file '%s' (fileId=%d)", null, filter.getName(), filter.getFileId());
+          filter.dropQuietly();
+        }
+        continue;
+      }
+
       if (!(component instanceof LSMTreeIndexCompacted compacted) || compacted.getMainIndex() != null)
         continue;
 

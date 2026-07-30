@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -159,6 +160,68 @@ class Issue4141SessionManagementTest {
       assertThat(rs.next().<String>getProperty("operation")).isEqualTo("reset");
     }
     assertThat(session.params).isEmpty();
+  }
+
+  // ---- Session parameters and the unbound-parameter check (issue #5561) -----------------------
+
+  /**
+   * Issue #5561: the parameter-bound check (#5501) runs on the parameters the session has been merged into,
+   * so a name the session supplies counts as bound. This is the engine-level statement of what the HTTP and
+   * Bolt session ITs assert end to end; getting the order wrong there made every session query fail.
+   */
+  @Test
+  void aSessionParameterSatisfiesTheBoundCheck() {
+    bindSession();
+    database.command("opencypher", "SESSION SET $threshold = 21").close();
+
+    try (final ResultSet rs = database.query("opencypher", "RETURN $threshold AS t")) {
+      assertThat(rs.next().<Number>getProperty("t").intValue()).isEqualTo(21);
+    }
+  }
+
+  /**
+   * Issue #5561: and once {@code SESSION RESET} has cleared it the name is unbound again, so it is rejected
+   * rather than silently resolving to null. The rejection is what proves the value is gone - a null result
+   * would equally be produced by a query that never consulted the session.
+   */
+  @Test
+  void aResetSessionParameterIsUnboundAgain() {
+    bindSession();
+    database.command("opencypher", "SESSION SET $threshold = 21").close();
+    database.command("opencypher", "SESSION RESET").close();
+
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN $threshold AS t").close())
+        .isInstanceOf(CommandParameterMissingException.class)
+        .hasMessageContaining("Expected parameter(s): threshold");
+  }
+
+  /**
+   * Issue #5561: a request that binds the same name shadows the session's value for that request only, and
+   * the session keeps its own. This is the no-bleed property in its policy-independent form.
+   */
+  @Test
+  void aRequestParameterShadowsTheSessionParameterWithoutChangingIt() {
+    bindSession();
+    database.command("opencypher", "SESSION SET $threshold = 21").close();
+
+    try (final ResultSet rs = database.query("opencypher", "RETURN $threshold AS t", Map.of("threshold", 7))) {
+      assertThat(rs.next().<Number>getProperty("t").intValue()).isEqualTo(7);
+    }
+
+    assertThat(((Number) session.params.get("threshold")).intValue()).isEqualTo(21);
+  }
+
+  /**
+   * Issue #5561: with no session bound at all (the embedded case, and the server's non-session request path)
+   * the name is simply unbound. Nothing another connection set can make it resolve.
+   */
+  @Test
+  void withoutABoundSessionAParameterIsUnbound() {
+    session.params.put("threshold", 21); // a session exists somewhere, but is not bound to this thread
+
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN $threshold AS t").close())
+        .isInstanceOf(CommandParameterMissingException.class)
+        .hasMessageContaining("Expected parameter(s): threshold");
   }
 
   // ---- SESSION CLOSE closes the session ------------------------------------------------------

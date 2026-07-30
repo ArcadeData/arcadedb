@@ -31,8 +31,12 @@ import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.Transaction;
+import org.neo4j.driver.exceptions.ClientException;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #4141 (ISO/IEC 39075 GQL, section 2): end-to-end Bolt test for Session Management. A value set with
@@ -40,6 +44,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code SESSION RESET} clears it, and {@code SESSION CLOSE} clears the session parameters.
  * <p>
  * Session parameters are connection-scoped, so the driver is pinned to a single pooled connection.
+ * <p>
+ * "Cleared" is asserted as the rejection of {@code $x}, not as a null result (issue #5501 / #5561): once the
+ * value is gone the parameter is unbound, and an unbound parameter is an error here as it is in Neo4j. That is
+ * the stronger statement - a null could also come from a query that never consulted the session.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -102,16 +110,31 @@ public class Issue4141BoltSessionManagementIT extends BaseGraphServerTest {
       Result result = session.run("RETURN $threshold AS t");
       assertThat(result.next().get("t").asInt()).isEqualTo(21);
 
-      // SESSION RESET clears it: $threshold is now unbound (null).
+      // SESSION RESET clears it: $threshold is unbound again, so referencing it is rejected by name
+      // (issue #5501 / #5561). The rejection IS the proof the value is gone - a null result would equally be
+      // produced by a query that never consulted the session. The Bolt status is Neo4j's own
+      // ParameterMissing title, not SyntaxError: the query text is fine, the value is missing.
       session.run("SESSION RESET").consume();
-      result = session.run("RETURN $threshold AS t");
-      assertThat(result.next().get("t").isNull()).isTrue();
+      assertParameterMissing(session, "threshold");
 
-      // SESSION SET again, then SESSION CLOSE clears the session parameters.
+      // A parameter bound on the request is still resolved after the session was reset.
+      result = session.run("RETURN $threshold AS t", Map.of("threshold", 7));
+      assertThat(result.next().get("t").asInt()).isEqualTo(7);
+
+      // SESSION SET again, then SESSION CLOSE clears the session parameters - same proof.
       session.run("SESSION SET $threshold = 99").consume();
       session.run("SESSION CLOSE").consume();
-      result = session.run("RETURN $threshold AS t");
-      assertThat(result.next().get("t").isNull()).isTrue();
+      assertParameterMissing(session, "threshold");
     }
+  }
+
+  /**
+   * {@code RETURN $name} with nothing bound fails with Neo4j's ParameterMissing code and wording. Runs through
+   * the driver so the assertion covers the wire status, not just the server-side exception type.
+   */
+  private static void assertParameterMissing(final Session session, final String parameterName) {
+    final Throwable thrown = catchThrowable(() -> session.run("RETURN $" + parameterName + " AS t").consume());
+    assertThat(thrown).isInstanceOf(ClientException.class).hasMessageContaining("Expected parameter(s): " + parameterName);
+    assertThat(((ClientException) thrown).code()).isEqualTo("Neo.ClientError.Statement.ParameterMissing");
   }
 }

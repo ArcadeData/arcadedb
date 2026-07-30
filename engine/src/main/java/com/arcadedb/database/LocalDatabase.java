@@ -37,6 +37,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
+import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -67,6 +68,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.hash.HashIndexBucket;
+import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
@@ -149,10 +151,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
+      LSMTreeIndexBloomFilter.FILE_EXT,
       LSMVectorIndex.FILE_EXT,
       LSMVectorIndexGraphFile.FILE_EXT,
       SparseSegmentComponent.FILE_EXT,
       TimeSeriesBucket.BUCKET_EXT,
+      TimeSeriesTagDictionary.DICT_EXT,
       HashIndexBucket.UNIQUE_INDEX_EXT,
       HashIndexBucket.NOTUNIQUE_INDEX_EXT);
 

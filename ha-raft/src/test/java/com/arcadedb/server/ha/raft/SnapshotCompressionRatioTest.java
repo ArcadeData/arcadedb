@@ -173,7 +173,8 @@ class SnapshotCompressionRatioTest {
    */
   @Test
   void sparsePageSizedEntry_doesNotExceedRatioLimit() throws Exception {
-    // Dictionary.DEF_PAGE_SIZE = 65536 * 5 = 327 680 bytes, freshly initialised → mostly zeros
+    // 327 680 bytes is the dictionary page size of any database created before multi-page support, and stays the largest
+    // sparse entry a snapshot of one can carry. Kept as a literal: this pins the ratio guard, not the current page size
     final int dictionaryPageSize = 65_536 * 5;
     final byte[] sparseData = new byte[dictionaryPageSize]; // all-zeros: highly compressible
 

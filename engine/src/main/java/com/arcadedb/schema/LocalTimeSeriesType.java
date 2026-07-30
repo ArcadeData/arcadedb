@@ -49,8 +49,10 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   private int                          shardCount;
   private long                         retentionMs;
   private long                         compactionBucketIntervalMs;
-  private int                          sealedFormatVersion;
-  private int                          mutableFormatVersion;
+  private int                          sealedFormatVersion  = TimeSeriesSealedStore.CURRENT_VERSION;
+  // A type created by this build writes the current mutable row format; one restored from JSON keeps
+  // whatever version wrote its pages, which is what lets a pre-#5519 database open unchanged.
+  private int                          mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
   private final List<ColumnDefinition>  tsColumns         = new ArrayList<>();
   private       List<DownsamplingTier> downsamplingTiers = new ArrayList<>();
   private volatile TimeSeriesEngine    engine;
@@ -67,7 +69,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     if (engine != null)
       return;
     engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns, shardCount > 0 ? shardCount : 1,
-        compactionBucketIntervalMs);
+        compactionBucketIntervalMs, mutableFormatVersion);
   }
 
   public TimeSeriesEngine getEngine() {
@@ -171,8 +173,10 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     json.put("retentionMs", retentionMs);
     if (compactionBucketIntervalMs > 0)
       json.put("compactionBucketIntervalMs", compactionBucketIntervalMs);
-    json.put("sealedFormatVersion", TimeSeriesSealedStore.CURRENT_VERSION);
-    json.put("mutableFormatVersion", TimeSeriesBucket.CURRENT_VERSION);
+    json.put("sealedFormatVersion", sealedFormatVersion);
+    // The version that wrote this type's pages, NOT the current constant: rewriting an existing v0
+    // type as v1 would tell the next open to read inline tag bytes as dictionary ids.
+    json.put("mutableFormatVersion", mutableFormatVersion);
 
     final JSONArray colArray = new JSONArray();
     for (final ColumnDefinition col : tsColumns) {
@@ -216,10 +220,13 @@ public class LocalTimeSeriesType extends LocalDocumentType {
       throw new IllegalStateException(
           "Unsupported sealed store format version " + sealedFormatVersion + " (expected " +
               TimeSeriesSealedStore.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
+    // Older mutable formats stay readable: the version selects the row layout rather than gating the
+    // open, so a type written before the tag dictionary (issue #5519) keeps its inline tag columns.
+    // Only a version this build does not know about is refused.
     mutableFormatVersion = json.getInt("mutableFormatVersion", 0);
-    if (mutableFormatVersion != TimeSeriesBucket.CURRENT_VERSION)
+    if (mutableFormatVersion > TimeSeriesBucket.CURRENT_VERSION)
       throw new IllegalStateException(
-          "Unsupported mutable bucket format version " + mutableFormatVersion + " (expected " +
+          "Unsupported mutable bucket format version " + mutableFormatVersion + " (this build supports up to " +
               TimeSeriesBucket.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
 
     tsColumns.clear();

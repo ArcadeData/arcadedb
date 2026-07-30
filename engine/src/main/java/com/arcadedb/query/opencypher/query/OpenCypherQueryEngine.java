@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.query.OperationType;
@@ -57,9 +58,11 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
 
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -285,23 +288,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
    *
    * @param referenced the parameter names the query text mentions, collected at parse time
    *
-   * @throws CommandParsingException listing every missing name, in the order the query mentions them
+   * @throws CommandParameterMissingException listing every missing name, in the order the query mentions them
    */
   private static void checkParametersAreBound(final Set<String> referenced, final Map<String, Object> parameters) {
     if (referenced.isEmpty())
       return;
 
-    StringJoiner missing = null;
+    // The common case is that nothing is missing, so the list is allocated only once one is found.
+    List<String> missing = null;
     for (final String name : referenced) {
       if (parameters == null || !parameters.containsKey(name)) {
         if (missing == null)
-          missing = new StringJoiner(", ");
+          missing = new ArrayList<>(referenced.size());
         missing.add(name);
       }
     }
 
     if (missing != null)
-      throw new CommandParsingException("Expected parameter(s): " + missing);
+      throw new CommandParameterMissingException(missing.toArray(new String[0]));
   }
 
   /**

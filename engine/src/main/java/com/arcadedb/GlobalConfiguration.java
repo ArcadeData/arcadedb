@@ -91,7 +91,6 @@ public enum GlobalConfiguration {
       } else if ("high-performance".equalsIgnoreCase(v)) {
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(-1);
-        VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(-1);
         VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT.setValue(50);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(50);
 
@@ -125,7 +124,8 @@ public enum GlobalConfiguration {
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
         SERVER_HTTP_WORKER_THREADS.setValue(16);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
-        VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(10_000);
+        // VECTOR_INDEX_LOCATION_CACHE_SIZE is deliberately NOT capped here: it is not a cache, and bounding it
+        // made this profile drop live vectors from searches (issue #5568).
         VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(10_000);
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
@@ -192,7 +192,7 @@ public enum GlobalConfiguration {
       "yyyy-MM-dd"),
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
-      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
+      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime, java.time.Instant",
       Class.class, LocalDateTime.class, value -> {
     if (value instanceof String string) {
       try {
@@ -233,6 +233,10 @@ public enum GlobalConfiguration {
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
       "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes.",
       String.class, ""),
+
+  TIMESERIES_TAG_DICTIONARY_MAX_SIZE("arcadedb.timeSeriesTagDictionaryMaxSize", SCOPE.DATABASE,
+      "Maximum number of distinct values one TimeSeries type's tag dictionary may hold. TAG columns are dictionary-encoded in the mutable row so each occupies a 4-byte id instead of a reserved 258-byte slot; the dictionary is kept in RAM, so this caps its footprint and turns a mis-declared high-cardinality TAG into a clear error instead of unbounded growth. Default is 1M distinct values, roughly 100MB",
+      Integer.class, 1_000_000),
 
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
@@ -306,8 +310,10 @@ public enum GlobalConfiguration {
   SPARSE_VECTOR_SCORING_POOL_THREADS("arcadedb.sparseVectorScoringPoolThreads", SCOPE.JVM,
       """
       Maximum number of threads in the JVM-wide pool that backs LSM_SPARSE_VECTOR top-K \
-      fan-out (per-bucket parallel scoring on partitioned types and types with multiple \
-      buckets). Kept on its own pool rather than sharing the QueryEngineManager pool so \
+      fan-out: per-bucket parallel scoring on partitioned types and types with multiple \
+      buckets, and the RID-range split of a single index's traversal (see \
+      arcadedb.sparseVectorScoringMaxPartitions). Kept on its own pool rather than sharing \
+      the QueryEngineManager pool so \
       long-running graph algorithms never queue scoring tasks behind seconds-long graph \
       chunks. 0 = available cores (min 2). REQUIRES JVM RESTART: the pool is a lazy \
       singleton constructed once on first use; later changes to this value have no effect \
@@ -323,6 +329,44 @@ public enum GlobalConfiguration {
       but never fails the query. REQUIRES JVM RESTART: same singleton lifecycle as \
       SPARSE_VECTOR_SCORING_POOL_THREADS.""",
       Integer.class, 1024),
+
+  SPARSE_VECTOR_SCORING_MAX_PARTITIONS("arcadedb.sparseVectorScoringMaxPartitions", SCOPE.JVM,
+      """
+      Maximum number of RID ranges a single LSM_SPARSE_VECTOR top-K query is split into for \
+      parallel scoring. 1 disables intra-query parallelism and keeps every query on the caller \
+      thread; 0 (default) lets the engine decide per query. Splitting buys latency with CPU: each \
+      range prunes against its own top-K watermark, which rises more slowly than the global one, \
+      so a range does more work than its share (measured at roughly 1.9x total CPU for an 8-way \
+      split on a learned-sparse corpus). On the default the engine claims only workers no other \
+      query needs, and does not split at all once enough queries are already in flight to keep \
+      the pool busy on their own - so an idle server spends spare cores on latency while a \
+      saturated one keeps its throughput. One cost of the default worth knowing: in a narrow band \
+      of moderate concurrency, where some queries claim a wide split and others get none, the \
+      spread between the two shows up as tail latency. Measured at 4 concurrent clients on an \
+      18-thread pool, p99 was about 1.2x serial's while the median was 3.4x better (7.6 ms against \
+      26.2). The band closes on both sides - below it every query splits, above it none does - and \
+      the median win is large enough that the default keeps the trade rather than flattening it. Measured on an 18-worker box at 500k documents: one \
+      client 13.7 -> 3.1 ms p50, four clients 13.6 -> 4.1 ms with 61% more throughput, sixteen \
+      clients within 5% of serial throughput. Any explicit value above 1 opts out of that \
+      self-throttling and splits regardless of load. That is a throughput risk on a busy server, \
+      and it is paid by the forcing query too. Measured at 16 concurrent clients on an 18-thread \
+      pool, 1M documents: a forced 8-way split returned 0.52x the throughput of no split at all, a \
+      median 1.85x worse and a p99 2.5x worse, for 1.9x the CPU per query. Above light concurrency \
+      there is no regime where forcing wins - not median, not throughput, not tail - because a \
+      query's own ranges start queueing behind its neighbours'. It is worth setting only when a \
+      single query at a time must be as fast as possible and nothing else is running; for anything \
+      else 0 is faster on every measure. The crossover is hardware and workload specific, so no \
+      number for it is given here. Re-read on every query.""",
+      Integer.class, 0),
+
+  SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING("arcadedb.sparseVectorScoringMinPostingsForPartitioning", SCOPE.JVM,
+      """
+      Minimum number of postings a LSM_SPARSE_VECTOR top-K query has to traverse before it is \
+      worth splitting into parallel ranges. Below this the fan-out (per-range cursor stacks, task \
+      dispatch, result merge) costs more than the traversal it parallelises, so the query stays on \
+      the caller thread. Counted as the summed document frequency of the query's dims, which is \
+      available from segment metadata without reading a page. Re-read on every query.""",
+      Long.class, 200_000L),
 
   SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS("arcadedb.sparseVectorScoringTimeoutSeconds", SCOPE.JVM,
       """
@@ -403,7 +447,7 @@ public enum GlobalConfiguration {
       Boolean.class, true),
 
   TX_PAGE_SLOT_MERGE("arcadedb.txPageSlotMerge", SCOPE.DATABASE,
-      "Generalization of GRAPH_EDGE_APPEND_MERGE to arbitrary records. At commit, when a bucket page conflicts only because concurrent transactions touched DIFFERENT record slots on it (logically-unrelated records sharing a page), re-apply this transaction's slot writes on top of the newer committed page instead of failing the whole transaction with a ConcurrentModificationException. Covers new-record inserts into free slots and same-or-smaller in-place updates (e.g. the vertex edge-list head-pointer flip on super-node insertion); a genuine same-record conflict, or any non-rebasable change (delete, multi-page/placeholder record, record growth), still raises the exception so it is retried",
+      "Generalization of GRAPH_EDGE_APPEND_MERGE to arbitrary records. At commit, when a bucket page conflicts only because concurrent transactions touched DIFFERENT record slots on it (logically-unrelated records sharing a page), re-apply this transaction's slot writes on top of the newer committed page instead of failing the whole transaction with a ConcurrentModificationException. Covers new-record inserts into free slots and every update that stays inside the page - an overwrite of the same size or smaller (e.g. the vertex edge-list head-pointer flip on super-node insertion) as well as a record growth the page can host by shifting the records that follow; a genuine same-record conflict, or any non-rebasable change (delete, multi-page/placeholder record, a record that has to spill out of its page), still raises the exception so it is retried",
       Boolean.class, true),
 
   TX_PAGE_SLOT_MERGE_MAX_BYTES("arcadedb.txPageSlotMergeMaxBytes", SCOPE.DATABASE,
@@ -566,12 +610,51 @@ public enum GlobalConfiguration {
       "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. 0 = disabled",
       Integer.class, 10),
 
+  INDEX_BLOOM_FILTER_RATE("arcadedb.indexBloomFilterRate", SCOPE.DATABASE,
+      """
+      Target false-positive rate of the bloom filter an index compaction writes for each compacted series of an LSM \
+      index, letting a point lookup skip a series that provably cannot hold the key without reading any of its pages. \
+      Default 0.01 (1%), enabled. Set to 0 to disable.
+      WHAT IT DOES. A lookup walks every compacted series from newest to oldest. A series' root page already rules out \
+      a key outside its key RANGE, but not a key inside the range that the series simply does not hold - so without a \
+      filter that series still costs a root-page search and a data-page read to discover nothing. The filter answers \
+      that question from a single 8 KB page instead.
+      WHEN IT HELPS. Most when the compacted series OVERLAP in key range, which is what any key that does not arrive \
+      already sorted produces: an email, a UUID, a business id. The extreme case is a bulk load into a UNIQUE index, \
+      where the duplicate check for every incoming record misses in every series by definition. Measured on 2M keys \
+      over 9 series: absent-key lookups about 2x faster and 2x fewer pages read; keys that ARE present also gain, \
+      because a key lives in one series and the filters spare the reader the others.
+      WHEN IT DOES NOT. Keys inserted in ascending order (a counter, a timestamp) give each series a disjoint key \
+      slice that its root page already rules out for free, leaving the filters little to save. Range scans and cursors \
+      never consult them at all: a filter can answer for one key, never for an interval.
+      WHAT IT COSTS. About 1.2 bytes per key on disk at 1% (roughly 3% of the index it describes), in a separate \
+      '<index>_bf.bfidx' paginated component alongside the compacted index. A false positive costs only the page read \
+      that would have happened anyway. During compaction it holds 8 bytes of transient heap per key of the series \
+      being written. Lower rates cost more bytes and more probes per lookup; higher rates save space and read more \
+      series. Below roughly 0.001 the extra bytes stop paying for themselves.
+      OPERATIONAL NOTES. Filters are written by compaction only, so an existing index gains them at its next \
+      compaction and never needs a rebuild. They are replicated over HA and included in backups like any other \
+      component, and are dropped with the index. An older ArcadeDB does not recognise the file and ignores it, so \
+      downgrading is safe for reading - but a downgraded build compacts without maintaining the filters, so prefer \
+      running a full compaction (or this setting at 0) if you downgrade and come back. \
+      A directory page holds ~255 series; beyond that further series are published without a filter until a full \
+      compaction collapses the count, which the default arcadedb.indexCompactionFullSeriesThreshold=10 does long \
+      before it can happen. Watch 'bloomSkippedSeries' and 'bloomProbedSeries' in the index statistics to see what \
+      the filters are actually saving.
+      DISABLING. 0 stops new filters being written immediately and stops existing ones being consulted from the next \
+      database open. Lookups then behave exactly as they did before the feature existed.""",
+      Float.class, 0.01f),
+
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
-      Maximum number of vector locations to cache in memory per vector index. \
-      Set to -1 for unlimited (backward compatible). \
-      Each entry uses ~56 bytes. Recommended: 100000 for datasets with 1M+ vectors (~5.6MB), \
-      -1 for smaller datasets.""",
+      DEPRECATED and ignored since issue #5568: the location index is always unlimited, and a positive value is \
+      reported once per index at WARNING. A vector location is the only record of which record a vector id belongs \
+      to and where its entry sits in the index file, and nothing on disk maps a vector id back to an offset, so \
+      evicting one destroyed that mapping rather than spilling it to a slower tier: the index under-reported its \
+      size, and any reader resolving an evicted id read it as deleted. The limit existed when the index held one \
+      location per write; issue #5516 made a tombstoned id release \
+      its location, so residency is now proportional to the live vectors (~90 bytes each) instead of to the write \
+      history.""",
       Integer.class, -1),
 
   VECTOR_INDEX_COMPACTION_BLOAT_FACTOR("arcadedb.vectorIndex.compactionBloatFactor", SCOPE.DATABASE,

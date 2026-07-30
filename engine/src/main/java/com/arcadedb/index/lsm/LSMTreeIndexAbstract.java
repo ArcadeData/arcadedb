@@ -41,6 +41,7 @@ import com.arcadedb.utility.RidHashSet;
 
 import java.io.File;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -857,6 +858,58 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected int findLastEntryOfSameKey(final int count, final Binary currentPageBuffer, final Object[] keys,
       final int startIndexArray, int mid) {
     return findEntryOfSameKey(currentPageBuffer, keys, startIndexArray, mid, mid + 1, count, 1);
+  }
+
+  /**
+   * Serializes a key into {@code scratch} for hashing (#5517), so a hash of those bytes means the same thing on the
+   * compaction path and on the lookup path. Returns null - "not hashable" - for anything but a complete key, because a
+   * partial key is a range and no hash can answer for a range.
+   * <p>
+   * It is NOT simply {@link #writeKeys}: a hash needs bytes that are equal whenever the INDEX considers the keys equal,
+   * and for one type the serialized form is stricter than the comparator. See {@link #canonicalizeForHashing}.
+   */
+  Binary serializeKeyForHashing(final Binary scratch, final Object[] convertedKeys) {
+    if (convertedKeys == null || convertedKeys.length != binaryKeyTypes.length)
+      return null;
+
+    scratch.clear();
+    writeKeys(scratch, canonicalizeForHashing(convertedKeys));
+    return scratch;
+  }
+
+  /**
+   * Rewrites the key components whose serialized form distinguishes values the comparator treats as EQUAL, so that
+   * equal keys always hash alike.
+   * <p>
+   * {@code convertKeys} already normalises the type of every component - a lookup with an Integer against a LONG index
+   * becomes a Long - which is what keeps the numeric types honest here. DECIMAL is the exception: converting to
+   * {@link BigDecimal} keeps whatever scale the caller supplied, serialization writes that scale
+   * ({@code putNumber(scale)} then the unscaled bytes), but {@link com.arcadedb.serializer.BinaryComparator} compares
+   * with {@code BigDecimal.compareTo}, which ignores it. So {@code 1.0} and {@code 1.00} are the SAME key to the index
+   * and two different byte strings to the hash - and a lookup for one would skip the series holding the other. On a
+   * unique DECIMAL index that is a duplicate slipping past the duplicate check.
+   * <p>
+   * {@code stripTrailingZeros} maps every {@code compareTo}-equal BigDecimal to one representation, so equal keys reach
+   * the hash as equal bytes. It is applied to the HASH only: the bytes written into a page are untouched.
+   * <p>
+   * Returns {@code convertedKeys} itself when nothing needs rewriting, which is every index that has no DECIMAL
+   * component - i.e. this costs an instanceof per component and no allocation on the common path.
+   */
+  private Object[] canonicalizeForHashing(final Object[] convertedKeys) {
+    Object[] canonical = convertedKeys;
+
+    for (int i = 0; i < convertedKeys.length; i++)
+      if (convertedKeys[i] instanceof BigDecimal decimal) {
+        final BigDecimal stripped = decimal.stripTrailingZeros();
+        // Equal scales mean equal unscaled values too (same number, same scale), so the bytes already match.
+        if (stripped.scale() != decimal.scale()) {
+          if (canonical == convertedKeys)
+            canonical = convertedKeys.clone();
+          canonical[i] = stripped;
+        }
+      }
+
+    return canonical;
   }
 
   private void writeKeys(final Binary buffer, final Object[] keys) {

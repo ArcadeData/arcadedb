@@ -18,8 +18,10 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -27,7 +29,9 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -153,7 +157,7 @@ class LSMSparseVectorIndexLargeBenchmark extends TestHelper {
     }
 
     System.out.printf("%n=== Index-backed `vector.sparseNeighbors` (K=%d) ===%n", K);
-    final long indexNs = benchIndex(queryIdx, queryVal);
+    final long indexNs = benchIndexBothShapes(queryIdx, queryVal);
 
     System.out.printf("%n=== Brute-force `vector.sparseDot` over %,d docs (K=%d, %s) ===%n", docCount, K,
         runFullBruteForce ? "warmup+5 iters" : "1 iter only - too slow at this scale");
@@ -166,30 +170,61 @@ class LSMSparseVectorIndexLargeBenchmark extends TestHelper {
         bfNs / 1_000_000.0 / bfIters);
   }
 
-  private long benchIndex(final int[][] qi, final float[][] qv) {
+  /**
+   * Runs the query sweep twice - once with the traversal pinned to the caller thread, once with the
+   * RID-range split of issue #4085 - and reports both plus the speedup. Also asserts the two shapes
+   * return the same documents, which is the correctness claim of the split at a scale no unit test
+   * reaches (multi-segment, 10M postings, a real index rather than a hand-built segment).
+   *
+   * @return the split arm's total, so the caller keeps reporting the speedup against brute force for
+   *         the shape a user actually gets by default.
+   */
+  private long benchIndexBothShapes(final int[][] qi, final float[][] qv) {
+    final int previous = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    try {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(1);
+      final List<List<RID>> serialHits = new ArrayList<>();
+      final long serialNs = benchIndex(qi, qv, "serial (1 range)", serialHits);
+
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(0);
+      final List<List<RID>> splitHits = new ArrayList<>();
+      final long splitNs = benchIndex(qi, qv, "adaptive split", splitHits);
+
+      for (int q = 0; q < serialHits.size(); q++)
+        assertThat(splitHits.get(q)).as("split must return the same documents as the serial scan (query %d)", q)
+            .isEqualTo(serialHits.get(q));
+
+      System.out.printf("Intra-query split: %.2f -> %.2f ms/query (%.2fx)%n",
+          serialNs / 1_000_000.0 / ITERATIONS, splitNs / 1_000_000.0 / ITERATIONS, (double) serialNs / splitNs);
+      return splitNs;
+    } finally {
+      GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.setValue(previous);
+    }
+  }
+
+  private long benchIndex(final int[][] qi, final float[][] qv, final String label, final List<List<RID>> hitsOut) {
     final String sql = "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?))";
     for (int q = 0; q < WARMUP; q++)
       runIndexOnce(sql, qi[q], qv[q]);
     long totalNs = 0;
     for (int q = 0; q < ITERATIONS; q++) {
       final long start = System.nanoTime();
-      final int seen = runIndexOnce(sql, qi[WARMUP + q], qv[WARMUP + q]);
+      final List<RID> hits = runIndexOnce(sql, qi[WARMUP + q], qv[WARMUP + q]);
       totalNs += System.nanoTime() - start;
-      assertThat(seen).as("index path must return >= 1 result").isGreaterThan(0);
+      assertThat(hits).as("index path must return >= 1 result").isNotEmpty();
+      hitsOut.add(hits);
     }
-    System.out.printf("vector.sparseNeighbors: avg %.2f ms/query over %d iterations%n",
-        totalNs / 1_000_000.0 / ITERATIONS, ITERATIONS);
+    System.out.printf("vector.sparseNeighbors [%s]: avg %.2f ms/query over %d iterations%n",
+        label, totalNs / 1_000_000.0 / ITERATIONS, ITERATIONS);
     return totalNs;
   }
 
-  private int runIndexOnce(final String sql, final int[] qi, final float[] qv) {
+  private List<RID> runIndexOnce(final String sql, final int[] qi, final float[] qv) {
+    final List<RID> hits = new ArrayList<>(K);
     final ResultSet rs = database.query("sql", sql, IDX_NAME, qi, qv, K);
-    int seen = 0;
-    while (rs.hasNext()) {
-      rs.next();
-      seen++;
-    }
-    return seen;
+    while (rs.hasNext())
+      rs.next().getIdentity().ifPresent(hits::add);
+    return hits;
   }
 
   private long benchBruteForce(final int[][] qi, final float[][] qv, final boolean runFull) {
