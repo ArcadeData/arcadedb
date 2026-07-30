@@ -4308,6 +4308,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * A companion only exists on a database whose index was compacted by a build older than #5521 - nothing writes one
    * any more, and the first compaction folds it into the new mutable and drops it - so this is the upgrade window
    * rather than the steady state. Cheap enough to be right in it anyway.
+   * <p>
+   * {@code compactedSubIndex} is not volatile and this reads it from the committing thread while a compaction may be
+   * clearing it on an async one. Deliberate: the answer feeds a heuristic, so a stale read moves one compaction by
+   * one commit and nothing else, and a volatile read on the commit path would cost more than that is worth.
    */
   private int totalPagesForBloatRatio() {
     return getTotalPages() + (compactedSubIndex != null ? compactedSubIndex.getTotalPages() : 0);
