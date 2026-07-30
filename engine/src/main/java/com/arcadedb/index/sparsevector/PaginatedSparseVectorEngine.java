@@ -19,8 +19,10 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
@@ -37,6 +39,11 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -158,6 +165,44 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * subsequent flushes write the new manifest slot and the trigger applies normally.
    */
   static final double TOMBSTONE_RATIO_TRIGGER = 0.30;
+
+  /**
+   * Blocks a parallel range must hold, at minimum, for the split to be worth making (issue #4085).
+   * The cuts are taken at block boundaries of the query's widest dim, so a dim with fewer than
+   * {@code partitions * MIN_BLOCKS_PER_PARTITION} blocks cannot be carved into ranges that are both
+   * distinct and balanced; the partition count is clipped to fit, and falls back to serial when even
+   * two ranges do not.
+   */
+  static final int MIN_BLOCKS_PER_PARTITION = 4;
+
+  /**
+   * Ceiling on how far an explicit {@code sparseVectorScoringMaxPartitions} may oversubscribe the
+   * scoring pool. The setting exists to opt out of the load gate, not out of arithmetic: each range
+   * costs a full cursor stack, and past a small multiple of the pool there is no thread free to run
+   * it, so the extra ranges buy queueing and memory rather than parallelism.
+   */
+  static final int EXPLICIT_PARTITION_OVERSUBSCRIPTION = 4;
+
+  /**
+   * A decided split: where the cuts go, and how many workers were actually claimed for it.
+   * <p>
+   * The two travel together because they are not derivable from each other. An explicit partition
+   * count is honoured in full but its claim saturates at the pool ceiling, so the reservation can be
+   * smaller than {@code boundaries.length} - and releasing the wrong number is not a visible failure,
+   * it is a counter that drifts until splitting stops happening for reasons nobody can see. Carrying
+   * the figure the pool actually recorded is what makes the reserve and the release the same number
+   * by construction rather than by two places computing it alike.
+   */
+  private record PartitionPlan(RID[] boundaries, int reservedWorkers) {
+  }
+
+  /**
+   * Queries that took the partitioned path (issue #4085). Whether a query is split depends on how
+   * busy the scoring pool was at that instant, so this is the only way to tell after the fact which
+   * shape actually ran - results are identical either way by design, which is exactly what makes the
+   * choice invisible without a counter.
+   */
+  private final AtomicLong partitionedQueries = new AtomicLong();
 
   private final DatabaseInternal  database;
   private final String            indexName;
@@ -340,11 +385,54 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final Memtable mtSnapshot = memtable.get();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
 
+    // Splitting off globally: return before touching the pool at all. getInstance() would build a
+    // ThreadPoolExecutor that this JVM has just been told it will never use, which an embedded
+    // deployment that disabled the feature should not be paying for.
+    if (GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger() == 1)
+      return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, null);
+
+    // Registered for the whole call, split or not: the split decision is made against how many
+    // queries are running, and a query that stays serial still occupies its caller's thread.
+    final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
+    pool.queryStarted();
+    try {
+      final PartitionPlan plan = planPartitionBoundaries(queryDims, segSnapshot);
+      if (plan != null) {
+        partitionedQueries.incrementAndGet();
+        pool.querySplit();
+        try {
+          return parallelTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, plan.boundaries());
+        } finally {
+          // Hand back exactly what the pool recorded, not what the split asked for: leaking it would
+          // permanently shrink what later queries believe is free, and over-releasing would let them
+          // over-claim. Either way the damage is a silent drift in a number nothing else checks.
+          pool.releaseWorkers(plan.reservedWorkers());
+        }
+      }
+
+      return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, null);
+    } finally {
+      pool.queryFinished();
+    }
+  }
+
+  /**
+   * One range of a (possibly partitioned) top-K: opens a cursor stack of its own and scores
+   * {@code [startInclusive, endExclusive)}. With both bounds null this is the whole query, which is
+   * the serial path.
+   * <p>
+   * Every piece of per-query state lives in the cursor stack built here, so this method is safe to
+   * run concurrently on the scoring pool for disjoint ranges: the segment readers it reads through
+   * cache their per-dim metadata behind a CAS and their pages behind the shared page cache, and the
+   * memtable is a {@code ConcurrentSkipListMap}. Nothing else is shared.
+   */
+  private List<RidScore> rangeTopK(final int[] queryDims, final float[] queryWeights, final int k, final Memtable mtSnapshot,
+      final PaginatedSegmentReader[] segSnapshot, final RID startInclusive, final RID endExclusive) throws IOException {
     final DimCursor[] cursors = new DimCursor[queryDims.length];
     try {
       for (int i = 0; i < queryDims.length; i++)
         cursors[i] = openMergedCursor(queryDims[i], mtSnapshot, segSnapshot);
-      return BmwScorer.topK(queryDims, queryWeights, cursors, k);
+      return BmwScorer.topK(queryDims, queryWeights, cursors, k, startInclusive, endExclusive);
     } finally {
       for (final DimCursor c : cursors)
         if (c != null)
@@ -352,10 +440,289 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     }
   }
 
+  /** Number of {@link #topK} calls that were split into parallel RID ranges. */
+  public long partitionedQueryCount() {
+    return partitionedQueries.get();
+  }
+
+  /**
+   * True when the calling thread sits in a transaction that has already modified pages.
+   * <p>
+   * Such a query must not be split. A worker resolves its page reads through its own transaction
+   * context, so it sees committed pages only - it cannot see what the caller's open transaction has
+   * written but not committed. That is invisible for the usual read-only query, and wrong for the
+   * one that matters: a {@code put} heavy enough to trigger a memtable flush writes a whole new
+   * segment inside the caller's transaction, and a query issued later in that same transaction has
+   * to score it. Staying serial in that case costs a query that was already paying for a flush
+   * nothing measurable, and removes the whole class of "sees stale data inside its own transaction"
+   * bug.
+   */
+  private boolean callerHoldsUncommittedChanges() {
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (ctx == null)
+      return false;
+    // Every transaction on the stack, not just the innermost. begin() on an already-active
+    // transaction pushes a nested one, so a caller can sit in a fresh inner transaction with no
+    // changes of its own while an outer one holds modified pages. Asking only the innermost would
+    // report "clean" and let the query split, and the workers - reading committed pages through a
+    // context of their own - would silently not see the outer transaction's writes. That is the
+    // exact class of bug this guard exists to remove, so it has to look at all of them.
+    for (int i = 0; i < ctx.transactions.size(); i++) {
+      final TransactionContext tx = ctx.transactions.get(i);
+      if (tx != null && tx.isActive() && tx.hasChanges())
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Decide whether to split this query into parallel RID ranges, and where the cuts go (issue #4085).
+   * Returns the interior boundaries - {@code partitions - 1} of them - or {@code null} to stay on the
+   * caller thread.
+   * <p>
+   * <b>Why this is gated rather than always on.</b> Each range runs its own traversal with its own
+   * top-K watermark. A range sees a fraction of the corpus, so its watermark rises more slowly than
+   * the serial scan's and it prunes less: the partitioned query is faster in wall-clock but burns
+   * more CPU in total (measured at ~1.16x for a 2-way split and ~1.89x for 8-way on a learned-sparse
+   * corpus). Spending that on an idle machine is free latency; spending it on a machine already
+   * running other queries takes throughput away from them.
+   * <p>
+   * Five things turn it off:
+   * <ul>
+   *   <li>an explicit {@code maxPartitions == 1};</li>
+   *   <li>the caller is already a scoring-pool worker - a nested fan-out on a pool with a bounded
+   *       queue deadlocks, since the outer tasks hold every worker while waiting on inner tasks that
+   *       nothing is left to run;</li>
+   *   <li>the caller holds uncommitted page changes, which a worker's own transaction cannot see;</li>
+   *   <li>the query is too small for the fan-out to pay for itself;</li>
+   *   <li>no worker can be claimed - either another query holds them all, or enough queries are
+   *       already in flight to keep the pool's worth of threads busy without any help. That last one
+   *       is the load signal that matters and the one the pool's own counters miss, since a query
+   *       runs on its caller's thread and only touches the pool if it decides to split.</li>
+   * </ul>
+   * Boundaries are taken from the block index of the query's widest dim, so each range holds roughly
+   * the same number of that dim's postings. That is a better proxy for "same amount of work" than
+   * cutting the RID space into equal spans, which goes lopsided as soon as a range of RIDs has been
+   * deleted or was never dense. Reading them touches in-memory block metadata only - no page reads.
+   * <p>
+   * It is a balance heuristic, not a guarantee, and it reads one dim of one segment. On an index with
+   * several live segments - a freshly loaded one, before compaction has merged them - that segment's
+   * layout need not represent the global RID distribution, and the ranges can come out uneven.
+   * Correctness does not depend on it: the ranges still partition the RID space disjointly and every
+   * document is still scored exactly once. Only the speedup suffers, and it shows up as one range
+   * finishing long after its siblings.
+   */
+  private PartitionPlan planPartitionBoundaries(final int[] queryDims, final PaginatedSegmentReader[] segSnapshot)
+      throws IOException {
+    final int configured = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger();
+    if (configured == 1 || segSnapshot.length == 0)
+      return null;
+    if (SparseVectorScoringPool.isPoolThread())
+      return null;
+    if (callerHoldsUncommittedChanges())
+      return null;
+
+    long totalPostings = 0L;
+    PaginatedDimMetadata widest = null;
+    for (final PaginatedSegmentReader r : segSnapshot) {
+      for (final int dim : queryDims) {
+        final PaginatedDimMetadata md = r.dimMetadata(dim);
+        if (md == null)
+          continue;
+        totalPostings += md.postingCount();
+        if (widest == null || md.postingCount() > widest.postingCount())
+          widest = md;
+      }
+    }
+    if (widest == null)
+      return null;
+    if (totalPostings < GlobalConfiguration.SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING.getValueAsLong())
+      return null;
+
+    final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
+    // How many ranges the block layout can carry: below MIN_BLOCKS_PER_PARTITION blocks each, the
+    // cuts stop being distinct RIDs and the ranges stop being balanced enough to be worth making.
+    final int byLayout = widest.blockCount() / MIN_BLOCKS_PER_PARTITION;
+    if (byLayout < 2)
+      return null;
+
+    // The caller scores one range itself, so only the other ranges need a worker. Claiming them up
+    // front - rather than sizing the split from how idle the pool looks - is what keeps concurrent
+    // queries from all deciding to split against the same instantaneously-free capacity.
+    final int partitions;
+    final int reserved;
+    if (configured > 1) {
+      // An explicit setting is an operator opting into the CPU cost, so the split itself is granted
+      // whether or not the pool is busy - it never yields. Clamped for sanity all the same: the knob
+      // is "do not throttle me", not "let me open a thousand cursor stacks", and past a small
+      // multiple of the pool there are no threads left to run them anyway.
+      partitions = Math.min(Math.min(configured, byLayout), pool.getMaxParallelism() * EXPLICIT_PARTITION_OVERSUBSCRIPTION);
+      // The claim, unlike the split, is capped at what the pool can hold, and may come back smaller
+      // than asked or zero. Claiming more would suppress splitting for every concurrent query for
+      // this one's whole duration, on the strength of ranges that are queued rather than running.
+      reserved = pool.reserveWorkers(partitions - 1);
+      pool.warnExplicitSplitUnderLoad(partitions);
+    } else {
+      final int wanted = Math.min(pool.getMaxParallelism(), byLayout) - 1;
+      final int granted = pool.tryReserveWorkers(wanted);
+      if (granted < 1) {
+        // Nothing free: every worker is already promised to another query. Staying serial here is the
+        // point of the reservation - splitting anyway is what costs throughput under load.
+        return null;
+      }
+      partitions = granted + 1;
+      reserved = granted;
+    }
+
+    // Everything past the claim hands it back unless it reaches the caller. The boundary walk
+    // touches in-memory block metadata only and cannot currently throw, but this method reads
+    // segment metadata and is declared to throw, so a future edit that adds a page read here would
+    // otherwise leak the claim permanently - silently shrinking what every later query believes is
+    // free, with nothing failing to point at it.
+    //
+    // Written as a handed-off flag rather than a catch clause on purpose. Enumerating exception
+    // types is how this guard fails quietly: the obvious "catch (RuntimeException | Error)" does not
+    // intercept the IOException that the page read it was written for would actually throw. A
+    // finally covers every abrupt exit - checked, unchecked, Error - and any future early return
+    // that forgets about the claim.
+    boolean handedOff = false;
+    try {
+      final RID[] boundaries = new RID[partitions - 1];
+      final int blocks = widest.blockCount();
+      for (int i = 1; i < partitions; i++) {
+        final int b = (int) ((long) blocks * i / partitions);
+        boundaries[i - 1] = new RID(widest.blockFirstBucketId(b), widest.blockFirstPosition(b));
+      }
+      handedOff = true;
+      return new PartitionPlan(boundaries, reserved);
+    } finally {
+      if (!handedOff)
+        pool.releaseWorkers(reserved);
+    }
+  }
+
+  /**
+   * Score every range concurrently on {@link SparseVectorScoringPool} and merge the per-range top-K
+   * lists into the global one.
+   * <p>
+   * The merge is exact, not approximate: the ranges partition the RID space, so every document is
+   * scored exactly once and by the same query, and a document's score does not depend on which range
+   * it landed in. Only pruning differs between the two shapes, and pruning never changes a score - it
+   * only decides which documents are cheap enough to skip.
+   * <p>
+   * Drains every future even when one fails, so a failed query does not leave siblings running and
+   * competing for page reads behind it, and shares one deadline across the whole fan-out so N wedged
+   * ranges cannot cost N timeouts. Same shape as the per-bucket fan-out in
+   * {@code SQLFunctionVectorSparseNeighbors}.
+   */
+  private List<RidScore> parallelTopK(final int[] queryDims, final float[] queryWeights, final int k,
+      final Memtable mtSnapshot, final PaginatedSegmentReader[] segSnapshot, final RID[] boundaries) throws IOException {
+    final int partitions = boundaries.length + 1;
+    final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
+    // Ranges [1, partitions) go to workers; the caller scores range 0 itself rather than blocking on
+    // them all. That is one more range running concurrently for the same claimed capacity, and it
+    // keeps a thread that would otherwise be parked doing the work it came to do.
+    final List<Future<List<RidScore>>> futures = new ArrayList<>(partitions - 1);
+    for (int i = 1; i < partitions; i++) {
+      final RID start = boundaries[i - 1];
+      final RID end = i == partitions - 1 ? null : boundaries[i];
+      futures.add(pool.submit(() -> {
+        // A worker thread carries no database context of its own, and the block decoder borrows its
+        // scratch buffer from one, so without this the first page read fails with "Transaction
+        // context not found on current thread". Establishing it explicitly rather than relying on
+        // LocalDatabase.checkDatabaseIsOpen, which creates one as a side effect for any thread that
+        // reaches a checked database method first: that is what keeps the per-bucket fan-out working
+        // today, and it is luck rather than design - the scoring path does not otherwise need it.
+        //
+        // Create-only-if-absent, and tear down only what this task created, exactly as
+        // checkDatabaseIsOpen does it. This task does NOT always run on a worker: the pool's queue is
+        // bounded and its rejection policy is caller-runs, so once the queue fills, a submitted range
+        // executes inline on the submitting thread - which is the user's, inside the user's
+        // transaction. An unconditional init() there takes DatabaseContext.init's "ROLLBACK PREVIOUS
+        // TXS" branch and silently rolls the caller's transaction back, and the removeContext below
+        // would then wipe the context the rest of the query still needs. The identical init/remove
+        // pair in FetchFromTypeExecutionStep is safe only because its pool has an unbounded queue and
+        // never runs a task on the caller.
+        //
+        // The context stays a fresh one rather than the caller's: TransactionContext caches the pages
+        // it hands out in plain HashMaps, so several workers sharing one would corrupt it. Reading
+        // committed pages through a fresh context is equivalent here because a caller holding
+        // uncommitted changes is not allowed to fan out at all - see planPartitionBoundaries.
+        final boolean contextCreated = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath()) == null;
+        if (contextCreated)
+          DatabaseContext.INSTANCE.init(database);
+        try {
+          return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, start, end);
+        } finally {
+          if (contextCreated)
+            DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+        }
+      }));
+    }
+
+    final int timeoutSeconds = GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
+    final long deadlineNs = timeoutSeconds > 0 ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds) : Long.MAX_VALUE;
+    final List<List<RidScore>> ranges = new ArrayList<>(partitions);
+    IOException failure = null;
+
+    // The caller's own range, scored while the workers run. Its failure is handled with the others so
+    // one bad range never leaves siblings running behind a caller that has already given up.
+    try {
+      ranges.add(rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, boundaries[0]));
+    } catch (final IOException | RuntimeException e) {
+      failure = e instanceof IOException io ? io : new IOException("sparse-vector range scoring failed", e);
+    }
+
+    for (final Future<List<RidScore>> f : futures) {
+      try {
+        // A range that has already finished is always harvested, deadline or not. The caller scores
+        // its own range before getting here, so it can legitimately consume the whole budget on work
+        // that succeeded; failing the query then, while every worker range sits complete and waiting
+        // to be read, would be a timeout reported for nothing that is actually outstanding. The
+        // deadline governs waiting, not collecting.
+        if (timeoutSeconds <= 0 || f.isDone()) {
+          ranges.add(f.get());
+        } else {
+          final long remainingNs = deadlineNs - System.nanoTime();
+          if (remainingNs <= 0L)
+            throw new TimeoutException("deadline elapsed before draining range");
+          ranges.add(f.get(remainingNs, TimeUnit.NANOSECONDS));
+        }
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        for (final Future<?> other : futures)
+          other.cancel(true);
+        throw new IndexException("Interrupted during sparse-vector top-K range fan-out", ie);
+      } catch (final TimeoutException te) {
+        for (final Future<?> other : futures)
+          other.cancel(true);
+        throw new IndexException("Sparse-vector top-K range fan-out timed out after " + timeoutSeconds + "s (configurable via "
+            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+      } catch (final ExecutionException ee) {
+        final Throwable cause = ee.getCause();
+        if (failure == null)
+          failure = cause instanceof IOException io ? io : new IOException("sparse-vector range scoring failed", cause);
+        else
+          failure.addSuppressed(cause);
+      }
+    }
+    if (failure != null)
+      throw failure;
+
+    return BmwScorer.mergeRanges(ranges, k);
+  }
+
   /**
    * Top-K with traversal-integrated {@code groupBy} / {@code groupSize} (issue #4071). Replaces the
    * MVP's {@code topK} + over-fetch + post-filter pattern with a per-group min-heap inside the BMW
-   * DAAT loop. {@code groupKeyResolver} is consulted once per scored document; {@code allowedRIDs}
+   * DAAT loop.
+   * <p>
+   * <b>Not range-split</b>, unlike {@link #topK} (issue #4085). Merging grouped results is not the
+   * same problem as merging plain ones: the group budget is global, so two ranges that each filled
+   * their {@code limit} groups can hold more distinct keys between them than the query asked for, and
+   * picking which to drop needs the per-group worst scores rather than a flat best-k. That merge
+   * already exists a layer up, in the per-bucket fan-out, and pushing it down here is a separate
+   * piece of work rather than a line of this one. {@code groupKeyResolver} is consulted once per scored document; {@code allowedRIDs}
    * is applied inline so callers no longer need to over-fetch to compensate for selective filters.
    *
    * @see BmwScorer#topKGrouped
@@ -373,6 +740,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final Memtable mtSnapshot = memtable.get();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
 
+    // Grouped queries never split, but they are still load: they run a full traversal on their
+    // caller's thread and compete for the same cores. Leaving them unregistered would let a plain
+    // topK arriving alongside heavy grouped traffic see an idle gate, split, and take throughput
+    // from them - which is precisely what the gate exists to prevent, merely from a source it could
+    // not see. Registered only when splitting is enabled at all, for the same reason as topK.
+    final boolean registerLoad = GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger() != 1;
+    final SparseVectorScoringPool pool = registerLoad ? SparseVectorScoringPool.getInstance() : null;
+    if (pool != null)
+      pool.queryStarted();
+
     final DimCursor[] cursors = new DimCursor[queryDims.length];
     try {
       for (int i = 0; i < queryDims.length; i++)
@@ -382,6 +759,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       for (final DimCursor c : cursors)
         if (c != null)
           c.close();
+      if (pool != null)
+        pool.queryFinished();
     }
   }
 

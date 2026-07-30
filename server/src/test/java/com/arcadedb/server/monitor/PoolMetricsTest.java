@@ -48,6 +48,17 @@ class PoolMetricsTest {
       "arcadedb.executor.tasks.completed",
       "arcadedb.executor.tasks.caller_run_fallbacks");
 
+  /**
+   * Gauges only the sparse-vector pool publishes: they explain its per-query decision to split a
+   * top-K into parallel RID ranges (issue #4085). Deliberately absent on the other pools, which take
+   * work as it is handed to them - Studio renders a dash there rather than a zero that would read as
+   * "nothing is splitting" when the concept does not apply.
+   */
+  private static final Set<String> SPARSE_ONLY_GAUGE_NAMES = Set.of(
+      "arcadedb.executor.pool.reserved",
+      "arcadedb.executor.queries.in_flight",
+      "arcadedb.executor.queries.split");
+
   @Test
   void registersGaugesForBothPoolsWithPoolTag() {
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -68,6 +79,13 @@ class PoolMetricsTest {
             .as("gauge '%s' tagged pool=%s must be registered", gaugeName, poolTag)
             .isNotNull();
       }
+    }
+
+    for (final String gaugeName : SPARSE_ONLY_GAUGE_NAMES) {
+      assertThat(registry.find(gaugeName).tag("pool", "sparse_vector").meter())
+          .as("split-decision gauge '%s' must be registered for the sparse-vector pool", gaugeName).isNotNull();
+      assertThat(registry.find(gaugeName).tag("pool", "query").meter())
+          .as("split-decision gauge '%s' must NOT be registered for pools that never split", gaugeName).isNull();
     }
   }
 
@@ -122,6 +140,21 @@ class PoolMetricsTest {
         assertThat(pool.getDouble(shortName))
             .as("pool=%s gauge '%s' must be a finite number", poolTag, shortName).isFinite();
       }
+    }
+
+    // The split-decision gauges reach Studio through the same grouping, on the sparse-vector row
+    // only. The JS renders a dash where a key is absent, so "present for sparse_vector, absent
+    // elsewhere" is the contract - a zero on the wrong row would read as "nothing is splitting".
+    final JSONObject sparse = executors.getJSONObject("sparse_vector");
+    final JSONObject query = executors.getJSONObject("query");
+    for (final String gaugeName : SPARSE_ONLY_GAUGE_NAMES) {
+      final String shortName = gaugeName.substring("arcadedb.executor.".length());
+      assertThat(sparse.has(shortName))
+          .as("pool=sparse_vector must expose split gauge '%s' in JSON", shortName).isTrue();
+      assertThat(sparse.getDouble(shortName))
+          .as("split gauge '%s' must be a finite number", shortName).isFinite();
+      assertThat(query.has(shortName))
+          .as("pool=query must NOT expose split gauge '%s'", shortName).isFalse();
     }
   }
 }

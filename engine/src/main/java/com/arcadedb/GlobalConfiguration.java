@@ -306,8 +306,10 @@ public enum GlobalConfiguration {
   SPARSE_VECTOR_SCORING_POOL_THREADS("arcadedb.sparseVectorScoringPoolThreads", SCOPE.JVM,
       """
       Maximum number of threads in the JVM-wide pool that backs LSM_SPARSE_VECTOR top-K \
-      fan-out (per-bucket parallel scoring on partitioned types and types with multiple \
-      buckets). Kept on its own pool rather than sharing the QueryEngineManager pool so \
+      fan-out: per-bucket parallel scoring on partitioned types and types with multiple \
+      buckets, and the RID-range split of a single index's traversal (see \
+      arcadedb.sparseVectorScoringMaxPartitions). Kept on its own pool rather than sharing \
+      the QueryEngineManager pool so \
       long-running graph algorithms never queue scoring tasks behind seconds-long graph \
       chunks. 0 = available cores (min 2). REQUIRES JVM RESTART: the pool is a lazy \
       singleton constructed once on first use; later changes to this value have no effect \
@@ -323,6 +325,44 @@ public enum GlobalConfiguration {
       but never fails the query. REQUIRES JVM RESTART: same singleton lifecycle as \
       SPARSE_VECTOR_SCORING_POOL_THREADS.""",
       Integer.class, 1024),
+
+  SPARSE_VECTOR_SCORING_MAX_PARTITIONS("arcadedb.sparseVectorScoringMaxPartitions", SCOPE.JVM,
+      """
+      Maximum number of RID ranges a single LSM_SPARSE_VECTOR top-K query is split into for \
+      parallel scoring. 1 disables intra-query parallelism and keeps every query on the caller \
+      thread; 0 (default) lets the engine decide per query. Splitting buys latency with CPU: each \
+      range prunes against its own top-K watermark, which rises more slowly than the global one, \
+      so a range does more work than its share (measured at roughly 1.9x total CPU for an 8-way \
+      split on a learned-sparse corpus). On the default the engine claims only workers no other \
+      query needs, and does not split at all once enough queries are already in flight to keep \
+      the pool busy on their own - so an idle server spends spare cores on latency while a \
+      saturated one keeps its throughput. One cost of the default worth knowing: in a narrow band \
+      of moderate concurrency, where some queries claim a wide split and others get none, the \
+      spread between the two shows up as tail latency. Measured at 4 concurrent clients on an \
+      18-thread pool, p99 was about 1.2x serial's while the median was 3.4x better (7.6 ms against \
+      26.2). The band closes on both sides - below it every query splits, above it none does - and \
+      the median win is large enough that the default keeps the trade rather than flattening it. Measured on an 18-worker box at 500k documents: one \
+      client 13.7 -> 3.1 ms p50, four clients 13.6 -> 4.1 ms with 61% more throughput, sixteen \
+      clients within 5% of serial throughput. Any explicit value above 1 opts out of that \
+      self-throttling and splits regardless of load. That is a throughput risk on a busy server, \
+      and it is paid by the forcing query too. Measured at 16 concurrent clients on an 18-thread \
+      pool, 1M documents: a forced 8-way split returned 0.52x the throughput of no split at all, a \
+      median 1.85x worse and a p99 2.5x worse, for 1.9x the CPU per query. Above light concurrency \
+      there is no regime where forcing wins - not median, not throughput, not tail - because a \
+      query's own ranges start queueing behind its neighbours'. It is worth setting only when a \
+      single query at a time must be as fast as possible and nothing else is running; for anything \
+      else 0 is faster on every measure. The crossover is hardware and workload specific, so no \
+      number for it is given here. Re-read on every query.""",
+      Integer.class, 0),
+
+  SPARSE_VECTOR_SCORING_MIN_POSTINGS_FOR_PARTITIONING("arcadedb.sparseVectorScoringMinPostingsForPartitioning", SCOPE.JVM,
+      """
+      Minimum number of postings a LSM_SPARSE_VECTOR top-K query has to traverse before it is \
+      worth splitting into parallel ranges. Below this the fan-out (per-range cursor stacks, task \
+      dispatch, result merge) costs more than the traversal it parallelises, so the query stays on \
+      the caller thread. Counted as the summed document frequency of the query's dims, which is \
+      available from segment metadata without reading a page. Re-read on every query.""",
+      Long.class, 200_000L),
 
   SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS("arcadedb.sparseVectorScoringTimeoutSeconds", SCOPE.JVM,
       """

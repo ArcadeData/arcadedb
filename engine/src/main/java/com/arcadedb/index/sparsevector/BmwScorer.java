@@ -120,16 +120,41 @@ public final class BmwScorer {
    */
   public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors, final int k)
       throws IOException {
+    return topK(queryDims, queryWeights, cursors, k, null, null);
+  }
+
+  /**
+   * {@link #topK(int[], float[], DimCursor[], int)} restricted to the RID range
+   * {@code [startInclusive, endExclusive)}. This is the unit of work of the parallel fan-out in
+   * {@link PaginatedSparseVectorEngine#topK}: each worker takes one range, and because the ranges
+   * partition the RID space, concatenating their results and keeping the best {@code k} yields
+   * exactly the serial top-K.
+   * <p>
+   * <b>A range costs more than its share.</b> The pruning threshold is per-traversal, so a worker
+   * that sees 1/P of the corpus reaches a lower watermark than the serial scan would at the same
+   * point and therefore prunes less. The partitioned traversal does strictly more total work than
+   * the serial one - measured at about 1.9x total CPU for an 8-way split on a learned-sparse corpus.
+   * It buys latency with CPU, which is why the caller gates the fan-out rather than always taking it.
+   * <p>
+   * Cursors are seeked to {@code startInclusive} <i>before</i> each term's ceiling is captured, so a
+   * worker prunes against the maximum weight remaining in <i>its</i> range rather than the whole
+   * dim's - which claws back part of that amplification.
+   *
+   * @param startInclusive first RID to consider, or {@code null} to start at the beginning
+   * @param endExclusive   first RID <i>not</i> to consider, or {@code null} to run to the end
+   */
+  public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors, final int k,
+      final RID startInclusive, final RID endExclusive) throws IOException {
     validate(queryDims, queryWeights, cursors);
     if (k <= 0)
       return List.of();
 
-    final DimEntry[] terms = openTerms(queryWeights, cursors);
+    final DimEntry[] terms = openTerms(queryWeights, cursors, startInclusive);
     if (terms.length == 0)
       return List.of();
 
     final TopKCollector collector = new TopKCollector(k);
-    scan(terms, collector);
+    scan(terms, collector, endExclusive);
     return collector.drain();
   }
 
@@ -185,12 +210,12 @@ public final class BmwScorer {
     if (limit <= 0 || groupSize <= 0)
       return List.of();
 
-    final DimEntry[] terms = openTerms(queryWeights, cursors);
+    final DimEntry[] terms = openTerms(queryWeights, cursors, null);
     if (terms.length == 0)
       return List.of();
 
     final GroupedCollector collector = new GroupedCollector(limit, groupSize, groupKeyResolver, allowedRIDs);
-    scan(terms, collector);
+    scan(terms, collector, null);
     return collector.drain();
   }
 
@@ -208,7 +233,9 @@ public final class BmwScorer {
    * dominates everything else once the posting mass has been pruned away. The heap turns that into
    * O(aligned * log terms).
    */
-  private static void scan(final DimEntry[] terms, final Collector collector) throws IOException {
+  private static void scan(final DimEntry[] terms, final Collector collector, final RID endExclusive) throws IOException {
+    final int endBucketId = endExclusive != null ? endExclusive.getBucketId() : -1;
+    final long endPosition = endExclusive != null ? endExclusive.getPosition() : -1L;
     final int n = terms.length;
     // prefix[i] == sum of sigma over terms [0, i). prefix[n] is the whole query's ceiling.
     final float[] prefix = new float[n + 1];
@@ -258,6 +285,12 @@ public final class BmwScorer {
       // at or below the threshold by construction of the split.
       final int candidateBucketId = keyBucketIds[heap[0]];
       final long candidatePosition = keyPositions[heap[0]];
+
+      // Range bound: candidates are produced in ascending RID order, so the first one at or past the
+      // end of this worker's range means the range is done - everything left belongs to a sibling.
+      if (endBucketId >= 0
+          && SparseSegmentBuilder.compareRid(candidateBucketId, candidatePosition, endBucketId, endPosition) >= 0)
+        return;
 
       // Detach the whole aligned run so the cursors can be moved without corrupting the heap order.
       int alignedCount = 0;
@@ -537,13 +570,24 @@ public final class BmwScorer {
    * Start every non-null cursor, drop the ones with nothing to iterate, and order the survivors by
    * {@link DimEntry#BY_PRUNING_VALUE promotion order}, i.e. by how much traversal work each term
    * would remove per unit of pruning budget it consumes.
+   * <p>
+   * When a {@code startInclusive} is given, each cursor is seeked there <i>before</i> its
+   * {@link DimEntry} is built. That ordering matters: a term's ceiling is captured from
+   * {@link DimCursor#upperBoundRemaining()}, which on a sealed segment is a suffix max from the
+   * cursor's current position, so seeking first gives a worker the maximum weight remaining in its
+   * own range rather than the whole dim's. A tighter ceiling means a term can be proven
+   * non-essential sooner, which is the one lever that offsets a partitioned traversal's weaker
+   * pruning threshold.
    */
-  private static DimEntry[] openTerms(final float[] queryWeights, final DimCursor[] cursors) throws IOException {
+  private static DimEntry[] openTerms(final float[] queryWeights, final DimCursor[] cursors, final RID startInclusive)
+      throws IOException {
     final List<DimEntry> live = new ArrayList<>(cursors.length);
     for (int i = 0; i < cursors.length; i++) {
       if (cursors[i] == null)
         continue;
       cursors[i].start();
+      if (startInclusive != null)
+        cursors[i].seekTo(startInclusive);
       if (cursors[i].isExhausted())
         continue;
       live.add(new DimEntry(cursors[i], queryWeights[i]));
@@ -576,8 +620,39 @@ public final class BmwScorer {
     void collect(RID rid, float score);
   }
 
-  /** Result ordering handed back to the caller: best score first. */
-  private static final Comparator<RidScore> BY_SCORE_DESC = (a, b) -> Float.compare(b.score(), a.score());
+  /**
+   * Result ordering handed back to the caller: best score first, ties broken by RID ascending.
+   * <p>
+   * The RID leg is what makes a partitioned traversal indistinguishable from the serial one
+   * (issue #4085). It is the same total order {@link RidScoreMinHeap} retains against, so sorting
+   * the concatenated per-range results and keeping the first {@code k} reproduces the serial result
+   * exactly, ties included.
+   */
+  static final Comparator<RidScore> BY_SCORE_DESC = (a, b) -> {
+    final int c = Float.compare(b.score(), a.score());
+    return c != 0 ? c : SparseSegmentBuilder.compareRid(a.rid(), b.rid());
+  };
+
+  /**
+   * Merge the per-range results of a partitioned {@link #topK(int[], float[], DimCursor[], int, RID, RID)}
+   * back into the global top-K.
+   * <p>
+   * Correct because the ranges partition the RID space: every document is scored by exactly one
+   * worker, against the same query, so a document's score does not depend on which range it fell in.
+   * Only the <i>pruning</i> differs - a worker with a weaker local watermark keeps candidates the
+   * serial scan would have discarded - and keeping the best {@code k} of the union discards those
+   * again.
+   */
+  static List<RidScore> mergeRanges(final List<List<RidScore>> ranges, final int k) {
+    int total = 0;
+    for (final List<RidScore> r : ranges)
+      total += r.size();
+    final List<RidScore> all = new ArrayList<>(total);
+    for (final List<RidScore> r : ranges)
+      all.addAll(r);
+    all.sort(BY_SCORE_DESC);
+    return all.size() <= k ? all : new ArrayList<>(all.subList(0, k));
+  }
 
   /** Plain top-K: a K-sized min-heap whose head is the threshold once full. */
   private static final class TopKCollector implements Collector {
