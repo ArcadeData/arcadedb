@@ -1288,6 +1288,61 @@ class LSMVectorIndexTest extends TestHelper {
     assertThat(typeIndex.countEntries()).as("Count after the compactions").isEqualTo(numVectors);
   }
 
+  /**
+   * Issue #5568: a configured {@code arcadedb.vectorIndex.locationCacheSize} must not evict live vectors.
+   * <p>
+   * The limit used to bound the location index and let it FIFO-evict. A location is the only record of which
+   * record a vector id belongs to and where its entry sits in the file, and nothing on disk maps a vector id back
+   * to an offset, so an evicted entry did not fall back to a slower path - the mapping was gone. With the values
+   * below the index reported 100 of its 1000 vectors, and every reader that resolves one of the 900 evicted ids
+   * reads it as deleted. The limit is now honoured as a sizing hint only.
+   */
+  @Test
+  void aConfiguredLocationCacheLimitDoesNotDropVectors() {
+    final int locationCacheLimit = 100;
+    final int numVectors = 1000;
+    final int neighbours = 50;
+
+    // Per-database, so it is dropped with the database and cannot leak into the rest of the suite.
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE, locationCacheLimit);
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE CappedLocations IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY CappedLocations.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON CappedLocations (vec) LSM_VECTOR \
+          METADATA {dimensions: 4, similarity: 'COSINE'}\
+          """);
+    });
+
+    database.transaction(() -> {
+      for (int i = 0; i < numVectors; i++) {
+        final var vertex = database.newVertex("CappedLocations");
+        vertex.set("vec", new float[] { (float) i, (float) i + 1, (float) i + 2, (float) i + 3 });
+        vertex.save();
+      }
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("CappedLocations[vec]");
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+    assertThat(typeIndex.countEntries())
+        .as("Every indexed vector must stay resident even with a location cache limit of " + locationCacheLimit)
+        .isEqualTo(numVectors);
+
+    // Smoke check on the search path with the same limit configured. This one passed even while the cap was
+    // evicting - the query's neighbours were still in the in-memory delta buffer - so it is not the regression
+    // guard, the count above is. It is here to prove the search API stays whole once eviction is gone.
+    database.transaction(() -> {
+      final var cursor = lsmIndex.get(new Object[] { new float[] { 10.0f, 11.0f, 12.0f, 13.0f } }, neighbours);
+      int found = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        found++;
+      }
+      assertThat(found).as("A k-NN query should return k results").isEqualTo(neighbours);
+    });
+  }
+
   @Test
   void vectorNeighborsViaSQL() {
     database.transaction(() -> {

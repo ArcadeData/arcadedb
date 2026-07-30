@@ -42,6 +42,12 @@ import java.util.stream.IntStream;
  * rebuild - 1.2MB for the 9.3M ids that used to cost 970MB.
  * <p>
  * Used by LSMVectorIndex to implement lazy-loading of vectors from disk.
+ * <p>
+ * The bounded ({@code maxSize > 0}) backend below evicts, and {@link LSMVectorIndex} deliberately never asks for
+ * it (issue #5568): there is no vector id to offset index on disk, so an evicted location cannot be recovered, and
+ * every reader reads "no location" as "deleted". Bounding it made the index under-report its size and exposed any
+ * reader resolving an evicted id to a false "deleted". Do not wire {@code arcadedb.vectorIndex.locationCacheSize}
+ * back into the constructor without first giving the file a lookup that makes a miss recoverable.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
