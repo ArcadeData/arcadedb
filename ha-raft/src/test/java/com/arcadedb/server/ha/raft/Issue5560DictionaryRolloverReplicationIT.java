@@ -42,6 +42,11 @@ class Issue5560DictionaryRolloverReplicationIT extends BaseRaftHATest {
   /**
    * Padded so a few hundred names cross a page instead of a few hundred thousand. Long, but a legal identifier: only type and
    * property names ever enter the dictionary, and the point is to reach the boundary quickly rather than to look typical.
+   * <p>
+   * The sizing targets the default page size: {@link Dictionary#DEF_PAGE_SIZE} leaves roughly 65Kb usable per page, and
+   * {@link #PROPERTIES} names of this length are about 200Kb, so the fixture crosses the boundary around three times over
+   * rather than only just. That margin is what keeps the {@code getTotalPages() > 1} guard below honest if the default ever
+   * changes; should it grow past the total written here, the guard fails loudly rather than passing without a rollover.
    */
   private static final int NAME_LENGTH            = 500;
   private static final int TYPE_RECORDS           = 5;
