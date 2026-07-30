@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.Document;
@@ -32,29 +31,29 @@ import java.util.Map;
 
 public class MongoDBToSqlTranslator {
 
-  protected static void buildExpression(final StringBuilder buffer, final Document query) {
+  protected static void buildExpression(final StringBuilder buffer, final Map<String, Object> params, final Document query) {
     for (final Map.Entry<String, Object> entry : query.entrySet()) {
       final Object key = entry.getKey();
       final Object value = entry.getValue();
 
       if (key instanceof String string && string.startsWith("$"))
-        buildExpression(buffer, string, value);
+        buildExpression(buffer, params, string, value);
       else if (value instanceof Document) {
-        buildAnd(buffer, key, value);
+        buildAnd(buffer, params, key, value);
       } else if (value instanceof List list) {
         if ("$or".equals(key)) {
-          buildOr(buffer, list);
+          buildOr(buffer, params, list);
         } else
           throw new IllegalArgumentException("Invalid operator " + key);
       } else {
         buffer.append(quoteFieldPath(entry.getKey()));
         buffer.append(" = ");
-        buildValue(buffer, value);
+        buildValue(buffer, params, value);
       }
     }
   }
 
-  protected static void buildAnd(final StringBuilder sql, final Object key, final Object value) {
+  protected static void buildAnd(final StringBuilder sql, final Map<String, Object> params, final Object key, final Object value) {
     int expressionCount = 0;
 
     sql.append("(");
@@ -64,7 +63,7 @@ public class MongoDBToSqlTranslator {
         if (expressionCount++ > 0)
           sql.append(" AND ");
 
-        buildExpression(sql, o);
+        buildExpression(sql, params, o);
       }
     } else if (value instanceof Document document) {
       for (final Map.Entry<String, Object> subEntry : document.entrySet()) {
@@ -77,7 +76,7 @@ public class MongoDBToSqlTranslator {
         if (key != null)
           sql.append(quoteFieldPath(key.toString()));
 
-        buildExpression(sql, subKey, subValue);
+        buildExpression(sql, params, subKey, subValue);
 
       }
     }
@@ -85,54 +84,55 @@ public class MongoDBToSqlTranslator {
     sql.append(")");
   }
 
-  protected static void buildExpression(final StringBuilder sql, final String key, final Object value) {
+  protected static void buildExpression(final StringBuilder sql, final Map<String, Object> params, final String key,
+      final Object value) {
     if ("$in".equals(key)) {
       if (value instanceof Collection collection) {
         sql.append(" IN ");
-        buildCollection(sql, collection);
+        buildCollection(sql, params, collection);
       } else
         throw new IllegalArgumentException("Operator $in was expecting a collection");
     } else if ("$nin".equals(key)) {
       if (value instanceof Collection collection) {
         sql.append(" NOT IN ");
-        buildCollection(sql, collection);
+        buildCollection(sql, params, collection);
       } else
         throw new IllegalArgumentException("Operator $in was expecting a collection");
     } else if ("$eq".equals(key)) {
       sql.append(" = ");
-      buildValue(sql, value);
+      buildValue(sql, params, value);
     } else if ("$ne".equals(key)) {
       sql.append(" <> ");
-      buildValue(sql, value);
+      buildValue(sql, params, value);
     } else if ("$lt".equals(key)) {
       sql.append(" < ");
-      buildValue(sql, value);
+      buildValue(sql, params, value);
     } else if ("$lte".equals(key)) {
       sql.append(" <= ");
-      buildValue(sql, value);
+      buildValue(sql, params, value);
     } else if ("$gt".equals(key)) {
       sql.append(" > ");
-      buildValue(sql, value);
+      buildValue(sql, params, value);
     } else if ("$gte".equals(key)) {
       sql.append(" >= ");
-      buildValue(sql, value);
+      buildValue(sql, params, value);
     } else if ("$exists".equals(key)) {
       sql.append(" IS DEFINED ");
     } else if ("$size".equals(key)) {
       sql.append(".size() = ");
-      buildValue(sql, value);
+      buildValue(sql, params, value);
     } else if ("$or".equals(key)) {
-      buildOr(sql, (List) value);
+      buildOr(sql, params, (List) value);
     } else if ("$and".equals(key)) {
-      buildAnd(sql, key, value);
+      buildAnd(sql, params, key, value);
     } else if ("$not".equals(key)) {
       sql.append(" NOT ");
-      buildExpression(sql, (Document) value);
+      buildExpression(sql, params, (Document) value);
     } else
       throw new IllegalArgumentException("Unknown operator " + key);
   }
 
-  protected static void buildOr(final StringBuilder buffer, final List list) {
+  protected static void buildOr(final StringBuilder buffer, final Map<String, Object> params, final List list) {
     buffer.append("(");
 
     int i = 0;
@@ -141,34 +141,37 @@ public class MongoDBToSqlTranslator {
         buffer.append(" OR ");
 
       if (o instanceof Document document) {
-        buildExpression(buffer, document);
+        buildExpression(buffer, params, document);
       }
     }
 
     buffer.append(")");
   }
 
-  protected static void buildCollection(final StringBuilder buffer, final Collection coll) {
-    int i = 0;
+  /**
+   * Binds the whole collection to a single parameter. The SQL grammar accepts an input parameter between the parentheses of an
+   * {@code IN} list, so there is no need to emit one placeholder per element.
+   */
+  protected static void buildCollection(final StringBuilder buffer, final Map<String, Object> params, final Collection coll) {
     buffer.append('(');
-    for (final Iterator it = coll.iterator(); it.hasNext(); ) {
-      if (i++ > 0)
-        buffer.append(", ");
-
-      buildValue(buffer, it.next());
-    }
+    buildValue(buffer, params, coll);
     buffer.append(')');
   }
 
-  protected static void buildValue(final StringBuilder buffer, final Object value) {
-    if (value instanceof String string) {
-      // the value is embedded in the statement, so it has to be escaped for a single-quoted literal: inlining it raw lets a
-      // quote in the value close the literal and append arbitrary SQL to the WHERE clause
-      buffer.append('\'');
-      buffer.append(Expression.encodeSingle(string));
-      buffer.append('\'');
-    } else
-      buffer.append(value);
+  /**
+   * Binds a value taken off the wire as a named parameter and appends only its placeholder. Nothing the client sent reaches the
+   * statement text, so a value can no longer close a quoted literal and append clauses of its own - the injection is
+   * unreachable by construction instead of by remembering to escape at each call site. Binding also preserves the value's Java
+   * type: spelling it went through {@code String.valueOf}, which renders a {@code Date} or an {@code ObjectId} as text no SQL
+   * parser accepts.
+   * <p>
+   * The parameter name is derived from the map's current size, so names are unique and assigned in the order the values are
+   * met.
+   */
+  protected static void buildValue(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
+    final String name = "p" + params.size();
+    params.put(name, value);
+    buffer.append(':').append(name);
   }
 
   /**
