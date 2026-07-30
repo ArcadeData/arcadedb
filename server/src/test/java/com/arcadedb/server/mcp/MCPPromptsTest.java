@@ -24,6 +24,7 @@ import com.arcadedb.server.mcp.prompts.BuildKnowledgeGraphPrompt;
 import com.arcadedb.server.mcp.prompts.GraphRagQueryPrompt;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
@@ -226,5 +227,82 @@ class MCPPromptsTest {
     final MCPConfiguration noReads = readWriteConfig();
     noReads.setAllowReads(false);
     assertThat(BuildKnowledgeGraphPrompt.isAvailable(ALL_TOOLS_ALLOWED, noReads)).isFalse();
+  }
+
+  private static Set<String> promptNames(final JSONObject listed) {
+    final Set<String> names = new HashSet<>();
+    final JSONArray prompts = listed.getJSONArray("prompts");
+    for (int i = 0; i < prompts.length(); i++)
+      names.add(prompts.getJSONObject(i).getString("name"));
+    return names;
+  }
+
+  @Test
+  void listReturnsBothPromptsWhenEverythingIsPermitted() {
+    assertThat(promptNames(MCPPrompts.list(readWriteConfig(), ALL_TOOLS_ALLOWED)))
+        .containsExactlyInAnyOrder("graphrag_query", "build_knowledge_graph");
+  }
+
+  @Test
+  void listOmitsTheWritePromptWhenWritesAreDenied() {
+    final MCPConfiguration config = readWriteConfig();
+    config.setAllowInsert(false);
+
+    assertThat(promptNames(MCPPrompts.list(config, ALL_TOOLS_ALLOWED)))
+        .containsExactly("graphrag_query");
+  }
+
+  @Test
+  void listIsEmptyUnderTheAdminProfile() {
+    final Predicate<String> admin = toolName -> MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ADMIN, toolName);
+
+    assertThat(MCPPrompts.list(readWriteConfig(), admin).getJSONArray("prompts").length()).isZero();
+  }
+
+  @Test
+  void listIsEmptyWhenReadsAreDisabled() {
+    final MCPConfiguration config = readWriteConfig();
+    config.setAllowReads(false);
+
+    assertThat(MCPPrompts.list(config, ALL_TOOLS_ALLOWED).getJSONArray("prompts").length()).isZero();
+  }
+
+  @Test
+  void getReturnsDescriptionAndRenderedMessages() {
+    final JSONObject result = MCPPrompts.get(readWriteConfig(), ALL_TOOLS_ALLOWED, "graphrag_query",
+        new JSONObject().put("database", "knowledge").put("question", "Which papers cite Codd?"));
+
+    assertThat(result.getString("description")).isNotEmpty();
+    final JSONArray messages = result.getJSONArray("messages");
+    assertThat(messages.length()).isEqualTo(1);
+    assertThat(messages.getJSONObject(0).getJSONObject("content").getString("text"))
+        .contains("Which papers cite Codd?");
+  }
+
+  @Test
+  void getRefusesAPromptTheCallerCannotSee() {
+    final MCPConfiguration config = readWriteConfig();
+    config.setAllowInsert(false);
+
+    assertThatThrownBy(() -> MCPPrompts.get(config, ALL_TOOLS_ALLOWED, "build_knowledge_graph",
+        new JSONObject().put("database", "knowledge").put("sourceText", "Ada wrote it.")))
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("build_knowledge_graph");
+  }
+
+  @Test
+  void getRejectsAnUnknownPromptName() {
+    assertThatThrownBy(() -> MCPPrompts.get(readWriteConfig(), ALL_TOOLS_ALLOWED, "nope", new JSONObject()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown prompt: nope");
+  }
+
+  @Test
+  void getChecksAvailabilityBeforeArguments() {
+    final MCPConfiguration config = readWriteConfig();
+    config.setAllowInsert(false);
+
+    assertThatThrownBy(() -> MCPPrompts.get(config, ALL_TOOLS_ALLOWED, "build_knowledge_graph", new JSONObject()))
+        .isInstanceOf(SecurityException.class);
   }
 }
