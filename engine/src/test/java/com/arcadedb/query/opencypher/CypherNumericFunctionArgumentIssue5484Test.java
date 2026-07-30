@@ -254,11 +254,32 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
   @Test
   void namespacedMathFunctionRejectsAStringArgument() {
     // math.* are ArcadeDB extensions but share the same contract: an argument outside the input domain is a client error,
-    // not the NumberFormatException-driven 500 they used to answer.
+    // not the NumberFormatException-driven 500 they used to answer. They do accept a numeric string, so an unparseable one
+    // is worded as such rather than as a STRING-vs-number type mismatch.
     assertThatThrownBy(() -> consume("RETURN math.sigmoid('hello') AS r"))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("math.sigmoid()")
-        .hasMessageContaining("STRING");
+        .hasMessageContaining("'hello'")
+        .hasMessageNotContaining("Type mismatch");
+    assertThatThrownBy(() -> consume("RETURN math.sigmoid(true) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("math.sigmoid()")
+        .hasMessageContaining("BOOLEAN");
+  }
+
+  @Test
+  void namespacedMathFunctionStillAcceptsANumericString() {
+    assertThat((Double) single("RETURN math.sigmoid('0') AS r")).isEqualTo(0.5d);
+  }
+
+  @Test
+  void anUnsupportedDistanceUnitIsAlreadyAClientError() {
+    // distance()'s unit is validated by SQLFunctionGeoDistance with an IllegalArgumentException, which the HTTP layer
+    // maps to 400 on its own. Asserted here so the widened arity cannot start hiding an internal error later.
+    assertThatThrownBy(() -> consume("RETURN distance(point({latitude: 0, longitude: 0}),"
+        + " point({latitude: 0, longitude: 1}), 'furlongs') AS r"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("furlongs");
   }
 
   // ===================== arguments that are still accepted =====================

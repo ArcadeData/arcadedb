@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.math;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 
@@ -50,8 +51,9 @@ public abstract class AbstractMathFunction implements StatelessFunction {
    * See issue #4556.
    * <p>
    * A value that is neither a number nor the text of one is an out-of-domain argument, i.e. the caller's mistake: it raises
-   * a {@link com.arcadedb.exception.CommandSemanticException} (HTTP 400) instead of letting a raw
-   * {@link NumberFormatException} escape and be reported as an internal 500. See issue #5484.
+   * a {@link CommandSemanticException} (HTTP 400) instead of letting a raw {@link NumberFormatException} escape and be
+   * reported as an internal 500. A STRING that does not spell a number gets its own wording, because unlike the
+   * Cypher-standard numeric functions these accept strings, so the type is not what is wrong with it. See issue #5484.
    */
   protected Double asDouble(final Object arg) {
     if (arg == null)
@@ -61,8 +63,11 @@ public abstract class AbstractMathFunction implements StatelessFunction {
     if (arg instanceof CharSequence) {
       try {
         return Double.parseDouble(arg.toString());
-      } catch (final NumberFormatException ignored) {
-        // falls through to the type error below
+      } catch (final NumberFormatException e) {
+        // A STRING is inside the input domain of these functions, so the type is not what is wrong with it: say what is,
+        // rather than the "expects an INTEGER or a FLOAT but got STRING" the standard functions report.
+        throw new CommandSemanticException(
+            getName() + "() expects a number or the text of one but got the STRING '" + arg + "'", e);
       }
     }
     throw CypherFunctionHelper.typeMismatch(getName(), CypherFunctionHelper.NUMERIC_DOMAIN, arg);

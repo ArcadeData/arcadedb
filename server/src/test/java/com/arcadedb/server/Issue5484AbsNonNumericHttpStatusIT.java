@@ -81,6 +81,17 @@ class Issue5484AbsNonNumericHttpStatusIT extends BaseGraphServerTest {
   }
 
   @Test
+  void anUnsupportedDistanceUnitAlsoReturns400() throws Exception {
+    // distance() gained an optional-unit declaration here; its unit error travels as an IllegalArgumentException, which
+    // the HTTP layer already maps to 400. Asserted end to end so it cannot regress into a 500 unnoticed.
+    testEachServer(serverIndex -> {
+      final JSONObject json = executeCypher(serverIndex, "RETURN distance(point({latitude: 0, longitude: 0}),"
+          + " point({latitude: 0, longitude: 1}), 'furlongs') AS r", 400);
+      assertThat(json.getString("detail")).contains("furlongs");
+    });
+  }
+
+  @Test
   void absOnNullStillReturns200() throws Exception {
     testEachServer(serverIndex -> {
       final JSONObject json = executeCypher(serverIndex, "RETURN abs(null) AS r", 200);
