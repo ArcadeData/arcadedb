@@ -67,4 +67,48 @@ Out of scope:
 - Vulnerabilities in upstream dependencies that are already tracked by their own advisories. (Please still let us know so we can upgrade.)
 - Issues that require physical access to an already-compromised host.
 
+## How we triage dependency alerts
+
+Dependabot alerts and security updates are enabled on this repository. We triage
+them by **where the dependency runs**, not by severity alone.
+
+**Runtime dependencies** - anything reachable from a published artifact (the
+engine, server, HA, wire protocol modules, Studio, the Docker images, the client
+libraries) - are always reviewed and patched. No automatic dismissal applies to
+them at any severity.
+
+**Development-scope dependencies** - build plugins, test frameworks, and the
+`e2e-*` harnesses - never ship in a distribution and execute only in CI, against
+inputs this repository controls. Two auto-triage rules dismiss the classes of
+alert that are not actionable there:
+
+| Rule | Covers |
+| ---- | ------ |
+| GitHub-curated preset, *Dismiss low-impact alerts for development-scoped dependencies* | Resource-exhaustion advisories: CWE-400, CWE-674, CWE-754, CWE-770, CWE-835 |
+| Custom rule, *Dismiss dev-scope algorithmic complexity* (`cwe:407 scope:development`) | CWE-407 (inefficient algorithmic complexity), development scope only |
+
+The custom rule exists because the curated preset dismisses an advisory only when
+*every* CWE on it is in the preset's set, so a ReDoS tagged CWE-400 **and**
+CWE-407 stays open while the same class of issue tagged CWE-400 alone is
+dismissed. Both rules are configured in the repository's security settings and
+therefore leave no trace in the source tree, which is why they are recorded here.
+
+**Development scope does not mean ignored.** These rules are deliberately narrow.
+At development scope we still review, and never auto-dismiss, path traversal
+(CWE-22), information disclosure (CWE-200), code injection, and malicious or
+compromised packages - a build tool that can read or exfiltrate files is a real
+supply-chain risk regardless of whether it ships. As a backstop,
+`.github/workflows/e2e-dependency-audit.yml` fails on any runtime-scope finding
+in the E2E harnesses and reports development-scope findings without blocking.
+
+Some advisories have no fixed release on the major line a pinned upstream
+dependency requires. Where we knowingly carry one, the reason is recorded in the
+relevant `pom.xml` or in `.github/dependabot.yml` rather than being silently
+dismissed.
+
+None of this changes what you should report: if you can show that a
+development-scope dependency is reachable from a shipped artifact, or exploitable
+in a way we have not considered, please tell us through the private channels
+above.
+
 Thank you for helping keep ArcadeDB and its users safe.

@@ -44,6 +44,16 @@ public final class MicrometerQueryMetricsRecorder implements QueryMetricsRecorde
   }
 
   /**
+   * Drops every cached timer. A cached {@link Timer} is bound to the registries backing
+   * {@code Metrics.globalRegistry} when it was built, so it must not outlive them: recording into a meter
+   * whose backing registry is gone silently discards the sample. Called when the server dismantles the
+   * metrics subsystem, so the next server generation rebuilds its timers from scratch.
+   */
+  public static void invalidateTimerCache() {
+    QUERY_TIMERS.clear();
+  }
+
+  /**
    * Resolves (and caches) the {@code arcadedb.query.duration} timer for the given bounded tag tuple.
    * Package-private for direct unit testing.
    */
