@@ -51,7 +51,10 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1139,38 +1142,29 @@ class LSMVectorIndexTest extends TestHelper {
 //      System.out.println("Second compaction result: " + compacted);
     }
 
-    if (compacted) {
-//      System.out.println("Compaction succeeded!");
+    // The verification below is worthless if the compaction never ran, and a silently skipped verification used to
+    // read as a passing test (issue #5568). Fail instead: a compaction that cannot be scheduled or that finds
+    // nothing to do is itself something to look at.
+    assertThat(compacted).as("""
+        Compaction did not run, so nothing about it was verified. Check that the index status was AVAILABLE when \
+        scheduleCompaction() was called, that the database is open with page flushing enabled, and that the index \
+        holds entries to compact""").isTrue();
 
-      // After compaction, verify the index still works correctly
-      final long countAfterCompaction = typeIndex.countEntries();
-      assertThat(countAfterCompaction).as("Should still have " + numVectors + " entries after compaction").isEqualTo(numVectors);
+    // After compaction, verify the index still works correctly
+    final long countAfterCompaction = typeIndex.countEntries();
+    assertThat(countAfterCompaction).as("Should still have " + numVectors + " entries after compaction").isEqualTo(numVectors);
 
-      // Verify we can still query the index
-      database.transaction(() -> {
-        final float[] queryVec = { 500.0f, 501.0f, 502.0f, 503.0f }; // Last iteration values for first doc
-        final var cursor = typeIndex.get(new Object[] { queryVec }, 10);
-        int count = 0;
-        while (cursor.hasNext()) {
-          cursor.next();
-          count++;
-        }
-        assertThat(count > 0).as("Should find vectors after compaction").isTrue();
-      });
-
-      // Check if compacted sub-index was created
-//      final var compactedSubIndex = lsmIndex.getSubIndex();
-//      if (compactedSubIndex != null) {
-//        System.out.println("Compacted sub-index created: fileId=" + compactedSubIndex.getFileId() +
-//            ", pages=" + compactedSubIndex.getTotalPages());
-//      }
-    } else {
-      System.out.println("Compaction failed or returned no changes. This could mean:");
-      System.out.println("  - Status was not COMPACTION_SCHEDULED when compact() was called");
-      System.out.println("  - Database is closed or page flushing is suspended");
-      System.out.println("  - No immutable pages found");
-      System.out.println("  - No entries were compacted (all deleted or empty pages)");
-    }
+    // Verify we can still query the index
+    database.transaction(() -> {
+      final float[] queryVec = { 500.0f, 501.0f, 502.0f, 503.0f }; // Last iteration values for first doc
+      final var cursor = typeIndex.get(new Object[] { queryVec }, 10);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count > 0).as("Should find vectors after compaction").isTrue();
+    });
 
     // Verify sample documents still exist with correct latest values
     database.transaction(() -> {
@@ -1203,6 +1197,149 @@ class LSMVectorIndexTest extends TestHelper {
         // These should have original values (not updated)
         assertThat(vec[0]).as("Vector[0] for doc " + i + " should have original value").isEqualTo((float) i);
       }
+    });
+  }
+
+  /**
+   * Issue #5568: a rebuild must publish the location index atomically.
+   * <p>
+   * The rebuild used to clear the live location index and refill it entry by entry under the index write lock. Every
+   * reader of that index is lock-free by design, so a reader running while a rebuild was in flight saw the map
+   * mid-refill: {@code countEntries()} returned an arbitrary fraction of the real content, a different wrong number
+   * on each run. A compaction IS a rebuild, which is what made the failure show up right after {@code compact()}.
+   * <p>
+   * The counter thread here plays the role of any concurrent reader (a {@code count()} query, the metrics
+   * collector, a search short-circuiting on an apparently empty index) and the assertion is the invariant that was
+   * violated: no reader may ever see fewer entries than the index holds.
+   */
+  @Test
+  void countEntriesIsNeverTornByAConcurrentRebuild() throws Exception {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE TornCount IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY TornCount.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON TornCount (vec) LSM_VECTOR \
+          METADATA {dimensions: 4, similarity: 'COSINE'}\
+          """);
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("TornCount[vec]");
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+
+    final int numVectors = 3000;
+    final List<RID> rids = new ArrayList<>(numVectors);
+    database.transaction(() -> {
+      for (int i = 0; i < numVectors; i++) {
+        final var vertex = database.newVertex("TornCount");
+        vertex.set("vec", new float[] { (float) i, (float) i + 1, (float) i + 2, (float) i + 3 });
+        vertex.save();
+        rids.add(vertex.getIdentity());
+      }
+    });
+
+    // Supersede a slice of the vectors so the pages carry tombstones and the live set is a strict subset of the
+    // entries: the rebuild then has to merge, which is exactly the state the reported failure was taken in.
+    database.transaction(() -> {
+      for (int i = 0; i < 500; i++) {
+        final var doc = rids.get(i).asDocument().modify();
+        doc.set("vec", new float[] { i + 1000f, i + 1001f, i + 1002f, i + 1003f });
+        doc.save();
+      }
+    });
+
+    // Every count below is compared against the full live set, which assumes an UNBOUNDED location cache - the
+    // default of arcadedb.vectorIndex.locationCacheSize, and what this suite runs with. Under a bounded cache (the
+    // low-ram profile caps it at 10_000) the index FIFO-evicts down to the cap and countEntries() legitimately
+    // reports the cap instead of the live count, so the invariant would have to be expressed against that bound.
+    assertThat(typeIndex.countEntries()).as("Baseline count before any compaction").isEqualTo(numVectors);
+
+    final AtomicBoolean stop = new AtomicBoolean(false);
+    final AtomicLong lowestCount = new AtomicLong(Long.MAX_VALUE);
+    final AtomicReference<Throwable> counterFailure = new AtomicReference<>();
+    final Thread counter = new Thread(() -> {
+      try {
+        while (!stop.get()) {
+          lowestCount.getAndAccumulate(typeIndex.countEntries(), Math::min);
+          // countEntries() is O(live entries): spin politely instead of burning a core for the whole compaction.
+          Thread.onSpinWait();
+        }
+      } catch (final Throwable t) {
+        counterFailure.set(t);
+      }
+    }, "issue5568-counter");
+    counter.setDaemon(true);
+    counter.start();
+
+    try {
+      // No writer runs from here on, so the count is a constant: every compaction rebuilds the same live set.
+      for (int round = 0; round < 3; round++) {
+        assertThat(lsmIndex.scheduleCompaction()).as("Compaction round " + round + " should be schedulable").isTrue();
+        assertThat(lsmIndex.compact()).as("Compaction round " + round + " should run").isTrue();
+      }
+    } finally {
+      stop.set(true);
+      counter.join(30_000);
+    }
+
+    assertThat(counterFailure.get()).as("The concurrent reader should not fail").isNull();
+    assertThat(lowestCount.get())
+        .as("countEntries() must never observe a partially rebuilt location index")
+        .isEqualTo(numVectors);
+    assertThat(typeIndex.countEntries()).as("Count after the compactions").isEqualTo(numVectors);
+  }
+
+  /**
+   * Issue #5568: a configured {@code arcadedb.vectorIndex.locationCacheSize} must not evict live vectors.
+   * <p>
+   * The limit used to bound the location index and let it FIFO-evict. A location is the only record of which
+   * record a vector id belongs to and where its entry sits in the file, and nothing on disk maps a vector id back
+   * to an offset, so an evicted entry did not fall back to a slower path - the mapping was gone. With the values
+   * below the index reported 100 of its 1000 vectors, and every reader that resolves one of the 900 evicted ids
+   * reads it as deleted. The limit is now honoured as a sizing hint only.
+   */
+  @Test
+  void aConfiguredLocationCacheLimitDoesNotDropVectors() {
+    final int locationCacheLimit = 100;
+    final int numVectors = 1000;
+    final int neighbours = 50;
+
+    // Per-database, so it is dropped with the database and cannot leak into the rest of the suite.
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE, locationCacheLimit);
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE CappedLocations IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY CappedLocations.vec IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON CappedLocations (vec) LSM_VECTOR \
+          METADATA {dimensions: 4, similarity: 'COSINE'}\
+          """);
+    });
+
+    database.transaction(() -> {
+      for (int i = 0; i < numVectors; i++) {
+        final var vertex = database.newVertex("CappedLocations");
+        vertex.set("vec", new float[] { (float) i, (float) i + 1, (float) i + 2, (float) i + 3 });
+        vertex.save();
+      }
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("CappedLocations[vec]");
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+    assertThat(typeIndex.countEntries())
+        .as("Every indexed vector must stay resident even with a location cache limit of " + locationCacheLimit)
+        .isEqualTo(numVectors);
+
+    // Smoke check on the search path with the same limit configured. This one passed even while the cap was
+    // evicting - the query's neighbours were still in the in-memory delta buffer - so it is not the regression
+    // guard, the count above is. It is here to prove the search API stays whole once eviction is gone.
+    database.transaction(() -> {
+      final var cursor = lsmIndex.get(new Object[] { new float[] { 10.0f, 11.0f, 12.0f, 13.0f } }, neighbours);
+      int found = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        found++;
+      }
+      assertThat(found).as("A k-NN query should return k results").isEqualTo(neighbours);
     });
   }
 

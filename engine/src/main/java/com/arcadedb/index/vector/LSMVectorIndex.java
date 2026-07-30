@@ -172,9 +172,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile GraphState                    graphState;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
-  private final    VectorLocationIndex           vectorIndex;       // Lightweight pointer index
+  // Lightweight pointer index. Volatile and swapped as a whole (never cleared and refilled in place) so the
+  // readers that take no lock - countEntries() and getStats() - always see a complete location set instead of a
+  // rebuild in progress (issue #5568). Everything else reaches it through lock.readLock().
+  private volatile VectorLocationIndex           vectorIndex;
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
+  // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
+  // compareAndSet, not a plain flag: two threads racing the first call would otherwise both log it.
+  private final    AtomicBoolean                 locationCacheCapReported = new AtomicBoolean();
 
   // Graph file for persistent storage of graph topology
   // Allows lazy-loading graph from disk and avoiding expensive rebuilds
@@ -383,11 +389,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * filesystem: leaving the old file behind was why compaction used to make the index bigger, not smaller.
    *
    * @param liveEntries the live set, re-pointed in place at the new file
+   *
+   * @return true when the file was actually rewritten and the location index re-published with it, false when the
+   * rewrite was skipped
    */
-  private void rewriteDataFileWithLiveEntries(final Collection<VectorEntryForGraphBuild> liveEntries) {
+  private boolean rewriteDataFileWithLiveEntries(final Collection<VectorEntryForGraphBuild> liveEntries) {
     if (liveEntries.isEmpty()) {
       LogManager.instance().log(this, Level.INFO, "Skipping compaction of vector index '%s': no live vectors", indexName);
-      return;
+      return false;
     }
 
     for (final VectorEntryForGraphBuild entry : liveEntries)
@@ -399,7 +408,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Skipping compaction of vector index '%s': the live set contains vectors recovered outside the index "
                 + "pages, so no space was reclaimed. Retry once a rebuild has persisted them",
             indexName);
-        return;
+        return false;
       }
 
     final DatabaseInternal database = getDatabase();
@@ -504,6 +513,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         currentInsertPageNum = newPages.size() - 1;
         currentMutablePages.set(1);
 
+        // Re-point the location index at the new file in the SAME critical section that swapped it (issue #5568).
+        // The entries above already carry their new offsets; leaving the swap to the caller would open a window in
+        // which the index answers offsets into a file that no longer exists - a search landing there reads another
+        // entry's bytes, or the dropped compacted component through a null reference.
+        publishLocationIndex(liveEntries);
+
         ((LocalSchema) database.getSchema()).setMigratedFileId(oldFileId, newFileId);
         database.getSchema().getEmbedded().saveConfiguration();
 
@@ -524,6 +539,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       dropReplacedComponent(previousMutable);
       dropReplacedComponent(previousCompacted);
 
+      return true;
     } finally {
       if (newFileId > -1)
         database.getTransactionManager().unlockFile(newFileId, Thread.currentThread());
@@ -576,6 +592,53 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.WARNING, "Error dropping the file replaced by the compaction of '%s': %s",
           indexName, e.getMessage());
     }
+  }
+
+  /**
+   * Replace the location index with one holding exactly {@code liveEntries}, published by a single reference
+   * assignment to the volatile field (issue #5568).
+   * <p>
+   * The replacement is populated on a DETACHED instance on purpose. Refilling the live index in place - clear()
+   * followed by one addOrUpdate per entry - is atomic only for whoever holds the index lock. The searches do
+   * ({@code lock.readLock()} covers their {@code vectorIndex.size() == 0} short-circuit and the RID filters), but
+   * {@link #countEntries()} and {@link #getStats()} take no lock at all, and they observed the map mid-refill and
+   * reported an arbitrary fraction of its real content - a different wrong number on each run after a compaction,
+   * because the rebuild a compaction triggers was still refilling the map while the caller counted it.
+   * <p>
+   * A swap fixes that without putting a lock on a read path, and it is what makes the invariant structural rather
+   * than a rule every future reader has to remember. It also covers a hazard the read lock cannot: a compaction
+   * swaps the data file in one write-locked section and used to re-publish the locations in a later one, so a
+   * search could take the read lock in between and resolve old offsets against the new file. That is why the
+   * compaction publishes from inside the section that swaps the file.
+   * <p>
+   * Callers must hold the write lock: it is what keeps a concurrent insert or remove from mutating the instance
+   * being replaced (its mutation would be dropped by the swap), not what protects the readers.
+   * <p>
+   * The CPU cost is the same as the in-place refill it replaces, but peak heap is not: the instance being replaced
+   * stays reachable for its in-flight readers while the new one is built, so a rebuild transiently holds two
+   * location sets (~90 bytes per live entry each) instead of one. That is a bounded, promptly released spike and
+   * the price of the atomicity.
+   * <p>
+   * The population loop runs under the write lock even though only the final store needs it. Hoisting it out would
+   * shorten the locked window, but it would also let an insert commit into the instance about to be discarded, so
+   * the loss window for a concurrent write would grow by the whole population. Holding the lock keeps exactly the
+   * exclusion the in-place refill had, and the loop is an in-memory map fill - tens of milliseconds on a 200K
+   * index, not the O(index size) document reads issue #5391 moved out of this lock.
+   *
+   * @param liveEntries the live set the index must hold, already pointing at the file that is current now
+   */
+  private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
+    // The location index is always unlimited (see getLocationCacheSize), so it will hold every live entry and is
+    // sized for exactly that. The intermediate is a long: `size() * 4` overflows int past ~536M entries, and a
+    // negative capacity would fail the rebuild rather than merely sizing the map badly.
+    final VectorLocationIndex rebuilt = new VectorLocationIndex(getLocationCacheSize(),
+        (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) liveEntries.size() * 4 / 3 + 1)));
+    for (final VectorEntryForGraphBuild entry : liveEntries)
+      rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
+    // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
+    // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
+    rebuilt.setNextId(Math.max(rebuilt.getNextId(), nextId.get()));
+    vectorIndex = rebuilt;
   }
 
   /**
@@ -1546,8 +1609,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // about to be built on. Doing it in the rebuild instead of in a separate compactor is what keeps the two from
     // disagreeing on what "live" means. Entries are re-pointed at the new file below, so everything downstream
     // (validation, preload, vectorIndex re-sync, graph build) transparently uses the compacted file.
-    if (compactDataFile)
-      rewriteDataFileWithLiveEntries(ridToLatestVector.values());
+    // A completed rewrite already re-published the location index against the new file, inside the critical section
+    // that swapped it - re-publishing an identical copy below would only reopen the window it closed (issue #5568).
+    final boolean locationIndexAlreadyPublished = compactDataFile && rewriteDataFileWithLiveEntries(
+        ridToLatestVector.values());
 
     // Rebuild ordinal mapping (may have changed after document scan fallback)
     final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
@@ -1563,14 +1628,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int[] vectorIds;
     try {
       // CRITICAL: If we couldn't read any entries from pages (e.g., during database close),
-      // DON'T clear vectorIndex - use what's already in memory!
+      // DON'T replace vectorIndex - use what's already in memory!
       if (!ridToLatestVector.isEmpty()) {
-        // Update vectorIndex to match what we found on pages (sync it with disk state)
-        // This ensures vectorIndex is consistent with the graph we're about to build
-        vectorIndex.clear();
-        for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
-          vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
-        }
+        // Update vectorIndex to match what we found on pages (sync it with disk state).
+        if (!locationIndexAlreadyPublished)
+          publishLocationIndex(ridToLatestVector.values());
         vectorIds = finalActiveVectorIdsFromPages; // Use vector IDs from pages (may include doc-scan fallback)
       } else {
         LogManager.instance().log(this, Level.SEVERE,
@@ -2234,29 +2296,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.SEVERE, "Error building PQ for index %s: %s", indexName, e.getMessage());
       // Don't throw - PQ is optional, index can still work with exact search
     }
-  }
-
-  /**
-   * Build ordinal-to-vectorId mapping from current vectorIndex.
-   * For incremental builds, ordinals ARE vectorIds (identity mapping for non-deleted entries).
-   */
-  /**
-   * Build identity ordinal mapping for live builder: ordinal[i] = i for each active vectorId.
-   * The live builder uses vectorIds as graph ordinals directly (no remapping).
-   */
-  private int[] buildLiveOrdinalMapping() {
-    final int maxId = vectorIndex.getMaxVectorId();
-    final int[] mapping = new int[maxId + 1];
-    for (int i = 0; i <= maxId; i++)
-      mapping[i] = i;
-    return mapping;
-  }
-
-  private int[] buildOrdinalMapping() {
-    return vectorIndex.getAllVectorIds().filter(id -> {
-      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
-      return loc != null && !loc.deleted;
-    }).sorted().toArray();
   }
 
   /**
@@ -4727,12 +4766,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public Map<String, Long> getStats() {
     final Map<String, Long> stats = new HashMap<>();
 
-    // Existing metrics
-    stats.put("totalVectors", (long) vectorIndex.size());
-    stats.put("activeVectors", vectorIndex.getActiveCount());
+    // Existing metrics. One read of the volatile field for the whole snapshot: a rebuild publishes a replacement
+    // instance (issue #5568), and three separate reads could each land on a different generation and report three
+    // numbers that never described the same index.
+    final VectorLocationIndex locations = vectorIndex;
+    stats.put("totalVectors", (long) locations.size());
+    stats.put("activeVectors", locations.getActiveCount());
     // Ask the deleted-id set instead of subtracting: a tombstoned id keeps no resident location since issue #5516,
     // so size() - activeCount() is always 0 now and this stat would report "no deletions" on an index full of them.
-    stats.put("deletedVectors", (long) vectorIndex.getDeletedCount());
+    stats.put("deletedVectors", (long) locations.getDeletedCount());
     stats.put("dimensions", (long) metadata.dimensions);
     stats.put("maxConnections", (long) metadata.maxConnections);
     stats.put("beamWidth", (long) metadata.beamWidth);
@@ -4773,7 +4815,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("vectorCacheMisses", searchCache != null ? searchCache.getMisses() : 0L);
 
     // NEW: Memory estimates
-    stats.put("estimatedLocationIndexBytes", (long) vectorIndex.size() * 24L);
+    // Quote the retained heap, not the 24-byte payload: this stat is what an operator sizes a heap from, and the
+    // payload-only figure it used to report under-estimated the location index several-fold (issue #5568).
+    stats.put("estimatedLocationIndexBytes",
+        (long) locations.size() * VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION);
     stats.put("estimatedOrdinalMapBytes", ordinalToVectorId != null ?
         (long) ordinalToVectorId.length * 4L : 0L);
 
@@ -5193,31 +5238,51 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Get the location cache size from configuration (per-index metadata or global default).
+   * Size of the location index, which is always unlimited (issue #5568).
+   * <p>
+   * {@code arcadedb.vectorIndex.locationCacheSize} (and its per-index {@code locationCacheSize} metadata) used to
+   * cap the location index and let it evict. That is not a cache bound - it is data loss. A location is the only
+   * record of which RID a vector id belongs to and where its entry sits in the file; there is no vector id to
+   * offset index on disk, so an evicted entry cannot be recovered. Measured: a cap of 100 over 1000 live vectors
+   * makes {@code countEntries()} report 100 and {@link #getStats()} under-report by the same 900. Every reader
+   * that resolves a vector id reads a missing location as deleted (see the result loops of the search paths), so
+   * a query whose neighbours were evicted drops them; the small reproduction above still answered in full because
+   * its vectors were also in the in-memory delta buffer, which is not a guarantee an index can rely on.
+   * <p>
+   * The cap was introduced when the index held one location per WRITE, so it grew without bound on a re-embedding
+   * workload. Issue #5516 removed that: a tombstoned id releases its location, so residency is O(live vectors) -
+   * proportional to the data the user asked to index, and roughly 90 bytes each. Capping that buys a memory
+   * ceiling by silently returning wrong results, which is never the right trade for a database.
+   * <p>
+   * The setting is therefore honoured as a sizing hint only and reported once per index at WARNING. Bringing the
+   * footprint down is a storage question, not an eviction one: laying the locations out in primitive arrays
+   * indexed by vector id would cost ~20 bytes each instead of ~90, with no per-entry objects at all (issue
+   * #5588).
    *
-   * @return Maximum number of vector locations to cache, or -1 for unlimited
-   */
-  private int getLocationCacheSize() {
-    if (metadata != null && metadata.locationCacheSize > -1) {
-      return metadata.locationCacheSize;
-    }
-    return mutable.getDatabase().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
-  }
-
-  /**
-   * Get the location cache size from configuration during initialization.
-   * Used when mutable is not yet initialized.
+   * @param database The database instance, since {@code mutable} may not be initialized yet
    *
-   * @param database The database instance
-   *
-   * @return Maximum number of vector locations to cache, or -1 for unlimited
+   * @return always -1, meaning unlimited
    */
   private int getLocationCacheSize(final DatabaseInternal database) {
-    if (metadata != null && metadata.locationCacheSize > -1) {
-      return metadata.locationCacheSize;
+    final int configured = metadata != null && metadata.locationCacheSize > -1 ?
+        metadata.locationCacheSize :
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
+
+    if (configured > 0 && locationCacheCapReported.compareAndSet(false, true)) {
+      LogManager.instance().log(this, Level.WARNING,
+          """
+          Ignoring a location cache limit of %d for vector index '%s': evicting a live vector location deletes the \
+          only mapping from its vector id to its record, so a capped index silently drops vectors from searches. \
+          Locations are resident only for live vectors since issue #5516, so the index costs ~90 bytes per indexed \
+          vector regardless of this setting""",
+          configured, indexName);
     }
-    return database.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
+    return -1;
+  }
+
+  /** @see #getLocationCacheSize(DatabaseInternal) - always -1. */
+  private int getLocationCacheSize() {
+    return getLocationCacheSize(mutable.getDatabase());
   }
 
   /**
@@ -5515,162 +5580,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (timer != null) {
       timer.cancel();
       inactivityTimer = null;
-    }
-  }
-
-  /**
-   * Get a vector location by ID, with fallback to page scanning if evicted from cache.
-   * This method provides transparent cache miss handling for bounded location caches.
-   *
-   * @param vectorId The vector ID to look up
-   *
-   * @return The vector location, or null if not found
-   */
-  private VectorLocationIndex.VectorLocation getVectorLocation(final int vectorId) {
-    // Try cache first (O(1) lookup)
-    VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
-    if (loc != null) {
-      return loc;
-    }
-
-    // A tombstoned id has no location by design (issue #5516): nothing to reconstruct, and scanning the pages for it
-    // would return its pre-tombstone entry (page order returns the first match), resurrecting a deleted vector.
-    if (vectorIndex.isDeleted(vectorId))
-      return null;
-
-    // Cache miss - reconstruct by scanning pages (expensive but rare for LRU cache)
-    loc = reconstructLocationFromPages(vectorId);
-    if (loc != null) {
-      // Add back to cache for future access
-      vectorIndex.addOrUpdate(vectorId, loc.isCompacted, loc.absoluteFileOffset, loc.rid, loc.deleted);
-    }
-    return loc;
-  }
-
-  /**
-   * Reconstruct a vector location from pages when evicted from cache.
-   * Scans compacted index first (more likely for old vectors), then mutable index.
-   *
-   * @param vectorId The vector ID to find
-   *
-   * @return The reconstructed location, or null if not found
-   */
-  private VectorLocationIndex.VectorLocation reconstructLocationFromPages(final int vectorId) {
-    // Scan compacted index first (more likely to contain old vectors)
-    if (compactedSubIndex != null) {
-      final VectorLocationIndex.VectorLocation loc = scanPagesForVectorId(compactedSubIndex.getFileId(),
-          compactedSubIndex.getTotalPages(), vectorId, true);
-      if (loc != null)
-        return loc;
-    }
-
-    // Scan mutable index
-    return scanPagesForVectorId(mutable.getFileId(), mutable.getTotalPages(), vectorId, false);
-  }
-
-  /**
-   * Scan pages in a specific file to find a vector by ID.
-   * Similar to loadVectorsFromFile() but stops at first match.
-   *
-   * @param fileId      The file ID to scan
-   * @param totalPages  Number of pages in the file
-   * @param vectorId    The vector ID to find
-   * @param isCompacted True if scanning compacted file
-   *
-   * @return The vector location if found, null otherwise
-   */
-  private VectorLocationIndex.VectorLocation scanPagesForVectorId(final int fileId, final int totalPages,
-      final int vectorId,
-      final boolean isCompacted) {
-    for (int pageNum = 0; pageNum < totalPages; pageNum++) {
-      try {
-        final BasePage currentPage = mutable.getDatabase().getPageManager()
-            .getImmutablePage(new PageId(mutable.getDatabase(), fileId, pageNum), getPageSize(), false, false);
-
-        if (currentPage == null)
-          continue;
-
-        final int offsetFreeContent = currentPage.readInt(OFFSET_FREE_CONTENT);
-        final int numberOfEntries = currentPage.readInt(OFFSET_NUM_ENTRIES);
-
-        if (numberOfEntries == 0)
-          continue;
-
-        // Calculate header size
-        final int headerSize;
-        if (isCompacted && pageNum == 0) {
-          headerSize = HEADER_BASE_SIZE + (4 * 4); // base + 4 ints for metadata
-        } else {
-          headerSize = HEADER_BASE_SIZE;
-        }
-
-        // Calculate absolute file offset for this page's data
-        final long pageBaseOffset = ((long) fileId << 32) | (pageNum * getPageSize());
-
-        // Parse entries in this page
-        int entryOffset = headerSize;
-        for (int i = 0; i < numberOfEntries && entryOffset < offsetFreeContent; i++) {
-          final long entryFileOffset = pageBaseOffset + entryOffset;
-          final int id = currentPage.readInt(entryOffset);
-          entryOffset += 4;
-
-          // Check if this is the vector we're looking for
-          if (id == vectorId) {
-            // Found it! Read the rest of the entry
-            final int bucketId = currentPage.readInt(entryOffset);
-            entryOffset += 4;
-            final long position = currentPage.readLong(entryOffset);
-            entryOffset += 8;
-            final RID rid = new RID(bucketId, position);
-
-            final byte flags = currentPage.readByte(entryOffset);
-            entryOffset += 1;
-            final boolean deleted = (flags & 0x01) != 0;
-
-            // Skip vector data (if present)
-            // Entry format: id(4) + bucketId(4) + position(8) + flags(1) + [quantized data]
-            // We don't need to read the vector data, just return the location
-
-            return new VectorLocationIndex.VectorLocation(isCompacted, entryFileOffset, rid, deleted);
-          }
-
-          // Skip to next entry: bucketId(4) + position(8) + flags(1) + vector data
-          entryOffset += 4 + 8 + 1;
-
-          // Skip quantized vector data if present
-          if (metadata.quantizationType != VectorQuantizationType.NONE) {
-            final int quantizedSize = calculateQuantizedSize(metadata.dimensions, metadata.quantizationType);
-            entryOffset += quantizedSize;
-          }
-        }
-      } catch (final Exception e) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error scanning page %d in file %d for vectorId %d: %s", pageNum, fileId,
-                vectorId,
-                e.getMessage());
-      }
-    }
-
-    return null; // Not found in this file
-  }
-
-  /**
-   * Calculate the size of quantized vector data in bytes.
-   *
-   * @param dimensions       Number of vector dimensions
-   * @param quantizationType Type of quantization
-   *
-   * @return Size in bytes
-   */
-  private int calculateQuantizedSize(final int dimensions, final VectorQuantizationType quantizationType) {
-    switch (quantizationType) {
-    case INT8:
-      return dimensions; // 1 byte per dimension
-    case BINARY:
-      return (dimensions + 7) / 8; // 1 bit per dimension, rounded up to bytes
-    case NONE:
-    default:
-      return 0;
     }
   }
 
