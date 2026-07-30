@@ -110,8 +110,20 @@ class MCPPromptsTest {
     assertThat(text)
         .contains("'knowledge'")
         .contains("Which papers cite Codd?")
-        .contains("arcadedb://knowledge/schema")
+        .contains(MCPResources.schemaURI("knowledge"))
         .doesNotContain("{database}", "{question}");
+  }
+
+  @Test
+  void graphRagQuerySubstitutesInOnePassWithoutReinterpretingAnotherPlaceholder() {
+    final String text = renderedText(GraphRagQueryPrompt.getMessages(new JSONObject()
+        .put("database", "x{question}y")
+        .put("question", "Which papers cite Codd?")));
+
+    assertThat(text)
+        .contains("'x{question}y'")
+        .contains("Which papers cite Codd?")
+        .doesNotContain("xWhich papers cite Codd?y");
   }
 
   @Test
@@ -188,8 +200,20 @@ class MCPPromptsTest {
     assertThat(text)
         .contains("'knowledge'")
         .contains("Ada Lovelace wrote the notes on the Analytical Engine.")
-        .contains("arcadedb://knowledge/schema")
+        .contains(MCPResources.schemaURI("knowledge"))
         .doesNotContain("{database}", "{sourceText}");
+  }
+
+  @Test
+  void buildKnowledgeGraphSubstitutesInOnePassWithoutReinterpretingAnotherPlaceholder() {
+    final String text = renderedText(BuildKnowledgeGraphPrompt.getMessages(new JSONObject()
+        .put("database", "x{sourceText}y")
+        .put("sourceText", "Ada Lovelace wrote the notes on the Analytical Engine.")));
+
+    assertThat(text)
+        .contains("'x{sourceText}y'")
+        .contains("Ada Lovelace wrote the notes on the Analytical Engine.")
+        .doesNotContain("xAda Lovelace wrote the notes on the Analytical Engine.y");
   }
 
   @Test
@@ -295,6 +319,13 @@ class MCPPromptsTest {
     assertThatThrownBy(() -> MCPPrompts.get(readWriteConfig(), ALL_TOOLS_ALLOWED, "nope", new JSONObject()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Unknown prompt: nope");
+  }
+
+  @Test
+  void getRejectsANullPromptName() {
+    assertThatThrownBy(() -> MCPPrompts.get(readWriteConfig(), ALL_TOOLS_ALLOWED, null, new JSONObject()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown prompt");
   }
 
   @Test

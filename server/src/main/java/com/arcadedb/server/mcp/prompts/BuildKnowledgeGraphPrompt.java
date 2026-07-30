@@ -25,6 +25,8 @@ import com.arcadedb.server.mcp.tools.MCPToolUtils;
 
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Guided template steering an agent through extracting entities and relationships from text and writing them into a
@@ -38,6 +40,10 @@ public class BuildKnowledgeGraphPrompt {
   private static final String DESCRIPTION =
       "Extract entities and relationships from text and write them into an ArcadeDB database without creating duplicates.";
 
+  /**
+   * The tools this prompt's text instructs the model to call. Read by the availability rule, so that the prompt is
+   * never offered to a caller whose profile hides one of them, and asserted against the tool registry by a test.
+   */
   private static final Set<String> REFERENCED_TOOLS = Set.of(
       "get_schema",
       "upsert_entity",
@@ -72,6 +78,11 @@ public class BuildKnowledgeGraphPrompt {
       6. Record only what the source text states. Do not infer relationships it does not
          contain. Close by reporting the entities and relationships you wrote, and anything you
          deliberately skipped.""";
+
+  // Matches a placeholder token verbatim, never a token that substitution may have introduced: the render below
+  // walks TEMPLATE once with Matcher.appendReplacement/appendTail, so a database name such as 'x{sourceText}y'
+  // cannot be reinterpreted as the source-text placeholder the way a second .replace() pass would reinterpret it.
+  private static final Pattern PLACEHOLDER = Pattern.compile("\\{(database|sourceText)\\}");
 
   private BuildKnowledgeGraphPrompt() {
   }
@@ -120,9 +131,14 @@ public class BuildKnowledgeGraphPrompt {
     final String database = MCPToolUtils.requireString(args, "database");
     final String sourceText = MCPToolUtils.requireString(args, "sourceText");
 
-    final String text = TEMPLATE
-        .replace("{database}", database)
-        .replace("{sourceText}", sourceText);
+    final Matcher matcher = PLACEHOLDER.matcher(TEMPLATE);
+    final StringBuilder rendered = new StringBuilder();
+    while (matcher.find()) {
+      final String value = "database".equals(matcher.group(1)) ? database : sourceText;
+      matcher.appendReplacement(rendered, Matcher.quoteReplacement(value));
+    }
+    matcher.appendTail(rendered);
+    final String text = rendered.toString();
 
     return new JSONArray().put(new JSONObject()
         .put("role", "user")

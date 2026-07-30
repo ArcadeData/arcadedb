@@ -3328,6 +3328,66 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(response.getJSONObject("error").getString("message")).contains("Unknown prompt");
   }
 
+  /**
+   * Mirrors {@link #principalProfilesDifferentiateNamedUsersOnOneHttpEndpoint()} for the Prompts surface: the
+   * global profile alone is "all", under which both prompts name only tools that are reachable, so root sees
+   * both. The principal's own profile is "admin", which registers neither the search tools graphrag_query names
+   * nor the upsert tools build_knowledge_graph names. If prompts/list consulted only the global profile, the
+   * principal would see the same two prompts as root; proving the principal sees none shows the effective
+   * profile is the intersection, not the global profile alone.
+   */
+  @Test
+  void principalProfilesFilterPromptsListByTheIntersectedProfile() throws Exception {
+    final String principalName = "mcp-prompt-admin";
+    final String password = "principalPromptPass1!";
+    if (getServer(0).getSecurity().existsUser(principalName))
+      getServer(0).getSecurity().dropUser(principalName);
+    getServer(0).getSecurity().createUser(new JSONObject()
+        .put("name", principalName)
+        .put("password", getServer(0).getSecurity().encodePassword(password))
+        .put("databases", new JSONObject().put("graph", new JSONArray().put("admin"))));
+
+    try {
+      saveMCPConfig(new JSONObject()
+          .put("profile", "all")
+          .put("allowReads", true)
+          .put("allowInsert", true)
+          .put("allowUpdate", true)
+          .put("allowedUsers", new JSONArray().put("root").put(principalName))
+          .put("principalProfiles", new JSONObject().put(principalName, "admin")));
+
+      final JSONObject request = new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 508)
+          .put("method", "prompts/list")
+          .put("params", new JSONObject());
+
+      final JSONArray rootPrompts = mcpRequest(request).getJSONObject("result").getJSONArray("prompts");
+      final Set<String> rootNames = new HashSet<>();
+      for (int i = 0; i < rootPrompts.length(); i++)
+        rootNames.add(rootPrompts.getJSONObject(i).getString("name"));
+      assertThat(rootNames).containsExactlyInAnyOrder("graphrag_query", "build_knowledge_graph");
+
+      final String principalAuth = getBasicAuth(principalName, password);
+      final JSONArray principalPrompts = mcpRequest(request, principalAuth).getJSONObject("result").getJSONArray("prompts");
+      assertThat(principalPrompts.length()).isZero();
+
+      final JSONObject denied = mcpRequest(new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 509)
+          .put("method", "prompts/get")
+          .put("params", new JSONObject()
+              .put("name", "graphrag_query")
+              .put("arguments", new JSONObject()
+                  .put("database", "graph")
+                  .put("question", "Which papers cite Codd?"))), principalAuth);
+      assertThat(denied.has("error")).isTrue();
+      assertThat(denied.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+    } finally {
+      getServer(0).getSecurity().dropUser(principalName);
+    }
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {

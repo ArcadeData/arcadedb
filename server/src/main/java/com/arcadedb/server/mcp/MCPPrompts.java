@@ -60,6 +60,12 @@ public class MCPPrompts {
    */
   public static JSONObject get(final MCPPermissions permissions, final Predicate<String> toolAllowed,
       final String name, final JSONObject args) {
+    // A String switch dereferences its selector, so a null name must be turned away before the switch rather
+    // than inside it: this keeps a null name on the same IllegalArgumentException path as any other name this
+    // server does not recognize, instead of surfacing as an internal error.
+    if (name == null)
+      throw new IllegalArgumentException("Unknown prompt: " + name);
+
     return switch (name) {
       case GraphRagQueryPrompt.NAME -> {
         requireAvailable(GraphRagQueryPrompt.isAvailable(toolAllowed, permissions), name);

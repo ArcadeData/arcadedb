@@ -25,6 +25,8 @@ import com.arcadedb.server.mcp.tools.MCPToolUtils;
 
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Guided template steering an agent through retrieval over an ArcadeDB database: load the schema first, pick the
@@ -76,6 +78,11 @@ public class GraphRagQueryPrompt {
          it came from. If retrieval returns nothing relevant, re-check type and property names
          against the schema, then say the database does not contain the answer.""";
 
+  // Matches a placeholder token verbatim, never a token that substitution may have introduced: the render below
+  // walks TEMPLATE once with Matcher.appendReplacement/appendTail, so a database name such as 'x{question}y' cannot
+  // be reinterpreted as the question placeholder the way a second .replace() pass would reinterpret it.
+  private static final Pattern PLACEHOLDER = Pattern.compile("\\{(database|question)\\}");
+
   private GraphRagQueryPrompt() {
   }
 
@@ -123,9 +130,14 @@ public class GraphRagQueryPrompt {
     final String database = MCPToolUtils.requireString(args, "database");
     final String question = MCPToolUtils.requireString(args, "question");
 
-    final String text = TEMPLATE
-        .replace("{database}", database)
-        .replace("{question}", question);
+    final Matcher matcher = PLACEHOLDER.matcher(TEMPLATE);
+    final StringBuilder rendered = new StringBuilder();
+    while (matcher.find()) {
+      final String value = "database".equals(matcher.group(1)) ? database : question;
+      matcher.appendReplacement(rendered, Matcher.quoteReplacement(value));
+    }
+    matcher.appendTail(rendered);
+    final String text = rendered.toString();
 
     return new JSONArray().put(new JSONObject()
         .put("role", "user")
