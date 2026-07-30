@@ -78,6 +78,11 @@ public class FetchFromSchemaIndexDetailStep extends AbstractExecutionStep {
       r.setProperty("automatic", index.isAutomatic());
       r.setProperty("compacting", indexInternal.isCompacting());
       r.setProperty("valid", indexInternal.isValid());
+      // Advisory only, and absent on a healthy index: the reason this one should be rebuilt (see
+      // IndexInternal#getUpgradeWarning).
+      final String upgradeWarning = indexInternal.getUpgradeWarning();
+      if (upgradeWarning != null)
+        r.setProperty("upgradeWarning", upgradeWarning);
       r.setProperty("supportsOrderedIterations", index.supportsOrderedIterations());
       r.setProperty("nullStrategy", index.getNullStrategy());
 

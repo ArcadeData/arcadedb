@@ -167,4 +167,34 @@ public interface IndexInternal extends Index {
   default boolean isTransactionKeyOrderRequired() {
     return true;
   }
+
+  /**
+   * Returns {@code true} when {@link Index#get} answers with a SUPERSET of the matching records that the caller must
+   * re-check with the real predicate - a spatial grid approximates a shape with cells, so a cell hit is a candidate,
+   * not a match.
+   * <p>
+   * The consequence is that a row {@code limit} cannot be applied to this index's output: truncating candidates
+   * BEFORE the predicate runs drops rows that would have survived it, and does so silently. Both
+   * {@link Index#get(Object[], int)} on such an index and {@link TypeIndex#get(Object[], int)} over it therefore
+   * ignore a positive limit and return every candidate; the caller applies the limit after filtering
+   * ({@code IndexableSQLFunction.shouldExecuteAfterSearch}).
+   */
+  default boolean isResultApproximate() {
+    return false;
+  }
+
+  /**
+   * Returns a human-readable reason why this index should be rebuilt, or {@code null} when there is none.
+   * <p>
+   * An index whose on-disk layout predates a change the engine cannot apply in place keeps working with the old
+   * layout - correctness first - but does not get whatever the new one buys. This is how it says so: the schema
+   * load logs it once per database open, and it is exposed as {@code upgradeWarning} on {@code schema:indexes} and
+   * {@code schema:index:<name>}, which is what Studio renders. The remedy is always
+   * {@code REBUILD INDEX &lt;name&gt;}, so say what is lost and why, not what to type.
+   * <p>
+   * Implementations must keep this cheap and side-effect free: it is called per index on every listing.
+   */
+  default String getUpgradeWarning() {
+    return null;
+  }
 }

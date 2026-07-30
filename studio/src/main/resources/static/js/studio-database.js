@@ -3725,7 +3725,16 @@ function renderIndexes(row, results, seen) {
     let index = row.indexes[k];
     if (seen[index.name]) continue;
     seen[index.name] = true;
-    panelHtml += "<tr><td>" + index.name + "</td><td>" + index.typeName + "</td>";
+    // An index whose on-disk layout predates a change the engine cannot apply in place keeps working, so this is
+    // advice, not an error: the reason arrives as `upgradeWarning` and the remedy is always REBUILD INDEX.
+    let indexWarning = index.upgradeWarning
+      ? "<i class='fa fa-exclamation-triangle text-warning me-1' title='" +
+        escapeHtml(index.upgradeWarning) +
+        " - run: REBUILD INDEX `" +
+        escapeHtml(index.name) +
+        "`'></i>"
+      : "";
+    panelHtml += "<tr><td>" + indexWarning + index.name + "</td><td>" + index.typeName + "</td>";
     panelHtml += "<td>" + index.properties + "</td>";
     panelHtml += "<td>" + index.type + "</td>";
 
@@ -5795,11 +5804,23 @@ function loadStorageIndexes() {
 
 function renderIndexesDataTable(indexes) {
   var tableData = [];
+  // An index whose on-disk layout predates a change the engine cannot apply in place keeps working, so this is
+  // advice, not an error: the server sends the reason as `upgradeWarning` and the remedy is always REBUILD INDEX.
+  var needRebuild = [];
 
   for (var i = 0; i < indexes.length; i++) {
     var idx = indexes[i];
+    var name = escapeHtml(idx.name);
+    if (idx.upgradeWarning) {
+      needRebuild.push(idx);
+      name =
+        "<i class='fa fa-exclamation-triangle text-warning me-1' title='" +
+        escapeHtml(idx.upgradeWarning) +
+        "'></i>" +
+        name;
+    }
     tableData.push([
-      escapeHtml(idx.name),
+      name,
       escapeHtml(idx.indexType || "-"),
       escapeHtml(idx.typeName || "-"),
       idx.fileId != null ? idx.fileId : "-",
@@ -5809,6 +5830,8 @@ function renderIndexesDataTable(indexes) {
       idx.valid != null ? (idx.valid ? "Yes" : "No") : "-"
     ]);
   }
+
+  renderIndexUpgradeWarningBanner(needRebuild);
 
   if ($.fn.dataTable.isDataTable("#dbStorageIndexes"))
     try { $("#dbStorageIndexes").DataTable().destroy(); $("#dbStorageIndexes").empty(); } catch (e) {}
@@ -5856,6 +5879,38 @@ function renderIndexesDataTable(indexes) {
       globalNotifyError(jqXHR.responseText);
     });
   });
+}
+
+// Renders the advisory banner above the index listing. The rows are per-bucket sub-indexes, so they are grouped by
+// the type index name the user actually rebuilds, and identical advice for several indexes is shown once.
+function renderIndexUpgradeWarningBanner(needRebuild) {
+  var banner = $("#dbIndexUpgradeWarning");
+  if (!needRebuild || needRebuild.length == 0) {
+    banner.hide().empty();
+    return;
+  }
+
+  var byMessage = {};
+  for (var i = 0; i < needRebuild.length; i++) {
+    var idx = needRebuild[i];
+    var names = byMessage[idx.upgradeWarning];
+    if (names == null) names = byMessage[idx.upgradeWarning] = [];
+    var name = idx.typeIndexName || idx.name;
+    if (names.indexOf(name) < 0) names.push(name);
+  }
+
+  var html = "<div><i class='fa fa-exclamation-triangle me-1'></i><strong>Some indexes should be rebuilt.</strong> " +
+    "They keep working as they are - rebuilding is optional and can be done at any time.</div>";
+
+  for (var message in byMessage) {
+    var names = byMessage[message].sort();
+    html += "<div class='mt-2'>" + escapeHtml(message) + "</div><ul class='mb-0 mt-1'>";
+    for (var n = 0; n < names.length; n++)
+      html += "<li><code>REBUILD INDEX `" + escapeHtml(names[n]) + "`</code></li>";
+    html += "</ul>";
+  }
+
+  banner.html(html).show();
 }
 
 // ===== Dictionary Tab =====

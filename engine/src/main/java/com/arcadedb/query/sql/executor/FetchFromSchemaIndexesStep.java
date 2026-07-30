@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -82,6 +83,16 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
             // Exposed here too (it was only on schema:index:<name>) so a listing can be rendered from this single query, without
             // one detail query per index (issue #5469).
             r.setProperty("valid", ((IndexInternal) index).isValid());
+            // Advisory only, and absent on a healthy index: the reason this one should be rebuilt (see
+            // IndexInternal#getUpgradeWarning). Studio flags the row on it.
+            final String upgradeWarning = ((IndexInternal) index).getUpgradeWarning();
+            if (upgradeWarning != null) {
+              r.setProperty("upgradeWarning", upgradeWarning);
+              // The listing shows one row per BUCKET sub-index; the name a user acts on (REBUILD INDEX, DROP INDEX)
+              // is the type index that owns them all.
+              final TypeIndex typeIndex = ((IndexInternal) index).getTypeIndex();
+              r.setProperty("typeIndexName", typeIndex != null ? typeIndex.getName() : index.getName());
+            }
 
             if (fileId > -1) {
               r.setProperty("fileId", fileId);

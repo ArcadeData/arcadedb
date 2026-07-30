@@ -43,6 +43,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
@@ -326,6 +327,14 @@ public class RebuildIndexStatement extends DDLStatement {
           ftMeta.fromJSON(((IndexInternal) idx).toJSON());
           ftMeta.setCounters(0L, 0L);
           indexMetadata = ftMeta;
+        } else if (type == Schema.INDEX_TYPE.GEOSPATIAL) {
+          // Same defect as #4732 for FULL_TEXT: the generic IndexMetadata carries no `precision`, so a rebuild silently
+          // reset a non-default GeoHash resolution. Rebuilding also re-reads every record, which is the one safe moment
+          // to publish the compact FRONTIER layout on an index created before 26.8.1 (#5478).
+          final GeoIndexMetadata geoMeta = new GeoIndexMetadata(typeName, propertyNames.toArray(new String[0]), -1);
+          geoMeta.fromJSON(((IndexInternal) idx).toJSON());
+          geoMeta.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
+          indexMetadata = geoMeta;
         }
         final IndexMetadata rebuildMetadata = indexMetadata;
 

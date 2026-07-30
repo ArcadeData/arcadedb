@@ -54,7 +54,6 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
   private static final long MIN_SORTED_BUILD_MEMORY_BUDGET    = 1L << 20;
 
-  public IndexMetadata metadata;
   // When set, lets {@link #create()} accept properties that aren't declared on the type yet:
   // the index is materialised with this Type as the key serialisation, while the property
   // stays "free-form" on the document type so writes don't get coerced. Used by the OpenCypher
