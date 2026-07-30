@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 /**
@@ -45,7 +46,10 @@ public class FunctionCallExpression implements Expression {
 
   public FunctionCallExpression(final String functionName, final List<Expression> arguments, final boolean distinct) {
     this.originalFunctionName = functionName;
-    this.functionName = functionName.toLowerCase(); // Cypher functions are case-insensitive
+    // Cypher functions are case-insensitive. Locale.ROOT and not the default locale: under a Turkish default,
+    // "ISNAN".toLowerCase() is "ısnan" with a dotless i, which matches no registry entry, so a valid query would be
+    // rejected as calling an unknown function.
+    this.functionName = functionName.toLowerCase(Locale.ROOT);
     this.arguments = arguments;
     this.distinct = distinct;
   }

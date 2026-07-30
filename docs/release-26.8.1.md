@@ -463,6 +463,46 @@ the filtered rows, as it always did through SQL.
 `FULL_TEXT` in #4732. Its cause was one level up: `TypeIndexBuilder` declared a `metadata` field that shadowed
 `IndexBuilder`'s, so `withMetadata()` wrote to one and `create()` read the other for every index type without a
 dedicated builder subclass. The duplicate field is gone.
+## Cypher: a non-numeric argument to `abs()` and friends is a client error, not a 500
+
+`RETURN abs('hello')` answered HTTP `500 Cannot execute command` with an otherwise perfectly good message,
+`abs() requires a numeric argument`. The type check was right; only its class was wrong, and a `500` tells a
+client the server broke when in fact the query did. Neo4j reports these as `Neo.ClientError.Statement.TypeError`
+([#5484](https://github.com/ArcadeData/arcadedb/issues/5484)).
+
+Every function declared as `f(input :: INTEGER | FLOAT)` now raises `CommandSemanticException`, so HTTP answers
+`400` and Bolt answers a client error: `abs`, `ceil`, `ceiling`, `floor`, `sqrt`, `sign`, `round`, `isNaN`,
+`exp`, `log`, `ln`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `cot`, `coth`, `sinh`,
+`cosh`, `tanh`, `degrees`, `radians`, `haversin`, plus the `math.*` extensions. The message is now phrased with
+the vocabulary of the language, matching the one `size()` and `head()` already used:
+
+```
+Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
+```
+
+- **A literal is rejected before the query runs**, as in Neo4j, so `MATCH (n:Nothing) RETURN abs('hello')` fails
+  even though the function would never be called. Both paths raise the same exception with the same wording, and
+  every argument position is covered: `atan2('hello', 1)` and `round(x, 2, 'SIDEWAYS')` fail there too, not only
+  the single-argument functions. That pass walks `RETURN` and `WITH` projections, which is the scope `size()` and
+  `head()` have always used; anywhere else the runtime check reports the same error with the same message when the
+  function runs.
+- **`round()` also covers its other two arguments**: a non-numeric precision, and a rounding mode outside
+  `UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN` (whose message now lists them).
+- **Null propagation is untouched**: `abs(null)` still answers `null`. In the two-argument `atan2()` both
+  arguments are type-checked before null decides the answer, so a bad one is still reported when the other is
+  null.
+- **The `math.*` extensions no longer leak `NumberFormatException`** for an unparseable argument. They still
+  accept a numeric *string* (`math.sigmoid('1.5')` works), which the Cypher-standard functions never did and
+  still do not (`abs('1.5')` is a type error). That asymmetry is deliberate: the `math.*` extensions have always
+  parsed strings and queries depend on it, while the standard ones follow the Cypher signature. Only a string is
+  parsed now, where before any value at all was run through `toString()` first, so a type whose text happens to
+  look like a number is a type error rather than a silent coercion.
+- **The wrong number of arguments is now caught while parsing**, with a message naming the function and the
+  count it expects (`Function 'abs' expects 1 argument but got 2`) - the same sentence the functions' own guards
+  use, so it does not matter which caught it. `distance()` was declared as taking exactly two arguments although
+  it has always accepted an optional unit; the declaration was corrected rather than the behaviour, and every
+  other variadic function was swept for the same mistake and found correct.
+
 ## Partitioned types: lookups on a secondary index no longer read the wrong bucket
 
 A type using `partitioned(...)` bucket selection places each record in the bucket its **partition** key hashes to,

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.math;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,18 +28,20 @@ class RoundFunctionTest {
 
   private final RoundFunction fn = new RoundFunction();
 
+  // Calling round() with the wrong number of arguments is the caller's mistake, so it raises a CommandSemanticException
+  // (HTTP 400) rather than the CommandExecutionException the HTTP layer would report as a 500. See issue #5484.
   @Test
   void rejectsTooFewArgumentsWithAccurateMessage() {
     assertThatThrownBy(() -> fn.execute(new Object[] {}, null))
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("round() requires 1, 2 or 3 arguments");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Function 'round' expects 1-3 arguments");
   }
 
   @Test
   void rejectsTooManyArgumentsWithAccurateMessage() {
     assertThatThrownBy(() -> fn.execute(new Object[] { 1.5, 2, "HALF_UP", "extra" }, null))
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("round() requires 1, 2 or 3 arguments");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Function 'round' expects 1-3 arguments");
   }
 
   @Test
