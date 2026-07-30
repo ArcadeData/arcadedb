@@ -166,7 +166,8 @@ public class MongoDBToSqlTranslator {
    * parser accepts.
    * <p>
    * The parameter name is derived from the map's current size, so names are unique and assigned in the order the values are
-   * met.
+   * met. That holds only while the map contains nothing but names this method generated: {@code params} must start empty and
+   * carry no caller-supplied entries, otherwise a generated name can collide with one already there and silently overwrite it.
    */
   protected static void buildValue(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
     final String name = "p" + params.size();

@@ -30,6 +30,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static com.mongodb.client.model.Filters.eq;
@@ -81,7 +82,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
     collection.insertOne(new Document("name", awkward));
     collection.insertOne(new Document("name", "someone else"));
 
-    final List<Document> found = collection.find(eq("name", awkward)).into(new java.util.ArrayList<>());
+    final List<Document> found = collection.find(eq("name", awkward)).into(new ArrayList<>());
 
     assertThat(found).hasSize(1);
     assertThat(found.getFirst().getString("name")).isEqualTo(awkward);
@@ -92,7 +93,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
     final String awkward = "C:\\data\\'";
     collection.insertOne(new Document("path", awkward));
 
-    final List<Document> found = collection.find(eq("path", awkward)).into(new java.util.ArrayList<>());
+    final List<Document> found = collection.find(eq("path", awkward)).into(new ArrayList<>());
 
     assertThat(found).hasSize(1);
     assertThat(found.getFirst().getString("path")).isEqualTo(awkward);
@@ -142,7 +143,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
     collection.insertOne(new Document("name", "not listed"));
 
     // find builds its own SELECT, so the binding has to hold on the read path independently of update/delete
-    final List<Document> found = collection.find(in("name", "plain", "with' quote")).into(new java.util.ArrayList<>());
+    final List<Document> found = collection.find(in("name", "plain", "with' quote")).into(new ArrayList<>());
 
     assertThat(found).hasSize(2);
   }
@@ -189,7 +190,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
     collection.insertOne(new Document("name", "a"));
 
     final List<Document> found = collection.find(new Document("name", new Document("$in", List.of())))
-        .into(new java.util.ArrayList<>());
+        .into(new ArrayList<>());
 
     assertThat(found).isEmpty();
   }
