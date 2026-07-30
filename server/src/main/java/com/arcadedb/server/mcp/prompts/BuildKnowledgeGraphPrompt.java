@@ -127,6 +127,15 @@ public class BuildKnowledgeGraphPrompt {
     return true;
   }
 
+  /**
+   * KNOWN LIMITATION: sourceText is substituted verbatim, so a document containing a literal closing
+   * source-text tag ends the fence the template opens around it, and whatever follows reads as procedure rather
+   * than as data. This is accepted rather than escaped. The rendered prompt is returned to the caller that
+   * supplied the document, never executed here, and every tool the text names enforces its own permission and
+   * per-database checks when it is actually called, so nothing is reachable that the caller could not already
+   * reach. Neutralizing the tag would silently alter the caller's document, which the verbatim-substitution rule
+   * this prompt is built on rules out. Revisit only together with that rule.
+   */
   public static JSONArray getMessages(final JSONObject args) {
     final String database = MCPToolUtils.requireString(args, "database");
     final String sourceText = MCPToolUtils.requireString(args, "sourceText");
