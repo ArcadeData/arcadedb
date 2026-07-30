@@ -19,6 +19,7 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -32,7 +33,9 @@ import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Date;
 
@@ -252,5 +255,56 @@ class JsonSerializerTest extends TestHelper {
       final MutableDocument doc2 = database.newDocument("DateJsonType").set("d", localDate);
       assertThat(doc2.toJSON(false).getLong("d")).isEqualTo(expectedDays);
     });
+  }
+
+  /**
+   * A DATETIME property must survive JSON serialization when the database is configured with
+   * `arcadedb.dateTimeImplementation` = java.time.Instant. An Instant carries no date fields, so
+   * formatting it with the schema-wide pattern (`yyyy-MM-dd HH:mm:ss`) fails unless the formatter
+   * is anchored to a time zone. Without that anchor every HTTP/remote read of a DATETIME column
+   * blows up with UnsupportedTemporalTypeException.
+   */
+  @Test
+  void datetimeSerializedWithInstantImplementation() throws Exception {
+    final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
+    final Object previous = serializer.getDateTimeImplementation();
+    try {
+      serializer.setDateTimeImplementation(Instant.class);
+
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("InstantJsonType");
+        type.createProperty("dtSecond", Type.DATETIME_SECOND);
+        type.createProperty("dt", Type.DATETIME);
+        type.createProperty("dtMicros", Type.DATETIME_MICROS);
+      });
+
+      final LocalDateTime when = LocalDateTime.of(2026, 7, 29, 12, 33, 44, 215_000_000);
+      final Instant instant = when.toInstant(ZoneOffset.UTC);
+
+      database.transaction(() -> {
+        final MutableDocument doc = database.newDocument("InstantJsonType")
+            .set("dtSecond", instant)
+            .set("dt", instant)
+            .set("dtMicros", instant)
+            .save();
+
+        doc.reload();
+        // The reloaded values come back as Instant, the shape the JSON layer has to cope with.
+        assertThat(doc.get("dt")).isInstanceOf(Instant.class);
+
+        final JSONObject json = jsonSerializer.serializeDocument(doc);
+        assertThat(json.getString("dtSecond")).isEqualTo("2026-07-29 12:33:44");
+        assertThat(json.getString("dt")).isEqualTo("2026-07-29 12:33:44.215");
+        assertThat(json.getString("dtMicros")).isEqualTo("2026-07-29 12:33:44.215000");
+      });
+
+      // The same values read back through a query must serialize identically.
+      try (final ResultSet rs = database.query("sql", "select from InstantJsonType")) {
+        final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
+        assertThat(json.getString("dt")).isEqualTo("2026-07-29 12:33:44.215");
+      }
+    } finally {
+      serializer.setDateTimeImplementation(previous);
+    }
   }
 }
