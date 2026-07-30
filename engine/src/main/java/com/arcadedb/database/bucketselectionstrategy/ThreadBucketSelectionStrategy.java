@@ -21,6 +21,8 @@ package com.arcadedb.database.bucketselectionstrategy;
 import com.arcadedb.database.Document;
 import com.arcadedb.schema.LocalDocumentType;
 
+import java.util.List;
+
 /**
  * Threaded implementation that returns the bucket partitioned with the thread id. In this way there is no conflict between documents created by concurrent threads.
  *
@@ -47,8 +49,8 @@ public class ThreadBucketSelectionStrategy implements BucketSelectionStrategy {
   }
 
   @Override
-  public int getBucketIdByKeys(final Object[] keys, final boolean async) {
-    // UNSUPPORTED
+  public int getBucketIdByKeys(final List<String> propertyNames, final Object[] keys, final boolean async) {
+    // UNSUPPORTED: PLACEMENT IS BY THREAD ID, SO NO KEY CAN PREDICT THE BUCKET
     return -1;
   }
 
