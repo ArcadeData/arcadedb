@@ -90,9 +90,9 @@ import java.util.logging.Level;
  * <p>
  * The trade-off that buys: declining to read a body means closing a connection the client may still be writing to,
  * and the TCP reset that follows can discard bytes the peer had already received - the response among them. A client
- * that reads while it uploads (any ordinary HTTP client, including {@code java.net.http.HttpClient} and so
- * {@code RemoteGraphBatch}) is handed the 400 mid-upload and is unaffected; one that writes its whole payload before
- * reading anything may see the reset instead. That is the better failure: it is immediate rather than a quarter of an
+ * that is no longer mid-upload always gets the error; one that reads while it uploads (any ordinary HTTP client)
+ * usually does, though not reliably - measured at about four times in five against the JDK client - and one that
+ * writes its whole payload before reading anything sees the reset instead. That is the better failure: it is immediate rather than a quarter of an
  * hour, it cannot be mistaken for success, and the exact reason is in the server log either way. The alternative -
  * reading a multi-gigabyte remainder to keep the socket well-mannered - is the bug this replaced, and it pinned a
  * worker thread for the duration.
@@ -474,11 +474,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       while (drained < TRUNCATION_PROBE_BYTES && inputStream.getBytesRead() < declaredLength) {
         // Undertow reports a finished request body as -1 available (not 0), which is the end-of-body signal this
         // probe is looking for; 0 means "more may still arrive", and waiting for it is what must not happen here.
-        // That -1 is Undertow's own convention, not the InputStream contract (which says >= 0), so it is worth
-        // knowing how it degrades: if a future version reported 0 at end of body instead, this returns false and a
-        // truncated upload is answered 400 naming the malformed record rather than 408 - a worse diagnosis, never a
-        // wrong success, and the common cases do not depend on it (a body whose end our own read() observed is
-        // already settled by isEndOfBody() above).
+        // That -1 is Undertow's own convention, not the InputStream contract (which says >= 0). An upgrade that
+        // changed it would not go unnoticed: Issue5470BatchErrorDeliveryIT's aRecordCutInHalfIsStillReportedAsA-
+        // TruncatedUpload and aRejectedButCompletePayloadKeepsItsConnection both fail when it reports 0 at end of
+        // body (verified by mutation). If it ever does, the degradation is a worse diagnosis - 400 naming the
+        // malformed record instead of 408 - never a wrong success.
         final int available = inputStream.available();
         if (available < 0)
           return true;
@@ -488,6 +488,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         final int read = inputStream.read(drain, 0, Math.min(available, drain.length));
         if (read < 0)
           return true;
+        if (read == 0)
+          // Cannot happen for a blocking stream asked for len >= 1, but never spin on it either.
+          return false;
         drained += read;
       }
     } catch (final IOException e) {
@@ -681,6 +684,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           final int read = read(drain, 0, Math.min(available, drain.length));
           if (read < 0)
             return true;
+          if (read == 0)
+            // Cannot happen for a blocking stream asked for len >= 1, but never spin on it either.
+            return false;
           drained += read;
         }
       } catch (final IOException e) {

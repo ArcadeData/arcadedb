@@ -36,6 +36,7 @@ import java.net.SocketException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.net.http.HttpTimeoutException;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -82,6 +83,8 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
 
   /** Generous next to a verdict the server can reach immediately, unforgiving next to waiting for the upload. */
   private static final int  RESPONSE_TIMEOUT_MS   = 20_000;
+  /** A verdict the server can reach immediately must land inside this, however the connection ends. */
+  private static final long PROMPT_ANSWER_MS     = 10_000;
   /** Announced but never sent, so the server can only answer by deciding it does not need it. */
   private static final long ANNOUNCED_EXTRA_BYTES = 64L * 1024 * 1024;
 
@@ -319,14 +322,19 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
   }
 
   /**
-   * The reported shape with a REAL client: a large payload streamed by {@link HttpClient}, failing part-way. This is
-   * the case the issue is about, and the one that has to deliver the diagnosis - an ordinary HTTP client reads the
-   * response while it uploads, so the server answering mid-upload reaches it.
+   * The reported shape with a REAL client: a large payload streamed by {@link HttpClient}, failing part-way.
    * <p>
-   * Contrast with {@link #theErrorReachesAClientThatIsStillUploading}, which writes in a tight loop and never reads:
-   * that client can only observe a reset, because refusing to read a body means closing a connection the peer is
-   * still writing to. Which of the two a client behaves like decides whether it sees the 400 or the reset - and
-   * either way it no longer waits, and the server log always carries the exact line.
+   * An ordinary HTTP client reads the response while it uploads, so it usually IS handed the 400 mid-upload - but not
+   * always, and the honest guarantee is narrower than that. Declining to read the rest of a body means closing a
+   * connection the peer is still writing to, and the reset that follows can discard what the client had already
+   * received; measured here, that costs the response body roughly one time in five. So delivery is asserted when it
+   * happens, and the invariant this pins is the one that always holds: the client is never left WAITING. A hang -
+   * which is what draining the remainder would cause, and what the issue was about - fails the test, both as a
+   * request timeout and on elapsed time.
+   * <p>
+   * Deterministic delivery is pinned elsewhere, on the shapes where TCP cannot interfere:
+   * {@link #aRejectedButCompletePayloadKeepsItsConnection} (body fully arrived) and the cases where the client has
+   * stopped sending.
    */
   @Test
   void aStreamingHttpClientReceivesTheErrorMidUpload() throws Exception {
@@ -360,12 +368,23 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
         .POST(HttpRequest.BodyPublishers.ofInputStream(() -> body))
         .build();
 
+    final long start = System.currentTimeMillis();
     try (final HttpClient client = HttpClient.newHttpClient()) {
       final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-      assertThat(response.statusCode()).as("a streaming client must be told why its load was refused").isEqualTo(400);
-      assertThat(response.body()).as("and which record to fix").contains("nonexistent-vertex");
+      assertThat(response.statusCode()).as("a streaming client that is answered must be answered correctly")
+          .isEqualTo(400);
+      assertThat(response.body()).as("and told which record to fix").contains("nonexistent-vertex");
+    } catch (final HttpTimeoutException hang) {
+      throw new AssertionError("the server must not make a streaming client wait for its own upload", hang);
+    } catch (final IOException reset) {
+      // The server stopped reading a body it will not use, and closed. A client in the middle of writing can lose
+      // the response to that; it cannot lose the fact that the load failed, and the reason is in the server log.
     }
+
+    assertThat(System.currentTimeMillis() - start)
+        .as("answered or reset, it must resolve at once rather than after the upload")
+        .isLessThan(PROMPT_ANSWER_MS);
   }
 
   /**

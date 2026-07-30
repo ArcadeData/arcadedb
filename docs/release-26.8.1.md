@@ -67,10 +67,12 @@ time one is refused. Only a remainder that has not arrived, or exceeds 64 KB, co
 
 One consequence worth knowing: declining to read the rest of a body means closing a connection the client may
 still be writing to, and the TCP reset that follows can discard bytes the client had already received. A
-client that reads while it uploads - any ordinary HTTP client, including the Java one used by
-`RemoteGraphBatch` - is handed the 400 mid-upload and is unaffected. A client that writes its whole payload
-before reading anything may see a connection reset instead of the error body; the reason is always in the
-server log, and the failure is immediate rather than a quarter of an hour of silence.
+client that is no longer mid-upload - it had finished sending, or stopped - always gets the error. A client
+still streaming when the load is refused usually gets it too, because an ordinary HTTP client reads while it
+uploads, but not reliably: measured against the JDK client it loses the response body to the reset roughly one
+time in five, and a client that writes its whole payload before reading anything loses it every time. What no
+client waits for any more is the upload itself, and the exact reason is always in the server log. Delivering
+it reliably would mean reading the remainder first, which is the quarter of an hour this replaced.
 
 Two related corrections:
 
