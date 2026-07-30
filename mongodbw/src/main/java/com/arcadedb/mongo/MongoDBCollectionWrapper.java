@@ -335,7 +335,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
       MongoDBToSqlTranslator.buildExpression(sql, params, query);
 
-      if (orderBy != null) {
+      // an empty $orderBy would otherwise leave a dangling "order by" with nothing to sort on, which does not parse
+      if (orderBy != null && !orderBy.isEmpty()) {
         sql.append(" order by ");
         int i = 0;
         for (final String p : orderBy.keySet()) {

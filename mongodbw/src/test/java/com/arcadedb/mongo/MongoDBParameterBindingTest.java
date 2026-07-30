@@ -136,6 +136,53 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   }
 
   @Test
+  void anInFilterMatchesOnTheFindPathToo() {
+    collection.insertOne(new Document("name", "plain"));
+    collection.insertOne(new Document("name", "with' quote"));
+    collection.insertOne(new Document("name", "not listed"));
+
+    // find builds its own SELECT, so the binding has to hold on the read path independently of update/delete
+    final List<Document> found = collection.find(in("name", "plain", "with' quote")).into(new java.util.ArrayList<>());
+
+    assertThat(found).hasSize(2);
+  }
+
+  @Test
+  void aNotInFilterExcludesOnlyTheListedValues() {
+    collection.insertOne(new Document("name", "keep"));
+    collection.insertOne(new Document("name", "drop' me"));
+
+    final UpdateResult result = collection.updateMany(new Document("name", new Document("$nin", List.of("drop' me"))),
+        new Document("$set", new Document("touched", "yes")));
+
+    assertThat(result.getModifiedCount()).isEqualTo(1);
+    assertThat(collection.find(eq("name", "keep")).first().getString("touched")).isEqualTo("yes");
+  }
+
+  @Test
+  void aQuoteBearingValueSurvivesBeingSetByAnUpdate() {
+    collection.insertOne(new Document("name", "target"));
+
+    // $set values travel as a JSON literal rather than as a bound parameter, so their escaping is a separate mechanism
+    // from the WHERE clause: this pins that it actually holds
+    final String awkward = "it's a \"quoted\" C:\\path";
+    collection.updateOne(eq("name", "target"), new Document("$set", new Document("note", awkward)));
+
+    assertThat(collection.find(eq("name", "target")).first().getString("note")).isEqualTo(awkward);
+  }
+
+  @Test
+  void aQuoteBearingValueSurvivesAFullReplacement() {
+    collection.insertOne(new Document("name", "target"));
+
+    // a replacement document goes out as SQL CONTENT <json>, another inlined-JSON path
+    final String awkward = "replaced' with \"quotes\"";
+    collection.replaceOne(eq("name", "target"), new Document("name", "target").append("note", awkward));
+
+    assertThat(collection.find(eq("name", "target")).first().getString("note")).isEqualTo(awkward);
+  }
+
+  @Test
   void aNumericValueIsComparedAsANumberNotAsText() {
     collection.insertOne(new Document("name", "big").append("size", 10_000_000_000L));
     collection.insertOne(new Document("name", "small").append("size", 1L));

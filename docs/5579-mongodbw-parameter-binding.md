@@ -47,9 +47,13 @@ name, so that half of #5575 is unchanged. `quoteFieldPath` still splits on `.` a
 MongoDB navigation into an embedded document keeps resolving.
 
 Two identifiers in `queryDocuments` were still being concatenated raw and are now quoted with the same helpers:
-the collection name and the `orderBy` field names. The `orderBy` key is attacker-controlled text on the `find`
-path with no validation in front of it, so leaving it raw next to a bound value would have left the same hole
-open one line away.
+the collection name and the `orderBy` field names.
+
+On reachability, to be precise: `orderBy` comes from `queryObject.remove("$orderBy")`, and the modern `find`
+command never populates that key (`MongoDBDatabaseWrapper.find` builds its `MongoQuery` with a null sort). So the
+`orderBy` branch is reached only through the legacy `OP_QUERY` wrapper or through a `mongo`-language query run via
+`MongoQueryEngine`. It is untrusted query text either way and quoting it is correct, but it is not the
+straightforwardly remote-attacker-controlled path the first draft of this note claimed.
 
 ## Verification
 
@@ -79,3 +83,28 @@ turns all 14 `MongoDBToSqlTranslatorParamsTest` cases red. The change was then r
 - `$set` still goes out as ` MERGE <json>` built with `JSONObject`, which does its own escaping. That is a
   different mechanism from the `WHERE` clause and was left alone.
 - `$inc` binds its operand but keeps the `(Number)` cast, so a non-numeric operand still fails the same way.
+
+## Review cycle 1 (PR #5581, head 50b78a6)
+
+The bot review raised no blocking items and four observations. Assessment and what was done:
+
+1. **`$set` / full-replacement values are still inlined as JSON, not bound.** Confirmed by reading the code:
+   `appendUpdateOperations` emits ` MERGE <documentToJson(operand)>` and a replacement emits ` CONTENT <json>`.
+   The reviewer judged this safe today because `JSONObject.toString()` escapes quotes and backslashes, and noted
+   no test pinned it. Rather than take that on faith, two wire tests now assert a `$set` value and a
+   `replaceOne` document each carrying `'`, `"` and `\` round-trip intact. **They pass**, so the property is
+   proven rather than assumed. Binding these would need `MERGE`/`CONTENT` to accept a parameter in place of a
+   JSON literal, which is a real change to the update path and out of this issue's scope (#5579 is about filter
+   values). Filed as a follow-up.
+2. **Empty `$orderBy` yields a dangling `order by`.** Confirmed: `orderBy != null` with an empty key set appended
+   `" order by "` and nothing after it, which does not parse. **Guard added** (`&& !orderBy.isEmpty()`). It is not
+   covered by a wire test because the modern driver cannot reach that branch at all - see the reachability note
+   above - so the guard is hardening for the legacy and `MongoQueryEngine` paths.
+3. **Coverage asymmetry on `$in` / `$nin`.** Fair. **Added** a find-path `$in` test and a positive-match `$nin`
+   test.
+4. **Null equality semantics.** `{field: null}` binds `field = :p0` with a null, which does not match missing
+   fields the way MongoDB does. The reviewer noted this matches the prior `field = null` behavior, and it does, so
+   it is **not a regression and no change was made**. It is a pre-existing semantic gap, not something this PR
+   introduced.
+
+Suite after the cycle: **49 tests, 0 failures.**
