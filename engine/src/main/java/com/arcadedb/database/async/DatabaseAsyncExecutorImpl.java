@@ -383,8 +383,27 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   public void compact(final IndexInternal index) {
-    if (index.scheduleCompaction())
-      scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, backPressurePercentage);
+    if (!index.scheduleCompaction())
+      return;
+
+    // scheduleCompaction() has reserved the index (AVAILABLE -> COMPACTION_SCHEDULED) and only the compaction
+    // itself gives that back. So when nothing is going to run it, hand it back here: a full worker queue answers
+    // false without throwing, and a shut-down executor throws out of getBestSlot()/scheduleTask. Leaving it
+    // reserved would be permanent - every later attempt, an explicit COMPACT INDEX included, needs the same
+    // AVAILABLE -> SCHEDULED move - so the index would silently stop compacting until the database is reopened.
+    boolean scheduled = false;
+    try {
+      // No back-pressure (0) on purpose, unlike the user-facing async entry points. Both callers of this method are
+      // index onAfterCommit hooks, so the thread that would be slowed down is a committer whose work is already
+      // durable: sleeping it throttles nothing that is filling the queue, it only adds latency to a commit that is
+      // finished. A full queue instead makes the offer below give up, the finally hands the slot back, and the next
+      // commit past the threshold schedules again - both gates are level-triggered, so no compaction is lost.
+      scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, 0);
+    } finally {
+      if (!scheduled)
+        index.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_SCHEDULED },
+            IndexInternal.INDEX_STATUS.AVAILABLE);
+    }
   }
 
   /**

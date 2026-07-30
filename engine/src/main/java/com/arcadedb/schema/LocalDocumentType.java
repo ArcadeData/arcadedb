@@ -655,11 +655,11 @@ public class LocalDocumentType implements DocumentType {
   }
 
   @Override
-  public int getBucketIndexByKeys(final Object[] keys, final boolean async) {
+  public int getBucketIndexByKeys(final List<String> propertyNames, final Object[] keys, final boolean async) {
     if (buckets.isEmpty())
       throw new SchemaException(
           "Cannot retrieve a bucket for keys '" + Arrays.toString(keys) + "' because there are no buckets associated");
-    return bucketSelectionStrategy.getBucketIdByKeys(keys, async);
+    return bucketSelectionStrategy.getBucketIdByKeys(propertyNames, keys, async);
   }
 
   @Override

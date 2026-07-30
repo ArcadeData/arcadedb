@@ -192,7 +192,7 @@ public enum GlobalConfiguration {
       "yyyy-MM-dd"),
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
-      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
+      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime, java.time.Instant",
       Class.class, LocalDateTime.class, value -> {
     if (value instanceof String string) {
       try {
@@ -233,6 +233,10 @@ public enum GlobalConfiguration {
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
       "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes.",
       String.class, ""),
+
+  TIMESERIES_TAG_DICTIONARY_MAX_SIZE("arcadedb.timeSeriesTagDictionaryMaxSize", SCOPE.DATABASE,
+      "Maximum number of distinct values one TimeSeries type's tag dictionary may hold. TAG columns are dictionary-encoded in the mutable row so each occupies a 4-byte id instead of a reserved 258-byte slot; the dictionary is kept in RAM, so this caps its footprint and turns a mis-declared high-cardinality TAG into a clear error instead of unbounded growth. Default is 1M distinct values, roughly 100MB",
+      Integer.class, 1_000_000),
 
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
@@ -443,7 +447,7 @@ public enum GlobalConfiguration {
       Boolean.class, true),
 
   TX_PAGE_SLOT_MERGE("arcadedb.txPageSlotMerge", SCOPE.DATABASE,
-      "Generalization of GRAPH_EDGE_APPEND_MERGE to arbitrary records. At commit, when a bucket page conflicts only because concurrent transactions touched DIFFERENT record slots on it (logically-unrelated records sharing a page), re-apply this transaction's slot writes on top of the newer committed page instead of failing the whole transaction with a ConcurrentModificationException. Covers new-record inserts into free slots and every update that stays inside the page - an overwrite of the same size or smaller (e.g. the vertex edge-list head-pointer flip on super-node insertion) as well as a record growth the page can host by shifting the records that follow; a genuine same-record conflict, or any non-rebasable change (delete, multi-page/placeholder record, a record that has to spill out of its page), still raises the exception so it is retried",
+      "Generalization of GRAPH_EDGE_APPEND_MERGE to arbitrary records. At commit, when a bucket page conflicts only because concurrent transactions touched DIFFERENT record slots on it (logically-unrelated records sharing a page), re-apply this transaction's slot writes on top of the newer committed page instead of failing the whole transaction with a ConcurrentModificationException. Covers new-record inserts into free slots, every update that stays inside the page - an overwrite of the same size or smaller (e.g. the vertex edge-list head-pointer flip on super-node insertion) as well as a record growth the page can host by shifting the records that follow - and the delete of a plain in-place record, which only frees its own slot; a genuine same-record conflict, or any non-rebasable change (multi-page/placeholder record, a record that has to spill out of its page), still raises the exception so it is retried",
       Boolean.class, true),
 
   TX_PAGE_SLOT_MERGE_MAX_BYTES("arcadedb.txPageSlotMergeMaxBytes", SCOPE.DATABASE,
@@ -652,6 +656,19 @@ public enum GlobalConfiguration {
       its location, so residency is now proportional to the live vectors (~90 bytes each) instead of to the write \
       history.""",
       Integer.class, -1),
+
+  VECTOR_INDEX_COMPACTION_BLOAT_FACTOR("arcadedb.vectorIndex.compactionBloatFactor", SCOPE.DATABASE,
+      """
+      How much bigger than its live vectors an LSM_VECTOR data file may get before it compacts itself. \
+      The file is append-only - an update writes a new vector plus a tombstone for the one it replaces, a delete \
+      writes a tombstone - so it grows with the number of writes while the live set stays the same size; a \
+      compaction rewrites it holding the live vectors only. 3 means "reclaim once about two thirds of the file is \
+      garbage". Lower reclaims sooner and rewrites more often, higher lets the file grow further and rewrites in \
+      bigger, rarer passes. Each pass is a full graph rebuild plus a sequential copy of the live vectors, and it \
+      holds the index write lock for that copy. Set to 0 to compact only on an explicit COMPACT INDEX; \
+      arcadedb.indexCompactionMinPagesSchedule gates it too, and 0 there disables automatic compaction for every \
+      index type. Both are read per commit, so either one takes effect at runtime.""",
+      Integer.class, 3),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE("arcadedb.vectorIndex.graphBuildCacheSize", SCOPE.DATABASE,
       """

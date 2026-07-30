@@ -26,6 +26,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
@@ -4243,19 +4244,149 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Schedules a compaction when the data file has grown well past what its live vectors need.
+   * <p>
+   * The file is append-only: an update writes a new vector plus a tombstone for the one it supersedes, a delete
+   * writes a tombstone, and nothing reclaims either - so a workload that keeps re-embedding the same vectors grows
+   * the file without bound while the live set stays the same size. That was the other half of issue #5516, the half
+   * a heap dump cannot show, and leaving it to an operator remembering to run COMPACT INDEX is not a fix.
+   * <p>
+   * The trigger is the garbage ratio rather than a page count, because a vector compaction is not the cheap merge an
+   * LSM-tree compaction is: it rebuilds the graph and rewrites the file, so it has to pay for itself in reclaimed
+   * space. The work happens on the async executor - never on the committing thread - and goes through
+   * {@link #compact()}, so it is the same replication-safe path an explicit COMPACT INDEX takes.
+   */
   public void onAfterCommit() {
-    // DISABLED: Compaction for vector indexes is currently disabled
-    // Vector indexes don't benefit much from compaction since vectors are rarely updated
-    // Re-enable once compaction properly handles uninitialized pages
+    // The whole body is guarded, the decision included: this runs inside the commit, before it is marked
+    // committed, so anything thrown here would fail a transaction whose data is already durable.
+    try {
+      if (!isCompactionDue())
+        return;
 
-    // Check if compaction should be triggered after commit
-    // Operations are applied immediately during TransactionIndexContext replay (not buffered here)
-    // if (minPagesToScheduleACompaction > 1 && currentMutablePages.get() >= minPagesToScheduleACompaction) {
-    //   LogManager.instance()
-    //       .log(this, Level.FINE, "Scheduled compaction of vector index '%s' (currentMutablePages=%d totalPages=%d)",
-    //           null, getComponentName(), currentMutablePages.get(), getTotalPages());
-    //   ((com.arcadedb.database.async.DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
-    // }
+      // scheduleCompaction() inside async().compact() flips AVAILABLE -> COMPACTION_SCHEDULED, so a second commit
+      // arriving while one is still pending is a no-op instead of a queue of redundant rewrites.
+      ((DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
+    } catch (final Exception e) {
+      // Scheduling must never fail the commit that just succeeded - the file simply stays as it is and the next
+      // commit, or an explicit COMPACT INDEX, picks it up. On a closing database (the async executor is already
+      // gone) that is routine and stays quiet; anywhere else it means this index has stopped reclaiming on its
+      // own, which nobody would notice at FINE.
+      // toString() rather than getMessage(): an exception that only carries a cause has a null message, and the one
+      // line that says this index stopped reclaiming on its own must not read "... : null".
+      LogManager.instance().log(this, getDatabase().isOpen() ? Level.WARNING : Level.FINE,
+          "Could not schedule the compaction of vector index '%s': %s", indexName, e.toString());
+    }
+  }
+
+  /**
+   * Whether the data file holds enough garbage to be worth rewriting: at least
+   * {@link GlobalConfiguration#VECTOR_INDEX_COMPACTION_BLOAT_FACTOR} times the pages its live vectors need.
+   * <p>
+   * Runs after every commit, so it stays on counters and configuration lookups already in memory - the page count,
+   * the number of resident locations, two settings read live - and never touches a page.
+   */
+  private boolean isCompactionDue() {
+    if (!isCompactionAllowedOnThisNode(getDatabase()))
+      return false;
+
+    final ContextConfiguration configuration = getDatabase().getConfiguration();
+
+    // Read both knobs live so they behave the same way: the cached minPagesToScheduleACompaction only reflects the
+    // value an index was built with, which would make one of the two gates ignore a runtime change.
+    final int minPages = configuration.getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+    if (minPages <= 0)
+      // Automatic compaction disabled for every index type.
+      return false;
+
+    final int bloatFactor = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_COMPACTION_BLOAT_FACTOR);
+    if (bloatFactor <= 0)
+      // Explicit COMPACT INDEX only.
+      return false;
+
+    if (vectorIndex.isBounded())
+      // A bounded location map evicts, so its size is a lower bound on the live set rather than the live set, and an
+      // index holding more live vectors than it caches would read as permanently bloated and rewrite itself after
+      // nearly every commit. Nothing asks for that backend today - #5568 stopped honouring
+      // arcadedb.vectorIndex.locationCacheSize precisely because an evicted location cannot be recovered - so this
+      // asks the map itself rather than the setting, and answers false. It exists so that wiring bounded mode back
+      // in cannot silently turn the ratio into a rewrite loop; whoever does that owes this an explicit live count,
+      // which COMPACT INDEX already derives by parsing the pages.
+      return false;
+
+    final int totalPages = totalPagesForBloatRatio();
+    if (totalPages < minPages)
+      // Too small to be worth a rewrite whatever its garbage ratio is.
+      return false;
+
+    final int pagesForLiveSet = estimatePagesForLiveSet();
+    if (pagesForLiveSet < 1)
+      return false;
+
+    return totalPages >= (long) pagesForLiveSet * bloatFactor;
+  }
+
+  /**
+   * Every page the ratio has to account for. {@link #getTotalPages()} is the mutable file alone, but the live set the
+   * estimate is built from spans the compacted companion too when one is loaded ({@code loadVectorsFromFile} pulls its
+   * locations into the same map), so counting only the mutable would compare a part against the whole and let the file
+   * grow well past the configured factor before anything fired.
+   * <p>
+   * A companion only exists on a database whose index was compacted by a build older than #5521 - nothing writes one
+   * any more, and the first compaction folds it into the new mutable and drops it - so this is the upgrade window
+   * rather than the steady state. Cheap enough to be right in it anyway.
+   * <p>
+   * {@code compactedSubIndex} is not volatile and this reads it from the committing thread while a compaction may be
+   * clearing it on an async one. Deliberate: the answer feeds a heuristic, so a stale read moves one compaction by
+   * one commit and nothing else, and a volatile read on the commit path would cost more than that is worth.
+   */
+  private int totalPagesForBloatRatio() {
+    return getTotalPages() + (compactedSubIndex != null ? compactedSubIndex.getTotalPages() : 0);
+  }
+
+  /**
+   * Whether this node is the one that compacts. A Raft follower receives the compacted file from the leader, and
+   * {@code runWithCompactionReplication} already declines on a follower - but it declines from inside an async task
+   * that had to be queued, run and reset first. A write-heavy follower is exactly the node whose garbage ratio keeps
+   * crossing the threshold, so without this gate every one of its commits schedules a task that does nothing.
+   * Mirrors the leader check {@code TimeSeriesMaintenanceScheduler.runMaintenance} makes for the same reason.
+   *
+   * @return true when standalone (never replicated) or on the current leader
+   */
+  static boolean isCompactionAllowedOnThisNode(final DatabaseInternal database) {
+    return !database.isReplicated() || database.isLeader();
+  }
+
+  /**
+   * Pages the live vectors alone would occupy, derived from the entry layout {@code persistVectorWithLocation}
+   * writes. An estimate on purpose: it feeds a ratio against a configurable factor, so being a few percent out
+   * moves when a compaction happens, never whether the result is correct.
+   */
+  private int estimatePagesForLiveSet() {
+    // size() is the resident location count, which is the live count: markDeleted() and an addOrUpdate() that
+    // supersedes an id both remove the old entry from the map rather than flagging it (getActiveCount() filters
+    // defensively, but on this backend it has nothing left to filter). Only the unbounded backend reaches here -
+    // isCompactionDue() turns back a map that evicts, which is what would break that equivalence. Counting the
+    // values instead would be a full map scan on every commit, which this check must not do.
+    final int liveVectors = vectorIndex.size();
+    if (liveVectors < 1)
+      return 0;
+
+    // vectorId + bucketId + position are zig-zag varints, so 4+4+8 is their typical size, not their maximum (a
+    // 32-bit id can reach 5 bytes and a 64-bit position 10). Under-counting here over-counts how many entries fit
+    // in a page, which makes the trigger marginally eager - harmless for a ratio against a configurable factor.
+    // Plus the deleted flag and the quantization-type byte, both always written.
+    // A quantized entry then carries the array length as an int, plus the array and its min/max (INT8) or median
+    // (BINARY) - exactly what calculateQuantizedDataSize returns, so the size comes from the reader's own arithmetic
+    // instead of a second copy of it here. NONE and PRODUCT return 0 there: they keep the vector in the document,
+    // which leaves the page entry as the header above.
+    final int quantizedSize = LSMVectorIndexPageParser.calculateQuantizedDataSize(metadata.dimensions,
+        metadata.quantizationType);
+    final int entrySize = 4 + 4 + 8 + 1 + 1 + (quantizedSize > 0 ? 4 + quantizedSize : 0);
+
+    final int usablePerPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - HEADER_BASE_SIZE;
+    final int entriesPerPage = Math.max(1, usablePerPage / entrySize);
+    return (liveVectors + entriesPerPage - 1) / entriesPerPage;
   }
 
   @Override
@@ -4467,64 +4598,79 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public boolean compact() throws IOException, InterruptedException {
-
-    LogManager.instance().log(this, Level.INFO, "compact() called for index: %s", null, getName());
-    checkIsValid();
-    final DatabaseInternal database = getDatabase();
-
-    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
-      throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
-
-    if (database.getPageManager().isPageFlushingSuspended(database)) {
-      LogManager.instance().log(this, Level.INFO, "compact() returning false: page flushing suspended");
-      // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
-      return false;
-    }
-
-    LogManager.instance().log(this, Level.INFO,
-        "compact() current status: %s, attempting compareAndSet from COMPACTION_SCHEDULED to COMPACTION_IN_PROGRESS",
-        status.get());
-    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS)) {
-      LogManager.instance()
-          .log(this, Level.INFO, "compact() returning false: status compareAndSet failed (current status: %s)",
-              status.get());
-      // COMPACTION NOT SCHEDULED
-      return false;
-    }
-
+    // Every exit before the state moves to COMPACTION_IN_PROGRESS has to hand the scheduling slot back. A
+    // compaction that gives up here - a backup suspended page flushing, the index went invalid - would otherwise
+    // leave the status at COMPACTION_SCHEDULED for good, and since scheduleCompaction() only moves AVAILABLE ->
+    // SCHEDULED, that silently disables every later compaction of this index, the explicit COMPACT INDEX included,
+    // until the database is reopened. Rare while compaction was operator-driven; reachable on any backup window now
+    // that a commit can schedule one.
+    boolean compactionStarted = false;
     try {
-      // Compaction IS a rebuild that also rewrites the data file: the rebuild already reads every page, resolves
-      // the LSM merge and produces the live set, so the compacted content is exactly what it computes. Running the
-      // two as one pass is what keeps them from disagreeing about which vectors are live - a standalone compactor
-      // with its own merge rules used to resurrect deleted vectors and duplicate updated ones.
-      //
-      // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine flush: the
-      // recording session captures registerFile + the page writes + the drop of the files they replace, and the
-      // synthetic WAL ships the new component to followers atomically with the leader's commit. The compacted
-      // pages are written synchronously, so the wait below is not what makes THEM durable: it is the guard that
-      // the session ships nothing still pending from the rest of the rebuild (#4928).
-      final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
-        final int fileIdBefore = getFileId();
-        buildGraphFromScratch(null, true);
-        // If the bounded wait gives up (#4928), the shipped component could contain unflushed (zero) pages:
-        // fail the compaction, it is rescheduled later.
-        if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
-          throw new IOException("Vector index compaction aborted: pages are still pending flush after the no-progress timeout");
-        // The data file is swapped only when the rewrite actually ran (it is skipped on an empty or
-        // partially-recovered live set), so the file id is what says whether anything was compacted.
-        return getFileId() != fileIdBefore;
-      });
-      if (success) {
-        // Track successful compaction
-        metrics.incrementCompactionCount();
+      LogManager.instance().log(this, Level.FINE, "compact() called for index: %s", null, getName());
+      checkIsValid();
+      final DatabaseInternal database = getDatabase();
+
+      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+        throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
+
+      if (database.getPageManager().isPageFlushingSuspended(database)) {
+        LogManager.instance().log(this, Level.FINE, "compact() returning false: page flushing suspended");
+        // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
+        return false;
       }
-      return success;
-    } catch (final TimeoutException e) {
-      LogManager.instance().log(this, Level.INFO, "compact() caught TimeoutException: %s", e.getMessage());
-      // IGNORE IT, WILL RETRY LATER
-      return false;
+
+      LogManager.instance().log(this, Level.FINE,
+          "compact() current status: %s, attempting compareAndSet from COMPACTION_SCHEDULED to COMPACTION_IN_PROGRESS",
+          status.get());
+      if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS)) {
+        LogManager.instance()
+            .log(this, Level.FINE, "compact() returning false: status compareAndSet failed (current status: %s)",
+                status.get());
+        // COMPACTION NOT SCHEDULED
+        return false;
+      }
+      compactionStarted = true;
+
+      try {
+          // Compaction IS a rebuild that also rewrites the data file: the rebuild already reads every page, resolves
+        // the LSM merge and produces the live set, so the compacted content is exactly what it computes. Running the
+        // two as one pass is what keeps them from disagreeing about which vectors are live - a standalone compactor
+        // with its own merge rules used to resurrect deleted vectors and duplicate updated ones.
+        //
+        // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine flush: the
+        // recording session captures registerFile + the page writes + the drop of the files they replace, and the
+        // synthetic WAL ships the new component to followers atomically with the leader's commit. The compacted
+        // pages are written synchronously, so the wait below is not what makes THEM durable: it is the guard that
+        // the session ships nothing still pending from the rest of the rebuild (#4928).
+        final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+          final int fileIdBefore = getFileId();
+          buildGraphFromScratch(null, true);
+          // If the bounded wait gives up (#4928), the shipped component could contain unflushed (zero) pages:
+          // fail the compaction, it is rescheduled later.
+          if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+            throw new IOException("Vector index compaction aborted: pages are still pending flush after the no-progress timeout");
+          // The data file is swapped only when the rewrite actually ran (it is skipped on an empty or
+          // partially-recovered live set), so the file id is what says whether anything was compacted.
+          return getFileId() != fileIdBefore;
+        });
+        if (success) {
+          // Track successful compaction
+          metrics.incrementCompactionCount();
+        }
+        return success;
+      } catch (final TimeoutException e) {
+        LogManager.instance().log(this, Level.FINE, "compact() caught TimeoutException: %s", e.getMessage());
+        // IGNORE IT, WILL RETRY LATER
+        return false;
+      } finally {
+        status.set(INDEX_STATUS.AVAILABLE);
+      }
+
     } finally {
-      status.set(INDEX_STATUS.AVAILABLE);
+      if (!compactionStarted)
+        // Never reached COMPACTION_IN_PROGRESS: release the slot this attempt reserved so the next commit, or an
+        // operator, can schedule again.
+        status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.AVAILABLE);
     }
   }
 
@@ -5125,6 +5271,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public int getCurrentMutablePages() {
     return currentMutablePages.get();
+  }
+
+  /** The pages the live vectors alone would need - exposed so a test can express its threshold in those terms. */
+  int estimatePagesForLiveSetForTest() {
+    return estimatePagesForLiveSet();
   }
 
   /**

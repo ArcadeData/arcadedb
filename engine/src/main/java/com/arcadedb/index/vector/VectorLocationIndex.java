@@ -497,9 +497,23 @@ public class VectorLocationIndex {
   }
 
   /**
-   * Get the total number of vectors (including deleted).
+   * Whether this map evicts. Always false today - {@link LSMVectorIndex} never asks for the bounded backend since
+   * issue #5568 - and asking the map is the point: it is what {@link #size()} being the live count depends on, so a
+   * caller that needs that guarantee can check the thing itself rather than a setting that no longer decides it.
    *
-   * @return Total number of vectors
+   * @return true when locations are capped and can be evicted
+   */
+  public boolean isBounded() {
+    return maxSize > 0;
+  }
+
+  /**
+   * Number of resident locations. Deleted vectors are not among them: {@link #markDeleted} drops the location and
+   * keeps only the id in the tombstone set, so on the unbounded backend this is the live-vector count and callers
+   * such as {@code LSMVectorIndex.estimatePagesForLiveSet} rely on that. A bounded cache evicts, so there it is a
+   * lower bound instead. Constant time either way, unlike {@link #getActiveCount()}.
+   *
+   * @return Number of vectors whose location is currently held
    */
   public int size() {
     return locations.size();
