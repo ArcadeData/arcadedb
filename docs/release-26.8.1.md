@@ -133,7 +133,12 @@ removed that: a tombstoned id releases its location, so residency now follows th
   the locations out in primitive arrays.
 - **An index that appeared to work under a cap on a large corpus may now need a larger heap** instead of silently
   under-reporting its size and losing vectors from searches. That is the intended trade: a wrong answer is worse
-  than a visible memory requirement.
+  than a visible memory requirement. Size it before upgrading if you had capped a very large corpus - 100M live
+  vectors is ~9GB resident.
+- **`estimatedLocationIndexBytes` steps up ~3.75x on upgrade** (24 -> 90 bytes per entry). Nothing changed about
+  the memory it describes; the stat used to quote the payload rather than the retained heap. Any dashboard or
+  alert threshold wired to it needs re-basing, and the same is true of `countEntries()` and `totalVectors` on an
+  index that had been capped - those were reporting the cap, not the index.
 - A compaction transiently holds two copies of the location set while it publishes the new one.
 
 ## Vector index: `countEntries()` is no longer torn by a concurrent graph rebuild
