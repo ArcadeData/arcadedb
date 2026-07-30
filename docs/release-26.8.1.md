@@ -407,4 +407,30 @@ partition keys, and the SQL and Cypher planner pruning rules are unaffected.
   boolean)` are deprecated. They still compile, and they never prune, since the keys alone cannot be verified
   against the partition properties.
 
+## Partitioned types: a lookup key boxed differently than the stored value now finds its record
+
+Follow-up to the above. `partitioned(...)` derives the bucket from `Object.hashCode()` on both sides, but the two
+sides saw differently boxed objects: placement hashes the value **after** the schema coerced it to the declared
+property type, while a lookup hashed whatever the caller passed. `Long.hashCode(v)` is `(int) (v ^ (v >>> 32))`
+and `Integer.hashCode(v)` is `v`, so the two agree only for positive values below 2^31. On a `LONG` partition key
+every negative value, and every value outside the `int` range, pruned to a bucket the record had never been placed
+in ([#5595](https://github.com/ArcadeData/arcadedb/issues/5595)).
+
+This was not limited to the Java index API: a plain `SELECT FROM T WHERE id = -5` hits it, because a SQL integer
+literal that fits an `int` arrives as an `Integer` and the planner prunes buckets through the same strategy.
+
+The lookup key is now converted to the declared property type - the very coercion the write path applies - before
+being hashed. Placement is untouched, so **no existing database needs a repartition**. Where the stored form cannot
+be reproduced the strategy declines to prune and the search fans out across every bucket, which is correct and only
+slower:
+
+- the partition property is not declared in the schema, so the record kept whatever Java type the writer used and
+  there is no conversion target;
+- the key does not coerce to the declared type at all;
+- the partition index declares `COLLATE CI`. Case folding is an index-level normalisation that placement never
+  applied, so `'Hello'` and `'hello'` are a single index key living in two different buckets. Only a change to
+  placement could reconcile that, and that would force a repartition, so such a partition is no longer pruned.
+  (Bucket counts that are a power of two up to 32 hid this by arithmetic accident: flipping the case of an ASCII
+  letter shifts the Java string hash by a multiple of 32.)
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

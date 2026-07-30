@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
@@ -1324,6 +1325,28 @@ public enum Type {
   }
 
   public Class<?> getDefaultJavaType() {
+    return javaDefaultType;
+  }
+
+  /**
+   * Returns the Java class a value of this type is materialised as once the schema has coerced it, i.e. the target
+   * {@link #convert(Database, Object, Class, Property)} uses when a property declares this type.
+   * <p>
+   * This is {@link #getDefaultJavaType()} for every type except {@code DATE} and {@code DATETIME}, whose runtime
+   * representation is configurable per database. Callers that need to reproduce the stored form of a value - the
+   * write path in {@code MutableDocument}, and the partitioned bucket strategy that has to hash a lookup key the way
+   * placement hashed the stored one (issue #5595) - must agree on this mapping, so it lives in one place.
+   *
+   * @param database database whose {@code DATE}/{@code DATETIME} settings apply, or {@code null} to fall back to the
+   *                 default Java type
+   */
+  public Class<?> getJavaImplementation(final Database database) {
+    if (database instanceof DatabaseInternal internal) {
+      if (this == DATE)
+        return internal.getSerializer().getDateImplementation();
+      if (this == DATETIME)
+        return internal.getSerializer().getDateTimeImplementation();
+    }
     return javaDefaultType;
   }
 
