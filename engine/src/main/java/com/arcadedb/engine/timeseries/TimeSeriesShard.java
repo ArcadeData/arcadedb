@@ -94,6 +94,11 @@ public class TimeSeriesShard implements AutoCloseable {
     this(database, baseName, shardIndex, columns, 0);
   }
 
+  /**
+   * Assumes the current mutable row format, so it must not be used to open a type whose stored
+   * {@code mutableFormatVersion} says otherwise: that would read inline tag bytes as dictionary ids.
+   * Test-only for that reason - the engine threads the type's own version through the constructor below.
+   */
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns, final long compactionBucketIntervalMs) throws IOException {
     this(database, baseName, shardIndex, columns, compactionBucketIntervalMs,

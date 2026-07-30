@@ -128,8 +128,9 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   // Id -> value. Replaced wholesale on growth and volatile-published after the entries are written,
   // so a reader that resolves an id read off a committed data page always sees the value for it.
   private volatile String[] byId = { "" };
-  // Value -> id. Concurrent because lookups run on every ingest thread while interning holds the lock.
-  private final ConcurrentHashMap<String, Integer> idByValue = new ConcurrentHashMap<>();
+  // Value -> id. Concurrent because lookups run on every ingest thread while interning holds the lock,
+  // and volatile because a reload replaces it wholesale instead of clearing it under those lookups.
+  private volatile ConcurrentHashMap<String, Integer> idByValue = new ConcurrentHashMap<>();
 
   private volatile int     entryCount;
   private volatile int     dataPageCount;
@@ -267,9 +268,10 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   public synchronized void load() throws IOException {
-    loaded = true;
-    if (getTotalPages() == 0)
+    if (getTotalPages() == 0) {
+      loaded = true;
       return;
+    }
 
     // A read transaction of our own, so this can be called from inside a scan. It must be the only one
     // rolled back at the end: load() is reachable from resolveMiss() mid-query, and discarding the
@@ -284,7 +286,10 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       final String[] values = new String[storedEntries + 1];
       values[EMPTY_ID] = "";
 
-      idByValue.clear();
+      // Built aside and swapped in below rather than rebuilt in place: a lookup runs lock-free and
+      // concurrently with this, and clearing the live map would make it report a stored value as
+      // absent - which on the ingest path means interning a second id for a value that already has one.
+      final ConcurrentHashMap<String, Integer> rebuilt = new ConcurrentHashMap<>();
       int id = 1;
       for (int pageNum = 1; pageNum <= pages; pageNum++) {
         final BasePage page = tx.getPage(new PageId(database, fileId, pageNum), pageSize);
@@ -297,15 +302,20 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
             page.readByteArray(offset + 2, bytes);
           final String value = new String(bytes, StandardCharsets.UTF_8);
           values[id] = value;
-          idByValue.putIfAbsent(value, id);
+          rebuilt.putIfAbsent(value, id);
           id++;
           offset += 2 + len;
         }
       }
 
+      // Published only now, complete: same order as publish(), reverse array before forward map, so a
+      // thread that finds a value in the map can always resolve the id it got back. A load that throws
+      // before this point leaves the previous mapping untouched, and `loaded` false so it is retried.
       this.byId = values;
+      this.idByValue = rebuilt;
       this.entryCount = storedEntries;
       this.dataPageCount = pages;
+      this.loaded = true;
     } finally {
       if (database.isTransactionActive())
         database.rollback();
@@ -578,8 +588,14 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
    * The reverse array is grown by doubling and the new reference is volatile-published <em>before</em>
    * the forward map is populated, so a thread that finds a value in the map can always resolve the id
    * it got back.
+   * <p>
+   * Synchronized on the same monitor as {@link #load()} so a reload cannot swap in a mapping rebuilt
+   * from the pages while this is publishing into the one it replaces, which would drop these entries
+   * from RAM and let the next batch intern a second id for a value that already has one. Reached only
+   * when a batch carries a value never seen before, so the extra ordering costs nothing in steady state.
+   * Callers hold {@code internLock} first, and nothing takes that lock while holding this monitor.
    */
-  private void publish(final int firstId, final int pages, final List<String> toAdd) {
+  private synchronized void publish(final int firstId, final int pages, final List<String> toAdd) {
     final int required = firstId + toAdd.size();
     String[] values = byId;
     if (required > values.length) {

@@ -23,9 +23,13 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -379,5 +383,59 @@ class Issue5519TagStrideTest extends TestHelper {
     // A null tag reads back as "" in both formats
     assertThat(rows.get(1)[1]).isEqualTo("");
     database.commit();
+  }
+
+  /**
+   * The compatibility claim end to end, through a real open rather than through a null dictionary: a
+   * database whose stored schema says mutable format 0 keeps the inline layout when this build opens
+   * it, and never adopts the dictionary. Simulated by relabelling the type on disk before the pages
+   * hold anything, since a v1 type whose rows already carry 4-byte ids could not honestly be called v0.
+   */
+  @Test
+  void aTypeStoredAsVersion0OpensWithTheInlineFormat() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Legacy TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+
+    final String databasePath = database.getDatabasePath();
+    database.close();
+
+    // Rewrite the stored schema as a pre-#5519 one: mutable format 0, and no dictionary component
+    final File schemaFile = new File(databasePath + "/schema.json");
+    final JSONObject schema = new JSONObject(Files.readString(schemaFile.toPath(), StandardCharsets.UTF_8));
+    final JSONObject legacy = schema.getJSONObject("types").getJSONObject("Legacy");
+    assertThat(legacy.getInt("mutableFormatVersion", -1)).isEqualTo(TimeSeriesBucket.CURRENT_VERSION);
+    legacy.put("mutableFormatVersion", 0);
+    Files.writeString(schemaFile.toPath(), schema.toString(), StandardCharsets.UTF_8);
+
+    final File[] dictFiles = new File(databasePath).listFiles((dir, fileName) -> fileName.startsWith("Legacy_tags."));
+    if (dictFiles != null)
+      for (final File dictFile : dictFiles)
+        assertThat(dictFile.delete()).isTrue();
+
+    database = factory.open();
+
+    final LocalTimeSeriesType reopened = (LocalTimeSeriesType) database.getSchema().getType("Legacy");
+    final TimeSeriesEngine engine = reopened.getEngine();
+
+    // No dictionary, and the row is back to the reserved inline slot
+    assertThat(engine.getTagDictionary()).isNull();
+    assertThat(engine.getShard(0).getMutableBucket().getRowSize())
+        .isEqualTo(8 + (2 + TimeSeriesBucket.MAX_STRING_BYTES) + 8);
+
+    // ...and it still reads and writes tags correctly through the normal path
+    database.begin();
+    engine.appendSamples(new long[] { 1_000L, 2_000L }, new Object[] { "web01", "web02" }, new Object[] { 1.5, 2.5 });
+    database.commit();
+
+    database.begin();
+    final List<Object[]> rows = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+    assertThat(rows).hasSize(2);
+    assertThat(rows.get(0)[1]).isEqualTo("web01");
+    assertThat(rows.get(1)[1]).isEqualTo("web02");
+    assertThat(engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, TagFilter.eq(0, "web02"))).hasSize(1);
+    database.commit();
+
+    // Writing it back out must not relabel it as current, or the next open would misread these rows
+    assertThat(reopened.toJSON().getInt("mutableFormatVersion", -1)).isZero();
   }
 }
