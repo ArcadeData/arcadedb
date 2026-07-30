@@ -28,6 +28,7 @@ import io.swagger.v3.oas.models.parameters.Parameter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -119,11 +120,71 @@ class PluginApiSpecTest {
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "peers", "databases", "databasePresence", "alerts");
 
+    // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these 12 fields
+    // per peer, no more, no fewer.
     final Schema<?> peersProperty = schema.getProperties().get("peers");
     final Schema<?> peerItemSchema = peersProperty.getItems();
-    assertThat(peerItemSchema.getProperties().keySet())
-        .contains("id", "address", "role", "matchIndex", "nextIndex", "replicationLag",
-            "lastContactMs", "replicaStatus", "laggingForMs", "lagging");
+    assertThat(peerItemSchema.getProperties().keySet()).containsExactlyInAnyOrder(
+        "id", "address", "role", "matchIndex", "nextIndex", "replicationLag", "lastContactMs",
+        "replicaStatus", "laggingForMs", "lagging", "replicationRttMs", "replicationRttP99Ms");
+  }
+
+  @Test
+  void clusterStatusPeerFieldsDocumentAbsenceForLeaderAndBeforeHealthSample() {
+    // Correction (round 2): GetClusterHandler only writes matchIndex, nextIndex, replicationLag,
+    // lastContactMs, replicaStatus, laggingForMs and lagging when '!peerIsLeader && health != null' -
+    // i.e. never for the leader's own peer entry, and never before a health sample exists. The first
+    // pass documented these seven with no absence note at all, while replicationRttMs/replicationRttP99Ms
+    // two lines below (guarded by the same condition plus one more) correctly said so - an inconsistency
+    // within the same schema. Every field gated by that condition must say so, so this cannot regress
+    // silently behind a loose .contains(...) check again.
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("ClusterStatus");
+    final Schema<?> peersProperty = schema.getProperties().get("peers");
+    final Schema<?> peerItemSchema = peersProperty.getItems();
+    final Map<String, Schema> peerProperties = peerItemSchema.getProperties();
+
+    for (final String conditionalField : List.of("matchIndex", "nextIndex", "replicationLag",
+        "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs", "replicationRttP99Ms")) {
+      final Schema<?> fieldSchema = peerProperties.get(conditionalField);
+      assertThat(fieldSchema.getDescription())
+          .as("'%s' is written only for a non-leader peer with a health sample; its description must say so",
+              conditionalField)
+          .containsIgnoringCase("absent");
+    }
+
+    // The three fields written unconditionally for every peer must NOT carry a misleading absence note.
+    for (final String unconditionalField : List.of("id", "address", "role")) {
+      final Schema<?> fieldSchema = peerProperties.get(unconditionalField);
+      assertThat(fieldSchema.getDescription())
+          .as("'%s' is written for every peer entry and must not claim to be sometimes absent", unconditionalField)
+          .doesNotContainIgnoringCase("absent");
+    }
+  }
+
+  @Test
+  void clusterStatusDatabaseFieldsDocumentAbsenceConsistently() {
+    // Correction (round 2): acquireTimestamp is set inside the same 'if (acquire != null)' block as
+    // acquireStatus and acquireError, both of which already carried an absence note; acquireTimestamp
+    // did not. bootstrapLastTxId/bootstrapFingerprint (a separate, independent condition) were already
+    // correct before this fix and are re-checked here so a future edit cannot silently drop them.
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("ClusterStatus");
+    final Schema<?> databasesProperty = schema.getProperties().get("databases");
+    final Schema<?> databaseItemSchema = databasesProperty.getItems();
+    assertThat(databaseItemSchema.getProperties().keySet()).containsExactlyInAnyOrder(
+        "name", "bootstrapLastTxId", "bootstrapFingerprint", "acquireStatus", "acquireTimestamp", "acquireError");
+
+    final Map<String, Schema> databaseProperties = databaseItemSchema.getProperties();
+    for (final String conditionalField : List.of("bootstrapLastTxId", "bootstrapFingerprint",
+        "acquireStatus", "acquireTimestamp", "acquireError")) {
+      final Schema<?> fieldSchema = databaseProperties.get(conditionalField);
+      assertThat(fieldSchema.getDescription())
+          .as("'%s' is populated only inside a guarding null-check and must document that", conditionalField)
+          .containsIgnoringCase("absent");
+    }
+
+    assertThat(databaseProperties.get("name").getDescription())
+        .as("'name' is written for every database entry and must not claim to be sometimes absent")
+        .doesNotContainIgnoringCase("absent");
   }
 
   @Test

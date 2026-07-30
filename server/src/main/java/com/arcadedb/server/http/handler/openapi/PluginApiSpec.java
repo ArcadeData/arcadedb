@@ -335,15 +335,22 @@ public class PluginApiSpec implements OpenApiContributor {
     peer.addProperty("id", SpecBuilders.string("Peer identifier"));
     peer.addProperty("address", SpecBuilders.string("Peer address"));
     peer.addProperty("role", SpecBuilders.string("LEADER or FOLLOWER"));
-    peer.addProperty("matchIndex", SpecBuilders.integer("Highest log entry known replicated"));
-    peer.addProperty("nextIndex", SpecBuilders.integer("Next log entry to send"));
-    peer.addProperty("replicationLag", SpecBuilders.integer("Entries behind the leader"));
-    peer.addProperty("lastContactMs", SpecBuilders.integer("Milliseconds since last contact"));
-    peer.addProperty("replicaStatus", SpecBuilders.string("Replica health status"));
+    peer.addProperty("matchIndex", SpecBuilders.integer(
+        "Highest log entry known replicated. Absent for the leader's own entry and until a health sample exists."));
+    peer.addProperty("nextIndex", SpecBuilders.integer(
+        "Next log entry to send. Absent for the leader's own entry and until a health sample exists."));
+    peer.addProperty("replicationLag", SpecBuilders.integer(
+        "Entries behind the leader. Absent for the leader's own entry and until a health sample exists."));
+    peer.addProperty("lastContactMs", SpecBuilders.integer(
+        "Milliseconds since last contact. Absent for the leader's own entry and until a health sample exists."));
+    peer.addProperty("replicaStatus", SpecBuilders.string(
+        "Replica health status. Absent for the leader's own entry and until a health sample exists."));
     peer.addProperty("laggingForMs", SpecBuilders.integer(
-        "How long this peer has been lagging, in milliseconds"));
+        "How long this peer has been lagging, in milliseconds. Absent for the leader's own entry and until "
+            + "a health sample exists."));
     peer.addProperty("lagging", SpecBuilders.bool(
-        "True when the lag exceeds the configured warning threshold"));
+        "True when the lag exceeds the configured warning threshold. Absent for the leader's own entry and "
+            + "until a health sample exists."));
     peer.addProperty("replicationRttMs", SpecBuilders.integer(
         "Mean replication round-trip time. Absent when no sample exists."));
     peer.addProperty("replicationRttP99Ms", SpecBuilders.integer(
@@ -358,7 +365,7 @@ public class PluginApiSpec implements OpenApiContributor {
     database.addProperty("acquireStatus", SpecBuilders.string(
         "State of the last acquisition attempt. Absent when none was made."));
     database.addProperty("acquireTimestamp", SpecBuilders.integer(
-        "When the last acquisition attempt ran, as epoch milliseconds"));
+        "When the last acquisition attempt ran, as epoch milliseconds. Absent when none was made."));
     database.addProperty("acquireError", SpecBuilders.string(
         "Why the last acquisition failed. Absent on success."));
 
