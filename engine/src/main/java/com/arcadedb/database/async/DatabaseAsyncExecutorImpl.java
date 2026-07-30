@@ -393,7 +393,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // AVAILABLE -> SCHEDULED move - so the index would silently stop compacting until the database is reopened.
     boolean scheduled = false;
     try {
-      scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, backPressurePercentage);
+      // No back-pressure (0) on purpose, unlike the user-facing async entry points. Both callers of this method are
+      // index onAfterCommit hooks, so the thread that would be slowed down is a committer whose work is already
+      // durable: sleeping it throttles nothing that is filling the queue, it only adds latency to a commit that is
+      // finished. A full queue instead makes the offer below give up, the finally hands the slot back, and the next
+      // commit past the threshold schedules again - both gates are level-triggered, so no compaction is lost.
+      scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, 0);
     } finally {
       if (!scheduled)
         index.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_SCHEDULED },

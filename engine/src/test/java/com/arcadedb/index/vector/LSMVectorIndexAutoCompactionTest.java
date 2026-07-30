@@ -30,6 +30,8 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
 
@@ -289,7 +291,50 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
         .isEqualTo(VERTICES - deleted);
   }
 
+  /**
+   * Compaction is leader-only under HA: a follower gets the rewritten file from the leader, and its own attempt is
+   * declined by runWithCompactionReplication - but only after the task has been queued, run and reset. A follower
+   * taking writes is precisely the node whose garbage ratio keeps crossing the threshold, so every commit would
+   * schedule a task that does nothing. The standalone case is the one every other test in this class exercises: they
+   * all compact, which they could not do if this gate answered the wrong way for a database that is not replicated.
+   */
+  @Test
+  void aFollowerDoesNotScheduleCompactionsTheLeaderWillSendItAnyway() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    assertThat(LSMVectorIndex.isCompactionAllowedOnThisNode(db)).as("a standalone database compacts its own indexes")
+        .isTrue();
+    assertThat(LSMVectorIndex.isCompactionAllowedOnThisNode(nodeView(db, true))).as("so does the leader of a cluster")
+        .isTrue();
+    assertThat(LSMVectorIndex.isCompactionAllowedOnThisNode(nodeView(db, false)))
+        .as("a follower must not: the compacted file arrives from the leader").isFalse();
+  }
+
   // ------------------------------------------------------------------------------------------------- helpers
+
+  /**
+   * A view of the database that only differs in being replicated, and in whether this node leads. Avoids pulling a
+   * mocking framework into the engine module just to flip two flags (same approach as Issue5470ReplicatedCommitEveryTest).
+   */
+  private static DatabaseInternal nodeView(final DatabaseInternal delegate, final boolean leader) {
+    return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+          if (args == null || args.length == 0)
+            switch (method.getName()) {
+            case "isReplicated" -> {
+              return Boolean.TRUE;
+            }
+            case "isLeader" -> {
+              return leader;
+            }
+            }
+          try {
+            return method.invoke(delegate, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
+  }
 
   /** Compaction runs on the async executor: let anything already scheduled finish before looking at the file. */
   private void awaitCompactionIdle() {

@@ -480,9 +480,12 @@ public class VectorLocationIndex {
   }
 
   /**
-   * Get the total number of vectors (including deleted).
+   * Number of resident locations. Deleted vectors are not among them: {@link #markDeleted} drops the location and
+   * keeps only the id in the tombstone set, so on the unbounded backend this is the live-vector count and callers
+   * such as {@code LSMVectorIndex.estimatePagesForLiveSet} rely on that. A bounded cache evicts, so there it is a
+   * lower bound instead. Constant time either way, unlike {@link #getActiveCount()}.
    *
-   * @return Total number of vectors
+   * @return Number of vectors whose location is currently held
    */
   public int size() {
     return locations.size();

@@ -4246,6 +4246,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the number of resident locations, two settings read live - and never touches a page.
    */
   private boolean isCompactionDue() {
+    if (!isCompactionAllowedOnThisNode(getDatabase()))
+      return false;
+
     final ContextConfiguration configuration = getDatabase().getConfiguration();
 
     // Read both knobs live so they behave the same way: the cached minPagesToScheduleACompaction only reflects the
@@ -4281,11 +4284,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether this node is the one that compacts. A Raft follower receives the compacted file from the leader, and
+   * {@code runWithCompactionReplication} already declines on a follower - but it declines from inside an async task
+   * that had to be queued, run and reset first. A write-heavy follower is exactly the node whose garbage ratio keeps
+   * crossing the threshold, so without this gate every one of its commits schedules a task that does nothing.
+   * Mirrors the leader check {@code TimeSeriesMaintenanceScheduler.runMaintenance} makes for the same reason.
+   *
+   * @return true when standalone (never replicated) or on the current leader
+   */
+  static boolean isCompactionAllowedOnThisNode(final DatabaseInternal database) {
+    return !database.isReplicated() || database.isLeader();
+  }
+
+  /**
    * Pages the live vectors alone would occupy, derived from the entry layout {@code persistVectorWithLocation}
    * writes. An estimate on purpose: it feeds a ratio against a configurable factor, so being a few percent out
    * moves when a compaction happens, never whether the result is correct.
    */
   private int estimatePagesForLiveSet() {
+    // size() is the resident location count, which is the live count: markDeleted() and an addOrUpdate() that
+    // supersedes an id both remove the old entry from the map rather than flagging it (getActiveCount() filters
+    // defensively, but on this backend it has nothing left to filter). The unbounded backend is the only one that
+    // reaches here - isCompactionDue() sends bounded caches away, where eviction would break that equivalence.
+    // Counting the values instead would be a full map scan on every commit, which this check must not do.
     final int liveVectors = vectorIndex.size();
     if (liveVectors < 1)
       return 0;
