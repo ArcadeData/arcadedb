@@ -265,6 +265,12 @@ class EdgeAppendMergeRaceTest extends TestHelper {
    * Runs a transaction and reports whether it committed. A transaction that exhausted its attempts raises a
    * {@link NeedRetryException}: that is contention, not corruption, so it is counted and swallowed. Everything
    * else - a {@code BufferUnderflowException} from a reader above all - propagates and fails the test.
+   * <p>
+   * Contention give-ups are the ONLY tolerated outcome, deliberately. {@code transaction()} also retries
+   * {@link com.arcadedb.exception.DuplicatedKeyException}, which does not extend {@link NeedRetryException} and
+   * so would still fail this test on exhaustion - correct here, since this workload has no unique index and a
+   * duplicate would mean the engine handed out a colliding RID. Anyone reusing this wrapper on a unique-key
+   * workload has to decide that case explicitly rather than inherit this one.
    */
   private boolean commit(final BasicDatabase.TransactionScope block, final int attempts, final GiveUps giveUps) {
     try {
