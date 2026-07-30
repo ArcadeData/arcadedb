@@ -910,7 +910,11 @@ public class GraphBatch implements AutoCloseable {
     }
 
     try {
-      // Connect all deferred incoming edges in one sorted pass
+      // Connect all deferred incoming edges in one sorted pass. On a large load this is minutes of work and it
+      // runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no back-pointer
+      // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
+      // (86 seconds of the timeline on issue #5470); connectDeferredIncomingEdges logs the pass and its duration
+      // itself, so the wait is already accounted for.
       if (bidirectional && inEdgeCount > 0)
         connectDeferredIncomingEdges();
 

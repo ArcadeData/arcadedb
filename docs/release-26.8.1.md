@@ -190,6 +190,48 @@ $ ls -l <database>/dictionary.*.dict
 131072 / 65536 = 2 pages, so that one has rolled over. A file at or under one page is still single-page and
 remains downgradable.
 
+### Improvements
+
+#### A failed bulk load answers immediately instead of waiting for the rest of the upload
+
+`POST /api/v1/batch` rejects a payload it cannot use - an edge naming a vertex the file never created, a
+vertex after the first edge, an unparseable RID - and until now it did so only after reading the *rest* of the
+upload. Closing Undertow's request stream reads the body to the end first, so on a 25M-line load the client
+was told nothing for fifteen minutes and then nothing at all: by then the response had been started and the
+status could no longer be set (`UT000002: The response has already been started`). An exact diagnosis the
+server had reached in two minutes never left the machine, and the load looked like a hang that died without a
+reason (issue #5470).
+
+The verdict is now delivered as soon as it is reached, because nothing about the remaining bytes can change
+it: the unread remainder is discarded rather than drained, and the connection is retired instead. A load that
+reads its body to the end keeps its connection reusable exactly as before, and so does one whose payload had
+already fully arrived when it was rejected - a remainder that is merely sitting in a buffer is consumed
+without waiting for the network, so a client sending small batches does not lose its pooled connection every
+time one is refused. Only a remainder that has not arrived, or exceeds 64 KB, costs the connection.
+
+One consequence worth knowing: declining to read the rest of a body means closing a connection the client may
+still be writing to, and the TCP reset that follows can discard bytes the client had already received. A
+client that is no longer mid-upload - it had finished sending, or stopped - always gets the error. A client
+still streaming when the load is refused usually gets it too, because an ordinary HTTP client reads while it
+uploads, but not reliably: measured against the JDK client it loses the response body to the reset roughly one
+time in five, and a client that writes its whole payload before reading anything loses it every time. What no
+client waits for any more is the upload itself, and the exact reason is always in the server log. Delivering
+it reliably would mean reading the remainder first, which is the quarter of an hour this replaced.
+
+Two related corrections:
+
+- **A valid line is no longer blamed for a truncated upload.** The truncation check exists because a peer that
+  disappears can leave Undertow's buffer holding bytes the client never sent, which surfaces as a malformed
+  record; it is now consulted only for a record that failed to *parse*, which is the only failure a cut body
+  can fabricate. A well-formed record with invalid content is final and reported as itself, instead of as
+  "the last record read is not part of the payload" - which pointed the user at a line that was fine.
+- **The check never blocks.** It establishes truncation from the end of the stream, which a departed peer
+  reaches without any waiting, so a slow-but-alive client can no longer stall the response.
+
+A batch that fails still connects the incoming edges of what it already committed before it answers, because
+skipping that would leave persisted edges without back-pointers. On a large load that pass takes a while, so
+it now says so in the log rather than looking like a fresh hang.
+
 ### Breaking Changes
 
 #### SQL: inside a back-tick quoted name a backslash escapes the next character
