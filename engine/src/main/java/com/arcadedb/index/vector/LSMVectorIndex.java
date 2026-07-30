@@ -4513,30 +4513,38 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public boolean compact() throws IOException, InterruptedException {
+    // Every exit before the state moves to COMPACTION_IN_PROGRESS has to hand the scheduling slot back. A
+    // compaction that gives up here - a backup suspended page flushing, the index went invalid - would otherwise
+    // leave the status at COMPACTION_SCHEDULED for good, and since scheduleCompaction() only moves AVAILABLE ->
+    // SCHEDULED, that silently disables every later compaction of this index, the explicit COMPACT INDEX included,
+    // until the database is reopened. Rare while compaction was operator-driven; reachable on any backup window now
+    // that a commit can schedule one.
+    boolean compactionStarted = false;
+    try {
+      LogManager.instance().log(this, Level.FINE, "compact() called for index: %s", null, getName());
+      checkIsValid();
+      final DatabaseInternal database = getDatabase();
 
-    LogManager.instance().log(this, Level.INFO, "compact() called for index: %s", null, getName());
-    checkIsValid();
-    final DatabaseInternal database = getDatabase();
+      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+        throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
 
-    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
-      throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
+      if (database.getPageManager().isPageFlushingSuspended(database)) {
+        LogManager.instance().log(this, Level.FINE, "compact() returning false: page flushing suspended");
+        // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
+        return false;
+      }
 
-    if (database.getPageManager().isPageFlushingSuspended(database)) {
-      LogManager.instance().log(this, Level.INFO, "compact() returning false: page flushing suspended");
-      // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
-      return false;
-    }
-
-    LogManager.instance().log(this, Level.INFO,
-        "compact() current status: %s, attempting compareAndSet from COMPACTION_SCHEDULED to COMPACTION_IN_PROGRESS",
-        status.get());
-    if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS)) {
-      LogManager.instance()
-          .log(this, Level.INFO, "compact() returning false: status compareAndSet failed (current status: %s)",
-              status.get());
-      // COMPACTION NOT SCHEDULED
-      return false;
-    }
+      LogManager.instance().log(this, Level.FINE,
+          "compact() current status: %s, attempting compareAndSet from COMPACTION_SCHEDULED to COMPACTION_IN_PROGRESS",
+          status.get());
+      if (!status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.COMPACTION_IN_PROGRESS)) {
+        LogManager.instance()
+            .log(this, Level.FINE, "compact() returning false: status compareAndSet failed (current status: %s)",
+                status.get());
+        // COMPACTION NOT SCHEDULED
+        return false;
+      }
+      compactionStarted = true;
 
     try {
       // Compaction IS a rebuild that also rewrites the data file: the rebuild already reads every page, resolves
@@ -4566,11 +4574,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       return success;
     } catch (final TimeoutException e) {
-      LogManager.instance().log(this, Level.INFO, "compact() caught TimeoutException: %s", e.getMessage());
+      LogManager.instance().log(this, Level.FINE, "compact() caught TimeoutException: %s", e.getMessage());
       // IGNORE IT, WILL RETRY LATER
       return false;
     } finally {
       status.set(INDEX_STATUS.AVAILABLE);
+    }
+
+    } finally {
+      if (!compactionStarted)
+        // Never reached COMPACTION_IN_PROGRESS: release the slot this attempt reserved so the next commit, or an
+        // operator, can schedule again.
+        status.compareAndSet(INDEX_STATUS.COMPACTION_SCHEDULED, INDEX_STATUS.AVAILABLE);
     }
   }
 

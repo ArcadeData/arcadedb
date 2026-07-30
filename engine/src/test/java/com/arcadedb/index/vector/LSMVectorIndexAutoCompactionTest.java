@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -189,6 +190,77 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
     }
   }
 
+  /**
+   * A compaction that gives up before it starts - a backup has suspended page flushing - must hand its scheduling
+   * slot back. scheduleCompaction() only moves AVAILABLE -> COMPACTION_SCHEDULED, so a slot left reserved disables
+   * every later compaction of that index, the explicit COMPACT INDEX included, until the database is reopened.
+   */
+  @Test
+  void acompactionThatGivesUpBeforeStartingReleasesItsSlot() throws Exception {
+    createSchema();
+    insertVertices();
+
+    final LSMVectorIndex index = vectorIndex();
+
+    // Reserve the slot the way a commit does, then let the attempt land inside a backup's flush suspension.
+    assertThat(index.scheduleCompaction()).as("the slot is free to begin with").isTrue();
+    ((DatabaseInternal) database).getPageManager()
+        .suspendFlushAndExecute(database, () -> assertThat(index.compact())
+            .as("a suspended flush postpones the compaction").isFalse());
+
+    assertThat(index.scheduleCompaction())
+        .as("the postponed attempt must have released the slot, or nothing can ever compact this index again")
+        .isTrue();
+  }
+
+  /**
+   * NONE quantization keeps the vector in the document, so a page entry is just its header - by far the smallest
+   * entry the size estimate has to deal with, and the branch of it with the least obvious arithmetic.
+   */
+  @Test
+  void anIndexWithoutQuantizationAlsoCompactsItself() {
+    GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(3);
+    try {
+      createSchema(VectorQuantizationType.NONE);
+      insertVertices();
+
+      final LSMVectorIndex index = vectorIndex();
+      final int fileIdBefore = index.getFileId();
+
+      for (int cycle = 1; cycle <= 30 && index.getFileId() == fileIdBefore; cycle++) {
+        updateAllVertices(cycle);
+        awaitCompactionIdle();
+      }
+
+      assertThat(index.getFileId()).as("header-only entries must be sized correctly too").isNotEqualTo(fileIdBefore);
+      assertThat(vectorIndex().countEntries()).isEqualTo(VERTICES);
+    } finally {
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.reset();
+    }
+  }
+
+  /** Deletes leave the same tombstones an update does, so a delete-heavy index has to reclaim as well. */
+  @Test
+  void aDeleteHeavyIndexCompactsItself() {
+    createSchema();
+    insertVertices();
+
+    final LSMVectorIndex index = vectorIndex();
+    final int fileIdBefore = index.getFileId();
+
+    final int deleted = VERTICES * 3 / 4;
+    database.transaction(() -> {
+      for (int i = 0; i < deleted; i++)
+        database.command("sql", "DELETE FROM Doc WHERE id = ?", "doc" + i);
+    });
+    awaitCompactionIdle();
+
+    assertThat(index.getFileId()).as("three quarters of the file is now garbage and must be reclaimed")
+        .isNotEqualTo(fileIdBefore);
+    assertThat(vectorIndex().countEntries()).as("the survivors are all still there")
+        .isEqualTo(VERTICES - deleted);
+  }
+
   // ------------------------------------------------------------------------------------------------- helpers
 
   /** Compaction runs on the async executor: let anything already scheduled finish before looking at the file. */
@@ -197,6 +269,10 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
   }
 
   private void createSchema() {
+    createSchema(VectorQuantizationType.INT8);
+  }
+
+  private void createSchema(final VectorQuantizationType quantization) {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE Doc");
       database.command("sql", "CREATE PROPERTY Doc.id STRING");
@@ -205,7 +281,7 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
 
       final TypeLSMVectorIndexBuilder builder = (TypeLSMVectorIndexBuilder) database.getSchema()
           .buildTypeIndex("Doc", new String[] { "embedding" }).withLSMVectorType().withPageSize(PAGE_SIZE);
-      builder.withDimensions(DIMENSIONS).withQuantization(VectorQuantizationType.INT8).create();
+      builder.withDimensions(DIMENSIONS).withQuantization(quantization).create();
     });
   }
 
