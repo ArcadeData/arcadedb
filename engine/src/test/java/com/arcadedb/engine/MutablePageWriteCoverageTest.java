@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for the replay-coverage bookkeeping introduced by issue #5596: a commit-time page merge may only
@@ -121,7 +122,9 @@ class MutablePageWriteCoverageTest {
 
   /**
    * A nested declaration must not leak: after the inner writer restores what it replaced, the outer declaration is
-   * back in force, and after the outer one ends writes are undeclared again.
+   * back in force, and after the outer one ends writes are undeclared again. The nesting production actually uses is
+   * an inner scope that declares NOTHING - a writer disclaiming coverage for one branch, as
+   * {@code createRecordInternal} does for a multi-page record - inside an outer declared one.
    */
   @Test
   void nestedDeclarationsRestoreTheOuterScope() {
@@ -129,24 +132,53 @@ class MutablePageWriteCoverageTest {
 
     final int outer = page.beginCoveredWrite(MutablePage.COVERAGE_ALL_MERGES);
     try {
-      final int inner = page.beginCoveredWrite(MutablePage.COVERAGE_SLOT_MERGE);
+      final int inner = page.beginCoveredWrite(0);
       try {
-        page.writeByte(10, (byte) 1);
+        page.writeByte(10, (byte) 1);   // undeclared: disqualifies both mechanisms
       } finally {
         page.endCoveredWrite(inner);
       }
-      // Back to the outer (all-mechanism) declaration.
+      // Back to the outer (all-mechanism) declaration: this write does NOT disqualify anything further.
       page.writeByte(11, (byte) 1);
     } finally {
       page.endCoveredWrite(outer);
     }
 
-    // The inner write named only the slot merge, so the edge-append merge is out; the slot merge is still in.
-    assertThat(page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)).isTrue();
+    assertThat(page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)).isFalse();
     assertThat(page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE)).isFalse();
 
-    page.writeByte(12, (byte) 1);
-    assertThat(page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)).isFalse();
+    // ...and the outermost scope really was restored to "no declaration": on a clean page a declared write is
+    // covered, and only what comes AFTER the end is not.
+    final MutablePage clean = newPage();
+    final int scope = clean.beginCoveredWrite(MutablePage.COVERAGE_SLOT_MERGE);
+    try {
+      clean.writeByte(10, (byte) 1);
+    } finally {
+      clean.endCoveredWrite(scope);
+    }
+    assertThat(clean.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)).isTrue();
+    clean.writeByte(12, (byte) 1);
+    assertThat(clean.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)).isFalse();
+  }
+
+  /**
+   * The guard on the one way this backstop could become the hazard it removes: a writer that opens a declaration and
+   * never restores it would silently vouch for every later write to that page. Opening a second declaration while one
+   * is still live is exactly that footprint, and trips an assertion (enabled under {@code -ea}, as surefire runs).
+   */
+  @Test
+  void aLeakedDeclarationIsCaughtByAnAssertion() {
+    // Guard the guard: with assertions disabled this test would pass vacuously, so fail loudly instead.
+    assertThat(MutablePageWriteCoverageTest.class.desiredAssertionStatus())
+        .as("this test needs -ea; surefire enables assertions by default").isTrue();
+
+    final MutablePage page = newPage();
+    page.beginCoveredWrite(MutablePage.COVERAGE_SLOT_MERGE);   // deliberately never restored
+    page.writeByte(10, (byte) 1);
+
+    assertThatThrownBy(() -> page.beginCoveredWrite(MutablePage.COVERAGE_EDGE_APPEND_MERGE))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining("leaked");
   }
 
   @Test

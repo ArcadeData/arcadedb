@@ -272,6 +272,16 @@ public class MutablePage extends BasePage implements TrackableContent {
    */
   public int beginCoveredWrite(final int mechanisms) {
     final int previous = declaredCoverage;
+    // The one thing that could turn this backstop into the very hazard it removes: a writer that opens a declaration
+    // and never restores it (a missing finally, an exception unwinding past it) leaves the declaration live, so a
+    // LATER undeclared write to the same page is wrongly vouched for. No writer legitimately opens a non-zero
+    // declaration inside another one - each names the single mechanism that replays its own bytes, and a write
+    // replayed by several of them passes the full mask instead - so inheriting a live declaration means exactly that
+    // leak. An assertion, not a hard check: it fails fast under -ea (surefire's default) at zero production cost,
+    // where the sticky uncovered set still keeps the outcome safe.
+    assert previous == 0 || mechanisms == 0 :
+        "A covered-write declaration leaked on page " + pageId + " (declared=" + previous
+            + "): every beginCoveredWrite must be restored by endCoveredWrite in a finally block";
     declaredCoverage = mechanisms;
     return previous;
   }

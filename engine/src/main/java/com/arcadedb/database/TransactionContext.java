@@ -737,35 +737,32 @@ public class TransactionContext implements Transaction {
     return edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(packPageKey(fileId, pageNumber));
   }
 
-  private boolean isRebasableEdgeAppendPage(final MutablePage page) {
+  /**
+   * True when this transaction registered at least one in-chunk append on {@code pageId} that the edge-append merge
+   * could replay, ignoring whether the page can PROVE the rest of its changes are replayable too. Split out from
+   * {@link #isRebasableEdgeAppendPage(MutablePage)} so the coverage verdict can be reported exactly once, at the
+   * point the transaction actually fails.
+   */
+  private boolean hasReplayableEdgeAppends(final PageId pageId) {
     if (!edgeAppendMerge || edgeAppendsBySegment == null)
       return false;
-    final PageId pageId = page.getPageId();
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
     if (edgeAppendPoisonedPages != null && edgeAppendPoisonedPages.contains(key))
       return false;
     // Is at least one tracked segment on this (conflicting) page? Computing the segment page keys here, on the
     // rare conflict path, is what keeps the append hot path free of allocation.
-    boolean tracked = false;
     for (final RID segmentRID : edgeAppendsBySegment.keySet())
-      if (edgeSegmentPageKey(segmentRID) == key) {
-        tracked = true;
-        break;
-      }
-    if (!tracked)
-      return false;
+      if (edgeSegmentPageKey(segmentRID) == key)
+        return true;
+    return false;
+  }
 
+  private boolean isRebasableEdgeAppendPage(final MutablePage page) {
     // #5596: the rebase drops this transaction's whole image of the page, so it is sound only when every byte this
     // transaction wrote there was declared replayable by THIS merge. A writer that forgot to poison the page (or
     // never knew the merge exists) leaves at least one undeclared byte behind and is refused here - a retry instead
-    // of a silently lost write. Logged because it is also the signal that a writer is missing its poison call.
-    if (!page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE)) {
-      database.getPageManager().incrementMergesDeclinedByCoverage();
-      LogManager.instance().log(this, Level.FINE,
-          "Edge-append merge declined page %s: it carries changes no tracked append accounts for", pageId);
-      return false;
-    }
-    return true;
+    // of a silently lost write. See reportCoverageDecline for the counter and the log.
+    return hasReplayableEdgeAppends(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
   }
 
   /**
@@ -1059,25 +1056,47 @@ public class TransactionContext implements Transaction {
     return slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(packPageKey(fileId, pageNumber));
   }
 
-  private boolean isRebasableSlotPage(final MutablePage page) {
+  /**
+   * True when this transaction registered at least one slot write on {@code pageId} that the disjoint-slot merge
+   * could replay, ignoring whether the page can PROVE the rest of its changes are replayable too. See
+   * {@link #hasReplayableEdgeAppends(PageId)}.
+   */
+  private boolean hasReplayableSlotWrites(final PageId pageId) {
     if (!slotMerge || slotRebaseByPage == null)
       return false;
-    final PageId pageId = page.getPageId();
     final long key = packPageKey(pageId.getFileId(), pageId.getPageNumber());
     if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
       return false;
-    if (!slotRebaseByPage.containsKey(key))
-      return false;
+    return slotRebaseByPage.containsKey(key);
+  }
 
+  private boolean isRebasableSlotPage(final MutablePage page) {
     // #5596: same coverage proof as the edge-append merge - the page is re-derived from the tracked slot writes
     // alone, so any byte written outside a slot-merge declaration disqualifies it.
-    if (!page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)) {
-      database.getPageManager().incrementMergesDeclinedByCoverage();
-      LogManager.instance().log(this, Level.FINE,
-          "Slot merge declined page %s: it carries changes no tracked slot write accounts for", pageId);
-      return false;
-    }
-    return true;
+    return hasReplayableSlotWrites(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
+  }
+
+  /**
+   * Reports, ONCE per page and only when the transaction is really about to fail, that a merge which had tracked
+   * writes on {@code page} was refused solely because the page could not prove the rest of its changes replayable
+   * (#5596). Counting inside the {@code isRebasable*} predicates instead would double-count a page both merges
+   * looked at, and could even count a decline for a page the other merge went on to rebase - which would make the
+   * one statistic meant to expose a forgotten declaration untrustworthy.
+   */
+  private void reportCoverageDecline(final MutablePage page) {
+    final PageId pageId = page.getPageId();
+    final boolean edgeDeclined = hasReplayableEdgeAppends(pageId)//
+        && !page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
+    final boolean slotDeclined = hasReplayableSlotWrites(pageId)//
+        && !page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
+    if (!edgeDeclined && !slotDeclined)
+      // An ordinary conflict on a page no merge ever tracked: nothing to do with coverage.
+      return;
+
+    database.getPageManager().incrementMergesDeclinedByCoverage();
+    LogManager.instance().log(this, Level.FINE,
+        "%s merge declined page %s: it carries changes no tracked write accounts for",
+        edgeDeclined && slotDeclined ? "Edge-append and slot" : edgeDeclined ? "Edge-append" : "Slot", pageId);
   }
 
   /**
@@ -1515,8 +1534,12 @@ public class TransactionContext implements Transaction {
               slotPagesToRebase = new ArrayList<>();
             slotPagesToRebase.add(p.getPageId());
             it.remove();
-          } else
+          } else {
+            if (isLeader)
+              // #5596 diagnostics: exactly one report, for a page a merge would have taken but for its coverage.
+              reportCoverageDecline(p);
             throw e;
+          }
         }
       }
 

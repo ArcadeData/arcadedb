@@ -50,6 +50,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * declaration naming that merge ({@code MutablePage.beginCoveredWrite}). These tests use the synthetic writer the
  * issue asks for - a transaction that dirties bytes belonging to no tracked write at all - once against each merge,
  * so they hold no matter which poison calls exist, and pin that the merges still fire on a fully covered page.
+ * <p>
+ * DELIBERATELY NOT {@code @Tag("slow")}, unlike the contention suites it sits next to
+ * ({@code Issue5381FalseConflictTest}, {@code EdgeAppendMergeRaceTest}, ...). Those run thousands of transactions;
+ * these are sized to the smallest contention that reproduces, and the whole class measures ~0.37s (heaviest method
+ * 0.19s; the 16-thread growth/delete one 0.04s) - well inside a regular CI run. It belongs there: a merge that stops
+ * firing because a writer forgot its declaration is a silent throughput regression no correctness assertion catches,
+ * so the merge-counter and coverage-decline assertions below have to run on every build to be worth having.
+ * Re-measure before tagging this class, rather than tagging it by family resemblance.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
