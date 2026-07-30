@@ -91,6 +91,15 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     assertThat(outcome.writerGiveUps())
         .as("write transactions that exhausted their retries: %d of %d", outcome.writerGiveUps(), writeTx)
         .isLessThan(Math.max(16, writeTx / 20));
+
+    // Readers are the corruption detector, so their give-ups need a floor rather than the writers' ceiling: a
+    // run where readers mostly failed to complete a traversal would go green with the BufferUnderflowException
+    // guard barely exercised. Assert the detector actually ran, in absolute terms and as a share.
+    final int readTx = outcome.readTransactions();
+    assertThat(outcome.readerCommits())
+        .as("full chain traversals completed: %d of %d reader transactions", outcome.readerCommits(), readTx)
+        .isGreaterThanOrEqualTo(READERS)
+        .isGreaterThan(readTx / 2);
   }
 
   /**
@@ -129,9 +138,9 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     final ConcurrentLinkedQueue<RID> live = new ConcurrentLinkedQueue<>();
     final AtomicInteger addedCount = new AtomicInteger();
     final AtomicInteger removedCount = new AtomicInteger();
-    final AtomicInteger writerGiveUps = new AtomicInteger();
-    final AtomicInteger readerGiveUps = new AtomicInteger();
-    final AtomicReference<Throwable> firstGiveUp = new AtomicReference<>();
+    final AtomicInteger readerCommits = new AtomicInteger();
+    final GiveUps writerGiveUps = new GiveUps();
+    final GiveUps readerGiveUps = new GiveUps();
     final AtomicBoolean addersDone = new AtomicBoolean();
     final CountDownLatch start = new CountDownLatch(1);
     final List<Thread> threads = new ArrayList<>();
@@ -150,7 +159,7 @@ class EdgeAppendMergeRaceTest extends TestHelper {
               src.save();
               src.newEdge("TRANSFERS", hubRID);
               holder[0] = src.getIdentity();
-            }, attempts, writerGiveUps, firstGiveUp))
+            }, attempts, writerGiveUps))
               // GAVE UP: nothing was committed, so nothing to count and nothing to offer to the removers.
               continue;
 
@@ -181,7 +190,7 @@ class EdgeAppendMergeRaceTest extends TestHelper {
             // A remover that gives up leaves its victim un-deleted and does not count it, so the expected edge
             // count stays exact. The victim is deliberately not re-queued: retrying it forever would hide the
             // give-up instead of reporting it.
-            if (commit(() -> victim.asVertex(true).delete(), attempts, writerGiveUps, firstGiveUp))
+            if (commit(() -> victim.asVertex(true).delete(), attempts, writerGiveUps))
               removedCount.incrementAndGet();
           }
         } catch (final Throwable e) {
@@ -196,13 +205,16 @@ class EdgeAppendMergeRaceTest extends TestHelper {
         try {
           start.await();
           while (!addersDone.get()) {
-            commit(() -> {
+            if (commit(() -> {
               final Vertex hub = hubRID.asVertex(true);
               hub.countEdges(Vertex.DIRECTION.IN, "TRANSFERS");
               for (final Vertex ignored : hub.getVertices(Vertex.DIRECTION.IN, "TRANSFERS")) {
                 // full traversal: forces every chunk in the chain to be parsed
               }
-            }, attempts, readerGiveUps, firstGiveUp);
+            }, attempts, readerGiveUps))
+              // A completed traversal is one full parse of the chain, i.e. one actual exercise of the
+              // corruption detector. Counted so the test can prove the detector really ran.
+              readerCommits.incrementAndGet();
           }
         } catch (final Throwable e) {
           errors.add(e);
@@ -218,17 +230,18 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     for (final Thread thread : threads)
       thread.join();
 
-    final RaceOutcome outcome = new RaceOutcome(addedCount.get(), removedCount.get(), writerGiveUps.get(),
-        readerGiveUps.get(), ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges);
+    final RaceOutcome outcome = new RaceOutcome(addedCount.get(), removedCount.get(), writerGiveUps.count.get(),
+        readerCommits.get(), readerGiveUps.count.get(),
+        ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges);
 
     // The suite pins com.arcadedb to SEVERE, so a run with give-ups is the only one that prints: a genuine
     // starvation regression then shows up as this count jumping in the build log, well before it grows enough
-    // to trip the assertion below.
+    // to trip the assertions below.
     LogManager.instance()
         .log(this, outcome.writerGiveUps() + outcome.readerGiveUps() > 0 ? Level.SEVERE : Level.WARNING,
-            "#5570 race outcome: added=%d removed=%d merges=%d give-ups(write)=%d give-ups(read)=%d%s", outcome.added(),
-            outcome.removed(), outcome.merges(), outcome.writerGiveUps(), outcome.readerGiveUps(),
-            firstGiveUp.get() != null ? " first=" + firstGiveUp.get() : "");
+            "#5570 race outcome: added=%d removed=%d merges=%d give-ups(write)=%d traversals=%d give-ups(read)=%d%s%s",
+            outcome.added(), outcome.removed(), outcome.merges(), outcome.writerGiveUps(), outcome.readerCommits(),
+            outcome.readerGiveUps(), writerGiveUps.describeFirst("write"), readerGiveUps.describeFirst("read"));
 
     if (!errors.isEmpty())
       throw new AssertionError(errors.size() + " thread(s) failed with a non-retryable error, first: " + errors.getFirst(),
@@ -253,21 +266,42 @@ class EdgeAppendMergeRaceTest extends TestHelper {
    * {@link NeedRetryException}: that is contention, not corruption, so it is counted and swallowed. Everything
    * else - a {@code BufferUnderflowException} from a reader above all - propagates and fails the test.
    */
-  private boolean commit(final BasicDatabase.TransactionScope block, final int attempts, final AtomicInteger giveUps,
-      final AtomicReference<Throwable> firstGiveUp) {
+  private boolean commit(final BasicDatabase.TransactionScope block, final int attempts, final GiveUps giveUps) {
     try {
       database.transaction(block, true, attempts);
       return true;
     } catch (final NeedRetryException e) {
-      giveUps.incrementAndGet();
-      firstGiveUp.compareAndSet(null, e);
+      giveUps.record(e);
       return false;
     }
   }
 
-  private record RaceOutcome(int added, int removed, int writerGiveUps, int readerGiveUps, long merges) {
+  /**
+   * Per-role tally of transactions that ran out of attempts. Kept per role so the logged sample cannot be a
+   * reader exception in a writer-dominated run.
+   */
+  private static final class GiveUps {
+    final AtomicInteger              count = new AtomicInteger();
+    final AtomicReference<Throwable> first = new AtomicReference<>();
+
+    void record(final NeedRetryException e) {
+      count.incrementAndGet();
+      first.compareAndSet(null, e);
+    }
+
+    String describeFirst(final String role) {
+      final Throwable e = first.get();
+      return e != null ? " first(" + role + ")=" + e : "";
+    }
+  }
+
+  private record RaceOutcome(int added, int removed, int writerGiveUps, int readerCommits, int readerGiveUps, long merges) {
     int writeTransactions() {
       return added + removed + writerGiveUps;
+    }
+
+    int readTransactions() {
+      return readerCommits + readerGiveUps;
     }
   }
 }
