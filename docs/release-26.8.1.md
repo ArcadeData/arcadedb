@@ -81,6 +81,19 @@ The same goes for the write shapes no merge can replay (a delete, a placeholder 
 record that has to spill out of its page). Nothing changes for single-writer workloads, and no application
 change is needed. The merge can be switched off with `arcadedb.txPageSlotMerge=false`.
 
+#### `dateTimeImplementation=java.time.Instant` no longer breaks reading DATETIME values
+
+`arcadedb.dateTimeImplementation` accepts `java.time.Instant`, and embedded getters returned one correctly, but
+the moment a DATETIME column crossed the JSON boundary it threw
+`UnsupportedTemporalTypeException: Unsupported field: YearOfEra`. An `Instant` is a point on the timeline with
+no date or time-of-day fields of its own, so the schema-wide pattern (`yyyy-MM-dd HH:mm:ss`) had nothing to
+format. That took out every read path built on JSON: HTTP and the remote driver, Studio, `toJSON()`,
+`Result.toJSON()` and the SQL `.format()` method.
+
+`Instant` is now anchored to UTC before the pattern is applied - the same anchor the rest of the engine already
+uses for timestamps - so it renders exactly like `LocalDateTime` and no output changes for anyone not using the
+setting. `java.time.Instant` is also listed in the `arcadedb.dateTimeImplementation` description, which had
+omitted it despite the type being supported.
 #### Query and HTTP metrics survive an in-process server restart
 
 The server added a Micrometer registry to the JVM-wide global registry on every start and removed none on
