@@ -258,8 +258,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final    AtomicInteger           currentMutablePages;
   private final    int                     minPagesToScheduleACompaction;
   private          LSMVectorIndexCompacted compactedSubIndex;
-  // Said once per index, from the commit hook: a plain field is enough, two lines on a race beats a lock here.
-  private          boolean                 boundedCacheExemptionLogged;
   private volatile boolean                 valid      = true;
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
 
@@ -4306,25 +4304,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Explicit COMPACT INDEX only.
       return false;
 
-    if (getLocationCacheSize() > 0) {
-      // A bounded location cache caps the resident locations at its size, so the live-vector count this decision
-      // rests on is not available: an index with more live vectors than the cache holds would look permanently
-      // bloated and rewrite itself after nearly every commit - worst on the largest indexes, which is exactly where
-      // that setting gets used. Leave those to an explicit COMPACT INDEX, which derives its live set by parsing the
-      // pages instead of trusting the resident map. See issue #5559 for why bounded mode needs work of its own.
-      //
-      // Say it once per index rather than staying silent: the low-RAM profile sets a bounded cache, so the
-      // deployments that most need the disk back are the ones opted out of reclaiming it automatically, and that
-      // is not something an operator would think to go looking for.
-      if (!boundedCacheExemptionLogged) {
-        boundedCacheExemptionLogged = true;
-        LogManager.instance().log(this, Level.INFO,
-            "Vector index '%s' will not compact automatically because it uses a bounded location cache of %d entries "
-                + "(arcadedb.vectorIndex.locationCacheSize): run COMPACT INDEX to reclaim its file", indexName,
-            getLocationCacheSize());
-      }
+    if (vectorIndex.isBounded())
+      // A bounded location map evicts, so its size is a lower bound on the live set rather than the live set, and an
+      // index holding more live vectors than it caches would read as permanently bloated and rewrite itself after
+      // nearly every commit. Nothing asks for that backend today - #5568 stopped honouring
+      // arcadedb.vectorIndex.locationCacheSize precisely because an evicted location cannot be recovered - so this
+      // asks the map itself rather than the setting, and answers false. It exists so that wiring bounded mode back
+      // in cannot silently turn the ratio into a rewrite loop; whoever does that owes this an explicit live count,
+      // which COMPACT INDEX already derives by parsing the pages.
       return false;
-    }
 
     final int totalPages = totalPagesForBloatRatio();
     if (totalPages < minPages)
@@ -4377,9 +4365,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private int estimatePagesForLiveSet() {
     // size() is the resident location count, which is the live count: markDeleted() and an addOrUpdate() that
     // supersedes an id both remove the old entry from the map rather than flagging it (getActiveCount() filters
-    // defensively, but on this backend it has nothing left to filter). The unbounded backend is the only one that
-    // reaches here - isCompactionDue() sends bounded caches away, where eviction would break that equivalence.
-    // Counting the values instead would be a full map scan on every commit, which this check must not do.
+    // defensively, but on this backend it has nothing left to filter). Only the unbounded backend reaches here -
+    // isCompactionDue() turns back a map that evicts, which is what would break that equivalence. Counting the
+    // values instead would be a full map scan on every commit, which this check must not do.
     final int liveVectors = vectorIndex.size();
     if (liveVectors < 1)
       return 0;
@@ -4388,14 +4376,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // 32-bit id can reach 5 bytes and a 64-bit position 10). Under-counting here over-counts how many entries fit
     // in a page, which makes the trigger marginally eager - harmless for a ratio against a configurable factor.
     // Plus the deleted flag and the quantization-type byte, both always written.
-    int entrySize = 4 + 4 + 8 + 1 + 1;
-    switch (metadata.quantizationType) {
-    case INT8 -> entrySize += 4 + calculateQuantizedSize(metadata.dimensions, metadata.quantizationType) + 8;
-    case BINARY -> entrySize += 4 + calculateQuantizedSize(metadata.dimensions, metadata.quantizationType) + 4;
-    default -> {
-      // NONE and PRODUCT keep the vector in the document, so the page entry is just the header above.
-    }
-    }
+    // A quantized entry then carries the array length as an int, plus the array and its min/max (INT8) or median
+    // (BINARY) - exactly what calculateQuantizedDataSize returns, so the size comes from the reader's own arithmetic
+    // instead of a second copy of it here. NONE and PRODUCT return 0 there: they keep the vector in the document,
+    // which leaves the page entry as the header above.
+    final int quantizedSize = LSMVectorIndexPageParser.calculateQuantizedDataSize(metadata.dimensions,
+        metadata.quantizationType);
+    final int entrySize = 4 + 4 + 8 + 1 + 1 + (quantizedSize > 0 ? 4 + quantizedSize : 0);
 
     final int usablePerPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - HEADER_BASE_SIZE;
     final int entriesPerPage = Math.max(1, usablePerPage / entrySize);

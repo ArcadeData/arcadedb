@@ -168,34 +168,41 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
   }
 
   /**
-   * A bounded location cache caps the resident locations, so the live-vector count the ratio needs is not available
-   * and an index holding more vectors than the cache would look permanently bloated. Those indexes must be left to
-   * an explicit COMPACT INDEX rather than rewriting themselves after nearly every commit.
+   * The ratio rests on {@code VectorLocationIndex.size()} being the live-vector count, which holds only while the map
+   * does not evict. Since #5568 nothing asks for the bounded backend - {@code locationCacheSize} is refused, because
+   * an evicted location cannot be recovered - so the guard asks the map whether it evicts rather than asking the
+   * setting, and this pins both halves of that: configuring a cap does not produce a map that evicts, and a map that
+   * does evict reports it. If bounded mode is ever wired back in, the second assertion is what keeps the ratio from
+   * silently becoming a rewrite-after-every-commit loop.
    */
   @Test
-  void aBoundedLocationCacheDoesNotTriggerCompactionOnEveryCommit() {
+  void theRatioOnlyTrustsALocationMapThatDoesNotEvict() {
     GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(VERTICES / 10);
     try {
       createSchema();
       insertVertices();
 
       final LSMVectorIndex index = vectorIndex();
-      final int fileIdBefore = index.getFileId();
-      assertThat(index.getVectorIndex().size())
-          .as("the cache must really be capped below the live set, or this proves nothing")
-          .isLessThan(VERTICES);
+      assertThat(index.getVectorIndex().isBounded())
+          .as("#5568: a configured cap is refused, so the map still holds every live location").isFalse();
+      assertThat(index.getVectorIndex().size()).as("and the live count the estimate reads is the whole live set")
+          .isEqualTo(VERTICES);
 
-      for (int cycle = 1; cycle <= CYCLES; cycle++) {
+      // The index is therefore an ordinary one and reclaims under churn, cap configured or not.
+      final int fileIdBefore = index.getFileId();
+      for (int cycle = 1; cycle <= CYCLES && vectorIndex().getFileId() == fileIdBefore; cycle++) {
         updateAllVertices(cycle);
         awaitCompactionIdle();
       }
-
-      assertThat(vectorIndex().getFileId())
-          .as("an index whose live count is hidden by a bounded cache must not compact itself")
-          .isEqualTo(fileIdBefore);
+      assertThat(vectorIndex().getFileId()).as("an unbounded map means the ratio is computable, so it compacts")
+          .isNotEqualTo(fileIdBefore);
     } finally {
       GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.reset();
     }
+
+    assertThat(new VectorLocationIndex(16).isBounded())
+        .as("a map that does evict says so, which is what the compaction guard turns back").isTrue();
+    assertThat(new VectorLocationIndex(-1).isBounded()).as("and an unlimited one does not").isFalse();
   }
 
   /**
