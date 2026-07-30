@@ -102,6 +102,36 @@ mvn -pl server -am -Dtest='MicrometerQueryMetricsRecorderTest,DefaultServerMetri
 mvn -pl postgresw -am verify -Pintegration            # the suite from the report, one JVM
 ```
 
+## Pull request
+
+[#5582](https://github.com/ArcadeData/arcadedb/pull/5582).
+
+### Review cycle 1 (f9016702)
+
+Applied:
+
+- The teardown's ownership contract is now stated where the snapshot is taken: while a server is up it owns
+  every meter registered on the global registry, so an embedding application must register its own meters
+  before starting the server, or on a registry of its own added to the composite.
+- The reason the registry and the binders are installed outside `METRICS_INSTALL_MUTEX` is documented:
+  registering an already-registered meter id is a no-op in Micrometer and the counter transitions that
+  decide the snapshot and the teardown are serialised, so concurrent startups interleave safely; holding
+  the mutex across MXBean binding would serialise unrelated startups for nothing.
+- The counter reset on an in-process restart is now in `docs/release-26.8.1.md`, so it is not reported as a
+  regression.
+
+Not applied, with reasons:
+
+- **`@Tag("slow")` on `ServerMetricsLifecycleTest`.** Measured under a second for all five cases together (six server
+  start/stop cycles on a local run). `CLAUDE.md` reserves the tag for tests taking noticeably long, which
+  this does not.
+- **A separate `SERVER_ROOT_PATH` per server in the two-server test.** Sharing the root path and varying
+  only `SERVER_DATABASE_DIRECTORY` is exactly what `BaseGraphServerTest.startServers()` does for its
+  multi-server tests, and `TestServerHelper.deleteDatabaseFolders()` only cleans `./target/databases<i>`.
+  A private root path would leave a `databases/` directory behind that the CI leak check looks for.
+- **Sharing the duplicated `invalidateTimerCache()` Javadoc.** The two caches are private to two unrelated
+  classes; a shared constant would couple an HTTP handler to a monitor class to save two sentences.
+
 ## Impact
 
 - Query and HTTP RED metrics keep recording, and keep reporting the values they recorded, across an

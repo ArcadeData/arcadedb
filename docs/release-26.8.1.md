@@ -37,6 +37,29 @@ The same goes for the write shapes no merge can replay (a delete, a placeholder 
 record that has to spill out of its page). Nothing changes for single-writer workloads, and no application
 change is needed. The merge can be switched off with `arcadedb.txPageSlotMerge=false`.
 
+#### Query and HTTP metrics survive an in-process server restart
+
+The server added a Micrometer registry to the JVM-wide global registry on every start and removed none on
+stop. Since a meter registered on that composite holds one child per backing registry and reports the value
+of a single, arbitrarily chosen child, a restart in the same JVM left `arcadedb.query.duration` and
+`arcadedb.http.requests` reporting from a child registry that had never recorded them - reading back as 0 -
+while the gauges bound at startup kept reporting the *stopped* server
+([#5565](https://github.com/ArcadeData/arcadedb/issues/5565)).
+
+The metrics subsystem is now dismantled when the server stops: its registry is removed and closed, the
+meters it registered are deregistered, the query and HTTP timer caches are dropped and the engine stops
+timing queries. Several servers sharing one JVM (HA, embedded) are reference counted, so a stopping node
+never strips the meters its siblings publish, and meters registered before the first server started are
+left untouched.
+
+Two consequences for embedded and multi-server setups. A restart in the same process now **resets the
+counters**, because the values belong to the server that recorded them: a scraper that outlives a restart
+sees the series start from zero rather than continue. And while a server is up it owns the meters on the
+global registry, so an application that wants its own meters to survive the server's shutdown should
+register them before starting it, or on its own registry added to the composite.
+
+Only production deployments running a single server per JVM were unaffected.
+
 ### New Features
 
 #### Bloom filters on compacted LSM indexes (enabled by default)

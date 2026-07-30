@@ -581,10 +581,19 @@ public class ArcadeDBServer {
       }
 
       if (metricsInstalls++ == 0)
-        // Meters already registered belong to somebody else (typically the embedding application), so the
-        // shutdown below removes only what the server generations added on top of them.
+        // Meters already registered belong to somebody else (typically the embedding application) and are
+        // left alone by the shutdown. The flip side is the contract: from here until the last server stops,
+        // the server owns every meter registered on the global registry, so an embedded application that
+        // wants its own meters to outlive the server must register them before starting it, or on a registry
+        // of its own added to the composite (what the Prometheus and OTLP plugins do).
         metersBeforeInstall = currentMeterIds();
     }
+
+    // The registry and the binders below are deliberately installed outside the mutex: it guards only the
+    // shared install state (counter, snapshot, filter). Two servers starting concurrently in one JVM can
+    // interleave here safely, because registering an already-registered meter id is a no-op in Micrometer
+    // and the counter transitions that decide the snapshot and the teardown are serialised above. Holding
+    // the mutex across MXBean binding would serialise unrelated server startups for no benefit.
 
     metricsRegistry = new SimpleMeterRegistry();
     Metrics.addRegistry(metricsRegistry);
