@@ -181,6 +181,36 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
   }
 
   /**
+   * The follower keeps self-healing across successive waves of interning, not just the first one. A
+   * leader interns for as long as it ingests, so a follower that reloaded once and then stopped would
+   * read {@code null} for every tag value first seen after that reload.
+   */
+  @Test
+  void aSecondWaveOfIdsIsAlsoResolvedByReloading() throws Exception {
+    final TimeSeriesTagDictionary writer = createDictionary("tags_follower_waves");
+    writer.internAll(List.of("host_a", "host_b"));
+
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final TimeSeriesTagDictionary follower = new TimeSeriesTagDictionary(db, "tags_follower_waves",
+        db.getDatabasePath() + "/tags_follower_waves", writer.getFileId());
+
+    // Wave 1: the reload that the single-wave test already covers
+    assertThat(follower.getById(2)).isEqualTo("host_b");
+    assertThat(follower.size()).isEqualTo(2);
+
+    // Wave 2: more values interned by the writer after the follower has already reloaded once
+    writer.internAll(List.of("host_c", "host_d"));
+
+    assertThat(follower.getById(4)).isEqualTo("host_d");
+    assertThat(follower.getById(3)).isEqualTo("host_c");
+    assertThat(follower.size()).isEqualTo(4);
+
+    // ...and a third wave, to prove the trigger is the growth and not the reload count
+    writer.internAll(List.of("host_e"));
+    assertThat(follower.getById(5)).isEqualTo("host_e");
+  }
+
+  /**
    * An id beyond anything ever stored stays unresolvable, and does not send every subsequent lookup
    * back to the pages.
    */

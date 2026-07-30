@@ -137,9 +137,6 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   // Whether the in-RAM mapping has been rebuilt from the pages. A dictionary created in this session
   // starts loaded; one the component factory rebuilt at cold open does not.
   private volatile boolean loaded;
-  // Entry count at the last reload triggered by an unresolvable id, so a corrupt id cannot make every
-  // row of a scan re-read the pages. Guarded by this instance's monitor.
-  private          int     reloadedAtEntryCount = -1;
 
   // Serializes id assignment across the shards of this type. Contended only while a batch carries
   // values never seen before, which is the warm-up phase and nothing after it.
@@ -353,9 +350,15 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       return values[id];
 
     // An id inside what is already loaded is not a staleness miss, and reloading cannot conjure it.
-    // The same holds once a reload has already been attempted at this entry count: repeating it would
-    // re-read every page on every row of a scan carrying a corrupt id.
-    if (id < 0 || id <= entryCount || entryCount == reloadedAtEntryCount)
+    if (id < 0 || id <= entryCount)
+      return null;
+
+    // Reload only when the pages really do hold the id, which is what tells a stale map apart from a
+    // corrupt id: without this a scan carrying a corrupt id would re-read every page on every row.
+    // The test is against the count stored in the header - one already-cached page read - and not
+    // against the last reload, because a leader interns for as long as it ingests: keying on the
+    // reload would self-heal for the first wave of ids and then never again.
+    if (id > peekStoredEntryCount())
       return null;
 
     try {
@@ -365,10 +368,33 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
           "Error reloading TimeSeries tag dictionary '%s' while resolving id %d: %s", e, getName(), id, e.getMessage());
       return null;
     }
-    reloadedAtEntryCount = entryCount;
 
     values = byId;
     return id < values.length ? values[id] : null;
+  }
+
+  /**
+   * Entry count as stored in the header page, which is what an id arriving from outside this instance
+   * has to be measured against. Read in a transaction of its own, like {@link #load()}, since this is
+   * reachable from inside a scan. A header that cannot be read degrades to the in-RAM count, so the
+   * caller declines to reload rather than reloading once per row.
+   */
+  private int peekStoredEntryCount() {
+    if (getTotalPages() == 0)
+      return entryCount;
+
+    database.begin();
+    try {
+      return database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize)
+          .readInt(HEADER_ENTRY_COUNT_OFFSET);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error reading the header of TimeSeries tag dictionary '%s': %s", e, getName(), e.getMessage());
+      return entryCount;
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
   }
 
   /**
@@ -412,11 +438,16 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
                 + "). A TAG column is meant to be low-cardinality; move a high-cardinality value to a FIELD, or raise "
                 + GlobalConfiguration.TIMESERIES_TAG_DICTIONARY_MAX_SIZE.getKey());
 
-      for (final String value : toAdd)
-        if (value.getBytes(StandardCharsets.UTF_8).length > TimeSeriesBucket.MAX_STRING_BYTES)
+      // Encoded once here and carried to the pages: a value is validated and written in the same bytes.
+      final List<byte[]> encoded = new ArrayList<>(toAdd.size());
+      for (final String value : toAdd) {
+        final byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > TimeSeriesBucket.MAX_STRING_BYTES)
           throw new IllegalArgumentException(
               "Tag value exceeds max length of " + TimeSeriesBucket.MAX_STRING_BYTES + " bytes for dictionary '"
                   + getName() + "'");
+        encoded.add(bytes);
+      }
 
       // Route through the wrapped database so the pages are shipped to followers under HA.
       final DatabaseInternal db = database.getWrappedDatabaseInstance();
@@ -426,7 +457,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       boolean ownTransaction = true;
       final int[] appended;
       try {
-        appended = appendEntries(db.getTransaction(), toAdd);
+        appended = appendEntries(db.getTransaction(), encoded);
         db.commit();
         ownTransaction = false;
       } catch (final Exception e) {
@@ -469,10 +500,10 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   // --- Private helpers ---
 
   /**
-   * Appends the values to the tail data page, spilling onto new pages so an entry is never split.
-   * Returns {@code { id assigned to the first value, resulting data page count }}.
+   * Appends the already UTF-8 encoded values to the tail data page, spilling onto new pages so an
+   * entry is never split. Returns {@code { id assigned to the first value, resulting data page count }}.
    */
-  private int[] appendEntries(final TransactionContext tx, final List<String> toAdd) throws IOException {
+  private int[] appendEntries(final TransactionContext tx, final List<byte[]> toAdd) throws IOException {
     final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
     int storedEntries = headerPage.readInt(HEADER_ENTRY_COUNT_OFFSET);
     int pages = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
@@ -489,9 +520,17 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       pageUsed = page.readInt(DATA_USED_BYTES_OFFSET);
     }
 
-    for (final String value : toAdd) {
-      final byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+    for (final byte[] bytes : toAdd) {
       final int needed = 2 + bytes.length;
+
+      // MAX_STRING_BYTES caps an entry at 258 bytes, so this can only fire on a configured page size
+      // far too small to host one. Checked rather than assumed: without it the write below would run
+      // off the end of a freshly allocated page.
+      if (needed > capacity)
+        throw new IllegalArgumentException(
+            "A tag value of " + bytes.length + " bytes does not fit a dictionary page of " + pageSize
+                + " bytes (capacity " + capacity + ") for '" + getName() + "'. Raise "
+                + GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getKey());
 
       if (page == null || pageUsed + needed > capacity) {
         if (page != null)
