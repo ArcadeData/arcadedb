@@ -19,6 +19,7 @@
 package com.arcadedb.partitioning;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -169,13 +170,34 @@ class PartitionedSecondaryIndexLookupTest extends TestHelper {
   }
 
   /**
+   * The property check is multiset equality, so a repeated property cannot stand in for a missing one: hashing
+   * {@code [org, org]} sums a different pair of values than placement did. No index declares a repeated property,
+   * so this is asserted straight against the strategy rather than through a query.
+   */
+  @Test
+  void aRepeatedLookupPropertyDoesNotPassForACompositePartition() {
+    final String typeName = "PartitionedCompositeDup";
+    createCompositeType(typeName);
+
+    final PartitionedBucketSelectionStrategy strategy =
+        (PartitionedBucketSelectionStrategy) database.getSchema().getType(typeName).getBucketSelectionStrategy();
+
+    assertThat(strategy.getBucketIdByKeys(List.of("org", "region"), new Object[] { "o-1", "r-1" }, false))
+        .as("the partition properties themselves must still resolve a bucket").isNotNegative();
+    assertThat(strategy.getBucketIdByKeys(List.of("region", "org"), new Object[] { "r-1", "o-1" }, false))
+        .as("a permutation hashes the same sum, so it must still resolve a bucket").isNotNegative();
+    assertThat(strategy.getBucketIdByKeys(List.of("org", "org"), new Object[] { "o-1", "o-1" }, false))
+        .as("a repeated property is not the partition set and must decline").isEqualTo(-1);
+    assertThat(strategy.getBucketIdByKeys(null, new Object[] { "o-1", "r-1" }, false))
+        .as("unverifiable properties must decline").isEqualTo(-1);
+  }
+
+  /**
    * Composite partition key. The full key must still prune and still find every row; a partial key is rejected
    * by the index contract itself, which is what keeps the "hash fewer values than placement did" case from ever
    * reaching the strategy through this entry point.
    */
-  @Test
-  void compositePartitionKeyLookupFindsTheRows() {
-    final String typeName = "PartitionedComposite";
+  private void createCompositeType(final String typeName) {
     database.transaction(() -> {
       database.getSchema().buildDocumentType().withName(typeName).withTotalBuckets(BUCKETS).create();
       database.command("sql", "CREATE PROPERTY " + typeName + ".org STRING");
@@ -183,6 +205,12 @@ class PartitionedSecondaryIndexLookupTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON " + typeName + "(org,region) UNIQUE");
       database.command("sql", "ALTER TYPE " + typeName + " BucketSelectionStrategy `partitioned('org','region')`");
     });
+  }
+
+  @Test
+  void compositePartitionKeyLookupFindsTheRows() {
+    final String typeName = "PartitionedComposite";
+    createCompositeType(typeName);
 
     database.transaction(() -> {
       for (int i = 0; i < TOTAL; i++)

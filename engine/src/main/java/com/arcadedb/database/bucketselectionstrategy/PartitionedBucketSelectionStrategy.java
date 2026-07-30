@@ -93,9 +93,6 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
 
   @Override
   public int getBucketIdByKeys(final List<String> lookupProperties, final Object[] keyValues, final boolean async) {
-    if (propertyNames == null)
-      return super.getBucketIdByKeys(lookupProperties, keyValues, async);
-
     // A record is placed by hashing THIS strategy's properties (see getBucketIdByRecord), so hashing the lookup
     // key only reaches the same bucket when the lookup covers exactly those properties. Anything else - another
     // index of the same type, or a partial key on a composite partition - hashes a different value set and would
@@ -116,9 +113,14 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
    * Whether {@code lookupProperties} is exactly this strategy's partition property set, with one key value each.
    * <p>
    * Order is deliberately NOT required: the hash both sides compute is a SUM over the per-value hash codes, which
-   * is commutative, so a permutation of the same properties reaches the same bucket. Membership is compared with
-   * nested scans rather than a Set - partition keys hold one to three properties, so this stays allocation-free on
-   * a lookup path that runs per query.
+   * is commutative, so a permutation of the same properties reaches the same bucket.
+   * <p>
+   * The comparison is multiset equality, not "every lookup property is also a partition property". The weaker test
+   * would accept a lookup on {@code [a, a]} against a partition of {@code [a, b]}, which sums a different pair of
+   * values than placement did and would prune to the wrong bucket. No index declares a repeated property today, so
+   * this is unreachable - but this method is the guard the whole fix rests on, so it enforces the invariant instead
+   * of assuming callers uphold it. Counting with nested scans rather than a Set keeps it allocation-free: partition
+   * keys hold one to three properties, and this runs on a per-query path.
    */
   private boolean coversPartitionProperties(final List<String> lookupProperties, final Object[] keyValues) {
     if (lookupProperties == null)
@@ -130,18 +132,20 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
       return false;
 
     for (int i = 0; i < size; i++) {
-      final String lookupProperty = lookupProperties.get(i);
-      boolean found = false;
-      for (int j = 0; j < size; j++)
-        if (propertyNames.get(j).equals(lookupProperty)) {
-          found = true;
-          break;
-        }
-      if (!found)
+      final String partitionProperty = propertyNames.get(i);
+      if (occurrencesOf(partitionProperty, lookupProperties) != occurrencesOf(partitionProperty, propertyNames))
         return false;
     }
 
     return true;
+  }
+
+  private static int occurrencesOf(final String property, final List<String> properties) {
+    int occurrences = 0;
+    for (int i = 0; i < properties.size(); i++)
+      if (properties.get(i).equals(property))
+        ++occurrences;
+    return occurrences;
   }
 
   @Override
