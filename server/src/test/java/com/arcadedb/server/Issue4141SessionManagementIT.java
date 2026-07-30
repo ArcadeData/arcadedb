@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +28,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.Map;
 
 import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,7 +36,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #4141 (ISO/IEC 39075 GQL, section 2): end-to-end HTTP test for Session Management. Proves a value set
  * with {@code SESSION SET $x = ...} is visible as {@code $x} to a later command in the same HTTP session, that
- * {@code SESSION RESET} clears it, and that {@code SESSION CLOSE} invalidates the session.
+ * {@code SESSION RESET} clears it, that {@code SESSION CLOSE} invalidates the session, and that a request
+ * arriving without the session header never inherits the session's parameters.
+ * <p>
+ * "Not visible" is asserted as the rejection of {@code $x} by name, not as a null result (issue #5501 / #5561):
+ * an unbound parameter is an error here as it is in Neo4j, and only a request for which the session's value was
+ * genuinely invisible can produce that error. A null result was the weaker signal, since a query that never
+ * consulted the session at all would produce it too.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -53,10 +61,11 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
       res = command(baseUrl, sessionId, "RETURN $threshold AS t");
       assertThat(res.getJSONArray("result").getJSONObject(0).getInt("t")).isEqualTo(21);
 
-      // SESSION RESET clears it: $threshold is now unbound, RETURN $threshold yields null.
+      // SESSION RESET clears it: $threshold is unbound again, so referencing it is rejected by name
+      // (issue #5501 / #5561). The rejection IS the proof that the value is gone - a null result would
+      // equally be produced by a query that never looked at the session at all.
       command(baseUrl, sessionId, "SESSION RESET");
-      res = command(baseUrl, sessionId, "RETURN $threshold AS t");
-      assertThat(res.getJSONArray("result").getJSONObject(0).isNull("t")).isTrue();
+      assertParameterMissing(commandError(baseUrl, sessionId, "RETURN $threshold AS t"), "threshold");
 
       // SESSION CLOSE invalidates the session: reusing the id afterwards is rejected.
       command(baseUrl, sessionId, "SESSION CLOSE");
@@ -73,9 +82,20 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
       command(baseUrl, sessionId, "SESSION SET $threshold = 21");
 
       // A request WITHOUT the session header must not inherit the session's parameters, even when it lands
-      // on the same pooled worker thread (session-bleed guard in DatabaseAbstractHandler).
-      final JSONObject res = commandNoSession(baseUrl, "RETURN $threshold AS t");
-      assertThat(res.getJSONArray("result").getJSONObject(0).isNull("t")).isTrue();
+      // on the same pooled worker thread (session-bleed guard in DatabaseAbstractHandler). $threshold is
+      // therefore unbound for this request and is rejected by name (issue #5501 / #5561): the error is the
+      // strongest available proof of non-inheritance, since it can only be raised when the session's 21 was
+      // invisible to the merge.
+      assertParameterMissing(commandErrorNoSession(baseUrl, "RETURN $threshold AS t"), "threshold");
+
+      // The same property stated without depending on the unbound-parameter policy at all: the non-session
+      // request binds its OWN $threshold and must see that value, never the session's 21.
+      final JSONObject res = commandNoSession(baseUrl, "RETURN $threshold AS t", Map.of("threshold", 7));
+      assertThat(res.getJSONArray("result").getJSONObject(0).getInt("t")).isEqualTo(7);
+
+      // The session is untouched by the request that shadowed the name: it still sees its own 21.
+      final JSONObject inSession = command(baseUrl, sessionId, "RETURN $threshold AS t");
+      assertThat(inSession.getJSONArray("result").getJSONObject(0).getInt("t")).isEqualTo(21);
 
       command(baseUrl, sessionId, "SESSION CLOSE");
     });
@@ -160,11 +180,12 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
     }
   }
 
-  private JSONObject commandNoSession(final String baseUrl, final String cypher) throws Exception {
+  private JSONObject commandNoSession(final String baseUrl, final String cypher, final Map<String, Object> params)
+      throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/command/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", basicAuth());
-    formatPayload(connection, "opencypher", cypher, null, new HashMap<>());
+    formatPayload(connection, "opencypher", cypher, null, params);
     connection.connect();
     try {
       final String response = readResponse(connection);
@@ -173,6 +194,37 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
     } finally {
       connection.disconnect();
     }
+  }
+
+  /**
+   * Posts a command expected to fail with a 400 and returns the parsed error body for the caller to identify.
+   * Asserting the status alone would not do: an unrelated 400 (a rejected payload, a lost session) would pass
+   * for the rejection the test is about.
+   */
+  private JSONObject commandError(final String baseUrl, final String sessionId, final String cypher) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/command/" + getDatabaseName()).openConnection();
+    connection.setRequestMethod("POST");
+    if (sessionId != null)
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+    connection.setRequestProperty("Authorization", basicAuth());
+    formatPayload(connection, "opencypher", cypher, null, new HashMap<>());
+    connection.connect();
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+      return new JSONObject(readError(connection));
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  private JSONObject commandErrorNoSession(final String baseUrl, final String cypher) throws Exception {
+    return commandError(baseUrl, null, cypher);
+  }
+
+  /** The error names the parameter the caller failed to bind, and carries Neo4j's wording for it. */
+  private static void assertParameterMissing(final JSONObject error, final String parameterName) {
+    assertThat(error.getString("exception")).isEqualTo(CommandParameterMissingException.class.getName());
+    assertThat(error.getString("detail")).contains("Expected parameter(s): " + parameterName);
   }
 
   private int commandResponseCode(final String baseUrl, final String sessionId, final String cypher) throws Exception {

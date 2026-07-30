@@ -75,5 +75,36 @@ Two related corrections:
 A batch that fails still connects the incoming edges of what it already committed before it answers, because
 skipping that would leave persisted edges without back-pointers. On a large load that pass takes a while, so
 it now says so in the log rather than looking like a fresh hang.
+### Breaking Changes
+
+#### Cypher: an unbound `$parameter` is now an error, not null
+
+A Cypher query that references a `$name` the caller never bound used to evaluate it to null. Null is a legal
+value everywhere, so the query ran to completion against a value nobody supplied: a filter matched nothing, a
+predicate came out false, and each caller absorbed that into its neutral answer. A de-duplicating
+
+```cypher
+WHERE NOT EXISTS { MATCH (a)-[:E {id: $id}]->(b) } CREATE ...
+```
+
+guard degraded into an unconditional `CREATE` rather than failing. ArcadeDB now raises the same error Neo4j
+does, with the same wording ([#5501](https://github.com/ArcadeData/arcadedb/issues/5501),
+[#5561](https://github.com/ArcadeData/arcadedb/issues/5561)):
+
+```
+Expected parameter(s): id
+```
+
+- **HTTP** answers `400` with `exception: com.arcadedb.exception.CommandParameterMissingException`.
+- **Bolt** answers Neo4j's own `Neo.ClientError.Statement.ParameterMissing`, not `SyntaxError`: the query text
+  is valid, only the value is missing, and drivers key off that distinction.
+- **Bound to null is not unbound.** A caller that explicitly passes `null` means it, and the query runs.
+- **`EXPLAIN` is exempt**, as in Neo4j - inspecting a plan before the values are known is the point of it.
+  `PROFILE` executes, so it is not exempt.
+- **`SESSION SET $x = ...` counts as a binding** for every later statement on that session, and `SESSION RESET`
+  / `SESSION CLOSE` unbind it again. A request that arrives without its session does not inherit the session's
+  parameters and will therefore report them missing rather than silently reading null.
+
+To keep the old behaviour for a specific query, bind the name explicitly to `null`.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

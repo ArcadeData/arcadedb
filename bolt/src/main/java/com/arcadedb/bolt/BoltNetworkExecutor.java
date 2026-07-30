@@ -39,6 +39,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.NeedRetryException;
@@ -1760,11 +1761,16 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Classify a query-parsing error into a Bolt status code. {@link CommandSemanticException} marks a
-   * statement that parsed correctly but violates a semantic rule (e.g. an undefined variable), so it maps
-   * to Neo4j's SemanticError; every other {@link CommandParsingException} is a genuine syntax error.
+   * Classify a query-parsing error into a Bolt status code. {@link CommandParameterMissingException} marks a
+   * statement whose text is fine but whose {@code $parameter} the client never bound, and Neo4j gives that
+   * its own ParameterMissing title - keep it distinct so a driver can tell "fix the query" from "send the
+   * value". {@link CommandSemanticException} marks a statement that parsed correctly but violates a semantic
+   * rule (e.g. an undefined variable), so it maps to Neo4j's SemanticError; every other
+   * {@link CommandParsingException} is a genuine syntax error.
    */
   static String classifyParsingError(final CommandParsingException error) {
+    if (error instanceof CommandParameterMissingException)
+      return BoltErrorCodes.PARAMETER_MISSING_ERROR;
     return error instanceof CommandSemanticException ? BoltErrorCodes.SEMANTIC_ERROR : BoltErrorCodes.SYNTAX_ERROR;
   }
 
