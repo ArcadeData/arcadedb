@@ -252,7 +252,10 @@ public class PostgresQuotedIdentifierRewriter {
     out.append('`');
     for (int k = 0; k < identifier.length(); k++) {
       final char c = identifier.charAt(k);
-      if (c == '`')
+      // inside a back-tick identifier a backslash escapes the character that follows it, so both characters have to be escaped:
+      // leaving a backslash bare would make the engine read `My\Type` as MyType, and one before the closing back-tick would
+      // consume it
+      if (c == '`' || c == '\\')
         out.append('\\');
       out.append(c);
     }

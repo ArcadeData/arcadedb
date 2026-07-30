@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.*;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -303,9 +304,7 @@ public class ArcadeGraph implements Graph, Closeable {
       for (final Bucket b : buckets) {
         if (i > 0)
           query.append(", ");
-        query.append("`");
-        query.append(b.getName());
-        query.append("`");
+        query.append(Identifier.quote(b.getName()));
         ++i;
       }
       query.append("]");
@@ -371,9 +370,7 @@ public class ArcadeGraph implements Graph, Closeable {
       for (final Bucket b : buckets) {
         if (i > 0)
           query.append(", ");
-        query.append("`");
-        query.append(b.getName());
-        query.append("`");
+        query.append(Identifier.quote(b.getName()));
         ++i;
       }
       query.append("]");

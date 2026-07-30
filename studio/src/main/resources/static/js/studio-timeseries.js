@@ -659,7 +659,7 @@ function tsDropType() {
       jQuery.ajax({
         type: "POST",
         url: "api/v1/command/" + db,
-        data: JSON.stringify({ language: "sql", command: "DROP TYPE `" + typeName + "` IF EXISTS" }),
+        data: JSON.stringify({ language: "sql", command: "DROP TYPE " + quoteSqlName(typeName) + " IF EXISTS" }),
         contentType: "application/json",
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);
@@ -702,7 +702,7 @@ function tsAddDownsamplingPolicy(typeName) {
       return;
     }
 
-    var command = "ALTER TIMESERIES TYPE `" + typeName + "` ADD DOWNSAMPLING POLICY";
+    var command = "ALTER TIMESERIES TYPE " + quoteSqlName(typeName) + " ADD DOWNSAMPLING POLICY";
     for (var i = 0; i < tiers.length; i++)
       command += " AFTER " + tiers[i].after + " " + tiers[i].afterUnit + " GRANULARITY " + tiers[i].gran + " " + tiers[i].granUnit;
 
@@ -751,7 +751,7 @@ function tsDropDownsamplingPolicy(typeName) {
       jQuery.ajax({
         type: "POST",
         url: "api/v1/command/" + db,
-        data: JSON.stringify({ language: "sql", command: "ALTER TIMESERIES TYPE `" + typeName + "` DROP DOWNSAMPLING POLICY" }),
+        data: JSON.stringify({ language: "sql", command: "ALTER TIMESERIES TYPE " + quoteSqlName(typeName) + " DROP DOWNSAMPLING POLICY" }),
         contentType: "application/json",
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);

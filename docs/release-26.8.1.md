@@ -5,6 +5,50 @@ they land during the 26.8.1 development cycle, so the release notes are ready at
 
 ### Fixes
 
+#### MongoDB protocol: field names and filter values can no longer inject SQL
+
+A MongoDB command is translated into a SQL statement, and the field names and values taken off the wire were
+embedded in it without escaping. Both could close their own quoting and append clauses of their own, so any
+client able to send an `update` or `delete` could rewrite the statement it was translated into:
+
+- A filter **value** containing a single quote closed the string literal, so
+  `updateMany({name: "v1' OR 'x' = 'x"}, ...)` produced `WHERE name = 'v1' OR 'x' = 'x'` and updated **every**
+  document instead of the intended one.
+- A `$unset` or `$inc` **field name** containing a back-tick closed the identifier and named further properties,
+  so a single crafted key removed a property the client never asked for.
+- A filter **field name** was appended unquoted and could introduce a predicate of its own.
+
+Values are now escaped for the literal they sit in and every field name is back-tick quoted, one dot-separated
+segment at a time so that navigation into an embedded document keeps working.
+
+#### Back-tick quoted names containing a backslash are no longer mis-parsed
+
+A schema object name may contain a back-tick or a backslash, and the SQL spelling of such a name escapes it with
+a leading backslash. Escaping the back-tick but not the backslash left that encoding ambiguous, with two
+consequences.
+
+A name that arrived already escaped was escaped a second time, so the spelling grew one backslash on every
+parse and re-emission and the name no longer resolved:
+
+```sql
+-- the type named a`b
+SELECT FROM `a\`b`
+-- re-emitted as `a\\`b`, and addressing the type reported: Type with name 'a\`b' was not found
+```
+
+A name ending in a backslash left the closing back-tick indistinguishable from an escaped one, so the quoted
+token ran past the end of the name and absorbed the SQL that followed it:
+
+```sql
+-- SET ` is consumed into the type name instead of parsing as a clause
+UPDATE `T\` SET `v` = 1
+```
+
+The same applied to a bucket or index addressed through a `schema:<kind>:<name>` target.
+
+Both are fixed: a backslash now escapes the character that follows it, in the lexer and in the quoting applied
+by the engine and by the Studio, so the encoding is unambiguous in both directions.
+
 #### Concurrent writes to unrelated records of the same page no longer conflict
 
 ArcadeDB detects write conflicts per *page*, so two transactions that touched the same bucket page raised a
@@ -124,6 +168,26 @@ $ ls -l <database>/dictionary.*.dict
 remains downgradable.
 
 ### Breaking Changes
+
+#### SQL: inside a back-tick quoted name a backslash escapes the next character
+
+A backslash used to stand for itself unless it preceded a back-tick, so a name carrying one could be written
+bare. It now always escapes the character that follows it, which is what makes the closing back-tick
+unambiguous, and a literal backslash has to be doubled:
+
+```sql
+-- before
+SELECT FROM `C:\data`
+-- now
+SELECT FROM `C:\\data`
+```
+
+A single backslash immediately before the closing back-tick escapes it, so the name is left unterminated and
+the statement is rejected rather than silently absorbing what follows. Only names that actually contain a
+backslash are affected; every other quoted name, including one containing an escaped back-tick, is unchanged.
+
+The Postgres wire protocol already read back-tick identifiers this way; it now also writes them this way, so a
+double-quoted Postgres name carrying a backslash survives the translation instead of losing it.
 
 #### Cypher: an unbound `$parameter` is now an error, not null
 
