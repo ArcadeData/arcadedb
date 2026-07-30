@@ -566,6 +566,41 @@ public enum GlobalConfiguration {
       "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. 0 = disabled",
       Integer.class, 10),
 
+  INDEX_BLOOM_FILTER_RATE("arcadedb.indexBloomFilterRate", SCOPE.DATABASE,
+      """
+      Target false-positive rate of the bloom filter an index compaction writes for each compacted series of an LSM \
+      index, letting a point lookup skip a series that provably cannot hold the key without reading any of its pages. \
+      Default 0.01 (1%), enabled. Set to 0 to disable.
+      WHAT IT DOES. A lookup walks every compacted series from newest to oldest. A series' root page already rules out \
+      a key outside its key RANGE, but not a key inside the range that the series simply does not hold - so without a \
+      filter that series still costs a root-page search and a data-page read to discover nothing. The filter answers \
+      that question from a single 8 KB page instead.
+      WHEN IT HELPS. Most when the compacted series OVERLAP in key range, which is what any key that does not arrive \
+      already sorted produces: an email, a UUID, a business id. The extreme case is a bulk load into a UNIQUE index, \
+      where the duplicate check for every incoming record misses in every series by definition. Measured on 2M keys \
+      over 9 series: absent-key lookups about 2x faster and 2x fewer pages read; keys that ARE present also gain, \
+      because a key lives in one series and the filters spare the reader the others.
+      WHEN IT DOES NOT. Keys inserted in ascending order (a counter, a timestamp) give each series a disjoint key \
+      slice that its root page already rules out for free, leaving the filters little to save. Range scans and cursors \
+      never consult them at all: a filter can answer for one key, never for an interval.
+      WHAT IT COSTS. About 1.2 bytes per key on disk at 1% (roughly 3% of the index it describes), in a separate \
+      '<index>_bf.bfidx' paginated component alongside the compacted index. A false positive costs only the page read \
+      that would have happened anyway. During compaction it holds 8 bytes of transient heap per key of the series \
+      being written. Lower rates cost more bytes and more probes per lookup; higher rates save space and read more \
+      series. Below roughly 0.001 the extra bytes stop paying for themselves.
+      OPERATIONAL NOTES. Filters are written by compaction only, so an existing index gains them at its next \
+      compaction and never needs a rebuild. They are replicated over HA and included in backups like any other \
+      component, and are dropped with the index. An older ArcadeDB does not recognise the file and ignores it, so \
+      downgrading is safe for reading - but a downgraded build compacts without maintaining the filters, so prefer \
+      running a full compaction (or this setting at 0) if you downgrade and come back. \
+      A directory page holds ~255 series; beyond that further series are published without a filter until a full \
+      compaction collapses the count, which the default arcadedb.indexCompactionFullSeriesThreshold=10 does long \
+      before it can happen. Watch 'bloomSkippedSeries' and 'bloomProbedSeries' in the index statistics to see what \
+      the filters are actually saving.
+      DISABLING. 0 stops new filters being written immediately and stops existing ones being consulted from the next \
+      database open. Lookups then behave exactly as they did before the feature existed.""",
+      Float.class, 0.01f),
+
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
       Maximum number of vector locations to cache in memory per vector index. \
