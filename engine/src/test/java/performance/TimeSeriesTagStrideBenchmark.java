@@ -33,31 +33,38 @@ import java.util.Locale;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Isolates what a tag-heavy TimeSeries schema actually pays on ingest (issue #5519).
+ * Isolates what a tag-heavy TimeSeries schema pays on ingest, and now guards the fix (issue #5519).
  * <p>
- * {@code TimeSeriesBucket.calculateRowSize()} reserves {@code 2 + MAX_STRING_BYTES} = 258 bytes of row
- * stride for every STRING column, while {@code writeStringValue()} stores the row packed. Only the
- * stride assumes the maximum, and the stride is what positions the row inside the page, so short tag
- * values are spread across a page that is almost entirely unwritten padding.
+ * <b>What this measured before the fix.</b> {@code TimeSeriesBucket.calculateRowSize()} reserved
+ * {@code 2 + MAX_STRING_BYTES} = 258 bytes of row stride for every STRING column while
+ * {@code writeStringValue()} stored the row packed. Only the stride assumed the maximum, and the
+ * stride is what positions the row inside the page, so short tag values were spread across a page
+ * that was almost entirely unwritten padding: a 2612-byte stride, 25 rows per 64 KB page, and 24x
+ * page and WAL amplification.
  * <p>
- * Three arms, each appending the same number of rows, differing in exactly one thing:
+ * <b>What it measures now.</b> TAG STRING columns are dictionary-encoded into a 4-byte id, so the
+ * same schema has a 72-byte stride and ~900 rows per page. The arms are unchanged, which is the
+ * point - the same three measurements now tell the opposite story:
  * <ol>
  *   <li>{@code WideStride} - the TSBS cpu-only shape: 10 STRING tags of ~8 chars plus 3 DOUBLE fields.</li>
- *   <li>{@code WideStrideBigValues} - the same schema with 200-char tag values. Twenty times more string
- *       bytes are encoded and copied per row, and the stride is unchanged. Isolates encoding cost.</li>
- *   <li>{@code NarrowStride} - the same tag text joined into one STRING column. Identical content, one
- *       ninth the stride. Isolates page traffic.</li>
+ *   <li>{@code WideStrideBigValues} - the same schema with 200-char tag values. Before, this proved the
+ *       encode loop was not the cost, because twenty times more string bytes at the same stride was
+ *       free. Now it is free for a second reason: each distinct value is interned once and the row
+ *       stores an id, so the tag length has stopped mattering at all.</li>
+ *   <li>{@code NarrowStride} - the same tag text joined into one STRING column. It used to have one
+ *       ninth the stride of arm 1; it now has half (36 bytes against 72), because what separates them
+ *       is nine extra 4-byte ids rather than nine 258-byte reservations.</li>
  * </ol>
- * Arm 2 costs about the same as arm 1 and arm 3 is several times faster, which is the finding: on a
- * tag-heavy schema the ingest is paying for pages, not for encoding. Backs the numbers quoted on #5519
- * and on issue #5474; when the tag dictionary of #5519 lands, arm 1 should converge towards arm 3.
+ * Arm 1 has converged towards arm 3, which is what the fix promised on #5519. The remaining gap is
+ * the real cost of nine more columns - nine more dictionary lookups and 36 more bytes per row - not
+ * padding. The assertions below are the regression guard: they now pin the absence of amplification
+ * rather than its presence, so a change that reintroduces a padded stride fails here.
  * <p>
  * Run explicitly with
  * {@code ./mvnw -pl engine -Dtest=TimeSeriesTagStrideBenchmark -Dgroups=benchmark test}.
  * Override the batch size with {@code -Darcadedb.tagStrideBenchmark.rows=50000} to reproduce the batch
- * size quoted on those issues. The default is deliberately smaller: at the default 64 KB page size a
- * wide-stride arm writes {@code rows / 25} pages per batch, so 50k rows costs roughly 1 GB under
- * {@code target/} across the three arms.
+ * size quoted on those issues. That used to cost roughly 1 GB under {@code target/} across the three
+ * arms; with the padding gone it costs about 40x less.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -100,19 +107,31 @@ class TimeSeriesTagStrideBenchmark extends TestHelper {
       arm.report();
     System.out.println();
 
-    // The finding, stated as the two orderings that survive re-running on other hardware.
+    // Timing orderings that survive re-running on other hardware.
 
-    // Twenty times more string bytes per row, same stride: encoding is not what ingest is paying for.
+    // Twenty times more string bytes per row: a value is interned once and the row carries an id, so
+    // the length of a tag no longer reaches the write path at all.
     assertThat(wideBig.medianNanos()).isLessThan(wide.medianNanos() * 2);
 
-    // Same tag content, one ninth of the stride: page traffic is.
-    assertThat(narrow.medianNanos() * 2).isLessThan(wide.medianNanos());
+    // Nine fewer tag columns is still nine fewer lookups and 36 fewer bytes per row, so the one-tag
+    // arm stays ahead - but by a factor, not by the order of magnitude the padding used to cost.
+    assertThat(narrow.medianNanos()).isLessThan(wide.medianNanos());
 
-    // Structural rather than timing-based, so these hold on any host: a page holds an order of
-    // magnitude fewer rows once ten tag columns each reserve 258 bytes they do not use.
+    // Structural rather than timing-based, so these hold on any host.
+
+    // Tag length does not move the stride in either direction.
     assertThat(wide.rowsPerPage()).isEqualTo(wideBig.rowsPerPage());
-    assertThat(wide.rowsPerPage() * 8).isLessThan(narrow.rowsPerPage());
-    assertThat(wide.pageTrafficAmplification()).isGreaterThan(10);
+
+    // The fix, stated as a number: a 64 KB page holds hundreds of ten-tag rows. It held 25.
+    assertThat(wide.rowsPerPage()).isGreaterThan(500);
+
+    // And the two arms have converged. Before the dictionary the one-tag arm fitted nine times more
+    // rows per page; the gap is now the four bytes per extra tag and nothing else.
+    assertThat(narrow.rowsPerPage()).isLessThan(wide.rowsPerPage() * 3);
+
+    // No amplification left: a page carries less than the naive inline encoding of the rows in it,
+    // where it used to carry more than ten times as much.
+    assertThat(wide.pageTrafficAmplification()).isLessThan(1.5);
   }
 
   private static String tenTagColumns() {
@@ -226,15 +245,19 @@ class TimeSeriesTagStrideBenchmark extends TestHelper {
      * How many bytes of page are moved, through the buffer pool and through the WAL, for every byte of
      * sample data actually stored. The WAL ships the whole used region of each page because
      * {@code MutablePage.MAX_MODIFIED_RANGES} is 8 and the row writes are scattered at stride distance.
+     * <p>
+     * A ratio, not an integer count: dictionary-encoded tags take the wide arm below 1.0, and rounding
+     * that to zero would read as "no page traffic" rather than "less page traffic than payload".
      */
-    private long pageTrafficAmplification() {
-      return pageTrafficBytesPerBatch() / payloadBytesPerBatch;
+    private double pageTrafficAmplification() {
+      return (double) pageTrafficBytesPerBatch() / payloadBytesPerBatch;
     }
 
     private void report() {
       System.out.printf(Locale.ROOT, "%-22s %8d %11d %10d %12s %18s %8.1f%n", name, bucket.getRowSize(), rowsPerPage(),
           pagesPerBatch(), format(payloadBytesPerBatch),
-          format(pageTrafficBytesPerBatch()) + " (" + pageTrafficAmplification() + "x)", medianNanos() / 1_000_000.0);
+          format(pageTrafficBytesPerBatch()) + String.format(Locale.ROOT, " (%.1fx)", pageTrafficAmplification()),
+          medianNanos() / 1_000_000.0);
     }
 
     private String format(final long bytes) {

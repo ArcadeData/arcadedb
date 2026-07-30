@@ -37,6 +37,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
+import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -150,6 +151,8 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(SparseSegmentComponent.FILE_EXT,
         new SparseSegmentComponent.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(TimeSeriesTagDictionary.DICT_EXT,
+        new TimeSeriesTagDictionary.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(HashIndexBucket.UNIQUE_INDEX_EXT,
         new HashIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(HashIndexBucket.NOTUNIQUE_INDEX_EXT,

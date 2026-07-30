@@ -124,7 +124,14 @@ class Issue5416DescendingTailTest extends TestHelper {
     // page is examined, and every older page is dropped on its header alone.
     assertThat(metrics.getMaterializedRows()).isLessThanOrEqualTo(4);
     assertThat(metrics.getScannedPages()).isLessThanOrEqualTo(2);
-    assertThat(metrics.getSkippedPages()).isGreaterThan(100);
+
+    // Every page the walk reached was either scanned or skipped: nothing was left unaccounted for,
+    // which is what "dropped on its header alone" means. Derived from the stride rather than
+    // hard-coded, because how many pages 80k rows occupy is a property of the row format - dictionary
+    // -encoding the host tag took this schema from a 274-byte stride to 20 (issue #5519).
+    final int rowsPerPage = engine.getShard(0).getMutableBucket().getMaxSamplesPerPage();
+    final int dataPages = (20_000 * TAGS + rowsPerPage - 1) / rowsPerPage;
+    assertThat(metrics.getScannedPages() + metrics.getSkippedPages()).isEqualTo(dataPages);
   }
 
   /**

@@ -33,6 +33,7 @@ import com.arcadedb.schema.Type;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -60,7 +61,16 @@ import java.util.Set;
  * - [2..9]   min timestamp in page (long)
  * - [10..17] max timestamp in page (long)
  * - [18..]   row data: fixed-size rows [timestamp(8)|col1|col2|...]
- *            For STRING columns: 2-byte length prefix + up to MAX_STRING_BYTES payload
+ *            TAG STRING columns: a 4-byte {@link TimeSeriesTagDictionary} id (format version 1)
+ *            other STRING columns: 2-byte length prefix + up to MAX_STRING_BYTES payload
+ * <p>
+ * <b>Format versions.</b> Version 0 stored every STRING column inline and reserved
+ * {@code 2 + MAX_STRING_BYTES} for it in the stride, so a ten-tag row cost 2612 bytes of stride to
+ * carry ~110 bytes of payload: 25 rows per 64 KB page and 24x page and WAL amplification (issue
+ * #5519). Version 1 dictionary-encodes TAG STRING columns into a fixed 4-byte id, taking the same
+ * schema to a 72-byte stride and ~900 rows per page. Both layouts are readable; which one a bucket
+ * uses is decided by whether a dictionary was handed to it, which the schema's
+ * {@code mutableFormatVersion} determines, so a database written by an older build keeps working.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -68,8 +78,23 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   public static final  String BUCKET_EXT       = "tstb";
   public static final  int    MAX_STRING_BYTES = 256;
-  public static final  int    CURRENT_VERSION  = 0;
-  private static final int    MAGIC_VALUE      = 0x54534243; // "TSBC"
+
+  /**
+   * Mutable row format that stores TAG STRING columns inline, reserving the maximum width per row.
+   */
+  public static final int VERSION_INLINE_TAGS = 0;
+
+  /**
+   * Mutable row format that stores TAG STRING columns as a 4-byte tag-dictionary id (issue #5519).
+   */
+  public static final int VERSION_DICTIONARY_TAGS = 1;
+
+  public static final  int CURRENT_VERSION = VERSION_DICTIONARY_TAGS;
+  /**
+   * Width of a dictionary-encoded TAG column in the row stride.
+   */
+  private static final int DICT_ID_SIZE    = 4;
+  private static final int MAGIC_VALUE     = 0x54534243; // "TSBC"
 
   // Header page offsets (from PAGE_HEADER_SIZE)
   private static final int HEADER_MAGIC_OFFSET            = 0;
@@ -95,6 +120,14 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private int                    rowSize; // fixed row size in bytes
   // Value-column kinds, resolved with rowSize so the boxed append path does not rebuild them per call.
   private byte[]                 columnKinds;
+  // Per-type tag dictionary, or null for a format-version-0 bucket that stores tags inline. Not final:
+  // a cold open builds a column-less stub through the component factory, and the shard supplies both
+  // the columns and the dictionary once the type is known.
+  private TimeSeriesTagDictionary tagDictionary;
+  // Indexed by the ordinal among non-timestamp columns: whether that column is a 4-byte dictionary id.
+  private boolean[]                     dictEncoded;
+  // The ordinals of the dictionary-encoded columns, so the ingest path can walk only those.
+  private int[]                         dictColumns;
 
   /**
    * Factory handler for loading existing .tstb files during schema load.
@@ -104,20 +137,30 @@ public class TimeSeriesBucket extends PaginatedComponent {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
         final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new TimeSeriesBucket(database, name, filePath, id, new ArrayList<>());
+      return new TimeSeriesBucket(database, name, filePath, id, new ArrayList<>(), null);
     }
   }
 
   /**
-   * Creates a new TimeSeries bucket.
+   * Creates a new TimeSeries bucket storing tags inline (format version 0).
    */
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath,
       final List<ColumnDefinition> columns) throws IOException {
+    this(database, name, filePath, columns, null);
+  }
+
+  /**
+   * Creates a new TimeSeries bucket.
+   *
+   * @param tagDictionary per-type tag dictionary, or {@code null} to store TAG STRING columns inline
+   *                      as format version 0 did
+   */
+  public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath,
+      final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary) throws IOException {
     super(database, name, filePath, BUCKET_EXT, ComponentFile.MODE.READ_WRITE,
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
-    this.columns = columns;
-    this.rowSize = calculateRowSize(columns);
-    this.columnKinds = ObjectColumnsRowSource.kindsOf(columns);
+    this.tagDictionary = tagDictionary;
+    resolveLayout(columns);
     // Note: initHeaderPage() is NOT called here.
     // TimeSeriesShard calls it in a self-contained nested transaction after registering the
     // bucket with the schema, so the nested TX commit can resolve the file by its ID.
@@ -127,21 +170,69 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * Opens an existing TimeSeries bucket.
    */
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
-      final List<ColumnDefinition> columns) throws IOException {
+      final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary) throws IOException {
     super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
-    this.columns = columns;
-    this.rowSize = calculateRowSize(columns);
-    this.columnKinds = ObjectColumnsRowSource.kindsOf(columns);
+    this.tagDictionary = tagDictionary;
+    resolveLayout(columns);
   }
 
   /**
-   * Sets column definitions (called during cold open after the factory handler creates a stub bucket).
+   * Sets column definitions and the tag dictionary together, which is what a cold open needs: the
+   * factory handler builds a stub with neither, and both have to be in place before the row layout is
+   * resolved or the stride would be computed for the wrong format version. Passing them separately is
+   * deliberately not possible - the stride and the dictionary have to agree.
    */
-  public void setColumns(final List<ColumnDefinition> columns) {
+  public void setColumns(final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary) {
+    this.tagDictionary = tagDictionary;
+    resolveLayout(columns);
+  }
+
+  /**
+   * Resolves everything the row format derives from the columns: the stride, the boxed-append kind
+   * table, and which columns are dictionary-encoded. Doing it once here is what lets the read and
+   * write loops decide a column's width with an array lookup instead of re-deriving it per value.
+   */
+  private void resolveLayout(final List<ColumnDefinition> columns) {
     this.columns = columns;
-    this.rowSize = calculateRowSize(columns);
     this.columnKinds = ObjectColumnsRowSource.kindsOf(columns);
+
+    int valueColumnCount = 0;
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        valueColumnCount++;
+
+    this.dictEncoded = new boolean[valueColumnCount];
+    int dictCount = 0;
+    int colIdx = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (isDictionaryEncoded(col)) {
+        dictEncoded[colIdx] = true;
+        dictCount++;
+      }
+      colIdx++;
+    }
+
+    this.dictColumns = new int[dictCount];
+    int d = 0;
+    for (int i = 0; i < valueColumnCount; i++)
+      if (dictEncoded[i])
+        dictColumns[d++] = i;
+
+    this.rowSize = calculateRowSize(columns);
+  }
+
+  /**
+   * A column is dictionary-encoded when a dictionary exists and the column is a STRING TAG. FIELD
+   * strings stay inline: a field is where high-cardinality text belongs, and interning it would grow
+   * the dictionary without bound.
+   */
+  private boolean isDictionaryEncoded(final ColumnDefinition col) {
+    return tagDictionary != null
+        && col.getRole() == ColumnDefinition.ColumnRole.TAG
+        && col.getDataType() == Type.STRING;
   }
 
   /**
@@ -176,6 +267,11 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int sampleCount = source.size();
     if (sampleCount == 0)
       return;
+
+    // Resolve tag ids first, before a single data page is touched. Interning commits its own nested
+    // transaction, so running it up front keeps the dictionary pages out of this transaction's page
+    // set and, with it, out of any MVCC conflict with the rows we are about to write.
+    internTagValues(source, sampleCount);
 
     final TransactionContext tx = database.getTransaction();
     final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
@@ -217,7 +313,11 @@ public class TimeSeriesBucket extends PaginatedComponent {
         // The width table decides, not the type name: a column with no fixed width is stored
         // length-prefixed, which is the only encoding the reader can walk past (issue #5475).
         final int fixedSize = col.getFixedSize();
-        if (fixedSize > 0)
+        if (dictEncoded[colIdx]) {
+          // Every value was interned above, so this lookup always resolves.
+          dataPage.writeInt(colOffset, tagDictionary.getId(source.getStringValue(i, colIdx)));
+          colOffset += DICT_ID_SIZE;
+        } else if (fixedSize > 0)
           colOffset += writeRawValue(dataPage, colOffset, fixedSize, source.getRawValue(i, colIdx));
         else
           colOffset += writeStringValue(dataPage, colOffset, col, source.getStringValue(i, colIdx));
@@ -242,6 +342,37 @@ public class TimeSeriesBucket extends PaginatedComponent {
     headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, totalSamples);
     headerPage.writeLong(HEADER_MIN_TS_OFFSET, minTs);
     headerPage.writeLong(HEADER_MAX_TS_OFFSET, maxTs);
+  }
+
+  /**
+   * Assigns a dictionary id to every tag value in the batch that does not already have one.
+   * <p>
+   * Steady state costs one lookup per distinct run of values and no transaction at all: a tag repeats
+   * heavily within a batch, so the per-column {@code lastSeen} reference check absorbs runs before the
+   * map is consulted, and after warm-up nothing is ever missing.
+   */
+  private void internTagValues(final TimeSeriesRowSource source, final int sampleCount) throws IOException {
+    if (dictColumns.length == 0)
+      return;
+
+    List<String> missing = null;
+    for (final int colIdx : dictColumns) {
+      String lastSeen = null;
+      for (int i = 0; i < sampleCount; i++) {
+        final String value = source.getStringValue(i, colIdx);
+        if (value == null || value.isEmpty() || value == lastSeen)
+          continue;
+        lastSeen = value;
+        if (tagDictionary.getId(value) == TimeSeriesTagDictionary.NO_ID) {
+          if (missing == null)
+            missing = new ArrayList<>();
+          missing.add(value);
+        }
+      }
+    }
+
+    if (missing != null)
+      tagDictionary.internAll(missing);
   }
 
   private static void flushDataPageHeader(final MutablePage page, final int samplesInPage, final long minTs, final long maxTs) {
@@ -408,11 +539,15 @@ public class TimeSeriesBucket extends PaginatedComponent {
     private final int      columnIndex;
     private final Set<?>   values;
     private final byte[][] utf8Values;
+    // Non-null only for a dictionary-encoded column: the candidates resolved to ids once, so the
+    // per-row test is an int compare against a tiny array.
+    private final int[]    dictIds;
 
-    private TagMatcher(final int columnIndex, final Set<?> values, final byte[][] utf8Values) {
+    private TagMatcher(final int columnIndex, final Set<?> values, final byte[][] utf8Values, final int[] dictIds) {
       this.columnIndex = columnIndex;
       this.values = values;
       this.utf8Values = utf8Values;
+      this.dictIds = dictIds;
     }
   }
 
@@ -431,6 +566,23 @@ public class TimeSeriesBucket extends PaginatedComponent {
       if (columnIndices != null && !isInArray(cond.columnIndex(), columnIndices))
         return null;
 
+      if (cond.columnIndex() >= 0 && cond.columnIndex() < dictEncoded.length && dictEncoded[cond.columnIndex()]) {
+        // Resolve the candidates to ids once. A candidate the dictionary has never seen cannot appear
+        // in any row, so it is dropped; if that leaves nothing, the condition is unsatisfiable and the
+        // whole filter can be answered without touching a page.
+        final int[] resolved = new int[cond.matchValues().size()];
+        int found = 0;
+        for (final Object value : cond.matchValues()) {
+          final int id = tagDictionary.getId(value == null ? null : value.toString());
+          if (id != TimeSeriesTagDictionary.NO_ID)
+            resolved[found++] = id;
+        }
+        if (found == 0)
+          return null;
+        matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), null, Arrays.copyOf(resolved, found));
+        continue;
+      }
+
       boolean allStrings = !cond.matchValues().isEmpty();
       for (final Object value : cond.matchValues())
         if (!(value instanceof String)) {
@@ -446,7 +598,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
           utf8Values[v++] = ((String) value).getBytes(StandardCharsets.UTF_8);
       }
 
-      matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), utf8Values);
+      matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), utf8Values, null);
     }
     return matchers;
   }
@@ -467,22 +619,34 @@ public class TimeSeriesBucket extends PaginatedComponent {
           target = col;
           break;
         }
-        colOffset += getColumnStorageSize(page, colOffset, col);
+        colOffset += getColumnStorageSize(page, colOffset, col, colIdx);
         colIdx++;
       }
 
       if (target == null)
         return false;
 
+      if (matcher.dictIds != null) {
+        // Dictionary-encoded: an int compare, no decode and no allocation.
+        if (!matchesDictId(page.readInt(colOffset), matcher.dictIds))
+          return false;
+      }
       // The byte comparison only applies to a STRING column: on any other type the leading bytes are
       // not a length prefix and the value has to be decoded.
-      if (matcher.utf8Values != null && target.getDataType() == Type.STRING) {
+      else if (matcher.utf8Values != null && target.getDataType() == Type.STRING) {
         if (!matchesUtf8(page, colOffset, matcher.utf8Values))
           return false;
-      } else if (!matcher.values.contains(readColumnValue(page, colOffset, target)))
+      } else if (!matcher.values.contains(readColumnValue(page, colOffset, target, colIdx)))
         return false;
     }
     return true;
+  }
+
+  private static boolean matchesDictId(final int id, final int[] candidates) {
+    for (final int candidate : candidates)
+      if (candidate == id)
+        return true;
+    return false;
   }
 
   /**
@@ -777,13 +941,23 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Returns the fixed stride, in bytes, that one sample occupies in a data page. Note that a row is
-   * <em>written</em> packed: a STRING column stores its actual bytes but reserves
-   * {@code 2 + MAX_STRING_BYTES} in the stride, so on a tag-heavy schema the stride is much wider than
-   * the row content (issue #5519).
+   * Returns the fixed stride, in bytes, that one sample occupies in a data page.
+   * <p>
+   * A dictionary-encoded TAG column contributes exactly {@code DICT_ID_SIZE}, so the stride matches
+   * what the row actually costs. An inline STRING column - any STRING FIELD, and every STRING column
+   * of a format-version-0 bucket - still reserves {@code 2 + MAX_STRING_BYTES} while writing itself
+   * packed, which is the amplification issue #5519 reported.
    */
   public int getRowSize() {
     return rowSize;
+  }
+
+  /**
+   * Returns the tag dictionary backing this bucket's TAG columns, or {@code null} for a
+   * format-version-0 bucket that stores them inline.
+   */
+  public TimeSeriesTagDictionary getTagDictionary() {
+    return tagDictionary;
   }
 
   /**
@@ -903,8 +1077,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
       for (int c = 0; c < columns.size(); c++) {
         if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
-        result[colIdx + 1] = readColumnValue(page, colOffset, columns.get(c));
-        colOffset += getColumnStorageSize(page, colOffset, columns.get(c));
+        result[colIdx + 1] = readColumnValue(page, colOffset, columns.get(c), colIdx);
+        colOffset += getColumnStorageSize(page, colOffset, columns.get(c), colIdx);
         colIdx++;
       }
     } else {
@@ -916,9 +1090,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
         if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
         if (isInArray(colIdx, columnIndices)) {
-          result[resultIdx++] = readColumnValue(page, colOffset, columns.get(c));
+          result[resultIdx++] = readColumnValue(page, colOffset, columns.get(c), colIdx);
         }
-        colOffset += getColumnStorageSize(page, colOffset, columns.get(c));
+        colOffset += getColumnStorageSize(page, colOffset, columns.get(c), colIdx);
         colIdx++;
       }
     }
@@ -931,7 +1105,11 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * {@link ColumnDefinition#boxRaw(long)} so the mutable and sealed layers cannot return different
    * Java types for the same declared column (issue #5475).
    */
-  private Object readColumnValue(final BasePage page, final int offset, final ColumnDefinition col) {
+  private Object readColumnValue(final BasePage page, final int offset, final ColumnDefinition col, final int colIdx) {
+    if (dictEncoded[colIdx])
+      // The shared String instance, so a scan of millions of rows no longer allocates one per tag.
+      return tagDictionary.getById(page.readInt(offset));
+
     final int fixedSize = col.getFixedSize();
     if (fixedSize > 0)
       return col.boxRaw(readRawValue(page, offset, fixedSize));
@@ -945,7 +1123,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
     return new String(bytes, StandardCharsets.UTF_8);
   }
 
-  private int getColumnStorageSize(final BasePage page, final int offset, final ColumnDefinition col) {
+  private int getColumnStorageSize(final BasePage page, final int offset, final ColumnDefinition col, final int colIdx) {
+    if (dictEncoded[colIdx])
+      return DICT_ID_SIZE;
     final int fixed = col.getFixedSize();
     if (fixed > 0)
       return fixed;
@@ -953,16 +1133,25 @@ public class TimeSeriesBucket extends PaginatedComponent {
     return 2 + (page.readShort(offset) & 0xFFFF);
   }
 
-  private static int calculateRowSize(final List<ColumnDefinition> columns) {
+  /**
+   * Sums the per-column widths the read and write loops walk. Must be called after {@link #dictEncoded}
+   * is resolved: the stride and the cursor advance have to agree column for column, or a row overruns
+   * its neighbours (the defect behind issue #5475).
+   */
+  private int calculateRowSize(final List<ColumnDefinition> columns) {
     int size = 8; // timestamp (always 8 bytes)
+    int colIdx = 0;
     for (final ColumnDefinition col : columns) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         continue;
       final int fixed = col.getFixedSize();
-      if (fixed > 0)
+      if (dictEncoded[colIdx])
+        size += DICT_ID_SIZE;
+      else if (fixed > 0)
         size += fixed;
       else
         size += 2 + MAX_STRING_BYTES; // max STRING: 2-byte length prefix + max payload
+      colIdx++;
     }
     return size;
   }

@@ -37,6 +37,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
+import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -155,6 +156,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMVectorIndexGraphFile.FILE_EXT,
       SparseSegmentComponent.FILE_EXT,
       TimeSeriesBucket.BUCKET_EXT,
+      TimeSeriesTagDictionary.DICT_EXT,
       HashIndexBucket.UNIQUE_INDEX_EXT,
       HashIndexBucket.NOTUNIQUE_INDEX_EXT);
 
