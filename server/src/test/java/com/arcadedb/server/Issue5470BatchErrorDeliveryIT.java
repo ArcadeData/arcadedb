@@ -408,6 +408,54 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
   }
 
   /**
+   * A payload that arrived IN FULL and was rejected on a record in the middle must not cost the connection. Its
+   * remainder is already buffered, so skipping it saves nothing and dropping a pooled connection on every rejected
+   * small batch would be a needless regression - the point of not draining is the upload that has not arrived, not
+   * the one that has. The second request over the same socket is the assertion.
+   */
+  @Test
+  void aRejectedButCompletePayloadKeepsItsConnection() throws Exception {
+    final StringBuilder payload = new StringBuilder();
+    appendVertices(payload, 995_000, 50);
+    // Fails here ...
+    payload.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"nonexistent-vertex\"}\n");
+    // ... with this much of the payload already sent and unread.
+    for (int i = 0; i < 10; i++)
+      payload.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"v1\"}\n");
+
+    final byte[] sent = payload.toString().getBytes(StandardCharsets.UTF_8);
+
+    try (final Socket socket = openSocket()) {
+      final OutputStream out = socket.getOutputStream();
+      final BufferedReader in = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+
+      // An exact Content-Length: the whole body is sent, and the load simply stops early inside it.
+      out.write(keepAliveRequestHeaders(sent.length).getBytes(StandardCharsets.US_ASCII));
+      out.write(sent);
+      out.flush();
+
+      final Response rejected = readOneResponse(in);
+      assertThat(rejected.status()).as("the rejection must arrive").isNotNull();
+      assertThat(rejected.status()).contains("400");
+      assertThat(rejected.body()).contains("nonexistent-vertex");
+
+      // Same socket, second request: only possible if the server consumed the remainder and kept the connection.
+      final StringBuilder good = new StringBuilder();
+      appendVertices(good, 996_000, 5);
+      final byte[] goodBytes = good.toString().getBytes(StandardCharsets.UTF_8);
+      out.write(keepAliveRequestHeaders(goodBytes.length).getBytes(StandardCharsets.US_ASCII));
+      out.write(goodBytes);
+      out.flush();
+
+      final Response reused = readOneResponse(in);
+      assertThat(reused.status()).as("a connection whose body was fully received must still be usable").isNotNull();
+      assertThat(reused.status()).contains("200");
+      assertThat(new JSONObject(reused.body()).getLong("verticesCreated")).isEqualTo(5);
+    }
+  }
+
+  /**
    * What must not regress: the request stream is no longer closed by the handler, so a load that reads its body to
    * the end has to leave the connection exactly as usable as before. Two batches over one socket prove it.
    */

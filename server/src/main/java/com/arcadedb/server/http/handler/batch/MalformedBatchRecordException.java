@@ -34,6 +34,14 @@ package com.arcadedb.server.http.handler.batch;
  * number of further bytes can change the verdict and the client is answered at once. Only the first kind is
  * ambiguous, and only the first kind is worth waiting to be sure about.
  * <p>
+ * The narrow cost of drawing the line here: a truncated tail that happens to remain <em>structurally</em> valid is
+ * no longer recognised as truncation. A CSV row cut inside its final field still satisfies the header's field count,
+ * so it parses, and the short value it carries fails later as content - an unknown temporary id, say - which is
+ * reported as a payload error (400) rather than a cut upload (408). The message is not wrong, and the alternative was
+ * worse: the previous code checked every failure and so mislabelled every genuine content error as truncation. A body
+ * cut on a record boundary is unaffected, because the records that did arrive are complete and the load ends
+ * normally, where the same check still runs.
+ * <p>
  * Both map to HTTP 400 for a payload that really is malformed: this stays an {@link IllegalArgumentException} so the
  * status mapping in {@code PostBatchHandler} is unchanged.
  *

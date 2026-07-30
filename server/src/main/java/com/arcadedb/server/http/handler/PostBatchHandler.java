@@ -161,6 +161,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   private static final int        MAX_PRESIZED_VERTICES      = 1 << 24;
   /** How far the tail of a short body is drained before deciding it is a live client rather than a cut upload. */
   private static final int        TRUNCATION_PROBE_BYTES     = 64 * 1024;
+  /**
+   * How much of an abandoned request body is consumed to keep its connection reusable. Only bytes that have already
+   * arrived are read (see {@link CountingInputStream#close()}), so this bounds work, not waiting: past it the
+   * connection is retired instead, because a bulk upload's remainder is not worth a keep-alive.
+   */
+  private static final int        MAX_ABANDONED_BODY_DRAIN   = 64 * 1024;
   private static final HttpClient HTTP_CLIENT                = HttpClient.newHttpClient();
 
   public PostBatchHandler(final HttpServer httpServer) {
@@ -468,6 +474,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       while (drained < TRUNCATION_PROBE_BYTES && inputStream.getBytesRead() < declaredLength) {
         // Undertow reports a finished request body as -1 available (not 0), which is the end-of-body signal this
         // probe is looking for; 0 means "more may still arrive", and waiting for it is what must not happen here.
+        // That -1 is Undertow's own convention, not the InputStream contract (which says >= 0), so it is worth
+        // knowing how it degrades: if a future version reported 0 at end of body instead, this returns false and a
+        // truncated upload is answered 400 naming the malformed record rather than 408 - a worse diagnosis, never a
+        // wrong success, and the common cases do not depend on it (a body whose end our own read() observed is
+        // already settled by isEndOfBody() above).
         final int available = inputStream.available();
         if (available < 0)
           return true;
@@ -637,11 +648,46 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * <p>
      * A body that WAS read to the end keeps the connection alive as before: there is nothing to drain, so an
      * ordinary client loading an ordinary payload sees no change.
+     * <p>
+     * Nor does a client whose payload had ALREADY ARRIVED when the load gave up on it - a small batch, fully sent,
+     * rejected on a record in the middle. Its remainder is sitting in a buffer, so it is consumed here without ever
+     * waiting for the network: the body reaches its end, the connection stays reusable, and - because the client is
+     * no longer mid-upload when the socket closes - the answer is not at risk of being lost to a reset. Only a
+     * remainder that has NOT arrived, or is larger than {@link #MAX_ABANDONED_BODY_DRAIN}, costs the connection.
      */
     @Override
     public void close() {
-      if (!endOfBody)
-        exchange.setPersistent(false);
+      if (endOfBody || drainWhatHasAlreadyArrived())
+        return;
+      exchange.setPersistent(false);
+    }
+
+    /**
+     * Consumes the rest of the request body if and only if it can be done without waiting for the network, and
+     * reports whether that reached the end of it. Never blocks: {@code available()} bounds every read, so the cost
+     * is what the server already holds, and a client that still owes bytes returns {@code false} at once.
+     */
+    private boolean drainWhatHasAlreadyArrived() {
+      final byte[] drain = new byte[8192];
+      long drained = 0;
+      try {
+        while (drained < MAX_ABANDONED_BODY_DRAIN) {
+          final int available = in.available();
+          if (available < 0)
+            return true;
+          if (available == 0)
+            return false;
+
+          final int read = read(drain, 0, Math.min(available, drain.length));
+          if (read < 0)
+            return true;
+          drained += read;
+        }
+      } catch (final IOException e) {
+        // The connection is already gone; there is nothing left to preserve it for.
+        return false;
+      }
+      return false;
     }
 
     long getBytesRead() {

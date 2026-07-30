@@ -59,8 +59,11 @@ server had reached in two minutes never left the machine, and the load looked li
 reason (issue #5470).
 
 The verdict is now delivered as soon as it is reached, because nothing about the remaining bytes can change
-it: the connection is marked non-persistent and the unread remainder is discarded rather than drained. A load
-that reads its body to the end keeps its connection reusable exactly as before.
+it: the unread remainder is discarded rather than drained, and the connection is retired instead. A load that
+reads its body to the end keeps its connection reusable exactly as before, and so does one whose payload had
+already fully arrived when it was rejected - a remainder that is merely sitting in a buffer is consumed
+without waiting for the network, so a client sending small batches does not lose its pooled connection every
+time one is refused. Only a remainder that has not arrived, or exceeds 64 KB, costs the connection.
 
 One consequence worth knowing: declining to read the rest of a body means closing a connection the client may
 still be writing to, and the TCP reset that follows can discard bytes the client had already received. A
@@ -82,6 +85,7 @@ Two related corrections:
 A batch that fails still connects the incoming edges of what it already committed before it answers, because
 skipping that would leave persisted edges without back-pointers. On a large load that pass takes a while, so
 it now says so in the log rather than looking like a fresh hang.
+
 ### Breaking Changes
 
 #### Cypher: an unbound `$parameter` is now an error, not null
