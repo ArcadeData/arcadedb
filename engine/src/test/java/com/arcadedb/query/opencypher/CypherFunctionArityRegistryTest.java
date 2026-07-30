@@ -42,6 +42,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>So every function whose argument count is not fixed is exercised here at each of its supported arities. A function
  * added with a wrong declaration fails the build rather than the user's query.
  *
+ * <p><b>What these tests cannot catch, and how it was covered instead.</b> A function declared with a *fixed* count that
+ * really accepts more - the shape the {@code distance} bug had - is invisible to a test that only calls each function at
+ * the counts it declares, and equally invisible to
+ * {@link #noRegisteredSignatureIsNarrowerThanWhatItsExecutorDeclares} when the executor leaves {@code getMinArgs()} and
+ * {@code getMaxArgs()} at their defaults. Deciding whether an extra argument is meaningful needs to read the function, so
+ * it was done once by hand: all 129 registered names were resolved to their executors (following the seven that reach a
+ * SQL function through {@code SQLFunctionBridge}, {@code distance} among them) and each executor's source was checked for
+ * the highest argument index it reads. Only {@code distance} reached past its declaration. Re-run that sweep when adding
+ * a function whose executor is not the obvious one.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CypherFunctionArityRegistryTest extends TestHelper {
