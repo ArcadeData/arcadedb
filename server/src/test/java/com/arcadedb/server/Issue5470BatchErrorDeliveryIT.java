@@ -24,13 +24,23 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.SequenceInputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
+import java.util.Enumeration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,10 +63,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>and the truncation probe was consulted for a failure truncation cannot cause, reporting a valid line of the
  *   user's file as "not part of the payload".</li>
  * </ul>
- * The first two tests therefore announce a large body and then never send the rest of it, so a server that insists on
- * having it cannot answer at all. The third keeps the upload flowing, which is the reported case. The last two guard
- * what must NOT change: a genuinely cut upload is still reported as truncated rather than blamed on the client, and a
- * load that succeeds still leaves its connection reusable.
+ * Most cases here announce a large body and then never send the rest of it, so a server that insists on having it
+ * cannot answer at all and the test times out - which is precisely the user's experience.
+ * {@link #aStreamingHttpClientReceivesTheErrorMidUpload} is the realistic shape: a real client streaming a large
+ * payload that keeps flowing while the server refuses it. The last cases guard what must NOT change - a genuinely cut
+ * upload is still reported as truncated rather than blamed on the client, and a load that succeeds still leaves its
+ * connection reusable.
+ * <p>
+ * Note on the two cases that write in a tight loop without reading: refusing to read a body means closing a
+ * connection the peer is still writing to, so those may observe a reset instead of the answer. They assert on what
+ * arrives, and on arriving PROMPTLY, never on the reset - see {@link #readResponseOrReset}. Delivery to a client that
+ * behaves normally is pinned by the {@code HttpClient} case instead.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -183,12 +200,11 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
       writer.start();
 
       try {
-        final Response response = readResponse(socket);
-
-        assertThat(response.status()).as("a client that is still uploading must still be told why the load failed")
-            .isNotNull();
-        assertThat(response.status()).contains("400");
-        assertThat(response.body()).contains("nonexistent-vertex");
+        final Response response = readResponseOrReset(socket);
+        if (response != null) {
+          assertThat(response.status()).contains("400");
+          assertThat(response.body()).contains("nonexistent-vertex");
+        }
       } finally {
         stopWriting.set(true);
         writer.join(RESPONSE_TIMEOUT_MS);
@@ -269,12 +285,12 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
       writer.start();
 
       try {
-        final Response response = readResponse(socket);
-
-        assertThat(response.status()).as("a live client sending a bad record must be answered").isNotNull();
-        assertThat(response.status()).as("the body did not end, so this is a 400 about the payload, not a 408")
-            .contains("400");
-        assertThat(response.body()).as("and it must name the line to fix").contains("line 21");
+        final Response response = readResponseOrReset(socket);
+        if (response != null) {
+          assertThat(response.status()).as("the body did not end, so this is a 400 about the payload, not a 408")
+              .contains("400");
+          assertThat(response.body()).as("and it must name the line to fix").contains("line 21");
+        }
       } finally {
         stopWriting.set(true);
         writer.join(RESPONSE_TIMEOUT_MS);
@@ -300,6 +316,95 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
     assertThat(response.status()).as("the server must not wait for bytes it cannot know are coming").isNotNull();
     assertThat(response.status()).contains("400");
     assertThat(response.body()).as("and must name the line to fix").contains("line 21");
+  }
+
+  /**
+   * The reported shape with a REAL client: a large payload streamed by {@link HttpClient}, failing part-way. This is
+   * the case the issue is about, and the one that has to deliver the diagnosis - an ordinary HTTP client reads the
+   * response while it uploads, so the server answering mid-upload reaches it.
+   * <p>
+   * Contrast with {@link #theErrorReachesAClientThatIsStillUploading}, which writes in a tight loop and never reads:
+   * that client can only observe a reset, because refusing to read a body means closing a connection the peer is
+   * still writing to. Which of the two a client behaves like decides whether it sees the 400 or the reset - and
+   * either way it no longer waits, and the server log always carries the exact line.
+   */
+  @Test
+  void aStreamingHttpClientReceivesTheErrorMidUpload() throws Exception {
+    // A body that fails at record 51 and then keeps going for far longer than the answer takes.
+    final InputStream body = new SequenceInputStream(new Enumeration<>() {
+      private int chunk;
+
+      @Override
+      public boolean hasMoreElements() {
+        return chunk < 20_000;
+      }
+
+      @Override
+      public InputStream nextElement() {
+        final StringBuilder text = new StringBuilder();
+        if (chunk++ == 0) {
+          appendVertices(text, 990_000, 50);
+          text.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"nonexistent-vertex\"}\n");
+        } else
+          for (int i = 0; i < 100; i++)
+            text.append("{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":999997}\n");
+        return new ByteArrayInputStream(text.toString().getBytes(StandardCharsets.UTF_8));
+      }
+    });
+
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create("http://127.0.0.1:2480/api/v1/batch/" + getDatabaseName()))
+        .header("Authorization", "Basic " + basicAuth())
+        .header("Content-Type", "application/x-ndjson")
+        .timeout(Duration.ofMillis(RESPONSE_TIMEOUT_MS))
+        .POST(HttpRequest.BodyPublishers.ofInputStream(() -> body))
+        .build();
+
+    try (final HttpClient client = HttpClient.newHttpClient()) {
+      final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+      assertThat(response.statusCode()).as("a streaming client must be told why its load was refused").isEqualTo(400);
+      assertThat(response.body()).as("and which record to fix").contains("nonexistent-vertex");
+    }
+  }
+
+  /**
+   * The production shape, and the only test that can see {@code exchange.setPersistent(false)} do its job.
+   * <p>
+   * Every other failing case here sends {@code Connection: close}, which makes the exchange non-persistent before
+   * the handler ever runs - so Undertow would not drain the remainder at {@code endExchange} whether or not the
+   * handler retired the connection itself. A real bulk loader uses a pooled client and sends no such header, and
+   * then the abandoned remainder is only skipped because the handler asked for it. Without that, Undertow keeps the
+   * connection alive, which means first reading the megabytes that are never coming.
+   */
+  @Test
+  void aFailedBatchOnAKeepAliveConnectionIsAnsweredAndTheConnectionRetired() throws Exception {
+    final StringBuilder payload = new StringBuilder();
+    appendVertices(payload, 980_000, 50);
+    payload.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"nonexistent-vertex\"}\n");
+    final byte[] sent = payload.toString().getBytes(StandardCharsets.UTF_8);
+
+    try (final Socket socket = openSocket()) {
+      final OutputStream out = socket.getOutputStream();
+      // Announces far more than it sends, and asks for keep-alive.
+      out.write(keepAliveRequestHeaders(sent.length + ANNOUNCED_EXTRA_BYTES).getBytes(StandardCharsets.US_ASCII));
+      out.write(sent);
+      out.flush();
+
+      final BufferedReader in = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      final Response response = readOneResponse(in);
+
+      assertThat(response.status()).as("a keep-alive client must be answered without the rest of its upload")
+          .isNotNull();
+      assertThat(response.status()).contains("400");
+      assertThat(response.body()).contains("nonexistent-vertex");
+
+      // A connection whose request body was abandoned cannot carry another request - the unread remainder would be
+      // read as the next request line - so the server has to retire it instead of keeping it alive.
+      assertThat(in.read()).as("the connection must be closed, not returned to the pool with an unread body")
+          .isEqualTo(-1);
+    }
   }
 
   /**
@@ -386,6 +491,26 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
   private String basicAuth() {
     return Base64.getEncoder()
         .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
+  }
+
+  /**
+   * Reads the answer to a request from a client that is writing in a tight loop and not reading until it is done -
+   * the worst case there is. Refusing to read a body means closing a connection the peer is still writing to, and
+   * the reset that follows discards whatever the kernel had already received, the answer included. So {@code null}
+   * (reset) is an accepted outcome and the caller asserts only on what it did receive.
+   * <p>
+   * What is NOT optional is that this returns promptly: a read timeout propagates and fails the test, which is the
+   * property these cases exist to pin. A client that reads while it uploads always gets the answer itself - see
+   * {@link #aStreamingHttpClientReceivesTheErrorMidUpload}, which is the realistic shape.
+   */
+  private Response readResponseOrReset(final Socket socket) throws IOException {
+    try {
+      final Response response = readResponse(socket);
+      return response.status() != null ? response : null;
+    } catch (final SocketException reset) {
+      // Reset by a server that has stopped reading: fast, and the reason is in the server log.
+      return null;
+    }
   }
 
   /** Reads a response whose end is the end of the stream ({@code Connection: close}). */

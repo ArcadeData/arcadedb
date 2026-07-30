@@ -88,6 +88,15 @@ import java.util.logging.Level;
  * content is final and reported at once. See {@link CountingInputStream#close()} and
  * {@link com.arcadedb.server.http.handler.batch.MalformedBatchRecordException}.
  * <p>
+ * The trade-off that buys: declining to read a body means closing a connection the client may still be writing to,
+ * and the TCP reset that follows can discard bytes the peer had already received - the response among them. A client
+ * that reads while it uploads (any ordinary HTTP client, including {@code java.net.http.HttpClient} and so
+ * {@code RemoteGraphBatch}) is handed the 400 mid-upload and is unaffected; one that writes its whole payload before
+ * reading anything may see the reset instead. That is the better failure: it is immediate rather than a quarter of an
+ * hour, it cannot be mistaken for success, and the exact reason is in the server log either way. The alternative -
+ * reading a multi-gigabyte remainder to keep the socket well-mannered - is the bug this replaced, and it pinned a
+ * worker thread for the duration.
+ * <p>
  * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
  * failure mid-stream leaves earlier chunks durably committed. On a client-input error the response
  * carries {@code verticesCreated} / {@code edgesCreated} and a {@code partialCommit} flag; because

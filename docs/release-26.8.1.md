@@ -62,6 +62,13 @@ The verdict is now delivered as soon as it is reached, because nothing about the
 it: the connection is marked non-persistent and the unread remainder is discarded rather than drained. A load
 that reads its body to the end keeps its connection reusable exactly as before.
 
+One consequence worth knowing: declining to read the rest of a body means closing a connection the client may
+still be writing to, and the TCP reset that follows can discard bytes the client had already received. A
+client that reads while it uploads - any ordinary HTTP client, including the Java one used by
+`RemoteGraphBatch` - is handed the 400 mid-upload and is unaffected. A client that writes its whole payload
+before reading anything may see a connection reset instead of the error body; the reason is always in the
+server log, and the failure is immediate rather than a quarter of an hour of silence.
+
 Two related corrections:
 
 - **A valid line is no longer blamed for a truncated upload.** The truncation check exists because a peer that
