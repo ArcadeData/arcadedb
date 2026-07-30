@@ -460,6 +460,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   private boolean bodyEndedEarly(final HttpServerExchange exchange, final CountingInputStream inputStream) {
     final long declaredLength = exchange.getRequestContentLength();
+    // A declared length only bounds the bytes ON THE WIRE, so with a Content-Encoding it says nothing about how
+    // much payload the parser should have seen and this check would compare two different quantities. The endpoint
+    // does not decode either - the body is handed to the parser as it arrives - so a compressed upload fails as a
+    // malformed record or an I/O error, which is answered on its own terms.
     if (declaredLength < 0 || inputStream.getBytesRead() >= declaredLength
         || exchange.getRequestHeaders().getFirst("Content-Encoding") != null)
       return false;
@@ -659,6 +663,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     public void close() {
       if (endOfBody || drainAlreadyBuffered(MAX_ABANDONED_BODY_DRAIN) == BufferedDrain.END_OF_BODY)
         return;
+
+      // Retiring a connection is invisible from the outside, and it is also where an unexpected cost would show up
+      // if a body that HAD arrived stopped being recognised as complete: this is the line to raise to see it.
+      LogManager.instance().log(this, Level.FINE,
+          "Batch load did not read its request body to the end (%d of %s announced bytes); the connection is closed "
+              + "rather than reused, so the rest of the upload is not read first", null, bytesRead,
+          exchange.getRequestContentLength() >= 0 ? exchange.getRequestContentLength() : "an unannounced number of");
+
       exchange.setPersistent(false);
     }
 

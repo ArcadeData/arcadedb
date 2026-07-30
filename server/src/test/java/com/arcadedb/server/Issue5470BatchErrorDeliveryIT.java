@@ -485,8 +485,10 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
     final StringBuilder payload = new StringBuilder();
     appendVertices(payload, 985_000, 50);
     payload.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"nonexistent-vertex\"}\n");
-    // ~40KB of already-sent remainder: several Undertow buffers, still inside the drain budget.
-    while (payload.length() < 40_000)
+    // ~56KB of already-sent remainder: many Undertow buffer refills, and close enough to the drain budget
+    // (MAX_ABANDONED_BODY_DRAIN, 64KB) that the whole range over which the connection is meant to survive is
+    // exercised, not just the first buffer.
+    while (payload.length() < 56_000)
       payload.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"v1\"}\n");
 
     final byte[] sent = payload.toString().getBytes(StandardCharsets.UTF_8);
