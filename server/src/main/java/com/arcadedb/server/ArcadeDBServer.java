@@ -590,17 +590,20 @@ public class ArcadeDBServer {
         metricsFiltersInstalled = true;
       }
 
-      // Paired with the decrement in stopMetrics() through this flag, set in the same critical section as the
-      // increment: anything that throws further down must still be able to release the count, or it never
-      // returns to zero and the last-one-out teardown is disabled for the life of the JVM.
-      metricsInstalled = true;
-      if (metricsInstalls++ == 0)
+      if (metricsInstalls == 0)
         // Meters already registered belong to somebody else (typically the embedding application) and are
         // left alone by the shutdown. The flip side is the contract: from here until the last server stops,
         // the server owns every meter registered on the global registry, so an embedded application that
         // wants its own meters to outlive the server must register them before starting it, or on a registry
-        // of its own added to the composite (what the Prometheus and OTLP plugins do).
+        // of its own added to the composite (what the Prometheus and OTLP plugins do). Taken before the
+        // increment, so a failure here leaves nothing to release and no half-installed count behind.
         metersBeforeInstall = currentMeterIds();
+
+      // Paired with the decrement in stopMetrics() through this flag, set in the same critical section as the
+      // increment: anything that throws further down must still be able to release the count, or it never
+      // returns to zero and the last-one-out teardown is disabled for the life of the JVM.
+      metricsInstalled = true;
+      metricsInstalls++;
     }
 
     // The registry and the binders below are deliberately installed outside the mutex: it guards only the
@@ -723,6 +726,9 @@ public class ArcadeDBServer {
           false);
     databases.clear();
 
+    // Deliberately last: the timer caches are cleared and the meters removed without holding off recording
+    // threads, so this must run once the plugins, the HTTP service and the databases are down and nothing is
+    // left to repopulate them. Keep it after those shutdowns.
     CodeUtils.executeIgnoringExceptions(this::stopMetrics, "Error on stopping the metrics collection", false);
 
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");

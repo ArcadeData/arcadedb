@@ -169,6 +169,22 @@ Not applied: the reviewer asked whether a permanent per-issue analysis file unde
 It is the established convention in this repository (`docs/5541-*`, `docs/5560-*`, `docs/5459-*`, ...), so
 the file stays and the release note remains the user-facing summary.
 
+### Review cycle 4 (9c2f75ea)
+
+Two hardening points, both applied:
+
+- The pre-install snapshot is now taken *before* the increment. If `currentMeterIds()` ever threw on the
+  first install, the count was already at 1 with `metersBeforeInstall` still null, and the teardown's
+  membership test would NPE (swallowed, then self-healing). Taking the snapshot first leaves nothing
+  half-installed.
+- The ordering that makes the teardown race-free is now stated at the call site: the timer caches are
+  cleared and the meters removed without holding off recording threads, so `stopMetrics()` must stay last
+  in `stopInternal()`, after the plugins, the HTTP service and the databases are down and nothing can
+  repopulate them.
+
+Review cycles stopped here at the configured maximum. The remaining open observation is the ownership
+contract, which every cycle judged deliberate and documented rather than actionable.
+
 ## Impact
 
 - Query and HTTP RED metrics keep recording, and keep reporting the values they recorded, across an
