@@ -1739,7 +1739,9 @@ public class LocalSchema implements Schema {
                     indexMap.put(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
-                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision);
+                    // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
+                    // the full ancestor chain: reading it as anything else would make put/remove miss them.
+                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON));
                     indexMap.put(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);

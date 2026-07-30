@@ -324,4 +324,57 @@ compaction publishes it inside the same critical section that swaps the data fil
 search could resolve pre-compaction offsets against the new file
 ([#5568](https://github.com/ArcadeData/arcadedb/issues/5568)).
 
+## Geospatial index: a point now costs one index entry instead of eleven
+
+A `GEOSPATIAL` index decomposed every shape into GeoHash cells and stored the WHOLE ancestor chain, so a single
+point wrote one entry per tree level - `precision` of them, 11 by default. Everything an index write costs was
+therefore multiplied by 11: the per-record work, the WAL, the pages a cluster replicates, and the compaction that
+has to merge them all again. Worse, the cells at the top of the tree are continent-sized and shared by the whole
+dataset, so a handful of keys collected one posting per record and grew without bound; each compaction rewrote
+those complete lists, which is why a bulk load with a geospatial index got slower the longer it ran and finally
+failed with `ReplicatedEntryTooLargeException`
+([#5478](https://github.com/ArcadeData/arcadedb/issues/5478)).
+
+That layout comes from Lucene, where a term's postings are a compressed doc-id list. On an LSM-Tree - a sorted
+key/value store - "every cell below C" is simply the key range `[C, C+\uFFFF]`, so the ancestors do not need to be
+materialised at all. A geospatial index now stores only the cells the decomposition stops at (**exactly one** for a
+point) and answers a query with a prefix RANGE SCAN over the covering cells of the search shape, plus an exact
+lookup on the covering cells that still have children - those can only match a shape indexed at a coarser
+resolution, such as a stored polygon.
+
+On a 1M-point load into one country-sized box, measured in a single JVM run (`GeoIndexIngestBenchmark`):
+
+| arm | wall clock | index entries |
+|---|---|---|
+| no index (the floor) | 10.8 s | - |
+| new layout | 13.0 s | 1,000,000 |
+| old layout | 22.4 s | 11,000,000 |
+
+The index costs **5.3x less** than it did (2.2 s of overhead against 11.6 s), the whole load is 1.7x faster, and
+the index is 11x smaller on disk.
+
+Two query-side consequences come with it:
+
+- **Selectivity.** The old layout answered a query by looking up each covering cell exactly, including the
+  level-1 cell, which returned every record on the same continent as candidates for the SQL predicate to
+  re-check. A prefix scan returns what is actually under the queried cells.
+- **A POINT search shape works.** Every cell of a point's covering carries a null `shapeRel`, and the old lookup
+  loop skipped exactly those, so `geo.equals` / `geo.contains` against an indexed type found nothing and had to
+  fall back to a full scan. The walk no longer filters on `shapeRel` - the cell iterator only ever yields cells
+  that do intersect the shape.
+
+**Existing indexes keep working and are not rewritten.** The layout is recorded per index (`tokenization` in the
+schema), a definition written before this release loads as `FULL` and keeps reading and writing the ancestor
+chain, so nothing on disk is reinterpreted. To move an existing index to the compact layout - which is where the
+ingest and selectivity gains are - rebuild it:
+
+```sql
+REBUILD INDEX `Address[location]`
+```
+
+`REBUILD INDEX` also no longer resets a non-default GeoHash `precision` back to 11, the same defect fixed for
+`FULL_TEXT` in #4732. Its cause was one level up: `TypeIndexBuilder` declared a `metadata` field that shadowed
+`IndexBuilder`'s, so `withMetadata()` wrote to one and `create()` read the other for every index type without a
+dedicated builder subclass. The duplicate field is gone.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

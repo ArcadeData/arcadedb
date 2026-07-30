@@ -42,7 +42,13 @@ public abstract class IndexBuilder<T extends Index> {
   Type[]                             keyTypes;
   int                                batchSize      = BUILD_BATCH_SIZE;
   int                                maxAttempts    = 1;
-  IndexMetadata                      metadata;
+  /**
+   * The one and only metadata slot of the builder hierarchy. {@link TypeIndexBuilder} used to declare a field of the
+   * same name, which SHADOWED this one: {@code withMetadata()} wrote here while {@code create()} read there, so every
+   * index type without a dedicated builder subclass (GEOSPATIAL, see #5478) silently lost the metadata it was given.
+   * Keep it single.
+   */
+  public IndexMetadata               metadata;
 
   protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexImplementation) {
     this.database = database;
