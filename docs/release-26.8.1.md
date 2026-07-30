@@ -400,7 +400,12 @@ Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
 - **Null propagation is untouched**: `abs(null)` still answers `null`. In the two-argument `atan2()` both
   arguments are type-checked before null decides the answer, so a bad one is still reported when the other is
   null.
-- **The `math.*` extensions no longer leak `NumberFormatException`** for an unparseable argument; a numeric
-  string is still accepted, as before.
+- **The `math.*` extensions no longer leak `NumberFormatException`** for an unparseable argument. They still
+  accept a numeric *string* (`math.sigmoid('1.5')` works), which the Cypher-standard functions never did and
+  still do not (`abs('1.5')` is a type error). That asymmetry is deliberate: the `math.*` extensions have always
+  parsed strings and queries depend on it, while the standard ones follow the Cypher signature.
+- **The wrong number of arguments is now caught while parsing**, with a message naming the function and the
+  count it expects, instead of at execution time. `distance()` was declared as taking exactly two arguments
+  although it has always accepted an optional unit; the declaration was corrected rather than the behaviour.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

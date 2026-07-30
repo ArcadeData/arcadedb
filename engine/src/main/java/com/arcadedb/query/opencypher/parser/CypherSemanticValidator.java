@@ -1757,6 +1757,11 @@ public class CypherSemanticValidator {
       if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
         throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
       final List<Expression> args = func.getArguments();
+      // The wrong number of arguments is the primary defect and must be reported as such, before the single-argument type
+      // check below decides that e.g. atan2('x') - a binary function called with one argument - is a type error (#5484).
+      final String arityError = FunctionValidator.validateArgumentCount(name, args.size());
+      if (arityError != null)
+        throw new CommandSemanticException(arityError);
       if (args.size() == 1) {
         final Expression arg = args.get(0);
         checkStaticallyKnownArgType(name, arg);

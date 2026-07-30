@@ -238,7 +238,8 @@ public class FunctionValidator {
     registerFunction("pi", 0, 0, "Pi constant", false);
     registerFunction("e", 0, 0, "Euler's number", false);
     registerFunction("point", 1, 2, "Create point (map or latitude,longitude)", false);
-    registerFunction("distance", 2, 2, "Distance between points", false);
+    // The third argument is the optional unit ('km', 'm', ...); point.distance() is the strict 2-argument Neo4j spelling.
+    registerFunction("distance", 2, 3, "Distance between points, optionally in a given unit", false);
     registerFunction("degrees", 1, 1, "Radians to degrees", false);
     registerFunction("radians", 1, 1, "Degrees to radians", false);
     registerFunction("haversin", 1, 1, "Haversine", false);

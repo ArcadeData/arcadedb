@@ -19,9 +19,24 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.math.AbsFunction;
+import com.arcadedb.function.math.IsNaNFunction;
+import com.arcadedb.function.math.MathBinaryFunction;
+import com.arcadedb.function.math.MathUnaryFunction;
+import com.arcadedb.function.math.RoundFunction;
+import com.arcadedb.function.math.SignFunction;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.Locale;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -106,9 +121,10 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
 
   @Test
   void everyUnaryNumericFunctionRejectsAStringArgument() {
+    // ln() is included on purpose: it is an alias of log() but keeps its own name, so its message must say ln().
     for (final String function : new String[] { "ceil", "ceiling", "floor", "sqrt", "sign", "round", "isNaN", "exp", "log",
-        "log10", "sin", "cos", "tan", "asin", "acos", "atan", "cot", "coth", "sinh", "cosh", "tanh", "degrees", "radians",
-        "haversin" }) {
+        "ln", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "cot", "coth", "sinh", "cosh", "tanh", "degrees",
+        "radians", "haversin" }) {
       assertThatThrownBy(() -> consume("RETURN " + function + "('hello') AS r"))
           .as("%s('hello')", function)
           .isInstanceOf(CommandSemanticException.class)
@@ -143,6 +159,68 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("round()")
         .hasMessageContaining("SIDEWAYS");
+  }
+
+  // ===================== the wrong number of arguments is a client error too =====================
+
+  @Test
+  void theWrongNumberOfArgumentsIsReportedAsSuch() {
+    // The arity is the primary defect, so it must be reported before the single-argument type check gets a chance to
+    // call a binary function handed one argument a type error.
+    assertThatThrownBy(() -> consume("RETURN atan2('hello') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("atan2")
+        .hasMessageContaining("2 arguments")
+        .hasMessageNotContaining("Type mismatch");
+    assertThatThrownBy(() -> consume("RETURN abs(1, 2) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("abs")
+        .hasMessageContaining("1 argument");
+    assertThatThrownBy(() -> consume("RETURN sqrt() AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("sqrt");
+  }
+
+  @Test
+  void theOptionalUnitOfDistanceIsStillAccepted() {
+    // distance() takes an optional third argument; the arity check must not reject it (it was registered as 2-only).
+    assertThat((Double) single("RETURN distance(point({latitude: 0, longitude: 0}), point({latitude: 0, longitude: 1}), 'km')"
+        + " AS r")).isGreaterThan(0d);
+  }
+
+  // ===================== the parse-time list must not drift from the executors =====================
+
+  @Test
+  void everyNumericFunctionNameResolvesToANumericExecutorAndBack() {
+    // The parse-time check reads NUMERIC_ARGUMENT_FUNCTIONS while the runtime check lives in the executor the factory
+    // builds. This locks the two together: a numeric function added to one but not the other fails here.
+    final CypherFunctionFactory factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+
+    for (final Map.Entry<String, String> entry : CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS.entrySet()) {
+      assertThat(entry.getKey()).as("map key must be the lower-case name the parser produces")
+          .isEqualTo(entry.getValue().toLowerCase(Locale.ROOT));
+      assertThat(isNumericExecutor(factory.getFunctionExecutor(entry.getKey())))
+          .as("%s is declared numeric but its executor is not", entry.getKey()).isTrue();
+    }
+
+    for (final String name : FunctionValidator.getKnownFunctionNames()) {
+      final StatelessFunction executor;
+      try {
+        executor = factory.getFunctionExecutor(name);
+      } catch (final CommandExecutionException ignored) {
+        // A name known to the parser with no executor behind it yet: nothing to keep in sync.
+        continue;
+      }
+      if (isNumericExecutor(executor))
+        assertThat(CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS)
+            .as("%s has a numeric executor but is missing from NUMERIC_ARGUMENT_FUNCTIONS", name).containsKey(name);
+    }
+  }
+
+  private static boolean isNumericExecutor(final StatelessFunction executor) {
+    return executor instanceof AbsFunction || executor instanceof MathUnaryFunction
+        || executor instanceof MathBinaryFunction || executor instanceof SignFunction || executor instanceof IsNaNFunction
+        || executor instanceof RoundFunction;
   }
 
   @Test
