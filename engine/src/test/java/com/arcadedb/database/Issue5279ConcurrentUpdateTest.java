@@ -115,7 +115,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(committed.get()).isEqualTo(concurrentIntent);
 
@@ -171,7 +171,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " transaction(s) failed, first: " + errors.get(0), errors.get(0));
 
     database.transaction(() -> {
       for (int i = 0; i < concurrentIntent; i++)
@@ -233,7 +233,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     assertThat(conflicts.get()).as("updates of records owned by different threads must not conflict").isZero();
 
@@ -310,7 +310,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     // The tolerance covers only the unavoidable residue: a record whose page has just filled up has to spill into a
     // placeholder, which no merge can replay.
@@ -371,7 +371,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     database.transaction(() -> {
       assertThat(database.countType("Growing", false)).isEqualTo((long) threadCount * recordsPerThread);
@@ -499,7 +499,7 @@ class Issue5279ConcurrentUpdateTest extends TestHelper {
 
   /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
   private Map<String, Object> bucketStats(final String typeName) {
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).get(0);
     final Map<String, Object>[] stats = new Map[1];
     database.transaction(() -> stats[0] = bucket.check(0, false));
     return stats[0];

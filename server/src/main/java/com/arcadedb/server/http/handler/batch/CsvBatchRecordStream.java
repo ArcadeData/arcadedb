@@ -145,7 +145,7 @@ public class CsvBatchRecordStream implements BatchRecordStream {
     final List<String> fields = parseCsvFields(line);
 
     if (fields.size() < headers.length)
-      throw new IllegalArgumentException("Too few fields at line " + lineNumber + ": expected " + headers.length + ", got " + fields.size());
+      throw new MalformedBatchRecordException("Too few fields at line " + lineNumber + ": expected " + headers.length + ", got " + fields.size());
 
     final String type = fields.get(typeCol);
     if ("vertex".equals(type) || "v".equals(type)) {

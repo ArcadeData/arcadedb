@@ -85,7 +85,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
     final List<Document> found = collection.find(eq("name", awkward)).into(new ArrayList<>());
 
     assertThat(found).hasSize(1);
-    assertThat(found.getFirst().getString("name")).isEqualTo(awkward);
+    assertThat(found.get(0).getString("name")).isEqualTo(awkward);
   }
 
   @Test
@@ -96,7 +96,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
     final List<Document> found = collection.find(eq("path", awkward)).into(new ArrayList<>());
 
     assertThat(found).hasSize(1);
-    assertThat(found.getFirst().getString("path")).isEqualTo(awkward);
+    assertThat(found.get(0).getString("path")).isEqualTo(awkward);
   }
 
   @Test
