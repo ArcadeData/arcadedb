@@ -2965,6 +2965,21 @@ function browseType(typeName) {
   });
 }
 
+// Quick-action helpers for the type and view detail panes. The SQL is built here, where quoteSqlName() applies, instead of
+// being spelled out inside an inline onclick attribute: a name embedded there would have to survive HTML decoding, JS string
+// parsing and SQL quoting at once, and only the first of those was handled.
+function browseRecords(typeName) {
+  executeCommand("sql", "select from " + quoteSqlName(typeName));
+}
+
+function browseRecordsWithConnections(typeName) {
+  executeCommand("sql", "select *, bothE() as `@edges` from " + quoteSqlName(typeName));
+}
+
+function countRecords(typeName) {
+  executeCommand("sql", "select count(*) from " + quoteSqlName(typeName));
+}
+
 function executeCommand(language, query) {
   globalResultset = null;
 
@@ -3531,10 +3546,10 @@ function showTypeDetail(typeName) {
   html += "<div class='db-detail-section'>";
   html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
   html += "<div class='d-flex flex-wrap gap-2'>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\`\")'><i class='fa fa-table'></i> Browse records</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='browseRecords(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-table'></i> Browse records</button>";
   if (row.type == "vertex")
-    html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select *, bothE() as \\`@edges\\` from \\`" + row.name + "\\`\")'><i class='fa fa-project-diagram'></i> With connections</button>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select count(*) from \\`" + row.name + "\\`\")'><i class='fa fa-calculator'></i> Count records</button>";
+    html += "<button class='btn btn-sm db-action-btn' onclick='browseRecordsWithConnections(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-project-diagram'></i> With connections</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='countRecords(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-calculator'></i> Count records</button>";
   html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropType(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-trash'></i> Drop Type</button>";
   html += "</div>";
   html += "</div>";
@@ -4219,7 +4234,7 @@ function renderMaterializedViewsSidebarSection(views, isQuerySidebar) {
 
     if (isQuerySidebar) {
       html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\"); return false;' ";
+      html += "onclick='browseRecords(\"" + escapeHtml(view.name) + "\"); return false;' ";
       html += "title='" + name + " (Materialized View)'>";
       html += "<span class='mv-status-dot " + statusClass + "'></span>";
       html += "<span class='sidebar-badge-name'>" + name + "</span>";
@@ -4263,7 +4278,7 @@ function renderMaterializedViewsSidebarBadges(views, isQuerySidebar) {
 
     if (isQuerySidebar) {
       html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\"); return false;' ";
+      html += "onclick='browseRecords(\"" + escapeHtml(view.name) + "\"); return false;' ";
       html += "title='" + name + " (Materialized View)'>";
       html += "<span class='mv-status-dot " + statusClass + "'></span>";
       html += "<span class='sidebar-badge-name'>" + name + "</span>";
@@ -5052,7 +5067,7 @@ function showMaterializedViewDetail(viewName) {
   html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
   html += "<div class='d-flex flex-wrap gap-2'>";
   html += "<button class='btn btn-sm db-action-btn' onclick='refreshMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-sync'></i> Refresh Now</button>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\")'><i class='fa fa-table'></i> Browse Records</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='browseRecords(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-table'></i> Browse Records</button>";
   html += "<button class='btn btn-sm db-action-btn' onclick='alterMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-pen'></i> Alter Refresh Mode</button>";
   html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-trash'></i> Drop View</button>";
   html += "</div></div>";

@@ -106,6 +106,14 @@ public class Identifier extends SimpleNode {
   }
 
   /**
+   * returns the SQL spelling of a name: the name escaped and wrapped in back-ticks, safe to embed in a statement whatever
+   * characters it carries. Callers that build SQL text by hand should route every schema object name through this.
+   */
+  public static String quote(final String name) {
+    return "`" + escape(name) + "`";
+  }
+
+  /**
    * escapes the two characters that carry meaning inside a back-tick quoted identifier, each with a leading backslash. A backslash
    * has to be escaped as well, otherwise a name ending with one would swallow the closing back-tick.
    */

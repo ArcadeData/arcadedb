@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
@@ -3086,7 +3087,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private static String quoteName(final String name) {
     if (name == null || name.isEmpty())
       throw new IllegalArgumentException("SQL identifier must not be empty");
-    return "`" + name.replace("`", "\\`") + "`";
+    return Identifier.quote(name);
   }
 
   // Match an existing row by key and merge onto it; false when none matched (caller then inserts).
