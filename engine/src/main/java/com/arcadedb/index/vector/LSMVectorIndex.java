@@ -615,14 +615,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * stays reachable for its in-flight readers while the new one is built, so a rebuild transiently holds two
    * location sets (~90 bytes per live entry each) instead of one. That is a bounded, promptly released spike and
    * the price of the atomicity.
+   * <p>
+   * The population loop runs under the write lock even though only the final store needs it. Hoisting it out would
+   * shorten the locked window, but it would also let an insert commit into the instance about to be discarded, so
+   * the loss window for a concurrent write would grow by the whole population. Holding the lock keeps exactly the
+   * exclusion the in-place refill had, and the loop is an in-memory map fill - tens of milliseconds on a 200K
+   * index, not the O(index size) document reads issue #5391 moved out of this lock.
    *
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
-    // The intermediate is a long: `size() * 4` overflows int past ~536M entries, and a negative capacity would
-    // fail the rebuild rather than merely sizing the map badly.
-    final VectorLocationIndex rebuilt = new VectorLocationIndex(getLocationCacheSize(),
-        (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) liveEntries.size() * 4 / 3 + 1)));
+    // Size the map for what it will actually hold. A bounded cache FIFO-evicts down to its cap as the loop fills
+    // it, so sizing from the live count there would allocate a table for millions of entries to hold `maxSize` of
+    // them. The intermediate is a long: `size() * 4` overflows int past ~536M entries, and a negative capacity
+    // would fail the rebuild rather than merely sizing the map badly.
+    final int cacheSize = getLocationCacheSize();
+    final long resident = cacheSize > 0 ? Math.min(cacheSize, liveEntries.size()) : liveEntries.size();
+    final VectorLocationIndex rebuilt = new VectorLocationIndex(cacheSize,
+        (int) Math.min(Integer.MAX_VALUE, Math.max(16L, resident * 4 / 3 + 1)));
     for (final VectorEntryForGraphBuild entry : liveEntries)
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
