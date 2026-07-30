@@ -18,8 +18,9 @@
  */
 package com.arcadedb.function.math;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.math.BigDecimal;
@@ -46,15 +47,14 @@ public class RoundFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length < 1 || args.length > 3)
-      throw new CommandExecutionException("round() requires 1, 2 or 3 arguments");
+      throw new CommandSemanticException("round() requires 1, 2 or 3 arguments");
 
-    if (args[0] == null)
+    // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
+    final Number number = CypherFunctionHelper.requireNumberArgument(args[0], "round");
+    if (number == null)
       return null;
 
-    if (!(args[0] instanceof Number))
-      throw new CommandExecutionException("round() requires a numeric argument");
-
-    final double value = ((Number) args[0]).doubleValue();
+    final double value = number.doubleValue();
 
     if (Double.isNaN(value) || Double.isInfinite(value))
       return value;
@@ -65,13 +65,11 @@ public class RoundFunction implements StatelessFunction {
     }
 
     // round(value, precision) or round(value, precision, mode)
-    if (args[1] == null)
+    final Number precisionArg = CypherFunctionHelper.requireNumberArgument(args[1], "round");
+    if (precisionArg == null)
       return null;
 
-    if (!(args[1] instanceof Number))
-      throw new CommandExecutionException("round() precision must be a numeric value");
-
-    final int precision = ((Number) args[1]).intValue();
+    final int precision = precisionArg.intValue();
 
     RoundingMode mode = RoundingMode.HALF_UP;
     if (args.length == 3 && args[2] != null) {
@@ -84,7 +82,9 @@ public class RoundFunction implements StatelessFunction {
         case "HALF_UP" -> RoundingMode.HALF_UP;
         case "HALF_DOWN" -> RoundingMode.HALF_DOWN;
         case "HALF_EVEN" -> RoundingMode.HALF_EVEN;
-        default -> throw new CommandExecutionException("round() unknown rounding mode: " + args[2]);
+        // An unusable mode name is the caller's mistake too, so it must not surface as a 500 either (issue #5484).
+        default -> throw new CommandSemanticException("round() unknown rounding mode: " + args[2]
+            + ". Valid modes are UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN and HALF_EVEN");
       };
     }
 

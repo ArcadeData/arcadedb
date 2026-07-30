@@ -19,6 +19,7 @@
 package com.arcadedb.function.math;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 
 /**
  * Abstract base class for math functions.
@@ -47,13 +48,23 @@ public abstract class AbstractMathFunction implements StatelessFunction {
    * null-out). Returning a boxed {@link Double} avoids the previous foot-gun where a null was
    * silently coerced to {@code 0.0}, turning e.g. {@code tanh(null)} into {@code tanh(0) == 0}.
    * See issue #4556.
+   * <p>
+   * A value that is neither a number nor the text of one is an out-of-domain argument, i.e. the caller's mistake: it raises
+   * a {@link com.arcadedb.exception.CommandSemanticException} (HTTP 400) instead of letting a raw
+   * {@link NumberFormatException} escape and be reported as an internal 500. See issue #5484.
    */
   protected Double asDouble(final Object arg) {
     if (arg == null)
       return null;
-    if (arg instanceof Number) {
+    if (arg instanceof Number)
       return ((Number) arg).doubleValue();
+    if (arg instanceof CharSequence) {
+      try {
+        return Double.parseDouble(arg.toString());
+      } catch (final NumberFormatException ignored) {
+        // falls through to the type error below
+      }
     }
-    return Double.parseDouble(arg.toString());
+    throw CypherFunctionHelper.typeMismatch(getName(), CypherFunctionHelper.NUMERIC_DOMAIN, arg);
   }
 }

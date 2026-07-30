@@ -376,4 +376,31 @@ compaction publishes it inside the same critical section that swaps the data fil
 search could resolve pre-compaction offsets against the new file
 ([#5568](https://github.com/ArcadeData/arcadedb/issues/5568)).
 
+## Cypher: a non-numeric argument to `abs()` and friends is a client error, not a 500
+
+`RETURN abs('hello')` answered HTTP `500 Cannot execute command` with an otherwise perfectly good message,
+`abs() requires a numeric argument`. The type check was right; only its class was wrong, and a `500` tells a
+client the server broke when in fact the query did. Neo4j reports these as `Neo.ClientError.Statement.TypeError`
+([#5484](https://github.com/ArcadeData/arcadedb/issues/5484)).
+
+Every function declared as `f(input :: INTEGER | FLOAT)` now raises `CommandSemanticException`, so HTTP answers
+`400` and Bolt answers a client error: `abs`, `ceil`, `ceiling`, `floor`, `sqrt`, `sign`, `round`, `isNaN`,
+`exp`, `log`, `ln`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `cot`, `coth`, `sinh`,
+`cosh`, `tanh`, `degrees`, `radians`, `haversin`, plus the `math.*` extensions. The message is now phrased with
+the vocabulary of the language, matching the one `size()` and `head()` already used:
+
+```
+Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
+```
+
+- **A literal is rejected before the query runs**, as in Neo4j, so `MATCH (n:Nothing) RETURN abs('hello')` fails
+  even though the function would never be called. Both paths raise the same exception with the same wording.
+- **`round()` also covers its other two arguments**: a non-numeric precision, and a rounding mode outside
+  `UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN` (whose message now lists them).
+- **Null propagation is untouched**: `abs(null)` still answers `null`. In the two-argument `atan2()` both
+  arguments are type-checked before null decides the answer, so a bad one is still reported when the other is
+  null.
+- **The `math.*` extensions no longer leak `NumberFormatException`** for an unparseable argument; a numeric
+  string is still accepted, as before.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

@@ -1817,7 +1817,7 @@ public class CypherSemanticValidator {
    * outside the function's input domain. The functions repeat the check at runtime for values known only then; doing it here
    * as well matches Neo4j, which fails {@code MATCH (n:Nothing) RETURN size(42)} even though the query matches no row and the
    * function would never run. Same message and same exception as the runtime check, so the client sees one behaviour.
-   * See issues #5477 (size) and #5476 (head, last, tail).
+   * See issues #5477 (size), #5476 (head, last, tail) and #5484 (the numeric family).
    */
   private void checkStaticallyKnownArgType(final String functionName, final Expression arg) {
     final boolean isMap = arg instanceof MapExpression;
@@ -1825,6 +1825,17 @@ public class CypherSemanticValidator {
     final Object literal = arg instanceof LiteralExpression ? ((LiteralExpression) arg).getValue() : null;
     if (!isMap && literal == null)
       return;
+
+    // abs(), sqrt(), round(), the trigonometric ones, ...: INTEGER | FLOAT only, so a list literal is a type error for them
+    // too and this has to be decided before the LIST short-circuit below.
+    final String numericFunction = CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS.get(functionName);
+    if (numericFunction != null) {
+      if (isMap || !(literal instanceof Number))
+        throw CypherFunctionHelper.typeMismatch(numericFunction, CypherFunctionHelper.NUMERIC_DOMAIN,
+            isMap ? Map.of() : literal);
+      return;
+    }
+
     // A literal holding a collection is a LIST, which every function handled below accepts.
     if (literal instanceof Collection || (literal != null && literal.getClass().isArray()))
       return;

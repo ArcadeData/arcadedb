@@ -405,7 +405,9 @@ public class CypherFunctionFactory {
       case "haversin" -> new MathUnaryFunction("haversin", v -> (1.0 - Math.cos(v)) / 2.0);
       // Logarithmic functions
       case "exp" -> new MathUnaryFunction("exp", Math::exp);
-      case "log", "ln" -> new MathUnaryFunction("log", Math::log);
+      // ln() is an alias of log(), but each keeps its own name so a type error echoes the one the client wrote (#5484).
+      case "log" -> new MathUnaryFunction("log", Math::log);
+      case "ln" -> new MathUnaryFunction("ln", Math::log);
       case "log10" -> new MathUnaryFunction("log10", Math::log10);
       // General functions
       case "coalesce" -> new CoalesceFunction();
