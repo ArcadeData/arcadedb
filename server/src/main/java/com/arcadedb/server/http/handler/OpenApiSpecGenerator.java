@@ -53,10 +53,9 @@ import java.util.List;
  */
 public class OpenApiSpecGenerator {
 
-  // Each task of this plan appends its own contributor here, in this order:
-  //   CoreApiSpec, AuthApiSpec, SecurityAdminApiSpec, TimeSeriesApiSpec, GrafanaApiSpec,
-  //   PrometheusApiSpec, AiApiSpec, McpApiSpec, PluginApiSpec.
-  // Order affects nothing but the key order of the emitted paths object.
+  // A contributor absent from this list never reaches the served document: its paths and schemas
+  // are silently omitted, with no compile error and no other signal. Order affects nothing but the
+  // key order of the emitted paths object.
   private static final List<OpenApiContributor> CONTRIBUTORS = List.of(//
       new CoreApiSpec(), //
       new AuthApiSpec(), //
@@ -68,10 +67,14 @@ public class OpenApiSpecGenerator {
       new McpApiSpec(), //
       new PluginApiSpec());
 
-  private final HttpServer httpServer;
+  /**
+   * The contributors that assemble the served document, in registration order.
+   */
+  static List<OpenApiContributor> contributors() {
+    return CONTRIBUTORS;
+  }
 
   public OpenApiSpecGenerator(final HttpServer httpServer) {
-    this.httpServer = httpServer;
   }
 
   public OpenAPI generateSpec() {

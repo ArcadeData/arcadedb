@@ -27,7 +27,6 @@ import io.swagger.v3.oas.models.parameters.Parameter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -59,6 +58,18 @@ class TimeSeriesApiSpecTest {
         .filter(p -> "precision".equals(p.getName())).findFirst().orElseThrow();
     assertThat(precision.getSchema().getEnum()).containsExactly("ns", "us", "ms", "s");
     assertThat(precision.getRequired()).isFalse();
+  }
+
+  @Test
+  void precisionDescriptionPinsTheHardCodedNanosecondDefault() {
+    // PostTimeSeriesWriteHandler.execute falls back to Precision.NANOSECONDS in code when the
+    // 'precision' query parameter is absent; the default is hard-coded in the handler, not read
+    // from a server setting. Pinned so the wording cannot be reverted to claim otherwise.
+    final Operation post = openAPI.getPaths().get("/api/v1/ts/{database}/write").getPost();
+    final Parameter precision = post.getParameters().stream()
+        .filter(p -> "precision".equals(p.getName())).findFirst().orElseThrow();
+    assertThat(precision.getDescription())
+        .isEqualTo("Unit of the timestamps in the body. Defaults to nanoseconds when omitted.");
   }
 
   @Test
@@ -126,6 +137,19 @@ class TimeSeriesApiSpecTest {
     final Map<String, Boolean> required = get.getParameters().stream()
         .collect(Collectors.toMap(Parameter::getName, Parameter::getRequired));
     assertThat(required).containsEntry("type", true).containsEntry("tag", false);
+  }
+
+  @Test
+  void tagDescriptionPinsTheColonSeparatorAndFirstOccurrenceOnlySemantics() {
+    // GetTimeSeriesLatestHandler.buildTagFilter splits the 'tag' query parameter on the first ':'
+    // (not '='), and getQueryParameter(HttpServerExchange, String) returns only the Deque's first
+    // entry, so a repeated 'tag' query parameter has every occurrence but the first ignored. Pinned
+    // so the wording cannot be reverted to claim '=' or all-occurrences semantics.
+    final Operation get = openAPI.getPaths().get("/api/v1/ts/{database}/latest").getGet();
+    final Parameter tag = get.getParameters().stream()
+        .filter(p -> "tag".equals(p.getName())).findFirst().orElseThrow();
+    assertThat(tag.getDescription()).isEqualTo(
+        "Tag filter in name:value form. Only the first occurrence is honored if the parameter repeats.");
   }
 
   @Test

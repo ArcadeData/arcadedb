@@ -189,6 +189,19 @@ class AiApiSpecTest {
   }
 
   @Test
+  void chatOperationDescriptionWarnsAboutStreamingBeforeAResponseDescriptionIsEvenReached() {
+    // openapi-generator's TypeScript targets emit an operation's summary/description as the
+    // generated method's doc comment and drop response descriptions entirely, so the streaming
+    // warning must be self-sufficient in the operation description, not only on the 200 response
+    // or the 'mode' property.
+    final String description = openAPI.getPaths().get("/api/v1/ai/chat").getPost().getDescription();
+    assertThat(description)
+        .as("the operation description must warn about the default streaming mode on its own")
+        .contains("text/event-stream")
+        .contains("auto");
+  }
+
+  @Test
   void analyzeProfilerRequestNeverDeclaresSchemas() {
     // AiAnalyzeProfilerHandler.execute (line 79) reads only "profilerData" from the client payload.
     // "schemas" is computed server-side (collectDatabaseSchemas, lines 133-176) and added only to

@@ -112,6 +112,10 @@ public class AiApiSpec implements OpenApiContributor {
             metrics to the gateway. The reply may carry SQL commands the assistant proposes and the \
             tool calls it made.
 
+            In the default 'auto' mode the 200 response is a 'text/event-stream', not a JSON body; \
+            the JSON response described below is returned only when 'mode' is set to something other \
+            than 'auto'.
+
             The assistant is a remote dependency: 503 means the gateway was unreachable and 504 that \
             it did not answer in time. Both are retryable. A rejected subscription token answers 502, \
             remapped from the gateway's own 401 or 403 so it cannot be mistaken for this request's own \
