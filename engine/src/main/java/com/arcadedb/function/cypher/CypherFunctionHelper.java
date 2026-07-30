@@ -58,18 +58,36 @@ public final class CypherFunctionHelper {
   public static final String NUMERIC_DOMAIN = "an INTEGER or a FLOAT";
 
   /**
-   * The Cypher functions whose whole argument list is {@code INTEGER | FLOAT}, so that an argument already readable in the
-   * query text can be rejected before the query runs, as Neo4j does. Keyed by the lower-case name the parser produces and
-   * valued with the canonical spelling, which is the one the runtime check uses, so both paths phrase the error identically.
-   * Kept in step with the numeric entries of {@code CypherFunctionFactory.createCypherSpecificExecutor()}, which is what
-   * supplies that runtime check. See issue #5484.
+   * A numeric Cypher function: its canonical spelling - the one the runtime check uses, so both the parse-time and the
+   * runtime path phrase an error identically - and how many of its leading arguments are declared {@code INTEGER | FLOAT}.
+   * All of them for the whole family except {@code round(value, precision, mode)}, whose third argument is the STRING name
+   * of a rounding mode.
+   *
+   * @param name        canonical function name, without parentheses
+   * @param numericArgs number of leading arguments that must be numeric; {@link Integer#MAX_VALUE} for "every one of them"
    */
-  public static final Map<String, String> NUMERIC_ARGUMENT_FUNCTIONS = Stream.of(//
-          "abs", "ceil", "ceiling", "floor", "sqrt", "sign", "round", "isNaN", //
-          "exp", "log", "ln", "log10", //
-          "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cot", "coth", "sinh", "cosh", "tanh", //
-          "degrees", "radians", "haversin")//
-      .collect(Collectors.toUnmodifiableMap(name -> name.toLowerCase(Locale.ROOT), name -> name));
+  public record NumericSignature(String name, int numericArgs) {
+  }
+
+  /**
+   * The numeric Cypher functions, keyed by the lower-case name the parser produces, so that an argument already readable in
+   * the query text can be rejected before the query runs, as Neo4j does. Kept in step with the numeric entries of
+   * {@code CypherFunctionFactory.createCypherSpecificExecutor()}, which is what supplies the matching runtime check - a test
+   * asserts the two agree in both directions. See issue #5484.
+   */
+  public static final Map<String, NumericSignature> NUMERIC_ARGUMENT_FUNCTIONS = Stream.concat(//
+          allArgumentsNumeric(//
+              "abs", "ceil", "ceiling", "floor", "sqrt", "sign", "isNaN", //
+              "exp", "log", "ln", "log10", //
+              "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cot", "coth", "sinh", "cosh", "tanh", //
+              "degrees", "radians", "haversin"), //
+          // round(value, precision, mode): only the first two arguments are numeric.
+          Stream.of(new NumericSignature("round", 2)))//
+      .collect(Collectors.toUnmodifiableMap(signature -> signature.name().toLowerCase(Locale.ROOT), signature -> signature));
+
+  private static Stream<NumericSignature> allArgumentsNumeric(final String... names) {
+    return Stream.of(names).map(name -> new NumericSignature(name, Integer.MAX_VALUE));
+  }
 
   private CypherFunctionHelper() {
     // utility class

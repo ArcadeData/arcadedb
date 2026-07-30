@@ -71,24 +71,34 @@ public class RoundFunction implements StatelessFunction {
 
     final int precision = precisionArg.intValue();
 
-    RoundingMode mode = RoundingMode.HALF_UP;
-    if (args.length == 3 && args[2] != null) {
-      final String modeStr = args[2].toString().toUpperCase(Locale.ROOT).replace(" ", "_");
-      mode = switch (modeStr) {
-        case "UP" -> RoundingMode.UP;
-        case "DOWN" -> RoundingMode.DOWN;
-        case "CEILING" -> RoundingMode.CEILING;
-        case "FLOOR" -> RoundingMode.FLOOR;
-        case "HALF_UP" -> RoundingMode.HALF_UP;
-        case "HALF_DOWN" -> RoundingMode.HALF_DOWN;
-        case "HALF_EVEN" -> RoundingMode.HALF_EVEN;
-        // An unusable mode name is the caller's mistake too, so it must not surface as a 500 either (issue #5484).
-        default -> throw new CommandSemanticException("round() unknown rounding mode: " + args[2]
-            + ". Valid modes are UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN and HALF_EVEN");
-      };
-    }
+    final RoundingMode mode = args.length == 3 ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
 
     final BigDecimal bd = BigDecimal.valueOf(value).setScale(precision, mode);
     return bd.doubleValue();
+  }
+
+  /**
+   * Resolves the optional third argument of {@code round()} to a rounding mode, defaulting to HALF_UP when it is absent or
+   * null. Shared with the parse-time check in {@code CypherSemanticValidator}, which applies it to a mode written as a
+   * literal so that the two paths accept exactly the same set of names and word an unknown one identically.
+   *
+   * @throws CommandSemanticException when the name is not one of the supported modes: an unusable mode is the caller's
+   *                                  mistake, so it must not surface as an internal 500 either (issue #5484)
+   */
+  public static RoundingMode parseRoundingMode(final Object mode) {
+    if (mode == null)
+      return RoundingMode.HALF_UP;
+
+    return switch (mode.toString().toUpperCase(Locale.ROOT).replace(" ", "_")) {
+      case "UP" -> RoundingMode.UP;
+      case "DOWN" -> RoundingMode.DOWN;
+      case "CEILING" -> RoundingMode.CEILING;
+      case "FLOOR" -> RoundingMode.FLOOR;
+      case "HALF_UP" -> RoundingMode.HALF_UP;
+      case "HALF_DOWN" -> RoundingMode.HALF_DOWN;
+      case "HALF_EVEN" -> RoundingMode.HALF_EVEN;
+      default -> throw new CommandSemanticException("round() unknown rounding mode: " + mode
+          + ". Valid modes are UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN and HALF_EVEN");
+    };
   }
 }

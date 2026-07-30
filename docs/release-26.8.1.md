@@ -402,7 +402,9 @@ Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
 ```
 
 - **A literal is rejected before the query runs**, as in Neo4j, so `MATCH (n:Nothing) RETURN abs('hello')` fails
-  even though the function would never be called. Both paths raise the same exception with the same wording.
+  even though the function would never be called. Both paths raise the same exception with the same wording, and
+  every argument position is covered: `atan2('hello', 1)` and `round(x, 2, 'SIDEWAYS')` fail there too, not only
+  the single-argument functions.
 - **`round()` also covers its other two arguments**: a non-numeric precision, and a rounding mode outside
   `UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN` (whose message now lists them).
 - **Null propagation is untouched**: `abs(null)` still answers `null`. In the two-argument `atan2()` both
@@ -411,7 +413,9 @@ Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
 - **The `math.*` extensions no longer leak `NumberFormatException`** for an unparseable argument. They still
   accept a numeric *string* (`math.sigmoid('1.5')` works), which the Cypher-standard functions never did and
   still do not (`abs('1.5')` is a type error). That asymmetry is deliberate: the `math.*` extensions have always
-  parsed strings and queries depend on it, while the standard ones follow the Cypher signature.
+  parsed strings and queries depend on it, while the standard ones follow the Cypher signature. Only a string is
+  parsed now, where before any value at all was run through `toString()` first, so a type whose text happens to
+  look like a number is a type error rather than a silent coercion.
 - **The wrong number of arguments is now caught while parsing**, with a message naming the function and the
   count it expects, instead of at execution time. `distance()` was declared as taking exactly two arguments
   although it has always accepted an optional unit; the declaration was corrected rather than the behaviour.

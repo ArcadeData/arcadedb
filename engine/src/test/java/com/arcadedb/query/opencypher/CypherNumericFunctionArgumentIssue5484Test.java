@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.cypher.CypherFunctionHelper.NumericSignature;
 import com.arcadedb.function.math.AbsFunction;
 import com.arcadedb.function.math.IsNaNFunction;
 import com.arcadedb.function.math.MathBinaryFunction;
@@ -161,6 +162,33 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
         .hasMessageContaining("SIDEWAYS");
   }
 
+  @Test
+  void multiArgumentNumericLiteralsFailEvenWhenNoRowMatches() {
+    // The parse-time guarantee covers the binary and ternary members of the family, not only the unary ones: these
+    // projections are never evaluated, so without the static check they used to succeed silently.
+    database.transaction(() -> database.command("opencypher", "CREATE (:Issue5484 {name: 'a'})"));
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) WHERE n.name = 'nobody' RETURN atan2('hello', 1) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("atan2()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) WHERE n.name = 'nobody' RETURN round(3.14, 'two') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("round()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) WHERE n.name = 'nobody' RETURN round(3.14, 2, 'SIDEWAYS') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("round()")
+        .hasMessageContaining("SIDEWAYS");
+  }
+
+  @Test
+  void theRoundingModeOfRoundIsNotANumericArgument() {
+    // round()'s third argument is a STRING, so the per-position check must not reject it as non-numeric.
+    assertThat(single("RETURN round(3.14159, 2, 'FLOOR') AS r")).isEqualTo(3.14d);
+    assertThat(single("RETURN round(3.14159, 2, 'CEILING') AS r")).isEqualTo(3.15d);
+    assertThat(single("RETURN round(3.14159, 2, null) AS r")).isEqualTo(3.14d);
+  }
+
   // ===================== the wrong number of arguments is a client error too =====================
 
   @Test
@@ -196,9 +224,9 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
     // builds. This locks the two together: a numeric function added to one but not the other fails here.
     final CypherFunctionFactory factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
 
-    for (final Map.Entry<String, String> entry : CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS.entrySet()) {
+    for (final Map.Entry<String, NumericSignature> entry : CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS.entrySet()) {
       assertThat(entry.getKey()).as("map key must be the lower-case name the parser produces")
-          .isEqualTo(entry.getValue().toLowerCase(Locale.ROOT));
+          .isEqualTo(entry.getValue().name().toLowerCase(Locale.ROOT));
       assertThat(isNumericExecutor(factory.getFunctionExecutor(entry.getKey())))
           .as("%s is declared numeric but its executor is not", entry.getKey()).isTrue();
     }
