@@ -160,6 +160,41 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   }
 
   @Test
+  void anEmptyInFilterMatchesNothing() {
+    collection.insertOne(new Document("name", "a"));
+    collection.insertOne(new Document("name", "b"));
+
+    // a real driver emits {field: {$in: []}} for an empty candidate set; the old code built "IN ()", which is not
+    // valid SQL, so this shape has never been exercised
+    final UpdateResult result = collection.updateMany(new Document("name", new Document("$in", List.of())),
+        new Document("$set", new Document("touched", "yes")));
+
+    assertThat(result.getModifiedCount()).isZero();
+    assertThat(collection.countDocuments(new Document("touched", "yes"))).isZero();
+  }
+
+  @Test
+  void anEmptyNotInFilterMatchesEverything() {
+    collection.insertOne(new Document("name", "a"));
+    collection.insertOne(new Document("name", "b"));
+
+    final UpdateResult result = collection.updateMany(new Document("name", new Document("$nin", List.of())),
+        new Document("$set", new Document("touched", "yes")));
+
+    assertThat(result.getModifiedCount()).isEqualTo(2);
+  }
+
+  @Test
+  void anEmptyInFilterMatchesNothingOnTheFindPath() {
+    collection.insertOne(new Document("name", "a"));
+
+    final List<Document> found = collection.find(new Document("name", new Document("$in", List.of())))
+        .into(new java.util.ArrayList<>());
+
+    assertThat(found).isEmpty();
+  }
+
+  @Test
   void aQuoteBearingValueSurvivesBeingSetByAnUpdate() {
     collection.insertOne(new Document("name", "target"));
 

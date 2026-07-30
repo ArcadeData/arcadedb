@@ -1,14 +1,25 @@
 # 5579 - mongodbw: bind filter values as parameters instead of escaping them
 
-Follow-up to #5575. That PR closed the injection by escaping values into the statement text. Escaping is correct
-but per-call-site: every future edit to `MongoDBToSqlTranslator` has to remember it, and forgetting is silent.
-Binding removes the class of bug.
+## Symptom
 
-## Analysis
+#5575 closed a SQL injection in the MongoDB wire protocol by escaping the field names and values that get embedded
+into the translated statement. Escaping is correct, but it is per-call-site: every future edit to
+`MongoDBToSqlTranslator` has to remember it, and forgetting is silent.
 
-### Call sites that reach the translator
+## Root cause
 
-`MongoDBToSqlTranslator.buildExpression` has three entry points, not two:
+`MongoDBToSqlTranslator` builds one SQL string and the caller executes it with no parameters, so every value taken
+off the wire is spelled into the statement text and its safety depends on `buildValue` escaping it correctly.
+
+Inlining hid a second defect. `buildValue`'s `else` branch spelled any non-`String` with `StringBuilder.append`,
+which is `String.valueOf`:
+
+- an `ObjectId` filter value emitted `ObjectId[...]`, which is not valid SQL
+- a `java.util.Date` emitted its `toString()`, which is not a SQL literal either
+- a `Double` could emit scientific notation
+- an empty `$in: []` emitted `IN ()`, which is not valid SQL
+
+There are **three** entry points into the translator, not the two the issue lists:
 
 | Entry point | Command | Statement |
 | --- | --- | --- |
@@ -16,95 +27,73 @@ Binding removes the class of bug.
 | `MongoDBDatabaseWrapper.appendWhere` via `executeUpdate` | `update` | `UPDATE ...` |
 | `MongoDBCollectionWrapper.queryDocuments` | `find` | `SELECT FROM ...` |
 
-The issue text says `find` does not go through the translator. That is only true of `countDocuments`, which is
-served by `MongoDBCollectionWrapper.count`. `find` reaches `MongoDBDatabaseWrapper.find` ->
-`handleQuery(MongoQuery)` -> `MongoDBCollectionWrapper.handleQuery(QueryParameters)` -> `queryDocuments`, which
-builds its own `SELECT` and calls `buildExpression`. So the read path is in scope too.
+The issue says `find` does not reach the translator. That is only true of `countDocuments`, which is served by
+`MongoDBCollectionWrapper.count`. `find` reaches `MongoDBDatabaseWrapper.find` -> `handleQuery(MongoQuery)` ->
+`MongoDBCollectionWrapper.handleQuery(QueryParameters)` -> `queryDocuments`, which builds its own `SELECT`. The
+read path was in scope too.
 
-### Defects the inlining hid
-
-Beyond the injection surface, `buildValue`'s `else` branch spelled any non-`String` with `StringBuilder.append`,
-which is `String.valueOf`:
-
-- an `ObjectId` filter value emitted `ObjectId[...]`, which is not valid SQL
-- a `java.util.Date` emitted its `toString()`, which is not a SQL literal either
-- a `Double` could emit scientific notation
-
-Binding keeps the Java value, so all three now compare against what the client actually sent.
-
-## Change
+## Fix
 
 `buildValue` no longer spells a value. It registers it in a `Map<String, Object>` under `p<n>` (where `n` is the
-map's current size, so names are unique and sequential) and appends `:p<n>`. The map is threaded through
-`buildExpression` (both overloads), `buildAnd`, `buildOr`, `buildCollection`, `appendWhere`,
+map's current size, so names are unique and assigned in the order values are met) and appends `:p<n>`. The map is
+threaded through `buildExpression` (both overloads), `buildAnd`, `buildOr`, `buildCollection`, `appendWhere`,
 `appendUpdateOperations` and the three call sites, and handed to `database.command` / `database.query`.
 
-`$in` / `$nin` bind the whole collection to a single parameter: the SQL grammar accepts an input parameter
-inside the `IN` parentheses (`x IN (:p0)`), so there is no need to emit one placeholder per element.
+`$in` / `$nin` bind the whole collection to a single parameter: the grammar accepts an input parameter inside the
+`IN` parentheses (`x IN (:p0)`), so there is no need to emit one placeholder per element. This is also what makes
+the empty-collection case work, where the old `IN ()` did not.
 
 **Identifiers still go through `Identifier.quote()` / `quoteFieldPath()`.** SQL cannot bind a type or property
-name, so that half of #5575 is unchanged. `quoteFieldPath` still splits on `.` and quotes each segment so
+name, so that half of #5575 is unchanged, and `quoteFieldPath` still splits on `.` and quotes each segment so
 MongoDB navigation into an embedded document keeps resolving.
 
-Two identifiers in `queryDocuments` were still being concatenated raw and are now quoted with the same helpers:
-the collection name and the `orderBy` field names.
+Three smaller repairs in the same code:
 
-On reachability, to be precise: `orderBy` comes from `queryObject.remove("$orderBy")`, and the modern `find`
-command never populates that key (`MongoDBDatabaseWrapper.find` builds its `MongoQuery` with a null sort). So the
-`orderBy` branch is reached only through the legacy `OP_QUERY` wrapper or through a `mongo`-language query run via
-`MongoQueryEngine`. It is untrusted query text either way and quoting it is correct, but it is not the
-straightforwardly remote-attacker-controlled path the first draft of this note claimed.
+- `queryDocuments` was concatenating the collection name and the `orderBy` field names raw; both now use the same
+  quoting helpers. On reachability, to be precise: `orderBy` comes from `queryObject.remove("$orderBy")`, and the
+  modern `find` command never populates that key, so the branch is reached only through the legacy `OP_QUERY`
+  wrapper or a `mongo`-language query via `MongoQueryEngine`. It is untrusted query text either way and quoting it
+  is correct, but it is not a straightforwardly remote-attacker-controlled path.
+- an empty `$orderBy` left a dangling `order by` with nothing to sort on, which does not parse. Guarded.
+- the `$nin` branch threw `"Operator $in was expecting a collection"`, a copy-paste from the `$in` branch above it.
 
 ## Verification
 
-- `MongoDBToSqlTranslatorParamsTest` (new, no server): calls the `protected static` builders directly and asserts
-  the generated SQL carries placeholders, the values never appear in the text, and the map holds the raw objects.
-  Covers equality, comparison operators, `$in`/`$nin`, `$or`, `$and`, nested documents and dotted paths.
-- `MongoDBParameterBindingTest` (new, wire level): drives a real server through the Mongo driver and asserts
-  quote-bearing, backslash-bearing and non-string values round-trip through `find`, `updateMany` and `deleteMany`.
-- `MongoDBSqlInjectionTest` must stay green unchanged - it is the #5575 regression suite.
-- Full `mongodbw` module suite for regressions.
+`mvn -pl mongodbw verify`: **52 tests, 0 failures**, plus `MongoQueryMetricsIT` run separately (green).
 
-## Results
+- `MongoDBToSqlTranslatorParamsTest` (new, no server, 14 cases) calls the `protected static` builders directly and
+  asserts the SQL carries placeholders, the values never appear in the text, and the map holds the raw objects.
+  Covers equality, comparison operators, `$in`/`$nin`, `$or`, `$and`, `$size`, nested documents, dotted paths,
+  null, and non-`String` types.
+- `MongoDBParameterBindingTest` (new, wire level, 13 cases) drives a real server through the Mongo driver:
+  quote-, backslash- and number-bearing values through `find`, `updateMany` and `deleteMany`; `$in` on both the
+  find and update paths; `$nin` positive match; empty `$in` / `$nin`; and `$set` / `replaceOne` values carrying
+  `'`, `"` and `\`. Every case pins a positive match, so none can pass merely by matching nothing.
+- `MongoDBSqlInjectionTest` (the #5575 regression suite) stays green **unchanged**.
 
-`mvn -pl mongodbw verify`: **45 tests, 0 failures**, plus `MongoQueryMetricsIT` run separately (1 test, green).
-That covers `MongoDBSqlInjectionTest` (4), `MongoDBUpdateDeleteTest` (8) and `MongoDBFindTest` (3) unchanged, so
-the #5575 contract and the ordinary read/write paths still hold.
+The new unit tests were proven to fail before being trusted: reverting only `buildValue` to the previous escaping
+form turns all 14 `MongoDBToSqlTranslatorParamsTest` cases red. The change was then restored and re-run green.
 
-The new tests were proven to fail before being trusted: reverting only `buildValue` to the previous escaping form
-turns all 14 `MongoDBToSqlTranslatorParamsTest` cases red. The change was then restored and re-run green.
+## Pull request
 
-### Notes for review
+https://github.com/ArcadeData/arcadedb/pull/5581
 
-- `buildValue` derives the placeholder name from `params.size()`, so it needs no separate counter and names come
-  out in the order the values are met. Every builder shares one map per statement.
-- Parameterising also makes the statement text stable across calls that differ only in their values, so the SQL
-  statement cache now gets a hit where every filter used to compile a fresh statement.
-- `$set` still goes out as ` MERGE <json>` built with `JSONObject`, which does its own escaping. That is a
-  different mechanism from the `WHERE` clause and was left alone.
-- `$inc` binds its operand but keeps the `(Number)` cast, so a non-numeric operand still fails the same way.
+## Follow-ups
 
-## Review cycle 1 (PR #5581, head 50b78a6)
+- **#5583** - `$set` and full-replacement values still travel as an inlined JSON literal (` MERGE <json>` /
+  ` CONTENT <json>`) rather than bound parameters. That path is safe because `JSONObject` does its own escaping,
+  and this PR added tests proving it rather than assuming it, but the "unreachable by construction" property
+  therefore covers the `WHERE` clause and `$inc`, not the update values. Binding them needs `MERGE`/`CONTENT` to
+  accept a parameter in place of a JSON literal, which must be checked against the grammar first; if it cannot,
+  closing #5583 as "escaping is the mechanism here" is a legitimate recorded decision.
+- **Unfiled:** `{field: null}` binds `field = :p0` with a null, which does not match missing fields the way
+  MongoDB does. This matches the prior `field = null` behavior, so it is a pre-existing semantic gap rather than a
+  regression from this change, but it is still a gap.
 
-The bot review raised no blocking items and four observations. Assessment and what was done:
+## Impact
 
-1. **`$set` / full-replacement values are still inlined as JSON, not bound.** Confirmed by reading the code:
-   `appendUpdateOperations` emits ` MERGE <documentToJson(operand)>` and a replacement emits ` CONTENT <json>`.
-   The reviewer judged this safe today because `JSONObject.toString()` escapes quotes and backslashes, and noted
-   no test pinned it. Rather than take that on faith, two wire tests now assert a `$set` value and a
-   `replaceOne` document each carrying `'`, `"` and `\` round-trip intact. **They pass**, so the property is
-   proven rather than assumed. Binding these would need `MERGE`/`CONTENT` to accept a parameter in place of a
-   JSON literal, which is a real change to the update path and out of this issue's scope (#5579 is about filter
-   values). Filed as a follow-up.
-2. **Empty `$orderBy` yields a dangling `order by`.** Confirmed: `orderBy != null` with an empty key set appended
-   `" order by "` and nothing after it, which does not parse. **Guard added** (`&& !orderBy.isEmpty()`). It is not
-   covered by a wire test because the modern driver cannot reach that branch at all - see the reachability note
-   above - so the guard is hardening for the legacy and `MongoQueryEngine` paths.
-3. **Coverage asymmetry on `$in` / `$nin`.** Fair. **Added** a find-path `$in` test and a positive-match `$nin`
-   test.
-4. **Null equality semantics.** `{field: null}` binds `field = :p0` with a null, which does not match missing
-   fields the way MongoDB does. The reviewer noted this matches the prior `field = null` behavior, and it does, so
-   it is **not a regression and no change was made**. It is a pre-existing semantic gap, not something this PR
-   introduced.
-
-Suite after the cycle: **49 tests, 0 failures.**
+Removes the injection class from the `WHERE` clause of every `find`, `update` and `delete` the MongoDB wire
+protocol translates, rather than relying on each call site remembering to escape. Fixes `ObjectId`, `Date`, large
+`Double` and empty-`$in` filter values, which previously produced statements the SQL parser rejects or
+misinterprets. Because the statement text is now stable across calls that differ only in their values, the SQL
+statement cache gets a hit where every distinct filter used to compile a fresh statement.

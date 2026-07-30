@@ -97,7 +97,7 @@ public class MongoDBToSqlTranslator {
         sql.append(" NOT IN ");
         buildCollection(sql, params, collection);
       } else
-        throw new IllegalArgumentException("Operator $in was expecting a collection");
+        throw new IllegalArgumentException("Operator $nin was expecting a collection");
     } else if ("$eq".equals(key)) {
       sql.append(" = ");
       buildValue(sql, params, value);
