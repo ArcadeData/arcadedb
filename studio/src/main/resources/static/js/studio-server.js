@@ -285,12 +285,22 @@ function displayMetrics() {
   }
   $("#srvMetricMetersTable").html(metersHtml || "<tr><td colspan='3' class='text-muted text-center'>No HTTP meters available.</td></tr>");
 
+  // Renders a gauge the pool may not publish at all: absent means "not applicable to this pool",
+  // which is different from zero and must not be shown as one.
+  function gaugeOrDash(pool, key) {
+    return pool[key] === undefined || pool[key] === null ? "<span class='text-muted'>-</span>"
+        : Math.round(pool[key]).toLocaleString();
+  }
+
   // Executor Pools table - rendered from metrics.executors. Server-side keys are populated by
-  // PoolMetrics; expected pool names are "query" (QueryEngineManager) and "sparse_vector"
-  // (SparseVectorScoringPool). Each pool's gauges are: pool.size, pool.active, queue.depth,
-  // queue.capacity_remaining, tasks.completed, tasks.caller_run_fallbacks.
+  // PoolMetrics; expected pool names are "query" (QueryEngineManager), "sparse_vector"
+  // (SparseVectorScoringPool) and "parallel_scan" (ParallelScanProducerPool). Each pool's gauges
+  // are: pool.size, pool.active, queue.depth, queue.capacity_remaining, tasks.completed,
+  // tasks.caller_run_fallbacks. The sparse-vector pool adds pool.reserved, queries.in_flight and
+  // queries.split, which explain its per-query decision to parallelise or not (#4085).
   var ex = serverData.metrics.executors || {};
-  var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring" };
+  var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring",
+      "parallel_scan": "Parallel Scan Producers" };
   var executorPoolNames = Object.keys(ex).sort();
   var executorsHtml = "";
   for (var i = 0; i < executorPoolNames.length; i++) {
@@ -310,9 +320,17 @@ function displayMetrics() {
     executorsHtml += "<td class='text-end'>" + Math.round(pool["queue.capacity_remaining"] || 0).toLocaleString() + "</td>";
     executorsHtml += "<td class='text-end'>" + Math.round(pool["tasks.completed"] || 0).toLocaleString() + "</td>";
     executorsHtml += "<td class='" + fallbackCellClass + "'>" + fallbacks.toLocaleString() + "</td>";
+    // Split-decision columns (#4085). Only the sparse-vector pool decides per query whether to
+    // parallelise, so a pool that does not report them shows "-" rather than a zero that would read
+    // as "nothing is splitting" when the concept simply does not apply. "Queries Split" is the
+    // decision, not the outcome: under caller-runs a submitted range executes inline on the caller,
+    // so it pairs with the Caller-Run Fallbacks column to the left.
+    executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "pool.reserved") + "</td>";
+    executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "queries.in_flight") + "</td>";
+    executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "queries.split") + "</td>";
     executorsHtml += "</tr>";
   }
-  $("#srvMetricExecutorsTable").html(executorsHtml || "<tr><td colspan='6' class='text-muted text-center'>No executor pool metrics available.</td></tr>");
+  $("#srvMetricExecutorsTable").html(executorsHtml || "<tr><td colspan='9' class='text-muted text-center'>No executor pool metrics available.</td></tr>");
 
   // Sparse Vector Indexes table - rendered from metrics.sparseVectorIndexes. Shape:
   //   { dbName: { typeIndexName: { memtablePostings, segmentCount, totalPostings } } }
