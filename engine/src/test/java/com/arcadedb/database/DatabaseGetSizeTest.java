@@ -36,7 +36,6 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.withinPercentage;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -154,7 +153,7 @@ class DatabaseGetSizeTest extends TestHelper {
    * getSize() sums the files under the database directory, and WAL segments are created and dropped there by background threads,
    * so it is a measurement of a moving target rather than a pure function. Asserting three consecutive calls are byte-identical
    * was therefore racy: it was seen failing on CI with 131453 then 65917, a delta of exactly one 64Kb segment. What the method
-   * does promise is that repeated calls keep working and keep reporting a plausible size, which is what this now checks.
+   * does promise is that repeated calls keep working and keep reporting a plausible size, which is what this checks.
    */
   @Test
   void getSizeMultipleCalls() {
@@ -162,14 +161,17 @@ class DatabaseGetSizeTest extends TestHelper {
     final long size2 = database.getSize();
     final long size3 = database.getSize();
 
-    assertThat(size1).isGreaterThan(0L);
-    assertThat(size2).isGreaterThan(0L);
-    assertThat(size3).isGreaterThan(0L);
+    final long smallest = Math.min(size1, Math.min(size2, size3));
+    final long largest = Math.max(size1, Math.max(size2, size3));
 
-    // NO CALL RETURNS SOMETHING WILDLY DIFFERENT FROM ITS NEIGHBOURS: THE DIRECTORY CAN GAIN OR LOSE WAL SEGMENTS BETWEEN CALLS,
-    // BUT NOT CHANGE ORDER OF MAGNITUDE, SO THIS STILL CATCHES A getSize() THAT MISCOUNTS OR RETURNS A PARTIAL SUM
-    assertThat(size2).isCloseTo(size1, withinPercentage(50.0));
-    assertThat(size3).isCloseTo(size2, withinPercentage(50.0));
+    assertThat(smallest).isGreaterThan(0L);
+
+    // Bound the spread instead of pinning it. This database is nearly empty, so one 64Kb WAL segment appearing or disappearing
+    // between two walks is the same order of magnitude as the whole database and consecutive sizes legitimately differ a lot.
+    // Comparing the extremes keeps the check symmetric: a percentage tolerance is computed against whichever value is passed as
+    // the expected one, so it would have allowed a segment to vanish while still failing when one was created. This still
+    // catches a getSize() that returns zero, a partial sum, or a wildly wrong count.
+    assertThat(largest).isLessThan(smallest * 10);
   }
 
   @Test
