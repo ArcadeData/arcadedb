@@ -585,13 +585,17 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return indexesOnBuckets;
     }
 
-    final int bucketIndex = type.getBucketIndexByKeys(keys,
+    // Pass the properties these keys belong to, NOT just the values: a record is placed by hashing the type's
+    // PARTITION properties, so pruning to the hash of an arbitrary key set lands on an unrelated bucket and the
+    // record is silently missed (issue #5589). The strategy compares the two and returns -1 when they differ,
+    // which falls through to the full fan-out below.
+    final List<String> propNames = getPropertyNames();
+
+    final int bucketIndex = type.getBucketIndexByKeys(propNames, keys,
         DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).asyncMode);
 
     if (bucketIndex > -1) {
       // USE THE SHARDED INDEX
-      final List<String> propNames = getPropertyNames();
-
       List<IndexInternal> polymorphicIndexesOnKeys = type.getPolymorphicBucketIndexByBucketId(
           type.getBuckets(false).get(bucketIndex).getFileId(), propNames);
 

@@ -182,7 +182,21 @@ public interface DocumentType {
 
   Bucket getBucketIdByRecord(Document record, boolean async);
 
-  int getBucketIndexByKeys(Object[] keys, boolean async);
+  /**
+   * Resolves the bucket holding the records matching {@code keys}, or -1 when the type's bucket selection strategy
+   * cannot tell. {@code propertyNames} states which properties {@code keys} are the values of, so a partitioning
+   * strategy can verify they are its own before pruning to a single bucket (issue #5589).
+   */
+  int getBucketIndexByKeys(List<String> propertyNames, Object[] keys, boolean async);
+
+  /**
+   * @deprecated the key array alone cannot be checked against the partition properties (issue #5589). Use
+   * {@link #getBucketIndexByKeys(List, Object[], boolean)}; this overload never prunes.
+   */
+  @Deprecated
+  default int getBucketIndexByKeys(final Object[] keys, final boolean async) {
+    return getBucketIndexByKeys(null, keys, async);
+  }
 
   BucketSelectionStrategy getBucketSelectionStrategy();
 

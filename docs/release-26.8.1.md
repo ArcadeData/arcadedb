@@ -56,7 +56,7 @@ ArcadeDB detects write conflicts per *page*, so two transactions that touched th
 share it. On a type with few buckets and many concurrent writers this made a retry pointless: the retry ran
 straight into the same collision ([#5279](https://github.com/ArcadeData/arcadedb/issues/5279)).
 
-Both halves of that are gone in 26.8.1:
+All three halves of that are gone in 26.8.1:
 
 - **Inserts** into one page now reserve their slot per in-flight transaction, so concurrent inserts get
   different positions (and different RIDs) instead of all being handed the same one, and the commit-time
@@ -65,6 +65,12 @@ Both halves of that are gone in 26.8.1:
   record that GREW - a longer string, one more property - and not only an overwrite of the same size or
   smaller. Growth is the normal update shape, so leaving it out kept concurrent updates of unrelated records
   conflicting for good.
+- **Deletes** of a plain in-place record are replayed too
+  ([#5569](https://github.com/ArcadeData/arcadedb/issues/5569)). Such a delete only zeroes one slot-table
+  entry, so it commutes with writes to every other slot - yet it used to take the whole page out of the merge,
+  which meant that deleting record A made every concurrent transaction that merely updated record B on the
+  same page fail. The pre-image is still compared byte for byte, so deleting a record another transaction is
+  updating remains a real conflict.
 
 Measured on the reported workload (one single bucket, `attempts=1`, no retry):
 
@@ -74,12 +80,14 @@ Measured on the reported workload (one single bucket, `attempts=1`, no retry):
 | Concurrent sub-graph creation (6 vertices + 5 edges per transaction) | ~270 / 320 | 0 |
 | 10 transactions updating 10 different records of one page | 9 failed / 10 | 0 |
 | Sustained updates, 8 writers on their own records of one page | ~2083 / 2880 | 0 |
+| 8 deletes + 8 updates of 16 different records of one page | 15 failed / 16 | 0 |
+| 10 transactions deleting 10 different records of one page | 9 failed / 10 | 0 |
 
 A `ConcurrentModificationException` is still raised - by design - when two transactions really write the
 **same** record: a byte-for-byte pre-image check makes sure no concurrent write is ever silently overwritten.
-The same goes for the write shapes no merge can replay (a delete, a placeholder or multi-page record, a
-record that has to spill out of its page). Nothing changes for single-writer workloads, and no application
-change is needed. The merge can be switched off with `arcadedb.txPageSlotMerge=false`.
+The same goes for the write shapes no merge can replay (a placeholder or multi-page record, a record that has
+to spill out of its page). Nothing changes for single-writer workloads, and no application change is needed.
+The merge can be switched off with `arcadedb.txPageSlotMerge=false`.
 
 #### `dateTimeImplementation=java.time.Instant` no longer breaks reading DATETIME values
 
@@ -407,5 +415,28 @@ Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
 - **The wrong number of arguments is now caught while parsing**, with a message naming the function and the
   count it expects, instead of at execution time. `distance()` was declared as taking exactly two arguments
   although it has always accepted an optional unit; the declaration was corrected rather than the behaviour.
+
+## Partitioned types: lookups on a secondary index no longer read the wrong bucket
+
+A type using `partitioned(...)` bucket selection places each record in the bucket its **partition** key hashes to,
+but every index lookup was pruned to the bucket the **lookup** key hashed to. For the partition index itself those
+are the same bucket; for any other index of the type they are unrelated, so the pruned search read a bucket the
+record was not in. The lookup silently returned nothing, and because the commit-time duplicate check reads through
+the same path, a secondary `UNIQUE` index stopped rejecting duplicates
+([#5589](https://github.com/ArcadeData/arcadedb/issues/5589)).
+
+The bucket-selection contract now carries the property names the key values belong to
+(`BucketSelectionStrategy.getBucketIdByKeys(List, Object[], boolean)`), so a partitioning strategy verifies the
+lookup covers exactly its partition properties before pruning and otherwise declines, which fans the search out
+across every bucket - correct, only slower. Pruning on the partition key itself is unchanged, including composite
+partition keys, and the SQL and Cypher planner pruning rules are unaffected.
+
+- **Databases that ran `partitioned(...)` on a type carrying more than one index may already hold duplicates in a
+  secondary `UNIQUE` index**, admitted while the check was reading the wrong bucket. The constraint is enforced
+  again from this release, but existing rows are not retro-validated: check those indexes for duplicate keys and
+  `REBUILD INDEX` them.
+- The single-argument `getBucketIdByKeys(Object[], boolean)` and `DocumentType.getBucketIndexByKeys(Object[],
+  boolean)` are deprecated. They still compile, and they never prune, since the keys alone cannot be verified
+  against the partition properties.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
