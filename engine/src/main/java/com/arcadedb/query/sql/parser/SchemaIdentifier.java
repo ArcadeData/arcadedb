@@ -49,7 +49,7 @@ public class SchemaIdentifier extends SimpleNode {
    */
   public static String unquoteName(final String namePart) {
     if (namePart.length() > 1 && namePart.charAt(0) == '`' && namePart.charAt(namePart.length() - 1) == '`')
-      return namePart.substring(1, namePart.length() - 1).replace("\\`", "`");
+      return Identifier.unescape(namePart.substring(1, namePart.length() - 1));
     return namePart;
   }
 
@@ -65,7 +65,7 @@ public class SchemaIdentifier extends SimpleNode {
           && c != ',';
     }
 
-    return needsQuoting ? "`" + namePart.replace("`", "\\`") + "`" : namePart;
+    return needsQuoting ? "`" + Identifier.escape(namePart) + "`" : namePart;
   }
 
   public String getName() {

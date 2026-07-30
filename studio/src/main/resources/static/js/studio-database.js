@@ -1479,7 +1479,7 @@ function createIndex(typeName) {
     let command = "CREATE INDEX";
     if (ifNotExists) command += " IF NOT EXISTS";
     command += " ON `" + typeName + "` (";
-    command += selectedProps.map(function (p) { return "`" + p + "`"; }).join(", ");
+    command += selectedProps.map(function (p) { return quoteSqlName(p); }).join(", ");
     command += ") " + indexTypeSql;
     if ((algorithm == "LSM_TREE" || algorithm == "HASH") && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
     if (metadataJson != null) command += " METADATA " + metadataJson;
@@ -1627,7 +1627,7 @@ function createType(category) {
     // Multiple parents
     let parents = $("#inputCreateTypeParents").val();
     if (parents && parents.length > 0)
-      command += " EXTENDS " + parents.map(function (p) { return "`" + p + "`"; }).join(", ");
+      command += " EXTENDS " + parents.map(function (p) { return quoteSqlName(p); }).join(", ");
 
     let buckets = $("#inputCreateTypeBuckets").val();
     if (buckets && parseInt(buckets) > 0)
@@ -4546,24 +4546,24 @@ function createGraphAnalyticalView() {
     if (vt)
       vt = vt.filter(function (v) { return v !== "__ALL__"; });
     if (vt && vt.length > 0)
-      command += " VERTEX TYPES (" + vt.map(function (v) { return "`" + v + "`"; }).join(", ") + ")";
+      command += " VERTEX TYPES (" + vt.map(function (v) { return quoteSqlName(v); }).join(", ") + ")";
 
     let et = $("#inputGavEdgeTypes").val();
     if (et)
       et = et.filter(function (e) { return e !== "__ALL__"; });
     if (et && et.length > 0)
-      command += " EDGE TYPES (" + et.map(function (e) { return "`" + e + "`"; }).join(", ") + ")";
+      command += " EDGE TYPES (" + et.map(function (e) { return quoteSqlName(e); }).join(", ") + ")";
 
     let props = $("#inputGavProperties").val().trim();
     if (props) {
-      let propList = props.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      let propList = props.split(",").filter(function (p) { return p.trim() !== ""; }).map(function (p) { return quoteSqlName(p.trim()); });
       if (propList.length > 0)
         command += " PROPERTIES (" + propList.join(", ") + ")";
     }
 
     let edgeProps = $("#inputGavEdgeProperties").val().trim();
     if (edgeProps) {
-      let edgePropList = edgeProps.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      let edgePropList = edgeProps.split(",").filter(function (p) { return p.trim() !== ""; }).map(function (p) { return quoteSqlName(p.trim()); });
       if (edgePropList.length > 0)
         command += " EDGE PROPERTIES (" + edgePropList.join(", ") + ")";
     }
