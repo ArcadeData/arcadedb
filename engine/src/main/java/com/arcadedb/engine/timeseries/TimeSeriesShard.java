@@ -94,8 +94,24 @@ public class TimeSeriesShard implements AutoCloseable {
     this(database, baseName, shardIndex, columns, 0);
   }
 
+  /**
+   * Assumes the current mutable row format, so it must not be used to open a type whose stored
+   * {@code mutableFormatVersion} says otherwise: that would read inline tag bytes as dictionary ids.
+   * Test-only for that reason - the engine threads the type's own version through the constructor below.
+   */
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns, final long compactionBucketIntervalMs) throws IOException {
+    this(database, baseName, shardIndex, columns, compactionBucketIntervalMs,
+        TimeSeriesTagDictionary.openOrCreate(database, baseName, columns, TimeSeriesBucket.CURRENT_VERSION));
+  }
+
+  /**
+   * @param tagDictionary the type's shared tag dictionary, or {@code null} to store TAG STRING columns
+   *                      inline as mutable format version 0 did
+   */
+  public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
+                         final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
+                         final TimeSeriesTagDictionary tagDictionary) throws IOException {
     this.shardIndex = shardIndex;
     this.typeName = baseName;
     this.database = database;
@@ -110,11 +126,11 @@ public class TimeSeriesShard implements AutoCloseable {
     final Component existing = schema.getFileByName(shardName);
     if (existing instanceof TimeSeriesBucket tsb) {
       this.mutableBucket = tsb;
-      this.mutableBucket.setColumns(columns);
+      this.mutableBucket.setColumns(columns, tagDictionary);
     } else {
       // First-time creation: register the file with the schema BEFORE initialising the header
       // page, so that the nested-TX commit in initHeaderPage() can resolve the file by its ID.
-      this.mutableBucket = new TimeSeriesBucket(database, shardName, shardPath, columns);
+      this.mutableBucket = new TimeSeriesBucket(database, shardName, shardPath, columns, tagDictionary);
       schema.registerFile(mutableBucket);
       // Initialise the header page in a self-contained nested transaction.  Using a nested TX
       // here ensures that page 0 is committed immediately and is NOT placed in any enclosing
