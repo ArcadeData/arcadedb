@@ -147,6 +147,15 @@ public class Dictionary extends PaginatedComponent {
           "Dictionary '" + filePath + "' was written with format version " + version + ", which this version of ArcadeDB cannot "
               + "read (latest known is " + CURRENT_VERSION + ")");
     reload();
+
+    if (pageCount.get() > 1)
+      // RESTATED ON EVERY OPEN, NOT ONLY WHEN IT HAPPENS. THE ROLLOVER ITSELF IS LOGGED ONCE, WHICH IS NO USE TO SOMEONE LOOKING
+      // AT A DATABASE AFTERWARDS OR PLANNING A ROLLBACK; THIS IS THE SAME FACT AS CURRENT STATE RATHER THAN AS AN EVENT. IT IS
+      // DERIVED FROM THE PAGE COUNT, SO IT CANNOT DRIFT THE WAY A SEPARATE PERSISTED MARKER COULD
+      LogManager.instance().log(this, Level.INFO,
+          "Database '%s' schema dictionary spans %d pages. It cannot be read by a build without multi-page dictionary support, "
+              + "so replicas and any rollback target have to be on this version or newer", null, database.getName(),
+          pageCount.get());
   }
 
   public int getIdByName(final String name, final boolean create) {
