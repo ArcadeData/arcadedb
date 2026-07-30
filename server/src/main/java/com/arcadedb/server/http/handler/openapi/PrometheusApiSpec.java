@@ -208,7 +208,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             '__name__' label. A selector that fails to parse is skipped rather than rejected, so a \
             mix of valid and malformed 'match[]' values still returns the matches from the valid ones.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    final Parameter match = SpecBuilders.queryParam("match[]",
+    final Parameter match = SpecBuilders.repeatableQueryParam("match[]",
         "Series selector. Repeatable: every occurrence is evaluated and the results are unioned.", true);
     get.addParametersItem(match);
     get.addParametersItem(SpecBuilders.queryParam("start",

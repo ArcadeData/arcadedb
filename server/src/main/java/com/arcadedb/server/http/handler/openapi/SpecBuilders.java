@@ -75,6 +75,24 @@ public final class SpecBuilders {
     return param;
   }
 
+  /**
+   * A query parameter the server reads as a repeated multi-valued key. Declared as an array with
+   * form style and explode enabled, which serializes as name=v1&name=v2, the form a repeated
+   * parameter actually takes on the wire.
+   */
+  public static Parameter repeatableQueryParam(final String name, final String description,
+      final boolean required) {
+    final Parameter param = new Parameter();
+    param.setName(name);
+    param.setIn("query");
+    param.setRequired(required);
+    param.setDescription(description);
+    param.setStyle(Parameter.StyleEnum.FORM);
+    param.setExplode(true);
+    param.setSchema(new Schema<>().type("array").items(new Schema<>().type("string")));
+    return param;
+  }
+
   public static Schema<Object> object(final String description) {
     final Schema<Object> schema = new Schema<>();
     schema.setType("object");

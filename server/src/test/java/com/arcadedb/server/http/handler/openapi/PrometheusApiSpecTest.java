@@ -129,6 +129,11 @@ class PrometheusApiSpecTest {
     final Parameter match = get.getParameters().stream()
         .filter(p -> "match[]".equals(p.getName())).findFirst().orElseThrow();
     assertThat(match.getRequired()).isTrue();
+    assertThat(match.getSchema().getType())
+        .as("match[] must be an array, not a scalar, so a generated client can send more than one")
+        .isEqualTo("array");
+    assertThat(match.getSchema().getItems().getType()).isEqualTo("string");
+    assertThat(match.getExplode()).isTrue();
 
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("PromQLSeriesResponse");
     assertThat(schema.getProperties().get("data").getItems().getType()).isEqualTo("object");

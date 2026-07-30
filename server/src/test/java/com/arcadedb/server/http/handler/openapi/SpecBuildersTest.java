@@ -51,6 +51,17 @@ class SpecBuildersTest {
   }
 
   @Test
+  void repeatableQueryParameterIsAnArrayWithFormExplode() {
+    final Parameter param = SpecBuilders.repeatableQueryParam("match[]", "Series selector", true);
+    assertThat(param.getIn()).isEqualTo("query");
+    assertThat(param.getRequired()).isTrue();
+    assertThat(param.getStyle()).isEqualTo(Parameter.StyleEnum.FORM);
+    assertThat(param.getExplode()).isTrue();
+    assertThat(param.getSchema().getType()).isEqualTo("array");
+    assertThat(param.getSchema().getItems().getType()).isEqualTo("string");
+  }
+
+  @Test
   void rawBodyDeclaresMediaTypeAndFormat() {
     final RequestBody body = SpecBuilders.rawBody("Snappy protobuf", "application/x-protobuf", "binary");
     assertThat(body.getContent()).containsKey("application/x-protobuf");
