@@ -123,6 +123,11 @@ class CypherFunctionArityRegistryTest extends TestHelper {
    * zero so this cannot quietly look like coverage it does not provide. Making it real would mean declaring bounds on
    * every executor, which still would not reach the functions behind {@code SQLFunctionBridge} ({@code distance} among
    * them, the one entry that was actually wrong), because {@code SQLFunction} has no bounds to delegate to.
+   * <p>
+   * Giving {@code SQLFunction} an argument-count contract for {@code SQLFunctionBridge} to pass through would close
+   * exactly that blind spot and let this guard cover the seven bridged functions instead of nothing. It is a change to
+   * the SQL function hierarchy rather than to the Cypher type checking this issue is about, so it is left as follow-up
+   * work; until it happens, the manual sweep described above is the only thing standing behind those seven.
    */
   @Test
   void noRegisteredSignatureIsNarrowerThanWhatItsExecutorDeclares() {
