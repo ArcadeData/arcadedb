@@ -134,7 +134,10 @@ public final class PoolMetrics implements MeterBinder {
         .description("Sparse-vector scoring: cumulative top-K queries split into parallel RID ranges since startup. "
             + "Counts the decision, not the outcome: a range submitted to a full queue runs inline on the caller under the "
             + "caller-runs policy, so a query counted here can still have executed serially. Read alongside "
-            + "tasks.caller_run_fallbacks, which is where that shows up.")
+            + "tasks.caller_run_fallbacks, which is where that shows up. It also records only WHETHER a query split, not into "
+            + "how many ranges - and width is what explains the tail-latency band the default shows at moderate concurrency, "
+            + "where some queries claim a wide split and others get none. A distribution of granted partition counts is the "
+            + "gauge that would show it; this one cannot.")
         .tags(tags).register(registry);
   }
 

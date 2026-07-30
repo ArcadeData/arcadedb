@@ -336,7 +336,12 @@ public enum GlobalConfiguration {
       split on a learned-sparse corpus). On the default the engine claims only workers no other \
       query needs, and does not split at all once enough queries are already in flight to keep \
       the pool busy on their own - so an idle server spends spare cores on latency while a \
-      saturated one keeps its throughput. Measured on an 18-worker box at 500k documents: one \
+      saturated one keeps its throughput. One cost of the default worth knowing: in a narrow band \
+      of moderate concurrency, where some queries claim a wide split and others get none, the \
+      spread between the two shows up as tail latency. Measured at 4 concurrent clients on an \
+      18-thread pool, p99 was about 1.2x serial's while the median was 3.4x better (7.6 ms against \
+      26.2). The band closes on both sides - below it every query splits, above it none does - and \
+      the median win is large enough that the default keeps the trade rather than flattening it. Measured on an 18-worker box at 500k documents: one \
       client 13.7 -> 3.1 ms p50, four clients 13.6 -> 4.1 ms with 61% more throughput, sixteen \
       clients within 5% of serial throughput. Any explicit value above 1 opts out of that \
       self-throttling and splits regardless of load. That is a throughput risk on a busy server, \
