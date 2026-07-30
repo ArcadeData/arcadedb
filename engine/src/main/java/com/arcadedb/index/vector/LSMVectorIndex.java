@@ -179,7 +179,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
   // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
-  private volatile boolean                       locationCacheCapReported;
+  // compareAndSet, not a plain flag: two threads racing the first call would otherwise both log it.
+  private final    AtomicBoolean                 locationCacheCapReported = new AtomicBoolean();
 
   // Graph file for persistent storage of graph topology
   // Allows lazy-loading graph from disk and avoiding expensive rebuilds
@@ -4814,7 +4815,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("vectorCacheMisses", searchCache != null ? searchCache.getMisses() : 0L);
 
     // NEW: Memory estimates
-    stats.put("estimatedLocationIndexBytes", (long) locations.size() * 24L);
+    // Quote the retained heap, not the 24-byte payload: this stat is what an operator sizes a heap from, and the
+    // payload-only figure it used to report under-estimated the location index several-fold (issue #5568).
+    stats.put("estimatedLocationIndexBytes",
+        (long) locations.size() * VectorLocationIndex.APPROX_RETAINED_BYTES_PER_LOCATION);
     stats.put("estimatedOrdinalMapBytes", ordinalToVectorId != null ?
         (long) ordinalToVectorId.length * 4L : 0L);
 
@@ -5263,8 +5267,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         metadata.locationCacheSize :
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE);
 
-    if (configured > 0 && !locationCacheCapReported) {
-      locationCacheCapReported = true;
+    if (configured > 0 && locationCacheCapReported.compareAndSet(false, true)) {
       LogManager.instance().log(this, Level.WARNING,
           """
           Ignoring a location cache limit of %d for vector index '%s': evicting a live vector location deletes the \

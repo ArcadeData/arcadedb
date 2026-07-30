@@ -112,4 +112,37 @@ Expected parameter(s): id
 
 To keep the old behaviour for a specific query, bind the name explicitly to `null`.
 
+## Vector index: the location cache no longer evicts, and `arcadedb.vectorIndex.locationCacheSize` is ignored
+
+**Behaviour change for operators.** `arcadedb.vectorIndex.locationCacheSize` (and the per-index
+`locationCacheSize` metadata) used to cap the in-memory location index of an `LSM_VECTOR` index and let it evict.
+That was never a cache bound. A location is the only record of which record a vector id belongs to and where its
+entry sits in the index file, and nothing on disk maps a vector id back to an offset, so an evicted entry could
+not be recovered - and every reader reads a missing location as deleted. A cap of 100 over 1000 live vectors made
+`countEntries()` report 100, and a query whose neighbours had been evicted dropped them
+([#5568](https://github.com/ArcadeData/arcadedb/issues/5568)).
+
+The limit dates from when the index held one location per *write*, so it grew with the write history. Issue #5516
+removed that: a tombstoned id releases its location, so residency now follows the number of **live** vectors.
+
+- **The setting is ignored** and reported once per index at `WARNING`. The `low-ram` profile no longer sets it.
+- **Plan for ~90 bytes per live vector** - about 90MB per million, 900MB at 10 million. This is the figure
+  `getStats()` now reports as `estimatedLocationIndexBytes`; it previously quoted the 24-byte payload and so
+  under-estimated the footprint several-fold.
+- **An index that appeared to work under a cap on a large corpus may now need a larger heap** instead of silently
+  under-reporting its size and losing vectors from searches. That is the intended trade: a wrong answer is worse
+  than a visible memory requirement.
+- A compaction transiently holds two copies of the location set while it publishes the new one.
+
+## Vector index: `countEntries()` is no longer torn by a concurrent graph rebuild
+
+A rebuild used to clear the live location index and refill it entry by entry. The write lock it held only
+serializes writers; `countEntries()` and `getStats()` take no lock, so they observed the map mid-refill and
+reported an arbitrary fraction of its real content - a different wrong number on each run, most visibly right
+after a `compact()`, because a compaction *is* a rebuild. A rebuild now publishes a fully populated replacement
+with a single reference assignment, so a reader sees either the whole old set or the whole new one, and the
+compaction publishes it inside the same critical section that swaps the data file - closing a window in which a
+search could resolve pre-compaction offsets against the new file
+([#5568](https://github.com/ArcadeData/arcadedb/issues/5568)).
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
