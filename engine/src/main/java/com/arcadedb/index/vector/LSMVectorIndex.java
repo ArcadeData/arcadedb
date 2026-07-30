@@ -4219,10 +4219,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #compact()}, so it is the same replication-safe path an explicit COMPACT INDEX takes.
    */
   public void onAfterCommit() {
-    if (!isCompactionDue())
-      return;
-
+    // The whole body is guarded, the decision included: this runs inside the commit, before it is marked
+    // committed, so anything thrown here would fail a transaction whose data is already durable.
     try {
+      if (!isCompactionDue())
+        return;
+
       // scheduleCompaction() inside async().compact() flips AVAILABLE -> COMPACTION_SCHEDULED, so a second commit
       // arriving while one is still pending is a no-op instead of a queue of redundant rewrites.
       ((DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
@@ -4548,40 +4550,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       compactionStarted = true;
 
-    try {
-      // Compaction IS a rebuild that also rewrites the data file: the rebuild already reads every page, resolves
-      // the LSM merge and produces the live set, so the compacted content is exactly what it computes. Running the
-      // two as one pass is what keeps them from disagreeing about which vectors are live - a standalone compactor
-      // with its own merge rules used to resurrect deleted vectors and duplicate updated ones.
-      //
-      // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine flush: the
-      // recording session captures registerFile + the page writes + the drop of the files they replace, and the
-      // synthetic WAL ships the new component to followers atomically with the leader's commit. The compacted
-      // pages are written synchronously, so the wait below is not what makes THEM durable: it is the guard that
-      // the session ships nothing still pending from the rest of the rebuild (#4928).
-      final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
-        final int fileIdBefore = getFileId();
-        buildGraphFromScratch(null, true);
-        // If the bounded wait gives up (#4928), the shipped component could contain unflushed (zero) pages:
-        // fail the compaction, it is rescheduled later.
-        if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
-          throw new IOException("Vector index compaction aborted: pages are still pending flush after the no-progress timeout");
-        // The data file is swapped only when the rewrite actually ran (it is skipped on an empty or
-        // partially-recovered live set), so the file id is what says whether anything was compacted.
-        return getFileId() != fileIdBefore;
-      });
-      if (success) {
-        // Track successful compaction
-        metrics.incrementCompactionCount();
+      try {
+          // Compaction IS a rebuild that also rewrites the data file: the rebuild already reads every page, resolves
+        // the LSM merge and produces the live set, so the compacted content is exactly what it computes. Running the
+        // two as one pass is what keeps them from disagreeing about which vectors are live - a standalone compactor
+        // with its own merge rules used to resurrect deleted vectors and duplicate updated ones.
+        //
+        // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine flush: the
+        // recording session captures registerFile + the page writes + the drop of the files they replace, and the
+        // synthetic WAL ships the new component to followers atomically with the leader's commit. The compacted
+        // pages are written synchronously, so the wait below is not what makes THEM durable: it is the guard that
+        // the session ships nothing still pending from the rest of the rebuild (#4928).
+        final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+          final int fileIdBefore = getFileId();
+          buildGraphFromScratch(null, true);
+          // If the bounded wait gives up (#4928), the shipped component could contain unflushed (zero) pages:
+          // fail the compaction, it is rescheduled later.
+          if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+            throw new IOException("Vector index compaction aborted: pages are still pending flush after the no-progress timeout");
+          // The data file is swapped only when the rewrite actually ran (it is skipped on an empty or
+          // partially-recovered live set), so the file id is what says whether anything was compacted.
+          return getFileId() != fileIdBefore;
+        });
+        if (success) {
+          // Track successful compaction
+          metrics.incrementCompactionCount();
+        }
+        return success;
+      } catch (final TimeoutException e) {
+        LogManager.instance().log(this, Level.FINE, "compact() caught TimeoutException: %s", e.getMessage());
+        // IGNORE IT, WILL RETRY LATER
+        return false;
+      } finally {
+        status.set(INDEX_STATUS.AVAILABLE);
       }
-      return success;
-    } catch (final TimeoutException e) {
-      LogManager.instance().log(this, Level.FINE, "compact() caught TimeoutException: %s", e.getMessage());
-      // IGNORE IT, WILL RETRY LATER
-      return false;
-    } finally {
-      status.set(INDEX_STATUS.AVAILABLE);
-    }
 
     } finally {
       if (!compactionStarted)

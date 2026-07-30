@@ -21,6 +21,8 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -32,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * An LSM_VECTOR data file only ever grows: an update appends a new vector plus a tombstone for the one it
@@ -210,6 +213,31 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
 
     assertThat(index.scheduleCompaction())
         .as("the postponed attempt must have released the slot, or nothing can ever compact this index again")
+        .isTrue();
+  }
+
+  /**
+   * The slot is reserved by DatabaseAsyncExecutorImpl.compact() BEFORE the task is handed to a worker, and only
+   * the compaction running gives it back - so an attempt whose task never reaches a worker has to release it there
+   * instead. A shut-down executor is the reachable version of that in a test; a full worker queue answers false
+   * from the same call and takes the same path out.
+   */
+  @Test
+  void anAttemptWhoseTaskIsNeverEnqueuedReleasesItsSlot() {
+    createSchema();
+    insertVertices();
+
+    final LSMVectorIndex index = vectorIndex();
+    database.async().waitCompletion(30_000);
+    ((DatabaseAsyncExecutorImpl) database.async()).close();
+
+    // Nothing can run the compaction now. The attempt reports the shutdown to its caller - onAfterCommit is what
+    // turns that into a log line rather than a failed commit - but it must not walk away still holding the index.
+    assertThatThrownBy(() -> ((DatabaseAsyncExecutorImpl) database.async()).compact(index))
+        .isInstanceOf(DatabaseOperationException.class);
+
+    assertThat(index.scheduleCompaction())
+        .as("a compaction that was never enqueued must leave the index schedulable")
         .isTrue();
   }
 
