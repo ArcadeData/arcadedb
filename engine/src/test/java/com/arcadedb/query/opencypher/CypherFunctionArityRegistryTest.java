@@ -50,7 +50,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * it was done once by hand: all 129 registered names were resolved to their executors (following the seven that reach a
  * SQL function through {@code SQLFunctionBridge}, {@code distance} among them) and each executor's source was checked for
  * the highest argument index it reads. Only {@code distance} reached past its declaration. Re-run that sweep when adding
- * a function whose executor is not the obvious one.
+ * a function whose executor is not the obvious one - {@code FunctionValidator.registerFunction()} carries the same
+ * warning, which is where someone adding one will be looking.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -112,10 +113,21 @@ class CypherFunctionArityRegistryTest extends TestHelper {
         .hasMessageContaining("2-3 arguments");
   }
 
+  /**
+   * Holds any executor that states its own bounds to its declaration, so the parser can never refuse a call the executor
+   * would have accepted.
+   * <p>
+   * <b>This compares nothing today</b> and the assertion at the end says so: not one of the functions registered in
+   * {@link FunctionValidator} overrides {@code getMinArgs()}/{@code getMaxArgs()}, so every one of them is skipped. It is
+   * kept as a forward guard - an executor that starts declaring bounds is held to them from that moment - and pinned at
+   * zero so this cannot quietly look like coverage it does not provide. Making it real would mean declaring bounds on
+   * every executor, which still would not reach the functions behind {@code SQLFunctionBridge} ({@code distance} among
+   * them, the one entry that was actually wrong), because {@code SQLFunction} has no bounds to delegate to.
+   */
   @Test
   void noRegisteredSignatureIsNarrowerThanWhatItsExecutorDeclares() {
-    // Where an executor states its own bounds, the parser must not refuse a call the executor would have accepted.
     final CypherFunctionFactory factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    int compared = 0;
 
     for (final String name : FunctionValidator.getKnownFunctionNames()) {
       final StatelessFunction executor;
@@ -130,6 +142,7 @@ class CypherFunctionArityRegistryTest extends TestHelper {
       if (executorMin == 0 && executorMax == Integer.MAX_VALUE)
         continue;
 
+      compared++;
       final FunctionSignature signature = FunctionValidator.getSignature(name);
       assertThat(signature.getMinArgs()).as("%s: parser demands more arguments than its executor does", name)
           .isLessThanOrEqualTo(executorMin);
@@ -137,6 +150,10 @@ class CypherFunctionArityRegistryTest extends TestHelper {
         assertThat(signature.getMaxArgs()).as("%s: parser allows fewer arguments than its executor accepts", name)
             .isGreaterThanOrEqualTo(executorMax);
     }
+
+    assertThat(compared)
+        .as("no registered executor declares its own bounds, so this guard is inert; if that changed, drop this pin")
+        .isZero();
   }
 
   @Test

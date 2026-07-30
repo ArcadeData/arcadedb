@@ -268,6 +268,23 @@ public class FunctionValidator {
     registerFunction("linenumber", 0, 0, "Current LOAD CSV line number", false);
   }
 
+  /**
+   * Declares a function to the parser.
+   * <p>
+   * <b>{@code minArgs}/{@code maxArgs} are enforced, not documentation.</b> Since issue #5484 the counts declared here are
+   * checked while parsing, so a range narrower than what the function really accepts rejects a query that would have
+   * worked. That is not hypothetical: {@code distance()} had always taken an optional unit while being declared as exactly
+   * two arguments, and the mistake only surfaced when the check was switched on.
+   * <p>
+   * So when adding a function, read its executor and count the arguments it actually reads - including the optional ones -
+   * rather than copying the shape of a neighbouring entry. Nothing verifies this automatically: the guard in
+   * {@code CypherFunctionArityRegistryTest} only compares against executors that declare their own
+   * {@code getMinArgs()}/{@code getMaxArgs()}, and none of the functions registered here do; the ones reached through
+   * {@code SQLFunctionBridge} could not anyway, since {@code SQLFunction} declares no argument bounds to delegate to.
+   *
+   * @param minArgs fewest arguments the function accepts
+   * @param maxArgs most arguments it accepts, or -1 for no limit
+   */
   private static void registerFunction(final String name, final int minArgs, final int maxArgs,
                                        final String description, final boolean aggregation) {
     FUNCTIONS.put(name.toLowerCase(Locale.ROOT), new FunctionSignature(name, minArgs, maxArgs, description, aggregation));
