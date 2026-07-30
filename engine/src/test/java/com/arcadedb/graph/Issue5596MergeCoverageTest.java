@@ -109,6 +109,11 @@ class Issue5596MergeCoverageTest extends TestHelper {
     return chunk[0];
   }
 
+  /** Page merges declined because the page could not prove its coverage (#5596). */
+  private long declinedByCoverage() {
+    return ((DatabaseInternal) database).getPageManager().getStats().mergesDeclinedByCoverage;
+  }
+
   private void assertSamePage(final RID a, final RID b) {
     assertThat(a.getBucketId()).as("same segments bucket").isEqualTo(b.getBucketId());
     final int maxRecords = ((LocalBucket) database.getSchema().getBucketById(a.getBucketId())).getMaxRecordsInPage();
@@ -180,6 +185,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     final PageId pageId = new PageId(database, segments.getFileId(),
         (int) (chunkA.getPosition() / segments.getMaxRecordsInPage()));
 
+    final long declinedBefore = declinedByCoverage();
     final CountDownLatch mainTxWritesDone = new CountDownLatch(1);
     final CountDownLatch bumpCommitted = new CountDownLatch(1);
     final List<Throwable> errors = new CopyOnWriteArrayList<>();
@@ -237,6 +243,10 @@ class Issue5596MergeCoverageTest extends TestHelper {
     assertThat(readMarker(pageId, segments.getPageSize())).as("the undeclared write must not have been merged away")
         .isEqualTo(POKED);
 
+    // ...and the coverage proof is what refused the page, not some unrelated conflict.
+    assertThat(declinedByCoverage() - declinedBefore).as("the merge must have been declined for lack of coverage")
+        .isGreaterThan(0);
+
     // ...and neither writer's append may be lost either.
     database.transaction(() -> {
       assertThat(hubA.asVertex(true).countEdges(Vertex.DIRECTION.OUT, "LinkA")).isEqualTo(2);
@@ -258,6 +268,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     assertSamePage(outHeadChunk(hubA), outHeadChunk(hubC));
 
     final long mergesBefore = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges;
+    final long declinedBefore = declinedByCoverage();
 
     final int rounds = 40;
     final CountDownLatch start = new CountDownLatch(1);
@@ -293,10 +304,89 @@ class Issue5596MergeCoverageTest extends TestHelper {
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges - mergesBefore;
     assertThat(merges).as("the edge-append merge must still fire on a fully covered page").isGreaterThan(0);
+    // The load-bearing half: a writer that forgot its declaration would show up HERE, as declines instead of merges.
+    assertThat(declinedByCoverage() - declinedBefore)
+        .as("an append-only page must never be declined for lack of coverage").isZero();
 
     database.transaction(() -> {
       assertThat(hubA.asVertex(true).countEdges(Vertex.DIRECTION.OUT, "LinkA")).isEqualTo(1 + rounds);
       assertThat(hubC.asVertex(true).countEdges(Vertex.DIRECTION.OUT, "LinkC")).isEqualTo(1 + rounds);
+    });
+  }
+
+  /**
+   * The same over-tightening guard for the disjoint-slot merge, on the two shapes whose declarations are the easiest
+   * to get wrong because they write far more than one record's bytes: a record GROWTH (which shifts the records that
+   * follow and rewrites their slot-table offsets) and a plain record DELETE (#5569). Both are fully declared, so on a
+   * page several writers contend for the merge must keep firing and NOTHING may be declined for lack of coverage - a
+   * missing declaration on either would silently turn absorbed contention back into retries, which no correctness
+   * assertion would notice.
+   */
+  @Test
+  void cleanGrowthAndDeleteConflictsAreStillMerged() throws Exception {
+    final int records = 8;
+    final int steps = 60;
+
+    final RID[] grow = new RID[records];
+    final RID[] victim = new RID[records];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Mixed", 1);
+      for (int i = 0; i < records; i++) {
+        grow[i] = database.newDocument("Mixed").set("role", "grow").set("tag", "").save().getIdentity();
+        victim[i] = database.newDocument("Mixed").set("role", "victim").save().getIdentity();
+      }
+    });
+
+    final long mergesBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
+    final long declinedBefore = declinedByCoverage();
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final List<Thread> threads = new java.util.ArrayList<>();
+
+    for (int t = 0; t < records; t++) {
+      final RID g = grow[t];
+      threads.add(new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 1; i <= steps; i++) {
+            final String value = "x".repeat(i); // strictly growing -> the in-page growth declaration
+            database.transaction(() -> g.asDocument(true).modify().set("tag", value).save(), true, 50);
+          }
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "grow-" + t));
+
+      final RID v = victim[t];
+      threads.add(new Thread(() -> {
+        try {
+          start.await();
+          database.transaction(() -> v.asDocument(true).delete(), true, 50);
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "delete-" + t));
+    }
+
+    for (final Thread thread : threads)
+      thread.start();
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+
+    if (!errors.isEmpty())
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+
+    final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges - mergesBefore;
+    assertThat(merges).as("growth and delete slot merges must still fire on fully covered pages").isGreaterThan(0);
+    assertThat(declinedByCoverage() - declinedBefore)
+        .as("a page of declared growths and deletes must never be declined").isZero();
+
+    // And the writes themselves are intact: every grower reached its final length, every victim is gone.
+    database.transaction(() -> {
+      for (int i = 0; i < records; i++)
+        assertThat(grow[i].asDocument(true).getString("tag")).isEqualTo("x".repeat(steps));
+      assertThat(database.countType("Mixed", false)).isEqualTo(records);
     });
   }
 
@@ -325,6 +415,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     assertThat(bumped.getPosition() / bucket.getMaxRecordsInPage()).as("all three records must share one page")
         .isEqualTo(tracked.getPosition() / bucket.getMaxRecordsInPage());
 
+    final long declinedBefore = declinedByCoverage();
     final CountDownLatch mainTxWritesDone = new CountDownLatch(1);
     final CountDownLatch bumpCommitted = new CountDownLatch(1);
     final List<Throwable> errors = new CopyOnWriteArrayList<>();
@@ -377,6 +468,8 @@ class Issue5596MergeCoverageTest extends TestHelper {
     database.transaction(() -> {
       assertThat(ridOf("victim").asDocument(true).getString("marker")).as("the undeclared write must not be merged away")
           .isEqualTo(POKED);
+      assertThat(declinedByCoverage() - declinedBefore).as("the merge must have been declined for lack of coverage")
+          .isGreaterThan(0);
       assertThat(tracked.asDocument(true).getString("tag")).isEqualTo("11111111");
       assertThat(bumped.asDocument(true).getString("tag")).isEqualTo("99999999");
     });

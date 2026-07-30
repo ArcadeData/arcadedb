@@ -760,6 +760,7 @@ public class TransactionContext implements Transaction {
     // never knew the merge exists) leaves at least one undeclared byte behind and is refused here - a retry instead
     // of a silently lost write. Logged because it is also the signal that a writer is missing its poison call.
     if (!page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE)) {
+      database.getPageManager().incrementMergesDeclinedByCoverage();
       LogManager.instance().log(this, Level.FINE,
           "Edge-append merge declined page %s: it carries changes no tracked append accounts for", pageId);
       return false;
@@ -1071,6 +1072,7 @@ public class TransactionContext implements Transaction {
     // #5596: same coverage proof as the edge-append merge - the page is re-derived from the tracked slot writes
     // alone, so any byte written outside a slot-merge declaration disqualifies it.
     if (!page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)) {
+      database.getPageManager().incrementMergesDeclinedByCoverage();
       LogManager.instance().log(this, Level.FINE,
           "Slot merge declined page %s: it carries changes no tracked slot write accounts for", pageId);
       return false;

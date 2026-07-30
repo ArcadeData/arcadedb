@@ -36,6 +36,8 @@ class MutablePageWriteCoverageTest {
   private MutablePage newPage() {
     // NOT the (pageId,size) constructor: that one marks the whole page modified (a brand-new page), which would
     // start every test from an already-uncovered state.
+    // A null PageId keeps this a pure unit test (a real one needs a database): the coverage bookkeeping is per-page
+    // state that never dereferences the page id. If that ever changes, give these pages a real PageId.
     return new MutablePage(null, PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
   }
 

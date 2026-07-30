@@ -65,6 +65,11 @@ public class MutablePage extends BasePage implements TrackableContent {
   // Replay-coverage bookkeeping (issue #5596). declaredCoverage is the set of mechanisms that own the write
   // currently in progress; uncoveredMechanisms is the sticky set of mechanisms that CANNOT account for at least one
   // byte this transaction dirtied on this page. See beginCoveredWrite/isFullyCoveredBy.
+  // Plain ints on purpose, like every other field of this class: a MutablePage is one transaction's private image of
+  // a page (see the class note above), dirtied only by the thread that owns that transaction and read on the
+  // committing thread - which is the same thread, or one the commit hand-off already orders against it. Do NOT
+  // introduce a background mutator of a modified image: it would need synchronisation here, and an unsynchronised
+  // one could hide a dirtied byte from the coverage proof, which is the very hazard #5596 exists to remove.
   private              int     declaredCoverage           = 0;
   private              int     uncoveredMechanisms        = 0;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
@@ -258,6 +263,12 @@ public class MutablePage extends BasePage implements TrackableContent {
    * writer to opt OUT (the {@code poisonEdgeAppendPage}/{@code poisonSlotRebasePage} calls, one forgotten call = a
    * silently lost write), a byte counts as covered only while its writer says so: any write performed outside a
    * declaration permanently marks the page as not re-derivable by the mechanisms that did not declare it.
+   * <p>
+   * NOTE: this REPLACES the current declaration, it does not union with it - a {@code begin(EDGE)} nested inside a
+   * {@code begin(SLOT)} scope declares its writes EDGE-only, not both. That is deliberate: coverage must name the
+   * mechanism that actually replays each byte, and a union would let an outer scope vouch for writes it cannot
+   * reproduce. Pass the full mask when a write really is replayed by several mechanisms (as
+   * {@code compressPage} does with {@link #COVERAGE_ALL_MERGES}).
    */
   public int beginCoveredWrite(final int mechanisms) {
     final int previous = declaredCoverage;
