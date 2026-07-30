@@ -36,6 +36,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.withinPercentage;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -149,15 +150,26 @@ class DatabaseGetSizeTest extends TestHelper {
     assertThat(sizeAfterInsert).isGreaterThan(sizeBeforeInsert);
   }
 
+  /**
+   * getSize() sums the files under the database directory, and WAL segments are created and dropped there by background threads,
+   * so it is a measurement of a moving target rather than a pure function. Asserting three consecutive calls are byte-identical
+   * was therefore racy: it was seen failing on CI with 131453 then 65917, a delta of exactly one 64Kb segment. What the method
+   * does promise is that repeated calls keep working and keep reporting a plausible size, which is what this now checks.
+   */
   @Test
   void getSizeMultipleCalls() {
-    // Multiple calls to getSize() should return consistent results
     final long size1 = database.getSize();
     final long size2 = database.getSize();
     final long size3 = database.getSize();
 
-    assertThat(size1).isEqualTo(size2);
-    assertThat(size2).isEqualTo(size3);
+    assertThat(size1).isGreaterThan(0L);
+    assertThat(size2).isGreaterThan(0L);
+    assertThat(size3).isGreaterThan(0L);
+
+    // NO CALL RETURNS SOMETHING WILDLY DIFFERENT FROM ITS NEIGHBOURS: THE DIRECTORY CAN GAIN OR LOSE WAL SEGMENTS BETWEEN CALLS,
+    // BUT NOT CHANGE ORDER OF MAGNITUDE, SO THIS STILL CATCHES A getSize() THAT MISCOUNTS OR RETURNS A PARTIAL SUM
+    assertThat(size2).isCloseTo(size1, withinPercentage(50.0));
+    assertThat(size3).isCloseTo(size2, withinPercentage(50.0));
   }
 
   @Test
