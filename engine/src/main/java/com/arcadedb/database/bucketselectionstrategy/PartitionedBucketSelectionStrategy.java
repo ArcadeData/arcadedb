@@ -18,26 +18,46 @@
  */
 package com.arcadedb.database.bucketselectionstrategy;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Select the bucket using a partition algorithm computed as the hashed value of the properties values. This allows to predetermine in which bucket is contained
  * a key(s) and therefore a document. There are some limitations on using this implementation: (1) field identified as partition key cannot be modified. (This
  * could be solved in the future by removing and recreating the document in a different bucket. If the record is part of a graph, then the edges will be updated
  * accordingly.)
+ * <p>
+ * <b>The two sides must hash the same object.</b> Placement ({@link #getBucketIdByRecord}) hashes the value the schema
+ * coerced and stored; a lookup ({@link #getBucketIdByKeys}) is handed the caller's raw key. Since {@code hashCode()} is
+ * type-dependent, the lookup side normalises its key to the declared property type before hashing (issue #5595), and
+ * declines to prune - answering -1, which callers read as "search every bucket" - whenever it cannot reproduce the
+ * stored form: an undeclared property, a value that will not coerce, or a case-insensitive partition index, whose two
+ * spellings are one index key but were placed in two different buckets. Placement itself is never altered, so no
+ * existing database needs a repartition.
  *
  * @author Luca Garulli
  */
 public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectionStrategy {
+  /**
+   * Sentinel for "this value's stored form cannot be reproduced", which forces the lookup to fan out. A distinct
+   * object rather than {@code null}, which is a legitimate conversion result.
+   */
+  private static final Object UNKNOWN_STORED_FORM = new Object();
+
   private       LocalDocumentType type;
   private final List<String>      propertyNames;
 
@@ -100,13 +120,84 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
     if (!coversPartitionProperties(lookupProperties, keyValues))
       return -1;
 
+    // A COLLATE CI partition index folds two spellings into one key, but placement hashed the spelling the writer
+    // used, so 'Hello' and 'hello' are one index entry living in two different buckets. Unlike the boxed-type case
+    // below there is no lookup-side normalisation that repairs this - only placement itself could, and changing
+    // placement would force every existing partitioned database through a repartition. Never prune instead.
+    if (partitionKeyIsCaseInsensitive())
+      return -1;
+
+    // RESOLVED ONCE: THE SAME DATABASE BACKS EVERY KEY OF THE LOOKUP
+    final Database database = type.getSchema().getEmbedded().getDatabase();
+
     int hash = 0;
     for (int i = 0; i < keyValues.length; i++) {
       final Object value = keyValues[i];
-      if (value != null)
-        hash += value.hashCode();
+      if (value == null)
+        continue;
+
+      // Placement hashed the value AFTER the schema coerced it to the declared type; the caller's key has had no
+      // such treatment (TypeIndex hands the raw keys over, and the index's own convertKeys runs much later). Since
+      // hashCode is type-dependent - Long.hashCode(v) is (int) (v ^ (v >>> 32)) while Integer.hashCode(v) is v -
+      // the numerically identical key boxed differently used to hash to a different bucket and miss the record
+      // (issue #5595). Replay the write-path coercion here so both sides hash the same object.
+      final Object storedForm = toStoredForm(database, lookupProperties.get(i), value);
+      if (storedForm == UNKNOWN_STORED_FORM)
+        return -1;
+
+      hash += storedForm.hashCode();
     }
     return (hash & 0x7fffffff) % total;
+  }
+
+  /**
+   * Whether the index backing this partition folds case on any of its properties, in which case the bucket a record
+   * was placed in is not derivable from a lookup key at all.
+   * <p>
+   * Resolved on every call rather than remembered: an index can be dropped and recreated with a different collation
+   * without the strategy being re-bound, so a cached answer could outlive the schema it was read from. The cost is a
+   * map lookup keyed on the property-name list, whose hash the JDK caches per String, which is the same order of
+   * magnitude as the per-key property lookup the hashing loop already does.
+   * <p>
+   * No index, or no metadata on it, means nothing declares a collation and therefore nothing folds case - answer
+   * "case-sensitive" and let the normal hashing proceed. A partitioned type can legitimately outlive its index: the
+   * unique index is mandated when the strategy is assigned but never re-checked afterwards.
+   */
+  private boolean partitionKeyIsCaseInsensitive() {
+    final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
+    final IndexMetadata metadata = index != null ? index.getMetadata() : null;
+    return metadata != null && metadata.hasAnyCaseInsensitive();
+  }
+
+  /**
+   * Returns {@code value} in the form {@link #getBucketIdByRecord} would have hashed it, or
+   * {@link #UNKNOWN_STORED_FORM} when that form is not derivable.
+   * <p>
+   * The stored form is the one {@code MutableDocument.convertValueToSchemaType} produces, so the conversion target
+   * comes from the SCHEMA property and not from the index key types: a case-insensitive index lowercases its keys
+   * and a string index stores them as {@code byte[]}, neither of which placement ever applied.
+   * <p>
+   * An undeclared property has no conversion target - the record kept whatever Java type the writer used - so the
+   * two sides cannot be reconciled and this declines. That costs a fan-out, which is correct, only slower.
+   */
+  private Object toStoredForm(final Database database, final String propertyName, final Object value) {
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null)
+      return UNKNOWN_STORED_FORM;
+
+    try {
+      final Object converted = Type.convert(database, value, property.getType().getJavaImplementation(database), property);
+      return converted != null ? converted : UNKNOWN_STORED_FORM;
+    } catch (final Exception e) {
+      // A key that cannot be coerced to the declared type cannot match any stored value either, but answering
+      // "bucket N" on a guess would be wrong: let the caller fan out and have the index itself reject the key.
+      // The catch stays broad so no conversion failure can ever turn a lookup into a wrong answer, but it is logged
+      // so an unrelated bug surfacing here degrades visibly instead of silently costing every query a fan-out.
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot reproduce the stored form of the partition key '%s' on type '%s': searching every bucket", e,
+          propertyName, type.getName());
+      return UNKNOWN_STORED_FORM;
+    }
   }
 
   /**
