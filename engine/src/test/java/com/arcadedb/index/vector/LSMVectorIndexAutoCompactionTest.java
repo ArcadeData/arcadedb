@@ -30,8 +30,11 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -308,6 +311,45 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
         .isTrue();
     assertThat(LSMVectorIndex.isCompactionAllowedOnThisNode(nodeView(db, false)))
         .as("a follower must not: the compacted file arrives from the leader").isFalse();
+  }
+
+  /**
+   * The ratio compares the file against the pages its live vectors need, so both sides have to cover the same files.
+   * They would not if a compacted companion were ever loaded: its vectors join the same resident location map (so the
+   * live-set estimate counts them) while {@code getTotalPages()} reports the mutable alone, and the file would be
+   * allowed to grow well past the configured factor. {@code totalPagesForBloatRatio()} adds the companion in.
+   * <p>
+   * That guard is defensive, and this test is what says so: a companion cannot actually be loaded. Its extension has
+   * never been in {@code LocalDatabase.SUPPORTED_FILE_EXT} - not since the index landed in #2816 - so the FileManager
+   * does not open one, and the discovery scan that looks for it finds nothing. Dropping a faithfully named legacy
+   * companion next to the mutable file proves it. If that extension is ever registered, this test fails and the ratio
+   * accounting is the thing to look at first.
+   */
+  @Test
+  void aLegacyCompactedCompanionOnDiskIsNotLoadedIntoTheRatio() throws Exception {
+    createSchema();
+    insertVertices();
+
+    final String databasePath = database.getDatabasePath();
+    database.close();
+
+    // Named the way the pre-#5521 compactor named it: <mutable component>_<timestamp>, which is exactly the pattern
+    // discoverAndLoadCompactedSubIndex() scans for, so a miss here is the FileManager not offering the file at all.
+    final File directory = new File(databasePath);
+    final String mutableFile = List.of(directory.list()).stream().filter(f -> f.endsWith("." + LSMVectorIndex.FILE_EXT))
+        .findFirst().orElseThrow();
+    final String companion = mutableFile.substring(0, mutableFile.indexOf('.')) + "_9999999999.1.65536.v0."
+        + LSMVectorIndexCompacted.FILE_EXT;
+    Files.copy(Path.of(databasePath, mutableFile), Path.of(databasePath, companion));
+
+    database = factory.open();
+
+    assertThat(((DatabaseInternal) database).getFileManager().getFiles().stream()
+        .anyMatch(f -> f != null && LSMVectorIndexCompacted.FILE_EXT.equals(f.getFileExtension())))
+        .as("the companion extension is not registered, so the file is never opened").isFalse();
+    assertThat(vectorIndex().getStats().get("compactedPages"))
+        .as("with no companion loaded the ratio sees the mutable file only").isEqualTo(0L);
+    assertThat(new File(databasePath, companion)).as("and the file itself is left alone on disk").exists();
   }
 
   // ------------------------------------------------------------------------------------------------- helpers

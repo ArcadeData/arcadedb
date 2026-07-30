@@ -252,6 +252,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final    AtomicInteger           currentMutablePages;
   private final    int                     minPagesToScheduleACompaction;
   private          LSMVectorIndexCompacted compactedSubIndex;
+  // Said once per index, from the commit hook: a plain field is enough, two lines on a race beats a lock here.
+  private          boolean                 boundedCacheExemptionLogged;
   private volatile boolean                 valid      = true;
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
 
@@ -4233,8 +4235,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // commit, or an explicit COMPACT INDEX, picks it up. On a closing database (the async executor is already
       // gone) that is routine and stays quiet; anywhere else it means this index has stopped reclaiming on its
       // own, which nobody would notice at FINE.
+      // toString() rather than getMessage(): an exception that only carries a cause has a null message, and the one
+      // line that says this index stopped reclaiming on its own must not read "... : null".
       LogManager.instance().log(this, getDatabase().isOpen() ? Level.WARNING : Level.FINE,
-          "Could not schedule the compaction of vector index '%s': %s", indexName, e.getMessage());
+          "Could not schedule the compaction of vector index '%s': %s", indexName, e.toString());
     }
   }
 
@@ -4263,15 +4267,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Explicit COMPACT INDEX only.
       return false;
 
-    if (getLocationCacheSize() > 0)
+    if (getLocationCacheSize() > 0) {
       // A bounded location cache caps the resident locations at its size, so the live-vector count this decision
       // rests on is not available: an index with more live vectors than the cache holds would look permanently
       // bloated and rewrite itself after nearly every commit - worst on the largest indexes, which is exactly where
       // that setting gets used. Leave those to an explicit COMPACT INDEX, which derives its live set by parsing the
       // pages instead of trusting the resident map. See issue #5559 for why bounded mode needs work of its own.
+      //
+      // Say it once per index rather than staying silent: the low-RAM profile sets a bounded cache, so the
+      // deployments that most need the disk back are the ones opted out of reclaiming it automatically, and that
+      // is not something an operator would think to go looking for.
+      if (!boundedCacheExemptionLogged) {
+        boundedCacheExemptionLogged = true;
+        LogManager.instance().log(this, Level.INFO,
+            "Vector index '%s' will not compact automatically because it uses a bounded location cache of %d entries "
+                + "(arcadedb.vectorIndex.locationCacheSize): run COMPACT INDEX to reclaim its file", indexName,
+            getLocationCacheSize());
+      }
       return false;
+    }
 
-    final int totalPages = getTotalPages();
+    final int totalPages = totalPagesForBloatRatio();
     if (totalPages < minPages)
       // Too small to be worth a rewrite whatever its garbage ratio is.
       return false;
@@ -4281,6 +4297,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return false;
 
     return totalPages >= (long) pagesForLiveSet * bloatFactor;
+  }
+
+  /**
+   * Every page the ratio has to account for. {@link #getTotalPages()} is the mutable file alone, but the live set the
+   * estimate is built from spans the compacted companion too when one is loaded ({@code loadVectorsFromFile} pulls its
+   * locations into the same map), so counting only the mutable would compare a part against the whole and let the file
+   * grow well past the configured factor before anything fired.
+   * <p>
+   * A companion only exists on a database whose index was compacted by a build older than #5521 - nothing writes one
+   * any more, and the first compaction folds it into the new mutable and drops it - so this is the upgrade window
+   * rather than the steady state. Cheap enough to be right in it anyway.
+   */
+  private int totalPagesForBloatRatio() {
+    return getTotalPages() + (compactedSubIndex != null ? compactedSubIndex.getTotalPages() : 0);
   }
 
   /**
