@@ -480,12 +480,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final Number limit = (Number) del.get("limit");
           final boolean single = limit != null && limit.intValue() == 1;
 
+          final Map<String, Object> params = new HashMap<>();
           final StringBuilder sql = new StringBuilder("DELETE FROM ").append(Identifier.quote(collectionName));
-          appendWhere(sql, q);
+          appendWhere(sql, params, q);
           if (single)
             sql.append(" LIMIT 1");
 
-          n += executeCount(sql.toString());
+          n += executeCount(sql.toString(), params);
         }
         database.commit();
       } catch (final RuntimeException e) {
@@ -557,13 +558,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!database.getSchema().existsType(collectionName) || u == null)
       return 0;
 
+    final Map<String, Object> params = new HashMap<>();
     final StringBuilder sql = new StringBuilder("UPDATE ").append(Identifier.quote(collectionName));
-    appendUpdateOperations(sql, u);
-    appendWhere(sql, q);
+    appendUpdateOperations(sql, params, u);
+    appendWhere(sql, params, q);
     if (!multi)
       sql.append(" LIMIT 1");
 
-    return executeCount(sql.toString());
+    return executeCount(sql.toString(), params);
   }
 
   private ObjectId executeUpsert(final String collectionName, final Document q, final Document u) {
@@ -621,7 +623,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
   }
 
-  private void appendUpdateOperations(final StringBuilder sql, final Document u) {
+  private void appendUpdateOperations(final StringBuilder sql, final Map<String, Object> params, final Document u) {
     if (isReplacement(u)) {
       sql.append(" CONTENT ").append(documentToJson(u));
       return;
@@ -642,8 +644,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         }
       }
       case "$inc" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet())
-          sql.append(" SET ").append(MongoDBToSqlTranslator.quoteFieldPath(f.getKey())).append(" += ").append((Number) f.getValue());
+        for (final Map.Entry<String, Object> f : operand.entrySet()) {
+          sql.append(" SET ").append(MongoDBToSqlTranslator.quoteFieldPath(f.getKey())).append(" += ");
+          MongoDBToSqlTranslator.buildValue(sql, params, (Number) f.getValue());
+        }
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
@@ -657,15 +661,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return true;
   }
 
-  private void appendWhere(final StringBuilder sql, final Document q) {
+  private void appendWhere(final StringBuilder sql, final Map<String, Object> params, final Document q) {
     if (q != null && !q.isEmpty()) {
       sql.append(" WHERE ");
-      MongoDBToSqlTranslator.buildExpression(sql, q);
+      MongoDBToSqlTranslator.buildExpression(sql, params, q);
     }
   }
 
-  private int executeCount(final String sql) {
-    try (final ResultSet rs = database.command("sql", sql)) {
+  private int executeCount(final String sql, final Map<String, Object> params) {
+    try (final ResultSet rs = database.command("sql", sql, params)) {
       if (rs.hasNext()) {
         final Number count = rs.next().getProperty("count");
         if (count != null)
