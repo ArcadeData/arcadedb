@@ -18,8 +18,9 @@
  */
 package com.arcadedb.function.math;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.math.BigDecimal;
@@ -46,15 +47,19 @@ public class RoundFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length < 1 || args.length > 3)
-      throw new CommandExecutionException("round() requires 1, 2 or 3 arguments");
+      throw CypherFunctionHelper.arityMismatch("round", "1-3 arguments", args.length);
 
-    if (args[0] == null)
+    // Every argument is checked before null propagation decides the answer, so an out-of-domain precision or an unusable
+    // mode is reported even when the value is null - the same ordering MathBinaryFunction uses, and the one the
+    // parse-time check applies, which examines each argument independently (issue #5484).
+    final Number number = CypherFunctionHelper.requireNumberArgument(args[0], "round");
+    final Number precisionArg = args.length > 1 ? CypherFunctionHelper.requireNumberArgument(args[1], "round") : null;
+    final RoundingMode mode = args.length == 3 ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
+
+    if (number == null)
       return null;
 
-    if (!(args[0] instanceof Number))
-      throw new CommandExecutionException("round() requires a numeric argument");
-
-    final double value = ((Number) args[0]).doubleValue();
+    final double value = number.doubleValue();
 
     if (Double.isNaN(value) || Double.isInfinite(value))
       return value;
@@ -65,30 +70,35 @@ public class RoundFunction implements StatelessFunction {
     }
 
     // round(value, precision) or round(value, precision, mode)
-    if (args[1] == null)
+    if (precisionArg == null)
       return null;
 
-    if (!(args[1] instanceof Number))
-      throw new CommandExecutionException("round() precision must be a numeric value");
-
-    final int precision = ((Number) args[1]).intValue();
-
-    RoundingMode mode = RoundingMode.HALF_UP;
-    if (args.length == 3 && args[2] != null) {
-      final String modeStr = args[2].toString().toUpperCase(Locale.ROOT).replace(" ", "_");
-      mode = switch (modeStr) {
-        case "UP" -> RoundingMode.UP;
-        case "DOWN" -> RoundingMode.DOWN;
-        case "CEILING" -> RoundingMode.CEILING;
-        case "FLOOR" -> RoundingMode.FLOOR;
-        case "HALF_UP" -> RoundingMode.HALF_UP;
-        case "HALF_DOWN" -> RoundingMode.HALF_DOWN;
-        case "HALF_EVEN" -> RoundingMode.HALF_EVEN;
-        default -> throw new CommandExecutionException("round() unknown rounding mode: " + args[2]);
-      };
-    }
-
-    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precision, mode);
+    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precisionArg.intValue(), mode);
     return bd.doubleValue();
+  }
+
+  /**
+   * Resolves the optional third argument of {@code round()} to a rounding mode, defaulting to HALF_UP when it is absent or
+   * null. Shared with the parse-time check in {@code CypherSemanticValidator}, which applies it to a mode written as a
+   * literal so that the two paths accept exactly the same set of names and word an unknown one identically.
+   *
+   * @throws CommandSemanticException when the name is not one of the supported modes: an unusable mode is the caller's
+   *                                  mistake, so it must not surface as an internal 500 either (issue #5484)
+   */
+  public static RoundingMode parseRoundingMode(final Object mode) {
+    if (mode == null)
+      return RoundingMode.HALF_UP;
+
+    return switch (mode.toString().toUpperCase(Locale.ROOT).replace(" ", "_")) {
+      case "UP" -> RoundingMode.UP;
+      case "DOWN" -> RoundingMode.DOWN;
+      case "CEILING" -> RoundingMode.CEILING;
+      case "FLOOR" -> RoundingMode.FLOOR;
+      case "HALF_UP" -> RoundingMode.HALF_UP;
+      case "HALF_DOWN" -> RoundingMode.HALF_DOWN;
+      case "HALF_EVEN" -> RoundingMode.HALF_EVEN;
+      default -> throw new CommandSemanticException("round() unknown rounding mode: " + mode
+          + ". Valid modes are UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN and HALF_EVEN");
+    };
   }
 }
