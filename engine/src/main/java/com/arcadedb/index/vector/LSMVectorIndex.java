@@ -172,7 +172,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile GraphState                    graphState;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
-  private final    VectorLocationIndex           vectorIndex;       // Lightweight pointer index
+  // Lightweight pointer index. Volatile and swapped as a whole (never cleared and refilled in place) so the
+  // lock-free readers - countEntries(), the `size() == 0` short-circuits of the search paths, getStats() - always
+  // see a complete location set instead of a rebuild in progress (issue #5568).
+  private volatile VectorLocationIndex           vectorIndex;
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
 
@@ -383,11 +386,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * filesystem: leaving the old file behind was why compaction used to make the index bigger, not smaller.
    *
    * @param liveEntries the live set, re-pointed in place at the new file
+   *
+   * @return true when the file was actually rewritten and the location index re-published with it, false when the
+   * rewrite was skipped
    */
-  private void rewriteDataFileWithLiveEntries(final Collection<VectorEntryForGraphBuild> liveEntries) {
+  private boolean rewriteDataFileWithLiveEntries(final Collection<VectorEntryForGraphBuild> liveEntries) {
     if (liveEntries.isEmpty()) {
       LogManager.instance().log(this, Level.INFO, "Skipping compaction of vector index '%s': no live vectors", indexName);
-      return;
+      return false;
     }
 
     for (final VectorEntryForGraphBuild entry : liveEntries)
@@ -399,7 +405,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Skipping compaction of vector index '%s': the live set contains vectors recovered outside the index "
                 + "pages, so no space was reclaimed. Retry once a rebuild has persisted them",
             indexName);
-        return;
+        return false;
       }
 
     final DatabaseInternal database = getDatabase();
@@ -504,6 +510,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         currentInsertPageNum = newPages.size() - 1;
         currentMutablePages.set(1);
 
+        // Re-point the location index at the new file in the SAME critical section that swapped it (issue #5568).
+        // The entries above already carry their new offsets; leaving the swap to the caller would open a window in
+        // which the index answers offsets into a file that no longer exists - a search landing there reads another
+        // entry's bytes, or the dropped compacted component through a null reference.
+        publishLocationIndex(liveEntries);
+
         ((LocalSchema) database.getSchema()).setMigratedFileId(oldFileId, newFileId);
         database.getSchema().getEmbedded().saveConfiguration();
 
@@ -524,6 +536,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       dropReplacedComponent(previousMutable);
       dropReplacedComponent(previousCompacted);
 
+      return true;
     } finally {
       if (newFileId > -1)
         database.getTransactionManager().unlockFile(newFileId, Thread.currentThread());
@@ -576,6 +589,35 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.WARNING, "Error dropping the file replaced by the compaction of '%s': %s",
           indexName, e.getMessage());
     }
+  }
+
+  /**
+   * Replace the location index with one holding exactly {@code liveEntries}, published by a single reference
+   * assignment to the volatile field (issue #5568).
+   * <p>
+   * The replacement is populated on a DETACHED instance on purpose. Refilling the live index in place - clear()
+   * followed by one addOrUpdate per entry - is atomic only for the writers, which all hold the index write lock;
+   * every reader of the location index is lock-free by design ({@link #countEntries()}, {@link #getStats()}, the
+   * {@code vectorIndex.size() == 0} short-circuits on the search paths, the RID filters) and observed the map
+   * mid-refill, seeing an arbitrary fraction of its real content. That is what made {@code countEntries()} report a
+   * different wrong number on each run after a compaction: the rebuild the compaction triggers was still refilling
+   * the map while the caller counted it. A count is the visible symptom; a search that runs in the same window
+   * short-circuits on an apparently empty index and returns nothing.
+   * <p>
+   * Callers must hold the write lock: it is what keeps a concurrent insert or remove from mutating the instance
+   * being replaced (its mutation would be dropped by the swap), not what protects the readers.
+   *
+   * @param liveEntries the live set the index must hold, already pointing at the file that is current now
+   */
+  private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
+    final VectorLocationIndex rebuilt = new VectorLocationIndex(getLocationCacheSize(),
+        Math.max(16, liveEntries.size() * 4 / 3 + 1));
+    for (final VectorEntryForGraphBuild entry : liveEntries)
+      rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
+    // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
+    // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
+    rebuilt.setNextId(Math.max(rebuilt.getNextId(), nextId.get()));
+    vectorIndex = rebuilt;
   }
 
   /**
@@ -1546,8 +1588,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // about to be built on. Doing it in the rebuild instead of in a separate compactor is what keeps the two from
     // disagreeing on what "live" means. Entries are re-pointed at the new file below, so everything downstream
     // (validation, preload, vectorIndex re-sync, graph build) transparently uses the compacted file.
-    if (compactDataFile)
-      rewriteDataFileWithLiveEntries(ridToLatestVector.values());
+    // A completed rewrite already re-published the location index against the new file, inside the critical section
+    // that swapped it - re-publishing an identical copy below would only reopen the window it closed (issue #5568).
+    final boolean locationIndexAlreadyPublished = compactDataFile && rewriteDataFileWithLiveEntries(
+        ridToLatestVector.values());
 
     // Rebuild ordinal mapping (may have changed after document scan fallback)
     final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
@@ -1563,14 +1607,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int[] vectorIds;
     try {
       // CRITICAL: If we couldn't read any entries from pages (e.g., during database close),
-      // DON'T clear vectorIndex - use what's already in memory!
+      // DON'T replace vectorIndex - use what's already in memory!
       if (!ridToLatestVector.isEmpty()) {
-        // Update vectorIndex to match what we found on pages (sync it with disk state)
-        // This ensures vectorIndex is consistent with the graph we're about to build
-        vectorIndex.clear();
-        for (final VectorEntryForGraphBuild entry : ridToLatestVector.values()) {
-          vectorIndex.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
-        }
+        // Update vectorIndex to match what we found on pages (sync it with disk state).
+        if (!locationIndexAlreadyPublished)
+          publishLocationIndex(ridToLatestVector.values());
         vectorIds = finalActiveVectorIdsFromPages; // Use vector IDs from pages (may include doc-scan fallback)
       } else {
         LogManager.instance().log(this, Level.SEVERE,
@@ -2253,8 +2294,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   private int[] buildOrdinalMapping() {
-    return vectorIndex.getAllVectorIds().filter(id -> {
-      final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(id);
+    // Read the volatile field once: a rebuild publishes a replacement instance (issue #5568), and taking the ids
+    // from one generation and their locations from the next would silently drop live vectors from the mapping.
+    final VectorLocationIndex locations = vectorIndex;
+    return locations.getAllVectorIds().filter(id -> {
+      final VectorLocationIndex.VectorLocation loc = locations.getLocation(id);
       return loc != null && !loc.deleted;
     }).sorted().toArray();
   }
@@ -5527,22 +5571,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return The vector location, or null if not found
    */
   private VectorLocationIndex.VectorLocation getVectorLocation(final int vectorId) {
+    // One read of the volatile field for the whole method: a rebuild publishes a replacement instance (issue
+    // #5568), and re-reading would let the miss be answered against one generation and re-cached into the next,
+    // seeding the fresh index with an offset into the file the compaction just replaced.
+    final VectorLocationIndex locations = vectorIndex;
+
     // Try cache first (O(1) lookup)
-    VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+    VectorLocationIndex.VectorLocation loc = locations.getLocation(vectorId);
     if (loc != null) {
       return loc;
     }
 
     // A tombstoned id has no location by design (issue #5516): nothing to reconstruct, and scanning the pages for it
     // would return its pre-tombstone entry (page order returns the first match), resurrecting a deleted vector.
-    if (vectorIndex.isDeleted(vectorId))
+    if (locations.isDeleted(vectorId))
       return null;
 
     // Cache miss - reconstruct by scanning pages (expensive but rare for LRU cache)
     loc = reconstructLocationFromPages(vectorId);
     if (loc != null) {
       // Add back to cache for future access
-      vectorIndex.addOrUpdate(vectorId, loc.isCompacted, loc.absoluteFileOffset, loc.rid, loc.deleted);
+      locations.addOrUpdate(vectorId, loc.isCompacted, loc.absoluteFileOffset, loc.rid, loc.deleted);
     }
     return loc;
   }
