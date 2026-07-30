@@ -80,6 +80,49 @@ recognise the `.bfidx` extension, never opens the file, and reads the index exac
 that a downgraded build compacts *without* maintaining the filters, so if you downgrade and later come back,
 prefer running a full compaction (or setting `arcadedb.indexBloomFilterRate=0`) on the upgraded build.
 
+#### The schema dictionary is no longer capped at a single page
+
+Every type name and property name in a database is mapped to a small integer id, and records carry that id
+instead of the name. That table lived in **one page**: 327,668 usable bytes, or 48,396 short names measured.
+Past it, `CREATE PROPERTY` and inserting a document with a new field name failed permanently with
+`No space left in dictionary file`, with no way to grow and no way back - entries are never reclaimed, so a
+schemaless workload with dynamic field names walked steadily toward a wall it could not retreat from
+([#5560](https://github.com/ArcadeData/arcadedb/pull/5560)).
+
+Names now roll over onto further pages, so the cap is gone.
+
+- **No migration, and existing databases are not rewritten.** Every page carries the same 4-byte header the
+  single page always carried, so a dictionary written by an earlier version *is* a dictionary of one page and
+  loads unchanged. It gains rollover on the next write that needs it.
+- **Appending a name is no longer quadratic.** The in-RAM name list copied its whole backing array per
+  append, which the old 48k ceiling had been hiding. Growing to 500,000 names took **11.2s** of pure array
+  copying; it now takes **2ms**.
+- **New databases use a 65,536-byte dictionary page** instead of 327,680. That size existed only to make the
+  one available page hold as much as possible; now that pages roll over, a smaller page means a new name
+  dirties and flushes 5x less. Existing databases keep the page size they were created with. One consequence:
+  on a new database a single *identifier* cannot exceed `pageSize - 12` bytes, about 65Kb rather than 327Kb.
+  Only type and property names ever enter the dictionary - a string *value* is only ever looked up, never
+  inserted - so this is not a limit on your data.
+
+**Rolling upgrade: upgrade followers before, or together with, the leader.** Dictionary pages replicate as
+raw pages. Once a leader's dictionary grows past its first page it ships page 1 and beyond to its followers,
+and a follower still running an older build writes those pages but reloads only page 0. Its in-RAM dictionary
+is then missing every name past the first page, and each record referencing one fails with
+`Dictionary item with id N is not valid`.
+
+For the same reason, a database that has rolled over can no longer be opened by an older ArcadeDB at all -
+loudly, not silently. Such a database could not have existed before this change, since the write would have
+been refused. To check whether a given database has rolled over, divide its dictionary file size by the page
+size in its own file name:
+
+```
+$ ls -l <database>/dictionary.*.dict
+-rw-r--r--  1 arcadedb  arcadedb  131072  dictionary.0.65536.v1.dict
+```
+
+131072 / 65536 = 2 pages, so that one has rolled over. A file at or under one page is still single-page and
+remains downgradable.
+
 ### Breaking Changes
 
 #### Cypher: an unbound `$parameter` is now an error, not null
