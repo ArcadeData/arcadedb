@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -103,5 +104,18 @@ class BoltErrorClassificationTest {
   void plainParsingExceptionClassifiesAsSyntaxError() {
     assertThat(BoltNetworkExecutor.classifyParsingError(new CommandParsingException("unexpected token")))
         .isEqualTo(BoltErrorCodes.SYNTAX_ERROR);
+  }
+
+  /**
+   * Issue #5561: an unbound {@code $parameter} is not a syntax error and not a generic semantic error - the
+   * query text is valid and the client only failed to send a value. Neo4j gives it its own title, and drivers
+   * key off it, so it must not collapse into either neighbour even though the exception extends
+   * {@link CommandSemanticException}.
+   */
+  @Test
+  void missingParameterClassifiesAsParameterMissing() {
+    assertThat(BoltNetworkExecutor.classifyParsingError(new CommandParameterMissingException("threshold")))
+        .isEqualTo(BoltErrorCodes.PARAMETER_MISSING_ERROR);
+    assertThat(BoltErrorCodes.PARAMETER_MISSING_ERROR).isEqualTo("Neo.ClientError.Statement.ParameterMissing");
   }
 }
