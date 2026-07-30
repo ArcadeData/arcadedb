@@ -39,7 +39,9 @@ import java.util.Set;
  * Blank lines are skipped. The record object is reused across calls.
  * <p>
  * Parsing errors are surfaced as {@link IllegalArgumentException} so the HTTP layer maps them
- * to a 400 Bad Request with a clear message instead of a generic 500.
+ * to a 400 Bad Request with a clear message instead of a generic 500. A line that did not form a well-formed JSON
+ * object at all uses the {@link MalformedBatchRecordException} subclass, because a truncated upload produces exactly
+ * that and the client must not be sent hunting for a bad line in a file that is fine - see that class.
  */
 public class JsonlBatchRecordStream implements BatchRecordStream {
 
@@ -101,18 +103,18 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
     final int start = firstNonWhitespace(line);
     final char first = line.charAt(start);
     if (first == '[')
-      throw new IllegalArgumentException("Malformed JSONL at line " + lineNumber
+      throw new MalformedBatchRecordException("Malformed JSONL at line " + lineNumber
           + ": expected one JSON object per line but got a JSON array. "
           + "The /api/v1/batch endpoint requires the JSONL format (newline-delimited JSON objects)");
     if (first != '{')
-      throw new IllegalArgumentException("Malformed JSONL at line " + lineNumber
+      throw new MalformedBatchRecordException("Malformed JSONL at line " + lineNumber
           + ": expected a JSON object starting with '{'");
 
     final JSONObject json;
     try {
       json = new JSONObject(line);
     } catch (final RuntimeException e) {
-      throw new IllegalArgumentException("Malformed JSON at line " + lineNumber + ": " + e.getMessage(), e);
+      throw new MalformedBatchRecordException("Malformed JSON at line " + lineNumber + ": " + e.getMessage(), e);
     }
 
     final String type = json.getString("@type", null);

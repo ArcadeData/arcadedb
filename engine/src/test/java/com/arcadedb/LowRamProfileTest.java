@@ -72,7 +72,11 @@ class LowRamProfileTest {
 
     // VECTOR INDEX CAPS
     assertThat(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.getValueAsInteger()).isEqualTo(10_000);
-    assertThat(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.getValueAsInteger()).isEqualTo(10_000);
+    // The location index is deliberately NOT capped, even here (issue #5568): it is not a cache of something
+    // recomputable - evicting an entry destroys the only mapping from a vector id to its record, so this profile
+    // used to make an index under-report its size and read evicted ids as deleted. Saving RAM by returning wrong
+    // answers is not a trade a low-memory profile gets to make.
+    assertThat(GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.getValueAsInteger()).isEqualTo(-1);
 
     // POLYGLOT ENGINE DISABLED -- avoids loading GraalVM Truffle + every language jar at startup
     assertThat(GlobalConfiguration.POLYGLOT_ENGINE_ENABLED.getValueAsBoolean()).isFalse();

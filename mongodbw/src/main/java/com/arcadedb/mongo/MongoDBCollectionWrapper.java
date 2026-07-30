@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.ArrayFilters;
@@ -32,6 +33,7 @@ import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -328,24 +330,26 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
     } else {
       // EXECUTE A SQL QUERY
-      final StringBuilder sql = new StringBuilder("select from " + collectionName + " where ");
+      final Map<String, Object> params = new HashMap<>();
+      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName)).append(" where ");
 
-      MongoDBToSqlTranslator.buildExpression(sql, query);
+      MongoDBToSqlTranslator.buildExpression(sql, params, query);
 
-      if (orderBy != null) {
+      // an empty $orderBy would otherwise leave a dangling "order by" with nothing to sort on, which does not parse
+      if (orderBy != null && !orderBy.isEmpty()) {
         sql.append(" order by ");
         int i = 0;
         for (final String p : orderBy.keySet()) {
           if (i > 0)
             sql.append(", ");
-          sql.append(p);
+          sql.append(MongoDBToSqlTranslator.quoteFieldPath(p));
           sql.append(' ');
           sql.append(((Number) orderBy.get(p)).intValue() == 1 ? "asc" : "desc");
           ++i;
         }
       }
 
-      try (final ResultSet rs = database.query("SQL", sql.toString())) {
+      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
         MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rs);
       }
     }
