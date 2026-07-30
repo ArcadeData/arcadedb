@@ -19,11 +19,15 @@
 package com.arcadedb.partitioning;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -78,27 +82,62 @@ class PartitionedBoxedKeyLookupTest extends TestHelper {
 
     final TypeIndex index = database.getSchema().getType(typeName).getPolymorphicIndexByProperties("id");
 
-    int foundAsLong = 0;
-    int foundAsInteger = 0;
     database.begin();
     try {
       for (final long value : LONG_VALUES) {
-        if (index.get(new Object[] { value }).hasNext())
-          foundAsLong++;
+        assertThat(index.get(new Object[] { value }).hasNext())
+            .as("record %d found with the natively typed Long key", value).isTrue();
 
-        if (value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE) {
-          if (index.get(new Object[] { (int) value }).hasNext())
-            foundAsInteger++;
-        } else
-          // OUT OF THE INT RANGE: NOTHING TO COMPARE, COUNT IT AS FOUND SO THE TWO TALLIES STAY COMPARABLE
-          foundAsInteger++;
+        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+          // OUT OF THE INT RANGE: THERE IS NO NUMERICALLY EQUAL INTEGER TO LOOK IT UP WITH
+          continue;
+
+        assertThat(index.get(new Object[] { (int) value }).hasNext())
+            .as("record %d found with the numerically equal Integer key", value).isTrue();
       }
     } finally {
       database.rollback();
     }
+  }
 
-    assertThat(foundAsLong).as("records found with the natively typed Long key").isEqualTo(LONG_VALUES.length);
-    assertThat(foundAsInteger).as("records found with the numerically equal Integer key").isEqualTo(LONG_VALUES.length);
+  /**
+   * What the fix actually delivers, which "the record was found" cannot prove: fanning out over every bucket also
+   * finds every record, so the tests above would still pass if the strategy regressed to answering -1 unconditionally
+   * and never pruned again - a silent performance cliff. This pins the real invariant instead: a lookup key of a
+   * different boxed type resolves the SAME bucket placement chose, and still narrows the search to one sub-index.
+   */
+  @Test
+  void anIntegerLookupKeyResolvesTheBucketPlacementChose() {
+    final String typeName = "PartitionedBoxedBucketAgreement";
+    createLongType(typeName, true);
+    populateLongType(typeName);
+
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
+    final PartitionedBucketSelectionStrategy strategy =
+        (PartitionedBucketSelectionStrategy) type.getBucketSelectionStrategy();
+    final TypeIndex index = type.getPolymorphicIndexByProperties("id");
+
+    database.begin();
+    try {
+      for (final long value : LONG_VALUES) {
+        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+          continue;
+
+        final Document record = index.get(new Object[] { value }).next().asDocument();
+        final int placementBucket = strategy.getBucketIdByRecord(record, false);
+        final int lookupBucket = strategy.getBucketIdByKeys(List.of("id"), new Object[] { (int) value }, false);
+
+        assertThat(lookupBucket).as("an Integer lookup key for %d must still prune, not decline", value)
+            .isNotEqualTo(-1);
+        assertThat(lookupBucket).as("Integer lookup for %d must resolve the bucket placement chose", value)
+            .isEqualTo(placementBucket);
+
+        assertThat(index.getIndexesByKeys(new Object[] { (int) value }))
+            .as("an Integer lookup for %d must still narrow to a single bucket's sub-index", value).hasSize(1);
+      }
+    } finally {
+      database.rollback();
+    }
   }
 
   /**
@@ -214,7 +253,15 @@ class PartitionedBoxedKeyLookupTest extends TestHelper {
         database.newDocument(typeName).set("name", value).save();
     });
 
-    final TypeIndex index = database.getSchema().getType(typeName).getPolymorphicIndexByProperties("name");
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
+    final TypeIndex index = type.getPolymorphicIndexByProperties("name");
+
+    // Asserted directly, not just through "the record was found": fanning out is the only correct answer here, and
+    // a decline is the only way to get it.
+    final PartitionedBucketSelectionStrategy strategy =
+        (PartitionedBucketSelectionStrategy) type.getBucketSelectionStrategy();
+    assertThat(strategy.getBucketIdByKeys(List.of("name"), new Object[] { values[0] }, false))
+        .as("a case-insensitive partition index must decline to prune").isEqualTo(-1);
 
     int found = 0;
     database.begin();

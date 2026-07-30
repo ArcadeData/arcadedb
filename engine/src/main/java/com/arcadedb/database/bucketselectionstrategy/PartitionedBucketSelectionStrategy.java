@@ -21,6 +21,7 @@ package com.arcadedb.database.bucketselectionstrategy;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
@@ -32,6 +33,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Select the bucket using a partition algorithm computed as the hashed value of the properties values. This allows to predetermine in which bucket is contained
@@ -187,6 +189,11 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
     } catch (final Exception e) {
       // A key that cannot be coerced to the declared type cannot match any stored value either, but answering
       // "bucket N" on a guess would be wrong: let the caller fan out and have the index itself reject the key.
+      // The catch stays broad so no conversion failure can ever turn a lookup into a wrong answer, but it is logged
+      // so an unrelated bug surfacing here degrades visibly instead of silently costing every query a fan-out.
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot reproduce the stored form of the partition key '%s' on type '%s': searching every bucket", e,
+          propertyName, type.getName());
       return UNKNOWN_STORED_FORM;
     }
   }
