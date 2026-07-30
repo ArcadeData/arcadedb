@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.schema.LocalSchema;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -60,6 +61,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   private final byte[]                 columnKinds;
   private final ExecutorService        shardExecutor;
   private final AtomicLong             appendCounter = new AtomicLong();
+  // Shared by every shard of this type, or null when no column is dictionary-encoded (issue #5519).
+  private       TimeSeriesTagDictionary tagDictionary;
 
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount) throws IOException {
@@ -69,6 +72,18 @@ public class TimeSeriesEngine implements AutoCloseable {
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount,
       final long compactionBucketIntervalMs) throws IOException {
+    this(database, typeName, columns, shardCount, compactionBucketIntervalMs, TimeSeriesBucket.CURRENT_VERSION);
+  }
+
+  /**
+   * @param mutableFormatVersion the type's stored mutable row format version. Version 0 keeps TAG
+   *                             STRING columns inline; version 1 and above dictionary-encode them
+   *                             into a 4-byte id (issue #5519). It comes from the schema so a
+   *                             database written by an older build keeps its layout.
+   */
+  public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
+      final List<ColumnDefinition> columns, final int shardCount,
+      final long compactionBucketIntervalMs, final int mutableFormatVersion) throws IOException {
     this.database = database;
     this.typeName = typeName;
     this.columns = columns;
@@ -84,8 +99,10 @@ public class TimeSeriesEngine implements AutoCloseable {
     });
 
     try {
+      // One dictionary per type, resolved before the shards so every shard shares the same id space.
+      this.tagDictionary = TimeSeriesTagDictionary.openOrCreate(database, typeName, columns, mutableFormatVersion);
       for (int i = 0; i < shardCount; i++)
-        shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs);
+        shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs, tagDictionary);
     } catch (final Exception e) {
       shardExecutor.shutdownNow();
       // Close any shards that were successfully created
@@ -718,6 +735,16 @@ public class TimeSeriesEngine implements AutoCloseable {
     }
     for (final TimeSeriesShard shard : shards)
       shard.close();
+    if (tagDictionary != null)
+      tagDictionary.close();
+  }
+
+  /**
+   * Returns the tag dictionary shared by this type's shards, or {@code null} when no column is
+   * dictionary-encoded.
+   */
+  public TimeSeriesTagDictionary getTagDictionary() {
+    return tagDictionary;
   }
 
   /**
@@ -735,6 +762,16 @@ public class TimeSeriesEngine implements AutoCloseable {
     }
     for (final TimeSeriesShard shard : shards)
       shard.drop();
+
+    // The dictionary is one file shared by every shard, so it is dropped once, after them. This is
+    // the whole reclamation story for interned tag values: they live exactly as long as the type.
+    if (tagDictionary != null) {
+      final int dictionaryFileId = tagDictionary.getFileId();
+      database.getPageManager().deleteFile(database, dictionaryFileId);
+      database.getFileManager().dropFile(dictionaryFileId);
+      ((LocalSchema) database.getSchema()).removeFile(dictionaryFileId);
+      tagDictionary = null;
+    }
   }
 
   // --- Private helpers ---
