@@ -686,6 +686,21 @@ public class TransactionContext implements Transaction {
     edgeAppendPoisonedPages.add(edgeSegmentPageKey(segmentRID));
   }
 
+  /**
+   * Same as {@link #poisonEdgeAppendPage(RID)} for a caller that already knows the (fileId, pageNumber) of the page,
+   * so no bucket lookup is needed. Used by the delete path: freeing a slot is not an edge append, and the edge merge
+   * re-derives the page from the committed image plus the tracked appends ALONE - so a delete left on a page that
+   * also received a tracked append would simply vanish at rebase time.
+   */
+  public void poisonEdgeAppendPage(final int fileId, final int pageNumber) {
+    if (!edgeAppendMerge)
+      return;
+
+    if (edgeAppendPoisonedPages == null)
+      edgeAppendPoisonedPages = new LongHashSet();
+    edgeAppendPoisonedPages.add(packPageKey(fileId, pageNumber));
+  }
+
   /** Packs the (fileId, pageNumber) of the page holding {@code segmentRID} into a long key (no allocation). */
   private long edgeSegmentPageKey(final RID segmentRID) {
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
@@ -790,9 +805,11 @@ public class TransactionContext implements Transaction {
    * while the feature is on. Released on {@link #reset()}.
    */
   private static final class SlotRebaseBuffer {
-    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins.
+    // slot -> this transaction's FINAL serialized record body (no size prefix); the latest write wins. A NULL value
+    // is the third kind (#5569): the slot was DELETED by this transaction, so the replay frees it instead of writing
+    // a body. HashMap allows null values, so one map still describes every tracked slot of the page.
     private final Map<Integer, byte[]> finalBody     = new HashMap<>();
-    // slot -> the record body this transaction started from (UPDATES only; absent for inserts).
+    // slot -> the record body this transaction started from (UPDATES and DELETES only; absent for inserts).
     private final Map<Integer, byte[]> baseBody      = new HashMap<>();
     // slots holding a brand-new record (an INSERT): kept explicit so an insert that is later updated in the same
     // transaction stays an insert (base absent) rather than being mistaken for an in-place update.
@@ -871,6 +888,15 @@ public class TransactionContext implements Transaction {
     if (slotRebaseByPage == null)
       slotRebaseByPage = new HashMap<>();
     final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    if (buffer.finalBody.containsKey(slot) && buffer.finalBody.get(slot) == null && !buffer.insertedSlots.contains(slot)) {
+      // DELETE followed by an INSERT on the SAME slot within one transaction. LocalBucket.getFreeSpaceInPage never
+      // hands back a slot this transaction has just freed (guarded by
+      // Issue5279ConcurrentInsertTest.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
+      // replaying it as a plain insert would skip the pre-image check the delete relies on, so if that allocation
+      // policy ever changes the page must fall back to a normal retry instead of silently mis-merging.
+      poisonSlotRebasePage(fileId, pageNumber);
+      return;
+    }
     final byte[] prev = buffer.finalBody.put(slot, finalBody);
     buffer.insertedSlots.add(slot);
     // Account the NET change in retained bytes: a repeated write to the same slot replaces its image, it does not
@@ -906,10 +932,38 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Records the DELETE of a plain in-place record - a single-slot change (zero the slot-table entry, optionally wipe
+   * the content) that commutes with writes to every other slot of the page, exactly like the insert and the in-page
+   * update above (#5569). {@code baseBody} is the pre-image captured BEFORE the optional content wipe-out, so the
+   * replay can still tell a false page conflict from a concurrent write to THIS record. No-op when the feature is off
+   * or the page is poisoned; the caller ({@link com.arcadedb.engine.LocalBucket}) keeps every other delete shape
+   * (placeholder pointer or content, chunk chain, corrupted slot) poisoning the page.
+   */
+  public void trackRebasableDelete(final int fileId, final int pageNumber, final int slot, final byte[] baseBody) {
+    if (!slotMerge)
+      return;
+    final long key = packPageKey(fileId, pageNumber);
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return;
+    if (slotRebaseByPage == null)
+      slotRebaseByPage = new HashMap<>();
+    final SlotRebaseBuffer buffer = slotRebaseByPage.computeIfAbsent(key, k -> new SlotRebaseBuffer());
+    // A null final image marks the slot as deleted. The image the slot held so far (if any) is released.
+    final byte[] prevFinal = buffer.finalBody.put(slot, null);
+    long delta = -(prevFinal != null ? prevFinal.length : 0);
+    // First-touch base wins, as for an update: a record this transaction already updated must still be diffed
+    // against the COMMITTED pre-image, not against the intermediate image it wrote itself. A slot this transaction
+    // INSERTED has no committed pre-image at all: it stays an insert-and-delete, replayed as nothing.
+    if (!buffer.insertedSlots.contains(slot) && buffer.baseBody.putIfAbsent(slot, baseBody) == null)
+      delta += baseBody.length;
+    accountTrackedBytes(delta);
+  }
+
+  /**
    * Marks the bucket page (fileId, pageNumber) as NOT rebasable via the slot merge: this transaction changed it in
-   * a way that is not a single-slot insert or an in-page update (delete, multi-page/placeholder record, a record
-   * that had to spill out of the page). Any tracked slots on it are dropped so a rebase can never silently
-   * re-derive the page from committed-state + our slot writes. No-op when the feature is off.
+   * a way that is not a single-slot insert, in-page update or plain-record delete (a placeholder or multi-page
+   * record, a record that had to spill out of the page). Any tracked slots on it are dropped so a rebase can never
+   * silently re-derive the page from committed-state + our slot writes. No-op when the feature is off.
    */
   public void poisonSlotRebasePage(final int fileId, final int pageNumber) {
     if (!slotMerge)
@@ -998,8 +1052,23 @@ public class TransactionContext implements Transaction {
 
     for (final Map.Entry<Integer, byte[]> entry : buffer.finalBody.entrySet()) {
       final int slot = entry.getKey();
-      final byte[] baseBody = buffer.insertedSlots.contains(slot) ? null : buffer.baseBody.get(slot);
-      if (!bucket.rebaseRecordOnPage(committed, slot, entry.getValue(), baseBody))
+      final byte[] finalBody = entry.getValue();
+      final boolean insertedHere = buffer.insertedSlots.contains(slot);
+
+      if (finalBody == null) {
+        // DELETE (#5569). A slot this transaction both CREATED and deleted never existed on the committed page: its
+        // net effect there is nothing, so it must be skipped entirely - looking for a pre-image that cannot be there
+        // would turn a perfectly mergeable transaction into a conflict.
+        if (insertedHere)
+          continue;
+        if (!bucket.rebaseRecordDeleteOnPage(committed, slot, buffer.baseBody.get(slot)))
+          throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
+              + " (concurrent change to the record being deleted). Please retry the operation");
+        continue;
+      }
+
+      final byte[] baseBody = insertedHere ? null : buffer.baseBody.get(slot);
+      if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
     }

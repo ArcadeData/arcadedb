@@ -659,10 +659,11 @@ class Issue5381FalseConflictTest extends TestHelper {
   }
 
   /**
-   * A DELETE on a page shared with other records must poison it (a delete frees a slot and can relink placeholder
-   * chains), so it is never merged - it falls back to a normal retry. Threads delete their own co-located victims
-   * while other threads update co-located survivors in place; the survivors keep exact values and every victim is
-   * gone, proving the delete fell back cleanly rather than being rebased.
+   * A DELETE on a page shared with other records, mixed with in-place updates of the co-located survivors. Since
+   * #5569 the delete of a plain in-place record is itself a tracked single-slot write and merges like the others;
+   * before that it poisoned the page and fell back to a retry. Either way the outcome asserted here is the same and
+   * is the point of the test: the survivors keep their exact last committed value and every victim is gone, so
+   * neither the merge nor the fallback ever mixes the two.
    */
   @Test
   void deleteOnSharedPageFallsBackAndStaysCorrect() throws Exception {
