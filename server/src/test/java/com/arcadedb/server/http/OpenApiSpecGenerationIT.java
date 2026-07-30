@@ -470,8 +470,9 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   void specDoesNotDocumentItselfOrTheWebSocketUpgrade() throws Exception {
     final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
     assertThat(openAPI.getPaths().keySet())
-        .as("self-documentation, the Swagger UI page, and the WebSocket upgrade stay out")
-        .doesNotContain("/api/v1/openapi.json", "/api/v1/docs", "/ws");
+        .as("self-documentation, the Swagger UI page, the WebSocket upgrade, and the Studio static-content "
+            + "fallback all stay out")
+        .doesNotContain("/api/v1/openapi.json", "/api/v1/docs", "/ws", "/");
   }
 
   @Test
