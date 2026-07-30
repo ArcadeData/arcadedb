@@ -31,8 +31,9 @@ import java.util.stream.IntStream;
 
 /**
  * Lightweight index that stores only vector location metadata (absolute file offset, RID)
- * instead of the full vector data. This dramatically reduces memory usage:
- * ~24 bytes per vector vs ~3KB for a 768-dimension vector.
+ * instead of the full vector data. This dramatically reduces memory usage: the payload of one location is ~24
+ * bytes, and it retains {@link #APPROX_RETAINED_BYTES_PER_LOCATION} once the map and object overheads around it
+ * are counted, against ~3KB for a 768-dimension vector.
  * <p>
  * Uses absolute file offsets for direct random access without loading full pages.
  * <p>
@@ -42,10 +43,26 @@ import java.util.stream.IntStream;
  * rebuild - 1.2MB for the 9.3M ids that used to cost 970MB.
  * <p>
  * Used by LSMVectorIndex to implement lazy-loading of vectors from disk.
+ * <p>
+ * The bounded ({@code maxSize > 0}) backend below evicts, and {@link LSMVectorIndex} deliberately never asks for
+ * it (issue #5568): there is no vector id to offset index on disk, so an evicted location cannot be recovered, and
+ * every reader reads "no location" as "deleted". Bounding it made the index under-report its size and exposed any
+ * reader resolving an evicted id to a false "deleted". Do not wire {@code arcadedb.vectorIndex.locationCacheSize}
+ * back into the constructor without first giving the file a lookup that makes a miss recoverable.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class VectorLocationIndex {
+  /**
+   * Approximate retained heap of one live location, and the single figure every caller and document should quote.
+   * Enumerated in issue #5516: the {@link VectorLocation} and the {@link RID} it points at, the boxed
+   * {@code Integer} key, the map node and its table slot, and the entry the id owns in the RID reverse index. The
+   * 24 bytes of payload it carries are only a fraction of that, which is why sizing an index off the payload
+   * under-estimates it several-fold. An estimate, not a measurement: the exact layout depends on the JVM and on
+   * whether compressed oops are in play.
+   */
+  public static final int APPROX_RETAINED_BYTES_PER_LOCATION = 90;
+
   private final Map<Integer, VectorLocation> locations;
   // Reverse index RID -> vector ids, mirroring the keys stored in `locations`. Lets remove(keys, rid) resolve the
   // vector ids for a single RID in O(k) instead of scanning every id in the index (issue #5318). Kept perfectly in

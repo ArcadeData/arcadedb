@@ -91,7 +91,6 @@ public enum GlobalConfiguration {
       } else if ("high-performance".equalsIgnoreCase(v)) {
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(-1);
-        VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(-1);
         VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT.setValue(50);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(50);
 
@@ -125,7 +124,8 @@ public enum GlobalConfiguration {
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
         SERVER_HTTP_WORKER_THREADS.setValue(16);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
-        VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(10_000);
+        // VECTOR_INDEX_LOCATION_CACHE_SIZE is deliberately NOT capped here: it is not a cache, and bounding it
+        // made this profile drop live vectors from searches (issue #5568).
         VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(10_000);
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
@@ -664,10 +664,14 @@ public enum GlobalConfiguration {
 
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
-      Maximum number of vector locations to cache in memory per vector index. \
-      Set to -1 for unlimited (backward compatible). \
-      Each entry uses ~56 bytes. Recommended: 100000 for datasets with 1M+ vectors (~5.6MB), \
-      -1 for smaller datasets.""",
+      DEPRECATED and ignored since issue #5568: the location index is always unlimited, and a positive value is \
+      reported once per index at WARNING. A vector location is the only record of which record a vector id belongs \
+      to and where its entry sits in the index file, and nothing on disk maps a vector id back to an offset, so \
+      evicting one destroyed that mapping rather than spilling it to a slower tier: the index under-reported its \
+      size, and any reader resolving an evicted id read it as deleted. The limit existed when the index held one \
+      location per write; issue #5516 made a tombstoned id release \
+      its location, so residency is now proportional to the live vectors (~90 bytes each) instead of to the write \
+      history.""",
       Integer.class, -1),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE("arcadedb.vectorIndex.graphBuildCacheSize", SCOPE.DATABASE,
