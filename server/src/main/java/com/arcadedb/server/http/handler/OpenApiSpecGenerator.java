@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.openapi.AiApiSpec;
 import com.arcadedb.server.http.handler.openapi.AuthApiSpec;
 import com.arcadedb.server.http.handler.openapi.CoreApiSpec;
 import com.arcadedb.server.http.handler.openapi.GrafanaApiSpec;
@@ -60,7 +61,8 @@ public class OpenApiSpecGenerator {
       new SecurityAdminApiSpec(), //
       new TimeSeriesApiSpec(), //
       new GrafanaApiSpec(), //
-      new PrometheusApiSpec());
+      new PrometheusApiSpec(), //
+      new AiApiSpec());
 
   private final HttpServer httpServer;
 
