@@ -58,13 +58,19 @@ public final class CypherFunctionHelper {
   public static final String NUMERIC_DOMAIN = "an INTEGER or a FLOAT";
 
   /**
+   * Value of {@link NumericSignature#numericArgs()} meaning "every argument this function takes is numeric", which is the
+   * case for the whole family except {@code round()}.
+   */
+  public static final int ALL_ARGUMENTS = Integer.MAX_VALUE;
+
+  /**
    * A numeric Cypher function: its canonical spelling - the one the runtime check uses, so both the parse-time and the
    * runtime path phrase an error identically - and how many of its leading arguments are declared {@code INTEGER | FLOAT}.
    * All of them for the whole family except {@code round(value, precision, mode)}, whose third argument is the STRING name
    * of a rounding mode.
    *
    * @param name        canonical function name, without parentheses
-   * @param numericArgs number of leading arguments that must be numeric; {@link Integer#MAX_VALUE} for "every one of them"
+   * @param numericArgs number of leading arguments that must be numeric, or {@link #ALL_ARGUMENTS}
    */
   public record NumericSignature(String name, int numericArgs) {
   }
@@ -86,7 +92,7 @@ public final class CypherFunctionHelper {
       .collect(Collectors.toUnmodifiableMap(signature -> signature.name().toLowerCase(Locale.ROOT), signature -> signature));
 
   private static Stream<NumericSignature> allArgumentsNumeric(final String... names) {
-    return Stream.of(names).map(name -> new NumericSignature(name, Integer.MAX_VALUE));
+    return Stream.of(names).map(name -> new NumericSignature(name, ALL_ARGUMENTS));
   }
 
   private CypherFunctionHelper() {

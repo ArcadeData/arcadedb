@@ -163,6 +163,20 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
   }
 
   @Test
+  void aListLiteralFailsEvenWhenNoRowMatches() {
+    // A bracketed list is a ListExpression, not a literal holding a Collection, so it needs recognising on its own:
+    // otherwise abs([1,2]) was only caught once a row reached the function.
+    database.transaction(() -> database.command("opencypher", "CREATE (:Issue5484 {name: 'a'})"));
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) WHERE n.name = 'nobody' RETURN abs([1,2]) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("abs()")
+        .hasMessageContaining("LIST");
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) WHERE n.name = 'nobody' RETURN round(3.14, 2, [1]) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("rounding mode");
+  }
+
+  @Test
   void multiArgumentNumericLiteralsFailEvenWhenNoRowMatches() {
     // The parse-time guarantee covers the binary and ternary members of the family, not only the unary ones: these
     // projections are never evaluated, so without the static check they used to succeed silently.

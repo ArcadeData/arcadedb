@@ -1874,18 +1874,25 @@ public class CypherSemanticValidator {
     for (int i = 0; i < args.size(); i++) {
       final Expression arg = args.get(i);
       final boolean isMap = arg instanceof MapExpression;
+      // A bracketed list is a ListExpression rather than a literal holding a Collection, so it has to be recognised
+      // separately or abs([1,2]) would reach the parse-time check looking like a value of unknown type and be let
+      // through, leaving it to fail only on a query that matches a row.
+      final boolean isList = arg instanceof ListExpression;
       // A null literal is legal everywhere: null propagation is not a type error.
       final Object literal = arg instanceof LiteralExpression ? ((LiteralExpression) arg).getValue() : null;
-      if (!isMap && literal == null)
+      if (!isMap && !isList && literal == null)
         continue;
 
+      // Stands in for the literal purely so the message names the type: a MAP or a LIST<ANY>.
+      final Object rendered = isMap ? Map.of() : isList ? List.of() : literal;
+
       if (i < signature.numericArgs()) {
-        if (isMap || !(literal instanceof Number))
-          throw CypherFunctionHelper.typeMismatch(signature.name(), CypherFunctionHelper.NUMERIC_DOMAIN,
-              isMap ? Map.of() : literal);
+        if (isMap || isList || !(literal instanceof Number))
+          throw CypherFunctionHelper.typeMismatch(signature.name(), CypherFunctionHelper.NUMERIC_DOMAIN, rendered);
       } else if ("round".equals(signature.name()))
-        // A map literal names no rounding mode either, so it is rejected here too rather than only once the query runs.
-        RoundFunction.parseRoundingMode(isMap ? Map.of() : literal);
+        // A map or list literal names no rounding mode either, so it is rejected here too rather than only once the
+        // query runs.
+        RoundFunction.parseRoundingMode(rendered);
     }
   }
 
