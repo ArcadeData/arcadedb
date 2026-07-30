@@ -363,6 +363,12 @@ Two query-side consequences come with it:
   fall back to a full scan. The walk no longer filters on `shapeRel` - the cell iterator only ever yields cells
   that do intersect the shape.
 
+The second of those reaches an **existing index too, without rebuilding it**: dropping the `shapeRel` filter is
+in the shared query walk, so an index still on the old layout now issues exact lookups on covering cells it used
+to skip. That is what makes a point search shape work against it - the results were previously empty and are now
+correct - at the cost of a few more lookups and a few more candidates per query on those indexes. Both layouts
+still return a superset that the SQL predicate re-checks, so no query changes its answer for the worse.
+
 **Existing indexes keep working and are not rewritten.** The layout is recorded per index (`tokenization` in the
 schema), a definition written before this release loads as `FULL` and keeps reading and writing the ancestor
 chain, so nothing on disk is reinterpreted. To move an existing index to the compact layout - which is where the
