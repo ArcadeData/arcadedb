@@ -4227,10 +4227,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // arriving while one is still pending is a no-op instead of a queue of redundant rewrites.
       ((DatabaseAsyncExecutorImpl) getDatabase().async()).compact(this);
     } catch (final Exception e) {
-      // A closing database (async executor already shut down) must not fail the commit that just succeeded: the
-      // file stays as it is and the next commit, or an explicit COMPACT INDEX, picks it up.
-      LogManager.instance().log(this, Level.FINE, "Could not schedule the compaction of vector index '%s': %s",
-          indexName, e.getMessage());
+      // Scheduling must never fail the commit that just succeeded - the file simply stays as it is and the next
+      // commit, or an explicit COMPACT INDEX, picks it up. On a closing database (the async executor is already
+      // gone) that is routine and stays quiet; anywhere else it means this index has stopped reclaiming on its
+      // own, which nobody would notice at FINE.
+      LogManager.instance().log(this, getDatabase().isOpen() ? Level.WARNING : Level.FINE,
+          "Could not schedule the compaction of vector index '%s': %s", indexName, e.getMessage());
     }
   }
 
@@ -4238,8 +4240,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Whether the data file holds enough garbage to be worth rewriting: at least
    * {@link GlobalConfiguration#VECTOR_INDEX_COMPACTION_BLOAT_FACTOR} times the pages its live vectors need.
    * <p>
-   * Runs after every commit, so it only reads counters already in memory - the page count and the number of
-   * resident locations - and never touches a page.
+   * Runs after every commit, so it stays on counters and configuration lookups already in memory - the page count,
+   * the number of resident locations, two settings read live - and never touches a page.
    */
   private boolean isCompactionDue() {
     final ContextConfiguration configuration = getDatabase().getConfiguration();
