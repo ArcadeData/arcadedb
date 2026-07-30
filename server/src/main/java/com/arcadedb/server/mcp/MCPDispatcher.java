@@ -286,17 +286,20 @@ public class MCPDispatcher {
 
   private MCPResponse promptsGet(final Object id, final JSONObject params, final ServerSecurityUser user,
       final Predicate<String> toolAllowed) {
-    final String name = params.getString("name", "");
-    final JSONObject args = params.getJSONObject("arguments", new JSONObject());
-
-    LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get '%s' (user=%s)", transport, name, user.getName());
-
+    // Both members are read inside the try because reading them can itself fail: the defaulting accessors fall back
+    // only for an absent or null member, so a member of the wrong JSON shape raises instead. That is a malformed
+    // request rather than a server fault, and answering it needs the -32602 mapping below.
     try {
+      final String name = params.getString("name", "");
+      final JSONObject args = params.getJSONObject("arguments", new JSONObject());
+
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get '%s' (user=%s)", transport, name, user.getName());
+
       return result(id, MCPPrompts.get(config, toolAllowed, name, args));
     } catch (final SecurityException e) {
       LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, e.getMessage());
       return error(id, -32600, e.getMessage(), 200);
-    } catch (final IllegalArgumentException e) {
+    } catch (final IllegalArgumentException | IllegalStateException e) {
       return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());

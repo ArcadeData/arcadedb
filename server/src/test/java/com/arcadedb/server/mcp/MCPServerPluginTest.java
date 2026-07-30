@@ -3329,6 +3329,26 @@ class MCPServerPluginTest extends BaseGraphServerTest {
   }
 
   /**
+   * A malformed 'arguments' member is a client mistake, so it must answer -32602 rather than -32603: the request
+   * never reaches the prompt, so nothing internal went wrong. Reading it defaults only on an absent or null
+   * member, so a JSON value of the wrong shape raises instead, which is why the read happens where the handler
+   * can answer for it.
+   */
+  @Test
+  void promptsGetRejectsNonObjectArguments() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 508)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONArray().put("database").put("graph"))));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+  }
+
+  /**
    * Mirrors {@link #principalProfilesDifferentiateNamedUsersOnOneHttpEndpoint()} for the Prompts surface: the
    * global profile alone is "all", under which both prompts name only tools that are reachable, so root sees
    * both. The principal's own profile is "admin", which registers neither the search tools graphrag_query names
