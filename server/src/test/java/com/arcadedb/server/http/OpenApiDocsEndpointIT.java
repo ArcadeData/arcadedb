@@ -334,21 +334,6 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   }
 
   @Test
-  void docsHandlerClassExists() {
-    // This test verifies that the OpenApiDocsHandler class exists
-    try {
-      Class<?> handlerClass = Class.forName("com.arcadedb.server.http.handler.OpenApiDocsHandler");
-      assertThat(handlerClass)
-          .as("OpenApiDocsHandler class should exist")
-          .isNotNull();
-    } catch (ClassNotFoundException e) {
-      assertThat(false)
-          .as("OpenApiDocsHandler class not found. Expected at: com.arcadedb.server.http.handler.OpenApiDocsHandler")
-          .isTrue();
-    }
-  }
-
-  @Test
   void docsEndpointSupportsHeadRequest() throws Exception {
     // Test that the docs endpoint supports HEAD requests
     HttpRequest request = HttpRequest.newBuilder()

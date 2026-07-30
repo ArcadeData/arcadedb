@@ -306,16 +306,25 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void openApiHandlerClassExists() {
-    // This test verifies that the OpenApiHandler class can be instantiated
-    // This will fail until we implement the class
-    try {
-      Class<?> handlerClass = Class.forName("com.arcadedb.server.http.handler.OpenApiHandler");
-      assertThat(handlerClass)
-          .as("OpenApiHandler class should exist")
-          .isNotNull();
-    } catch (ClassNotFoundException e) {
-      fail("OpenApiHandler class not found. Expected at: com.arcadedb.server.http.handler.OpenApiHandler");
+  void rootSecurityDeclaresBasicAndBearer() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    assertThat(openAPI.getSecurity())
+        .as("root security should offer basicAuth and bearerAuth as alternatives")
+        .hasSize(2);
+    assertThat(openAPI.getSecurity().stream().flatMap(r -> r.keySet().stream()).toList())
+        .containsExactlyInAnyOrder("basicAuth", "bearerAuth");
+  }
+
+  @Test
+  void livenessAndReadinessAreDeclaredPublic() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    for (final String path : java.util.List.of("/api/v1/health", "/api/v1/ready")) {
+      assertThat(openAPI.getPaths().get(path).getGet().getSecurity())
+          .as("%s requires no authentication, so it must override root security with an empty list", path)
+          .isNotNull()
+          .isEmpty();
     }
   }
 
