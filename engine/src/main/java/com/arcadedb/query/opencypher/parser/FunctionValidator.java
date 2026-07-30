@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.parser;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,7 +44,7 @@ public class FunctionValidator {
 
     public FunctionSignature(final String name, final int minArgs, final int maxArgs,
                              final String description, final boolean aggregation) {
-      this.name = name.toLowerCase();
+      this.name = name.toLowerCase(Locale.ROOT);
       this.minArgs = minArgs;
       this.maxArgs = maxArgs;
       this.description = description;
@@ -267,21 +268,21 @@ public class FunctionValidator {
 
   private static void registerFunction(final String name, final int minArgs, final int maxArgs,
                                        final String description, final boolean aggregation) {
-    FUNCTIONS.put(name.toLowerCase(), new FunctionSignature(name, minArgs, maxArgs, description, aggregation));
+    FUNCTIONS.put(name.toLowerCase(Locale.ROOT), new FunctionSignature(name, minArgs, maxArgs, description, aggregation));
   }
 
   /**
    * Check if a function is known.
    */
   public static boolean isKnownFunction(final String functionName) {
-    return FUNCTIONS.containsKey(functionName.toLowerCase());
+    return FUNCTIONS.containsKey(functionName.toLowerCase(Locale.ROOT));
   }
 
   /**
    * Get function signature.
    */
   public static FunctionSignature getSignature(final String functionName) {
-    return FUNCTIONS.get(functionName.toLowerCase());
+    return FUNCTIONS.get(functionName.toLowerCase(Locale.ROOT));
   }
 
   /**

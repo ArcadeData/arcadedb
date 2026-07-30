@@ -1753,7 +1753,7 @@ public class CypherSemanticValidator {
       return;
     if (expr instanceof FunctionCallExpression) {
       final FunctionCallExpression func = (FunctionCallExpression) expr;
-      final String name = func.getFunctionName().toLowerCase();
+      final String name = func.getFunctionName().toLowerCase(Locale.ROOT);
       // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
       if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
         throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");

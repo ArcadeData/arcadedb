@@ -245,6 +245,23 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
     }
   }
 
+  @Test
+  void theFunctionNameLookupDoesNotDependOnTheDefaultLocale() {
+    // The map is keyed with Locale.ROOT while the parser lower-cases the name it read. Under a Turkish default locale
+    // "ISNAN".toLowerCase() is "ısnan" with a dotless i, which matches neither the map nor the known-function registry:
+    // a valid query would be rejected as calling an unknown function.
+    final Locale previous = Locale.getDefault();
+    try {
+      Locale.setDefault(Locale.forLanguageTag("tr"));
+      assertThat(single("RETURN ISNAN(1.0) AS r")).isEqualTo(false);
+      assertThatThrownBy(() -> consume("RETURN ISNAN('hello') AS r"))
+          .isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("STRING");
+    } finally {
+      Locale.setDefault(previous);
+    }
+  }
+
   private static boolean isNumericExecutor(final StatelessFunction executor) {
     return executor instanceof AbsFunction || executor instanceof MathUnaryFunction
         || executor instanceof MathBinaryFunction || executor instanceof SignFunction || executor instanceof IsNaNFunction
