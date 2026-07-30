@@ -19,6 +19,8 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
@@ -45,7 +47,7 @@ public class MongoDBToSqlTranslator {
         } else
           throw new IllegalArgumentException("Invalid operator " + key);
       } else {
-        buffer.append(entry.getKey());
+        buffer.append(quoteFieldPath(entry.getKey()));
         buffer.append(" = ");
         buildValue(buffer, value);
       }
@@ -73,7 +75,7 @@ public class MongoDBToSqlTranslator {
           sql.append(" AND ");
 
         if (key != null)
-          sql.append(key);
+          sql.append(quoteFieldPath(key.toString()));
 
         buildExpression(sql, subKey, subValue);
 
@@ -159,12 +161,34 @@ public class MongoDBToSqlTranslator {
   }
 
   protected static void buildValue(final StringBuilder buffer, final Object value) {
-    if (value instanceof String) {
+    if (value instanceof String string) {
+      // the value is embedded in the statement, so it has to be escaped for a single-quoted literal: inlining it raw lets a
+      // quote in the value close the literal and append arbitrary SQL to the WHERE clause
       buffer.append('\'');
-      buffer.append(value);
+      buffer.append(Expression.encodeSingle(string));
       buffer.append('\'');
     } else
       buffer.append(value);
+  }
+
+  /**
+   * Quotes a field reference for embedding in a statement. A MongoDB field name is a dot-separated path, so each segment is quoted
+   * on its own: quoting the whole path would turn navigation into a single property whose name contains a dot.
+   */
+  protected static String quoteFieldPath(final String field) {
+    final int dot = field.indexOf('.');
+    if (dot < 0)
+      return Identifier.quote(field);
+
+    final StringBuilder buffer = new StringBuilder(field.length() + 8);
+    int start = 0;
+    for (int i = dot; i >= 0; i = field.indexOf('.', start)) {
+      if (start > 0)
+        buffer.append('.');
+      buffer.append(Identifier.quote(field.substring(start, i)));
+      start = i + 1;
+    }
+    return buffer.append('.').append(Identifier.quote(field.substring(start))).toString();
   }
 
   protected static void fillResultSet(final int numberToSkip, final int numberToReturn, final List<Document> result, final Iterator it) {

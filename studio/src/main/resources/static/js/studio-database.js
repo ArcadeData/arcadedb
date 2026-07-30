@@ -896,7 +896,7 @@ function dropProperty(type, property) {
           url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
-            command: "drop property `" + type + "`.`" + property + "`",
+            command: "drop property " + quoteSqlName(type) + "." + quoteSqlName(property),
             serializer: "record",
           }),
           beforeSend: function (xhr) {
@@ -933,7 +933,7 @@ function dropIndex(indexName, type) {
           url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
-            command: "drop index `" + indexName + "`",
+            command: "drop index " + quoteSqlName(indexName),
             serializer: "record",
           }),
           beforeSend: function (xhr) {
@@ -989,7 +989,7 @@ function runRepartition(typeName) {
           url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
-            command: "REBUILD TYPE `" + typeName + "` WITH repartition = true",
+            command: "REBUILD TYPE " + quoteSqlName(typeName) + " WITH repartition = true",
             serializer: "record",
           }),
           beforeSend: function (xhr) {
@@ -1029,26 +1029,39 @@ function dropType(typeName) {
     "Are you sure you want to drop the type '" + escapeHtml(typeName) + "'?<br>WARNING: The operation cannot be undone.",
     "warning",
     function () {
-      jQuery
-        .ajax({
-          type: "POST",
-          url: "api/v1/command/" + database,
-          data: JSON.stringify({
-            language: "sql",
-            command: "drop type `" + typeName + "` unsafe",
-            serializer: "record",
-          }),
-          beforeSend: function (xhr) {
-            xhr.setRequestHeader("Authorization", globalCredentials);
-          },
-        })
-        .done(function (data) {
-          $("#dbTypeDetail").html("");
-          updateDatabases();
-        })
-        .fail(function (jqXHR, textStatus, errorThrown) {
-          globalNotifyError(jqXHR.responseText);
-        });
+      globalPrompt(
+        "Confirm drop type",
+        "Type the type name to confirm:<br><b>" + escapeHtml(typeName) + "</b>" +
+        "<input type='text' id='dropTypeConfirmInput' class='form-control mt-2' placeholder='Type name'>",
+        "Drop",
+        function (values) {
+          var typed = values["dropTypeConfirmInput"] || "";
+          if (typed !== typeName) {
+            globalNotify("Drop cancelled", "Type name does not match.", "warning");
+            return;
+          }
+          jQuery
+            .ajax({
+              type: "POST",
+              url: "api/v1/command/" + database,
+              data: JSON.stringify({
+                language: "sql",
+                command: "drop type " + quoteSqlName(typeName) + " unsafe",
+                serializer: "record",
+              }),
+              beforeSend: function (xhr) {
+                xhr.setRequestHeader("Authorization", globalCredentials);
+              },
+            })
+            .done(function (data) {
+              $("#dbTypeDetail").html("");
+              updateDatabases();
+            })
+            .fail(function (jqXHR, textStatus, errorThrown) {
+              globalNotifyError(jqXHR.responseText);
+            });
+        },
+      );
     },
   );
 }
@@ -1207,7 +1220,7 @@ function createProperty(typeName) {
     let compression = $("#inputCreatePropCompression").val();
     let ifNotExists = $("#inputCreatePropIfNotExists").prop("checked");
 
-    let command = "CREATE PROPERTY `" + typeName + "`.`" + name + "`";
+    let command = "CREATE PROPERTY " + quoteSqlName(typeName) + "." + quoteSqlName(name);
     if (ifNotExists) command += " IF NOT EXISTS";
     command += " " + type;
     if (ofType != "") command += " OF " + ofType;
@@ -1452,8 +1465,8 @@ function createIndex(typeName) {
 
     let command = "CREATE INDEX";
     if (ifNotExists) command += " IF NOT EXISTS";
-    command += " ON `" + typeName + "` (";
-    command += selectedProps.map(function (p) { return "`" + p + "`"; }).join(", ");
+    command += " ON " + quoteSqlName(typeName) + " (";
+    command += selectedProps.map(function (p) { return quoteSqlName(p); }).join(", ");
     command += ") " + indexTypeSql;
     if ((algorithm == "LSM_TREE" || algorithm == "HASH") && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
     if (metadataJson != null) command += " METADATA " + metadataJson;
@@ -1593,7 +1606,7 @@ function createType(category) {
       return;
     }
 
-    let command = "CREATE " + sqlKeyword + " TYPE `" + name + "`";
+    let command = "CREATE " + sqlKeyword + " TYPE " + quoteSqlName(name);
 
     if ($("#inputCreateTypeIfNotExists").prop("checked"))
       command += " IF NOT EXISTS";
@@ -1601,7 +1614,7 @@ function createType(category) {
     // Multiple parents
     let parents = $("#inputCreateTypeParents").val();
     if (parents && parents.length > 0)
-      command += " EXTENDS " + parents.map(function (p) { return "`" + p + "`"; }).join(", ");
+      command += " EXTENDS " + parents.map(function (p) { return quoteSqlName(p); }).join(", ");
 
     let buckets = $("#inputCreateTypeBuckets").val();
     if (buckets && parseInt(buckets) > 0)
@@ -1762,7 +1775,7 @@ function createTimeSeriesType() {
       return;
     }
 
-    let command = "CREATE TIMESERIES TYPE `" + name + "`";
+    let command = "CREATE TIMESERIES TYPE " + quoteSqlName(name);
 
     if ($("#tsCreateIfNotExists").prop("checked"))
       command += " IF NOT EXISTS";
@@ -2895,7 +2908,7 @@ function browseType(typeName) {
   if (!database) return;
 
   let limit = parseInt($("#inputLimit").val()) || 100;
-  let query = "select from `" + typeName + "`";
+  let query = "select from " + quoteSqlName(typeName);
 
   $("#inputLanguage").val("sql");
   editor.setValue(query);
@@ -2937,6 +2950,21 @@ function browseType(typeName) {
     $("#executeSpinner").hide();
     globalNotifyError(jqXHR.responseText);
   });
+}
+
+// Quick-action helpers for the type and view detail panes. The SQL is built here, where quoteSqlName() applies, instead of
+// being spelled out inside an inline onclick attribute: a name embedded there would have to survive HTML decoding, JS string
+// parsing and SQL quoting at once, and only the first of those was handled.
+function browseRecords(typeName) {
+  executeCommand("sql", "select from " + quoteSqlName(typeName));
+}
+
+function browseRecordsWithConnections(typeName) {
+  executeCommand("sql", "select *, bothE() as `@edges` from " + quoteSqlName(typeName));
+}
+
+function countRecords(typeName) {
+  executeCommand("sql", "select count(*) from " + quoteSqlName(typeName));
 }
 
 function executeCommand(language, query) {
@@ -3505,10 +3533,10 @@ function showTypeDetail(typeName) {
   html += "<div class='db-detail-section'>";
   html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
   html += "<div class='d-flex flex-wrap gap-2'>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + row.name + "\\`\")'><i class='fa fa-table'></i> Browse records</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='browseRecords(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-table'></i> Browse records</button>";
   if (row.type == "vertex")
-    html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select *, bothE() as \\`@edges\\` from \\`" + row.name + "\\`\")'><i class='fa fa-project-diagram'></i> With connections</button>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select count(*) from \\`" + row.name + "\\`\")'><i class='fa fa-calculator'></i> Count records</button>";
+    html += "<button class='btn btn-sm db-action-btn' onclick='browseRecordsWithConnections(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-project-diagram'></i> With connections</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='countRecords(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-calculator'></i> Count records</button>";
   html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropType(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-trash'></i> Drop Type</button>";
   html += "</div>";
   html += "</div>";
@@ -4193,7 +4221,7 @@ function renderMaterializedViewsSidebarSection(views, isQuerySidebar) {
 
     if (isQuerySidebar) {
       html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\"); return false;' ";
+      html += "onclick='browseRecords(\"" + escapeHtml(view.name) + "\"); return false;' ";
       html += "title='" + name + " (Materialized View)'>";
       html += "<span class='mv-status-dot " + statusClass + "'></span>";
       html += "<span class='sidebar-badge-name'>" + name + "</span>";
@@ -4237,7 +4265,7 @@ function renderMaterializedViewsSidebarBadges(views, isQuerySidebar) {
 
     if (isQuerySidebar) {
       html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\"); return false;' ";
+      html += "onclick='browseRecords(\"" + escapeHtml(view.name) + "\"); return false;' ";
       html += "title='" + name + " (Materialized View)'>";
       html += "<span class='mv-status-dot " + statusClass + "'></span>";
       html += "<span class='sidebar-badge-name'>" + name + "</span>";
@@ -4513,31 +4541,31 @@ function createGraphAnalyticalView() {
     let command = "CREATE GRAPH ANALYTICAL VIEW";
     if ($("#inputGavIfNotExists").prop("checked"))
       command += " IF NOT EXISTS";
-    command += " `" + name + "`";
+    command += " " + quoteSqlName(name);
 
     let vt = $("#inputGavVertexTypes").val();
     // Filter out the "All types" sentinel — no VERTEX TYPES clause means all
     if (vt)
       vt = vt.filter(function (v) { return v !== "__ALL__"; });
     if (vt && vt.length > 0)
-      command += " VERTEX TYPES (" + vt.map(function (v) { return "`" + v + "`"; }).join(", ") + ")";
+      command += " VERTEX TYPES (" + vt.map(function (v) { return quoteSqlName(v); }).join(", ") + ")";
 
     let et = $("#inputGavEdgeTypes").val();
     if (et)
       et = et.filter(function (e) { return e !== "__ALL__"; });
     if (et && et.length > 0)
-      command += " EDGE TYPES (" + et.map(function (e) { return "`" + e + "`"; }).join(", ") + ")";
+      command += " EDGE TYPES (" + et.map(function (e) { return quoteSqlName(e); }).join(", ") + ")";
 
     let props = $("#inputGavProperties").val().trim();
     if (props) {
-      let propList = props.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      let propList = props.split(",").filter(function (p) { return p.trim() !== ""; }).map(function (p) { return quoteSqlName(p.trim()); });
       if (propList.length > 0)
         command += " PROPERTIES (" + propList.join(", ") + ")";
     }
 
     let edgeProps = $("#inputGavEdgeProperties").val().trim();
     if (edgeProps) {
-      let edgePropList = edgeProps.split(",").map(function (p) { return "`" + p.trim() + "`"; }).filter(function (p) { return p !== "``"; });
+      let edgePropList = edgeProps.split(",").filter(function (p) { return p.trim() !== ""; }).map(function (p) { return quoteSqlName(p.trim()); });
       if (edgePropList.length > 0)
         command += " EDGE PROPERTIES (" + edgePropList.join(", ") + ")";
     }
@@ -4778,7 +4806,7 @@ function dropGav(gavName) {
         url: "api/v1/command/" + database,
         data: JSON.stringify({
           language: "sql",
-          command: "DROP GRAPH ANALYTICAL VIEW `" + gavName + "`"
+          command: "DROP GRAPH ANALYTICAL VIEW " + quoteSqlName(gavName)
         }),
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);
@@ -4803,7 +4831,7 @@ function alterGavUpdateMode(gavName, newMode) {
     url: "api/v1/command/" + database,
     data: JSON.stringify({
       language: "sql",
-      command: "ALTER GRAPH ANALYTICAL VIEW `" + gavName + "` UPDATE MODE " + newMode
+      command: "ALTER GRAPH ANALYTICAL VIEW " + quoteSqlName(gavName) + " UPDATE MODE " + newMode
     }),
     beforeSend: function (xhr) {
       xhr.setRequestHeader("Authorization", globalCredentials);
@@ -4825,7 +4853,7 @@ function rebuildGav(gavName) {
     url: "api/v1/command/" + database,
     data: JSON.stringify({
       language: "sql",
-      command: "REBUILD GRAPH ANALYTICAL VIEW `" + gavName + "`"
+      command: "REBUILD GRAPH ANALYTICAL VIEW " + quoteSqlName(gavName)
     }),
     beforeSend: function (xhr) {
       xhr.setRequestHeader("Authorization", globalCredentials);
@@ -5026,7 +5054,7 @@ function showMaterializedViewDetail(viewName) {
   html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
   html += "<div class='d-flex flex-wrap gap-2'>";
   html += "<button class='btn btn-sm db-action-btn' onclick='refreshMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-sync'></i> Refresh Now</button>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='executeCommand(\"sql\", \"select from \\`" + view.name + "\\`\")'><i class='fa fa-table'></i> Browse Records</button>";
+  html += "<button class='btn btn-sm db-action-btn' onclick='browseRecords(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-table'></i> Browse Records</button>";
   html += "<button class='btn btn-sm db-action-btn' onclick='alterMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-pen'></i> Alter Refresh Mode</button>";
   html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-trash'></i> Drop View</button>";
   html += "</div></div>";
@@ -5113,7 +5141,7 @@ function createMaterializedView() {
       return;
     }
     let mode = $("input[name='mvRefreshMode']:checked").val();
-    let command = "CREATE MATERIALIZED VIEW `" + name + "` AS " + query;
+    let command = "CREATE MATERIALIZED VIEW " + quoteSqlName(name) + " AS " + query;
     if (mode != "MANUAL") {
       command += " REFRESH";
       if (mode == "PERIODIC") {
@@ -5189,7 +5217,7 @@ function refreshMaterializedView(name) {
           url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
-            command: "REFRESH MATERIALIZED VIEW `" + name + "`",
+            command: "REFRESH MATERIALIZED VIEW " + quoteSqlName(name),
             serializer: "record",
           }),
           beforeSend: function (xhr) {
@@ -5223,7 +5251,7 @@ function alterMaterializedView(name) {
 
   globalPrompt("Alter Materialized View: " + escapeHtml(name), html, "Alter", function () {
     let mode = $("input[name='mvAlterMode']:checked").val();
-    let command = "ALTER MATERIALIZED VIEW `" + name + "` REFRESH " + mode;
+    let command = "ALTER MATERIALIZED VIEW " + quoteSqlName(name) + " REFRESH " + mode;
     if (mode == "PERIODIC") {
       let interval = parseInt($("#mvAlterInterval").val()) || 5;
       let unit = $("#mvAlterIntervalUnit").val() || "MINUTE";
@@ -5277,7 +5305,7 @@ function dropMaterializedView(name) {
           url: "api/v1/command/" + database,
           data: JSON.stringify({
             language: "sql",
-            command: "DROP MATERIALIZED VIEW `" + name + "`",
+            command: "DROP MATERIALIZED VIEW " + quoteSqlName(name),
             serializer: "record",
           }),
           beforeSend: function (xhr) {
@@ -5624,7 +5652,7 @@ function refreshMvFromMetrics(name) {
   jQuery.ajax({
     type: "POST",
     url: "api/v1/command/" + database,
-    data: JSON.stringify({ language: "sql", command: "REFRESH MATERIALIZED VIEW `" + name + "`" }),
+    data: JSON.stringify({ language: "sql", command: "REFRESH MATERIALIZED VIEW " + quoteSqlName(name) }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function () {
     globalNotify("Success", "Materialized view '" + escapeHtml(name) + "' refreshed", "success");
