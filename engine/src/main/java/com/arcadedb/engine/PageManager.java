@@ -95,6 +95,7 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
     public long mergesDeclinedByCoverage;
     public long evictionRuns;
     public long pagesEvicted;
@@ -334,8 +335,14 @@ public class PageManager extends LockContext {
    * replayable by that merge (#5596). The transaction falls back to an ordinary retry, so this is never a
    * correctness problem - but a non-zero and growing value means some writer is dirtying a mergeable page without
    * declaring it ({@code MutablePage.beginCoveredWrite}), i.e. contention that used to be absorbed is now being
-   * retried. Watch it next to {@link Stats#edgeAppendMerges}/{@link Stats#txPageSlotMerges}: a jump here with a dip
+   * retried. Watch it next to {@link PPageManagerStats#edgeAppendMerges}/{@link PPageManagerStats#txPageSlotMerges}: a jump here with a dip
    * there is exactly the shape of a forgotten declaration.
+   * <p>
+   * COUNTING SEMANTICS: this is "commit attempts that FAILED on a coverage decline", not "pages declined". The
+   * report is made from the commit loop's terminal branch, which then rethrows, so a transaction whose commit
+   * touched several undeclared pages contributes exactly one - and a retry that fails the same way contributes one
+   * more. That is the right granularity for the question the metric answers (is a writer missing a declaration, and
+   * is it costing retries?); do not read it as a page count or divide it by anything.
    */
   public void incrementMergesDeclinedByCoverage() {
     totalMergesDeclinedByCoverage.incrementAndGet();
