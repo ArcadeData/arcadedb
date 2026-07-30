@@ -4242,18 +4242,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * resident locations - and never touches a page.
    */
   private boolean isCompactionDue() {
-    if (minPagesToScheduleACompaction <= 0)
+    final ContextConfiguration configuration = getDatabase().getConfiguration();
+
+    // Read both knobs live so they behave the same way: the cached minPagesToScheduleACompaction only reflects the
+    // value an index was built with, which would make one of the two gates ignore a runtime change.
+    final int minPages = configuration.getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+    if (minPages <= 0)
       // Automatic compaction disabled for every index type.
       return false;
 
-    final int bloatFactor = getDatabase().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_COMPACTION_BLOAT_FACTOR);
+    final int bloatFactor = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_COMPACTION_BLOAT_FACTOR);
     if (bloatFactor <= 0)
       // Explicit COMPACT INDEX only.
       return false;
 
+    if (getLocationCacheSize() > 0)
+      // A bounded location cache caps the resident locations at its size, so the live-vector count this decision
+      // rests on is not available: an index with more live vectors than the cache holds would look permanently
+      // bloated and rewrite itself after nearly every commit - worst on the largest indexes, which is exactly where
+      // that setting gets used. Leave those to an explicit COMPACT INDEX, which derives its live set by parsing the
+      // pages instead of trusting the resident map. See issue #5559 for why bounded mode needs work of its own.
+      return false;
+
     final int totalPages = getTotalPages();
-    if (totalPages < minPagesToScheduleACompaction)
+    if (totalPages < minPages)
       // Too small to be worth a rewrite whatever its garbage ratio is.
       return false;
 
@@ -4274,8 +4286,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (liveVectors < 1)
       return 0;
 
-    // vectorId + bucketId + position are variable-length; 4+4+8 is their upper bound. Plus the deleted flag and the
-    // quantization-type byte, both always written.
+    // vectorId + bucketId + position are zig-zag varints, so 4+4+8 is their typical size, not their maximum (a
+    // 32-bit id can reach 5 bytes and a 64-bit position 10). Under-counting here over-counts how many entries fit
+    // in a page, which makes the trigger marginally eager - harmless for a ratio against a configurable factor.
+    // Plus the deleted flag and the quantization-type byte, both always written.
     int entrySize = 4 + 4 + 8 + 1 + 1;
     switch (metadata.quantizationType) {
     case INT8 -> entrySize += 4 + calculateQuantizedSize(metadata.dimensions, metadata.quantizationType) + 8;

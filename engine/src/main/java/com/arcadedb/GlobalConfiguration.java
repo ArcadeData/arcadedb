@@ -584,7 +584,9 @@ public enum GlobalConfiguration {
       bigger, rarer passes. Each pass is a full graph rebuild plus a sequential copy of the live vectors, and it \
       holds the index write lock for that copy. Set to 0 to compact only on an explicit COMPACT INDEX; \
       arcadedb.indexCompactionMinPagesSchedule gates it too, and 0 there disables automatic compaction for every \
-      index type.""",
+      index type. Both are read per commit, so either one takes effect at runtime. An index with a bounded \
+      arcadedb.vectorIndex.locationCacheSize never compacts automatically: its live-vector count is capped by the \
+      cache, so the ratio this rests on cannot be computed - run COMPACT INDEX explicitly there.""",
       Integer.class, 3),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE("arcadedb.vectorIndex.graphBuildCacheSize", SCOPE.DATABASE,

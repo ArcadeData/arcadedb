@@ -125,6 +125,70 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
     }
   }
 
+  /**
+   * The point of the ratio is that a compaction pays for itself, so a steady churn workload must reach a steady
+   * state: reclaim, then run for a while on the compacted file before reclaiming again. A trigger that fired on
+   * every commit - which is what an under-counted live set would produce - would rewrite the whole file, graph
+   * included, on each cycle and cost far more than the space it returns.
+   */
+  @Test
+  void aChurningIndexReachesASteadyStateInsteadOfRewritingEveryCycle() {
+    createSchema();
+    insertVertices();
+
+    final LSMVectorIndex index = vectorIndex();
+    int lastFileId = index.getFileId();
+    int compactions = 0;
+
+    for (int cycle = 1; cycle <= CYCLES; cycle++) {
+      updateAllVertices(cycle);
+      awaitCompactionIdle();
+      final int fileId = vectorIndex().getFileId();
+      if (fileId != lastFileId) {
+        compactions++;
+        lastFileId = fileId;
+      }
+    }
+
+    assertThat(compactions).as("the workload must reclaim at least once over %d cycles", CYCLES).isGreaterThan(0);
+    assertThat(compactions)
+        .as("%d cycles produced %d compactions: a rewrite per cycle means the trigger is not measuring garbage",
+            CYCLES, compactions)
+        .isLessThan(CYCLES / 2);
+    assertThat(vectorIndex().countEntries()).isEqualTo(VERTICES);
+  }
+
+  /**
+   * A bounded location cache caps the resident locations, so the live-vector count the ratio needs is not available
+   * and an index holding more vectors than the cache would look permanently bloated. Those indexes must be left to
+   * an explicit COMPACT INDEX rather than rewriting themselves after nearly every commit.
+   */
+  @Test
+  void aBoundedLocationCacheDoesNotTriggerCompactionOnEveryCommit() {
+    GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(VERTICES / 10);
+    try {
+      createSchema();
+      insertVertices();
+
+      final LSMVectorIndex index = vectorIndex();
+      final int fileIdBefore = index.getFileId();
+      assertThat(index.getVectorIndex().size())
+          .as("the cache must really be capped below the live set, or this proves nothing")
+          .isLessThan(VERTICES);
+
+      for (int cycle = 1; cycle <= CYCLES; cycle++) {
+        updateAllVertices(cycle);
+        awaitCompactionIdle();
+      }
+
+      assertThat(vectorIndex().getFileId())
+          .as("an index whose live count is hidden by a bounded cache must not compact itself")
+          .isEqualTo(fileIdBefore);
+    } finally {
+      GlobalConfiguration.VECTOR_INDEX_LOCATION_CACHE_SIZE.reset();
+    }
+  }
+
   // ------------------------------------------------------------------------------------------------- helpers
 
   /** Compaction runs on the async executor: let anything already scheduled finish before looking at the file. */
