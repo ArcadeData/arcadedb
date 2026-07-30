@@ -1386,10 +1386,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 //      LogManager.instance()
 //          .log(this, Level.SEVERE, "UPDATE %s pageV=%d content %s (threadId=%d)", rid, page.getVersion(), record.toJSON(), Thread.currentThread().threadId());
 
-      // DISJOINT-SLOT MERGE (#5381): only a same-or-smaller in-place overwrite (the branch far below) touches
-      // just this record's slot and thus commutes with concurrent writes to other slots on the page. Every other
-      // update shape here (placeholder pointer, multi-page chunk, record growth that shifts other slots or spills
-      // to a placeholder) changes more than this slot, so it poisons the page: the slot merge must never rebase it.
+      // DISJOINT-SLOT MERGE (#5381, #5279): only an update that stays INSIDE this page - an overwrite of the same
+      // size or smaller, or a growth the page can host by shifting the records that follow (the two branches far
+      // below) - touches just this record's slot and thus commutes with concurrent writes to other slots on the
+      // page. Every other update shape here (placeholder pointer or content, multi-page chunk, a record that has to
+      // spill OUT of the page) changes more than this slot, so it poisons the page: the merge must never rebase it.
       final TransactionContext slotTx = database.getTransactionIfExists();
       final boolean slotMergeOn = slotTx != null && slotTx.isSlotMergeEnabled();
       // #5279: an edge-list segment is normally left to the edge-append merge, but a segment this transaction
@@ -1422,6 +1423,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         // DELETE OLD PLACEHOLDER, A NEW PLACEHOLDER WILL BE CREATED WITH ENOUGH SPACE
         deleteRecordInternal(placeHolderContentRID, true, false, false);
+
+        // The slot is being turned from a placeholder POINTER back into a record, and the content record it pointed
+        // to (on another page) has just been deleted: this is not a single-slot change, and the "pre-image" the
+        // branches below would capture is the 8-byte pointer, not record content. Poison the page so no merge can
+        // ever rebase this slot from it.
+        if (slotCandidate)
+          slotTx.poisonSlotRebasePage(fileId, pageId);
 
         recordSize[0] = LONG_SERIALIZED_SIZE;
         recordSize[1] = 1L;
