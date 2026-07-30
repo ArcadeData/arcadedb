@@ -36,8 +36,11 @@ import java.io.StringReader;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAccessor;
@@ -171,6 +174,10 @@ public class JSONObject implements Map<String, Object> {
         // SAVE AS TIMESTAMP
         object.addProperty(name,
             DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS));
+      else if (temporalAccessor instanceof Instant instant)
+        // SAVE AS STRING: an Instant has no date fields, so it must be anchored to UTC before the
+        // schema-wide pattern can be applied (arcadedb.dateTimeImplementation=java.time.Instant).
+        object.addProperty(name, dateTimeFormat.format(LocalDateTime.ofInstant(instant, ZoneOffset.UTC)));
       else
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
