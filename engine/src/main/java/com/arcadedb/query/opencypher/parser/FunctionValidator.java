@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,7 +46,7 @@ public class FunctionValidator {
 
     public FunctionSignature(final String name, final int minArgs, final int maxArgs,
                              final String description, final boolean aggregation) {
-      this.name = name.toLowerCase();
+      this.name = name.toLowerCase(Locale.ROOT);
       this.minArgs = minArgs;
       this.maxArgs = maxArgs;
       this.description = description;
@@ -238,7 +241,8 @@ public class FunctionValidator {
     registerFunction("pi", 0, 0, "Pi constant", false);
     registerFunction("e", 0, 0, "Euler's number", false);
     registerFunction("point", 1, 2, "Create point (map or latitude,longitude)", false);
-    registerFunction("distance", 2, 2, "Distance between points", false);
+    // The third argument is the optional unit ('km', 'm', ...); point.distance() is the strict 2-argument Neo4j spelling.
+    registerFunction("distance", 2, 3, "Distance between points, optionally in a given unit", false);
     registerFunction("degrees", 1, 1, "Radians to degrees", false);
     registerFunction("radians", 1, 1, "Degrees to radians", false);
     registerFunction("haversin", 1, 1, "Haversine", false);
@@ -264,23 +268,40 @@ public class FunctionValidator {
     registerFunction("linenumber", 0, 0, "Current LOAD CSV line number", false);
   }
 
+  /**
+   * Declares a function to the parser.
+   * <p>
+   * <b>{@code minArgs}/{@code maxArgs} are enforced, not documentation.</b> Since issue #5484 the counts declared here are
+   * checked while parsing, so a range narrower than what the function really accepts rejects a query that would have
+   * worked. That is not hypothetical: {@code distance()} had always taken an optional unit while being declared as exactly
+   * two arguments, and the mistake only surfaced when the check was switched on.
+   * <p>
+   * So when adding a function, read its executor and count the arguments it actually reads - including the optional ones -
+   * rather than copying the shape of a neighbouring entry. Nothing verifies this automatically: the guard in
+   * {@code CypherFunctionArityRegistryTest} only compares against executors that declare their own
+   * {@code getMinArgs()}/{@code getMaxArgs()}, and none of the functions registered here do; the ones reached through
+   * {@code SQLFunctionBridge} could not anyway, since {@code SQLFunction} declares no argument bounds to delegate to.
+   *
+   * @param minArgs fewest arguments the function accepts
+   * @param maxArgs most arguments it accepts, or -1 for no limit
+   */
   private static void registerFunction(final String name, final int minArgs, final int maxArgs,
                                        final String description, final boolean aggregation) {
-    FUNCTIONS.put(name.toLowerCase(), new FunctionSignature(name, minArgs, maxArgs, description, aggregation));
+    FUNCTIONS.put(name.toLowerCase(Locale.ROOT), new FunctionSignature(name, minArgs, maxArgs, description, aggregation));
   }
 
   /**
    * Check if a function is known.
    */
   public static boolean isKnownFunction(final String functionName) {
-    return FUNCTIONS.containsKey(functionName.toLowerCase());
+    return FUNCTIONS.containsKey(functionName.toLowerCase(Locale.ROOT));
   }
 
   /**
    * Get function signature.
    */
   public static FunctionSignature getSignature(final String functionName) {
-    return FUNCTIONS.get(functionName.toLowerCase());
+    return FUNCTIONS.get(functionName.toLowerCase(Locale.ROOT));
   }
 
   /**
@@ -294,8 +315,8 @@ public class FunctionValidator {
       return null; // Unknown function, can't validate (may be user-defined)
 
     if (!sig.acceptsArgCount(actualArgs)) {
-      return "Function '" + functionName + "' expects " + sig.getExpectedArgsDescription() +
-          " but got " + actualArgs;
+      // Same wording the functions' own runtime guards use, so a client is told the same thing whichever path caught it.
+      return CypherFunctionHelper.arityMessage(functionName, sig.getExpectedArgsDescription(), actualArgs);
     }
 
     return null;
