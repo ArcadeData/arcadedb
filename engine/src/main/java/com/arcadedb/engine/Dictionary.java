@@ -34,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -55,8 +54,11 @@ import java.util.logging.Level;
  * revisited even when it still has room, and nothing is ever removed. Writing into an earlier page would renumber every name
  * after it and silently repoint every record that referenced them.
  * <br>
- * A name is never split over two pages, so the tail of a page is left unused when the next name does not fit: at identifier
- * lengths that is well under 1% of the file. The only hard limit left is a single name larger than one page, which caps one
+ * A name is never split over two pages, so the tail of a page is left unused when the next name does not fit: on the append path,
+ * at identifier lengths, that is well under 1% of the file. {@link #updateName} is looser - a rewrite that shrinks the content
+ * leaves the pages it no longer reaches empty, and appends resume on the last of them, so the pages in between stay empty for
+ * good. They cost one zero-entry read each on load and nothing else, and no production code calls that method. The only hard
+ * limit left is a single name larger than one page, which caps one
  * identifier at {@code pageSize - BasePage.PAGE_HEADER_SIZE - DICTIONARY_HEADER_SIZE} bytes: ~65Kb on a dictionary created with
  * the current {@link #DEF_PAGE_SIZE}, against ~327Kb on one created before it was reduced. Existing databases keep their page
  * size, so only new ones see the lower cap, and no realistic identifier comes close to either.
@@ -94,7 +96,7 @@ public class Dictionary extends PaginatedComponent {
    * volatile field is what makes a reader either see both halves of the old snapshot or both halves of the new one, and is
    * what gives the reader a happens-before edge with the rebuild at all.
    * <br>
-   * {@code names} is an array with spare capacity rather than a {@link CopyOnWriteArrayList}, and {@code size} is how much of it
+   * {@code names} is an array with spare capacity rather than a {@code CopyOnWriteArrayList}, and {@code size} is how much of it
    * is live. A COW list copies its whole backing array on every append, so growing a dictionary of N names cost N^2/2 element
    * copies: ~150ms and 4.6Gb of copying at the 48K names that used to be the hard ceiling, and quadratically worse without one.
    * Removing that ceiling is exactly what this class now does, so the append had to stop being O(n).
@@ -169,7 +171,14 @@ public class Dictionary extends PaginatedComponent {
           // THE COMMIT ABOVE CAN HAVE SWAPPED THE SNAPSHOT (RELOAD ON ROLLBACK/RETRY): RE-READ IT
           current = entries;
 
-          if (current.ids().putIfAbsent(name, newPos.get()) == null) {
+          // THE NAMES ARE PUBLISHED BEFORE THE MAP, AND THE ORDER MATTERS. THE TWO CANNOT BE UPDATED ATOMICALLY TOGETHER, SO ONE
+          // OF THEM LEADS BY AN INSTANT AND A CONCURRENT READER CAN LAND IN BETWEEN. LEADING WITH THE MAP MEANS THAT READER
+          // RESOLVES THE NAME TO AN ID THAT getNameById() DOES NOT YET ACCEPT, WHICH THROWS. LEADING WITH THE NAMES MEANS IT
+          // FINDS THE NAME NOT PRESENT YET AND -1 COMES BACK, WHICH EVERY create=false CALLER ALREADY HANDLES (BinarySerializer
+          // JUST SKIPS THE COMPRESSION) AND WHICH A create=true CALLER RESOLVES BY BLOCKING ON THIS MONITOR. NOBODY CAN HOLD THE
+          // NEW ID BEFORE THE MAP PUBLISHES IT, BECAUSE IT ONLY REACHES A RECORD AFTER THIS RETURNS. A MISS COSTS NOTHING, A
+          // THROW COSTS A REQUEST, SO THE MISS IS THE ONE TO PREFER
+          if (!current.ids().containsKey(name)) {
             final int appended = appendName(current, name);
             if (appended != newPos.get() + 1) {
               try {
@@ -179,6 +188,7 @@ public class Dictionary extends PaginatedComponent {
               }
               throw new SchemaException("Error on updating dictionary for key '" + name + "'");
             }
+            current.ids().putIfAbsent(name, newPos.get());
           }
           pos = current.ids().get(name);
         }
