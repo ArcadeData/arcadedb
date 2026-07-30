@@ -231,6 +231,45 @@ Two related corrections:
 A batch that fails still connects the incoming edges of what it already committed before it answers, because
 skipping that would leave persisted edges without back-pointers. On a large load that pass takes a while, so
 it now says so in the log rather than looking like a fresh hang.
+#### TimeSeries TAG columns are dictionary-encoded: 36x less page traffic on a tag-heavy schema
+
+A TimeSeries mutable row is fixed-stride, so a `STRING` TAG column reserved the widest value it could ever
+hold - `2 + MAX_STRING_BYTES`, 258 bytes - whether the tag was `us-east-1` or empty. Tags are low-cardinality
+by definition, which is what makes them tags, so nearly all of that was padding that still had to be written,
+flushed and shipped through the WAL ([#5519](https://github.com/ArcadeData/arcadedb/issues/5519)).
+
+A TAG column now holds a 4-byte id into a per-**type** append-only dictionary component (`.tstd`, one file per
+TimeSeries type, shared by every shard):
+
+| arm | tags | fields | stride | rows per 64K page |
+|---|---|---|---|---|
+| 1 tag, 3 fields | 1 | 3 | 290 B → **36 B** | 225 → **1819** |
+| 10 tags, 3 fields | 10 | 3 | 2612 B → **72 B** | 25 → **909** |
+| 10 tags, 10 fields | 10 | 10 | 2668 B → **128 B** | 24 → **511** |
+
+On `TimeSeriesTagStrideBenchmark`, the ten-tag arm went from writing 50.0 MB of pages for 2.1 MB of payload
+(23x amplification) to 1.4 MB (0.7x), and from 29.9 ms to 6.0 ms. The single-tag arm improves too - it was
+paying the same reservation for its one column - so a tag-heavy schema does not converge on a narrow one: the
+stride ratio between them goes from 9.0x to 2.0x, which is the honest cost of nine more columns rather than
+nine more paddings. Corroborated independently on real TSBS data (2,592,000 points through the primitive batch
+API) by @tae898 in the issue.
+
+- **Ids are 4 bytes, not the 2 the sealed `DictionaryCodec` uses.** That trades ~900 rows per page for ~1250
+  in exchange for removing the overflow-past-65535 question entirely. Id 0 is reserved for null/empty, so the
+  old round trip is unchanged.
+- **STRING *fields* stay inline.** A field is where high-cardinality text belongs; interning it would grow the
+  dictionary without bound.
+- **`arcadedb.timeSeriesTagDictionaryMaxSize`** caps distinct values per type, default 1M (roughly 100MB). The
+  dictionary is held in RAM, so this turns a mis-declared high-cardinality TAG into a clear error instead of
+  unbounded growth.
+- **Existing types keep the inline layout.** The mutable row format is versioned per type, so a database
+  written by an earlier build opens and reads unchanged, and there is no in-place migration. A new TimeSeries
+  type gets the encoding; an existing one has to be recreated to gain it. If you are benchmarking, point the
+  harness at a fresh database or you will measure the old layout and see no change.
+- **A probe that computes the stride itself has the mirror problem.** A harness carrying the old
+  `8 + 258 * tags + 8 * fields` formula reports the layout this replaced and turns a real improvement into what
+  looks like a measurement error. The encoded formula is `8 + 4 * tags + 8 * fields`. Both failure modes produce
+  a confident null result from a harness that looks correct in isolation.
 
 ### Breaking Changes
 
