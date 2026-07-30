@@ -1883,8 +1883,9 @@ public class CypherSemanticValidator {
         if (isMap || !(literal instanceof Number))
           throw CypherFunctionHelper.typeMismatch(signature.name(), CypherFunctionHelper.NUMERIC_DOMAIN,
               isMap ? Map.of() : literal);
-      } else if ("round".equals(signature.name()) && !isMap)
-        RoundFunction.parseRoundingMode(literal);
+      } else if ("round".equals(signature.name()))
+        // A map literal names no rounding mode either, so it is rejected here too rather than only once the query runs.
+        RoundFunction.parseRoundingMode(isMap ? Map.of() : literal);
     }
   }
 

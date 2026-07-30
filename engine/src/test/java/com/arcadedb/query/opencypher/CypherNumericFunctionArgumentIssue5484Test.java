@@ -182,6 +182,16 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
   }
 
   @Test
+  void aMapLiteralIsNotARoundingModeEither() {
+    // The numeric positions reject a map literal at parse time, so the mode position must too rather than deferring to
+    // the runtime check.
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) WHERE false RETURN round(3.14, 2, {a: 1}) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("round()")
+        .hasMessageContaining("rounding mode");
+  }
+
+  @Test
   void theRoundingModeOfRoundIsNotANumericArgument() {
     // round()'s third argument is a STRING, so the per-position check must not reject it as non-numeric.
     assertThat(single("RETURN round(3.14159, 2, 'FLOOR') AS r")).isEqualTo(3.14d);
