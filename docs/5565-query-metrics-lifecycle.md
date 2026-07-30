@@ -92,6 +92,7 @@ reachable through the composite that the Prometheus and OTLP plugins attach to.
 | `queryTimerRecordsIntoTheLiveRegistryAfterARestart` | two registries after one restart |
 | `queryRecorderIsRetiredWhenTheServerStops` | the Holder keeps the recorder of the dead server |
 | `metricsSurviveWhileAnotherServerInTheSameJvmIsRunning` | (guards the reference count) |
+| `aFailedStartDoesNotLeaveTheMetricsSubsystemInstalled` | (guards the failed-start rollback, see cycle 2) |
 
 The recorder is exercised through `QueryMetricsRecorder.Holder.get()`, i.e. the same entry point the
 engine uses, under a `protocol` tag unique to the test so its meters cannot collide with another test's.
@@ -131,6 +132,29 @@ Not applied, with reasons:
   A private root path would leave a `databases/` directory behind that the CI leak check looks for.
 - **Sharing the duplicated `invalidateTimerCache()` Javadoc.** The two caches are private to two unrelated
   classes; a shared constant would couple an HTTP handler to a monitor class to save two sentences.
+
+### Review cycle 2 (f258c355)
+
+One real defect found, in the failure path the first version introduced. `startMetrics()` raises the
+reference count near the top of `start()`, but the failures that matter (a plugin, the HTTP service, the
+databases) happen much later and do **not** all route through `stop()` - `startInternal()` only calls it
+from the final `SERVER_UP` catch. A single leaked increment means the count never returns to zero, so the
+last-one-out teardown is disabled for the life of the JVM: worse than the leak it replaced, and reachable
+by an embedder that catches a start failure and retries in-process.
+
+`start()` now releases the metrics install if `startInternal()` throws, and rethrows unchanged. Only the
+install is undone - the rest of the failure path and the caller's ownership of the `stop()` decision are
+untouched, and a `stop()` that follows finds nothing left to dismantle (`stopMetrics()` is guarded on its
+own registry reference).
+
+`aFailedStartDoesNotLeaveTheMetricsSubsystemInstalled` covers it: SSL requested with no key store fails
+`httpServer.startService()`, well past the metrics install, and the test then asserts a later server can
+still tear the subsystem down. Verified to fail with the rollback removed and pass with it.
+
+The two remaining points were flagged as acknowledged rather than actionable: the aggressive ownership
+contract (documented in cycle 1) and the window in a concurrent stop+start interleave where a stopping
+server has already pulled its child registry - sequential start/stop, which is the real-world and test
+path, is unaffected.
 
 ## Impact
 

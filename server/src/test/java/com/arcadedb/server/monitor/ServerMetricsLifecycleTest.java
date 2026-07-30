@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for the lifecycle of the server-side Micrometer subsystem.
@@ -132,7 +133,35 @@ class ServerMetricsLifecycleTest extends StaticBaseServerTest {
     assertThat(queryTimer()).as("the last server out dismantles the subsystem").isNull();
   }
 
+  @Test
+  void aFailedStartDoesNotLeaveTheMetricsSubsystemInstalled() {
+    // SSL requested with no key store: the HTTP service fails to start, which happens well after the
+    // metrics install and does not go through stop().
+    final ContextConfiguration config = serverConfiguration(0);
+    config.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
+
+    final ArcadeDBServer failing = new ArcadeDBServer(config);
+    servers.add(failing);
+    assertThatThrownBy(failing::start).isInstanceOf(RuntimeException.class);
+
+    // The install of the server that never came up must have been released, or the reference count could
+    // never return to zero and no later server would be able to dismantle the subsystem.
+    final ArcadeDBServer server = startServer(0);
+    recordQuery();
+    server.stop();
+
+    assertThat(queryTimer()).as("a failed start must not pin the metrics subsystem").isNull();
+    assertThat(QueryMetricsRecorder.Holder.get()).isSameAs(QueryMetricsRecorder.NO_OP);
+  }
+
   private ArcadeDBServer startServer(final int index) {
+    final ArcadeDBServer server = new ArcadeDBServer(serverConfiguration(index));
+    servers.add(server);
+    server.start();
+    return server;
+  }
+
+  private static ContextConfiguration serverConfiguration(final int index) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_NAME, "metrics_lifecycle_" + index);
     config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
@@ -140,11 +169,7 @@ class ServerMetricsLifecycleTest extends StaticBaseServerTest {
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
     config.setValue(GlobalConfiguration.SERVER_HTTP_IO_THREADS, 2);
     config.setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, 2);
-
-    final ArcadeDBServer server = new ArcadeDBServer(config);
-    servers.add(server);
-    server.start();
-    return server;
+    return config;
   }
 
   private static void recordQuery() {

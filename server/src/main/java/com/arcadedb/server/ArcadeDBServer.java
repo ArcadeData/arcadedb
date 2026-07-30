@@ -219,6 +219,15 @@ public class ArcadeDBServer {
     lifecycleLock.lock();
     try {
       startInternal();
+    } catch (final RuntimeException | Error e) {
+      // A start that fails after the metrics install (a plugin, the HTTP service, the databases) does not
+      // necessarily reach stop(): callers own that decision. The reference count must be released anyway,
+      // otherwise it never returns to zero and the last-one-out teardown is disabled for the life of the
+      // JVM - the shared meters, timer caches and recorder of a server that never came up would survive
+      // every later stop. Only the metrics install is undone here; the rest of the failure path is
+      // unchanged, and a stop() that follows finds nothing left to dismantle.
+      CodeUtils.executeIgnoringExceptions(this::stopMetrics, "Error on stopping the metrics collection", false);
+      throw e;
     } finally {
       lifecycleLock.unlock();
     }
