@@ -158,6 +158,7 @@ public class ArcadeDBServer {
   private static       int          metricsInstalls;
   private static       boolean      metricsFiltersInstalled;
   private static       Set<Meter.Id> metersBeforeInstall;
+  private              boolean       metricsInstalled;
   private              MeterRegistry metricsRegistry;
   private              MeterRegistry metricsLoggingRegistry;
   private              JvmGcMetrics  metricsJvmGc;
@@ -589,6 +590,10 @@ public class ArcadeDBServer {
         metricsFiltersInstalled = true;
       }
 
+      // Paired with the decrement in stopMetrics() through this flag, set in the same critical section as the
+      // increment: anything that throws further down must still be able to release the count, or it never
+      // returns to zero and the last-one-out teardown is disabled for the life of the JVM.
+      metricsInstalled = true;
       if (metricsInstalls++ == 0)
         // Meters already registered belong to somebody else (typically the embedding application) and are
         // left alone by the shutdown. The flip side is the contract: from here until the last server stops,
@@ -634,9 +639,10 @@ public class ArcadeDBServer {
   }
 
   private void stopMetrics() {
-    if (metricsRegistry == null)
-      // Metrics were disabled for this server: nothing of ours to dismantle.
+    if (!metricsInstalled)
+      // Metrics were disabled for this server, or already dismantled: nothing of ours to release.
       return;
+    metricsInstalled = false;
 
     LogManager.instance().log(this, Level.INFO, "- Stop metrics collection");
 
@@ -648,8 +654,11 @@ public class ArcadeDBServer {
       removeMeterRegistry(metricsLoggingRegistry);
       metricsLoggingRegistry = null;
     }
-    removeMeterRegistry(metricsRegistry);
-    metricsRegistry = null;
+    // Null when the install threw before getting this far: the count below is released either way.
+    if (metricsRegistry != null) {
+      removeMeterRegistry(metricsRegistry);
+      metricsRegistry = null;
+    }
 
     synchronized (METRICS_INSTALL_MUTEX) {
       if (--metricsInstalls > 0)

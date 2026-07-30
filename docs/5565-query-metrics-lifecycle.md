@@ -156,6 +156,19 @@ contract (documented in cycle 1) and the window in a concurrent stop+start inter
 server has already pulled its child registry - sequential start/stop, which is the real-world and test
 path, is unaffected.
 
+### Review cycle 3 (a1cdb09e)
+
+The rollback from cycle 2 was guarded on `metricsRegistry != null`, which is assigned *after* the mutex is
+released, while the count is raised inside it. A throw in between (`currentMeterIds()`, the
+`SimpleMeterRegistry` constructor) would make `stopMetrics()` return early and leak the count for good -
+the very failure mode cycle 2 set out to remove. The install is now tracked by a per-instance
+`metricsInstalled` flag set in the same critical section as the increment, and `stopMetrics()` guards on
+that and releases the count whether or not the registry ever got created.
+
+Not applied: the reviewer asked whether a permanent per-issue analysis file under `docs/` is intended.
+It is the established convention in this repository (`docs/5541-*`, `docs/5560-*`, `docs/5459-*`, ...), so
+the file stays and the release note remains the user-facing summary.
+
 ## Impact
 
 - Query and HTTP RED metrics keep recording, and keep reporting the values they recorded, across an
