@@ -25,6 +25,7 @@ import com.arcadedb.server.http.handler.openapi.CoreApiSpec;
 import com.arcadedb.server.http.handler.openapi.GrafanaApiSpec;
 import com.arcadedb.server.http.handler.openapi.McpApiSpec;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
+import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
 import com.arcadedb.server.http.handler.openapi.PrometheusApiSpec;
 import com.arcadedb.server.http.handler.openapi.SecurityAdminApiSpec;
 import com.arcadedb.server.http.handler.openapi.TimeSeriesApiSpec;
@@ -64,7 +65,8 @@ public class OpenApiSpecGenerator {
       new GrafanaApiSpec(), //
       new PrometheusApiSpec(), //
       new AiApiSpec(), //
-      new McpApiSpec());
+      new McpApiSpec(), //
+      new PluginApiSpec());
 
   private final HttpServer httpServer;
 
