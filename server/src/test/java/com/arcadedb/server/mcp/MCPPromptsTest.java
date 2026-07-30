@@ -20,6 +20,7 @@ package com.arcadedb.server.mcp;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.mcp.prompts.BuildKnowledgeGraphPrompt;
 import com.arcadedb.server.mcp.prompts.GraphRagQueryPrompt;
 import org.junit.jupiter.api.Test;
 
@@ -137,5 +138,93 @@ class MCPPromptsTest {
 
     config.setAllowReads(false);
     assertThat(GraphRagQueryPrompt.isAvailable(ALL_TOOLS_ALLOWED, config)).isFalse();
+  }
+
+  private static JSONArray buildKnowledgeGraphMessages() {
+    return BuildKnowledgeGraphPrompt.getMessages(new JSONObject()
+        .put("database", "knowledge")
+        .put("sourceText", "Ada Lovelace wrote the notes on the Analytical Engine."));
+  }
+
+  @Test
+  void buildKnowledgeGraphDeclaresOnlyRegisteredTools() {
+    assertThat(BuildKnowledgeGraphPrompt.referencedTools()).isSubsetOf(MCPDispatcher.REGISTERED_TOOL_NAMES);
+  }
+
+  @Test
+  void buildKnowledgeGraphTextNamesOnlyDeclaredTools() {
+    assertTextDeclaresEveryToolItNames(BuildKnowledgeGraphPrompt.referencedTools(),
+        renderedText(buildKnowledgeGraphMessages()));
+  }
+
+  @Test
+  void buildKnowledgeGraphDefinitionDeclaresBothArgumentsRequired() {
+    final JSONObject definition = BuildKnowledgeGraphPrompt.getDefinition();
+
+    assertThat(definition.getString("name")).isEqualTo("build_knowledge_graph");
+    assertThat(definition.getString("description")).isNotEmpty();
+
+    final JSONArray arguments = definition.getJSONArray("arguments");
+    assertThat(arguments.length()).isEqualTo(2);
+    assertThat(arguments.getJSONObject(0).getString("name")).isEqualTo("database");
+    assertThat(arguments.getJSONObject(0).getBoolean("required")).isTrue();
+    assertThat(arguments.getJSONObject(0).getString("description")).isNotEmpty();
+    assertThat(arguments.getJSONObject(1).getString("name")).isEqualTo("sourceText");
+    assertThat(arguments.getJSONObject(1).getBoolean("required")).isTrue();
+    assertThat(arguments.getJSONObject(1).getString("description")).isNotEmpty();
+  }
+
+  @Test
+  void buildKnowledgeGraphRendersOneUserMessageWithArgumentsSubstituted() {
+    final JSONArray messages = buildKnowledgeGraphMessages();
+
+    assertThat(messages.length()).isEqualTo(1);
+    final JSONObject message = messages.getJSONObject(0);
+    assertThat(message.getString("role")).isEqualTo("user");
+    assertThat(message.getJSONObject("content").getString("type")).isEqualTo("text");
+
+    final String text = message.getJSONObject("content").getString("text");
+    assertThat(text)
+        .contains("'knowledge'")
+        .contains("Ada Lovelace wrote the notes on the Analytical Engine.")
+        .contains("arcadedb://knowledge/schema")
+        .doesNotContain("{database}", "{sourceText}");
+  }
+
+  @Test
+  void buildKnowledgeGraphRejectsMissingArguments() {
+    assertThatThrownBy(() -> BuildKnowledgeGraphPrompt.getMessages(new JSONObject().put("database", "knowledge")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("sourceText");
+
+    assertThatThrownBy(() -> BuildKnowledgeGraphPrompt.getMessages(new JSONObject().put("sourceText", "Ada wrote it.")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("database");
+  }
+
+  @Test
+  void buildKnowledgeGraphNeedsReadsInsertUpdateAndBothUpsertTools() {
+    final MCPConfiguration config = readWriteConfig();
+
+    assertThat(BuildKnowledgeGraphPrompt.isAvailable(ALL_TOOLS_ALLOWED, config)).isTrue();
+
+    final Predicate<String> admin = toolName -> MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.ADMIN, toolName);
+    assertThat(BuildKnowledgeGraphPrompt.isAvailable(admin, config)).isFalse();
+
+    final Predicate<String> rag = toolName -> MCPDispatcher.isToolAllowed(MCPConfiguration.ToolProfile.RAG, toolName);
+    assertThat(BuildKnowledgeGraphPrompt.isAvailable(rag, config)).isTrue();
+
+    final MCPConfiguration noInsert = readWriteConfig();
+    noInsert.setAllowInsert(false);
+    assertThat(BuildKnowledgeGraphPrompt.isAvailable(ALL_TOOLS_ALLOWED, noInsert)).isFalse();
+    assertThat(GraphRagQueryPrompt.isAvailable(ALL_TOOLS_ALLOWED, noInsert)).isTrue();
+
+    final MCPConfiguration noUpdate = readWriteConfig();
+    noUpdate.setAllowUpdate(false);
+    assertThat(BuildKnowledgeGraphPrompt.isAvailable(ALL_TOOLS_ALLOWED, noUpdate)).isFalse();
+
+    final MCPConfiguration noReads = readWriteConfig();
+    noReads.setAllowReads(false);
+    assertThat(BuildKnowledgeGraphPrompt.isAvailable(ALL_TOOLS_ALLOWED, noReads)).isFalse();
   }
 }
