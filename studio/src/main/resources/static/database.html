@@ -76,6 +76,7 @@
             <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa fa-list-ol"></i> Indexes</span>
             <button class="btn btn-sm db-action-btn" onclick="loadStorageIndexes()"><i class="fa fa-sync"></i> Refresh</button>
           </div>
+          <div id="dbIndexUpgradeWarning" class="alert alert-warning py-2 px-3" style="display: none; font-size: 0.82rem;"></div>
           <table id="dbStorageIndexes" class="table table-striped table-sm" style="width: 100%"></table>
         </div>
         <div id="dbIndexDetailPanel" style="width: 380px; min-width: 380px; border-left: 1px solid var(--border-ddd, #dee2e6); overflow-y: auto; padding: 12px; display: none;">

@@ -69,16 +69,39 @@ import java.util.logging.Level;
  * WKT geometry strings into GeoHash cell tokens. Each token is stored as a key in the underlying
  * {@link LSMTreeIndex} with the document RID as value.
  * <p>
- * Querying generates covering GeoHash tokens for the search shape and performs set-union
- * lookups in the LSM index, returning deduplicated RIDs.
+ * Two storage layouts exist, see {@link GeoIndexMetadata.TOKENIZATION}:
+ * <ul>
+ *   <li>{@link GeoIndexMetadata.TOKENIZATION#FRONTIER} (default since 26.8.1, issue #5478) stores only the deepest
+ *       cells of the decomposition - one single token for a point - and answers a query with a GeoHash prefix RANGE
+ *       SCAN over each covering cell of the search shape, plus an exact lookup on the covering cells that still have
+ *       children (they can only match a shape indexed at a coarser resolution). The underlying LSM-Tree is a sorted
+ *       store, so "every cell below C" is literally the key range {@code [C, C+\uFFFF]}.</li>
+ *   <li>{@link GeoIndexMetadata.TOKENIZATION#FULL} is the original layout: the whole ancestor chain of every covering
+ *       cell, resolved with one exact lookup per covering cell of the search shape. Kept for indexes created before
+ *       26.8.1, whose entries are already written that way.</li>
+ * </ul>
+ * Both layouts return a SUPERSET of the matching records - the grid is an approximation of the shape - which the SQL
+ * geo.* predicates post-filter ({@code shouldExecuteAfterSearch}).
  */
 public class LSMTreeGeoIndex implements Index, IndexInternal {
 
-  private final LSMTreeIndex               underlyingIndex;
-  private final int                        precision;
-  private final GeohashPrefixTree          grid;
-  private final RecursivePrefixTreeStrategy strategy;
-  private       TypeIndex                  typeIndex;
+  /**
+   * Upper bound of a GeoHash prefix range scan. The scan only ever runs over FRONTIER tokens, which come from
+   * {@code getTokenBytesNoLeaf} and are therefore the plain base-32 GeoHash alphabet - the {@code '+'} leaf marker
+   * belongs to the FULL layout, whose tokens are only ever read by exact lookup. Since the LSM-Tree compares STRING
+   * keys as UNSIGNED UTF-8 bytes, a character encoding to 0xEF 0xBF 0xBF sorts after every possible descendant of a
+   * cell and before its next sibling.
+   */
+  private static final String PREFIX_SCAN_UPPER_BOUND = "\uFFFF";
+
+  private final LSMTreeIndex                     underlyingIndex;
+  private final int                              precision;
+  private final GeoIndexMetadata.TOKENIZATION    tokenization;
+  /** Built once at construction, see {@link #getUpgradeWarning()}. Null on an index already in the current layout. */
+  private final String                           upgradeWarning;
+  private final GeohashPrefixTree                grid;
+  private final RecursivePrefixTreeStrategy      strategy;
+  private       TypeIndex                        typeIndex;
 
   /**
    * Factory handler for creating LSMTreeGeoIndex instances.
@@ -94,28 +117,34 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
               "Geospatial index can only be defined on STRING properties, found: " + keyType);
 
       int precision = GeoIndexMetadata.DEFAULT_PRECISION;
-      if (builder.getMetadata() instanceof GeoIndexMetadata geoMeta)
+      GeoIndexMetadata.TOKENIZATION tokenization = GeoIndexMetadata.DEFAULT_TOKENIZATION;
+      if (builder.getMetadata() instanceof GeoIndexMetadata geoMeta) {
         precision = geoMeta.getPrecision();
+        tokenization = geoMeta.getTokenization();
+      }
 
       return new LSMTreeGeoIndex(builder.getDatabase(), builder.getIndexName(),
           builder.getFilePath(), ComponentFile.MODE.READ_WRITE,
-          builder.getPageSize(), builder.getNullStrategy(), precision);
+          builder.getPageSize(), builder.getNullStrategy(), precision, tokenization);
     }
   }
 
   /**
-   * Called at load time. Uses the default precision.
+   * Called at load time. Uses the default precision and the LEGACY layout, because a caller with no persisted
+   * definition to read from can only be looking at a file written before the layout existed.
    */
   public LSMTreeGeoIndex(final LSMTreeIndex index) {
-    this(index, GeoIndexMetadata.DEFAULT_PRECISION);
+    this(index, GeoIndexMetadata.DEFAULT_PRECISION, GeoIndexMetadata.LEGACY_TOKENIZATION);
   }
 
   /**
-   * Called at load time with explicit precision.
+   * Called at load time with explicit precision and tokenization, both read back from the persisted index definition.
    */
-  public LSMTreeGeoIndex(final LSMTreeIndex index, final int precision) {
+  public LSMTreeGeoIndex(final LSMTreeIndex index, final int precision, final GeoIndexMetadata.TOKENIZATION tokenization) {
     this.underlyingIndex = index;
     this.precision = precision;
+    this.tokenization = tokenization;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
   }
@@ -126,7 +155,18 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   public LSMTreeGeoIndex(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final int precision) {
+    this(database, name, filePath, mode, pageSize, nullStrategy, precision, GeoIndexMetadata.DEFAULT_TOKENIZATION);
+  }
+
+  /**
+   * Creation time constructor (used by factory handler and tests).
+   */
+  public LSMTreeGeoIndex(final DatabaseInternal database, final String name, final String filePath,
+      final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final int precision, final GeoIndexMetadata.TOKENIZATION tokenization) {
     this.precision = precision;
+    this.tokenization = tokenization;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
     this.underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[]{Type.STRING}, pageSize, nullStrategy);
@@ -138,6 +178,8 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   public LSMTreeGeoIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId,
       final ComponentFile.MODE mode, final int pageSize, final int version) {
     this.precision = GeoIndexMetadata.DEFAULT_PRECISION;
+    this.tokenization = GeoIndexMetadata.LEGACY_TOKENIZATION;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
     try {
@@ -205,32 +247,42 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final double distErr = args.resolveDistErr(GeoUtils.getSpatialContext(), strategy.getDistErrPct());
     final int detailLevel = grid.getLevelForDistance(distErr);
 
-    // Iterate all tree cells that cover the search shape and collect their GeoHash tokens.
-    // TODO: For large regions at high precision (up to 12 levels) this materialises the full
-    //       candidate RID set in memory before applying the limit. A streaming/lazy cursor
-    //       chaining cells on demand (similar to LSMTreeFullTextIndex) would reduce GC pressure
-    //       on production datasets with dense or wide-area queries.
-    final CellIterator cellIter = grid.getTreeCellIterator(searchShape, detailLevel);
+    // TODO: For large regions at high precision (up to 12 levels) this materialises the candidate RID set in memory.
+    //       A streaming/lazy cursor chaining cells on demand (similar to LSMTreeFullTextIndex) would reduce GC
+    //       pressure on production datasets with dense or wide-area queries.
+    // `limit` is DELIBERATELY IGNORED, see isResultApproximate(): what this index returns is a superset of the match
+    // that the SQL geo.* predicate re-checks, so truncating it here would drop rows that would have survived the
+    // filter - silently, and only on some queries. The caller applies the limit to the FILTERED rows instead.
     final LinkedHashSet<RID> seen = new LinkedHashSet<>();
-    while (cellIter.hasNext()) {
-      final Cell cell = cellIter.next();
-      if (cell.getShapeRel() == null)
-        continue;
-      final String token = cell.getTokenBytesNoLeaf(null).utf8ToString();
-      if (token.isEmpty())
-        continue;
-      final IndexCursor cursor = underlyingIndex.get(new Object[]{token});
-      while (cursor.hasNext())
-        seen.add(cursor.next().getIdentity());
-    }
 
-    final int maxElements = limit > -1 ? Math.min(limit, seen.size()) : seen.size();
-    final List<IndexCursorEntry> entries = new ArrayList<>(maxElements);
-    for (final RID rid : seen) {
-      if (entries.size() >= maxElements)
-        break;
+    forEachCoveringCell(searchShape, detailLevel, (token, frontier) -> {
+      final IndexCursor cursor;
+      if (tokenization == GeoIndexMetadata.TOKENIZATION.FULL || !frontier)
+        // A cell that still has children can only match a shape whose OWN decomposition stopped there, so an exact
+        // lookup is enough - and it is the only thing the legacy layout can do, having stored every ancestor.
+        cursor = underlyingIndex.get(new Object[] { token });
+      else {
+        // Frontier cell: every indexed cell at or below it starts with its token, which on a sorted store is one
+        // range scan instead of one lookup per descendant level. This is the site the ASCII invariant actually
+        // protects - the bound is appended to THIS token - so assert it here as well as where tokens are written.
+        assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
+        cursor = underlyingIndex.range(true, new Object[] { token }, true,
+            new Object[] { token + PREFIX_SCAN_UPPER_BOUND }, true);
+      }
+
+      while (cursor.hasNext()) {
+        // A range cursor answers hasNext() optimistically and returns null once a run of tombstones leaves nothing
+        // to emit, so the result must be checked rather than dereferenced.
+        final Identifiable next = cursor.next();
+        if (next != null)
+          seen.add(next.getIdentity());
+      }
+      return true;
+    });
+
+    final List<IndexCursorEntry> entries = new ArrayList<>(seen.size());
+    for (final RID rid : seen)
       entries.add(new IndexCursorEntry(keys, rid, 1));
-    }
     return new TempIndexCursor(entries);
   }
 
@@ -374,6 +426,12 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   }
 
   @Override
+  public boolean isResultApproximate() {
+    // The GeoHash grid approximates a shape with cells, so a cell hit is a candidate the geo.* predicate re-checks.
+    return true;
+  }
+
+  @Override
   public PaginatedComponent getComponent() {
     return underlyingIndex.getComponent();
   }
@@ -481,6 +539,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     json.put("bucket", underlyingIndex.getComponent().getDatabase().getSchema().getBucketById(bucketId).getName());
     json.put("properties", getPropertyNames());
     json.put("precision", precision);
+    json.put("tokenization", tokenization.name());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
     return json;
@@ -493,7 +552,50 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     return precision;
   }
 
+  /**
+   * Returns the cell tokenization layout the index entries are stored in.
+   */
+  public GeoIndexMetadata.TOKENIZATION getTokenization() {
+    return tokenization;
+  }
+
+  @Override
+  public String getUpgradeWarning() {
+    // Built once in the constructor: this is called per index on every schema:indexes / schema:types listing, and the
+    // contract on IndexInternal#getUpgradeWarning is that it stays cheap.
+    return upgradeWarning;
+  }
+
   // ---- Private helpers ----
+
+  private static String buildUpgradeWarning(final GeoIndexMetadata.TOKENIZATION tokenization, final int precision) {
+    if (tokenization != GeoIndexMetadata.TOKENIZATION.FULL)
+      return null;
+
+    return ("This geospatial index uses the legacy %s cell layout: it stores one entry per GeoHash level, so every "
+        + "indexed point costs %d entries instead of 1, and a query has to read the coarse cells shared by the whole "
+        + "dataset. It keeps working as it always did, and rebuilding it switches it to the compact %s layout "
+        + "(issue #5478)").formatted(GeoIndexMetadata.TOKENIZATION.FULL, precision,
+        GeoIndexMetadata.TOKENIZATION.FRONTIER);
+  }
+
+  /**
+   * Holds the invariant {@link #PREFIX_SCAN_UPPER_BOUND} depends on: a FRONTIER token must be pure ASCII, so that
+   * appending U+FFFF (0xEF 0xBF 0xBF in UTF-8) produces a key sorting after every descendant of the cell and before
+   * its next sibling. GeoHash cell tokens are base-32, so this holds for every grid we use - but a tokenizer change
+   * that broke it would silently truncate range scans instead of failing, which is why it is asserted rather than
+   * left to the comment. Compiled out unless assertions are enabled (tests do).
+   * <p>
+   * Asserted on BOTH sides: where tokens are written, and where a query token has the bound appended to it. The two
+   * come from the same grid today, so one implies the other - but the read site is where the truncation would
+   * actually happen, and a future divergence would otherwise be caught only on the side that cannot fail.
+   */
+  private static boolean isAsciiToken(final String token) {
+    for (int i = 0; i < token.length(); i++)
+      if (token.charAt(i) > 0x7F)
+        return false;
+    return true;
+  }
 
   private Shape toShape(final Object obj) {
     if (obj instanceof Shape s)
@@ -511,6 +613,31 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final Shape shape = toShape(wktOrShape);
     if (shape == null)
       return List.of();
+
+    if (tokenization == GeoIndexMetadata.TOKENIZATION.FULL)
+      return extractFullChainTokens(shape);
+
+    // FRONTIER: only the cells the decomposition stops at. A point yields exactly one token instead of `precision` of
+    // them (issue #5478), and no continent-sized cell collects a posting per indexed record.
+    final int detailLevel = grid.getLevelForDistance(
+        SpatialArgs.calcDistanceFromErrPct(shape, strategy.getDistErrPct(), GeoUtils.getSpatialContext()));
+
+    final List<String> tokens = new ArrayList<>();
+    forEachCoveringCell(shape, detailLevel, (token, frontier) -> {
+      if (frontier) {
+        assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
+        tokens.add(token);
+      }
+      return true;
+    });
+    return tokens;
+  }
+
+  /**
+   * Legacy tokenization: the whole ancestor chain, exactly as Lucene writes it into an inverted index (leaf cells carry
+   * the {@code '+'} leaf marker). Only used by indexes created before 26.8.1.
+   */
+  private List<String> extractFullChainTokens(final Shape shape) {
     final List<String> tokens = new ArrayList<>();
     final Field[] fields = strategy.createIndexableFields(shape);
     for (final Field field : fields) {
@@ -533,5 +660,46 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
       }
     }
     return tokens;
+  }
+
+  /**
+   * Walks the GeoHash cells covering {@code shape} down to {@code detailLevel}, telling the visitor whether each one is
+   * a FRONTIER cell - one the decomposition stops at, with no deeper cell of its own below it.
+   * <p>
+   * {@link org.apache.lucene.spatial.prefix.tree.CellIterator} is a depth-first pre-order walk, so a cell is a frontier
+   * exactly when the cell that follows it is not deeper; the last cell always is. This is derived from the traversal
+   * rather than from {@link Cell#isLeaf()} so that it holds for every shape and grid, including the boundary cells at
+   * {@code detailLevel} that are emitted without the leaf flag.
+   *
+   * @param visitor returns false to stop the walk
+   */
+  private void forEachCoveringCell(final Shape shape, final int detailLevel, final CellVisitor visitor) {
+    final CellIterator cellIter = grid.getTreeCellIterator(shape, detailLevel);
+
+    String pendingToken = null;
+    int pendingLevel = -1;
+
+    while (cellIter.hasNext()) {
+      final Cell cell = cellIter.next();
+      final int level = cell.getLevel();
+      final String token = cell.getTokenBytesNoLeaf(null).utf8ToString();
+
+      if (pendingToken != null && !visitor.visit(pendingToken, level <= pendingLevel))
+        return;
+
+      pendingToken = token.isEmpty() ? null : token;
+      pendingLevel = level;
+    }
+
+    if (pendingToken != null)
+      visitor.visit(pendingToken, true);
+  }
+
+  @FunctionalInterface
+  private interface CellVisitor {
+    /**
+     * @return false to stop the walk
+     */
+    boolean visit(String token, boolean frontier);
   }
 }
