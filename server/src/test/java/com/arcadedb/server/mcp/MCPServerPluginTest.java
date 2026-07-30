@@ -3191,6 +3191,143 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(payload.getJSONArray("records").getJSONObject(0).getString("note")).isEqualTo(malicious);
   }
 
+  @Test
+  void initializeAdvertisesPromptsCapability() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 500)
+        .put("method", "initialize")
+        .put("params", new JSONObject()));
+
+    final JSONObject capabilities = response.getJSONObject("result").getJSONObject("capabilities");
+    assertThat(capabilities.has("prompts")).isTrue();
+    assertThat(capabilities.getJSONObject("prompts").getBoolean("listChanged")).isFalse();
+  }
+
+  @Test
+  void promptsListReturnsBothPromptsWhenWritesEnabled() throws Exception {
+    saveMCPConfig(new JSONObject().put("allowInsert", true).put("allowUpdate", true));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 501)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+
+    final JSONArray prompts = response.getJSONObject("result").getJSONArray("prompts");
+    final Set<String> names = new HashSet<>();
+    for (int i = 0; i < prompts.length(); i++) {
+      names.add(prompts.getJSONObject(i).getString("name"));
+      assertThat(prompts.getJSONObject(i).getJSONArray("arguments").length()).isEqualTo(2);
+    }
+
+    assertThat(names).containsExactlyInAnyOrder("graphrag_query", "build_knowledge_graph");
+  }
+
+  @Test
+  void promptsListHidesTheWritePromptWithoutWritePermissions() throws Exception {
+    saveMCPConfig(new JSONObject().put("allowInsert", false).put("allowUpdate", false));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 502)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+
+    final JSONArray prompts = response.getJSONObject("result").getJSONArray("prompts");
+    assertThat(prompts.length()).isEqualTo(1);
+    assertThat(prompts.getJSONObject(0).getString("name")).isEqualTo("graphrag_query");
+  }
+
+  @Test
+  void promptsListIsEmptyUnderTheAdminProfile() throws Exception {
+    saveMCPConfig(new JSONObject().put("profile", "admin"));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 503)
+        .put("method", "prompts/list")
+        .put("params", new JSONObject()));
+
+    assertThat(response.getJSONObject("result").getJSONArray("prompts").length()).isZero();
+  }
+
+  @Test
+  void promptsGetRendersTheSubstitutedTemplate() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 504)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject()
+                .put("database", "graph")
+                .put("question", "Which papers cite Codd?"))));
+
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getString("description")).isNotEmpty();
+
+    final JSONArray messages = result.getJSONArray("messages");
+    assertThat(messages.length()).isEqualTo(1);
+    assertThat(messages.getJSONObject(0).getString("role")).isEqualTo("user");
+
+    final String text = messages.getJSONObject(0).getJSONObject("content").getString("text");
+    assertThat(text)
+        .contains("'graph'")
+        .contains("Which papers cite Codd?")
+        .contains("vector_search")
+        .doesNotContain("{database}", "{question}");
+  }
+
+  @Test
+  void promptsGetRefusesAPromptHiddenByTheProfile() throws Exception {
+    saveMCPConfig(new JSONObject().put("profile", "admin"));
+
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 505)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject()
+                .put("database", "graph")
+                .put("question", "Which papers cite Codd?"))));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32600);
+    assertThat(response.getJSONObject("error").getString("message")).contains("graphrag_query");
+  }
+
+  @Test
+  void promptsGetRejectsAMissingArgument() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 506)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "graphrag_query")
+            .put("arguments", new JSONObject().put("database", "graph"))));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.getJSONObject("error").getString("message")).contains("question");
+  }
+
+  @Test
+  void promptsGetRejectsAnUnknownPromptName() throws Exception {
+    final JSONObject response = mcpRequest(new JSONObject()
+        .put("jsonrpc", "2.0")
+        .put("id", 507)
+        .put("method", "prompts/get")
+        .put("params", new JSONObject()
+            .put("name", "nope")
+            .put("arguments", new JSONObject())));
+
+    assertThat(response.has("error")).isTrue();
+    assertThat(response.getJSONObject("error").getInt("code")).isEqualTo(-32602);
+    assertThat(response.getJSONObject("error").getString("message")).contains("Unknown prompt");
+  }
+
   // ---- Helper methods ----
 
   private JSONObject mcpRequest(final JSONObject request) throws Exception {

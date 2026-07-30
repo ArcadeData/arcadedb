@@ -45,6 +45,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -66,7 +67,8 @@ public class MCPDispatcher {
       2. Prefer Cypher (language: 'cypher') for graph queries unless SQL is explicitly requested.
       3. Use the 'query' tool for read-only operations (SELECT, MATCH, RETURN) and 'execute_command' for writes (CREATE, INSERT, UPDATE, DELETE, MERGE).
       4. Call get_schema before writing queries against an unfamiliar database to understand its types and properties. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead: it carries the same content without spending a tool call.
-      5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.""";
+      5. If a query returns no results, verify the type/property names with get_schema before concluding the data does not exist.
+      6. Guided prompt templates may be available for retrieval and knowledge-graph construction: call prompts/list to see which ones your profile exposes.""";
 
   private static final String RAG_INSTRUCTIONS =
       """
@@ -76,7 +78,8 @@ public class MCPDispatcher {
       3. Use query for custom read-only SQL or Cypher retrieval.
       4. Prefer the dedicated vector, hybrid, full-text, or sampling tools shown by tools/list when they match the task.
       5. Use upsert_entity and upsert_relationship to maintain agent memory when the corresponding write permissions are enabled.
-      6. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.""";
+      6. ArcadeDB does not generate embeddings; supply vectors produced by your embedding model.
+      7. Call prompts/list for guided templates: graphrag_query for retrieval, build_knowledge_graph for writing extracted entities and relationships.""";
 
   private static final String RESTRICTED_INSTRUCTIONS =
       """
@@ -210,6 +213,8 @@ public class MCPDispatcher {
         case "tools/call" -> toolsCall(id, params, user, effectiveProfile(user));
         case "resources/list" -> resourcesList(id, user);
         case "resources/read" -> resourcesRead(id, params, user);
+        case "prompts/list" -> promptsList(id, effectiveProfile(user)::allows);
+        case "prompts/get" -> promptsGet(id, params, user, effectiveProfile(user)::allows);
         case "ping" -> result(id, new JSONObject());
         default -> error(id, -32601, "Method not found: " + method, 200);
       };
@@ -235,6 +240,7 @@ public class MCPDispatcher {
     final JSONObject capabilities = new JSONObject();
     capabilities.put("tools", new JSONObject().put("listChanged", false));
     capabilities.put("resources", new JSONObject().put("listChanged", false).put("subscribe", false));
+    capabilities.put("prompts", new JSONObject().put("listChanged", false));
     result.put("capabilities", capabilities);
 
     result.put("instructions", instructionsForProfile(profile));
@@ -265,6 +271,35 @@ public class MCPDispatcher {
       return error(id, -32002, e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] resources/read -> error: %s", transport, e.getMessage());
+      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+    }
+  }
+
+  private MCPResponse promptsList(final Object id, final Predicate<String> toolAllowed) {
+    try {
+      return result(id, MCPPrompts.list(config, toolAllowed));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/list -> error: %s", transport, e.getMessage());
+      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+    }
+  }
+
+  private MCPResponse promptsGet(final Object id, final JSONObject params, final ServerSecurityUser user,
+      final Predicate<String> toolAllowed) {
+    final String name = params.getString("name", "");
+    final JSONObject args = params.getJSONObject("arguments", new JSONObject());
+
+    LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get '%s' (user=%s)", transport, name, user.getName());
+
+    try {
+      return result(id, MCPPrompts.get(config, toolAllowed, name, args));
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, e.getMessage());
+      return error(id, -32600, e.getMessage(), 200);
+    } catch (final IllegalArgumentException e) {
+      return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
       return error(id, -32603, "Internal error: " + e.getMessage(), 200);
     }
   }
