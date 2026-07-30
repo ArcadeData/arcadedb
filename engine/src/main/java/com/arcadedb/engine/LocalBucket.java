@@ -1256,6 +1256,69 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Commit-time primitive for the disjoint-slot page merge (#5569). Re-applies the DELETE of one plain in-place
+   * record on top of {@code page} freshly reloaded at its current committed version. Called only on the
+   * leader/embedded commit while the bucket file's commit lock is held, and only for a page whose every modification
+   * this transaction made was a tracked single-slot write (see {@code TransactionContext.rebaseSlots}).
+   *
+   * @param page           the reloaded committed page to re-apply the delete onto.
+   * @param positionInPage the record slot (RID position modulo maxRecordsInPage).
+   * @param baseBody       the record body this transaction started from - used to detect a concurrent modification
+   *                       of the SAME record (a TRUE conflict).
+   *
+   * @return true when the delete was safely re-applied; false when the committed slot no longer holds the very same
+   * record - the caller then falls back to a full-transaction retry.
+   */
+  public boolean rebaseRecordDeleteOnPage(final MutablePage page, final int positionInPage, final byte[] baseBody) {
+    try {
+      final int pageNumber = page.getPageId().getPageNumber();
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final int existingPos = positionInPage < recordCountInPage ? getRecordPositionInPage(page, positionInPage) : 0;
+
+      // The slot must still hold the record this transaction started from, byte-for-byte: a concurrent commit that
+      // deleted or rewrote THIS record is a real conflict the application has to see.
+      if (existingPos == 0 || baseBody == null)
+        return false;
+      final long[] rs = page.readNumberAndSize(existingPos);
+      if (rs[0] <= 0)
+        // Deleted, placeholder, or multi-page marker: not the plain in-place record we captured anymore.
+        return false;
+      final int committedSize = (int) rs[0];
+      if (committedSize != baseBody.length)
+        return false;
+      final byte[] committed = new byte[committedSize];
+      page.readByteArray((int) (existingPos + rs[1]), committed, 0, committedSize);
+      if (!Arrays.equals(committed, baseBody))
+        return false;
+
+      if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE))
+        // WIPE OUT RECORD CONTENT, EXACTLY AS deleteRecordInternal DOES
+        page.writeZeros(existingPos + 1, (int) (committedSize + rs[1] - 1));
+
+      // POINTER = 0 MEANS DELETED. The in-page record count is deliberately left alone, as on the normal delete
+      // path: it is the size of the slot table, not the number of live records, and compressPage (which the commit
+      // runs on the rebased page right after) shrinks it when the freed slots are the trailing ones.
+      page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+
+      if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal()) {
+        // UPDATE THE STATISTICS
+        final PageAnalysis pageAnalysis = new PageAnalysis(page);
+        pageAnalysis.totalRecordsInPage = recordCountInPage;
+        getFreeSpaceInPage(pageAnalysis);
+        updatePageStatistics(pageNumber, pageAnalysis.spaceAvailableInCurrentPage, (int) ((committedSize + rs[1]) * -1));
+      } else
+        changesFromLastStats.incrementAndGet();
+
+      return true;
+
+    } catch (final IOException e) {
+      // Same asymmetry as rebaseRecordOnPage: a "cannot rebase this slot" outcome returns false, a genuine I/O
+      // failure aborts the transaction instead of masquerading as a version conflict.
+      throw new DatabaseOperationException("Error on slot delete rebase for page " + page.getPageId(), e);
+    }
+  }
+
   private boolean writeRecordAtSlot(final MutablePage page, final int pageNumber, final int positionInPage,
                                     final short recordCountInPage, final byte[] body) throws IOException {
     final int spaceNeeded = Binary.getNumberSpace(body.length) + body.length;
@@ -1669,11 +1732,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
-    // DISJOINT-SLOT MERGE (#5381): a delete frees a slot and can relink placeholder/chunk records elsewhere, so
-    // it is never a pure single-slot change - keep the page out of the slot merge.
+    // DISJOINT-SLOT MERGE (#5381, #5569): whether this delete is a pure single-slot change depends on the record's
+    // marker, which is only known further down once the page has been read - so the poison lives in each non-plain
+    // branch below (placeholder pointer or content, chunk chain, corrupted slot, and the error fallback) instead of
+    // here. A plain in-place record is deleted by zeroing its slot-table entry (plus the optional content wipe-out),
+    // which commutes with writes to every other slot exactly like an insert or an in-page update.
     final TransactionContext slotTx = database.getTransactionIfExists();
-    if (slotTx != null && slotTx.isSlotMergeEnabled())
-      slotTx.poisonSlotRebasePage(fileId, pageId);
+    final boolean slotMergeOn = slotTx != null && slotTx.isSlotMergeEnabled();
+
+    // EDGE-APPEND MERGE: that merge re-derives the page from its committed image plus the tracked appends alone, so
+    // a delete left on a page which also received a tracked append would be dropped at rebase time. Freeing a slot
+    // is not an append: exclude the page from it, whatever the record shape turns out to be.
+    if (slotTx != null)
+      slotTx.poisonEdgeAppendPage(fileId, pageId);
 
     database.getTransaction().removeRecordFromCache(rid);
 
@@ -1704,6 +1775,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
         if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+          // The slot holds an 8-byte pointer, and the content record it points to lives on ANOTHER page: not a
+          // single-slot change, so the page can never be slot-rebased from this transaction's writes alone.
+          if (slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+
           // FOUND PLACEHOLDER POINTER: DELETE THE PLACEHOLDER CONTENT FIRST
           final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
           try {
@@ -1713,6 +1789,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
 
         } else if (recordSize[0] == FIRST_CHUNK) {
+          // The record continues on other pages through a chunk chain: freeing it touches more than this slot.
+          if (slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+
           // 1ST CHUNK: DELETE ALL THE CHUNKS
           MutablePage chunkPage = page;
           int chunkRecordPositionInPage = recordPositionInPage;
@@ -1775,23 +1855,52 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
 
         } else if (recordSize[0] == NEXT_CHUNK) {
+          // A continuation chunk of a record whose head lives elsewhere: part of a multi-page structure.
+          if (slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+
           if (!deleteChunks)
             // CANNOT DELETE A CHUNK DIRECTLY
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
         } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
+          // Placeholder CONTENT: it is reachable only through a pointer on another page, so rebasing this page in
+          // isolation would leave that pointer dangling.
+          if (slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+
           if (!deletePlaceholderContent)
             // CANNOT DELETE A PLACEHOLDER DIRECTLY
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
-        } else if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
-          // WIPE OUT RECORD CONTENT
-          try {
-            page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
-          } catch (Exception e) {
-            // IGNORE IT
-            LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
+        } else if (recordSize[0] > 0) {
+          // PLAIN IN-PLACE RECORD: the delete is a single-slot change (zero the slot-table entry, optionally wipe the
+          // content), so it commutes with concurrent writes to the other slots of the page and can be replayed on the
+          // newer committed version at commit time (#5569). The pre-image must be captured BEFORE the wipe-out below,
+          // and lets the replay tell a false page conflict from a concurrent write to THIS record.
+          if (slotMergeOn) {
+            if (page.readByte((int) (recordPositionInPage + recordSize[1])) == EdgeSegment.RECORD_TYPE)
+              // An edge-list segment is owned by the commutative edge-append merge, not by this one: keep the two
+              // mechanisms from ever rebasing the same page (mirrors isSlotMergeCandidate on the update path).
+              slotTx.poisonSlotRebasePage(fileId, pageId);
+            else if (!slotTx.isSlotRebasePagePoisoned(fileId, pageId)) {
+              final byte[] baseBody = new byte[(int) recordSize[0]];
+              page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
+              slotTx.trackRebasableDelete(fileId, pageId, positionInPage, baseBody);
+            }
           }
-        }
+
+          if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
+            // WIPE OUT RECORD CONTENT
+            try {
+              page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
+            } catch (Exception e) {
+              // IGNORE IT
+              LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
+            }
+          }
+        } else if (slotMergeOn)
+          // AN UNKNOWN NEGATIVE MARKER: NOT A PLAIN SINGLE-SLOT RECORD, KEEP THE PAGE OUT OF THE MERGE
+          slotTx.poisonSlotRebasePage(fileId, pageId);
 
         // POINTER = 0 MEANS DELETED
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
@@ -1811,7 +1920,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
       } else {
-        // CORRUPTED RECORD: WRITE ZERO AS POINTER TO RECORD
+        // CORRUPTED RECORD: WRITE ZERO AS POINTER TO RECORD. There is no readable pre-image to check the replay
+        // against, so the page cannot take part in the slot merge.
+        if (slotMergeOn)
+          slotTx.poisonSlotRebasePage(fileId, pageId);
+
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
       }
 
@@ -1831,9 +1944,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on deleting record %s content", e, rid);
 
-      if (page != null)
+      if (page != null) {
+        // The delete failed half-way, so whatever was tracked for this page no longer describes it: never let the
+        // slot merge re-derive the page from it.
+        if (slotMergeOn)
+          slotTx.poisonSlotRebasePage(fileId, pageId);
+
         // POINTER = 0 MEANS DELETED
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+      }
     }
   }
 
