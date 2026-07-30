@@ -103,7 +103,7 @@ public class BufferBloomFilter {
   }
 
   public synchronized void add(final int value) {
-    addHash(hash64(value));
+    setHashBits(hash64(value));
   }
 
   /**
@@ -111,7 +111,7 @@ public class BufferBloomFilter {
    * into an int would throw away the very entropy the filter needs.
    */
   public synchronized void add(final byte[] key, final int length) {
-    addHash(MurmurHash.hash64(key, length, hashSeed));
+    setHashBits(MurmurHash.hash64(key, length, hashSeed));
   }
 
   /**
@@ -120,11 +120,52 @@ public class BufferBloomFilter {
    * could be observed and produce a false negative.
    */
   public boolean mightContain(final int value) {
-    return mightContainHash(hash64(value));
+    return testHashBits(hash64(value));
   }
 
   public boolean mightContain(final byte[] key, final int length) {
-    return mightContainHash(MurmurHash.hash64(key, length, hashSeed));
+    return testHashBits(MurmurHash.hash64(key, length, hashSeed));
+  }
+
+  /**
+   * Sets the bits of an already-hashed key, for a caller that routes one key to one of several filters and so has to
+   * hash it once, up front - re-hashing per candidate filter is both wasted work and one more chance for the routing
+   * and the probing to disagree. The hash MUST be of the same bytes under the same seed this filter was built with,
+   * or the key is recorded where it will never be probed: a false negative.
+   */
+  public synchronized void addHash(final long hash) {
+    setHashBits(hash);
+  }
+
+  /**
+   * Reads the bits of an already-hashed key, the counterpart of {@link #addHash}. Lock-free, with the same publication
+   * requirement as {@link #mightContain}.
+   */
+  public boolean mightContainHash(final long hash) {
+    return testHashBits(hash);
+  }
+
+  /**
+   * The same probe against a filter that lives in a page, without wrapping it in anything.
+   * <p>
+   * A caller that probes one filter per series, per record, on a bulk load cannot afford the slice, the {@link Binary}
+   * and the filter instance that reading it through the constructor would cost - that is millions of short-lived
+   * objects on the very path the filter exists to make cheaper. The page's own accessors are content-relative, exactly
+   * like the {@code Binary} an instance would wrap, so the bytes addressed here are the bytes {@link #addHash} wrote.
+   * <p>
+   * This deliberately repeats the loop of {@link #testHashBits} rather than sharing it, because the two read from
+   * different sources; {@code theStaticProbeAgreesWithTheInstanceOne} pins them to the same answer, and a divergence
+   * between them would be a false negative.
+   */
+  public static boolean mightContainHash(final BasePage page, final int slots, final int probes, final long hash) {
+    final int first = (int) (hash >>> 32);
+    final int step = (int) hash | 1;
+    for (int i = 0; i < probes; i++) {
+      final int bit = (int) Math.floorMod(first + (long) i * step, slots);
+      if (((page.readByte(bit / 8) >> (bit % 8)) & 1) == 0)
+        return false;
+    }
+    return true;
   }
 
   public int getSlots() {
@@ -174,7 +215,7 @@ public class BufferBloomFilter {
     return Math.pow(1 - Math.exp(-(double) probes * entries / capacity), probes);
   }
 
-  private void addHash(final long hash) {
+  private void setHashBits(final long hash) {
     final int first = (int) (hash >>> 32);
     // Forced odd so that on a power-of-two capacity the probes never walk the same short cycle.
     final int step = (int) hash | 1;
@@ -182,7 +223,7 @@ public class BufferBloomFilter {
       setBit(Math.floorMod(first + (long) i * step, capacity));
   }
 
-  private boolean mightContainHash(final long hash) {
+  private boolean testHashBits(final long hash) {
     final int first = (int) (hash >>> 32);
     final int step = (int) hash | 1;
     for (int i = 0; i < probes; i++)

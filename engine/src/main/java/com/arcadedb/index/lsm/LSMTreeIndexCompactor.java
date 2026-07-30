@@ -103,8 +103,17 @@ public class LSMTreeIndexCompactor {
       // race this rollback and re-raise the count right after it was reset.
       mutableIndex.getDatabase().getPageManager().waitAllPagesOfDatabaseAreFlushed(mutableIndex.getDatabase());
       compactedIndex.rollbackPageCountTo(preCompactionPages);
+      // #5517: the rolled-back page range is reused by the next round, so a filter published for a series that lived
+      // there must go with it - the new series at the same root page would otherwise be filtered by the old one's keys.
+      final LSMTreeIndexBloomFilter bloomFilter = compactedIndex.getBloomFilter();
+      if (bloomFilter != null)
+        bloomFilter.rollbackFrom(preCompactionPages);
       if (createdCompactedIndex) {
         try {
+          // The filter file was created by THIS round and describes a compacted file that is about to go: drop it too,
+          // or every failed first compaction leaks one.
+          if (bloomFilter != null)
+            bloomFilter.dropQuietly();
           mutableIndex.getDatabase().getSchema().getEmbedded().removeFile(compactedIndex.getFileId());
           mutableIndex.getDatabase().getFileManager().dropFile(compactedIndex.getFileId());
         } catch (final Throwable cleanupError) {
@@ -331,6 +340,9 @@ public class LSMTreeIndexCompactor {
       // aborted new file entirely so nothing of the failed merge survives
       database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
       try {
+        final LSMTreeIndexBloomFilter bloomFilter = newCompacted.getBloomFilter();
+        if (bloomFilter != null)
+          bloomFilter.dropQuietly();
         database.getSchema().getEmbedded().removeFile(newCompacted.getFileId());
         database.getFileManager().dropFile(newCompacted.getFileId());
       } catch (final Throwable cleanupError) {
