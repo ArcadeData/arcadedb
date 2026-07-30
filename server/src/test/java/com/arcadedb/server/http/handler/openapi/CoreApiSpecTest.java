@@ -81,7 +81,7 @@ class CoreApiSpecTest {
   void batchFailuresCarryThePartialCommitCountsNotTheGenericError() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("BatchError");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "error", "detail", "verticesCreated", "edgesCreated", "partialCommit");
+        "error", "exception", "requestId", "verticesCreated", "edgesCreated", "partialCommit");
 
     final Operation post = openAPI.getPaths().get("/api/v1/batch/{database}").getPost();
     for (final String code : List.of("400", "408")) {

@@ -575,8 +575,14 @@ public class CoreApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("""
         Failed bulk load. Carries how much of the payload was attempted, because a batch is not \
         atomic and the caller has to reconcile before retrying.""");
-    schema.addProperty("error", SpecBuilders.string("Why the load failed"));
-    schema.addProperty("detail", SpecBuilders.string("Additional detail, when available"));
+    schema.addProperty("error", SpecBuilders.string("""
+        Why the load failed. Carries the offending location, such as a line number or a temporary id, \
+        because a batch failure echoes client input rather than engine internals."""));
+    schema.addProperty("exception", SpecBuilders.string(
+        "Exception class name, for distinguishing failure classes programmatically"));
+    schema.addProperty("requestId", SpecBuilders.string("""
+        Correlation id echoing X-Request-Id, for cross-referencing the failure against the server \
+        log. Absent when the request carried no correlation id."""));
     schema.addProperty("verticesCreated", SpecBuilders.integer("""
         Vertices attempted before the failure. An upper bound on what is durable: records handled \
         since the last commit boundary were rolled back."""));
