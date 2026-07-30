@@ -173,8 +173,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
   // Lightweight pointer index. Volatile and swapped as a whole (never cleared and refilled in place) so the
-  // lock-free readers - countEntries(), the `size() == 0` short-circuits of the search paths, getStats() - always
-  // see a complete location set instead of a rebuild in progress (issue #5568).
+  // readers that take no lock - countEntries() and getStats() - always see a complete location set instead of a
+  // rebuild in progress (issue #5568). Everything else reaches it through lock.readLock().
   private volatile VectorLocationIndex           vectorIndex;
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
@@ -596,13 +596,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * assignment to the volatile field (issue #5568).
    * <p>
    * The replacement is populated on a DETACHED instance on purpose. Refilling the live index in place - clear()
-   * followed by one addOrUpdate per entry - is atomic only for the writers, which all hold the index write lock;
-   * every reader of the location index is lock-free by design ({@link #countEntries()}, {@link #getStats()}, the
-   * {@code vectorIndex.size() == 0} short-circuits on the search paths, the RID filters) and observed the map
-   * mid-refill, seeing an arbitrary fraction of its real content. That is what made {@code countEntries()} report a
-   * different wrong number on each run after a compaction: the rebuild the compaction triggers was still refilling
-   * the map while the caller counted it. A count is the visible symptom; a search that runs in the same window
-   * short-circuits on an apparently empty index and returns nothing.
+   * followed by one addOrUpdate per entry - is atomic only for whoever holds the index lock. The searches do
+   * ({@code lock.readLock()} covers their {@code vectorIndex.size() == 0} short-circuit and the RID filters), but
+   * {@link #countEntries()} and {@link #getStats()} take no lock at all, and they observed the map mid-refill and
+   * reported an arbitrary fraction of its real content - a different wrong number on each run after a compaction,
+   * because the rebuild a compaction triggers was still refilling the map while the caller counted it.
+   * <p>
+   * A swap fixes that without putting a lock on a read path, and it is what makes the invariant structural rather
+   * than a rule every future reader has to remember. It also covers a hazard the read lock cannot: a compaction
+   * swaps the data file in one write-locked section and used to re-publish the locations in a later one, so a
+   * search could take the read lock in between and resolve old offsets against the new file. That is why the
+   * compaction publishes from inside the section that swaps the file.
    * <p>
    * Callers must hold the write lock: it is what keeps a concurrent insert or remove from mutating the instance
    * being replaced (its mutation would be dropped by the swap), not what protects the readers.
@@ -615,8 +619,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
+    // The intermediate is a long: `size() * 4` overflows int past ~536M entries, and a negative capacity would
+    // fail the rebuild rather than merely sizing the map badly.
     final VectorLocationIndex rebuilt = new VectorLocationIndex(getLocationCacheSize(),
-        Math.max(16, liveEntries.size() * 4 / 3 + 1));
+        (int) Math.min(Integer.MAX_VALUE, Math.max(16L, (long) liveEntries.size() * 4 / 3 + 1)));
     for (final VectorEntryForGraphBuild entry : liveEntries)
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
@@ -2298,6 +2304,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return mapping;
   }
 
+  /** Currently unused - kept alongside {@link #buildLiveOrdinalMapping()}, which is the one the live builder uses. */
   private int[] buildOrdinalMapping() {
     // Read the volatile field once: a rebuild publishes a replacement instance (issue #5568), and taking the ids
     // from one generation and their locations from the next would silently drop live vectors from the mapping.
@@ -4776,12 +4783,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public Map<String, Long> getStats() {
     final Map<String, Long> stats = new HashMap<>();
 
-    // Existing metrics
-    stats.put("totalVectors", (long) vectorIndex.size());
-    stats.put("activeVectors", vectorIndex.getActiveCount());
+    // Existing metrics. One read of the volatile field for the whole snapshot: a rebuild publishes a replacement
+    // instance (issue #5568), and three separate reads could each land on a different generation and report three
+    // numbers that never described the same index.
+    final VectorLocationIndex locations = vectorIndex;
+    stats.put("totalVectors", (long) locations.size());
+    stats.put("activeVectors", locations.getActiveCount());
     // Ask the deleted-id set instead of subtracting: a tombstoned id keeps no resident location since issue #5516,
     // so size() - activeCount() is always 0 now and this stat would report "no deletions" on an index full of them.
-    stats.put("deletedVectors", (long) vectorIndex.getDeletedCount());
+    stats.put("deletedVectors", (long) locations.getDeletedCount());
     stats.put("dimensions", (long) metadata.dimensions);
     stats.put("maxConnections", (long) metadata.maxConnections);
     stats.put("beamWidth", (long) metadata.beamWidth);
@@ -4822,7 +4832,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("vectorCacheMisses", searchCache != null ? searchCache.getMisses() : 0L);
 
     // NEW: Memory estimates
-    stats.put("estimatedLocationIndexBytes", (long) vectorIndex.size() * 24L);
+    stats.put("estimatedLocationIndexBytes", (long) locations.size() * 24L);
     stats.put("estimatedOrdinalMapBytes", ordinalToVectorId != null ?
         (long) ordinalToVectorId.length * 4L : 0L);
 
@@ -5570,6 +5580,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Get a vector location by ID, with fallback to page scanning if evicted from cache.
    * This method provides transparent cache miss handling for bounded location caches.
+   * <p>
+   * NOTE: nothing calls this today. Every reader - the searches, the delta merge, the ordinal maps, the RID
+   * filters - goes straight to {@code vectorIndex.getLocation()}, so an entry evicted by a bounded
+   * {@code arcadedb.vectorIndex.locationCacheSize} reads as null and is treated as deleted instead of being
+   * reconstructed here. That makes the bounded mode lose vectors from searches until the next rebuild; wiring the
+   * readers through this method is the fix, and it is deliberately out of scope for issue #5568.
    *
    * @param vectorId The vector ID to look up
    *
