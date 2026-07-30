@@ -170,8 +170,8 @@ A single backslash immediately before the closing back-tick escapes it, so the n
 the statement is rejected rather than silently absorbing what follows. Only names that actually contain a
 backslash are affected; every other quoted name, including one containing an escaped back-tick, is unchanged.
 
-This is also the encoding the Postgres wire protocol already applied when it rewrote quoted identifiers, so the
-two agree now.
+The Postgres wire protocol already read back-tick identifiers this way; it now also writes them this way, so a
+double-quoted Postgres name carrying a backslash survives the translation instead of losing it.
 
 #### Cypher: an unbound `$parameter` is now an error, not null
 

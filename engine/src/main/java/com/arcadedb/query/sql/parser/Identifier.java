@@ -56,6 +56,17 @@ public class Identifier extends SimpleNode {
   }
 
   /**
+   * builds an identifier from the SQL spelling of a back-tick quoted name, outer back-ticks included. Going through the
+   * {@link #Identifier(String)} constructor first would run the inner text through {@link #escape(String)} only to discard the
+   * result on the following {@link #setQuotedStringValue(String)}.
+   */
+  public static Identifier quoted(final String spelling) {
+    final Identifier identifier = new Identifier(-1);
+    identifier.setQuotedStringValue(spelling);
+    return identifier;
+  }
+
+  /**
    * returns the value in escaped form, ready to be emitted between back-ticks: both back-ticks and backslashes carry a leading
    * backslash. Use {@link #getStringValue()} for the plain name, which is what schema lookups take.
    *

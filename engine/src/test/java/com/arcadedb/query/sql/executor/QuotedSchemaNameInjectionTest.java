@@ -78,6 +78,20 @@ class QuotedSchemaNameInjectionTest extends TestHelper {
     assertNameAddressableAndIsolated("Mixed\\`Name");
   }
 
+  /**
+   * A DDL statement names the object it creates, so the name has to survive the round-trip through the statement rather than being
+   * silently altered on the way in: an unescaped backslash would make {@code CREATE DOCUMENT TYPE `My\Type`} create MyType.
+   */
+  @Test
+  void createdTypeKeepsTheNameItWasGiven() {
+    final String typeName = "My\\Type";
+
+    database.command("sql", "CREATE DOCUMENT TYPE " + quoteSqlName(typeName));
+
+    assertThat(database.getSchema().existsType(typeName)).isTrue();
+    assertThat(database.getSchema().existsType("MyType")).isFalse();
+  }
+
   @Test
   void injectionAttemptInNameIsTreatedAsPlainName() {
     // a name crafted to close the identifier early and append a command must survive as a single, literal type name
