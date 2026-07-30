@@ -86,9 +86,11 @@ import java.util.logging.Level;
 public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   /**
-   * Upper bound of a GeoHash prefix range scan. GeoHash tokens are ASCII (the base-32 alphabet plus Lucene's {@code '+'}
-   * leaf marker), and the LSM-Tree compares STRING keys as UNSIGNED UTF-8 bytes, so a character encoding to 0xEF 0xBF
-   * 0xBF sorts after every possible descendant of a cell and before its next sibling.
+   * Upper bound of a GeoHash prefix range scan. The scan only ever runs over FRONTIER tokens, which come from
+   * {@code getTokenBytesNoLeaf} and are therefore the plain base-32 GeoHash alphabet - the {@code '+'} leaf marker
+   * belongs to the FULL layout, whose tokens are only ever read by exact lookup. Since the LSM-Tree compares STRING
+   * keys as UNSIGNED UTF-8 bytes, a character encoding to 0xEF 0xBF 0xBF sorts after every possible descendant of a
+   * cell and before its next sibling.
    */
   private static final String PREFIX_SCAN_UPPER_BOUND = "\uFFFF";
 
@@ -249,6 +251,10 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     //       A streaming/lazy cursor chaining cells on demand (similar to LSMTreeFullTextIndex) would reduce GC
     //       pressure on production datasets with dense or wide-area queries.
     final LinkedHashSet<RID> seen = new LinkedHashSet<>();
+    // `limit` caps the CANDIDATES, not the rows: what this index returns is a superset of the match that the SQL
+    // geo.* predicate re-checks (shouldExecuteAfterSearch is always true), so N candidates yield at most N rows and
+    // usually fewer. The only production caller passes -1 for exactly that reason. Do NOT wire a query LIMIT into
+    // this parameter: truncating the candidate set before the post-filter runs would under-return.
     final int maxElements = limit > -1 ? limit : Integer.MAX_VALUE;
 
     forEachCoveringCell(searchShape, detailLevel, (token, frontier) -> {
@@ -570,11 +576,11 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   }
 
   /**
-   * Holds the invariant {@link #PREFIX_SCAN_UPPER_BOUND} depends on: a stored token must be pure ASCII, so that
+   * Holds the invariant {@link #PREFIX_SCAN_UPPER_BOUND} depends on: a FRONTIER token must be pure ASCII, so that
    * appending U+FFFF (0xEF 0xBF 0xBF in UTF-8) produces a key sorting after every descendant of the cell and before
-   * its next sibling. GeoHash cells are base-32 plus Lucene's {@code '+'} leaf marker, so this holds for every grid
-   * we use - but a tokenizer change that broke it would silently truncate range scans instead of failing, which is
-   * why it is asserted rather than left to the comment. Compiled out unless assertions are enabled (tests do).
+   * its next sibling. GeoHash cell tokens are base-32, so this holds for every grid we use - but a tokenizer change
+   * that broke it would silently truncate range scans instead of failing, which is why it is asserted rather than
+   * left to the comment. Compiled out unless assertions are enabled (tests do).
    */
   private static boolean isAsciiToken(final String token) {
     for (int i = 0; i < token.length(); i++)
