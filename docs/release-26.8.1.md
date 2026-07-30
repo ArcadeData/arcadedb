@@ -423,11 +423,13 @@ Two query-side consequences come with it:
   fall back to a full scan. The walk no longer filters on `shapeRel` - the cell iterator only ever yields cells
   that do intersect the shape.
 
-The second of those reaches an **existing index too, without rebuilding it**: dropping the `shapeRel` filter is
-in the shared query walk, so an index still on the old layout now issues exact lookups on covering cells it used
-to skip. That is what makes a point search shape work against it - the results were previously empty and are now
-correct - at the cost of a few more lookups and a few more candidates per query on those indexes. Both layouts
-still return a superset that the SQL predicate re-checks, so no query changes its answer for the worse.
+> **Upgrading? Your existing geospatial indexes change behaviour the moment the jar is swapped, before any
+> rebuild.** The `shapeRel` fix above lives in the shared query walk, so an index still on the old layout also
+> stops skipping those covering cells. A `geo.equals` / `geo.contains` query against it goes from returning
+> **nothing** to returning the right rows - the reason those two predicates were documented as index-less - and
+> every other query on it pays a few more lookups and carries a few more candidates into the predicate. Results
+> stay a superset that the predicate re-checks, so nothing gets worse than it was; the ingest and selectivity
+> gains still need the rebuild below.
 
 **Existing indexes keep working and are not rewritten.** The layout is recorded per index (`tokenization` in the
 schema), a definition written before this release loads as `FULL` and keeps reading and writing the ancestor
@@ -450,6 +452,12 @@ affected index and flags the rows, and the type detail marks the index too. Unde
 mechanism, not a geospatial one - `IndexInternal.getUpgradeWarning()` defaults to `null` and is surfaced as
 `upgradeWarning` on `schema:indexes`, `schema:index:<name>` and `schema:types`, so any future layout change can
 use the same channel.
+
+A row `LIMIT` is now ignored by a geospatial index rather than truncating its candidates. What the index returns
+is a superset the `geo.*` predicate re-checks, so cutting it at N before the filter runs drops rows that would
+have survived - silently, and only on some queries. `IndexInternal.isResultApproximate()` marks such an index and
+both `Index.get(keys, limit)` and the `TypeIndex` fan-out over it now return every candidate; the limit applies to
+the filtered rows, as it always did through SQL.
 
 `REBUILD INDEX` also no longer resets a non-default GeoHash `precision` back to 11, the same defect fixed for
 `FULL_TEXT` in #4732. Its cause was one level up: `TypeIndexBuilder` declared a `metadata` field that shadowed

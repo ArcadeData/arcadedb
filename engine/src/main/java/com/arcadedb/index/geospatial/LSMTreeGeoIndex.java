@@ -250,17 +250,12 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     // TODO: For large regions at high precision (up to 12 levels) this materialises the candidate RID set in memory.
     //       A streaming/lazy cursor chaining cells on demand (similar to LSMTreeFullTextIndex) would reduce GC
     //       pressure on production datasets with dense or wide-area queries.
+    // `limit` is DELIBERATELY IGNORED, see isResultApproximate(): what this index returns is a superset of the match
+    // that the SQL geo.* predicate re-checks, so truncating it here would drop rows that would have survived the
+    // filter - silently, and only on some queries. The caller applies the limit to the FILTERED rows instead.
     final LinkedHashSet<RID> seen = new LinkedHashSet<>();
-    // `limit` caps the CANDIDATES, not the rows: what this index returns is a superset of the match that the SQL
-    // geo.* predicate re-checks (shouldExecuteAfterSearch is always true), so N candidates yield at most N rows and
-    // usually fewer. The only production caller passes -1 for exactly that reason. Do NOT wire a query LIMIT into
-    // this parameter: truncating the candidate set before the post-filter runs would under-return.
-    final int maxElements = limit > -1 ? limit : Integer.MAX_VALUE;
 
     forEachCoveringCell(searchShape, detailLevel, (token, frontier) -> {
-      if (seen.size() >= maxElements)
-        return false;
-
       final IndexCursor cursor;
       if (tokenization == GeoIndexMetadata.TOKENIZATION.FULL || !frontier)
         // A cell that still has children can only match a shape whose OWN decomposition stopped there, so an exact
@@ -272,7 +267,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         cursor = underlyingIndex.range(true, new Object[] { token }, true,
             new Object[] { token + PREFIX_SCAN_UPPER_BOUND }, true);
 
-      while (cursor.hasNext() && seen.size() < maxElements) {
+      while (cursor.hasNext()) {
         // A range cursor answers hasNext() optimistically and returns null once a run of tombstones leaves nothing
         // to emit, so the result must be checked rather than dereferenced.
         final Identifiable next = cursor.next();
@@ -425,6 +420,12 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   @Override
   public boolean isUnique() {
     return false;
+  }
+
+  @Override
+  public boolean isResultApproximate() {
+    // The GeoHash grid approximates a shape with cells, so a cell hit is a candidate the geo.* predicate re-checks.
+    return true;
   }
 
   @Override

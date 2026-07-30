@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
@@ -352,7 +353,45 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
         .getProperty("upgradeWarning")).isNull();
   }
 
+  /**
+   * A row limit must never reach a spatial index. Its results are a SUPERSET the geo.* predicate re-checks, so cutting
+   * the candidates at N drops rows that would have survived the filter - and only on some queries, which is the worst
+   * shape a bug can have. {@code get(keys, limit)} is a public {@code Index} method and {@code TypeIndex} forwards a
+   * limit down to every bucket sub-index, so both layers have to ignore it.
+   */
+  @Test
+  void aPositiveLimitIsIgnoredBecauseTheResultIsASuperset() {
+    createType("LocLimit");
+    database.command("sql", "CREATE INDEX ON LocLimit (coords) GEOSPATIAL");
+    insertCities("LocLimit");
+
+    final Index index = database.getSchema().getIndexByName("LocLimit[coords]");
+    assertThat(((IndexInternal) index).isResultApproximate()).isTrue();
+
+    // Every city is inside this box: asking for 2 must still hand back all 5 candidates
+    final Shape italy = GeoUtils.getSpatialContext().getShapeFactory().rect(6.0, 16.0, 36.0, 47.0);
+    assertThat(count(index.get(new Object[] { italy }, 2))).isEqualTo(CITIES.length);
+    assertThat(count(index.get(new Object[] { italy }, -1))).isEqualTo(CITIES.length);
+
+    // ...and the SQL LIMIT, applied after the predicate, still works
+    final ResultSet rs = database.query("sql",
+        "SELECT name FROM LocLimit WHERE geo.intersects(coords, geo.geomFromText('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))')) = true LIMIT 2");
+    final List<String> names = new ArrayList<>();
+    while (rs.hasNext())
+      names.add(rs.next().getProperty("name"));
+    assertThat(names).hasSize(2);
+    assertThat(List.of("Rome", "Naples", "Palermo")).containsAll(names);
+  }
+
   // ---- helpers ----
+
+  private int count(final IndexCursor cursor) {
+    int total = 0;
+    while (cursor.hasNext())
+      if (cursor.next() != null)
+        ++total;
+    return total;
+  }
 
   /** Minimal {@link Logger} that keeps the WARNING messages, with their arguments already substituted. */
   private record CollectingLogger(List<String> warnings) implements Logger {

@@ -189,18 +189,24 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
       return new TempIndexCursor(entries);
     } else {
-      // For non-full-text indexes, use the original implementation
+      // For non-full-text indexes, use the original implementation.
+      // An index whose results are APPROXIMATE (a spatial grid: a cell hit is a candidate, not a match) cannot have a
+      // row limit applied to its output - truncating candidates before the caller's predicate re-checks them silently
+      // drops rows that would have survived it. Such an index is asked for, and returns, everything.
+      final int effectiveLimit = isResultApproximate() ? -1 : limit;
+
       Set<Identifiable> result = null;
 
       for (final Index index : getIndexesByKeys(keys)) {
-        final IndexCursor cursor = index.get(keys, limit > -1 ? (result != null ? result.size() : 0) - limit : -1);
+        final IndexCursor cursor = index.get(keys,
+            effectiveLimit > -1 ? (result != null ? result.size() : 0) - effectiveLimit : -1);
         while (cursor.hasNext()) {
           if (result == null)
-            result = new HashSet<>(limit);
+            result = effectiveLimit > -1 ? new HashSet<>(effectiveLimit) : new HashSet<>();
 
           result.add(cursor.next());
 
-          if (limit > -1 && result.size() >= limit)
+          if (effectiveLimit > -1 && result.size() >= effectiveLimit)
             return new IndexCursorCollection(result);
         }
       }
@@ -303,6 +309,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public String getUpgradeWarning() {
     // Every bucket sub-index of a type index shares one definition, so the first one answers for all of them.
     return getFirstUnderlyingIndex().getUpgradeWarning();
+  }
+
+  @Override
+  public boolean isResultApproximate() {
+    // Same definition across every bucket sub-index, so the first one answers for all of them.
+    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.getFirst().isResultApproximate();
   }
 
   @Override
