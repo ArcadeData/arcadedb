@@ -19,6 +19,9 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.BaseGraphServerTest;
+import io.swagger.v3.parser.OpenAPIV3Parser;
+import io.swagger.v3.parser.core.models.ParseOptions;
+import io.swagger.v3.parser.core.models.SwaggerParseResult;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
@@ -371,5 +374,45 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
     assertThat(response.headers().firstValue("Content-Type").orElse(""))
         .as("HTML should specify UTF-8 charset")
         .containsAnyOf("charset=utf-8", "charset=UTF-8");
+  }
+
+  @Test
+  void swaggerUiPageLoadsAndPointsAtTheCompletedSpec() throws Exception {
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .GET()
+        .setHeader("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .build();
+
+    final HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
+
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.body())
+        .as("the UI must load the spec this issue completed")
+        .contains("/api/v1/openapi.json");
+  }
+
+  @Test
+  void theServedSpecIsRenderableWithoutParserErrors() throws Exception {
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(new URI("http://localhost:2480/api/v1/openapi.json"))
+        .GET()
+        .setHeader("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .build();
+
+    final HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
+    assertThat(response.statusCode()).isEqualTo(200);
+
+    final ParseOptions options = new ParseOptions();
+    options.setResolve(true);
+    final SwaggerParseResult result = new OpenAPIV3Parser().readContents(response.body(), null, options);
+
+    assertThat(result.getMessages())
+        .as("Swagger UI renders what the parser accepts, so a clean parse is the render check: %s",
+            result.getMessages())
+        .isEmpty();
+    assertThat(result.getOpenAPI().getPaths()).hasSizeGreaterThanOrEqualTo(40);
   }
 }
