@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +33,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * A Cypher query that references a parameter the caller never bound is rejected, as Neo4j does
@@ -101,6 +104,34 @@ class CypherUnboundParameterTest {
     assertThatThrownBy(() -> database.query("cypher", "MATCH (a:Account {accountNumber: $x}) RETURN $y AS v", Map.of()).close())
         .isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("Expected parameter(s): x, y");
+  }
+
+  /**
+   * The names travel structurally as well as in the message, so a caller that wants to react - prompt for the
+   * values, name them in a log, map them to a wire status - never has to parse the message back apart. Issue
+   * #5561: the dedicated type is also what lets the Bolt layer answer Neo4j's ParameterMissing rather than
+   * SyntaxError, and what the HTTP session ITs assert on.
+   */
+  @Test
+  void theMissingNamesAreCarriedOnTheException() {
+    final Throwable thrown = catchThrowable(
+        () -> database.query("cypher", "MATCH (a:Account {accountNumber: $x}) RETURN $y AS v, $z AS w", Map.of("z", 1)).close());
+
+    assertThat(thrown).isInstanceOf(CommandParameterMissingException.class);
+    // $z was bound, so only the two the caller left out are reported, in the order the query mentions them.
+    assertThat(((CommandParameterMissingException) thrown).getMissingParameters()).containsExactly("x", "y");
+  }
+
+  /**
+   * A missing value is not a syntax error: the statement parses and is semantically well formed. Callers that
+   * only distinguish "client sent something wrong" keep working (HTTP still answers 400) because the type
+   * still sits under {@link CommandParsingException}.
+   */
+  @Test
+  void theExceptionIsSemanticNotSyntactic() {
+    assertThatThrownBy(() -> database.query("cypher", "RETURN $acct AS v", Map.of()).close())
+        .isInstanceOf(CommandSemanticException.class)
+        .isInstanceOf(CommandParsingException.class);
   }
 
   /**
