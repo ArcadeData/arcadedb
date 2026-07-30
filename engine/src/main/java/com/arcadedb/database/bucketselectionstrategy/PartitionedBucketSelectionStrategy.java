@@ -127,6 +127,9 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
     if (partitionKeyIsCaseInsensitive())
       return -1;
 
+    // RESOLVED ONCE: THE SAME DATABASE BACKS EVERY KEY OF THE LOOKUP
+    final Database database = type.getSchema().getEmbedded().getDatabase();
+
     int hash = 0;
     for (int i = 0; i < keyValues.length; i++) {
       final Object value = keyValues[i];
@@ -138,7 +141,7 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
       // hashCode is type-dependent - Long.hashCode(v) is (int) (v ^ (v >>> 32)) while Integer.hashCode(v) is v -
       // the numerically identical key boxed differently used to hash to a different bucket and miss the record
       // (issue #5595). Replay the write-path coercion here so both sides hash the same object.
-      final Object storedForm = toStoredForm(lookupProperties.get(i), value);
+      final Object storedForm = toStoredForm(database, lookupProperties.get(i), value);
       if (storedForm == UNKNOWN_STORED_FORM)
         return -1;
 
@@ -177,12 +180,11 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
    * An undeclared property has no conversion target - the record kept whatever Java type the writer used - so the
    * two sides cannot be reconciled and this declines. That costs a fan-out, which is correct, only slower.
    */
-  private Object toStoredForm(final String propertyName, final Object value) {
+  private Object toStoredForm(final Database database, final String propertyName, final Object value) {
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (property == null)
       return UNKNOWN_STORED_FORM;
 
-    final Database database = type.getSchema().getEmbedded().getDatabase();
     try {
       final Object converted = Type.convert(database, value, property.getType().getJavaImplementation(database), property);
       return converted != null ? converted : UNKNOWN_STORED_FORM;
