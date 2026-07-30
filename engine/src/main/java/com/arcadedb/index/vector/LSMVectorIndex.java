@@ -606,6 +606,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * Callers must hold the write lock: it is what keeps a concurrent insert or remove from mutating the instance
    * being replaced (its mutation would be dropped by the swap), not what protects the readers.
+   * <p>
+   * The CPU cost is the same as the in-place refill it replaces, but peak heap is not: the instance being replaced
+   * stays reachable for its in-flight readers while the new one is built, so a rebuild transiently holds two
+   * location sets (~90 bytes per live entry each) instead of one. That is a bounded, promptly released spike and
+   * the price of the atomicity.
    *
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
@@ -5573,7 +5578,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private VectorLocationIndex.VectorLocation getVectorLocation(final int vectorId) {
     // One read of the volatile field for the whole method: a rebuild publishes a replacement instance (issue
     // #5568), and re-reading would let the miss be answered against one generation and re-cached into the next,
-    // seeding the fresh index with an offset into the file the compaction just replaced.
+    // seeding the fresh index with an offset into the file the compaction just replaced. The cost of that choice is
+    // that a re-cache racing a swap lands on the detached generation and is lost, so the next miss on that id scans
+    // the pages again - a repeated reconstruction, never a wrong answer, and only while a rebuild is in flight.
     final VectorLocationIndex locations = vectorIndex;
 
     // Try cache first (O(1) lookup)

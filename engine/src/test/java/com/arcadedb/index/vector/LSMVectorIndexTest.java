@@ -1247,6 +1247,10 @@ class LSMVectorIndexTest extends TestHelper {
       }
     });
 
+    // Every count below is compared against the full live set, which assumes an UNBOUNDED location cache - the
+    // default of arcadedb.vectorIndex.locationCacheSize, and what this suite runs with. Under a bounded cache (the
+    // low-ram profile caps it at 10_000) the index FIFO-evicts down to the cap and countEntries() legitimately
+    // reports the cap instead of the live count, so the invariant would have to be expressed against that bound.
     assertThat(typeIndex.countEntries()).as("Baseline count before any compaction").isEqualTo(numVectors);
 
     final AtomicBoolean stop = new AtomicBoolean(false);
@@ -1254,8 +1258,11 @@ class LSMVectorIndexTest extends TestHelper {
     final AtomicReference<Throwable> counterFailure = new AtomicReference<>();
     final Thread counter = new Thread(() -> {
       try {
-        while (!stop.get())
+        while (!stop.get()) {
           lowestCount.getAndAccumulate(typeIndex.countEntries(), Math::min);
+          // countEntries() is O(live entries): spin politely instead of burning a core for the whole compaction.
+          Thread.onSpinWait();
+        }
       } catch (final Throwable t) {
         counterFailure.set(t);
       }
