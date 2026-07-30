@@ -261,11 +261,14 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         // A cell that still has children can only match a shape whose OWN decomposition stopped there, so an exact
         // lookup is enough - and it is the only thing the legacy layout can do, having stored every ancestor.
         cursor = underlyingIndex.get(new Object[] { token });
-      else
+      else {
         // Frontier cell: every indexed cell at or below it starts with its token, which on a sorted store is one
-        // range scan instead of one lookup per descendant level.
+        // range scan instead of one lookup per descendant level. This is the site the ASCII invariant actually
+        // protects - the bound is appended to THIS token - so assert it here as well as where tokens are written.
+        assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
         cursor = underlyingIndex.range(true, new Object[] { token }, true,
             new Object[] { token + PREFIX_SCAN_UPPER_BOUND }, true);
+      }
 
       while (cursor.hasNext()) {
         // A range cursor answers hasNext() optimistically and returns null once a run of tombstones leaves nothing
@@ -582,6 +585,10 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    * its next sibling. GeoHash cell tokens are base-32, so this holds for every grid we use - but a tokenizer change
    * that broke it would silently truncate range scans instead of failing, which is why it is asserted rather than
    * left to the comment. Compiled out unless assertions are enabled (tests do).
+   * <p>
+   * Asserted on BOTH sides: where tokens are written, and where a query token has the bound appended to it. The two
+   * come from the same grid today, so one implies the other - but the read site is where the truncation would
+   * actually happen, and a future divergence would otherwise be caught only on the side that cannot fail.
    */
   private static boolean isAsciiToken(final String token) {
     for (int i = 0; i < token.length(); i++)
