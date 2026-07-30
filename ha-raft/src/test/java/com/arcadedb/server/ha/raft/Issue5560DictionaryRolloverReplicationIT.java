@@ -43,9 +43,14 @@ class Issue5560DictionaryRolloverReplicationIT extends BaseRaftHATest {
    * Padded so a few hundred names cross a page instead of a few hundred thousand. Long, but a legal identifier: only type and
    * property names ever enter the dictionary, and the point is to reach the boundary quickly rather than to look typical.
    */
-  private static final int NAME_LENGTH  = 500;
-  private static final int PROPERTIES   = 400;
-  private static final int TYPE_RECORDS = 5;
+  private static final int NAME_LENGTH            = 500;
+  private static final int TYPE_RECORDS           = 5;
+  private static final int PROPERTIES_PER_RECORD  = 80;
+  /**
+   * Derived, never chosen: the index arithmetic below walks {@code record * PROPERTIES_PER_RECORD + p}, so a count that is not a
+   * multiple of the per-record figure would leave gaps that the follower loop would then report as missing names.
+   */
+  private static final int PROPERTIES             = TYPE_RECORDS * PROPERTIES_PER_RECORD;
 
   private static String propertyName(final int i) {
     final String prefix = "p" + i + "_";
@@ -80,8 +85,8 @@ class Issue5560DictionaryRolloverReplicationIT extends BaseRaftHATest {
       leader.transaction(() -> {
         final var doc = leader.newDocument("Wide");
         doc.set("recordId", record);
-        for (int p = 0; p < PROPERTIES / TYPE_RECORDS; ++p) {
-          final int index = record * (PROPERTIES / TYPE_RECORDS) + p;
+        for (int p = 0; p < PROPERTIES_PER_RECORD; ++p) {
+          final int index = record * PROPERTIES_PER_RECORD + p;
           doc.set(propertyName(index), "value_" + index);
         }
         doc.save();
@@ -106,7 +111,7 @@ class Issue5560DictionaryRolloverReplicationIT extends BaseRaftHATest {
       for (int p = 0; p < PROPERTIES; ++p) {
         final String name = propertyName(p);
         final int id = dictionary.getIdByName(name, false);
-        assertThat(id).as("property '%s' must be in the dictionary of server %d", "p" + p, serverIndex).isNotEqualTo(-1);
+        assertThat(id).as("property #%d must be in the dictionary of server %d", p, serverIndex).isNotEqualTo(-1);
         assertThat(dictionary.getNameById(id)).as("id %d must resolve on server %d", id, serverIndex).isEqualTo(name);
       }
 
@@ -120,8 +125,8 @@ class Issue5560DictionaryRolloverReplicationIT extends BaseRaftHATest {
         while (rs.hasNext()) {
           final var row = rs.next();
           final int record = row.getProperty("recordId");
-          for (int p = 0; p < PROPERTIES / TYPE_RECORDS; ++p) {
-            final int index = record * (PROPERTIES / TYPE_RECORDS) + p;
+          for (int p = 0; p < PROPERTIES_PER_RECORD; ++p) {
+            final int index = record * PROPERTIES_PER_RECORD + p;
             assertThat(row.<String>getProperty(propertyName(index)))
                 .as("record %d property %d must read back on server %d", record, index, serverIndex)
                 .isEqualTo("value_" + index);
