@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.openapi.AuthApiSpec;
 import com.arcadedb.server.http.handler.openapi.CoreApiSpec;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.SecurityAdminApiSpec;
@@ -52,6 +53,7 @@ public class OpenApiSpecGenerator {
   // Order affects nothing but the key order of the emitted paths object.
   private static final List<OpenApiContributor> CONTRIBUTORS = List.of(//
       new CoreApiSpec(), //
+      new AuthApiSpec(), //
       new SecurityAdminApiSpec());
 
   private final HttpServer httpServer;

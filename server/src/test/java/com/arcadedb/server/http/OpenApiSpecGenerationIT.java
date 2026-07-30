@@ -37,6 +37,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -238,11 +239,12 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
             .isNotNull()
             .isNotEmpty();
 
-        // Should at least have a success response (200 or 201)
+        // Should at least have a success response (200, 201, or 204)
         ApiResponses responses = postOp.getResponses();
-        boolean hasSuccessResponse = responses.get("200") != null || responses.get("201") != null;
+        boolean hasSuccessResponse = responses.get("200") != null || responses.get("201") != null
+            || responses.get("204") != null;
         assertThat(hasSuccessResponse)
-            .as("POST operation for %s should have success response (200 or 201)", path)
+            .as("POST operation for %s should have success response (200, 201, or 204)", path)
             .isTrue();
       }
     }
@@ -320,12 +322,56 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   void livenessAndReadinessAreDeclaredPublic() throws Exception {
     final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
 
-    for (final String path : java.util.List.of("/api/v1/health", "/api/v1/ready")) {
+    for (final String path : List.of("/api/v1/health", "/api/v1/ready")) {
       assertThat(openAPI.getPaths().get(path).getGet().getSecurity())
           .as("%s requires no authentication, so it must override root security with an empty list", path)
           .isNotNull()
           .isEmpty();
     }
+  }
+
+  @Test
+  void apiTokenAuthenticatesAgainstTheDeclaredBearerScheme() throws Exception {
+    // Mint a real API token through the documented endpoint.
+    final HttpRequest createToken = HttpRequest.newBuilder()
+        .uri(new URI("http://localhost:2480/api/v1/server/api-tokens"))
+        .header("Content-Type", "application/json")
+        .setHeader("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"openapi-bearer-test\"}"))
+        .build();
+
+    final HttpResponse<String> created = client.send(createToken, BodyHandlers.ofString());
+    assertThat(created.statusCode())
+        .as("token creation should succeed: %s", created.body())
+        .isIn(200, 201);
+
+    // PostApiTokenHandler wraps the token payload under a "result" object rather than
+    // returning it at the top level.
+    final String token = new JSONObject(created.body()).getJSONObject("result").getString("token");
+    assertThat(token).startsWith("at-");
+
+    // The server accepts it as a bearer token on an ordinary documented operation.
+    final HttpRequest listDatabases = HttpRequest.newBuilder()
+        .uri(new URI("http://localhost:2480/api/v1/databases"))
+        .GET()
+        .setHeader("Authorization", "Bearer " + token)
+        .build();
+
+    final HttpResponse<String> listed = client.send(listDatabases, BodyHandlers.ofString());
+    assertThat(listed.statusCode())
+        .as("an 'at-' API token must authenticate as a bearer token: %s", listed.body())
+        .isEqualTo(200);
+
+    // And the spec says so: root security offers bearerAuth, and this operation does not override it.
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+    assertThat(openAPI.getComponents().getSecuritySchemes().get("bearerAuth").getScheme())
+        .isEqualTo("bearer");
+    assertThat(openAPI.getPaths().get("/api/v1/databases").getGet().getSecurity())
+        .as("listDatabases must inherit root security rather than override it")
+        .isNull();
+    assertThat(openAPI.getSecurity().stream().flatMap(r -> r.keySet().stream()).toList())
+        .contains("bearerAuth");
   }
 
   /**
