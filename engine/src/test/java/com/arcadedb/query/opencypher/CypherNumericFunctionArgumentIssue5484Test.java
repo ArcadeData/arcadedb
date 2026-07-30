@@ -220,6 +220,33 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
   }
 
   @Test
+  void bothPathsWordAWrongArgumentCountIdentically() {
+    // The parse-time check and the function's own guard describe the same mistake with the same sentence, so which one
+    // happened to catch it is not observable.
+    assertThatThrownBy(() -> consume("RETURN abs(1, 2) AS r"))
+        .hasMessageContaining("Function 'abs' expects 1 argument but got 2");
+    assertThatThrownBy(() -> new AbsFunction().execute(new Object[] { 1, 2 }, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Function 'abs' expects 1 argument but got 2");
+  }
+
+  @Test
+  void roundChecksItsOtherArgumentsEvenWhenTheValueIsNull() {
+    // The parse-time check looks at each argument independently, so the function must too: otherwise round(n.missing,
+    // 'two') answered null while round(null, 'two') written as a literal was a type error.
+    database.transaction(() -> database.command("opencypher", "CREATE (:Issue5484 {name: 'a'})"));
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) RETURN round(n.missing, 'two') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("round()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("MATCH (n:Issue5484) RETURN round(n.missing, 2, 'SIDEWAYS') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("SIDEWAYS");
+    // A well-formed call over a null value still propagates null rather than failing.
+    assertThat(single("MATCH (n:Issue5484) RETURN round(n.missing, 2, 'FLOOR') AS r")).isNull();
+  }
+
+  @Test
   void theOptionalUnitOfDistanceIsStillAccepted() {
     // distance() takes an optional third argument; the arity check must not reject it (it was registered as 2-only).
     assertThat((Double) single("RETURN distance(point({latitude: 0, longitude: 0}), point({latitude: 0, longitude: 1}), 'km')"

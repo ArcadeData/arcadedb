@@ -48,7 +48,7 @@ public class MathBinaryFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 2)
-      throw new CommandSemanticException(name + "() requires exactly two arguments");
+      throw CypherFunctionHelper.arityMismatch(name, "2 arguments", args.length);
     // Both arguments are type-checked before null propagation decides the answer, so an out-of-domain argument is
     // still reported when the other one happens to be null (issue #5484).
     final Number first = CypherFunctionHelper.requireNumberArgument(args[0], name);

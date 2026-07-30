@@ -47,10 +47,15 @@ public class RoundFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length < 1 || args.length > 3)
-      throw new CommandSemanticException("round() requires 1, 2 or 3 arguments");
+      throw CypherFunctionHelper.arityMismatch("round", "1-3 arguments", args.length);
 
-    // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
+    // Every argument is checked before null propagation decides the answer, so an out-of-domain precision or an unusable
+    // mode is reported even when the value is null - the same ordering MathBinaryFunction uses, and the one the
+    // parse-time check applies, which examines each argument independently (issue #5484).
     final Number number = CypherFunctionHelper.requireNumberArgument(args[0], "round");
+    final Number precisionArg = args.length > 1 ? CypherFunctionHelper.requireNumberArgument(args[1], "round") : null;
+    final RoundingMode mode = args.length == 3 ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
+
     if (number == null)
       return null;
 
@@ -65,15 +70,10 @@ public class RoundFunction implements StatelessFunction {
     }
 
     // round(value, precision) or round(value, precision, mode)
-    final Number precisionArg = CypherFunctionHelper.requireNumberArgument(args[1], "round");
     if (precisionArg == null)
       return null;
 
-    final int precision = precisionArg.intValue();
-
-    final RoundingMode mode = args.length == 3 ? parseRoundingMode(args[2]) : RoundingMode.HALF_UP;
-
-    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precision, mode);
+    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precisionArg.intValue(), mode);
     return bd.doubleValue();
   }
 

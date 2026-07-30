@@ -35,7 +35,7 @@ public class SignFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
-      throw new CommandSemanticException("sign() requires exactly one argument");
+      throw CypherFunctionHelper.arityMismatch("sign", "1 argument", args.length);
     // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
     final Number number = CypherFunctionHelper.requireNumberArgument(args[0], "sign");
     if (number == null)

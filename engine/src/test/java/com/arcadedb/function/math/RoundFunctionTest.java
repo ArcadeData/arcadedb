@@ -34,14 +34,14 @@ class RoundFunctionTest {
   void rejectsTooFewArgumentsWithAccurateMessage() {
     assertThatThrownBy(() -> fn.execute(new Object[] {}, null))
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("round() requires 1, 2 or 3 arguments");
+        .hasMessageContaining("Function 'round' expects 1-3 arguments");
   }
 
   @Test
   void rejectsTooManyArgumentsWithAccurateMessage() {
     assertThatThrownBy(() -> fn.execute(new Object[] { 1.5, 2, "HALF_UP", "extra" }, null))
         .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("round() requires 1, 2 or 3 arguments");
+        .hasMessageContaining("Function 'round' expects 1-3 arguments");
   }
 
   @Test

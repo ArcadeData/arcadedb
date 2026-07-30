@@ -35,7 +35,7 @@ public class IsNaNFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
-      throw new CommandSemanticException("isNaN() requires exactly one argument");
+      throw CypherFunctionHelper.arityMismatch("isNaN", "1 argument", args.length);
     // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
     final Number value = CypherFunctionHelper.requireNumberArgument(args[0], "isNaN");
     return value == null ? null : Double.isNaN(value.doubleValue());

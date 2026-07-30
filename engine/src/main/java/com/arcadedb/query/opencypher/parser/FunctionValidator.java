@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
@@ -296,8 +298,8 @@ public class FunctionValidator {
       return null; // Unknown function, can't validate (may be user-defined)
 
     if (!sig.acceptsArgCount(actualArgs)) {
-      return "Function '" + functionName + "' expects " + sig.getExpectedArgsDescription() +
-          " but got " + actualArgs;
+      // Same wording the functions' own runtime guards use, so a client is told the same thing whichever path caught it.
+      return CypherFunctionHelper.arityMessage(functionName, sig.getExpectedArgsDescription(), actualArgs);
     }
 
     return null;

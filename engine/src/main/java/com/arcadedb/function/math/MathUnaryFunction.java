@@ -48,7 +48,7 @@ public class MathUnaryFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
-      throw new CommandSemanticException(name + "() requires exactly one argument");
+      throw CypherFunctionHelper.arityMismatch(name, "1 argument", args.length);
     // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
     final Number value = CypherFunctionHelper.requireNumberArgument(args[0], name);
     return value == null ? null : op.applyAsDouble(value.doubleValue());

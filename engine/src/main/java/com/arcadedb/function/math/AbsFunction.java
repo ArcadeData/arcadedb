@@ -39,7 +39,7 @@ public class AbsFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
-      throw new CommandSemanticException("abs() requires exactly one argument");
+      throw CypherFunctionHelper.arityMismatch("abs", "1 argument", args.length);
     // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
     final Number value = CypherFunctionHelper.requireNumberArgument(args[0], "abs");
     if (value == null)

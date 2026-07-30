@@ -404,7 +404,9 @@ Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
 - **A literal is rejected before the query runs**, as in Neo4j, so `MATCH (n:Nothing) RETURN abs('hello')` fails
   even though the function would never be called. Both paths raise the same exception with the same wording, and
   every argument position is covered: `atan2('hello', 1)` and `round(x, 2, 'SIDEWAYS')` fail there too, not only
-  the single-argument functions.
+  the single-argument functions. That pass walks `RETURN` and `WITH` projections, which is the scope `size()` and
+  `head()` have always used; anywhere else the runtime check reports the same error with the same message when the
+  function runs.
 - **`round()` also covers its other two arguments**: a non-numeric precision, and a rounding mode outside
   `UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN` (whose message now lists them).
 - **Null propagation is untouched**: `abs(null)` still answers `null`. In the two-argument `atan2()` both
@@ -417,8 +419,10 @@ Type mismatch: abs() expects an INTEGER or a FLOAT argument but got STRING
   parsed now, where before any value at all was run through `toString()` first, so a type whose text happens to
   look like a number is a type error rather than a silent coercion.
 - **The wrong number of arguments is now caught while parsing**, with a message naming the function and the
-  count it expects, instead of at execution time. `distance()` was declared as taking exactly two arguments
-  although it has always accepted an optional unit; the declaration was corrected rather than the behaviour.
+  count it expects (`Function 'abs' expects 1 argument but got 2`) - the same sentence the functions' own guards
+  use, so it does not matter which caught it. `distance()` was declared as taking exactly two arguments although
+  it has always accepted an optional unit; the declaration was corrected rather than the behaviour, and every
+  other variadic function was swept for the same mistake and found correct.
 
 ## Partitioned types: lookups on a secondary index no longer read the wrong bucket
 
