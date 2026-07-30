@@ -129,6 +129,8 @@ removed that: a tombstoned id releases its location, so residency now follows th
 - **Plan for ~90 bytes per live vector** - about 90MB per million, 900MB at 10 million. This is the figure
   `getStats()` now reports as `estimatedLocationIndexBytes`; it previously quoted the 24-byte payload and so
   under-estimated the footprint several-fold.
+  [#5588](https://github.com/ArcadeData/arcadedb/issues/5588) tracks bringing that down to ~20 bytes by laying
+  the locations out in primitive arrays.
 - **An index that appeared to work under a cap on a large corpus may now need a larger heap** instead of silently
   under-reporting its size and losing vectors from searches. That is the intended trade: a wrong answer is worse
   than a visible memory requirement.

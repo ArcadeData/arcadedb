@@ -5256,7 +5256,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * The setting is therefore honoured as a sizing hint only and reported once per index at WARNING. Bringing the
    * footprint down is a storage question, not an eviction one: laying the locations out in primitive arrays
-   * indexed by vector id would cost ~20 bytes each instead of ~90, with no per-entry objects at all.
+   * indexed by vector id would cost ~20 bytes each instead of ~90, with no per-entry objects at all (issue
+   * #5588).
    *
    * @param database The database instance, since {@code mutable} may not be initialized yet
    *
