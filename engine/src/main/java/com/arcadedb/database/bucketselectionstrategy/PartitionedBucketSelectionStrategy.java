@@ -92,18 +92,56 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
   }
 
   @Override
-  public int getBucketIdByKeys(final Object[] keyValues, final boolean async) {
-    if (propertyNames != null) {
-      int hash = 0;
-      for (int i = 0; i < keyValues.length; i++) {
-        final Object value = keyValues[i];
-        if (value != null)
-          hash += value.hashCode();
-      }
-      return (hash & 0x7fffffff) % total;
+  public int getBucketIdByKeys(final List<String> lookupProperties, final Object[] keyValues, final boolean async) {
+    if (propertyNames == null)
+      return super.getBucketIdByKeys(lookupProperties, keyValues, async);
+
+    // A record is placed by hashing THIS strategy's properties (see getBucketIdByRecord), so hashing the lookup
+    // key only reaches the same bucket when the lookup covers exactly those properties. Anything else - another
+    // index of the same type, or a partial key on a composite partition - hashes a different value set and would
+    // point at an unrelated bucket, silently missing the record (issue #5589). Decline and let the caller fan out.
+    if (!coversPartitionProperties(lookupProperties, keyValues))
+      return -1;
+
+    int hash = 0;
+    for (int i = 0; i < keyValues.length; i++) {
+      final Object value = keyValues[i];
+      if (value != null)
+        hash += value.hashCode();
+    }
+    return (hash & 0x7fffffff) % total;
+  }
+
+  /**
+   * Whether {@code lookupProperties} is exactly this strategy's partition property set, with one key value each.
+   * <p>
+   * Order is deliberately NOT required: the hash both sides compute is a SUM over the per-value hash codes, which
+   * is commutative, so a permutation of the same properties reaches the same bucket. Membership is compared with
+   * nested scans rather than a Set - partition keys hold one to three properties, so this stays allocation-free on
+   * a lookup path that runs per query.
+   */
+  private boolean coversPartitionProperties(final List<String> lookupProperties, final Object[] keyValues) {
+    if (lookupProperties == null)
+      // THE CALLER COULD NOT SAY WHICH PROPERTIES THE KEYS BELONG TO: UNVERIFIABLE, SO NOT A MATCH
+      return false;
+
+    final int size = propertyNames.size();
+    if (lookupProperties.size() != size || keyValues.length != size)
+      return false;
+
+    for (int i = 0; i < size; i++) {
+      final String lookupProperty = lookupProperties.get(i);
+      boolean found = false;
+      for (int j = 0; j < size; j++)
+        if (propertyNames.get(j).equals(lookupProperty)) {
+          found = true;
+          break;
+        }
+      if (!found)
+        return false;
     }
 
-    return super.getBucketIdByKeys(keyValues, async);
+    return true;
   }
 
   @Override

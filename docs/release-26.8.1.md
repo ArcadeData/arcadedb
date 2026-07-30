@@ -376,4 +376,27 @@ compaction publishes it inside the same critical section that swaps the data fil
 search could resolve pre-compaction offsets against the new file
 ([#5568](https://github.com/ArcadeData/arcadedb/issues/5568)).
 
+## Partitioned types: lookups on a secondary index no longer read the wrong bucket
+
+A type using `partitioned(...)` bucket selection places each record in the bucket its **partition** key hashes to,
+but every index lookup was pruned to the bucket the **lookup** key hashed to. For the partition index itself those
+are the same bucket; for any other index of the type they are unrelated, so the pruned search read a bucket the
+record was not in. The lookup silently returned nothing, and because the commit-time duplicate check reads through
+the same path, a secondary `UNIQUE` index stopped rejecting duplicates
+([#5589](https://github.com/ArcadeData/arcadedb/issues/5589)).
+
+The bucket-selection contract now carries the property names the key values belong to
+(`BucketSelectionStrategy.getBucketIdByKeys(List, Object[], boolean)`), so a partitioning strategy verifies the
+lookup covers exactly its partition properties before pruning and otherwise declines, which fans the search out
+across every bucket - correct, only slower. Pruning on the partition key itself is unchanged, including composite
+partition keys, and the SQL and Cypher planner pruning rules are unaffected.
+
+- **Databases that ran `partitioned(...)` on a type carrying more than one index may already hold duplicates in a
+  secondary `UNIQUE` index**, admitted while the check was reading the wrong bucket. The constraint is enforced
+  again from this release, but existing rows are not retro-validated: check those indexes for duplicate keys and
+  `REBUILD INDEX` them.
+- The single-argument `getBucketIdByKeys(Object[], boolean)` and `DocumentType.getBucketIndexByKeys(Object[],
+  boolean)` are deprecated. They still compile, and they never prune, since the keys alone cannot be verified
+  against the partition properties.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

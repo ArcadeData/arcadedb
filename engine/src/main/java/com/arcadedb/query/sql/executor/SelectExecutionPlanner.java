@@ -2093,7 +2093,8 @@ public class SelectExecutionPlanner {
       if (boundCount != partitionProps.size())
         return filterClusters;  // Block left a partition coordinate open; cannot prune.
 
-      final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
+      // keyValues was filled in partitionProps order right above, so the strategy's own check is satisfied.
+      final int bucketIndex = partitioned.getBucketIdByKeys(partitionProps, keyValues, false);
       if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
         return filterClusters;  // Strategy returned an out-of-range index; abort defensively.
       derivedBuckets.add(typeBuckets.get(bucketIndex).getName());
