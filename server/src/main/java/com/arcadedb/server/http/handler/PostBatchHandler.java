@@ -464,7 +464,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         || exchange.getRequestHeaders().getFirst("Content-Encoding") != null)
       return false;
 
-    // The parser already hit the end of a body shorter than announced: nothing more to establish.
+    // The parser already hit the end of a body shorter than announced: nothing more to establish. Note this is
+    // often settled BEFORE this method runs: try-with-resources closes the record stream on the way out of the
+    // load, so CountingInputStream.close() has already consumed any buffered remainder and, if that reached the
+    // end, recorded it here. The drain deliberately runs ahead of this probe - the two agree because a remainder
+    // that ends the body sets endOfBody, and one that does not leaves the question open for the loop below.
     if (inputStream.isEndOfBody())
       return true;
 

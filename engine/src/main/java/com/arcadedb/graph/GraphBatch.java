@@ -114,8 +114,6 @@ public class GraphBatch implements AutoCloseable {
 
   /** Upper bound for the exponential back-off between vertex-commit retries. */
   private static final long MAX_COMMIT_RETRY_DELAY_MS = 10_000L;
-  /** Deferred incoming edges past which the closing pass is worth announcing, because it stops being instant. */
-  private static final int  DEFERRED_EDGES_WORTH_ANNOUNCING = 100_000;
 
   /**
    * Test-only fault-injection hook. Invoked just before each {@link #createVertices} commit with
@@ -912,18 +910,13 @@ public class GraphBatch implements AutoCloseable {
     }
 
     try {
-      // Connect all deferred incoming edges in one sorted pass. On a large load this pass is minutes of work, and
-      // it runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no
-      // back-pointer and the integrity checker trips (see #4113 above). Announce it, so the gap between the error
-      // a client was given and the moment it is answered is accounted for in the log instead of looking like a
-      // hang: that gap was 86 seconds of the timeline reported on issue #5470.
-      if (bidirectional && inEdgeCount > 0) {
-        if (inEdgeCount >= DEFERRED_EDGES_WORTH_ANNOUNCING)
-          LogManager.instance().log(this, Level.INFO,
-              "GraphBatch: connecting %d deferred incoming edges before closing, this may take a while", null,
-              inEdgeCount);
+      // Connect all deferred incoming edges in one sorted pass. On a large load this is minutes of work and it
+      // runs on the way out of a FAILED batch too - it has to, or the edges already persisted keep no back-pointer
+      // and the integrity checker trips (see #4113 above). That is why a rejected batch can take a while to answer
+      // (86 seconds of the timeline on issue #5470); connectDeferredIncomingEdges logs the pass and its duration
+      // itself, so the wait is already accounted for.
+      if (bidirectional && inEdgeCount > 0)
         connectDeferredIncomingEdges();
-      }
 
       // Batch-update all vertex head chunk pointers in one pass
       if (!deferredOutHead.isEmpty() || !deferredInHead.isEmpty())
