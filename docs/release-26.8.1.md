@@ -372,6 +372,19 @@ ingest and selectivity gains are - rebuild it:
 REBUILD INDEX `Address[location]`
 ```
 
+Opening a database **says so**, once per logical index and not again on every schema reload:
+
+```
+WARNI [LocalSchema] Index 'Address[location]' of database 'mydb' should be rebuilt: This geospatial index uses
+the legacy FULL cell layout: ... Run: REBUILD INDEX `Address[location]`
+```
+
+The same advice reaches Studio: the Indexes tab shows a banner with the ready-to-run `REBUILD INDEX` for each
+affected index and flags the rows, and the type detail marks the index too. Under the hood this is a general
+mechanism, not a geospatial one - `IndexInternal.getUpgradeWarning()` defaults to `null` and is surfaced as
+`upgradeWarning` on `schema:indexes`, `schema:index:<name>` and `schema:types`, so any future layout change can
+use the same channel.
+
 `REBUILD INDEX` also no longer resets a non-default GeoHash `precision` back to 11, the same defect fixed for
 `FULL_TEXT` in #4732. Its cause was one level up: `TypeIndexBuilder` declared a `metadata` field that shadowed
 `IndexBuilder`'s, so `withMetadata()` wrote to one and `create()` read the other for every index type without a

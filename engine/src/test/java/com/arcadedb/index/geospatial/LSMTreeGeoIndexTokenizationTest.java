@@ -23,6 +23,9 @@ import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.GeoIndexMetadata;
 import com.arcadedb.schema.LocalSchema;
@@ -38,6 +41,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -290,7 +294,98 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
     }
   }
 
+  /**
+   * An operator has no other way to learn that a geospatial index is on the old layout, so opening the database says
+   * so - once per logical index, not once per bucket sub-index and not again on every schema reload.
+   */
+  @Test
+  void openingADatabaseWarnsOnceAboutALegacyIndex() {
+    createType("LocWarn");
+    createLegacyIndex("LocWarn");
+    insertCities("LocWarn");
+    database.close();
+
+    final List<String> warnings = new ArrayList<>();
+    final Logger previous = LogManager.instance().getLogger();
+    try {
+      LogManager.instance().setLogger(new CollectingLogger(warnings));
+      database = factory.open();
+      // A DDL statement re-reads the schema: the advice must not be repeated
+      database.command("sql", "CREATE DOCUMENT TYPE Unrelated");
+    } finally {
+      LogManager.instance().setLogger(previous);
+    }
+
+    assertThat(warnings).hasSize(1);
+    assertThat(warnings.getFirst()).contains("LocWarn[coords]").contains("REBUILD INDEX").contains("#5478");
+  }
+
+  /**
+   * The same advice reaches Studio, which renders it from {@code schema:indexes}: the reason on every affected bucket
+   * sub-index, and the type index name to rebuild. A current index carries neither.
+   */
+  @Test
+  void schemaIndexesExposesTheUpgradeWarning() {
+    createType("LocApi");
+    createLegacyIndex("LocApi");
+
+    createType("LocApiNew");
+    database.command("sql", "CREATE INDEX ON LocApiNew (coords) GEOSPATIAL");
+
+    int legacyRows = 0;
+    final ResultSet rs = database.query("sql", "SELECT FROM schema:indexes");
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      final String name = row.getProperty("name");
+      if (name.startsWith("LocApi_")) {
+        ++legacyRows;
+        assertThat((String) row.getProperty("upgradeWarning")).contains("#5478");
+        assertThat((String) row.getProperty("typeIndexName")).isEqualTo("LocApi[coords]");
+      } else if (name.startsWith("LocApiNew_"))
+        assertThat((String) row.getProperty("upgradeWarning")).isNull();
+    }
+    assertThat(legacyRows).isPositive();
+
+    assertThat((String) database.query("sql", "SELECT FROM schema:index:`LocApi[coords]`").next()
+        .getProperty("upgradeWarning")).contains("#5478");
+    assertThat((String) database.query("sql", "SELECT FROM schema:index:`LocApiNew[coords]`").next()
+        .getProperty("upgradeWarning")).isNull();
+  }
+
   // ---- helpers ----
+
+  /** Minimal {@link Logger} that keeps the WARNING messages, with their arguments already substituted. */
+  private record CollectingLogger(List<String> warnings) implements Logger {
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+        final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
+        final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16,
+        final Object arg17) {
+      log(requester, level, message, exception, context,
+          new Object[] { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15,
+              arg16, arg17 });
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      if (level != Level.WARNING || message == null)
+        return;
+      final List<Object> bound = new ArrayList<>();
+      if (args != null)
+        for (final Object arg : args)
+          if (arg != null)
+            bound.add(arg);
+      final String formatted = bound.isEmpty() ? message : String.format(message, bound.toArray());
+      if (formatted.contains("should be rebuilt"))
+        warnings.add(formatted);
+    }
+
+    @Override
+    public void flush() {
+    }
+  }
 
   private void createType(final String typeName) {
     database.command("sql", "CREATE DOCUMENT TYPE " + typeName);

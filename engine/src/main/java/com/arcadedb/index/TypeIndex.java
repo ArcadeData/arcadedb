@@ -300,6 +300,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public String getUpgradeWarning() {
+    // Every bucket sub-index of a type index shares one definition, so the first one answers for all of them.
+    return getFirstUnderlyingIndex().getUpgradeWarning();
+  }
+
+  @Override
   public void drop() {
     if (!valid)
       // Already dropped. The schema's leaf-drop path (LocalSchema#dropIndex) auto-removes a wrapper

@@ -544,6 +544,18 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     return tokenization;
   }
 
+  @Override
+  public String getUpgradeWarning() {
+    if (tokenization != GeoIndexMetadata.TOKENIZATION.FULL)
+      return null;
+
+    return ("This geospatial index uses the legacy %s cell layout: it stores one entry per GeoHash level, so every "
+        + "indexed point costs %d entries instead of 1, and a query has to read the coarse cells shared by the whole "
+        + "dataset. It keeps working as it always did, and rebuilding it switches it to the compact %s layout "
+        + "(issue #5478)").formatted(GeoIndexMetadata.TOKENIZATION.FULL, precision,
+        GeoIndexMetadata.TOKENIZATION.FRONTIER);
+  }
+
   // ---- Private helpers ----
 
   private Shape toShape(final Object obj) {
