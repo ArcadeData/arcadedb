@@ -475,6 +475,50 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
   }
 
   /**
+   * The same guarantee for a remainder too big to sit in one buffer. {@code available()} reports what is buffered
+   * right now, so a tail spanning several of Undertow's buffers is the case where the drain could stop early - see
+   * it report 0 at a boundary, conclude the client still owes bytes, and retire a connection whose body had in fact
+   * arrived in full. Sized under {@link PostBatchHandler} MAX_ABANDONED_BODY_DRAIN so the cap is not what decides it.
+   */
+  @Test
+  void aRejectedButCompletePayloadKeepsItsConnectionAcrossSeveralBuffers() throws Exception {
+    final StringBuilder payload = new StringBuilder();
+    appendVertices(payload, 985_000, 50);
+    payload.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"nonexistent-vertex\"}\n");
+    // ~40KB of already-sent remainder: several Undertow buffers, still inside the drain budget.
+    while (payload.length() < 40_000)
+      payload.append("{\"@type\":\"edge\",\"@class\":\"E1\",\"@from\":\"v0\",\"@to\":\"v1\"}\n");
+
+    final byte[] sent = payload.toString().getBytes(StandardCharsets.UTF_8);
+
+    try (final Socket socket = openSocket()) {
+      final OutputStream out = socket.getOutputStream();
+      final BufferedReader in = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+
+      out.write(keepAliveRequestHeaders(sent.length).getBytes(StandardCharsets.US_ASCII));
+      out.write(sent);
+      out.flush();
+
+      final Response rejected = readOneResponse(in);
+      assertThat(rejected.status()).as("the rejection must arrive").isNotNull();
+      assertThat(rejected.status()).contains("400");
+
+      final StringBuilder good = new StringBuilder();
+      appendVertices(good, 986_000, 5);
+      final byte[] goodBytes = good.toString().getBytes(StandardCharsets.UTF_8);
+      out.write(keepAliveRequestHeaders(goodBytes.length).getBytes(StandardCharsets.US_ASCII));
+      out.write(goodBytes);
+      out.flush();
+
+      final Response reused = readOneResponse(in);
+      assertThat(reused.status()).as("a multi-buffer remainder that had arrived must still keep the connection")
+          .isNotNull();
+      assertThat(reused.status()).contains("200");
+    }
+  }
+
+  /**
    * What must not regress: the request stream is no longer closed by the handler, so a load that reads its body to
    * the end has to leave the connection exactly as usable as before. Two batches over one socket prove it.
    */
@@ -601,6 +645,10 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
   /**
    * Reads exactly one response off a keep-alive connection, so the next one can be read after it. The body is
    * delimited by {@code Content-Length} rather than by the end of the stream.
+   * <p>
+   * {@code Content-Length} counts bytes and this reads characters, which holds only because every body asserted on
+   * here is ASCII JSON. A response echoing multibyte content would leave this waiting for characters that do not
+   * exist - so if one is ever added, read the exact byte count off the raw stream instead.
    */
   private Response readOneResponse(final BufferedReader in) throws IOException {
     final String status = in.readLine();

@@ -468,36 +468,29 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (inputStream.isEndOfBody())
       return true;
 
-    final byte[] drain = new byte[8192];
-    long drained = 0;
-    try {
-      while (drained < TRUNCATION_PROBE_BYTES && inputStream.getBytesRead() < declaredLength) {
-        // Undertow reports a finished request body as -1 available (not 0), which is the end-of-body signal this
-        // probe is looking for; 0 means "more may still arrive", and waiting for it is what must not happen here.
-        // That -1 is Undertow's own convention, not the InputStream contract (which says >= 0). An upgrade that
-        // changed it would not go unnoticed: Issue5470BatchErrorDeliveryIT's aRecordCutInHalfIsStillReportedAsA-
-        // TruncatedUpload and aRejectedButCompletePayloadKeepsItsConnection both fail when it reports 0 at end of
-        // body (verified by mutation). If it ever does, the degradation is a worse diagnosis - 400 naming the
-        // malformed record instead of 408 - never a wrong success.
-        final int available = inputStream.available();
-        if (available < 0)
-          return true;
-        if (available == 0)
-          return false;
+    // Consume no further than the announced length: reaching it means the body was whole after all, which is a
+    // spent budget rather than an end of stream.
+    final BufferedDrain outcome = inputStream.drainAlreadyBuffered(
+        Math.min(TRUNCATION_PROBE_BYTES, declaredLength - inputStream.getBytesRead()));
 
-        final int read = inputStream.read(drain, 0, Math.min(available, drain.length));
-        if (read < 0)
-          return true;
-        if (read == 0)
-          // Cannot happen for a blocking stream asked for len >= 1, but never spin on it either.
-          return false;
-        drained += read;
-      }
-    } catch (final IOException e) {
-      // The connection is already gone: the announced bytes are not coming either way.
-      return true;
-    }
-    return false;
+    // A broken connection settles it the same way an end of stream does: the announced bytes are not coming.
+    return outcome == BufferedDrain.END_OF_BODY || outcome == BufferedDrain.BROKEN;
+  }
+
+  /**
+   * Why {@link CountingInputStream#drainAlreadyBuffered} stopped. The distinction that matters is between reaching
+   * the END of the request body - which proves what is left will never arrive - and merely running out of bytes that
+   * had already arrived, which proves nothing either way.
+   */
+  private enum BufferedDrain {
+    /** The request body is finished. */
+    END_OF_BODY,
+    /** Nothing more has arrived yet; the client may still be sending. */
+    EXHAUSTED,
+    /** The caller's budget ran out before either of the above. */
+    BUDGET_SPENT,
+    /** The connection failed while reading; nothing more is coming through it. */
+    BROKEN
   }
 
   /**
@@ -660,40 +653,46 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     @Override
     public void close() {
-      if (endOfBody || drainWhatHasAlreadyArrived())
+      if (endOfBody || drainAlreadyBuffered(MAX_ABANDONED_BODY_DRAIN) == BufferedDrain.END_OF_BODY)
         return;
       exchange.setPersistent(false);
     }
 
     /**
-     * Consumes the rest of the request body if and only if it can be done without waiting for the network, and
-     * reports whether that reached the end of it. Never blocks: {@code available()} bounds every read, so the cost
-     * is what the server already holds, and a client that still owes bytes returns {@code false} at once.
+     * Consumes up to {@code budget} bytes of the request body that have ALREADY arrived, and reports why it stopped.
+     * <p>
+     * Never blocks. {@code available()} bounds every read, so the cost is only what the server already holds and a
+     * client that still owes bytes ends this at once with {@link BufferedDrain#EXHAUSTED}. Undertow reports a
+     * finished body as -1 available rather than 0, which is the end-of-body signal both callers are looking for;
+     * that is Undertow's own convention, not the {@link InputStream} contract (which says >= 0). An upgrade that
+     * changed it would not go unnoticed - {@code Issue5470BatchErrorDeliveryIT}'s
+     * {@code aRecordCutInHalfIsStillReportedAsATruncatedUpload} and
+     * {@code aRejectedButCompletePayloadKeepsItsConnection} both fail when it reports 0 at end of body (verified by
+     * mutation) - and if it ever does, the degradation is a worse diagnosis, never a wrong answer.
      */
-    private boolean drainWhatHasAlreadyArrived() {
+    BufferedDrain drainAlreadyBuffered(final long budget) {
       final byte[] drain = new byte[8192];
       long drained = 0;
       try {
-        while (drained < MAX_ABANDONED_BODY_DRAIN) {
+        while (drained < budget) {
           final int available = in.available();
           if (available < 0)
-            return true;
+            return BufferedDrain.END_OF_BODY;
           if (available == 0)
-            return false;
+            return BufferedDrain.EXHAUSTED;
 
-          final int read = read(drain, 0, Math.min(available, drain.length));
+          final int read = read(drain, 0, (int) Math.min(Math.min(available, drain.length), budget - drained));
           if (read < 0)
-            return true;
+            return BufferedDrain.END_OF_BODY;
           if (read == 0)
             // Cannot happen for a blocking stream asked for len >= 1, but never spin on it either.
-            return false;
+            return BufferedDrain.EXHAUSTED;
           drained += read;
         }
       } catch (final IOException e) {
-        // The connection is already gone; there is nothing left to preserve it for.
-        return false;
+        return BufferedDrain.BROKEN;
       }
-      return false;
+      return BufferedDrain.BUDGET_SPENT;
     }
 
     long getBytesRead() {
