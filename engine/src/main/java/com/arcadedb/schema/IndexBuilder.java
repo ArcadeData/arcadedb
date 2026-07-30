@@ -46,9 +46,10 @@ public abstract class IndexBuilder<T extends Index> {
    * The one and only metadata slot of the builder hierarchy. {@link TypeIndexBuilder} used to declare a field of the
    * same name, which SHADOWED this one: {@code withMetadata()} wrote here while {@code create()} read there, so every
    * index type without a dedicated builder subclass (GEOSPATIAL, see #5478) silently lost the metadata it was given.
-   * Keep it single.
+   * Keep it single - and reach it through {@link #withMetadata(IndexMetadata)} / {@link #getMetadata()} from outside
+   * this package, so a second slot cannot be reintroduced unnoticed.
    */
-  public IndexMetadata               metadata;
+  IndexMetadata                      metadata;
 
   protected IndexBuilder(final DatabaseInternal database, final Class<? extends Index> indexImplementation) {
     this.database = database;

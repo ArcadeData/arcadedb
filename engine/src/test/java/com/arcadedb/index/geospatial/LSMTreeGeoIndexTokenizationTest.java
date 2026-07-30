@@ -403,7 +403,7 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
     final GeoIndexMetadata meta = new GeoIndexMetadata(typeName, new String[] { "coords" }, -1);
     meta.setPrecision(precision);
     meta.setTokenization(GeoIndexMetadata.TOKENIZATION.FULL);
-    builder.metadata = meta;
+    builder.withMetadata(meta);
     builder.create();
   }
 

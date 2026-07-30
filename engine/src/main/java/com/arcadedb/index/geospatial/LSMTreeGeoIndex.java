@@ -95,6 +95,8 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   private final LSMTreeIndex                     underlyingIndex;
   private final int                              precision;
   private final GeoIndexMetadata.TOKENIZATION    tokenization;
+  /** Built once at construction, see {@link #getUpgradeWarning()}. Null on an index already in the current layout. */
+  private final String                           upgradeWarning;
   private final GeohashPrefixTree                grid;
   private final RecursivePrefixTreeStrategy      strategy;
   private       TypeIndex                        typeIndex;
@@ -140,6 +142,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     this.underlyingIndex = index;
     this.precision = precision;
     this.tokenization = tokenization;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
   }
@@ -161,6 +164,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
       final int precision, final GeoIndexMetadata.TOKENIZATION tokenization) {
     this.precision = precision;
     this.tokenization = tokenization;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
     this.underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[]{Type.STRING}, pageSize, nullStrategy);
@@ -173,6 +177,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
       final ComponentFile.MODE mode, final int pageSize, final int version) {
     this.precision = GeoIndexMetadata.DEFAULT_PRECISION;
     this.tokenization = GeoIndexMetadata.LEGACY_TOKENIZATION;
+    this.upgradeWarning = buildUpgradeWarning(tokenization, precision);
     this.grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     this.strategy = new RecursivePrefixTreeStrategy(grid, "geo");
     try {
@@ -546,6 +551,14 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   @Override
   public String getUpgradeWarning() {
+    // Built once in the constructor: this is called per index on every schema:indexes / schema:types listing, and the
+    // contract on IndexInternal#getUpgradeWarning is that it stays cheap.
+    return upgradeWarning;
+  }
+
+  // ---- Private helpers ----
+
+  private static String buildUpgradeWarning(final GeoIndexMetadata.TOKENIZATION tokenization, final int precision) {
     if (tokenization != GeoIndexMetadata.TOKENIZATION.FULL)
       return null;
 
@@ -556,7 +569,19 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         GeoIndexMetadata.TOKENIZATION.FRONTIER);
   }
 
-  // ---- Private helpers ----
+  /**
+   * Holds the invariant {@link #PREFIX_SCAN_UPPER_BOUND} depends on: a stored token must be pure ASCII, so that
+   * appending U+FFFF (0xEF 0xBF 0xBF in UTF-8) produces a key sorting after every descendant of the cell and before
+   * its next sibling. GeoHash cells are base-32 plus Lucene's {@code '+'} leaf marker, so this holds for every grid
+   * we use - but a tokenizer change that broke it would silently truncate range scans instead of failing, which is
+   * why it is asserted rather than left to the comment. Compiled out unless assertions are enabled (tests do).
+   */
+  private static boolean isAsciiToken(final String token) {
+    for (int i = 0; i < token.length(); i++)
+      if (token.charAt(i) > 0x7F)
+        return false;
+    return true;
+  }
 
   private Shape toShape(final Object obj) {
     if (obj instanceof Shape s)
@@ -585,8 +610,10 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     final List<String> tokens = new ArrayList<>();
     forEachCoveringCell(shape, detailLevel, (token, frontier) -> {
-      if (frontier)
+      if (frontier) {
+        assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
         tokens.add(token);
+      }
       return true;
     });
     return tokens;

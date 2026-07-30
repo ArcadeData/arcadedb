@@ -67,7 +67,7 @@ class LSMTreeGeoIndexSchemaTest extends TestHelper {
     builder.withType(Schema.INDEX_TYPE.GEOSPATIAL);
     final GeoIndexMetadata geoMeta = new GeoIndexMetadata("Location2", new String[] { "coords" }, -1);
     geoMeta.setPrecision(7);
-    builder.metadata = geoMeta;
+    builder.withMetadata(geoMeta);
     builder.create();
 
     reopenDatabase();
