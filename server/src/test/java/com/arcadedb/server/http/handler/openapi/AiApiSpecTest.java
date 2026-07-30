@@ -25,6 +25,7 @@ import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.Paths;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
+import io.swagger.v3.oas.models.responses.ApiResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -139,5 +140,61 @@ class AiApiSpecTest {
   void deleteAnswersADeletedFlag() {
     assertThat(openAPI.getComponents().getSchemas().get("AiChatDeleted")
         .getProperties().keySet()).containsExactly("deleted");
+  }
+
+  @Test
+  void gatewayProxyingOperationsDeclare502ForARejectedToken() {
+    // AiTokenException (server/src/main/java/com/arcadedb/server/ai/AiTokenException.java, lines
+    // 43-46) always maps the gateway's own 401/403 to a client-facing 502, on all three operations
+    // that talk to the gateway: chatWithAi, analyzeProfilerWithAi (both catch AiTokenException
+    // directly) and activateAi (which inlines the same 401/403 -> 502 remap).
+    assertThat(openAPI.getPaths().get("/api/v1/ai/chat").getPost().getResponses().keySet())
+        .as("chatWithAi").contains("502");
+    assertThat(openAPI.getPaths().get("/api/v1/ai/analyze-profiler").getPost().getResponses().keySet())
+        .as("analyzeProfilerWithAi").contains("502");
+    assertThat(openAPI.getPaths().get("/api/v1/ai/activate").getPost().getResponses().keySet())
+        .as("activateAi").contains("502");
+  }
+
+  @Test
+  void aiChatDeclaresAllSixStoredFields() {
+    // ChatStorage.createNewChat (server/src/main/java/com/arcadedb/server/ai/ChatStorage.java,
+    // lines 157-167) stores id, title, database, created, updated, and messages.
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("AiChat");
+    assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
+        "id", "title", "database", "created", "updated", "messages");
+  }
+
+  @Test
+  void chatMessagesCarryOptionalCommands() {
+    // AiChatHandler puts "commands" onto a persisted assistant message when the gateway proposed
+    // at least one (buildResponse, lines 433-435 and 448-449; handleStreamingRequest, lines 365-367).
+    final Schema<?> chat = openAPI.getComponents().getSchemas().get("AiChat");
+    final Schema<?> messages = chat.getProperties().get("messages");
+    final Schema<?> message = messages.getItems();
+    assertThat(message.getProperties().keySet()).contains("commands");
+  }
+
+  @Test
+  void chatSuccessDeclaresBothJsonAndEventStreamContent() {
+    // AiChatHandler.execute defaults mode to "auto" (line 128) and in "auto" mode calls
+    // handleStreamingRequest, which sets Content-Type: text/event-stream (line 265) and streams
+    // SSE events instead of returning the AiChatResponse JSON body. The JSON body is only produced
+    // by buildResponse on the non-"auto" ("review-first") path. A doc that only declared
+    // application/json would misrepresent the default path, so both must be present on the 200.
+    final ApiResponse ok = openAPI.getPaths().get("/api/v1/ai/chat").getPost().getResponses().get("200");
+    assertThat(ok.getContent().keySet())
+        .as("the default 'auto' mode streams SSE; only 'review-first' mode returns application/json")
+        .containsExactlyInAnyOrder("application/json", "text/event-stream");
+  }
+
+  @Test
+  void analyzeProfilerRequestNeverDeclaresSchemas() {
+    // AiAnalyzeProfilerHandler.execute (line 79) reads only "profilerData" from the client payload.
+    // "schemas" is computed server-side (collectDatabaseSchemas, lines 133-176) and added only to
+    // the outbound gateway request (lines 85-90); it is never read from the client's request, so it
+    // must not appear as a request property.
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("AiAnalyzeProfilerRequest");
+    assertThat(schema.getProperties().keySet()).containsExactly("profilerData");
   }
 }
