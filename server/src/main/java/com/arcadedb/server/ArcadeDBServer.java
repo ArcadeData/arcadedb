@@ -39,6 +39,7 @@ import com.arcadedb.server.ai.AiConfiguration;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
@@ -55,6 +56,8 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.ServerPathUtils;
+import io.micrometer.core.instrument.Meter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.core.instrument.binder.jvm.ClassLoaderMetrics;
@@ -73,6 +76,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -143,6 +147,21 @@ public class ArcadeDBServer {
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
   private volatile    Function<LocalDatabase, DatabaseInternal> databaseWrapper;
+  // Micrometer's global composite registry, the meter binders and the per-tuple timer caches of
+  // MicrometerQueryMetricsRecorder/AbstractServerHttpHandler are JVM-wide, while a start()/stop() pair is
+  // not: a start that adds a backing registry and a stop that removes none grows the composite by one
+  // child per in-process restart. A composite meter answers count() from a single, arbitrarily chosen
+  // child, and a child added after a recording starts at zero, so meters fed by an earlier generation
+  // still resolve through find() but read back 0 (issue #5565). The install is therefore reference
+  // counted - HA and embedded setups run several servers in one JVM - and the last one out dismantles it.
+  private static final Object       METRICS_INSTALL_MUTEX = new Object();
+  private static       int          metricsInstalls;
+  private static       boolean      metricsFiltersInstalled;
+  private static       Set<Meter.Id> metersBeforeInstall;
+  private              boolean       metricsInstalled;
+  private              MeterRegistry metricsRegistry;
+  private              MeterRegistry metricsLoggingRegistry;
+  private              JvmGcMetrics  metricsJvmGc;
 //  private             ServerMonitor                         serverMonitor;
 
   static {
@@ -201,6 +220,15 @@ public class ArcadeDBServer {
     lifecycleLock.lock();
     try {
       startInternal();
+    } catch (final RuntimeException | Error e) {
+      // A start that fails after the metrics install (a plugin, the HTTP service, the databases) does not
+      // necessarily reach stop(): callers own that decision. The reference count must be released anyway,
+      // otherwise it never returns to zero and the last-one-out teardown is disabled for the life of the
+      // JVM - the shared meters, timer caches and recorder of a server that never came up would survive
+      // every later stop. Only the metrics install is undone here; the rest of the failure path is
+      // unchanged, and a stop() that follows finds nothing left to dismantle.
+      CodeUtils.executeIgnoringExceptions(this::stopMetrics, "Error on stopping the metrics collection", false);
+      throw e;
     } finally {
       lifecycleLock.unlock();
     }
@@ -261,39 +289,8 @@ public class ArcadeDBServer {
     }
 
     // START METRICS & CONNECTED JMX REPORTER
-    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
-      // Backstop against a path-tag cardinality explosion on arcadedb.http.requests. The handler already
-      // collapses unmatched URIs to a constant, but this caps the number of distinct "path" tag values and
-      // denies further ones so a future route or regression can never grow the registry without bound.
-      // Configured before any registry/meter is added, as Micrometer requires MeterFilters to precede the
-      // meters they govern.
-      Metrics.globalRegistry.config().meterFilter(
-          MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
-
-      Metrics.addRegistry(new SimpleMeterRegistry());
-
-      new ClassLoaderMetrics().bindTo(Metrics.globalRegistry);
-      new JvmMemoryMetrics().bindTo(Metrics.globalRegistry);
-      new JvmGcMetrics().bindTo(Metrics.globalRegistry);
-      new ProcessorMetrics().bindTo(Metrics.globalRegistry);
-      new JvmThreadMetrics().bindTo(Metrics.globalRegistry);
-      // Engine executor pools (query parallelism + sparse-vector scoring) - exposes
-      // arcadedb.executor.pool.{size,active,...} gauges tagged with pool=<name>.
-      new PoolMetrics().bindTo(Metrics.globalRegistry);
-      // Engine-wide Profiler stats (cache hit/miss, pages, WAL, MVCC conflicts, open files, tx,
-      // queries) - exposes arcadedb.engine.* gauges read live from the Profiler on each scrape.
-      new EngineMetricsBinder().bindTo(Metrics.globalRegistry);
-      // HA replication health (heartbeat lag + replication lag) sourced live from the HA plugin -
-      // exposes arcadedb.ha.* gauges; harmless no-op (all -1/0) when HA is disabled.
-      new HAReplicationMetrics(this).bindTo(Metrics.globalRegistry);
-      QueryMetricsRecorder.Holder.register(new MicrometerQueryMetricsRecorder());
-
-      if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
-        LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");
-        Metrics.addRegistry(new LoggingMeterRegistry());
-      }
-      LogManager.instance().log(this, Level.INFO, "Metrics Collection Started");
-    }
+    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS))
+      startMetrics();
 
     // Register the engine-boundary query tracer regardless of the metrics flag: it opens a span only
     // when the optional tracing plugin has attached a tracer to the ObservationRegistry, and is a
@@ -580,6 +577,123 @@ public class ArcadeDBServer {
     }
   }
 
+  private void startMetrics() {
+    synchronized (METRICS_INSTALL_MUTEX) {
+      if (!metricsFiltersInstalled) {
+        // Backstop against a path-tag cardinality explosion on arcadedb.http.requests. The handler already
+        // collapses unmatched URIs to a constant, but this caps the number of distinct "path" tag values and
+        // denies further ones so a future route or regression can never grow the registry without bound.
+        // A MeterFilter cannot be removed from a registry, so it is installed once per JVM, and before any
+        // meter exists as Micrometer requires MeterFilters to precede the meters they govern.
+        Metrics.globalRegistry.config().meterFilter(
+            MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
+        metricsFiltersInstalled = true;
+      }
+
+      if (metricsInstalls == 0)
+        // Meters already registered belong to somebody else (typically the embedding application) and are
+        // left alone by the shutdown. The flip side is the contract: from here until the last server stops,
+        // the server owns every meter registered on the global registry, so an embedded application that
+        // wants its own meters to outlive the server must register them before starting it, or on a registry
+        // of its own added to the composite (what the Prometheus and OTLP plugins do). Taken before the
+        // increment, so a failure here leaves nothing to release and no half-installed count behind.
+        metersBeforeInstall = currentMeterIds();
+
+      // Paired with the decrement in stopMetrics() through this flag, set in the same critical section as the
+      // increment: anything that throws further down must still be able to release the count, or it never
+      // returns to zero and the last-one-out teardown is disabled for the life of the JVM.
+      metricsInstalled = true;
+      metricsInstalls++;
+    }
+
+    // The registry and the binders below are deliberately installed outside the mutex: it guards only the
+    // shared install state (counter, snapshot, filter). Two servers starting concurrently in one JVM can
+    // interleave here safely, because registering an already-registered meter id is a no-op in Micrometer
+    // and the counter transitions that decide the snapshot and the teardown are serialised above. Holding
+    // the mutex across MXBean binding would serialise unrelated server startups for no benefit.
+
+    metricsRegistry = new SimpleMeterRegistry();
+    Metrics.addRegistry(metricsRegistry);
+
+    new ClassLoaderMetrics().bindTo(Metrics.globalRegistry);
+    new JvmMemoryMetrics().bindTo(Metrics.globalRegistry);
+    // Registers notification listeners on the GC MXBeans, so it must be closed on shutdown.
+    metricsJvmGc = new JvmGcMetrics();
+    metricsJvmGc.bindTo(Metrics.globalRegistry);
+    new ProcessorMetrics().bindTo(Metrics.globalRegistry);
+    new JvmThreadMetrics().bindTo(Metrics.globalRegistry);
+    // Engine executor pools (query parallelism + sparse-vector scoring) - exposes
+    // arcadedb.executor.pool.{size,active,...} gauges tagged with pool=<name>.
+    new PoolMetrics().bindTo(Metrics.globalRegistry);
+    // Engine-wide Profiler stats (cache hit/miss, pages, WAL, MVCC conflicts, open files, tx,
+    // queries) - exposes arcadedb.engine.* gauges read live from the Profiler on each scrape.
+    new EngineMetricsBinder().bindTo(Metrics.globalRegistry);
+    // HA replication health (heartbeat lag + replication lag) sourced live from the HA plugin -
+    // exposes arcadedb.ha.* gauges; harmless no-op (all -1/0) when HA is disabled.
+    new HAReplicationMetrics(this).bindTo(Metrics.globalRegistry);
+    QueryMetricsRecorder.Holder.register(new MicrometerQueryMetricsRecorder());
+
+    if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
+      LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");
+      metricsLoggingRegistry = new LoggingMeterRegistry();
+      Metrics.addRegistry(metricsLoggingRegistry);
+    }
+    LogManager.instance().log(this, Level.INFO, "Metrics Collection Started");
+  }
+
+  private void stopMetrics() {
+    if (!metricsInstalled)
+      // Metrics were disabled for this server, or already dismantled: nothing of ours to release.
+      return;
+    metricsInstalled = false;
+
+    LogManager.instance().log(this, Level.INFO, "- Stop metrics collection");
+
+    if (metricsJvmGc != null) {
+      CodeUtils.executeIgnoringExceptions(metricsJvmGc::close, "Error on closing the JVM GC metrics", false);
+      metricsJvmGc = null;
+    }
+    if (metricsLoggingRegistry != null) {
+      removeMeterRegistry(metricsLoggingRegistry);
+      metricsLoggingRegistry = null;
+    }
+    // Null when the install threw before getting this far: the count below is released either way.
+    if (metricsRegistry != null) {
+      removeMeterRegistry(metricsRegistry);
+      metricsRegistry = null;
+    }
+
+    synchronized (METRICS_INSTALL_MUTEX) {
+      if (--metricsInstalls > 0)
+        // A sibling server in this JVM still publishes to the shared registry: leave its meters in place.
+        return;
+
+      // Last one out: the engine must stop timing queries, the cached timers must not outlive the
+      // registries that backed them, and no meter may survive to be read from a later generation that
+      // never recorded into it.
+      QueryMetricsRecorder.Holder.register(QueryMetricsRecorder.NO_OP);
+      MicrometerQueryMetricsRecorder.invalidateTimerCache();
+      AbstractServerHttpHandler.invalidateTimerCache();
+
+      for (final Meter meter : Metrics.globalRegistry.getMeters())
+        if (!metersBeforeInstall.contains(meter.getId()))
+          Metrics.globalRegistry.remove(meter);
+
+      metersBeforeInstall = null;
+    }
+  }
+
+  private static void removeMeterRegistry(final MeterRegistry registry) {
+    Metrics.removeRegistry(registry);
+    CodeUtils.executeIgnoringExceptions(registry::close, "Error on closing the metrics registry", false);
+  }
+
+  private static Set<Meter.Id> currentMeterIds() {
+    final Set<Meter.Id> ids = new HashSet<>();
+    Metrics.globalRegistry.forEachMeter(meter -> ids.add(meter.getId()));
+    return ids;
+  }
+
   private void stopInternal() {
     if (status == STATUS.OFFLINE || status == STATUS.SHUTTING_DOWN)
       return;
@@ -612,8 +726,10 @@ public class ArcadeDBServer {
           false);
     databases.clear();
 
-    CodeUtils.executeIgnoringExceptions(() ->
-      LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics"), "Error on stopping JMX Metrics", false);
+    // Deliberately last: the timer caches are cleared and the meters removed without holding off recording
+    // threads, so this must run once the plugins, the HTTP service and the databases are down and nothing is
+    // left to repopulate them. Keep it after those shutdowns.
+    CodeUtils.executeIgnoringExceptions(this::stopMetrics, "Error on stopping the metrics collection", false);
 
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 
