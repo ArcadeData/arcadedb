@@ -95,6 +95,16 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     // Readers are the corruption detector, so their give-ups need a floor rather than the writers' ceiling: a
     // run where readers mostly failed to complete a traversal would go green with the BufferUnderflowException
     // guard barely exercised. Assert the detector actually ran, in absolute terms and as a share.
+    //
+    // Neither bound re-couples the test to runner speed, which is the thing #5570 set out to remove:
+    //
+    // - a read-only transaction cannot give up at all. commit1stPhase locks exactly the files that
+    //   lockFilesFromChanges() collects from modifiedPages / newPages / indexChanges, all empty here, so
+    //   tryLockFiles iterates an empty list and no COMMIT_LOCK_TIMEOUT can elapse; with no modified page there
+    //   is likewise nothing for checkPageVersion to reject. So readerGiveUps is structurally 0, which makes the
+    //   share bound vacuous (n > n/2) until readers really do start failing - exactly the degradation it guards.
+    // - the absolute floor is 4 traversals for the whole run, against 18000 write transactions the readers loop
+    //   underneath, and the earliest ones parse a nearly empty chain. No runner is slow enough for that.
     final int readTx = outcome.readTransactions();
     assertThat(outcome.readerCommits())
         .as("full chain traversals completed: %d of %d reader transactions", outcome.readerCommits(), readTx)
@@ -139,7 +149,10 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     final AtomicInteger addedCount = new AtomicInteger();
     final AtomicInteger removedCount = new AtomicInteger();
     final AtomicInteger readerCommits = new AtomicInteger();
-    final GiveUps writerGiveUps = new GiveUps();
+    // Tallied per role, not per writer/reader: an adder losing the append race and a remover losing the
+    // structural race are different symptoms, and a starvation regression is worth attributing to one of them.
+    final GiveUps adderGiveUps = new GiveUps();
+    final GiveUps removerGiveUps = new GiveUps();
     final GiveUps readerGiveUps = new GiveUps();
     final AtomicBoolean addersDone = new AtomicBoolean();
     final CountDownLatch start = new CountDownLatch(1);
@@ -159,7 +172,7 @@ class EdgeAppendMergeRaceTest extends TestHelper {
               src.save();
               src.newEdge("TRANSFERS", hubRID);
               holder[0] = src.getIdentity();
-            }, attempts, writerGiveUps))
+            }, attempts, adderGiveUps))
               // GAVE UP: nothing was committed, so nothing to count and nothing to offer to the removers.
               continue;
 
@@ -190,7 +203,7 @@ class EdgeAppendMergeRaceTest extends TestHelper {
             // A remover that gives up leaves its victim un-deleted and does not count it, so the expected edge
             // count stays exact. The victim is deliberately not re-queued: retrying it forever would hide the
             // give-up instead of reporting it.
-            if (commit(() -> victim.asVertex(true).delete(), attempts, writerGiveUps))
+            if (commit(() -> victim.asVertex(true).delete(), attempts, removerGiveUps))
               removedCount.incrementAndGet();
           }
         } catch (final Throwable e) {
@@ -230,8 +243,8 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     for (final Thread thread : threads)
       thread.join();
 
-    final RaceOutcome outcome = new RaceOutcome(addedCount.get(), removedCount.get(), writerGiveUps.count.get(),
-        readerCommits.get(), readerGiveUps.count.get(),
+    final RaceOutcome outcome = new RaceOutcome(addedCount.get(), removedCount.get(), adderGiveUps.count.get(),
+        removerGiveUps.count.get(), readerCommits.get(), readerGiveUps.count.get(),
         ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges);
 
     // The suite pins com.arcadedb to SEVERE, so a run with give-ups is the only one that prints: a genuine
@@ -239,9 +252,10 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     // to trip the assertions below.
     LogManager.instance()
         .log(this, outcome.writerGiveUps() + outcome.readerGiveUps() > 0 ? Level.SEVERE : Level.WARNING,
-            "#5570 race outcome: added=%d removed=%d merges=%d give-ups(write)=%d traversals=%d give-ups(read)=%d%s%s",
-            outcome.added(), outcome.removed(), outcome.merges(), outcome.writerGiveUps(), outcome.readerCommits(),
-            outcome.readerGiveUps(), writerGiveUps.describeFirst("write"), readerGiveUps.describeFirst("read"));
+            "#5570 race outcome: added=%d removed=%d merges=%d traversals=%d give-ups: adder=%d remover=%d reader=%d%s%s%s",
+            outcome.added(), outcome.removed(), outcome.merges(), outcome.readerCommits(), outcome.adderGiveUps(),
+            outcome.removerGiveUps(), outcome.readerGiveUps(), adderGiveUps.describeFirst("adder"),
+            removerGiveUps.describeFirst("remover"), readerGiveUps.describeFirst("reader"));
 
     if (!errors.isEmpty())
       throw new AssertionError(errors.size() + " thread(s) failed with a non-retryable error, first: " + errors.getFirst(),
@@ -301,9 +315,14 @@ class EdgeAppendMergeRaceTest extends TestHelper {
     }
   }
 
-  private record RaceOutcome(int added, int removed, int writerGiveUps, int readerCommits, int readerGiveUps, long merges) {
+  private record RaceOutcome(int added, int removed, int adderGiveUps, int removerGiveUps, int readerCommits,
+                            int readerGiveUps, long merges) {
+    int writerGiveUps() {
+      return adderGiveUps + removerGiveUps;
+    }
+
     int writeTransactions() {
-      return added + removed + writerGiveUps;
+      return added + removed + writerGiveUps();
     }
 
     int readTransactions() {
