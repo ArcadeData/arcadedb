@@ -84,8 +84,8 @@ alert that are not actionable there:
 
 | Rule | Covers |
 | ---- | ------ |
-| GitHub-curated preset, *Dismiss low impact issues for development-scoped dependencies* | Resource-exhaustion advisories: CWE-400, CWE-674, CWE-754, CWE-770, CWE-835 |
-| Custom rule | CWE-407 (inefficient algorithmic complexity), development scope only |
+| GitHub-curated preset, *Dismiss low-impact alerts for development-scoped dependencies* | Resource-exhaustion advisories: CWE-400, CWE-674, CWE-754, CWE-770, CWE-835 |
+| Custom rule, *Dismiss dev-scope algorithmic complexity* (`cwe:407 scope:development`) | CWE-407 (inefficient algorithmic complexity), development scope only |
 
 The custom rule exists because the curated preset dismisses an advisory only when
 *every* CWE on it is in the preset's set, so a ReDoS tagged CWE-400 **and**
