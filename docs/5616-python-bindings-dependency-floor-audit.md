@@ -224,6 +224,32 @@ Consistent with every other `curl | sh` install in this repo. Adding a checksum 
 the floor for the workflows that surround it, and pinning the version already removes the drift that
 mattered for this job's output.
 
+### Cycle 4 - `9dc2df33a`
+
+`claude[bot]` reviewed again, nothing blocking, three observations. None resulted in a change; the first was
+checked against the repo and its premise does not hold.
+
+**1. "This job now sits in the Release path via `workflow_call`, so an advisory-service outage can redden a
+release run" - declined, the premise is not true of this repo.** The workflow does declare `workflow_call`,
+but nothing calls it: `grep -rn "uses: \./\.github/workflows/"` over `.github/workflows/` returns no
+matches, and `mvn-release.yml`, the only release workflow, calls no reusable workflow at all. The trigger is
+declared and unused. The related `workflow_run: workflows: ["Release"]` trigger runs this workflow *after* a
+release completes, so it cannot gate one either. Nothing here can redden a release, and the `if:` guard the
+review suggests would be guarding a path that does not exist. The trigger-tightening follow-up below still
+stands on its own merits, for this job and the Bandit job together.
+
+**2. "`jpype1==1.5.0` is the cell most likely to break when a new interpreter joins the classifiers" - no
+change, recorded as a watch item.** Accurate: because the loop now derives its versions from the
+classifiers, adding 3.15 there automatically adds a resolution the floor may not satisfy, and that surfaces
+as a `uv pip compile` error rather than an advisory. That is the correct failure: it says the declared floor
+does not support the interpreter the package claims to support, which is a real defect in the manifest
+rather than a defect in the job.
+
+**3. "`--vulnerability-service osv` aggregates more feeds" - declined.** The PyPI default is what produced
+every result in this document, including the `PYSEC-2022-42998` the falsification run turns on. Switching
+sources changes what the gate reports and would need its own before-and-after, which is not worth bundling
+into the change that introduces the gate.
+
 ## Follow-ups
 
 - Meterian still cannot scan `bindings/python`, and the issue's four directions all remain open. This makes
@@ -234,6 +260,11 @@ mattered for this job's output.
   floors would let the `dev` extra join the job.
 - The job only runs on pushes touching `bindings/python/**`. A new advisory against an unchanged floor is
   not noticed until the next such push. A schedule would catch that, but this workflow also carries the
-  20-cell build matrix, so it needs a separate trigger rather than a `schedule:` on this file.
+  20-cell build matrix, so it needs a separate trigger rather than a `schedule:` on this file. Moving this
+  job and the Bandit job to a workflow of their own would give them that trigger and would also drop the
+  `workflow_run` and `workflow_call` triggers they inherit today and do not use.
+- When an interpreter is added to the classifiers the loop picks it up automatically, and a declared floor
+  that has no dist for it will fail as a `uv pip compile` error rather than an advisory. `jpype1>=1.5.0` is
+  the likeliest such floor.
 - Meterian is red on `main` continuously for an unrelated reason (`e2e-go/go.mod` pulling
   `google.golang.org/grpc@v1.67.0`, CVE-2026-33186), which is what made this failure easy to miss.
