@@ -797,6 +797,14 @@ public class LocalDocumentType implements DocumentType {
    * Warnings never refuse. A second index on non-partition properties is a perfectly reasonable schema, it just does
    * not benefit from the partitioning, and it is common enough that refusing it would be hostile. They are reported
    * last so a configuration that is about to be refused outright does not first draw advice on how to speed it up.
+   * <p>
+   * <b>Warnings are assignment-time advice, so they are not repeated on reload.</b> They say "this is not the shape
+   * you probably meant", which is worth one line at the moment the shape is chosen and nothing at all on every
+   * subsequent open of a database whose schema has not changed since. Left unconditional they would put a WARNING
+   * per startup, forever, against a schema that was accepted and is working as designed - the kind of line operators
+   * learn to filter out, taking the blockers below with it. Blockers do repeat on every open, deliberately: those
+   * describe a database that is still paying for a strategy it cannot use, and that stays worth saying until
+   * somebody acts on it.
    */
   private void reportPartitionSuitability(final PartitionedBucketSelectionStrategy partitioned) {
     final PartitionedBucketSelectionStrategy.Suitability suitability = partitioned.checkSuitability();
@@ -818,6 +826,9 @@ public class LocalDocumentType implements DocumentType {
           `REBUILD TYPE %s WITH repartition = true`.""", null, name, partitioned.getProperties(), reasons,
           buckets.size(), name);
     }
+
+    if (schema.isReadingFromFile())
+      return;
 
     for (final String warning : suitability.warnings())
       LogManager.instance().log(this, Level.WARNING,

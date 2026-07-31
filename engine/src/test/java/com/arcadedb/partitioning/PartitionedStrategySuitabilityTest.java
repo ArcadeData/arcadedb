@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.schema.LocalDocumentType;
@@ -102,14 +103,21 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
         () -> database.command("sql", "ALTER TYPE " + typeName + " BucketSelectionStrategy `partitioned('k')`"));
   }
 
-  /** Number of the given values the UNIQUE index let through. Anything above 1 is a broken constraint. */
+  /**
+   * Number of the given values the UNIQUE index let through. Anything above 1 is a broken constraint.
+   * <p>
+   * Only a {@link DuplicatedKeyException} counts as the constraint holding, and every other failure propagates.
+   * Swallowing all of them would let an unrelated error be tallied as a rejection, which is the difference between
+   * "the constraint held" and "nothing was written for some other reason" - and it would make every count in this
+   * class meaningless in exactly the direction that reads as success.
+   */
   private int insertAll(final String typeName, final Object... values) {
     int admitted = 0;
     for (final Object value : values) {
       try {
         database.transaction(() -> database.newDocument(typeName).set("k", value).save());
         admitted++;
-      } catch (final Exception e) {
+      } catch (final DuplicatedKeyException e) {
         // THE CONSTRAINT HELD
       }
     }
@@ -355,6 +363,35 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
     createIndexedType("OneIdx", "STRING");
 
     assertThat(captureWarnings(() -> partition("OneIdx"))).noneMatch(m -> m.contains("OneIdx"));
+  }
+
+  /**
+   * The fan-out warning is advice about the shape just chosen, so it is said once, at assignment, and never again on
+   * reopening a database whose schema has not changed. Unconditional it would be a WARNING per startup, forever,
+   * against a schema that was accepted and works as designed - the kind of line operators learn to filter out, which
+   * would take the blocker warnings with it.
+   */
+  @Test
+  void theFanOutWarningIsNotRepeatedOnEveryReopen() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("ReopenIdx").withTotalBuckets(BUCKETS).create();
+      database.command("sql", "CREATE PROPERTY ReopenIdx.k STRING");
+      database.command("sql", "CREATE PROPERTY ReopenIdx.code STRING");
+      database.command("sql", "CREATE INDEX ON ReopenIdx(k) UNIQUE");
+      database.command("sql", "CREATE INDEX ON ReopenIdx(code) UNIQUE");
+    });
+    partition("ReopenIdx");
+    // The schema is flushed explicitly because `ALTER TYPE ... BucketSelectionStrategy` does not persist on its own -
+    // the strategy lives in memory until some later schema mutation happens to save, so without this the type would
+    // reopen as round-robin and the test would pass for the wrong reason. Pre-existing and unrelated to this change
+    // (reproduced on the unmodified sources); reported separately.
+    ((LocalSchema) database.getSchema().getEmbedded()).saveConfiguration();
+    database.close();
+
+    final List<String> warnings = captureWarnings(() -> database = factory.open());
+
+    assertThat(warnings).as("an accepted schema must not warn again on every open").noneMatch(m -> m.contains("ReopenIdx"));
+    assertThat(database.getSchema().getType("ReopenIdx").getBucketSelectionStrategy().getName()).isEqualTo("partitioned");
   }
 
   // ---------------------------------------------------------------------------------------------------------------
