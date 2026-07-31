@@ -68,6 +68,7 @@ import com.arcadedb.utility.RidHashSet;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
+import io.github.jbellis.jvector.graph.NodesIterator;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
@@ -1396,6 +1397,72 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Using a per-index pool allows us to cancel long-running builds on shutdown
    * by calling shutdownNow() on this pool.
    */
+  /**
+   * Ordinals that no path from the entry node reaches. Beam search only ever follows edges forward from the entry
+   * node, so such a node can never be returned no matter how wide the beam - the graph build occasionally leaves one
+   * with a full out-degree and no in-edges (issue #5615). Callers keep those vectors searchable through the delta
+   * scan instead.
+   *
+   * @return the unreachable ordinals, empty when every node is reachable
+   */
+  int[] findUnreachableOrdinals(final ImmutableGraphIndex graph) {
+    try (final ImmutableGraphIndex.View view = graph.getView()) {
+      final int upper = graph.getIdUpperBound();
+      if (upper <= 0)
+        return EMPTY_ORDINALS;
+
+      final boolean[] reached = new boolean[upper];
+      final int[] queue = new int[upper];
+      int head = 0, tail = 0;
+
+      final int entry = view.entryNode().node;
+      if (entry < 0 || entry >= upper)
+        return EMPTY_ORDINALS;
+      reached[entry] = true;
+      queue[tail++] = entry;
+
+      final int maxLevel = graph.getMaxLevel();
+      while (head < tail) {
+        final int node = queue[head++];
+        for (int level = 0; level <= maxLevel; level++) {
+          final NodesIterator neighbors;
+          try {
+            neighbors = view.getNeighborsIterator(level, node);
+          } catch (final Exception e) {
+            // A node absent from this level is normal in a hierarchical graph.
+            continue;
+          }
+          while (neighbors.hasNext()) {
+            final int next = neighbors.nextInt();
+            if (next >= 0 && next < upper && !reached[next]) {
+              reached[next] = true;
+              queue[tail++] = next;
+            }
+          }
+        }
+      }
+
+      int unreachable = 0;
+      for (int node = 0; node < upper; node++)
+        if (!reached[node] && graph.containsNode(node))
+          unreachable++;
+
+      if (unreachable == 0)
+        return EMPTY_ORDINALS;
+
+      final int[] result = new int[unreachable];
+      int i = 0;
+      for (int node = 0; node < upper; node++)
+        if (!reached[node] && graph.containsNode(node))
+          result[i++] = node;
+      return result;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not verify graph connectivity for index %s: %s", indexName, e.getMessage());
+      return EMPTY_ORDINALS;
+    }
+  }
+
   private synchronized ForkJoinPool getOrCreateGraphBuildPool() {
     ForkJoinPool pool = graphBuildPool;
     if (pool == null || pool.isShutdown()) {
@@ -1987,6 +2054,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
         throw e;
       }
 
+      // The build occasionally leaves a node with a full out-degree and no in-edges, which no beam search can reach
+      // at any efSearch (issue #5615). Collect those vectors here, before the write lock, so neither the O(V+E)
+      // walk nor the vector reads stall concurrent searches; they are re-queued into the delta buffer below and
+      // stay searchable through the delta scan until the next rebuild wires them into the graph.
+      final List<DeltaVectorEntry> unreachableEntries = new ArrayList<>();
+      for (final int ordinal : findUnreachableOrdinals(builtGraph)) {
+        if (ordinal >= finalActiveVectorIds.length)
+          continue;
+        final int vectorId = finalActiveVectorIds[ordinal];
+        // Anything at or past the snapshot is already carried over by the trim below; re-adding it here would
+        // score the same vector twice in the delta scan.
+        if (vectorId >= deltaSnapshotId)
+          continue;
+        final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+        if (loc == null || loc.deleted)
+          continue;
+        final VectorFloat<?> vector = vectors.getVector(ordinal);
+        if (vector != null)
+          unreachableEntries.add(new DeltaVectorEntry(vectorId, loc.rid, vector));
+      }
+      if (!unreachableEntries.isEmpty())
+        LogManager.instance().log(this, Level.WARNING,
+            "Graph build left %d of %d vectors unreachable for index %s: serving them from the delta scan until the "
+                + "next rebuild", unreachableEntries.size(), finalActiveVectorIds.length, indexName);
+
       // Reacquire write lock to update graph state
       lock.writeLock().lock();
       try {
@@ -2001,6 +2093,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         for (final DeltaVectorEntry e : deltaVectors)
           if (e.vectorId >= deltaSnapshotId)
             remaining.add(e);
+
+        remaining.addAll(unreachableEntries);
+
         this.deltaVectors = remaining;
 
         // Subtract only mutations present at build start, preserving concurrent ones
@@ -2412,6 +2507,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Above this threshold, a full rebuild can take seconds to minutes, so async is preferred.
    */
   private static final int ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000;
+  private static final int[] EMPTY_ORDINALS             = new int[0];
 
   /**
    * Check if the graph needs rebuilding before a search, and trigger the appropriate rebuild strategy.
