@@ -1888,6 +1888,14 @@ public class LocalDocumentType implements DocumentType {
       if (!superType.getBucketSelectionStrategy().getName().equalsIgnoreCase(getBucketSelectionStrategy().getName()))
         // INHERIT THE BUCKET SELECTION STRATEGY FROM THE SUPER TYPE. The enclosing recordFileChanges saves the
         // schema when it completes, and that write carries this strategy, so the setter does not persist on its own.
+        //
+        // An inherited partition that is unsuitable for this subtype still refuses here, as it always has: what
+        // changed with issue #5637 is that the refusal now arrives as the SchemaException the suitability check
+        // raises rather than the IllegalArgumentException the binding used to throw. Checked against every caller
+        // of addSuperType - CreateTypeAbstractStatement, AlterTypeStatement's SUPERTYPE branch, TypeBuilder, the
+        // Cypher Labels helper, and LocalSchema's dropType re-attach - and none of them catches either type, so
+        // nothing distinguishes the two. Neither is a CommandParsingException, so the HTTP status is unchanged too.
+        // (AlterTypeStatement's one catch names both, but it guards the BucketSelectionStrategy branch, not this.)
         setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy(), false);
 
       return null;

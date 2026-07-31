@@ -1902,6 +1902,11 @@ public class LocalSchema implements Schema {
             // property of this database and worth a WARNING. Anything else reaching here is a fault in the bind
             // path itself, and would otherwise be indistinguishable from an expected refusal in the log of a
             // database that opens successfully.
+            // IllegalArgumentException is listed alongside SchemaException for the strategies this engine does not
+            // ship: a custom BucketSelectionStrategy named by class in schema.json runs its own setType() here, and
+            // rejecting the type it is handed is what that exception is for. The engine's own strategies no longer
+            // raise it from the bind path - that is the change this issue made - so on a stock database only the
+            // SchemaException arm fires.
             final boolean expected = e instanceof SchemaException || e instanceof IllegalArgumentException;
             LogManager.instance().log(this, expected ? Level.WARNING : Level.SEVERE,
                 "Cannot restore the '%s' bucket selection strategy on type '%s': %s. The type falls back to `%s`",
