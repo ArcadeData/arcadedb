@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -40,9 +39,18 @@ public class TailFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("tail() requires exactly one argument");
+    checkArity(args);
     final List<Object> list = CypherFunctionHelper.requireListArgument(args[0], "tail");
     if (list == null)
       return null;

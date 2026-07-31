@@ -39,6 +39,21 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
     super(NAME);
   }
 
+  /**
+   * Variadic in SQL: {@code sum(a, b, c)} adds the arguments of one row, which is a different computation from the
+   * cross-row {@code sum(a)}. Cypher exposes only the single-argument aggregation, so its parser declaration is
+   * deliberately narrower - see {@code CypherFunctionArityRegistryTest.NARROWER_IN_CYPHER}.
+   */
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return Integer.MAX_VALUE;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {

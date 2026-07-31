@@ -45,8 +45,21 @@ public class DateTimeConstructorFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 0;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length == 0)
+    checkArity(args);
+    // No argument means "now". checkArity() lets a null array through for a zero-minimum function, so treat it as empty
+    // rather than dereferencing it (issue #5602).
+    if (args == null || args.length == 0)
       return CypherFunctionHelper.getStatementTime(context).get("datetime");
     if (args[0] == null)
       return null;

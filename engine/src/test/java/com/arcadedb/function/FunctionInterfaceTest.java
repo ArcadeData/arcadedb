@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function;
 
+import com.arcadedb.exception.CommandSemanticException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -113,11 +114,11 @@ class FunctionInterfaceTest {
   void validateArgsExactCountTooFew() {
     final Function fn = createFunction("exactFunc", 2, 2);
 
+    // Same wording and same class as checkArity and as the Cypher parser's gate: one mistake, one message,
+    // whichever path caught it (issue #5602).
     assertThatThrownBy(() -> fn.validateArgs(new Object[]{"a"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("exactFunc")
-        .hasMessageContaining("exactly 2")
-        .hasMessageContaining("got 1");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Function 'exactFunc' expects 2 arguments but got 1");
   }
 
   @Test
@@ -125,10 +126,8 @@ class FunctionInterfaceTest {
     final Function fn = createFunction("exactFunc", 2, 2);
 
     assertThatThrownBy(() -> fn.validateArgs(new Object[]{"a", "b", "c"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("exactFunc")
-        .hasMessageContaining("exactly 2")
-        .hasMessageContaining("got 3");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Function 'exactFunc' expects 2 arguments but got 3");
   }
 
   @Test
@@ -146,10 +145,8 @@ class FunctionInterfaceTest {
     final Function fn = createFunction("rangeFunc", 2, 4);
 
     assertThatThrownBy(() -> fn.validateArgs(new Object[]{"a"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("rangeFunc")
-        .hasMessageContaining("2 to 4")
-        .hasMessageContaining("got 1");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Function 'rangeFunc' expects 2-4 arguments but got 1");
   }
 
   @Test
@@ -157,10 +154,8 @@ class FunctionInterfaceTest {
     final Function fn = createFunction("rangeFunc", 1, 3);
 
     assertThatThrownBy(() -> fn.validateArgs(new Object[]{"a", "b", "c", "d"}))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("rangeFunc")
-        .hasMessageContaining("1 to 3")
-        .hasMessageContaining("got 4");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Function 'rangeFunc' expects 1-3 arguments but got 4");
   }
 
   @Test
@@ -177,6 +172,25 @@ class FunctionInterfaceTest {
 
     // Should not throw even with many args
     fn.validateArgs(new Object[]{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"});
+  }
+
+  /**
+   * "Unbounded" has two spellings - {@code Integer.MAX_VALUE} here and {@code -1} in the Cypher parser's registry -
+   * and the check has to accept both. Reading a {@code -1} literally would make every count exceed the maximum and
+   * reject every call, while the message went on describing the function as taking "at least N" (issue #5602).
+   */
+  @Test
+  void aMaximumSpelledAsMinusOneMeansUnlimitedToTheCheckAndToTheMessage() {
+    final Function fn = createFunction("varArgs", 1, -1);
+
+    fn.validateArgs(new Object[]{"a"});
+    fn.validateArgs(new Object[]{"a", "b", "c", "d", "e"});
+    assertThat(FunctionArity.describe(1, -1)).isEqualTo("at least 1 argument");
+    assertThat(FunctionArity.describe(1, Integer.MAX_VALUE)).isEqualTo("at least 1 argument");
+
+    assertThatThrownBy(() -> fn.validateArgs(new Object[]{}))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Function 'varArgs' expects at least 1 argument but got 0");
   }
 
   private Function createFunction(final String name, final int minArgs, final int maxArgs) {

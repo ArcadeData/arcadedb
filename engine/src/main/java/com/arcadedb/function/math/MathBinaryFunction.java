@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.math;
 
-import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -46,9 +45,18 @@ public class MathBinaryFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw CypherFunctionHelper.arityMismatch(name, "2 arguments", args.length);
+    checkArity(args);
     // Both arguments are type-checked before null propagation decides the answer, so an out-of-domain argument is
     // still reported when the other one happens to be null (issue #5484).
     final Number first = CypherFunctionHelper.requireNumberArgument(args[0], name);

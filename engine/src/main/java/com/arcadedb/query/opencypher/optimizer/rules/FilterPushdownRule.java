@@ -201,7 +201,7 @@ public class FilterPushdownRule implements OptimizationRule {
    */
   public double estimateFilterSelectivity(final Expression filter) {
     // Simplified heuristics
-    final String text = filter.getText().toLowerCase();
+    final String text = filter.getText().toLowerCase(Locale.ROOT);
 
     if (text.contains("=")) {
       return 0.1; // Equality: 10%

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.temporal;
 
+import com.arcadedb.exception.ArithmeticErrorException;
+
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
@@ -211,7 +213,9 @@ public class CypherDuration implements CypherTemporalValue {
 
   public CypherDuration divide(final double divisor) {
     if (divisor == 0)
-      throw new ArithmeticException("Cannot divide duration by zero");
+      // A raw java.lang.ArithmeticException reached the wire layers as an unrecognised throwable and became a 500;
+      // dividing a duration by zero is the caller's mistake, same as 1/0 (issue #5602).
+      throw new ArithmeticErrorException("Cannot divide duration by zero");
     return multiply(1.0 / divisor);
   }
 

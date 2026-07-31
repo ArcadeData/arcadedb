@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.math;
 
-import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -46,9 +45,18 @@ public class MathUnaryFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw CypherFunctionHelper.arityMismatch(name, "1 argument", args.length);
+    checkArity(args);
     // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
     final Number value = CypherFunctionHelper.requireNumberArgument(args[0], name);
     return value == null ? null : op.applyAsDouble(value.doubleValue());

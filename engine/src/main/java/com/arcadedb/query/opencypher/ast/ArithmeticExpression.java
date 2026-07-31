@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -171,10 +171,13 @@ public class ArithmeticExpression implements Expression {
    * OpenCypher TCK), not a silent {@code null}. Fail the query so callers can tell a real error from a
    * legitimate null (issue #5163). Floating-point division by zero is left to IEEE 754 semantics
    * ({@code Infinity}/{@code NaN}): the OpenCypher TCK requires {@code 0.0 / 0.0} to yield {@code NaN}.
+   * <p>
+   * Reported as an {@link ArithmeticErrorException}, so the caller's bad divisor is a 400 rather than a 500 -
+   * the same classification Neo4j gives it and the same one integer overflow gets below (issue #5602).
    */
   public static void checkIntegerDivisorNotZero(final Operator op, final long divisor) {
     if (divisor == 0)
-      throw new CommandExecutionException(op == Operator.MODULO ? "% by zero" : "/ by zero");
+      throw new ArithmeticErrorException(op == Operator.MODULO ? "% by zero" : "/ by zero");
   }
 
   /**
@@ -186,6 +189,10 @@ public class ArithmeticExpression implements Expression {
    * <p>
    * Only pure-integer operations are checked here; mixed or floating-point arithmetic keeps IEEE 754 semantics
    * (overflow becomes {@code ±Infinity}), matching Neo4j.
+   * <p>
+   * The failure is an {@link ArithmeticErrorException} - still a {@code CommandExecutionException}, so code
+   * written against #5164 keeps working, but singled out by the wire layers as the client error Neo4j calls
+   * {@code Neo.ClientError.Statement.ArithmeticError} instead of an internal fault (issue #5602).
    */
   public static long integerArithmetic(final Operator op, final long l, final long r) {
     try {
@@ -199,7 +206,7 @@ public class ArithmeticExpression implements Expression {
         case CONCAT -> throw new IllegalStateException("CONCAT is not an integer operation");
       };
     } catch (final ArithmeticException e) {
-      throw new CommandExecutionException("long overflow", e);
+      throw new ArithmeticErrorException("long overflow", e);
     }
   }
 

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.graph;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Vertex;
@@ -41,10 +40,18 @@ public class LabelsFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1) {
-      throw new CommandExecutionException("labels() requires exactly one argument");
-    }
+    checkArity(args);
     if (args[0] == null)
       return null;
     DeletedEntityMarker.checkNotDeleted(args[0]);

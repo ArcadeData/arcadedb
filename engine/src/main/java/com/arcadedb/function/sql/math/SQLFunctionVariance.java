@@ -70,6 +70,21 @@ public class SQLFunctionVariance extends SQLAggregatedFunction {
     this.population = population;
   }
 
+  /**
+   * One argument, the value to accumulate. Inherited by stddev / stddevp / variancep, which differ only in how the
+   * accumulated moments are turned into a result. The Cypher names stdev / stdevp / stdev_samp / stdev_pop reach
+   * this through {@code SQLFunctionBridge}.
+   */
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {

@@ -34,7 +34,18 @@ public class TimestampFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 0;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 0;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    checkArity(args);
     return System.currentTimeMillis();
   }
 }

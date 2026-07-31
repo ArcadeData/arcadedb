@@ -39,9 +39,18 @@ public class CypherPointDistanceFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args == null || args.length != 2)
-      throw new CommandExecutionException("point.distance() requires exactly 2 arguments");
+    checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
     if (!(args[0] instanceof Map) || !(args[1] instanceof Map))

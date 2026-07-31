@@ -123,7 +123,7 @@ public final class CypherFunctionHelper {
       return "LIST<ANY>";
     if (value instanceof Map)
       return "MAP";
-    return value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase();
+    return value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
   }
 
   /**
@@ -198,28 +198,6 @@ public final class CypherFunctionHelper {
       return number;
 
     throw typeMismatch(functionName, NUMERIC_DOMAIN, value);
-  }
-
-  /**
-   * The one wording for "wrong number of arguments", shared by the parse-time check in {@code FunctionValidator} and by the
-   * functions' own runtime guards so that a client never sees the same mistake described two different ways. See issue
-   * #5484.
-   *
-   * @param functionName function name without parentheses, e.g. {@code "abs"}
-   * @param expectedArgs the accepted count, phrased for the message, e.g. {@code "1 argument"} or {@code "1-3 arguments"}
-   * @param actualArgs   how many arguments the call actually carried
-   */
-  public static String arityMessage(final String functionName, final String expectedArgs, final int actualArgs) {
-    return "Function '" + functionName + "' expects " + expectedArgs + " but got " + actualArgs;
-  }
-
-  /**
-   * The exception form of {@link #arityMessage}: a wrong argument count is the caller's mistake, so it is a client error
-   * (HTTP 400) rather than an internal failure.
-   */
-  public static CommandSemanticException arityMismatch(final String functionName, final String expectedArgs,
-      final int actualArgs) {
-    return new CommandSemanticException(arityMessage(functionName, expectedArgs, actualArgs));
   }
 
   /**

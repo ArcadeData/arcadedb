@@ -45,9 +45,18 @@ public class RoundFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 1 || args.length > 3)
-      throw CypherFunctionHelper.arityMismatch("round", "1-3 arguments", args.length);
+    checkArity(args);
 
     // Every argument is checked before null propagation decides the answer, so an out-of-domain precision or an unusable
     // mode is reported even when the value is null - the same ordering MathBinaryFunction uses, and the one the

@@ -74,7 +74,7 @@ public class SQLFunctionDuanSSSP extends SQLFunctionMathAbstract {
 
     final String weightFieldName = params.length > 2 && params[2] != null ? params[2].toString() : "weight";
     final Vertex.DIRECTION direction = params.length > 3 && params[3] != null ?
-        Vertex.DIRECTION.valueOf(params[3].toString().toUpperCase()) : Vertex.DIRECTION.OUT;
+        Vertex.DIRECTION.valueOf(params[3].toString().toUpperCase(Locale.ROOT)) : Vertex.DIRECTION.OUT;
 
     return executeDuanSSSP(sourceVertex, destinationVertex, weightFieldName, direction, context);
   }

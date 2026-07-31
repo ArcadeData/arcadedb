@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -33,9 +32,18 @@ public class DateTimeFromEpochFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("datetime.fromepoch() requires 2 arguments: seconds, nanoseconds");
+    checkArity(args);
     final long seconds = ((Number) args[0]).longValue();
     final long nanos = ((Number) args[1]).longValue();
     return CypherDateTime.fromEpoch(seconds, nanos);

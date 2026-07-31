@@ -41,8 +41,25 @@ public class OrNullFunction implements StatelessFunction {
     return name;
   }
 
+  /**
+   * The wrapped function's contract: {@code toIntegerOrNull()} takes exactly what {@code toInteger()} takes, it only
+   * differs in what it does with a value it cannot convert.
+   */
+  @Override
+  public int getMinArgs() {
+    return delegate.getMinArgs();
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return delegate.getMaxArgs();
+  }
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // Checked here rather than left to the delegate: the catch below turns every exception into null, so a wrong
+    // argument count would answer null instead of telling the caller what is wrong.
+    checkArity(args);
     try {
       return delegate.execute(args, context);
     } catch (final Exception e) {

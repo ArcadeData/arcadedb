@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
@@ -44,6 +45,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -282,7 +284,7 @@ public class CallStep extends AbstractExecutionStep {
     }
 
     // Handle built-in Cypher procedures
-    switch (procedureName.toLowerCase()) {
+    switch (procedureName.toLowerCase(Locale.ROOT)) {
       case "db.labels":
         return getLabels(context);
       case "db.relationshiptypes":
@@ -332,10 +334,11 @@ public class CallStep extends AbstractExecutionStep {
       return procedure.execute(args, inputRow, context)
           .map(this::convertProcedureResultToInternal)
           .iterator();
-    } catch (final IllegalArgumentException e) {
-      if (callClause.isOptional())
-        return null;
-      throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
+    } catch (final CommandParsingException clientError) {
+      // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
+      // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
+      // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
+      throw clientError;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
@@ -365,10 +368,11 @@ public class CallStep extends AbstractExecutionStep {
     try {
       function.validateArgs(args);
       return function.execute(args, context);
-    } catch (final IllegalArgumentException e) {
-      if (callClause.isOptional())
-        return null;
-      throw new CommandExecutionException("Error executing function: " + function.getName(), e);
+    } catch (final CommandParsingException clientError) {
+      // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
+      // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
+      // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
+      throw clientError;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;

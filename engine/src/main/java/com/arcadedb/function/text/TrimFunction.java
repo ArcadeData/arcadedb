@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -40,8 +40,24 @@ public class TrimFunction implements StatelessFunction {
     return "trim";
   }
 
+  /**
+   * One argument, or three. Two is inside the declared range but is not a form this function has, so it is rejected
+   * separately at the end of {@code execute()}; the range is what the parse-time gate needs and is deliberately the
+   * wider of the two statements.
+   */
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    checkArity(args);
     if (args.length == 1) {
       // Simple form: trim(source)
       if (args[0] == null)
@@ -71,7 +87,7 @@ public class TrimFunction implements StatelessFunction {
       };
     }
 
-    throw new CommandExecutionException("trim() requires 1 or 3 arguments");
+    throw FunctionArity.mismatch(getName(), "1 or 3 arguments", args.length);
   }
 
   static String stripLeading(final String source, final String trimChars) {
