@@ -68,6 +68,11 @@ import java.util.function.Consumer;
  * The visitor is called on every expression node including the root, parents before children. Traversal stops at a
  * subquery held as unparsed text ({@code EXISTS { ... }}, {@code COUNT { ... }}, {@code COLLECT { ... }}): those are
  * parsed on their own and validated then, and there is no AST here to walk.
+ * <p>
+ * <b>Add a case here when introducing an expression type that nests other expressions.</b> The {@code default} arms
+ * treat an unrecognised type as a leaf, which is right for a literal or a variable but silently hides whatever a new
+ * composite type contains: everything inside it would escape every check that runs through this walker, with nothing
+ * failing to say so.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -174,6 +174,25 @@ class FunctionInterfaceTest {
     fn.validateArgs(new Object[]{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"});
   }
 
+  /**
+   * "Unbounded" has two spellings - {@code Integer.MAX_VALUE} here and {@code -1} in the Cypher parser's registry -
+   * and the check has to accept both. Reading a {@code -1} literally would make every count exceed the maximum and
+   * reject every call, while the message went on describing the function as taking "at least N" (issue #5602).
+   */
+  @Test
+  void aMaximumSpelledAsMinusOneMeansUnlimitedToTheCheckAndToTheMessage() {
+    final Function fn = createFunction("varArgs", 1, -1);
+
+    fn.validateArgs(new Object[]{"a"});
+    fn.validateArgs(new Object[]{"a", "b", "c", "d", "e"});
+    assertThat(FunctionArity.describe(1, -1)).isEqualTo("at least 1 argument");
+    assertThat(FunctionArity.describe(1, Integer.MAX_VALUE)).isEqualTo("at least 1 argument");
+
+    assertThatThrownBy(() -> fn.validateArgs(new Object[]{}))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessage("Function 'varArgs' expects at least 1 argument but got 0");
+  }
+
   private Function createFunction(final String name, final int minArgs, final int maxArgs) {
     return new Function() {
       @Override

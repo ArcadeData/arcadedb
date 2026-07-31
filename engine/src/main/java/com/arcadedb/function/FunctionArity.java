@@ -39,6 +39,19 @@ public final class FunctionArity {
   }
 
   /**
+   * Resolves the two spellings of "no limit" to one number.
+   * <p>
+   * The Cypher parser's registry writes an unbounded maximum as {@code -1}, while {@link Function#getMaxArgs} defaults
+   * to {@link Integer#MAX_VALUE}. Every caller that compares against a maximum has to go through here: a raw
+   * {@code count > maxArgs} against a {@code -1} rejects <em>every</em> call, since any count exceeds {@code -1}, while
+   * {@link #describe} would still be phrasing it as "at least N". Accepting both spellings in one place is what keeps
+   * the check and the message from disagreeing.
+   */
+  public static int effectiveMax(final int maxArgs) {
+    return maxArgs == -1 ? Integer.MAX_VALUE : maxArgs;
+  }
+
+  /**
    * Phrases an accepted argument count, e.g. {@code "1 argument"}, {@code "2-3 arguments"} or
    * {@code "at least 1 argument"}.
    *
@@ -46,11 +59,12 @@ public final class FunctionArity {
    * @param maxArgs most arguments accepted; {@code -1} and {@link Integer#MAX_VALUE} both mean "no limit"
    */
   public static String describe(final int minArgs, final int maxArgs) {
-    if (minArgs == maxArgs)
+    final int max = effectiveMax(maxArgs);
+    if (minArgs == max)
       return minArgs + " argument" + (minArgs == 1 ? "" : "s");
-    if (maxArgs == -1 || maxArgs == Integer.MAX_VALUE)
+    if (max == Integer.MAX_VALUE)
       return "at least " + minArgs + " argument" + (minArgs == 1 ? "" : "s");
-    return minArgs + "-" + maxArgs + " arguments";
+    return minArgs + "-" + max + " arguments";
   }
 
   /**
