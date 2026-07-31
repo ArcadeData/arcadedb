@@ -135,6 +135,46 @@ went through the same authentication, profile and permission gates.
 The guards sit on the request-parsing path and cost one `instanceof` per member, replacing an accessor call
 that did strictly more work.
 
+## Review
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5623
+
+### Cycle 1 - `216cfe73a`
+
+No `claude` review arrived within the 15-minute window; only `codacy-production[bot]` reported (0 issues,
+0 complexity). While that cycle was waiting, #5619 merged to main, so `origin/main` was merged in and the
+overlap resolved as described above. That produced `61bb20fa5`.
+
+### Cycle 2 - `61bb20fa5`
+
+`claude[bot]` reviewed: LGTM, with three observations marked non-blocking. All three were assessed and none
+resulted in a code change. Nothing was deferred.
+
+**1. "`resourcesRead` hardcodes the catch message while `toolsCall`/`promptsGet` use `e.getMessage()`" -
+declined, premise is inverted.** Three of the four guards hardcode their message (`dispatch`,
+`resourcesRead`, `toolsCall`); only `promptsGet` relays `e.getMessage()`. The split is structural rather
+than accidental:
+
+- A guard wrapped tightly around member reads states the expected shape, because its catch also covers
+  Gson's `IllegalStateException` / `UnsupportedOperationException` from the object-typed read beside it.
+  Those carry internal text such as `Not a JSON Object: ["a"]`, so relaying them would both read as noise
+  and echo fragments of the request payload back to the client.
+- `promptsGet`'s catch is the broad handler one: it also covers `MCPPrompts.get` raising
+  `IllegalArgumentException` for an unknown prompt, where the message is the whole point of the answer.
+
+Aligning `resourcesRead` to `e.getMessage()` would make it inconsistent with the two guards it sits next to
+in order to match the one that is a different kind of catch. The messages are also #5619's, unchanged here
+on purpose.
+
+**2. "`promptsGet`'s catch now also absorbs `IllegalArgumentException` from `MCPPrompts.get`" - no action,
+and the review agrees.** That catch already listed `IllegalArgumentException` before this change, so the
+mapping of unknown-prompt to `-32602` is pre-existing and untouched.
+
+**3. "The doc still cites pre-merge counts (30/276) while the PR body says 36/282" - declined, already
+correct.** The committed doc carries both, deliberately: the 30/276 figures are the before-and-after of the
+fix itself and are what demonstrate the tests failed first, while the post-merge 36/282 figures follow on
+the next two lines.
+
 ## Follow-ups
 
 - PR #5622 is still open and fixes `formatArgs`' read of `arguments.key` by catching. It does not conflict
