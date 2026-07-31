@@ -161,13 +161,24 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
         .hasMessageContaining("DECIMAL");
   }
 
+  /**
+   * Every datetime precision, not only the base type. {@code Type.getJavaImplementation} resolves the configured
+   * implementation for {@code DATE} and {@code DATETIME} alone and answers the static {@code LocalDateTime} default
+   * for the three precision subtypes, while the deserializer honours the configured class for all four - so asking it
+   * for the read-back class reported every subtype zone-free and let the configuration through.
+   */
   @Test
-  void aZoneCarryingDateTimeImplementationIsRefused() {
+  void aZoneCarryingDateTimeImplementationIsRefusedAtEveryPrecision() {
     useDateTimeImplementation(ZonedDateTime.class);
-    createIndexedType("ZonedPart", "DATETIME");
-    assertThatThrownBy(() -> partition("ZonedPart"))
-        .as("only the instant is stored, so the writer's zone cannot be recovered")
-        .hasMessageContaining("DATETIME");
+
+    for (final String propertyType : new String[] { "DATETIME", "DATETIME_SECOND", "DATETIME_MICROS",
+        "DATETIME_NANOS" }) {
+      final String typeName = "Zoned" + propertyType;
+      createIndexedType(typeName, propertyType);
+      assertThatThrownBy(() -> partition(typeName))
+          .as("%s: only the instant is stored, so the writer's zone cannot be recovered", propertyType)
+          .hasMessageContaining(propertyType);
+    }
   }
 
   @Test
@@ -235,6 +246,24 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
         .as("six spellings of one instant against a UNIQUE index")
         .isEqualTo(1);
     assertThat(database.countType("ZoneDrift", false)).isEqualTo(1);
+  }
+
+  /**
+   * The same proof one precision down. Before the read-back class was resolved for the subtypes, a
+   * {@code DATETIME_NANOS} partition key under {@code ZonedDateTime} was accepted outright - no runtime setting had
+   * to change to get there - and admitted 3 of these 6 writes of a single instant.
+   */
+  @Test
+  void aUniqueIndexHoldsOnASubPrecisionDateTimePartitionKey() {
+    useDateTimeImplementation(Date.class);
+    createIndexedType("NanoDrift", "DATETIME_NANOS");
+    partition("NanoDrift");
+
+    useDateTimeImplementation(ZonedDateTime.class);
+
+    assertThat(insertAll("NanoDrift", oneInstantInSixZones()))
+        .as("six spellings of one instant against a UNIQUE DATETIME_NANOS index")
+        .isEqualTo(1);
   }
 
   /** Control for the above: the same six writes on a type that never prunes. */

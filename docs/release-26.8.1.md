@@ -567,9 +567,10 @@ identical `BINARY` values and 3 of 6 spellings of one instant:
 - **`DECIMAL`** - `BigDecimal.hashCode` folds in the scale, so `1.1` and `1.10` hash apart while the index compares
   them equal;
 - **`DATE`/`DATETIME` under a zone-carrying `dateTimeImplementation`** (`ZonedDateTime`, `Calendar`) - only the
-  instant reaches disk, so the writer's zone is hashed at placement and gone on the way back. The zone-free
-  implementations (`java.util.Date`, `Instant`, `LocalDate`, `LocalDateTime`) round-trip unchanged and are
-  unaffected.
+  instant reaches disk, so the writer's zone is hashed at placement and gone on the way back. This covers every
+  datetime precision (`DATETIME_SECOND`, `DATETIME_MICROS`, `DATETIME_NANOS`), which the deserializer reads back
+  through the configured implementation just like the base type. The zone-free implementations (`java.util.Date`,
+  `Instant`, `LocalDate`, `LocalDateTime`) round-trip unchanged and are unaffected.
 
 Such a partition is now never pruned, which restores the constraint by making the uniqueness check fan out, and
 **`ALTER TYPE ... BucketSelectionStrategy partitioned(...)` refuses the configuration outright** rather than

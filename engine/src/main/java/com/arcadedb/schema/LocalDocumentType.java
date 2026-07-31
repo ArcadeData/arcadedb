@@ -747,6 +747,8 @@ public class LocalDocumentType implements DocumentType {
       if (selectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
         reportPartitionSuitability(partitioned);
     } catch (final RuntimeException e) {
+      // Restoring the reference is the whole rollback: previous was bound to this type when it was assigned, and
+      // nothing here unbinds it, so re-invoking previous.setType(this) would be a no-op.
       this.bucketSelectionStrategy = previous;
       throw e;
     }

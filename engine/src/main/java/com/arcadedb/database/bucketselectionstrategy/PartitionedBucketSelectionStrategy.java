@@ -19,6 +19,7 @@
 package com.arcadedb.database.bucketselectionstrategy;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -297,10 +298,35 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
   private static boolean hashAgreesWithIndexKeyIdentity(final Database database, final Type propertyType) {
     return switch (propertyType) {
       case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, STRING, LINK -> true;
-      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS ->
-          isZoneFree(propertyType.getJavaImplementation(database));
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> isZoneFree(readBackClass(database, propertyType));
       default -> false;
     };
+  }
+
+  /**
+   * The class the binary deserializer will hand a temporal property back as, which is what decides whether the zone a
+   * record was placed under survives a round trip.
+   * <p>
+   * Asked of the serializer directly rather than through {@link Type#getJavaImplementation}, which resolves the
+   * configured implementation for {@code DATE} and {@code DATETIME} only and answers the static default
+   * ({@code LocalDateTime}) for the three precision subtypes. {@code BinarySerializer.deserializeValue} passes the
+   * configured {@code dateTimeImplementation} for all four datetime binary types, so reading the subtypes through that
+   * helper would report every one of them zone-free and admit exactly the configuration this guard exists to catch -
+   * measured: a {@code DATETIME_NANOS} partition key under {@code ZonedDateTime} let 3 of 6 writes of a single instant
+   * into a UNIQUE index.
+   * <p>
+   * {@code getJavaImplementation} is left alone deliberately. Its other caller is the write path's
+   * {@code convertValueToSchemaType}, where the same mismatch is inert - {@code Type.convert} returns an
+   * already-temporal value untouched, so the conversion target is never consulted for one - and changing it would
+   * alter the class a subtype property converts a String or a Long to, a wider behaviour change than this guard needs.
+   */
+  private static Class<?> readBackClass(final Database database, final Type propertyType) {
+    if (!(database instanceof DatabaseInternal internal))
+      return propertyType.getJavaImplementation(database);
+
+    return propertyType == Type.DATE ?
+        internal.getSerializer().getDateImplementation() :
+        internal.getSerializer().getDateTimeImplementation();
   }
 
   private static boolean isZoneFree(final Class<?> implementation) {
