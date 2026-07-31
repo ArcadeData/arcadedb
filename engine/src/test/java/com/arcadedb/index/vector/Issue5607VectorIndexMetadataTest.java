@@ -28,6 +28,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -133,23 +135,28 @@ class Issue5607VectorIndexMetadataTest extends TestHelper {
   }
 
   /**
-   * Product quantization needs codebooks trained from the data, and the dialog offers it on a type that
-   * is usually still empty. Creating the index and filling it afterwards has to work end to end, or the
-   * option does not belong in the dialog at all.
+   * Every quantization the dialog offers has to survive the shape the dialog produces: an index created
+   * on a type that is still empty, filled afterwards. PRODUCT is the hard case (its codebooks are trained
+   * from the data, and there is none at creation time), but an option that only fails on the first insert
+   * would be no better than the bug this issue is about, so each one is exercised end to end.
    */
-  @Test
-  void productQuantizationIndexCreatedOnAnEmptyTypeAcceptsAndSearchesVectors() {
+  @ParameterizedTest
+  @ValueSource(strings = { "NONE", "INT8", "BINARY", "PRODUCT" })
+  void everyQuantizationOfferedByTheDialogIndexesAndSearchesVectors(final String quantization) {
+    final String typeName = "QDoc" + quantization;
+
     database.transaction(() -> {
-      database.command("sql", "CREATE VERTEX TYPE PqDoc");
-      database.command("sql", "CREATE PROPERTY PqDoc.embedding ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE VERTEX TYPE " + typeName);
+      database.command("sql", "CREATE PROPERTY " + typeName + ".embedding ARRAY_OF_FLOATS");
     });
 
-    database.command("sql", "CREATE INDEX ON `PqDoc` (`embedding`) LSM_VECTOR METADATA "
-        + "{\"dimensions\":8,\"similarity\":\"COSINE\",\"maxConnections\":32,\"beamWidth\":100,\"quantization\":\"PRODUCT\"}");
+    database.command("sql", "CREATE INDEX ON `" + typeName + "` (`embedding`) LSM_VECTOR METADATA "
+        + "{\"dimensions\":8,\"similarity\":\"COSINE\",\"maxConnections\":32,\"beamWidth\":100,\"quantization\":\""
+        + quantization + "\"}");
 
     database.transaction(() -> {
       for (int i = 0; i < 50; i++) {
-        final MutableVertex v = database.newVertex("PqDoc");
+        final MutableVertex v = database.newVertex(typeName);
         final float[] vector = new float[8];
         for (int j = 0; j < 8; j++)
           vector[j] = (i + j) / 64f;
@@ -159,9 +166,9 @@ class Issue5607VectorIndexMetadataTest extends TestHelper {
     });
 
     final ResultSet rs = database.query("sql",
-        "SELECT distance FROM (SELECT expand(vectorNeighbors('PqDoc[embedding]', ?, 5)))",
+        "SELECT distance FROM (SELECT expand(vectorNeighbors('" + typeName + "[embedding]', ?, 5)))",
         (Object) new float[] { 0f, 1 / 64f, 2 / 64f, 3 / 64f, 4 / 64f, 5 / 64f, 6 / 64f, 7 / 64f });
-    assertThat(rs.stream().count()).isPositive();
+    assertThat(rs.stream().count()).as("quantization=%s must answer a search", quantization).isPositive();
   }
 
   @Test

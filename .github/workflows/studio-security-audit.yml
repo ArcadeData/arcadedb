@@ -41,7 +41,10 @@ jobs:
       - name: "Setup Node.js"
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "18"
+          # Must match the node.version pinned in studio/pom.xml: the "Test Build Process" step below runs
+          # the same webpack build Maven runs, and copy-webpack-plugin 14 calls Array.prototype.toSorted,
+          # which does not exist before Node 20. On Node 18 the build died with "toSorted is not a function".
+          node-version: "20"
           cache: "npm"
           cache-dependency-path: "studio/package-lock.json"
 

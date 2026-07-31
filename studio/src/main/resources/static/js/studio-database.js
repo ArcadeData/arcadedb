@@ -1300,13 +1300,16 @@ function createProperty(typeName) {
 function validateCreateIndexOptions(opts) {
   let properties = opts.properties || [];
 
+  // The algorithm-specific arity rules come first, so an LSM_VECTOR or LSM_SPARSE_VECTOR submitted with
+  // no property at all gets the message that names its own rule rather than the generic one.
   if (opts.algorithm == "LSM_SPARSE_VECTOR" && properties.length != 2)
     return "LSM_SPARSE_VECTOR requires both an indices property and a weights property";
+
+  if (opts.algorithm == "LSM_VECTOR" && properties.length != 1) return "LSM_VECTOR requires exactly one property";
 
   if (properties.length == 0) return "At least one property is required";
 
   if (opts.algorithm == "LSM_VECTOR") {
-    if (properties.length != 1) return "LSM_VECTOR requires exactly one property";
     // The engine has no usable default for the vector width: it compares every candidate vector
     // length against it, so an index created without it never indexes anything (issue #5607).
     let dimensions = opts.metadata == null ? null : opts.metadata.dimensions;

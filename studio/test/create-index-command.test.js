@@ -179,6 +179,16 @@ test("LSM_VECTOR accepts exactly one property", () => {
     }),
     /one property/
   );
+
+  // The algorithm's own rule wins over the generic "at least one property is required".
+  assert.match(
+    validateCreateIndexOptions({ typeName: "Doc", algorithm: "LSM_VECTOR", properties: [], metadata: { dimensions: 4 } }),
+    /one property/
+  );
+  assert.match(
+    validateCreateIndexOptions({ typeName: "Doc", algorithm: "LSM_SPARSE_VECTOR", properties: [], metadata: {} }),
+    /indices property and a weights property/
+  );
 });
 
 test("LSM_SPARSE_VECTOR keeps emitting its optional metadata and requires both properties", () => {
