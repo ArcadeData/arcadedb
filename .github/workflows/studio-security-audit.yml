@@ -82,7 +82,10 @@ jobs:
             const floors = {
               jquery: [3, "jQuery 1.x/2.x carry unpatched XSS advisories"],
               bootstrap: [5, "Bootstrap 4.x and earlier are EOL with known XSS issues"],
-              sweetalert2: [11, "SweetAlert2 below 11 is unmaintained"]
+              sweetalert2: [11, "SweetAlert2 below 11 is unmaintained"],
+              // This is where a per-package minimum version can actually be enforced: the dependency-review action has
+              // no min-version option, so the rules the (inert) config file used to list live here (issue #5639).
+              "datatables.net": [2, "DataTables 1.x has known XSS issues and is superseded"]
             };
             let failed = false;
             for (const [name, [floor, reason]] of Object.entries(floors)) {
@@ -167,15 +170,13 @@ jobs:
       - name: "Dependency Review"
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          fail-on-severity: moderate
-          # No allow-dependencies-licenses here: that input takes package URLs of dependencies to exempt
-          # from the license check ("pkg:npm/foo@1.2.3"), not a list of acceptable licenses, so the SPDX
-          # ids that used to sit here failed the action's own input validation ("package-url must start
-          # with pkg:") and the job errored out before reviewing anything. The acceptable-license side is
-          # covered by deny-licenses below and by the `license-checker --onlyAllow` step of this workflow;
-          # an allow-list cannot be used here anyway, since the action rejects allow-licenses and
-          # deny-licenses together and the project's allowed set is wider than any short list.
-          deny-licenses: "GPL-2.0, GPL-3.0, AGPL-3.0"
+          # The whole policy (severity, scopes, denied licences, denied packages) lives in the config file, which is
+          # written in the flat schema the action actually reads. Nothing else is passed here on purpose: an inline
+          # input OVERRIDES the file (readConfig merges `{...externalConfig, ...inlineConfig}`), so a duplicated
+          # fail-on-severity or deny-licenses would silently shadow the file and split the policy in two (issue #5639).
+          # In particular, no allow-dependencies-licenses: that input takes package URLs of dependencies to exempt from
+          # the license check ("pkg:npm/foo@1.2.3"), not a list of acceptable licenses, so the SPDX ids that used to sit
+          # here failed the action's own input validation and the job errored out before reviewing anything.
           config-file: ".github/dependency-review-config.yml"
 
   codeql-analysis:

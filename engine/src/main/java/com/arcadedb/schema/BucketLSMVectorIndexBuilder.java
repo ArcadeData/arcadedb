@@ -23,38 +23,23 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
-import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 /**
  * Builder class for bucket indexes of type lsm vector.
+ * <p>
+ * Every setting lives on the {@link LSMVectorIndexMetadata} this builder carries, and never on a field of its own: the
+ * historical parallel field list silently dropped {@code efSearch}, {@code inactivityRebuildTimeoutMs},
+ * {@code neighborOverflowFactor} and {@code alphaDiversityRelaxation} on the way from the type-level builder to the
+ * index, because a setting added to the metadata had to be remembered here too (issue #5639).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
-  public int                      dimensions;
-  public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
-  public VectorQuantizationType   quantizationType         = VectorQuantizationType.NONE;
-  public VectorEncoding           encoding                 = VectorEncoding.FLOAT32;
-  /** Vamana per-layer graph degree (JVector {@code M}); see {@link LSMVectorIndexMetadata#maxConnections}. Default 32 (issue #5352). */
-  public int                      maxConnections           = 32;
-  public int                      beamWidth                = 100;
-  public float                    neighborOverflowFactor   = 1.2f;
-  public float                    alphaDiversityRelaxation = 1.2f;
-  public String                   idPropertyName           = "id";
-  public int                      locationCacheSize        = -1;  // -1 = use global default
-  public int                      graphBuildCacheSize      = -1; // -1 = use global default
-  public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
-  public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
-  public boolean                  addHierarchy             = false;
-  // Product Quantization parameters
-  public int                      pqSubspaces              = -1;   // -1 = auto (dimensions/4, capped at 512)
-  public int                      pqClusters               = 256;  // Clusters per subspace (K)
-  public boolean                  pqCenterGlobally         = true; // Global centering before PQ
-  public int                      pqTrainingLimit          = 128000; // Max training vectors
-
-  protected BucketLSMVectorIndexBuilder(DatabaseInternal database, String typeName, String bucketName,
-      String[] propertyNames) {
+  protected BucketLSMVectorIndexBuilder(final DatabaseInternal database, final String typeName, final String bucketName,
+      final String[] propertyNames) {
     super(database, typeName, bucketName, propertyNames);
+    this.indexType = Schema.INDEX_TYPE.LSM_VECTOR;
+    this.metadata = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
   }
 
   protected BucketLSMVectorIndexBuilder(final BucketIndexBuilder copyFrom) {
@@ -71,6 +56,14 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
     this.keyTypes = copyFrom.keyTypes;
     this.batchSize = copyFrom.batchSize;
     this.maxAttempts = copyFrom.maxAttempts;
+    this.metadata = new LSMVectorIndexMetadata(copyFrom.typeName, copyFrom.propertyNames, -1);
+  }
+
+  /**
+   * Returns the vector configuration this builder carries. The index factory reads every setting from here.
+   */
+  public LSMVectorIndexMetadata getVectorMetadata() {
+    return vectorMetadata();
   }
 
   /**
@@ -79,7 +72,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param dimensions the number of dimensions
    */
   public BucketLSMVectorIndexBuilder withDimensions(final int dimensions) {
-    this.dimensions = dimensions;
+    vectorMetadata().dimensions = dimensions;
     return this;
   }
 
@@ -90,12 +83,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param similarity the similarity function name
    */
   public BucketLSMVectorIndexBuilder withSimilarity(final String similarity) {
-    try {
-      this.similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase());
-      return this;
-    } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid similarity function: " + similarity + ". Supported values: COSINE, DOT_PRODUCT, EUCLIDEAN");
-    }
+    vectorMetadata().setSimilarity(similarity);
+    return this;
   }
 
   /**
@@ -108,9 +97,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @see LSMVectorIndexMetadata#maxConnections
    */
   public BucketLSMVectorIndexBuilder withMaxConnections(final int maxConnections) {
-    if (maxConnections < 1)
-      throw new IllegalArgumentException("maxConnections must be at least 1");
-    this.maxConnections = maxConnections;
+    vectorMetadata().setMaxConnections(maxConnections);
     return this;
   }
 
@@ -122,9 +109,17 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param beamWidth the beam width
    */
   public BucketLSMVectorIndexBuilder withBeamWidth(final int beamWidth) {
-    if (beamWidth < 1)
-      throw new IllegalArgumentException("beamWidth must be at least 1");
-    this.beamWidth = beamWidth;
+    vectorMetadata().setBeamWidth(beamWidth);
+    return this;
+  }
+
+  /**
+   * Sets the search-time beam width. Higher values improve recall at the cost of latency. Default: 100.
+   *
+   * @param efSearch the search beam width
+   */
+  public BucketLSMVectorIndexBuilder withEfSearch(final int efSearch) {
+    vectorMetadata().setEfSearch(efSearch);
     return this;
   }
 
@@ -137,9 +132,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param neighborOverflowFactor the neighbor overflow factor
    */
   public BucketLSMVectorIndexBuilder withNeighborOverflowFactor(final float neighborOverflowFactor) {
-    if (neighborOverflowFactor < 1.0f)
-      throw new IllegalArgumentException("neighborOverflowFactor must be at least 1.0");
-    this.neighborOverflowFactor = neighborOverflowFactor;
+    vectorMetadata().setNeighborOverflowFactor(neighborOverflowFactor);
     return this;
   }
 
@@ -152,9 +145,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param alphaDiversityRelaxation the alpha diversity relaxation factor
    */
   public BucketLSMVectorIndexBuilder withAlphaDiversityRelaxation(final float alphaDiversityRelaxation) {
-    if (alphaDiversityRelaxation < 1.0f)
-      throw new IllegalArgumentException("alphaDiversityRelaxation must be at least 1.0");
-    this.alphaDiversityRelaxation = alphaDiversityRelaxation;
+    vectorMetadata().setAlphaDiversityRelaxation(alphaDiversityRelaxation);
     return this;
   }
 
@@ -166,7 +157,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param idPropertyName the ID property name
    */
   public BucketLSMVectorIndexBuilder withIdProperty(final String idPropertyName) {
-    this.idPropertyName = idPropertyName;
+    vectorMetadata().idPropertyName = idPropertyName;
     return this;
   }
 
@@ -179,7 +170,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param quantizationType the quantization type
    */
   public BucketLSMVectorIndexBuilder withQuantization(final VectorQuantizationType quantizationType) {
-    this.quantizationType = quantizationType;
+    vectorMetadata().quantizationType = quantizationType;
     return this;
   }
 
@@ -189,12 +180,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param quantization the quantization type name (NONE, INT8, BINARY, PRODUCT)
    */
   public BucketLSMVectorIndexBuilder withQuantization(final String quantization) {
-    try {
-      this.quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
-      return this;
-    } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY, PRODUCT");
-    }
+    vectorMetadata().setQuantization(quantization);
+    return this;
   }
 
   /**
@@ -204,7 +191,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param encoding the vector encoding
    */
   public BucketLSMVectorIndexBuilder withEncoding(final VectorEncoding encoding) {
-    this.encoding = encoding;
+    vectorMetadata().encoding = encoding;
     return this;
   }
 
@@ -214,12 +201,8 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param encoding the encoding name
    */
   public BucketLSMVectorIndexBuilder withEncoding(final String encoding) {
-    try {
-      this.encoding = VectorEncoding.fromString(encoding);
-      return this;
-    } catch (final IllegalArgumentException e) {
-      throw new IndexException(e.getMessage(), e);
-    }
+    vectorMetadata().setEncoding(encoding);
+    return this;
   }
 
   /**
@@ -231,9 +214,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param pqSubspaces the number of subspaces (M)
    */
   public BucketLSMVectorIndexBuilder withPQSubspaces(final int pqSubspaces) {
-    if (pqSubspaces < 1)
-      throw new IllegalArgumentException("pqSubspaces must be at least 1");
-    this.pqSubspaces = pqSubspaces;
+    vectorMetadata().setPQSubspaces(pqSubspaces);
     return this;
   }
 
@@ -246,13 +227,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param pqClusters the number of clusters per subspace (K)
    */
   public BucketLSMVectorIndexBuilder withPQClusters(final int pqClusters) {
-    if (pqClusters < 1)
-      throw new IllegalArgumentException("pqClusters must be at least 1");
-    // PQ codes are one byte per subspace, so more than 256 clusters cannot be encoded: reject it at index creation time
-    // instead of letting the graph build fail later, which would leave the index without a graph (issue #5417)
-    if (pqClusters > 256)
-      throw new IllegalArgumentException("pqClusters cannot exceed 256 (PQ codes are one byte per subspace)");
-    this.pqClusters = pqClusters;
+    vectorMetadata().setPQClusters(pqClusters);
     return this;
   }
 
@@ -265,7 +240,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param pqCenterGlobally true to globally center vectors, false otherwise
    */
   public BucketLSMVectorIndexBuilder withPQCenterGlobally(final boolean pqCenterGlobally) {
-    this.pqCenterGlobally = pqCenterGlobally;
+    vectorMetadata().pqCenterGlobally = pqCenterGlobally;
     return this;
   }
 
@@ -278,96 +253,49 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    * @param pqTrainingLimit the maximum number of training vectors
    */
   public BucketLSMVectorIndexBuilder withPQTrainingLimit(final int pqTrainingLimit) {
-    if (pqTrainingLimit < 1)
-      throw new IllegalArgumentException("pqTrainingLimit must be at least 1");
-    this.pqTrainingLimit = pqTrainingLimit;
+    vectorMetadata().setPQTrainingLimit(pqTrainingLimit);
     return this;
   }
 
   @Override
   public BucketLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
-    // Also store in base class for propagation through createBucketIndex()
-    super.withMetadata(metadata);
-    if (metadata instanceof LSMVectorIndexMetadata v) {
-      this.dimensions = v.dimensions;
-      withSimilarity(v.similarityFunction.name());
-      this.quantizationType = v.quantizationType;
-      this.encoding = v.encoding;
-      this.maxConnections = v.maxConnections;
-      this.beamWidth = v.beamWidth;
-      this.neighborOverflowFactor = v.neighborOverflowFactor;
-      this.alphaDiversityRelaxation = v.alphaDiversityRelaxation;
-      this.idPropertyName = v.idPropertyName;
-      // Phase 2: New configuration options
-      this.locationCacheSize = v.locationCacheSize;
-      this.graphBuildCacheSize = v.graphBuildCacheSize;
-      this.mutationsBeforeRebuild = v.mutationsBeforeRebuild;
-      this.storeVectorsInGraph = v.storeVectorsInGraph;
-      this.addHierarchy = v.addHierarchy;
-      // Product Quantization parameters
-      this.pqSubspaces = v.pqSubspaces;
-      this.pqClusters = v.pqClusters;
-      this.pqCenterGlobally = v.pqCenterGlobally;
-      this.pqTrainingLimit = v.pqTrainingLimit;
+    if (metadata instanceof LSMVectorIndexMetadata) {
+      // Adopt the type-level instance instead of copying it field by field: that copy is what dropped four settings
+      // on the floor (issue #5639). The index factory takes a copy() so the per-bucket index does not share the
+      // type-level instance's per-index runtime state.
+      super.withMetadata(metadata);
+    } else if (metadata != null) {
+      // A plain metadata carries no vector setting, only the shared bits: keep this builder's configuration and graft
+      // those on, which is what the historical field-by-field copy did for a non-vector metadata.
+      final LSMVectorIndexMetadata vectorMetadata = vectorMetadata();
+      vectorMetadata.typeName = metadata.typeName;
+      vectorMetadata.propertyNames = metadata.propertyNames;
+      vectorMetadata.associatedBucketId = metadata.associatedBucketId;
+      vectorMetadata.collations = metadata.collations;
+      vectorMetadata.typeIndexName = metadata.typeIndexName;
     }
     return this;
   }
 
+  /**
+   * Configures the builder from the {@code METADATA} clause of {@code CREATE INDEX}. Unknown keys are rejected rather
+   * than dropped (issue #5639).
+   *
+   * @param metadata the METADATA clause
+   */
   public void withMetadata(final JSONObject metadata) {
-    if (metadata.has("dimensions"))
-      this.dimensions = metadata.getInt("dimensions");
+    vectorMetadata().fromUserMetadata(metadata, Schema.INDEX_TYPE.LSM_VECTOR);
+  }
 
-    if (metadata.has("similarity"))
-      withSimilarity(metadata.getString("similarity"));
-
-    if (metadata.has("quantization"))
-      withQuantization(metadata.getString("quantization"));
-
-    if (metadata.has("encoding"))
-      withEncoding(metadata.getString("encoding"));
-
-    if (metadata.has("maxConnections"))
-      this.maxConnections = metadata.getInt("maxConnections");
-
-    if (metadata.has("beamWidth"))
-      this.beamWidth = metadata.getInt("beamWidth");
-
-    if (metadata.has("neighborOverflowFactor"))
-      this.neighborOverflowFactor = ((Number) metadata.get("neighborOverflowFactor")).floatValue();
-
-    if (metadata.has("alphaDiversityRelaxation"))
-      this.alphaDiversityRelaxation = ((Number) metadata.get("alphaDiversityRelaxation")).floatValue();
-
-    if (metadata.has("idPropertyName"))
-      this.idPropertyName = metadata.getString("idPropertyName");
-
-    // Phase 2: New configuration options
-    if (metadata.has("locationCacheSize"))
-      this.locationCacheSize = metadata.getInt("locationCacheSize");
-
-    if (metadata.has("graphBuildCacheSize"))
-      this.graphBuildCacheSize = metadata.getInt("graphBuildCacheSize");
-
-    if (metadata.has("mutationsBeforeRebuild"))
-      this.mutationsBeforeRebuild = metadata.getInt("mutationsBeforeRebuild");
-
-    if (metadata.has("storeVectorsInGraph"))
-      this.storeVectorsInGraph = metadata.getBoolean("storeVectorsInGraph");
-
-    if (metadata.has("addHierarchy"))
-      this.addHierarchy = metadata.getBoolean("addHierarchy");
-
-    // Product Quantization parameters
-    if (metadata.has("pqSubspaces"))
-      this.pqSubspaces = metadata.getInt("pqSubspaces");
-
-    if (metadata.has("pqClusters"))
-      withPQClusters(metadata.getInt("pqClusters"));
-
-    if (metadata.has("pqCenterGlobally"))
-      this.pqCenterGlobally = metadata.getBoolean("pqCenterGlobally");
-
-    if (metadata.has("pqTrainingLimit"))
-      this.pqTrainingLimit = metadata.getInt("pqTrainingLimit");
+  /**
+   * Returns {@code metadata} narrowed to {@link LSMVectorIndexMetadata}. Both constructors install one, so the guard
+   * only turns a metadata swapped in from outside into a clear error rather than a {@link ClassCastException} blamed on
+   * an unrelated line.
+   */
+  private LSMVectorIndexMetadata vectorMetadata() {
+    if (metadata instanceof LSMVectorIndexMetadata m)
+      return m;
+    throw new IndexException("BucketLSMVectorIndexBuilder.metadata is not an LSMVectorIndexMetadata (got "
+        + (metadata == null ? "null" : metadata.getClass().getSimpleName()) + ")");
   }
 }

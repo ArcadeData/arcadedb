@@ -1024,4 +1024,54 @@ projection names, while the body's copy passed the incoming scope through.
 > where before the `WITH *` made the engine forget `p` was a path and the query failed at runtime instead. A
 > projection that names what it keeps is unaffected - `WITH 1 AS p` still stops `p` being a path.
 
+## An index `METADATA` key is now either applied or reported, and a reopened vector index keeps its metric
+
+`CREATE INDEX ... METADATA {...}` read the keys it knew with `if (json.has(...))` and dropped the rest, on every
+index type except `GEOSPATIAL` ([#5639](https://github.com/ArcadeData/arcadedb/issues/5639)). A typo was therefore
+indistinguishable from a correct clause:
+
+```sql
+-- succeeded, reported success, and built a COSINE index
+CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {"dimensions": 384, "similarty": "EUCLIDEAN"}
+```
+
+An unknown key is now refused with the list of the ones the index type accepts, as an HTTP 400. This holds for
+`LSM_VECTOR`, `LSM_SPARSE_VECTOR` and `FULL_TEXT`; `GEOSPATIAL` already behaved this way, and an index type with no
+settings at all already refused a `METADATA` clause outright.
+
+Four dense-vector settings were unreachable behind that silence, and are now settable and persisted:
+
+- **`efSearch`** and **`inactivityRebuildTimeoutMs`** were never read from the clause, so the search-time
+  recall/latency knob could only be set per query. Two of ArcadeDB's own tests believed they had disabled the
+  inactivity rebuild through `METADATA` and had not.
+- **`neighborOverflowFactor`** and **`alphaDiversityRelaxation`** were read, then lost one hop later: the settings
+  travelled from the type-level builder to the per-bucket index through a hand-written field-by-field copy, and that
+  copy had fallen behind. `TRUNCATE TYPE` and `REBUILD INDEX` lost the same four settings when re-creating an index.
+  Every setting now travels as one `LSMVectorIndexMetadata`, so there is no second field list to keep in sync.
+
+**A `EUCLIDEAN` or `DOT_PRODUCT` vector index came back up as `COSINE` after a restart.** The persisted definition
+names the metric `similarityFunction` while the reader looked only for `similarity`, so nothing restored it and every
+search after a reopen scored with the wrong metric against a graph built with the right one. Both spellings are read
+now. The persisted definition also carries every remaining knob, so a setting no longer silently reverts to its
+default on the next restart.
+
+Finally, restoring a vector index from an exported definition (`IMPORT DATABASE` of a JSONL dump) goes through a
+distinct entry point: an exported definition legitimately carries structural keys - `type`, `bucket`, `version`, ... -
+that the `METADATA`-clause reader has to reject as typos.
+
+## `.github/dependency-review-config.yml` expresses the policy the action actually reads
+
+The file was organised into `security:`, `licensing:`, `packages:`, `changes:`, `exemptions:`, `notifications:`,
+`advanced:` and `reporting:` sections. `actions/dependency-review-action` takes a **flat** configuration and silently
+drops every key it does not know, so the whole file was inert while reading as an enforced supply-chain policy: the
+minimum versions for `jquery`, `bootstrap` and `datatables.net` and the denial of the compromised `event-stream` and
+`flatmap-stream` were never applied. Had the file been live it would also have rejected dependencies the project
+permits, since its `licensing.deny` listed `EPL-1.0`, `EPL-2.0` and `LGPL-2.1` - which `CLAUDE.md` allows and the
+current tree already ships.
+
+The policy is now written in the schema the action reads (`fail-on-severity`, `fail-on-scopes`, `deny-licenses`,
+`deny-packages`), aligned with the allowed/forbidden lists in `CLAUDE.md`, and the workflow step no longer passes
+inline inputs that would override the file. The per-package minimum versions moved to the workflow's existing
+`Validate Package.json` step, which is the only place they can actually be enforced.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

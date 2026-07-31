@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -67,6 +68,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
+
+  /**
+   * Fixed keys a user may write in {@code METADATA}. The key space is not closed: {@code <field>_analyzer} and
+   * {@code <field>_boost} are per-property, so {@link #isUserMetadataKey(String)} recognises those by shape. The
+   * persisted corpus counters ({@code ft_*}) are deliberately absent - they are maintained by the index, not configured.
+   */
+  private static final Set<String> USER_METADATA_KEYS = Set.of("analyzer", "index_analyzer", "query_analyzer",
+      "allowLeadingWildcard", "defaultOperator", "similarity", "bm25_k1", "bm25_b");
 
   // These scalar fields (analyzers, operator, wildcard flag, similarity, k1/b) are set once at index creation / schema load,
   // before any query-path read, so they need no volatile/synchronization (unlike the live corpus counters and the per-field
@@ -177,6 +186,68 @@ public class FullTextIndexMetadata extends IndexMetadata {
         setFieldBoost(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
+  }
+
+  @Override
+  public Set<String> getUserMetadataKeys() {
+    return USER_METADATA_KEYS;
+  }
+
+  /**
+   * The per-field keys are recognised by shape, not against the indexed properties: a boost or analyzer may legitimately
+   * name a property that is added to the type later, and {@link #fromJSON} restores whatever was persisted, so tying the
+   * clause to the current property list would reject configurations the index can carry.
+   */
+  @Override
+  protected boolean isUserMetadataKey(final String key) {
+    return USER_METADATA_KEYS.contains(key) || key.endsWith(ANALYZER_SUFFIX) || key.endsWith(BOOST_SUFFIX);
+  }
+
+  @Override
+  protected String describeUserMetadataKeys() {
+    return super.describeUserMetadataKeys() + ", <field>" + ANALYZER_SUFFIX + ", <field>" + BOOST_SUFFIX;
+  }
+
+  /**
+   * Applies the {@code METADATA} clause of {@code CREATE INDEX}. Deliberately not {@link #fromJSON(JSONObject)}: that
+   * method reads a PERSISTED definition, where a missing {@code similarity} means an index written before BM25 support
+   * and therefore CLASSIC ranking. Here a missing key just means the user did not ask for anything, so an index created
+   * with a METADATA clause must keep the same BM25 default as one created without it - it used to silently drop to
+   * CLASSIC (issue #5639).
+   */
+  @Override
+  protected void applyUserMetadata(final JSONObject json) {
+    if (json.has("analyzer"))
+      this.analyzerClass = json.getString("analyzer");
+
+    if (json.has("index_analyzer"))
+      this.indexAnalyzerClass = json.getString("index_analyzer");
+
+    if (json.has("query_analyzer"))
+      this.queryAnalyzerClass = json.getString("query_analyzer");
+
+    if (json.has("allowLeadingWildcard"))
+      this.allowLeadingWildcard = json.getBoolean("allowLeadingWildcard");
+
+    if (json.has("defaultOperator"))
+      this.defaultOperator = json.getString("defaultOperator");
+
+    // Route through the validating setters so an unknown similarity or an out-of-range k1/b in METADATA {...} is
+    // reported at creation rather than silently scoring wrong.
+    if (json.has("similarity"))
+      setSimilarity(json.getString("similarity"));
+
+    if (json.has("bm25_k1"))
+      setBm25K1(json.getFloat("bm25_k1", DEFAULT_BM25_K1));
+
+    if (json.has("bm25_b"))
+      setBm25B(json.getFloat("bm25_b", DEFAULT_BM25_B));
+
+    for (final String key : json.keySet())
+      if (key.endsWith(ANALYZER_SUFFIX) && !USER_METADATA_KEYS.contains(key))
+        setFieldAnalyzer(key.substring(0, key.length() - ANALYZER_SUFFIX.length()), json.getString(key));
+      else if (key.endsWith(BOOST_SUFFIX))
+        setFieldBoost(key.substring(0, key.length() - BOOST_SUFFIX.length()), json.getFloat(key, 1.0f));
   }
 
   /**

@@ -695,16 +695,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     @Override
     public IndexInternal create(final IndexBuilder<? extends Index> builder) {
       final BucketLSMVectorIndexBuilder vectorBuilder = (BucketLSMVectorIndexBuilder) builder;
+      final LSMVectorIndexMetadata vectorMetadata = vectorBuilder.getVectorMetadata();
 
       // "dimensions" is the one vector setting with no usable default: every put() and every graph
       // build compares the candidate vector length against metadata.dimensions, so a zero (or
       // negative) value yields an index that silently accepts writes and never indexes a single
       // vector. Refusing it here covers all creation entry points at once - SQL METADATA, the
       // schema builders and the importers - instead of only the SQL one (issue #5607).
-      if (vectorBuilder.dimensions < 1)
+      if (vectorMetadata.dimensions < 1)
         throw new IndexException(
             "LSM_VECTOR index '" + builder.getIndexName() + "' requires a positive 'dimensions' setting (got "
-                + vectorBuilder.dimensions
+                + vectorMetadata.dimensions
                 + "): it must match the number of components of the indexed vectors, e.g. METADATA {\"dimensions\": 384}");
 
       // Reject the (encoding=INT8, quantization=INT8) combination: wire/storage is already int8,
@@ -712,7 +713,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // float vectors we just dequantized at ingest. The user's intent is almost certainly one or
       // the other, not both. If a future use case justifies this combination, lift the guard with
       // a deliberate justification - silent double-processing is the failure mode we are blocking.
-      if (vectorBuilder.encoding == VectorEncoding.INT8 && vectorBuilder.quantizationType == VectorQuantizationType.INT8)
+      if (vectorMetadata.encoding == VectorEncoding.INT8 && vectorMetadata.quantizationType == VectorQuantizationType.INT8)
         throw new IndexException(
             """
             Combining encoding=INT8 with quantization=INT8 is redundant: the property is already byte-quantized \
@@ -732,26 +733,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final Property property = propertyOwner.getPolymorphicPropertyIfExists(propertyName);
       if (property != null) {
         final Type propertyType = property.getType();
-        if (vectorBuilder.encoding == VectorEncoding.INT8 && propertyType != Type.BINARY)
+        if (vectorMetadata.encoding == VectorEncoding.INT8 && propertyType != Type.BINARY)
           throw new IndexException(
               "Vector index encoding=INT8 requires property '" + propertyName + "' to be declared as BINARY (one byte per dim), "
                   + "but it is declared as " + propertyType + ". Either change the property type to BINARY or set encoding=FLOAT32.");
-        if (vectorBuilder.encoding == VectorEncoding.FLOAT32 && propertyType == Type.BINARY)
+        if (vectorMetadata.encoding == VectorEncoding.FLOAT32 && propertyType == Type.BINARY)
           throw new IndexException(
               "Vector index encoding=FLOAT32 (default) does not support a BINARY property '" + propertyName
                   + "'. Either declare the property as ARRAY_OF_FLOATS or set encoding=INT8 to ingest pre-quantized bytes.");
       }
 
-      final LSMVectorIndexConfig config = new LSMVectorIndexConfig(
-          vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(), vectorBuilder.dimensions,
-          vectorBuilder.similarityFunction, vectorBuilder.encoding, vectorBuilder.quantizationType,
-          vectorBuilder.maxConnections, vectorBuilder.beamWidth, vectorBuilder.idPropertyName,
-          vectorBuilder.locationCacheSize, vectorBuilder.graphBuildCacheSize,
-          vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph, vectorBuilder.addHierarchy,
-          vectorBuilder.pqSubspaces, vectorBuilder.pqClusters, vectorBuilder.pqCenterGlobally,
-          vectorBuilder.pqTrainingLimit);
       return new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), config);
+          ComponentFile.MODE.READ_WRITE, builder.getPageSize(),
+          vectorMetadata.copy(vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(), -1));
     }
   }
 
@@ -770,33 +764,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Constructor for creating a new index. All construction-time settings are bundled into a single
-   * {@link LSMVectorIndexConfig} value object so the metadata is fully populated atomically before
-   * the instance escapes; previously the factory passed 17 positional args and then post-mutated
-   * {@code metadata.encoding} after the constructor returned (issue #4134).
+   * Constructor for creating a new index. Every construction-time setting arrives on a single
+   * {@link LSMVectorIndexMetadata}, so the metadata is fully populated before the instance escapes;
+   * previously the factory passed 17 positional args and then post-mutated {@code metadata.encoding}
+   * after the constructor returned (issue #4134), and later a value object whose own field list could
+   * (and did) fall behind the metadata's (issue #5639).
+   * <p>
+   * The caller must pass an instance it does not keep - typically {@link LSMVectorIndexMetadata#copy} of
+   * the builder's - because {@code buildState} and the corpus-dependent fields are per-index state.
    */
   public LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath,
-      final ComponentFile.MODE mode, final int pageSize, final LSMVectorIndexConfig config) {
+      final ComponentFile.MODE mode, final int pageSize, final LSMVectorIndexMetadata metadata) {
     try {
       this.indexName = name;
 
-      this.metadata = new LSMVectorIndexMetadata(config.typeName(), config.propertyNames(), -1);
-      this.metadata.dimensions = config.dimensions();
-      this.metadata.similarityFunction = config.similarityFunction();
-      this.metadata.encoding = config.encoding();
-      this.metadata.quantizationType = config.quantizationType();
-      this.metadata.maxConnections = config.maxConnections();
-      this.metadata.beamWidth = config.beamWidth();
-      this.metadata.idPropertyName = config.idPropertyName();
-      this.metadata.locationCacheSize = config.locationCacheSize();
-      this.metadata.graphBuildCacheSize = config.graphBuildCacheSize();
-      this.metadata.mutationsBeforeRebuild = config.mutationsBeforeRebuild();
-      this.metadata.storeVectorsInGraph = config.storeVectorsInGraph();
-      this.metadata.addHierarchy = config.addHierarchy();
-      this.metadata.pqSubspaces = config.pqSubspaces();
-      this.metadata.pqClusters = config.pqClusters();
-      this.metadata.pqCenterGlobally = config.pqCenterGlobally();
-      this.metadata.pqTrainingLimit = config.pqTrainingLimit();
+      this.metadata = metadata;
 
       this.lock = new ReentrantReadWriteLock();
       this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
@@ -4850,6 +4832,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
       json.put("encoding", metadata.encoding.name());
     json.put("maxConnections", metadata.maxConnections);
     json.put("beamWidth", metadata.beamWidth);
+    // Every remaining knob is written too, so the persisted definition is complete: a setting that only lives until
+    // the next restart is barely better than one that was dropped at creation (issue #5639). LSMVectorIndexMetadata
+    // reads each of these back, and a value equal to its default round-trips as itself.
+    json.put("efSearch", metadata.efSearch);
+    json.put("neighborOverflowFactor", metadata.neighborOverflowFactor);
+    json.put("alphaDiversityRelaxation", metadata.alphaDiversityRelaxation);
+    json.put("locationCacheSize", metadata.locationCacheSize);
+    json.put("graphBuildCacheSize", metadata.graphBuildCacheSize);
+    json.put("mutationsBeforeRebuild", metadata.mutationsBeforeRebuild);
+    json.put("inactivityRebuildTimeoutMs", metadata.inactivityRebuildTimeoutMs);
     json.put("idPropertyName", metadata.idPropertyName);
     json.put("storeVectorsInGraph", metadata.storeVectorsInGraph);
     json.put("addHierarchy", metadata.addHierarchy);

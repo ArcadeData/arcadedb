@@ -23,7 +23,6 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
-import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 /**
  * Builder class for lsm vector indexes.
@@ -55,6 +54,9 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   protected TypeLSMVectorIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, typeName, propertyNames);
     this.indexType = Schema.INDEX_TYPE.LSM_VECTOR;
+    // Install the vector metadata here too: the superclass constructor leaves a plain IndexMetadata, and every setter
+    // on this builder writes into the vector one.
+    this.metadata = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
   }
 
   /**
@@ -63,7 +65,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param dimensions the number of dimensions
    */
   public TypeLSMVectorIndexBuilder withDimensions(final int dimensions) {
-    ((LSMVectorIndexMetadata) metadata).dimensions = dimensions;
+    vectorMetadata().dimensions = dimensions;
     return this;
   }
 
@@ -74,12 +76,8 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param similarity the similarity function name
    */
   public TypeLSMVectorIndexBuilder withSimilarity(final String similarity) {
-    try {
-      ((LSMVectorIndexMetadata) metadata).similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase());
-      return this;
-    } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid similarity function: " + similarity + ". Supported values: COSINE, DOT_PRODUCT, EUCLIDEAN");
-    }
+    vectorMetadata().setSimilarity(similarity);
+    return this;
   }
 
   /**
@@ -92,9 +90,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @see LSMVectorIndexMetadata#maxConnections
    */
   public TypeLSMVectorIndexBuilder withMaxConnections(final int maxConnections) {
-    if (maxConnections < 1)
-      throw new IllegalArgumentException("maxConnections must be at least 1");
-    ((LSMVectorIndexMetadata) metadata).maxConnections = maxConnections;
+    vectorMetadata().setMaxConnections(maxConnections);
     return this;
   }
 
@@ -106,9 +102,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param beamWidth the beam width
    */
   public TypeLSMVectorIndexBuilder withBeamWidth(final int beamWidth) {
-    if (beamWidth < 1)
-      throw new IllegalArgumentException("beamWidth must be at least 1");
-    ((LSMVectorIndexMetadata) metadata).beamWidth = beamWidth;
+    vectorMetadata().setBeamWidth(beamWidth);
     return this;
   }
 
@@ -121,9 +115,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param neighborOverflowFactor the neighbor overflow factor
    */
   public TypeLSMVectorIndexBuilder withNeighborOverflowFactor(final float neighborOverflowFactor) {
-    if (neighborOverflowFactor < 1.0f)
-      throw new IllegalArgumentException("neighborOverflowFactor must be at least 1.0");
-    ((LSMVectorIndexMetadata) metadata).neighborOverflowFactor = neighborOverflowFactor;
+    vectorMetadata().setNeighborOverflowFactor(neighborOverflowFactor);
     return this;
   }
 
@@ -136,9 +128,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param alphaDiversityRelaxation the alpha diversity relaxation factor
    */
   public TypeLSMVectorIndexBuilder withAlphaDiversityRelaxation(final float alphaDiversityRelaxation) {
-    if (alphaDiversityRelaxation < 1.0f)
-      throw new IllegalArgumentException("alphaDiversityRelaxation must be at least 1.0");
-    ((LSMVectorIndexMetadata) metadata).alphaDiversityRelaxation = alphaDiversityRelaxation;
+    vectorMetadata().setAlphaDiversityRelaxation(alphaDiversityRelaxation);
     return this;
   }
 
@@ -150,7 +140,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param idPropertyName the ID property name
    */
   public TypeLSMVectorIndexBuilder withIdProperty(final String idPropertyName) {
-    ((LSMVectorIndexMetadata) metadata).idPropertyName = idPropertyName;
+    vectorMetadata().idPropertyName = idPropertyName;
     return this;
   }
 
@@ -163,7 +153,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param quantizationType the quantization type
    */
   public TypeLSMVectorIndexBuilder withQuantization(final VectorQuantizationType quantizationType) {
-    ((LSMVectorIndexMetadata) metadata).quantizationType = quantizationType;
+    vectorMetadata().quantizationType = quantizationType;
     return this;
   }
 
@@ -175,7 +165,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param addHierarchy true to add hierarchy, false otherwise
    */
   public TypeLSMVectorIndexBuilder withAddHierarchy(final boolean addHierarchy) {
-    ((LSMVectorIndexMetadata) metadata).addHierarchy = addHierarchy;
+    vectorMetadata().addHierarchy = addHierarchy;
     return this;
   }
 
@@ -185,12 +175,8 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param quantization the quantization type name (NONE, INT8, BINARY, PRODUCT)
    */
   public TypeLSMVectorIndexBuilder withQuantization(final String quantization) {
-    try {
-      ((LSMVectorIndexMetadata) metadata).quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
-      return this;
-    } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY, PRODUCT");
-    }
+    vectorMetadata().setQuantization(quantization);
+    return this;
   }
 
   /**
@@ -216,12 +202,8 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param encoding the encoding name
    */
   public TypeLSMVectorIndexBuilder withEncoding(final String encoding) {
-    try {
-      vectorMetadata().encoding = VectorEncoding.fromString(encoding);
-      return this;
-    } catch (final IllegalArgumentException e) {
-      throw new IndexException(e.getMessage(), e);
-    }
+    vectorMetadata().setEncoding(encoding);
+    return this;
   }
 
   /**
@@ -248,9 +230,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param pqSubspaces the number of subspaces (M)
    */
   public TypeLSMVectorIndexBuilder withPQSubspaces(final int pqSubspaces) {
-    if (pqSubspaces < 1)
-      throw new IllegalArgumentException("pqSubspaces must be at least 1");
-    ((LSMVectorIndexMetadata) metadata).pqSubspaces = pqSubspaces;
+    vectorMetadata().setPQSubspaces(pqSubspaces);
     return this;
   }
 
@@ -263,13 +243,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param pqClusters the number of clusters per subspace (K)
    */
   public TypeLSMVectorIndexBuilder withPQClusters(final int pqClusters) {
-    if (pqClusters < 1)
-      throw new IllegalArgumentException("pqClusters must be at least 1");
-    // PQ codes are one byte per subspace, so more than 256 clusters cannot be encoded: reject it at index creation time
-    // instead of letting the graph build fail later, which would leave the index without a graph (issue #5417)
-    if (pqClusters > 256)
-      throw new IllegalArgumentException("pqClusters cannot exceed 256 (PQ codes are one byte per subspace)");
-    ((LSMVectorIndexMetadata) metadata).pqClusters = pqClusters;
+    vectorMetadata().setPQClusters(pqClusters);
     return this;
   }
 
@@ -282,7 +256,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param pqCenterGlobally true to globally center vectors, false otherwise
    */
   public TypeLSMVectorIndexBuilder withPQCenterGlobally(final boolean pqCenterGlobally) {
-    ((LSMVectorIndexMetadata) metadata).pqCenterGlobally = pqCenterGlobally;
+    vectorMetadata().pqCenterGlobally = pqCenterGlobally;
     return this;
   }
 
@@ -295,9 +269,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param pqTrainingLimit the maximum number of training vectors
    */
   public TypeLSMVectorIndexBuilder withPQTrainingLimit(final int pqTrainingLimit) {
-    if (pqTrainingLimit < 1)
-      throw new IllegalArgumentException("pqTrainingLimit must be at least 1");
-    ((LSMVectorIndexMetadata) metadata).pqTrainingLimit = pqTrainingLimit;
+    vectorMetadata().setPQTrainingLimit(pqTrainingLimit);
     return this;
   }
 
@@ -307,63 +279,33 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
     return this;
   }
 
+  /**
+   * Configures the builder from the {@code METADATA} clause of {@code CREATE INDEX}. Unknown keys are rejected rather
+   * than dropped: a typo such as {@code {"similarty": "EUCLIDEAN"}} used to yield a COSINE index and report success
+   * (issue #5639).
+   * <p>
+   * Use {@link #withPersistedMetadata(JSONObject)} instead to restore an index from an exported definition, which
+   * carries structural keys this method has no reason to accept.
+   *
+   * @param json the METADATA clause
+   */
   public void withMetadata(final JSONObject json) {
-    final LSMVectorIndexMetadata meta = (LSMVectorIndexMetadata) metadata;
+    vectorMetadata().fromUserMetadata(json, Schema.INDEX_TYPE.LSM_VECTOR);
+  }
 
-    if (json.has("dimensions"))
-      meta.dimensions = json.getInt("dimensions");
-
-    if (json.has("similarity"))
-      withSimilarity(json.getString("similarity"));
-
-    if (json.has("quantization"))
-      withQuantization(json.getString("quantization"));
-
-    if (json.has("encoding"))
-      withEncoding(json.getString("encoding"));
-
-    if (json.has("maxConnections"))
-      meta.maxConnections = json.getInt("maxConnections");
-
-    if (json.has("beamWidth"))
-      meta.beamWidth = json.getInt("beamWidth");
-
-    if (json.has("neighborOverflowFactor"))
-      meta.neighborOverflowFactor = ((Number) json.get("neighborOverflowFactor")).floatValue();
-
-    if (json.has("alphaDiversityRelaxation"))
-      meta.alphaDiversityRelaxation = ((Number) json.get("alphaDiversityRelaxation")).floatValue();
-
-    if (json.has("idPropertyName"))
-      meta.idPropertyName = json.getString("idPropertyName");
-
-    // Phase 2: New configuration options
-    if (json.has("locationCacheSize"))
-      meta.locationCacheSize = json.getInt("locationCacheSize");
-
-    if (json.has("graphBuildCacheSize"))
-      meta.graphBuildCacheSize = json.getInt("graphBuildCacheSize");
-
-    if (json.has("mutationsBeforeRebuild"))
-      meta.mutationsBeforeRebuild = json.getInt("mutationsBeforeRebuild");
-
-    if (json.has("storeVectorsInGraph"))
-      meta.storeVectorsInGraph = json.getBoolean("storeVectorsInGraph");
-
-    if (json.has("addHierarchy"))
-      meta.addHierarchy = json.getBoolean("addHierarchy");
-
-    // Product Quantization parameters
-    if (json.has("pqSubspaces"))
-      meta.pqSubspaces = json.getInt("pqSubspaces");
-
-    if (json.has("pqClusters"))
-      withPQClusters(json.getInt("pqClusters"));
-
-    if (json.has("pqCenterGlobally"))
-      meta.pqCenterGlobally = json.getBoolean("pqCenterGlobally");
-
-    if (json.has("pqTrainingLimit"))
-      meta.pqTrainingLimit = json.getInt("pqTrainingLimit");
+  /**
+   * Restores the builder from a PERSISTED index definition - the JSON {@code LSMVectorIndex.toJSON()} writes into
+   * {@code schema.json} and the exporters copy verbatim. Unlike {@link #withMetadata(JSONObject)} this tolerates (and
+   * ignores) the structural keys of such a definition: {@code type}, {@code bucket}, {@code indexName},
+   * {@code typeName}, {@code properties}, {@code version} and the {@code buildState} marker.
+   *
+   * @param json the persisted index definition
+   *
+   * @return this builder for chaining
+   */
+  public TypeLSMVectorIndexBuilder withPersistedMetadata(final JSONObject json) {
+    if (json != null)
+      vectorMetadata().fromJSON(json);
+    return this;
   }
 }

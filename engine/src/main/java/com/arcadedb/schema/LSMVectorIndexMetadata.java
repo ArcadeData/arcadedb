@@ -18,12 +18,32 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
+import java.util.Set;
+
+/**
+ * Metadata of an {@link Schema.INDEX_TYPE#LSM_VECTOR LSM_VECTOR} index, and the single list of its settings: the
+ * builders, the index and the persisted definition all read this class rather than keeping parallel copies of the
+ * field list. Four settings were unreachable from SQL precisely because that list had been duplicated four times and
+ * two copies had fallen behind (issue #5639).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class LSMVectorIndexMetadata extends IndexMetadata {
+  /**
+   * Keys a user may write in {@code METADATA}. Everything on this class except {@code buildState}, which is the
+   * index's own lifecycle marker and not a setting.
+   */
+  private static final Set<String> USER_METADATA_KEYS = Set.of("dimensions", "similarity", "quantization", "encoding",
+      "maxConnections", "beamWidth", "efSearch", "neighborOverflowFactor", "alphaDiversityRelaxation", "idPropertyName",
+      "locationCacheSize", "graphBuildCacheSize", "mutationsBeforeRebuild", "inactivityRebuildTimeoutMs",
+      "storeVectorsInGraph", "addHierarchy", "pqSubspaces", "pqClusters", "pqCenterGlobally", "pqTrainingLimit");
+
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
   public VectorQuantizationType   quantizationType         = VectorQuantizationType.NONE;
@@ -73,6 +93,212 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     super(typeName, propertyNames, bucketId);
   }
 
+  /**
+   * Returns a fresh instance carrying every setting of this one, for the given type/properties/bucket. Used wherever an
+   * index definition has to be reproduced (TRUNCATE TYPE rebuilding an index, the per-bucket index taking its
+   * configuration from the type-level builder): the copy leaves the source's mutable runtime state behind - notably
+   * {@code buildState}, which is per-index - while making it impossible to forget a field, since there is no second
+   * field list to keep in sync.
+   *
+   * @param typeName      type the copy belongs to
+   * @param propertyNames indexed properties of the copy
+   * @param bucketId      associated bucket, or -1 when not bound yet
+   */
+  public LSMVectorIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
+    final LSMVectorIndexMetadata copy = new LSMVectorIndexMetadata(typeName, propertyNames, bucketId);
+    copy.dimensions = dimensions;
+    copy.similarityFunction = similarityFunction;
+    copy.quantizationType = quantizationType;
+    copy.encoding = encoding;
+    copy.maxConnections = maxConnections;
+    copy.beamWidth = beamWidth;
+    copy.efSearch = efSearch;
+    copy.neighborOverflowFactor = neighborOverflowFactor;
+    copy.alphaDiversityRelaxation = alphaDiversityRelaxation;
+    copy.idPropertyName = idPropertyName;
+    copy.locationCacheSize = locationCacheSize;
+    copy.graphBuildCacheSize = graphBuildCacheSize;
+    copy.mutationsBeforeRebuild = mutationsBeforeRebuild;
+    copy.inactivityRebuildTimeoutMs = inactivityRebuildTimeoutMs;
+    copy.storeVectorsInGraph = storeVectorsInGraph;
+    copy.addHierarchy = addHierarchy;
+    copy.pqSubspaces = pqSubspaces;
+    copy.pqClusters = pqClusters;
+    copy.pqCenterGlobally = pqCenterGlobally;
+    copy.pqTrainingLimit = pqTrainingLimit;
+    copy.collations = collations;
+    return copy;
+  }
+
+  @Override
+  public Set<String> getUserMetadataKeys() {
+    return USER_METADATA_KEYS;
+  }
+
+  /**
+   * Applies the {@code METADATA} clause of {@code CREATE INDEX}. Every key is read through the validating setter it
+   * shares with the Java builders, and an absent key leaves the current value alone - unlike
+   * {@link #fromJSON(JSONObject)}, which reads a complete persisted definition.
+   */
+  @Override
+  protected void applyUserMetadata(final JSONObject json) {
+    if (json.has("dimensions"))
+      this.dimensions = json.getInt("dimensions");
+
+    if (json.has("similarity"))
+      setSimilarity(json.getString("similarity"));
+
+    if (json.has("quantization"))
+      setQuantization(json.getString("quantization"));
+
+    if (json.has("encoding"))
+      setEncoding(json.getString("encoding"));
+
+    if (json.has("maxConnections"))
+      setMaxConnections(json.getInt("maxConnections"));
+
+    if (json.has("beamWidth"))
+      setBeamWidth(json.getInt("beamWidth"));
+
+    if (json.has("efSearch"))
+      setEfSearch(json.getInt("efSearch"));
+
+    if (json.has("neighborOverflowFactor"))
+      setNeighborOverflowFactor(((Number) json.get("neighborOverflowFactor")).floatValue());
+
+    if (json.has("alphaDiversityRelaxation"))
+      setAlphaDiversityRelaxation(((Number) json.get("alphaDiversityRelaxation")).floatValue());
+
+    if (json.has("idPropertyName"))
+      this.idPropertyName = json.getString("idPropertyName");
+
+    if (json.has("locationCacheSize"))
+      this.locationCacheSize = json.getInt("locationCacheSize");
+
+    if (json.has("graphBuildCacheSize"))
+      this.graphBuildCacheSize = json.getInt("graphBuildCacheSize");
+
+    if (json.has("mutationsBeforeRebuild"))
+      this.mutationsBeforeRebuild = json.getInt("mutationsBeforeRebuild");
+
+    if (json.has("inactivityRebuildTimeoutMs"))
+      this.inactivityRebuildTimeoutMs = json.getInt("inactivityRebuildTimeoutMs");
+
+    if (json.has("storeVectorsInGraph"))
+      this.storeVectorsInGraph = json.getBoolean("storeVectorsInGraph");
+
+    if (json.has("addHierarchy"))
+      this.addHierarchy = json.getBoolean("addHierarchy");
+
+    if (json.has("pqSubspaces"))
+      setPQSubspaces(json.getInt("pqSubspaces"));
+
+    if (json.has("pqClusters"))
+      setPQClusters(json.getInt("pqClusters"));
+
+    if (json.has("pqCenterGlobally"))
+      this.pqCenterGlobally = json.getBoolean("pqCenterGlobally");
+
+    if (json.has("pqTrainingLimit"))
+      setPQTrainingLimit(json.getInt("pqTrainingLimit"));
+  }
+
+  /**
+   * Sets the similarity function from its name (COSINE, DOT_PRODUCT, EUCLIDEAN), case-insensitive.
+   */
+  public void setSimilarity(final String similarity) {
+    try {
+      this.similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase());
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException(
+          "Invalid similarity function: " + similarity + ". Supported values: COSINE, DOT_PRODUCT, EUCLIDEAN");
+    }
+  }
+
+  /**
+   * Sets the index-internal quantization from its name (NONE, INT8, BINARY, PRODUCT), case-insensitive.
+   */
+  public void setQuantization(final String quantization) {
+    try {
+      this.quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY, PRODUCT");
+    }
+  }
+
+  /**
+   * Sets the wire / storage encoding of the vector property from its name (FLOAT32, INT8).
+   */
+  public void setEncoding(final String encoding) {
+    try {
+      this.encoding = VectorEncoding.fromString(encoding);
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException(e.getMessage(), e);
+    }
+  }
+
+  /** Sets the Vamana per-layer graph degree; see {@link #maxConnections}. */
+  public void setMaxConnections(final int maxConnections) {
+    if (maxConnections < 1)
+      throw new IllegalArgumentException("maxConnections must be at least 1");
+    this.maxConnections = maxConnections;
+  }
+
+  /** Sets the build-time beam width. Higher values improve recall but increase build time. */
+  public void setBeamWidth(final int beamWidth) {
+    if (beamWidth < 1)
+      throw new IllegalArgumentException("beamWidth must be at least 1");
+    this.beamWidth = beamWidth;
+  }
+
+  /** Sets the search-time beam width. Higher values improve recall at the cost of latency. */
+  public void setEfSearch(final int efSearch) {
+    if (efSearch < 1)
+      throw new IllegalArgumentException("efSearch must be at least 1");
+    this.efSearch = efSearch;
+  }
+
+  /** Sets the neighbor overflow factor used while building the graph. Typical range 1.0-1.5. */
+  public void setNeighborOverflowFactor(final float neighborOverflowFactor) {
+    if (neighborOverflowFactor < 1.0f)
+      throw new IllegalArgumentException("neighborOverflowFactor must be at least 1.0");
+    this.neighborOverflowFactor = neighborOverflowFactor;
+  }
+
+  /** Sets the alpha diversity relaxation factor used while building the graph. Typical range 1.0-1.5. */
+  public void setAlphaDiversityRelaxation(final float alphaDiversityRelaxation) {
+    if (alphaDiversityRelaxation < 1.0f)
+      throw new IllegalArgumentException("alphaDiversityRelaxation must be at least 1.0");
+    this.alphaDiversityRelaxation = alphaDiversityRelaxation;
+  }
+
+  /** Sets the number of PQ subspaces (M). Only applicable when {@code quantizationType=PRODUCT}. */
+  public void setPQSubspaces(final int pqSubspaces) {
+    if (pqSubspaces < 1)
+      throw new IllegalArgumentException("pqSubspaces must be at least 1");
+    this.pqSubspaces = pqSubspaces;
+  }
+
+  /**
+   * Sets the number of PQ clusters per subspace (K). A PQ code is one byte per subspace, so more than 256 clusters
+   * cannot be encoded: reject it at index creation instead of letting the graph build fail later and leave the index
+   * without a graph (issue #5417).
+   */
+  public void setPQClusters(final int pqClusters) {
+    if (pqClusters < 1)
+      throw new IllegalArgumentException("pqClusters must be at least 1");
+    if (pqClusters > 256)
+      throw new IllegalArgumentException("pqClusters cannot exceed 256 (PQ codes are one byte per subspace)");
+    this.pqClusters = pqClusters;
+  }
+
+  /** Sets the maximum number of vectors used to train the PQ codebooks. */
+  public void setPQTrainingLimit(final int pqTrainingLimit) {
+    if (pqTrainingLimit < 1)
+      throw new IllegalArgumentException("pqTrainingLimit must be at least 1");
+    this.pqTrainingLimit = pqTrainingLimit;
+  }
+
   @Override
   public void fromJSON(final JSONObject metadata) {
     super.fromJSON(metadata);
@@ -80,8 +306,13 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("dimensions"))
       this.dimensions = metadata.getInt("dimensions");
 
+    // "similarity" is the name of the METADATA key; "similarityFunction" is the name LSMVectorIndex.toJSON() has always
+    // written into the persisted definition. Accept both, or a reopened EUCLIDEAN index comes back up as COSINE and
+    // every search after the restart scores with the wrong metric (issue #5639).
     if (metadata.has("similarity"))
-      this.similarityFunction = VectorSimilarityFunction.valueOf(metadata.getString("similarity"));
+      setSimilarity(metadata.getString("similarity"));
+    else if (metadata.has("similarityFunction"))
+      setSimilarity(metadata.getString("similarityFunction"));
 
     if (metadata.has("quantization"))
       this.quantizationType = VectorQuantizationType.valueOf(metadata.getString("quantization"));
