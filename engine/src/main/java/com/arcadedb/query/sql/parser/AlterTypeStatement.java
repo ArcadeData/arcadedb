@@ -176,7 +176,14 @@ public class AlterTypeStatement extends DDLStatement {
           // not get masked as a parsing error.
           throw e;
         } catch (final Exception e) {
-          throw new CommandSQLParsingException("Bucket selection strategy implementation '" + implName + "' was not found", e);
+          // Report why the strategy was refused rather than claiming it does not exist. Every failure used to be
+          // rewritten as "was not found", so `partitioned('x')` with no unique index on x - or, since issue #5603,
+          // with a partition key whose stored form cannot be hashed consistently - sent the user hunting for a typo
+          // in a name that was perfectly valid. The genuinely unknown implementation still says so: that case
+          // arrives with its own "Cannot find bucket selection strategy class" message, which this keeps.
+          throw new CommandExecutionException(
+              "Cannot set bucket selection strategy '" + implName + "' on type '" + type.getName() + "': "
+                  + e.getMessage(), e);
         }
         break;
       }

@@ -552,4 +552,47 @@ slower:
   (Bucket counts that are a power of two up to 32 hid this by arithmetic accident: flipping the case of an ASCII
   letter shifts the Java string hash by a multiple of 32.)
 
+## Partitioned types: an unusable partition key is refused instead of quietly breaking `UNIQUE`
+
+Third and last of the series, and the one that closes the hole rather than the symptom
+([#5603](https://github.com/ArcadeData/arcadedb/issues/5603)). On a partitioned type a `UNIQUE` index is a set of
+per-bucket sub-indexes, so the constraint is global only while every record carrying one index key lands in one
+bucket. Placement hashes the value; the index decides two keys are equal a different way. Where those disagree the
+same key lives in several buckets and **each of them accepts its own copy**. Measured against a round-robin control
+that rejects the duplicate every time, a partitioned type admitted 3 of 4 rescaled `DECIMAL` values, 3 of 6
+identical `BINARY` values and 3 of 6 spellings of one instant:
+
+- **`BINARY`** - the stored form is a `byte[]`, which inherits identity `hashCode`, so every single write of the
+  same bytes drew a fresh bucket;
+- **`DECIMAL`** - `BigDecimal.hashCode` folds in the scale, so `1.1` and `1.10` hash apart while the index compares
+  them equal;
+- **`DATE`/`DATETIME` under a zone-carrying `dateTimeImplementation`** (`ZonedDateTime`, `Calendar`) - only the
+  instant reaches disk, so the writer's zone is hashed at placement and gone on the way back. The zone-free
+  implementations (`java.util.Date`, `Instant`, `LocalDate`, `LocalDateTime`) round-trip unchanged and are
+  unaffected.
+
+Such a partition is now never pruned, which restores the constraint by making the uniqueness check fan out, and
+**`ALTER TYPE ... BucketSelectionStrategy partitioned(...)` refuses the configuration outright** rather than
+attaching it and letting the damage surface at read time - the common root behind #5589 and #5595. `COLLATE CI`,
+already unprunable since #5595, is refused on the same footing. Placement is untouched, so no existing database
+needs a repartition.
+
+- **An existing database in one of these states still opens.** The same check runs when the schema is read back,
+  but only logs a warning: a refusal at load would turn a slow database into an unopenable one. Once open, its
+  `UNIQUE` index is enforced again. Duplicates already on disk are not retro-validated - scan those indexes and
+  `REBUILD INDEX` them.
+- **A second index on non-partition properties is a warning, not a refusal.** Those lookups fan out (#5589), which
+  is correct but no faster than not partitioning; the schema is otherwise perfectly reasonable, so it is reported
+  and accepted.
+- **`ALTER TYPE ... BucketSelectionStrategy` now says what actually went wrong.** Every failure used to be
+  rewritten as `implementation '...' was not found`, so a `partitioned('x')` rejected for want of a unique index on
+  `x` sent you hunting for a typo in a name that was perfectly valid. A genuinely unknown implementation still
+  reports that it cannot be found.
+
+Two states the issue asked about turned out not to be reachable, and are pinned by tests rather than fixed: an
+**undeclared partition property** cannot occur, because the strategy demands a unique automatic index and an index
+cannot be created on a property that does not exist; and a **`DATETIME` key under a non-default
+`dateTimeImplementation` does not shift bucket across a rebuild**, because the write path already truncates to the
+declared precision, so a freshly built record and one deserialized from disk hash identically.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
