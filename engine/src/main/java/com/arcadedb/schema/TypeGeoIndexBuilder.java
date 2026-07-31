@@ -18,7 +18,6 @@
  */
 package com.arcadedb.schema;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Arrays;
@@ -58,12 +57,6 @@ public class TypeGeoIndexBuilder extends TypeIndexBuilder {
     this.keyTypes = copyFrom.keyTypes;
     this.batchSize = copyFrom.batchSize;
     this.maxAttempts = copyFrom.maxAttempts;
-  }
-
-  protected TypeGeoIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
-    super(database, typeName, propertyNames);
-    this.indexType = Schema.INDEX_TYPE.GEOSPATIAL;
-    this.metadata = new GeoIndexMetadata(typeName, propertyNames, -1);
   }
 
   /**

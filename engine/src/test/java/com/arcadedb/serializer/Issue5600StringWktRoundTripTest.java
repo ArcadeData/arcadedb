@@ -206,4 +206,33 @@ class Issue5600StringWktRoundTripTest extends TestHelper {
     assertThatThrownBy(() -> database.query("sql", "SELECT name FROM Mixed WHERE coords.isWithin('POLYGONN ((0 0))') = true")
         .hasNext()).hasMessageContaining("POLYGONN");
   }
+
+  /**
+   * The remaining operand shapes of the two relation methods: no parameter at all is a query mistake, while a null or
+   * empty operand has nothing to relate and simply does not match.
+   */
+  @Test
+  void relationMethodsHandleTheDegenerateOperands() {
+    database.getSchema().createDocumentType("Deg").createProperty("coords", Type.STRING);
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Deg SET name = 'here', coords = 'POINT (12.5 41.9)'");
+      database.command("sql", "INSERT INTO Deg SET name = 'nowhere'");
+    });
+
+    // A missing parameter is a mistake in the query, the same way it always was
+    assertThatThrownBy(() -> database.query("sql", "SELECT name FROM Deg WHERE coords.isWithin() = true").hasNext())
+        .hasMessageContaining("requires a shape as parameter");
+    assertThatThrownBy(() -> database.query("sql", "SELECT name FROM Deg WHERE coords.intersectsWith(null) = true")
+        .hasNext()).hasMessageContaining("requires a shape as parameter");
+
+    // An empty operand has no geometry to relate: no match, no error. The row without coords is skipped the same way.
+    final ResultSet empty = database.query("sql", "SELECT name FROM Deg WHERE coords.isWithin('') = true");
+    assertThat(empty.hasNext()).isFalse();
+
+    final ResultSet present = database.query("sql",
+        "SELECT name FROM Deg WHERE coords.intersectsWith('POLYGON ((10 38, 16 38, 16 44, 10 44, 10 38))') = true");
+    assertThat(present.next().<String>getProperty("name")).isEqualTo("here");
+    assertThat(present.hasNext()).isFalse();
+  }
 }
