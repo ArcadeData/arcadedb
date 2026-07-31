@@ -143,6 +143,25 @@ The other two (delete the dead `renderMaterializedViewsSidebarSection`; open a t
 `studio-security.js` `.data()` coercion) are follow-ups outside this change. No issue was filed, since
 opening one is outside this task's mandate - see the list below.
 
+### Cycle 4 - `4bd1906a4`
+
+**LGTM.** Four non-blocking notes, none requiring a code change:
+
+- `updateDatabaseSetting` (`studio-database.js:4004`) emits both `row[0]` and `row[1]` with zero escaping,
+  and `row[1]` is the setting *value*, which is more free-form than the key. Out of scope here, but a
+  sharper observation than the original follow-up note - carried into the list below.
+- The click delegation itself has no automated test (the renderers do). Correct, and a conscious tradeoff:
+  there is no jsdom in the suite, so the dispatch is covered by the Chrome pass recorded above.
+- `studio-security.js` `.data()` coercion - already listed as a follow-up.
+- A claimed styling delta on the MV source-type links. **Checked and rejected:** the bot stated the anchor
+  "picks up `.link` styling it did not have before", but `git show origin/main` confirms the original
+  anchor already carried `class='link'`. The only real change is that `font-weight:600` moved from the
+  anchor's inline style to a wrapping span, and `.link` (`css/studio.css:228`) sets only `color`, no
+  `font-weight` - so the inherited value applies unopposed and the rendering is identical. No change made.
+
+Final state: **max-cycles-reached** (4 of 4), with four consecutive LGTMs and no outstanding code defects.
+Every cycle after the first produced only documentation or comment changes.
+
 ### Unrelated CI
 
 `Meterian Scanner workflow` fails on this branch, and also on the five most recent `main` commits. This
@@ -153,7 +172,10 @@ failure is pre-existing and unrelated. `Studio Security Audit` passes.
 
 - `restoreBackupAction` / `deleteBackupAction` (backup file names) and `updateDatabaseSetting` (setting
   keys) still use inline handlers. They carry server-generated or fixed-vocabulary values, not schema
-  names, so they were left alone to keep this diff to the issue's subject.
+  names, so they were left alone to keep this diff to the issue's subject. Note from review cycle 4:
+  `updateDatabaseSetting` at `studio-database.js:4004` interpolates **both** `row[0]` (key) and `row[1]`
+  (value) with no escaping at all, and the value is far more free-form than the key - this is the strongest
+  candidate of the three for a follow-up.
 - `studio-security.js` reads its delegated values with `$(this).data("name")`. For user and group names
   that looks numeric (`"123"`), jQuery coerces to a number. Not triggered by this issue, worth a separate
   look.
