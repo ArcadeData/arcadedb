@@ -434,6 +434,26 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
     }
   }
 
+  /**
+   * Kind propagation is one construction now, shared by the statement and by a subquery body, and folding them
+   * together closed an asymmetry that predated this issue: the statement's copy dropped every kind at a {@code
+   * WITH *} because it kept only what the projection names, while the body's copy passed the incoming scope
+   * through. So the same path access was rejected inside a body and accepted outside one - the shape #5602 and
+   * #5626 exist to remove, in the phase that decides what a name is.
+   */
+  @Test
+  void aKindSurvivesWithStarInsideAndOutsideASubqueryBody() {
+    assertThatThrownBy(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) WITH * RETURN p.name"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+    assertThatThrownBy(() -> explain(
+        "MATCH (n:P) RETURN COLLECT { MATCH p = (a:P)-[:KNOWS]->(b:P) WITH * RETURN p.name } AS r"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+    // A projection that names what it keeps still drops the rest, inside and outside alike.
+    assertThatCode(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) WITH 1 AS p RETURN p")).doesNotThrowAnyException();
+  }
+
   private List<String> names(final String query) {
     final List<String> result = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
