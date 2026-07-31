@@ -43,6 +43,19 @@ public class DistinctAggregationWrapper implements StatelessFunction {
     return delegate.getName();
   }
 
+  /**
+   * The wrapped aggregation's contract: {@code collect(DISTINCT x)} takes the same arguments as {@code collect(x)}.
+   */
+  @Override
+  public int getMinArgs() {
+    return delegate.getMinArgs();
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return delegate.getMaxArgs();
+  }
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (!seenValues.add(Arrays.asList(args)))

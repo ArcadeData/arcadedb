@@ -151,7 +151,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     try {
       // Check for EXPLAIN or PROFILE prefix
       String actualQuery = query.trim();
-      final String upperQuery = actualQuery.toUpperCase();
+      final String upperQuery = actualQuery.toUpperCase(Locale.ROOT);
       boolean explain = false;
       boolean profile = false;
 
@@ -210,7 +210,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     try {
       // Check for EXPLAIN or PROFILE prefix
       String actualQuery = query.trim();
-      final String upperQuery = actualQuery.toUpperCase();
+      final String upperQuery = actualQuery.toUpperCase(Locale.ROOT);
       boolean explain = false;
       boolean profile = false;
 

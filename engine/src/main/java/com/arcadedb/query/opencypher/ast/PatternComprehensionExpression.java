@@ -553,4 +553,27 @@ public class PatternComprehensionExpression implements Expression {
   public String getText() {
     return text;
   }
+
+  /**
+   * The pattern matched by the comprehension. Exposed, with the two expressions below, so
+   * {@code CypherExpressionWalker} can reach what this expression nests: without them a function call inside a
+   * pattern comprehension is invisible to every check that runs through the walker (issue #5602).
+   */
+  public PathPattern getPathPattern() {
+    return pathPattern;
+  }
+
+  /**
+   * The optional filter after {@code WHERE}, or {@code null}.
+   */
+  public Expression getWhereExpression() {
+    return whereExpression;
+  }
+
+  /**
+   * The projection after {@code |}, which every pattern comprehension has.
+   */
+  public Expression getMapExpression() {
+    return mapExpression;
+  }
 }

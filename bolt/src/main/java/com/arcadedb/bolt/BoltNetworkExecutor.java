@@ -39,6 +39,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
@@ -1754,10 +1756,23 @@ public class BoltNetworkExecutor extends Thread {
    * Classify a query/transaction execution error into a Bolt status code. ArcadeDB's
    * optimistic-concurrency conflicts ({@link NeedRetryException}, e.g. a page-version
    * {@code ConcurrentModificationException} or a {@code LockTimeoutException}) map to a Neo4j
-   * transient status so managed-transaction drivers auto-retry; anything else keeps the given default.
+   * transient status so managed-transaction drivers auto-retry; an {@link ArithmeticErrorException}
+   * (64-bit overflow, division by zero) maps to Neo4j's ArithmeticError so a driver reports the caller's
+   * values rather than a server fault (issue #5602); anything else keeps the given default.
    */
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
-    return isRetryableConflict(error) ? BoltErrorCodes.TRANSIENT_CONFLICT_ERROR : defaultCode;
+    if (isRetryableConflict(error))
+      return BoltErrorCodes.TRANSIENT_CONFLICT_ERROR;
+    return isArithmeticError(error) ? BoltErrorCodes.ARITHMETIC_ERROR : defaultCode;
+  }
+
+  /**
+   * Whether the error (or any wrapped cause) is an arithmetic error. Walks the chain for the same reason
+   * {@link #isRetryableConflict} does: the exception reaches here wrapped by the auto-commit transaction wrapper,
+   * and carries the JDK {@code ArithmeticException} it came from as its own cause.
+   */
+  static boolean isArithmeticError(final Throwable error) {
+    return CauseChain.contains(error, ArithmeticErrorException.class);
   }
 
   /**
@@ -1780,13 +1795,7 @@ public class BoltNetworkExecutor extends Thread {
    * driver, so callers both classify them as transient and log them at a lower level.
    */
   static boolean isRetryableConflict(final Throwable error) {
-    // Bounded walk: the depth cap guards against a self-referential / cyclic cause chain spinning forever.
-    Throwable t = error;
-    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++) {
-      if (t instanceof NeedRetryException)
-        return true;
-    }
-    return false;
+    return CauseChain.contains(error, NeedRetryException.class);
   }
 
   /**

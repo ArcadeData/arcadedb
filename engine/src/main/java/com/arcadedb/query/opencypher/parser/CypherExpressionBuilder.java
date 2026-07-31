@@ -38,6 +38,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -1832,7 +1833,7 @@ class CypherExpressionBuilder {
     // If it's a pattern without MATCH, add MATCH prefix
     if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN true";
-    } else if (!subquery.toUpperCase().contains("RETURN ")) {
+    } else if (!subquery.toUpperCase(Locale.ROOT).contains("RETURN ")) {
       // Full subquery without RETURN — add RETURN true
       subquery = subquery + " RETURN true";
     }
@@ -1889,7 +1890,7 @@ class CypherExpressionBuilder {
     // Pattern-only form: wrap with MATCH and add RETURN 1 so the outer evaluator can count rows.
     if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN 1";
-    } else if (!subquery.toUpperCase().contains("RETURN ")) {
+    } else if (!subquery.toUpperCase(Locale.ROOT).contains("RETURN ")) {
       subquery = subquery + " RETURN 1";
     }
 
@@ -2097,7 +2098,7 @@ class CypherExpressionBuilder {
     String labelText = labelExprCtx.getText();
     if (labelText.startsWith(":"))
       labelText = labelText.substring(1);
-    else if (labelText.toUpperCase().startsWith("IS"))
+    else if (labelText.toUpperCase(Locale.ROOT).startsWith("IS"))
       labelText = labelText.substring(2).trim();
 
     if (labelText.contains("|")) {
@@ -2770,7 +2771,7 @@ class CypherExpressionBuilder {
    * Maps EUCLIDEAN to SQL vector.magnitude, MANHATTAN to SQL vector.l1Norm.
    */
   Expression parseVectorNormFunction(final Cypher25Parser.VectorNormFunctionContext ctx) {
-    final String metric = ctx.vectorNormDistanceMetric().getText().toUpperCase();
+    final String metric = ctx.vectorNormDistanceMetric().getText().toUpperCase(Locale.ROOT);
     final String functionName = switch (metric) {
       case "EUCLIDEAN" -> "vector.magnitude";
       case "MANHATTAN" -> "vector.l1Norm";
@@ -2787,7 +2788,7 @@ class CypherExpressionBuilder {
    * Reuses SQL vector functions where available, falls back to Cypher-specific for others.
    */
   Expression parseVectorDistanceFunction(final Cypher25Parser.VectorDistanceFunctionContext ctx) {
-    final String metric = ctx.vectorDistanceMetric().getText().toUpperCase();
+    final String metric = ctx.vectorDistanceMetric().getText().toUpperCase(Locale.ROOT);
 
     final List<Expression> args = new ArrayList<>();
     args.add(parseExpression(ctx.vector1));

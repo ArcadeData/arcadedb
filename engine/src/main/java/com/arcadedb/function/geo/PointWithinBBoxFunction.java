@@ -35,9 +35,18 @@ public class PointWithinBBoxFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 3)
-      throw new CommandExecutionException("point.withinBBox() requires exactly 3 arguments: point, lowerLeft, upperRight");
+    checkArity(args);
     if (args[0] == null || args[1] == null || args[2] == null)
       return null;
     final boolean pointGeo = isGeographic(args[0]);

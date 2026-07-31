@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -37,9 +36,18 @@ public class CypherSplitFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("split() requires exactly 2 arguments: split(string, delimiter)");
+    checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();

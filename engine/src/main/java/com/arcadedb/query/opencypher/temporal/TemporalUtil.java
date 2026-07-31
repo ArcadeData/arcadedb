@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -111,7 +112,7 @@ public final class TemporalUtil {
    * Truncate a date to the given unit.
    */
   public static LocalDate truncateDate(final LocalDate date, final String unit) {
-    return switch (unit.toLowerCase()) {
+    return switch (unit.toLowerCase(Locale.ROOT)) {
       case "millennium" -> LocalDate.of((date.getYear() / 1000) * 1000, 1, 1);
       case "century" -> LocalDate.of((date.getYear() / 100) * 100, 1, 1);
       case "decade" -> LocalDate.of((date.getYear() / 10) * 10, 1, 1);
@@ -137,7 +138,7 @@ public final class TemporalUtil {
    */
   public static LocalDateTime truncateLocalDateTime(final LocalDateTime dateTime, final String unit) {
     // Time-level truncation: date stays the same, only time component changes
-    return switch (unit.toLowerCase()) {
+    return switch (unit.toLowerCase(Locale.ROOT)) {
       case "hour" -> LocalDateTime.of(dateTime.toLocalDate(), LocalTime.of(dateTime.getHour(), 0));
       case "minute" -> LocalDateTime.of(dateTime.toLocalDate(), LocalTime.of(dateTime.getHour(), dateTime.getMinute()));
       case "second" -> LocalDateTime.of(dateTime.toLocalDate(), LocalTime.of(dateTime.getHour(), dateTime.getMinute(), dateTime.getSecond()));
@@ -163,7 +164,7 @@ public final class TemporalUtil {
    * Truncate a local time to the given unit.
    */
   public static LocalTime truncateLocalTime(final LocalTime time, final String unit) {
-    return switch (unit.toLowerCase()) {
+    return switch (unit.toLowerCase(Locale.ROOT)) {
       case "day" -> LocalTime.MIDNIGHT;
       case "hour" -> LocalTime.of(time.getHour(), 0);
       case "minute" -> LocalTime.of(time.getHour(), time.getMinute());

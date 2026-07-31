@@ -211,10 +211,10 @@ public class VariableScopeTracker {
    */
   private List<String> findSimilarVariables(final String variableName) {
     final List<String> similar = new ArrayList<>();
-    final String lower = variableName.toLowerCase();
+    final String lower = variableName.toLowerCase(Locale.ROOT);
 
     for (final String var : currentScope.keySet()) {
-      final String varLower = var.toLowerCase();
+      final String varLower = var.toLowerCase(Locale.ROOT);
 
       // Case-insensitive match
       if (varLower.equals(lower) && !var.equals(variableName)) {

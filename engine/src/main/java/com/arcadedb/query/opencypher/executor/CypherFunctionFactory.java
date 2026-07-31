@@ -98,6 +98,7 @@ import com.arcadedb.function.temporal.TimeTruncateFunction;
 import com.arcadedb.function.temporal.TimestampFunction;
 import com.arcadedb.function.text.CharLengthFunction;
 import com.arcadedb.function.text.FormatFunction;
+import com.arcadedb.function.text.IsNormalizedFunction;
 import com.arcadedb.function.text.LTrimFunction;
 import com.arcadedb.function.text.LeftFunction;
 import com.arcadedb.function.text.NormalizeFunction;
@@ -319,7 +320,8 @@ public class CypherFunctionFactory {
       case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "lower", "upper", "ltrim", "rtrim", "btrim" ->
           true;
       // String functions (additional)
-      case "trim", "replace", "char.length", "character.length", "char_length", "character_length", "normalize" -> true;
+      case "trim", "replace", "char.length", "character.length", "char_length", "character_length", "charlength",
+           "normalize", "isnormalized" -> true;
       // Type conversion functions
       case "tostring", "tointeger", "tofloat", "toboolean",
            "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull",
@@ -446,8 +448,10 @@ public class CypherFunctionFactory {
       case "rtrim" -> new RTrimFunction();
       case "trim", "btrim" -> new CypherTrimFunction();
       case "replace" -> new ReplaceFunction();
-      case "char.length", "character.length", "char_length", "character_length" -> new CharLengthFunction();
+      // charLength is the camel-case spelling Neo4j 5 uses; the underscored and dotted forms were already here.
+      case "char.length", "character.length", "char_length", "character_length", "charlength" -> new CharLengthFunction();
       case "normalize" -> new NormalizeFunction();
+      case "isnormalized" -> new IsNormalizedFunction();
       // Type conversion functions
       case "tostring" -> new ToStringFunction();
       case "tointeger" -> new ToIntegerFunction();

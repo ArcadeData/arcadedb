@@ -18,8 +18,7 @@
  */
 package com.arcadedb.function.math;
 
-import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -37,9 +36,18 @@ public class AbsFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw CypherFunctionHelper.arityMismatch("abs", "1 argument", args.length);
+    checkArity(args);
     // Rejects anything outside INTEGER | FLOAT as a client-facing type error rather than a 500 (issue #5484).
     final Number value = CypherFunctionHelper.requireNumberArgument(args[0], "abs");
     if (value == null)
@@ -50,7 +58,9 @@ public class AbsFunction implements StatelessFunction {
         // integer and which Math.abs() would silently return unchanged - a negative "absolute value".
         return Math.absExact(value.longValue());
       } catch (final ArithmeticException e) {
-        throw new CommandExecutionException("long overflow", e);
+        // Same classification as the +, - and * operators (issue #5602): no representable answer is the caller's
+        // pair of values, not a server fault, so it reports as a client error rather than a 500.
+        throw new ArithmeticErrorException("long overflow", e);
       }
     }
     return Math.abs(value.doubleValue());

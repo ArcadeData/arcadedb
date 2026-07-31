@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import org.junit.jupiter.api.Test;
@@ -57,7 +58,7 @@ class TextStatelessFunctionsTest {
     final ToUpperFunction fn = new ToUpperFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ ToLowerFunction tests ============
@@ -82,7 +83,7 @@ class TextStatelessFunctionsTest {
     final ToLowerFunction fn = new ToLowerFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ TrimFunction tests ============
@@ -143,7 +144,7 @@ class TextStatelessFunctionsTest {
     final TrimFunction fn = new TrimFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ LTrimFunction tests ============
@@ -168,7 +169,7 @@ class TextStatelessFunctionsTest {
     final LTrimFunction fn = new LTrimFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b", "c"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ RTrimFunction tests ============
@@ -193,7 +194,7 @@ class TextStatelessFunctionsTest {
     final RTrimFunction fn = new RTrimFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b", "c"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ LeftFunction tests ============
@@ -219,7 +220,7 @@ class TextStatelessFunctionsTest {
     final LeftFunction fn = new LeftFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"hello"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ RightFunction tests ============
@@ -245,7 +246,7 @@ class TextStatelessFunctionsTest {
     final RightFunction fn = new RightFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"hello"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ SubstringFunction tests ============
@@ -287,7 +288,7 @@ class TextStatelessFunctionsTest {
     final SubstringFunction fn = new SubstringFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"hello"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ SplitFunction tests ============
@@ -331,7 +332,7 @@ class TextStatelessFunctionsTest {
     final SplitFunction fn = new SplitFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"hello"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ ReplaceFunction tests ============
@@ -356,7 +357,7 @@ class TextStatelessFunctionsTest {
     final ReplaceFunction fn = new ReplaceFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"hello", "l"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ CharLengthFunction tests ============
@@ -381,7 +382,7 @@ class TextStatelessFunctionsTest {
     final CharLengthFunction fn = new CharLengthFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"a", "b"}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ NormalizeFunction tests ============
@@ -418,7 +419,7 @@ class TextStatelessFunctionsTest {
     final NormalizeFunction fn = new NormalizeFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"hello", "INVALID"}, null))
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("unsupported normalization form");
   }
 
@@ -427,7 +428,7 @@ class TextStatelessFunctionsTest {
     final NormalizeFunction fn = new NormalizeFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   // ============ FormatFunction tests ============
@@ -492,6 +493,6 @@ class TextStatelessFunctionsTest {
     final FormatFunction fn = new FormatFunction();
 
     assertThatThrownBy(() -> fn.execute(new Object[]{}, null))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 }

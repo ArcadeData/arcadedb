@@ -53,9 +53,18 @@ public class CypherPointFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args == null || args.length == 0 || args.length > 2)
-      throw new CommandExecutionException("point() requires either one map argument (point({...})) or two numeric arguments (point(x, y))");
+    checkArity(args);
 
     // 2-arg positional form: point(x, y) ≡ point(longitude, latitude) → WGS-84 2D.
     // Follows the universal GIS convention where the first ordinate is x (longitude) and the

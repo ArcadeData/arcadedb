@@ -37,9 +37,18 @@ public class RangeFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 2 || args.length > 3)
-      throw new CommandExecutionException("range() requires 2 or 3 arguments: range(start, end) or range(start, end, step)");
+    checkArity(args);
     // Validate that arguments are integers, not floats. These are client-side type errors, so they carry a
     // CommandSemanticException (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5477.
     for (int i = 0; i < args.length; i++) {

@@ -37,7 +37,18 @@ public class CypherTrimFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    checkArity(args);
     if (args.length == 1) {
       // Simple form: trim(source) or btrim(source)
       if (args[0] == null)

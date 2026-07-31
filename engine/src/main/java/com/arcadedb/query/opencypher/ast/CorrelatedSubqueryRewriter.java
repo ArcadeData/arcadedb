@@ -290,7 +290,7 @@ public final class CorrelatedSubqueryRewriter {
     final String trimmed = subquery.trim();
     final String joined = String.join(", ", patterns);
 
-    if (trimmed.toUpperCase().startsWith("MATCH")) {
+    if (trimmed.toUpperCase(Locale.ROOT).startsWith("MATCH")) {
       // Find the end of "MATCH " and insert patterns with commas
       int pos = 5;
       while (pos < trimmed.length() && Character.isWhitespace(trimmed.charAt(pos)))

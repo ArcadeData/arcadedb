@@ -36,9 +36,18 @@ public class VectorCreateFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 1)
-      throw new CommandExecutionException("vector_create() requires at least 1 argument (values)");
+    checkArity(args);
     if (args[0] == null)
       return null;
 

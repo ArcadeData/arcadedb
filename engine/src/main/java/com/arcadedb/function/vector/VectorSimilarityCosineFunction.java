@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.vector;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -34,9 +33,18 @@ public class VectorSimilarityCosineFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("vector.similarity.cosine() requires exactly 2 arguments");
+    checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
     final float[] v1 = VectorUtils.toFloatArray(args[0]);

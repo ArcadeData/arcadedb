@@ -39,9 +39,18 @@ public class VectorDistanceFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 2 || args.length > 3)
-      throw new CommandExecutionException("vector_distance() requires 2 or 3 arguments (vectorA, vectorB, [metric])");
+    checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
 

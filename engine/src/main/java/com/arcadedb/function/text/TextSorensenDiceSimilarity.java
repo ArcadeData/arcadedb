@@ -21,6 +21,7 @@ package com.arcadedb.function.text;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -83,7 +84,7 @@ public class TextSorensenDiceSimilarity extends AbstractTextFunction {
   private Set<String> getBigrams(final String s) {
     final Set<String> bigrams = new HashSet<>();
     for (int i = 0; i < s.length() - 1; i++) {
-      bigrams.add(s.substring(i, i + 2).toLowerCase());
+      bigrams.add(s.substring(i, i + 2).toLowerCase(Locale.ROOT));
     }
     return bigrams;
   }

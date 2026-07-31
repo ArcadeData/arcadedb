@@ -33,9 +33,18 @@ public class CypherSubstringFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 2 || args.length > 3)
-      throw new CommandExecutionException("substring() requires 2 or 3 arguments: substring(string, start[, length])");
+    checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();

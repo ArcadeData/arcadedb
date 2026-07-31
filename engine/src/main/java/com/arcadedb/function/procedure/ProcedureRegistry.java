@@ -23,6 +23,7 @@ import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,7 +69,7 @@ public final class ProcedureRegistry {
    * @return true if registered successfully, false if a procedure with the same name already exists
    */
   public static boolean register(final Procedure procedure) {
-    final String name = procedure.getName().toLowerCase();
+    final String name = procedure.getName().toLowerCase(Locale.ROOT);
     final Procedure existing = PROCEDURES.putIfAbsent(name, procedure);
     if (existing != null) {
       LogManager.instance().log(ProcedureRegistry.class, Level.WARNING,
@@ -84,7 +85,7 @@ public final class ProcedureRegistry {
    * @param procedure the procedure to register
    */
   public static void registerOrReplace(final Procedure procedure) {
-    final String name = procedure.getName().toLowerCase();
+    final String name = procedure.getName().toLowerCase(Locale.ROOT);
     PROCEDURES.put(name, procedure);
   }
 
@@ -123,7 +124,7 @@ public final class ProcedureRegistry {
    * @return the normalized name (lowercase, without apoc. prefix)
    */
   public static String normalizeApocName(final String name) {
-    final String lowerName = name.toLowerCase();
+    final String lowerName = name.toLowerCase(Locale.ROOT);
     if (lowerName.startsWith(APOC_PREFIX)) {
       return lowerName.substring(APOC_PREFIX.length());
     }

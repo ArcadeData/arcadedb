@@ -41,9 +41,18 @@ public class FormatFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 1 || args.length > 2)
-      throw new CommandExecutionException("format() requires 1 or 2 arguments: format(temporal[, pattern])");
+    checkArity(args);
     if (args[0] == null)
       return null;
 

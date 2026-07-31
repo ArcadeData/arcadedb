@@ -37,6 +37,19 @@ public class SQLFunctionCount extends SQLAggregatedFunction {
     super(NAME);
   }
 
+  /**
+   * {@code count(*)} carries no argument at all, which is why the minimum is 0 rather than 1.
+   */
+  @Override
+  public int getMinArgs() {
+    return 0;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     final boolean counted = params.length == 0 || params[0] != null;

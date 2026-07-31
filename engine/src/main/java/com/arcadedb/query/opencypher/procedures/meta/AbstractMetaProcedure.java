@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -38,7 +39,7 @@ public abstract class AbstractMetaProcedure implements CypherProcedure {
   protected Map<String, Object> typeToMap(final DocumentType type) {
     final Map<String, Object> result = new HashMap<>();
     result.put("name", type.getName());
-    result.put("type", type.getClass().getSimpleName().replace("Type", "").toUpperCase());
+    result.put("type", type.getClass().getSimpleName().replace("Type", "").toUpperCase(Locale.ROOT));
 
     final List<Map<String, Object>> properties = new ArrayList<>();
     for (final String propName : type.getPropertyNames()) {

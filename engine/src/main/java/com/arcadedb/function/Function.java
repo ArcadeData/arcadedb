@@ -18,6 +18,8 @@
  */
 package com.arcadedb.function;
 
+import com.arcadedb.exception.CommandSemanticException;
+
 import java.util.List;
 
 /**
@@ -53,17 +55,48 @@ public interface Function {
 
   /**
    * Returns the minimum number of arguments required.
+   * <p>
+   * <b>This is the function's argument-count contract, not documentation.</b> {@link #checkArity} enforces it at
+   * runtime, and {@code CypherFunctionArityRegistryTest} holds the parser's declaration in
+   * {@code FunctionValidator} to it, so a registry entry narrower than what the function really accepts fails the
+   * build instead of the user's query - the shape the {@code distance()} bug of #5484 had. Declare what
+   * {@link StatelessFunction#execute} actually reads, including the optional arguments.
    *
    * @return minimum argument count (>= 0)
    */
   int getMinArgs();
 
   /**
-   * Returns the maximum number of arguments allowed.
+   * Returns the maximum number of arguments allowed, or {@link Integer#MAX_VALUE} when the function is variadic.
+   * See {@link #getMinArgs()} for what this declaration is used for.
    *
    * @return maximum argument count (>= getMinArgs())
    */
   int getMaxArgs();
+
+  /**
+   * Rejects a call whose argument count falls outside {@link #getMinArgs()}..{@link #getMaxArgs()}.
+   * <p>
+   * Functions call this instead of hand-writing their own count check, so each one declares its arity exactly once:
+   * a second hand-written copy inside {@code execute()} is free to drift from the declared bounds, and the drift
+   * would be invisible to the registry guard, which reads the bounds. The message is the one the parse-time gate
+   * uses, so a client is told the same thing whichever path caught the mistake (#5484, #5602).
+   * <p>
+   * A wrong argument count is the caller's mistake, so this is a {@link CommandSemanticException} (HTTP 400) rather
+   * than an internal failure.
+   *
+   * @param args the arguments the call carried, {@code null} counting as none - a couple of executors used to defend
+   *             against a null array by hand, and folding that in here keeps the count check in one place. Note that
+   *             this only rejects the null array for a function that requires at least one argument: an executor
+   *             declaring {@code getMinArgs() == 0} is handed it unchanged and must still tolerate it.
+   */
+  default void checkArity(final Object[] args) {
+    final int actualArgs = args == null ? 0 : args.length;
+    // effectiveMax(), not getMaxArgs(), so an implementation that spells "unbounded" the registry's way (-1) is not
+    // read as "at most -1 arguments" - which would reject every call while the message still said "at least N".
+    if (actualArgs < getMinArgs() || actualArgs > FunctionArity.effectiveMax(getMaxArgs()))
+      throw FunctionArity.mismatch(getName(), FunctionArity.describe(getMinArgs(), getMaxArgs()), actualArgs);
+  }
 
   /**
    * Returns a description of the function for documentation.
@@ -113,21 +146,22 @@ public interface Function {
   }
 
   /**
-   * Validates the arguments before execution.
-   * Default implementation checks argument count against min/max bounds.
+   * Validates the arguments before execution. Kept as the name the {@code CALL} path calls
+   * ({@code CallStep.executeFunction}); the check itself is {@link #checkArity}, so a wrong argument count is
+   * reported identically however the function was invoked.
+   * <p>
+   * It used to raise its own {@link IllegalArgumentException} with its own wording, which meant the same mistake
+   * read one way through an expression and another through {@code CALL} - and, because {@code CallStep} wraps what
+   * it catches, surfaced over HTTP as 500 rather than the 400 the expression path gave (issue #5602).
+   * <p>
+   * Note that {@code Procedure} declares a separate {@code validateArgs} of its own. Procedures are not functions -
+   * they have their own registry, their own {@code CALL} handling and around eighty implementations - so unifying
+   * the two is a change to the procedure abstraction rather than to this one, and is deliberately not done here.
    *
    * @param args the arguments to validate
-   * @throws IllegalArgumentException if arguments are invalid
+   * @throws CommandSemanticException if the argument count is outside the declared bounds
    */
   default void validateArgs(final Object[] args) {
-    if (args.length < getMinArgs() || args.length > getMaxArgs()) {
-      if (getMinArgs() == getMaxArgs()) {
-        throw new IllegalArgumentException(
-            getName() + "() requires exactly " + getMinArgs() + " argument(s), got " + args.length);
-      } else {
-        throw new IllegalArgumentException(
-            getName() + "() requires " + getMinArgs() + " to " + getMaxArgs() + " arguments, got " + args.length);
-      }
-    }
+    checkArity(args);
   }
 }

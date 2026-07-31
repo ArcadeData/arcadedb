@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -35,9 +34,18 @@ public class ReplaceFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 3)
-      throw new CommandExecutionException("replace() requires exactly 3 arguments: replace(original, search, replace)");
+    checkArity(args);
     if (args[0] == null || args[1] == null || args[2] == null)
       return null;
     return args[0].toString().replace(args[1].toString(), args[2].toString());

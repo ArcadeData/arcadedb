@@ -49,8 +49,33 @@ public class SQLFunctionBridge implements StatelessFunction {
     return cypherFunctionName;
   }
 
+  /**
+   * The wrapped SQL function's own argument-count contract, passed straight through.
+   * <p>
+   * Without this the bridge reported {@link com.arcadedb.function.StatelessFunction}'s "anything goes" defaults, so the
+   * seven Cypher functions that reach a SQL function this way - {@code count}, {@code distance}, {@code stdev},
+   * {@code stdev_pop}, {@code stdev_samp}, {@code stdevp} and {@code sum} - were the one group
+   * {@code CypherFunctionArityRegistryTest} could not check. That is exactly where the #5484 bug happened:
+   * {@code distance()} was declared to the parser as taking exactly two arguments while it had always accepted an
+   * optional unit. See issue #5602.
+   */
+  @Override
+  public int getMinArgs() {
+    return sqlFunction.getMinArgs();
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return sqlFunction.getMaxArgs();
+  }
+
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // Held to the same declaration every other executor is, so "each function's runtime guard reads its own bounds"
+    // has no exception here either. The bounds are the wrapped SQL function's own, so this can only reject a call
+    // that function could not have served anyway; one that declares none (the SQLFunctionAbstract defaults) is
+    // unaffected.
+    checkArity(args);
     // SQL functions expect (self, currentRecord, currentResult, params, context)
     // For now, we pass nulls for self, currentRecord, currentResult
     return sqlFunction.execute(null, null, null, args, context);

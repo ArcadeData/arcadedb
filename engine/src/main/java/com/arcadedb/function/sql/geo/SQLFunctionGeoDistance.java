@@ -43,6 +43,21 @@ public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
     super(NAME);
   }
 
+  /**
+   * Two points and an optional unit. The optional third argument is the whole point of declaring this: Cypher's
+   * {@code distance()} reaches here through {@code SQLFunctionBridge} and had been registered with the parser as
+   * taking exactly two, which rejected every call that named a unit once the declaration became a gate (#5484).
+   */
+  @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {

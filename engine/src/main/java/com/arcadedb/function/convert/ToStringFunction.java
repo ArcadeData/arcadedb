@@ -19,7 +19,6 @@
 package com.arcadedb.function.convert;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
@@ -41,9 +40,18 @@ public class ToStringFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("toString() requires exactly one argument");
+    checkArity(args);
     if (args[0] == null)
       return null;
     if (args[0] instanceof String || args[0] instanceof Number || args[0] instanceof Boolean)
