@@ -53,7 +53,14 @@ function extractFn(name) {
   return src.substring(start, i);
 }
 
+// renderIndexes builds the Drop Index button through schemaActionAttrs (issue #5580), which escapes
+// the name with escapeHtml from studio-utils.js. Both are pulled in so the function evaluates standalone.
+const utilsSrc = fs.readFileSync(path.join(__dirname, "..", "src", "main", "resources", "static", "js", "studio-utils.js"), "utf8");
+const escapeHtmlStart = utilsSrc.indexOf("function escapeHtml(");
+eval(utilsSrc.substring(escapeHtmlStart, utilsSrc.indexOf("\n}", escapeHtmlStart) + 2));
+
 eval(extractFn("findTypeInResult"));
+eval(extractFn("schemaActionAttrs"));
 eval(extractFn("renderIndexes"));
 
 test("inherited index from a single parent type appears under the child detail", () => {
