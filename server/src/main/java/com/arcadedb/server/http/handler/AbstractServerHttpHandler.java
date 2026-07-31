@@ -477,6 +477,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
+      } else if (isArithmeticError(e)) {
+        // An integer overflow or a division by zero is decided by the values the caller supplied, not by anything
+        // wrong with the server, and Neo4j classifies the whole category as a client error
+        // (Neo.ClientError.Statement.ArithmeticError). Reported as 400 with the arithmetic message rather than the
+        // 500 it used to degrade to. See issue #5602.
+        final Throwable reported = arithmeticError(e);
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        reported.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
       } else if (e instanceof CommandParsingException || realException instanceof CommandParsingException) {
         // A parsing/semantic validation error (malformed query, unknown variable, invalid MERGE
         // rebind, unsupported Gremlin syntax such as Groovy closures, ...) is a client error - the query
@@ -550,6 +560,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                         realException.getMessage());
         sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
                 dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
+      } else if (isArithmeticError(e)) {
+        // Symmetric with the un-wrapped arithmetic arm above (#5602): the auto-commit wrapper in
+        // DatabaseAbstractHandler re-wraps the failure as a TransactionException, and without this branch the
+        // client error would degrade back to 500.
+        final Throwable reported = arithmeticError(e);
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        reported.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
       } else if (realException instanceof CommandParsingException) {
         // Symmetric with the un-wrapped CommandParsingException arm above. A Cypher/SQL validation
         // error thrown during execution is wrapped by the auto-commit transaction wrapper in
@@ -982,6 +1001,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   private boolean isProductionMode() {
     return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
+  }
+
+  /**
+   * Whether the failure is an arithmetic error - a 64-bit overflow or a division by zero (issue #5602). The whole
+   * cause chain is searched rather than only the outermost throwable and its immediate cause, because the
+   * exception is wrapped differently depending on how the request arrived: directly, inside the auto-commit
+   * {@code TransactionException} wrapper, or with the JDK {@code ArithmeticException} it came from as its own
+   * cause. The depth cap guards against a self-referential chain, matching {@code BoltNetworkExecutor}.
+   */
+  private static boolean isArithmeticError(final Throwable error) {
+    return arithmeticError(error) != null;
+  }
+
+  /**
+   * The {@link ArithmeticErrorException} in the cause chain, or {@code null} when there is none. Returning the
+   * exception itself rather than a boolean lets the caller report ArcadeDB's message ({@code long overflow}) instead
+   * of whatever the wrapper happened to say.
+   */
+  private static ArithmeticErrorException arithmeticError(final Throwable error) {
+    Throwable t = error;
+    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++)
+      if (t instanceof ArithmeticErrorException arithmetic)
+        return arithmetic;
+    return null;
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,

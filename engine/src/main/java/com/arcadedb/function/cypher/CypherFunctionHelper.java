@@ -119,7 +119,7 @@ public final class CypherFunctionHelper {
       case Edge ignored -> "RELATIONSHIP";
       case List ignored -> "LIST<ANY>";
       case Map ignored -> "MAP";
-      default -> value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase();
+      default -> value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
     };
   }
 
@@ -217,6 +217,25 @@ public final class CypherFunctionHelper {
   public static CommandSemanticException arityMismatch(final String functionName, final String expectedArgs,
       final int actualArgs) {
     return new CommandSemanticException(arityMessage(functionName, expectedArgs, actualArgs));
+  }
+
+  /**
+   * Phrases an accepted argument count for {@link #arityMessage}, e.g. {@code "1 argument"}, {@code "2-3 arguments"} or
+   * {@code "at least 1 argument"}.
+   * <p>
+   * Shared by the parse-time gate ({@code FunctionValidator.FunctionSignature}) and by the executors' own runtime guard
+   * ({@link com.arcadedb.function.Function#checkArity}) so the two never describe the same range differently - the point
+   * of #5484, extended in #5602 to the runtime side.
+   *
+   * @param minArgs fewest arguments accepted
+   * @param maxArgs most arguments accepted; {@code -1} and {@link Integer#MAX_VALUE} both mean "no limit"
+   */
+  public static String argumentCountDescription(final int minArgs, final int maxArgs) {
+    if (minArgs == maxArgs)
+      return minArgs + " argument" + (minArgs == 1 ? "" : "s");
+    if (maxArgs == -1 || maxArgs == Integer.MAX_VALUE)
+      return "at least " + minArgs + " argument" + (minArgs == 1 ? "" : "s");
+    return minArgs + "-" + maxArgs + " arguments";
   }
 
   /**

@@ -20,7 +20,6 @@ package com.arcadedb.function.temporal;
 
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -35,9 +34,18 @@ public class DurationInSecondsFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("duration.inSeconds() requires 2 arguments");
+    checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
     return TemporalUtil.durationInSeconds(CypherFunctionHelper.wrapTemporal(args[0]), CypherFunctionHelper.wrapTemporal(args[1]));

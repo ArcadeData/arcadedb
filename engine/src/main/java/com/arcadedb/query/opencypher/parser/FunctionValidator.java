@@ -82,11 +82,7 @@ public class FunctionValidator {
     }
 
     public String getExpectedArgsDescription() {
-      if (minArgs == maxArgs)
-        return minArgs + " argument" + (minArgs == 1 ? "" : "s");
-      if (maxArgs == -1)
-        return "at least " + minArgs + " argument" + (minArgs == 1 ? "" : "s");
-      return minArgs + "-" + maxArgs + " arguments";
+      return CypherFunctionHelper.argumentCountDescription(minArgs, maxArgs);
     }
   }
 
@@ -254,9 +250,10 @@ public class FunctionValidator {
     registerFunction("charlength", 1, 1, "Character length", false);
     registerFunction("char_length", 1, 1, "Character length", false);
     registerFunction("character_length", 1, 1, "Character length", false);
-    registerFunction("charat", 2, 2, "Character at position", false);
+    // charAt() is deliberately absent: it names no Cypher function - Neo4j has none, and neither had ArcadeDB, so
+    // every call that the parser used to accept then failed at execution with "Unknown function". See issue #5602.
     registerFunction("normalize", 1, 2, "Normalize string", false);
-    registerFunction("isnormalized", 1, 2, "Check if normalized", false);
+    registerFunction("isnormalized", 1, 2, "Check if string is already in the given Unicode normal form", false);
     registerFunction("char.length", 1, 1, "Character length", false);
     registerFunction("character.length", 1, 1, "Character length", false);
     registerFunction("nullif", 2, 2, "Null if equal", false);
@@ -277,10 +274,11 @@ public class FunctionValidator {
    * two arguments, and the mistake only surfaced when the check was switched on.
    * <p>
    * So when adding a function, read its executor and count the arguments it actually reads - including the optional ones -
-   * rather than copying the shape of a neighbouring entry. Nothing verifies this automatically: the guard in
-   * {@code CypherFunctionArityRegistryTest} only compares against executors that declare their own
-   * {@code getMinArgs()}/{@code getMaxArgs()}, and none of the functions registered here do; the ones reached through
-   * {@code SQLFunctionBridge} could not anyway, since {@code SQLFunction} declares no argument bounds to delegate to.
+   * rather than copying the shape of a neighbouring entry. The guard in {@code CypherFunctionArityRegistryTest} checks
+   * this for you (issue #5602): every executor declares its own {@code getMinArgs()}/{@code getMaxArgs()}, the ones
+   * reached through {@code SQLFunctionBridge} by passing the wrapped SQL function's through, and a declaration here that
+   * is narrower than what the executor accepts fails the build. If your new function has no executor bounds to compare
+   * against, the guard says so rather than skipping it.
    *
    * @param minArgs fewest arguments the function accepts
    * @param maxArgs most arguments it accepts, or -1 for no limit

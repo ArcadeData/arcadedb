@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -33,9 +32,18 @@ public class DateTimeFromEpochMillisFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("datetime.fromepochmillis() requires 1 argument: milliseconds");
+    checkArity(args);
     final long millis = ((Number) args[0]).longValue();
     return CypherDateTime.fromEpochMillis(millis);
   }

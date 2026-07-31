@@ -42,6 +42,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -253,9 +254,9 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
       return "BOTH";
     if (params[3] instanceof Map<?, ?> rawMap) {
       final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
-      return opts.getString("direction", "BOTH").toUpperCase();
+      return opts.getString("direction", "BOTH").toUpperCase(Locale.ROOT);
     }
-    return params[3].toString().toUpperCase();
+    return params[3].toString().toUpperCase(Locale.ROOT);
   }
 
   @Override

@@ -30,6 +30,7 @@ import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -92,7 +93,7 @@ public class IsTypedExpression implements BooleanExpression {
       case "LOCAL DATETIME", "LOCAL TIMESTAMP" -> value instanceof LocalDateTime;
       case "ZONED DATETIME", "ZONED TIMESTAMP" -> value instanceof ZonedDateTime;
       case "DURATION" -> value instanceof Duration;
-      case "POINT" -> value.getClass().getSimpleName().toLowerCase().contains("point");
+      case "POINT" -> value.getClass().getSimpleName().toLowerCase(Locale.ROOT).contains("point");
       case "MAP" -> value instanceof Map;
       case "LIST", "ARRAY" -> isListMatch(value);
       case "NODE", "VERTEX", "ANY NODE", "ANY VERTEX" -> value instanceof Vertex;

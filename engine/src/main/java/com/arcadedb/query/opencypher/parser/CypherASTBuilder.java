@@ -86,6 +86,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -392,7 +393,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (int i = 0; i < typeName.getChildCount(); i++) {
       if (i > 0)
         sb.append(' ');
-      sb.append(typeName.getChild(i).getText().toUpperCase());
+      sb.append(typeName.getChild(i).getText().toUpperCase(Locale.ROOT));
     }
     return sb.toString();
   }
@@ -449,7 +450,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         continue;
       if (sb.length() > 0)
         sb.append(' ');
-      sb.append(text.toUpperCase());
+      sb.append(text.toUpperCase(Locale.ROOT));
     }
     return sb.toString();
   }

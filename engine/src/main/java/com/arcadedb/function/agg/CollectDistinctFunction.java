@@ -19,7 +19,6 @@
 package com.arcadedb.function.agg;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -42,10 +41,18 @@ public class CollectDistinctFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1) {
-      throw new CommandExecutionException("collect(DISTINCT ...) requires exactly one argument");
-    }
+    checkArity(args);
     final Object value = args[0];
     // Only add non-null values, and use identity for Identifiable objects
     if (value != null) {

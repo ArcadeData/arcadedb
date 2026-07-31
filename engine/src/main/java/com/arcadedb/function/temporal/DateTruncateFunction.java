@@ -43,9 +43,18 @@ public class DateTruncateFunction implements StatelessFunction {
 
   @SuppressWarnings("unchecked")
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 2)
-      throw new CommandExecutionException("date.truncate() requires at least 2 arguments: unit, temporal");
+    checkArity(args);
     final String unit = args[0].toString();
     final LocalDate date;
     if (args[1] instanceof CypherDate)

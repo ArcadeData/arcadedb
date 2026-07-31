@@ -579,4 +579,66 @@ existed ([#5596](https://github.com/ArcadeData/arcadedb/issues/5596)).
   concurrent updates, inserts and deletes of unrelated records sharing a page): those pages are fully declared.
 - **Cost is two ints per page and one OR per page write.**
 
+## Cypher: the follow-ups left by the `abs()` fix
+
+Five loose ends recorded while fixing [#5484](https://github.com/ArcadeData/arcadedb/issues/5484), collected as
+[#5602](https://github.com/ArcadeData/arcadedb/issues/5602) and closed together.
+
+**The guard that was supposed to stop the `distance()` mistake from recurring now actually compares something.**
+`FunctionValidator`'s `minArgs`/`maxArgs` went from unused metadata to a hard parse-time gate in #5484, which is
+how a declaration narrower than the function's real signature started rejecting valid queries. The drift guard
+added alongside it compared a registered signature against the bounds its executor declares - and asserted it had
+compared *zero* of them, because no executor declared any, and the seven functions that reach a SQL function
+through `SQLFunctionBridge` (`count`, `distance`, `stdev`, `stdev_pop`, `stdev_samp`, `stdevp`, `sum` - `distance`
+among them, the one entry that was actually wrong) had nothing to delegate to. Every Cypher executor now declares
+its argument-count contract and enforces it *from that declaration* (`Function.checkArity`), so there is one
+number per function rather than a hand-written `if` beside a hand-written bound; the bridge passes the wrapped SQL
+function's through. All 129 registered names are checked at build time. Two are pinned as deliberately narrower in
+Cypher than in SQL - `count` (whose star form is a separate parser construct) and `sum` (SQL's is variadic per
+row) - and the pin itself is asserted to still bite.
+
+- **A wrong argument count is now a client error everywhere.** The shared function layer previously answered
+  `CommandExecutionException` (HTTP `500`) from its own runtime guards while the parser answered
+  `CommandSemanticException` (HTTP `400`) for the same mistake. Both now say
+  `Function 'x' expects N arguments but got M` with the client-error class.
+
+**Parse-time argument validation is no longer confined to `RETURN` and `WITH`.** `MATCH (n:Nothing) WHERE
+abs('x') > 0 RETURN n` ran to completion - and, matching no row, looked like a success - while the identical call
+in a `RETURN` was rejected before the query started. The clause an expression sits in has no bearing on whether
+the call is valid, so the same checks now run over `WHERE`, `UNWIND`, `SET`, `CREATE`, `MERGE`, `DELETE`,
+`FOREACH`, `ORDER BY`, `SKIP`/`LIMIT` and inline pattern properties, through one traversal rather than a
+per-clause recursion. No check is new; only its reach. A call that does execute still fails with the same message
+from the function's own guard.
+
+**`charLength()` and `isNormalized()` work; `charAt()` is gone.** All three were registered as known to the
+parser with no executor behind them, so a call parsed and then failed at execution with the confusing `Unknown
+function` - right after the parser had declared the name valid. `charLength` is now an alias of the
+already-implemented `char_length`, `isNormalized(input[, normalForm])` is implemented as the boolean counterpart
+of `normalize()` (same `NFC, NFD, NFKC, NFKD` form names, same error for an unknown one), and `charAt` - which
+names no function in Neo4j either - is unregistered, so it is rejected up front with the ordinary unknown-function
+error. An unknown-function error now also echoes the spelling you wrote rather than the folded one.
+
+**Case folding no longer depends on the server's default locale.** #5484 fixed this for function names, where a
+Turkish default made `"ISNAN".toLowerCase()` the dotless `"ısnan"` and `RETURN ISNAN(1.0)` an unknown function.
+The same pattern survived in procedure names, variable names, `IS ::` type names, the `EXPLAIN`/`PROFILE` prefix
+scan, temporal unit names, vector metric names and the graph functions' direction argument. All of them fold with
+`Locale.ROOT` now, and a test reads the sources to keep a new one from slipping in - the two forms behave
+identically under every locale CI runs in, so nothing else would notice.
+
+**An arithmetic error is a client error, not a 500.** `abs(-9223372036854775808)`, `9223372036854775807 + 1` and
+`1 / 0` all have no representable answer, which is decided by the values the caller supplied and not by anything
+wrong with the server; all three answered HTTP `500`. Neo4j classifies the whole category as
+`Neo.ClientError.Statement.ArithmeticError`. The engine now raises `ArithmeticErrorException` for 64-bit overflow
+and for division or modulo by zero (including `duration(...) / 0`, which used to escape as a raw
+`java.lang.ArithmeticException`), HTTP answers `400`, and Bolt answers
+`Neo.ClientError.Statement.ArithmeticError`.
+
+- **Nothing changes for embedded code**: `ArithmeticErrorException` extends `CommandExecutionException`, the
+  class [#5164](https://github.com/ArcadeData/arcadedb/issues/5164) and
+  [#5494](https://github.com/ArcadeData/arcadedb/issues/5494) settled on, so existing catch blocks are unaffected.
+- **Floating-point arithmetic is untouched**: `1.0 / 0.0` is still `Infinity` and `0.0 / 0.0` still `NaN`, as
+  IEEE 754 and Neo4j require.
+- **A retryable conflict still wins over it** in the Bolt classification, so a driver's managed-transaction retry
+  is not lost.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

@@ -18,6 +18,9 @@
  */
 package com.arcadedb.function;
 
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+
 import java.util.List;
 
 /**
@@ -53,17 +56,45 @@ public interface Function {
 
   /**
    * Returns the minimum number of arguments required.
+   * <p>
+   * <b>This is the function's argument-count contract, not documentation.</b> {@link #checkArity} enforces it at
+   * runtime, and {@code CypherFunctionArityRegistryTest} holds the parser's declaration in
+   * {@code FunctionValidator} to it, so a registry entry narrower than what the function really accepts fails the
+   * build instead of the user's query - the shape the {@code distance()} bug of #5484 had. Declare what
+   * {@link StatelessFunction#execute} actually reads, including the optional arguments.
    *
    * @return minimum argument count (>= 0)
    */
   int getMinArgs();
 
   /**
-   * Returns the maximum number of arguments allowed.
+   * Returns the maximum number of arguments allowed, or {@link Integer#MAX_VALUE} when the function is variadic.
+   * See {@link #getMinArgs()} for what this declaration is used for.
    *
    * @return maximum argument count (>= getMinArgs())
    */
   int getMaxArgs();
+
+  /**
+   * Rejects a call whose argument count falls outside {@link #getMinArgs()}..{@link #getMaxArgs()}.
+   * <p>
+   * Functions call this instead of hand-writing their own count check, so each one declares its arity exactly once:
+   * a second hand-written copy inside {@code execute()} is free to drift from the declared bounds, and the drift
+   * would be invisible to the registry guard, which reads the bounds. The message is the one the parse-time gate
+   * uses, so a client is told the same thing whichever path caught the mistake (#5484, #5602).
+   * <p>
+   * A wrong argument count is the caller's mistake, so this is a {@link CommandSemanticException} (HTTP 400) rather
+   * than an internal failure.
+   *
+   * @param args the arguments the call carried, {@code null} counting as none - a couple of executors used to defend
+   *             against a null array by hand, and folding that in here keeps the count check in one place
+   */
+  default void checkArity(final Object[] args) {
+    final int actualArgs = args == null ? 0 : args.length;
+    if (actualArgs < getMinArgs() || actualArgs > getMaxArgs())
+      throw CypherFunctionHelper.arityMismatch(getName(),
+          CypherFunctionHelper.argumentCountDescription(getMinArgs(), getMaxArgs()), actualArgs);
+  }
 
   /**
    * Returns a description of the function for documentation.

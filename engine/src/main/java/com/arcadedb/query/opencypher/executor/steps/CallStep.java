@@ -44,6 +44,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -282,7 +283,7 @@ public class CallStep extends AbstractExecutionStep {
     }
 
     // Handle built-in Cypher procedures
-    switch (procedureName.toLowerCase()) {
+    switch (procedureName.toLowerCase(Locale.ROOT)) {
       case "db.labels":
         return getLabels(context);
       case "db.relationshiptypes":

@@ -45,7 +45,18 @@ public class DateTimeConstructorFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 0;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    checkArity(args);
     if (args.length == 0)
       return CypherFunctionHelper.getStatementTime(context).get("datetime");
     if (args[0] == null)

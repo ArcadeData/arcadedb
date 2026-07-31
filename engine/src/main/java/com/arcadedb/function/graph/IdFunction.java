@@ -40,9 +40,18 @@ public class IdFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("id() requires exactly one argument");
+    checkArity(args);
     if (args[0] == null)
       return null;
     if (args[0] instanceof Identifiable identifiable)

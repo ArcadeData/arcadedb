@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.graph;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -33,10 +32,18 @@ public class EndNodeFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1) {
-      throw new CommandExecutionException("endNode() requires exactly one argument");
-    }
+    checkArity(args);
     if (args[0] instanceof Edge) {
       final Edge edge = (Edge) args[0];
       // getInVertex() returns the actual Vertex, not just a RID

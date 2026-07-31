@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.misc;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.serializer.BinaryComparator;
@@ -40,9 +39,18 @@ public class NullIfFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("nullIf() requires exactly 2 arguments");
+    checkArity(args);
     if (BinaryComparator.equals(args[0], args[1]))
       return null;
     return args[0];

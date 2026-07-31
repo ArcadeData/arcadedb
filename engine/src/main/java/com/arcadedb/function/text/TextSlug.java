@@ -21,6 +21,7 @@ package com.arcadedb.function.text;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.text.Normalizer;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
@@ -79,6 +80,6 @@ public class TextSlug extends AbstractTextFunction {
     // Trim delimiters from ends
     slug = slug.replaceAll("^" + Pattern.quote(delim) + "|" + Pattern.quote(delim) + "$", "");
 
-    return slug.toLowerCase();
+    return slug.toLowerCase(Locale.ROOT);
   }
 }

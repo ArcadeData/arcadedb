@@ -40,9 +40,18 @@ public class PercentileContFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("percentileCont() requires exactly 2 arguments: percentileCont(expr, percentile)");
+    checkArity(args);
     if (percentile < 0) {
       if (args[1] == null)
         throw new CommandExecutionException("percentileCont() percentile argument must not be null");

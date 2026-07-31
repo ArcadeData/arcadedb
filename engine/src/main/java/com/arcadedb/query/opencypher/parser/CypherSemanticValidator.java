@@ -25,6 +25,7 @@ import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.query.opencypher.ast.*;
 
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
  * Semantic validator for Cypher statements.
@@ -1723,104 +1724,179 @@ public class CypherSemanticValidator {
   // Phase 10: Function Argument Type Validation
   // ============================================
 
+  /**
+   * Applies the function checks - unknown name, argument count, statically-known argument types - to every expression
+   * the statement contains, wherever it appears.
+   * <p>
+   * Until #5602 this walked {@code RETURN} and {@code WITH} items only, so {@code MATCH (n:Nothing) WHERE abs('x') > 0
+   * RETURN n} ran and failed at runtime (or, on a query matching no row, silently succeeded) while the same call in a
+   * {@code RETURN} was rejected before the query started. The clause an expression sits in has no bearing on whether
+   * the call is valid, so the walk now covers {@code WHERE}, {@code UNWIND}, {@code SET}, {@code CREATE},
+   * {@code MERGE}, {@code DELETE}, {@code FOREACH}, {@code SKIP}/{@code LIMIT} and the pattern properties of
+   * {@code MATCH} as well - all through one traversal ({@link CypherExpressionWalker}) rather than a per-clause
+   * recursion.
+   * <p>
+   * This widens the set of queries rejected at parse time. No new check is introduced: the same two that ran before -
+   * the function checks and the path-property check, the latter previously reaching only the {@code WHERE} of a
+   * {@code MATCH} or a {@code WITH} - now run wherever an expression appears. A call that reaches a row still fails
+   * with the same message from the function's own runtime guard, so what changes is when the client is told, not what
+   * they are told.
+   */
   private void validateFunctionArgumentTypes(final CypherStatement statement) {
-    // Check RETURN clause
+    final Consumer<Expression> checks = expression -> {
+      checkFunctionArgTypes(expression);
+      checkPropertyAccessOnPath(expression);
+    };
+
     if (statement.getReturnClause() != null)
       for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
-        checkFunctionArgTypes(item.getExpression());
-    // Check WITH clauses
-    for (final WithClause withClause : statement.getWithClauses())
-      for (final ReturnClause.ReturnItem item : withClause.getItems())
-        checkFunctionArgTypes(item.getExpression());
-    // Check WHERE clauses for property access on path variables
+        CypherExpressionWalker.walk(item.getExpression(), checks);
+    walkOrderBy(statement.getOrderByClause(), checks);
+
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses != null)
-      for (final ClauseEntry entry : clauses) {
-        if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
-          final MatchClause matchClause = entry.getTypedClause();
-          if (matchClause.hasWhereClause())
-            checkPropertyAccessOnPathInBoolean(matchClause.getWhereClause().getConditionExpression());
-        } else if (entry.getType() == ClauseEntry.ClauseType.WITH) {
-          final WithClause withClause = entry.getTypedClause();
-          if (withClause.getWhereClause() != null)
-            checkPropertyAccessOnPathInBoolean(withClause.getWhereClause().getConditionExpression());
-        }
-      }
+      for (final ClauseEntry entry : clauses)
+        walkClause(entry, checks);
+
+    // A WITH not present in the ordered list (some builder paths register it only on the statement) still has to be
+    // covered, and walking one twice is harmless - the checks are pure.
+    for (final WithClause withClause : statement.getWithClauses())
+      walkWith(withClause, checks);
   }
 
-  private void checkFunctionArgTypes(final Expression expr) {
-    if (expr == null)
+  private void walkClause(final ClauseEntry entry, final Consumer<Expression> checks) {
+    switch (entry.getType()) {
+    case MATCH -> {
+      final MatchClause matchClause = entry.getTypedClause();
+      if (matchClause.hasWhereClause())
+        CypherExpressionWalker.walk(matchClause.getWhereClause().getConditionExpression(), checks);
+      if (matchClause.getPathPatterns() != null)
+        for (final PathPattern pattern : matchClause.getPathPatterns())
+          CypherExpressionWalker.walk(pattern, checks);
+    }
+    case WITH -> walkWith(entry.getTypedClause(), checks);
+    case UNWIND -> CypherExpressionWalker.walk(((UnwindClause) entry.getTypedClause()).getListExpression(), checks);
+    case CREATE -> {
+      final CreateClause createClause = entry.getTypedClause();
+      if (createClause.getPathPatterns() != null)
+        for (final PathPattern pattern : createClause.getPathPatterns())
+          CypherExpressionWalker.walk(pattern, checks);
+    }
+    case MERGE -> {
+      final MergeClause mergeClause = entry.getTypedClause();
+      CypherExpressionWalker.walk(mergeClause.getPathPattern(), checks);
+      walkSet(mergeClause.getOnCreateSet(), checks);
+      walkSet(mergeClause.getOnMatchSet(), checks);
+    }
+    case SET -> walkSet(entry.getTypedClause(), checks);
+    case DELETE -> {
+      final DeleteClause deleteClause = entry.getTypedClause();
+      if (deleteClause.getExpressions() != null)
+        for (final Expression expression : deleteClause.getExpressions())
+          CypherExpressionWalker.walk(expression, checks);
+    }
+    case FOREACH -> {
+      final ForeachClause foreachClause = entry.getTypedClause();
+      CypherExpressionWalker.walk(foreachClause.getListExpression(), checks);
+      if (foreachClause.getInnerClauses() != null)
+        for (final ClauseEntry inner : foreachClause.getInnerClauses())
+          walkClause(inner, checks);
+    }
+    default -> {
+      // RETURN is walked from the statement, and CALL / SUBQUERY / LOAD CSV / FINISH carry no expression this
+      // validation applies to - a subquery is a statement of its own and is validated when it is parsed.
+    }
+    }
+  }
+
+  private void walkWith(final WithClause withClause, final Consumer<Expression> checks) {
+    if (withClause == null)
       return;
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
-      final String name = func.getFunctionName().toLowerCase(Locale.ROOT);
-      // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
-      if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
-        throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
-      final List<Expression> args = func.getArguments();
-      // The wrong number of arguments is the primary defect and must be reported as such, before the single-argument type
-      // check below decides that e.g. atan2('x') - a binary function called with one argument - is a type error (#5484).
-      final String arityError = FunctionValidator.validateArgumentCount(name, args.size());
-      if (arityError != null)
-        throw new CommandSemanticException(arityError);
-      // The numeric family is checked at every argument position, so atan2('hello', 1) and round(x, 2, 'SIDEWAYS') are
-      // rejected before the query runs just like the single-argument abs('hello') is.
-      final CypherFunctionHelper.NumericSignature numeric = CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS.get(name);
-      if (numeric != null)
-        checkStaticallyKnownNumericArgs(numeric, args);
-      if (args.size() == 1) {
-        final Expression arg = args.get(0);
-        if (numeric == null)
-          checkStaticallyKnownArgType(name, arg);
-        final VarType argType = getExpressionType(arg);
-        if (argType != null) {
-          switch (name) {
-            case "length":
-              // length() only works on paths and strings, not nodes or relationships
-              if (argType == VarType.NODE)
-                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
-              if (argType == VarType.RELATIONSHIP)
-                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
-              break;
-            case "type":
-              // type() only works on relationships. Point at valueType(), which is what callers who
-              // expect a value-type name are actually after (issue #5292).
-              if (argType == VarType.NODE)
-                throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node"
-                    + ". Use valueType() to inspect the type of a value");
-              break;
-            case "labels":
-              // labels() only works on nodes
-              if (argType == VarType.PATH)
-                throw new CommandParsingException("InvalidArgumentType: labels() requires a node argument, got path");
-              break;
-            case "size":
-              // size() works on strings and lists, not paths
-              if (argType == VarType.PATH)
-                throw new CommandParsingException("InvalidArgumentType: size() cannot be applied to a path");
-              break;
-          }
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      CypherExpressionWalker.walk(item.getExpression(), checks);
+    if (withClause.getWhereClause() != null)
+      CypherExpressionWalker.walk(withClause.getWhereClause().getConditionExpression(), checks);
+    walkOrderBy(withClause.getOrderByClause(), checks);
+    CypherExpressionWalker.walk(withClause.getSkip(), checks);
+    CypherExpressionWalker.walk(withClause.getLimit(), checks);
+  }
+
+  private void walkSet(final SetClause setClause, final Consumer<Expression> checks) {
+    if (setClause == null)
+      return;
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      CypherExpressionWalker.walk(item.getTargetExpression(), checks);
+      CypherExpressionWalker.walk(item.getKeyExpression(), checks);
+      CypherExpressionWalker.walk(item.getValueExpression(), checks);
+    }
+  }
+
+  private void walkOrderBy(final OrderByClause orderBy, final Consumer<Expression> checks) {
+    if (orderBy == null || orderBy.getItems() == null)
+      return;
+    for (final OrderByClause.OrderByItem item : orderBy.getItems())
+      // An ORDER BY item keeps its expression as text and, when the builder could parse one, as an AST too.
+      CypherExpressionWalker.walk(item.getExpressionAST(), checks);
+  }
+
+  /**
+   * The per-expression function checks. Called on every node of the traversal, so it inspects only the node handed to
+   * it: descending into a function's arguments is {@link CypherExpressionWalker}'s job.
+   */
+  private void checkFunctionArgTypes(final Expression expr) {
+    if (!(expr instanceof FunctionCallExpression func))
+      return;
+
+    final String name = func.getFunctionName().toLowerCase(Locale.ROOT);
+    // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
+    if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
+      // Echo the spelling the client wrote, not the folded one: "Unknown function 'charat'" sends someone looking for
+      // a name that never appeared in their query.
+      throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getOriginalFunctionName() + "'");
+    final List<Expression> args = func.getArguments();
+    // The wrong number of arguments is the primary defect and must be reported as such, before the single-argument type
+    // check below decides that e.g. atan2('x') - a binary function called with one argument - is a type error (#5484).
+    final String arityError = FunctionValidator.validateArgumentCount(name, args.size());
+    if (arityError != null)
+      throw new CommandSemanticException(arityError);
+    // The numeric family is checked at every argument position, so atan2('hello', 1) and round(x, 2, 'SIDEWAYS') are
+    // rejected before the query runs just like the single-argument abs('hello') is.
+    final CypherFunctionHelper.NumericSignature numeric = CypherFunctionHelper.NUMERIC_ARGUMENT_FUNCTIONS.get(name);
+    if (numeric != null)
+      checkStaticallyKnownNumericArgs(numeric, args);
+    if (args.size() == 1) {
+      final Expression arg = args.get(0);
+      if (numeric == null)
+        checkStaticallyKnownArgType(name, arg);
+      final VarType argType = getExpressionType(arg);
+      if (argType != null) {
+        switch (name) {
+          case "length":
+            // length() only works on paths and strings, not nodes or relationships
+            if (argType == VarType.NODE)
+              throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
+            if (argType == VarType.RELATIONSHIP)
+              throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
+            break;
+          case "type":
+            // type() only works on relationships. Point at valueType(), which is what callers who
+            // expect a value-type name are actually after (issue #5292).
+            if (argType == VarType.NODE)
+              throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node"
+                  + ". Use valueType() to inspect the type of a value");
+            break;
+          case "labels":
+            // labels() only works on nodes
+            if (argType == VarType.PATH)
+              throw new CommandParsingException("InvalidArgumentType: labels() requires a node argument, got path");
+            break;
+          case "size":
+            // size() works on strings and lists, not paths
+            if (argType == VarType.PATH)
+              throw new CommandParsingException("InvalidArgumentType: size() cannot be applied to a path");
+            break;
         }
       }
-      // Recurse into arguments
-      for (final Expression arg : args)
-        checkFunctionArgTypes(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkFunctionArgTypes(((ArithmeticExpression) expr).getLeft());
-      checkFunctionArgTypes(((ArithmeticExpression) expr).getRight());
-    } else if (expr instanceof ListExpression) {
-      for (final Expression elem : ((ListExpression) expr).getElements())
-        checkFunctionArgTypes(elem);
-    } else if (expr instanceof CaseExpression) {
-      final CaseExpression caseExpr = (CaseExpression) expr;
-      if (caseExpr.getCaseExpression() != null)
-        checkFunctionArgTypes(caseExpr.getCaseExpression());
-      for (final CaseAlternative alt : caseExpr.getAlternatives()) {
-        checkFunctionArgTypes(alt.getWhenExpression());
-        checkFunctionArgTypes(alt.getThenExpression());
-      }
-      if (caseExpr.getElseExpression() != null)
-        checkFunctionArgTypes(caseExpr.getElseExpression());
     }
   }
 
@@ -1896,38 +1972,13 @@ public class CypherSemanticValidator {
     }
   }
 
+  /**
+   * A path variable holds a whole path, so {@code p.name} names nothing. Called on every node of the traversal, which
+   * is why it inspects only the node handed to it rather than recursing.
+   */
   private void checkPropertyAccessOnPath(final Expression expr) {
-    if (expr == null)
-      return;
-    if (expr instanceof PropertyAccessExpression) {
-      final String varName = ((PropertyAccessExpression) expr).getVariableName();
-      final VarType type = varTypes.get(varName);
-      if (type == VarType.PATH)
-        throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
-    } else if (expr instanceof FunctionCallExpression) {
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        checkPropertyAccessOnPath(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkPropertyAccessOnPath(((ArithmeticExpression) expr).getLeft());
-      checkPropertyAccessOnPath(((ArithmeticExpression) expr).getRight());
-    }
-  }
-
-  private void checkPropertyAccessOnPathInBoolean(final BooleanExpression boolExpr) {
-    if (boolExpr == null)
-      return;
-    if (boolExpr instanceof ComparisonExpression) {
-      checkPropertyAccessOnPath(((ComparisonExpression) boolExpr).getLeft());
-      checkPropertyAccessOnPath(((ComparisonExpression) boolExpr).getRight());
-    } else if (boolExpr instanceof LogicalExpression) {
-      checkPropertyAccessOnPathInBoolean(((LogicalExpression) boolExpr).getLeft());
-      if (((LogicalExpression) boolExpr).getRight() != null)
-        checkPropertyAccessOnPathInBoolean(((LogicalExpression) boolExpr).getRight());
-    } else if (boolExpr instanceof InExpression) {
-      checkPropertyAccessOnPath(((InExpression) boolExpr).getExpression());
-    } else if (boolExpr instanceof IsNullExpression) {
-      checkPropertyAccessOnPath(((IsNullExpression) boolExpr).getExpression());
-    }
+    if (expr instanceof PropertyAccessExpression access && varTypes.get(access.getVariableName()) == VarType.PATH)
+      throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
   }
 
   private VarType getExpressionType(final Expression expr) {

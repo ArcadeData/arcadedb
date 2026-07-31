@@ -31,7 +31,18 @@ public class CoalesceFunction implements StatelessFunction {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return Integer.MAX_VALUE;
+  }
+
+  @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    checkArity(args);
     for (final Object arg : args)
       if (arg != null)
         return arg;

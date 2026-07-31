@@ -104,6 +104,7 @@ import com.arcadedb.query.opencypher.procedures.path.PathSubgraphNodes;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -154,7 +155,7 @@ public final class CypherProcedureRegistry {
    * @throws IllegalArgumentException if a procedure with the same name is already registered
    */
   public static void register(final CypherProcedure procedure) {
-    final String name = procedure.getName().toLowerCase();
+    final String name = procedure.getName().toLowerCase(Locale.ROOT);
     final CypherProcedure existing = PROCEDURES.putIfAbsent(name, procedure);
     if (existing != null) {
       LogManager.instance().log(CypherProcedureRegistry.class, Level.WARNING,
@@ -174,7 +175,7 @@ public final class CypherProcedureRegistry {
    * @param procedure the procedure to register
    */
   public static void registerOrReplace(final CypherProcedure procedure) {
-    final String name = procedure.getName().toLowerCase();
+    final String name = procedure.getName().toLowerCase(Locale.ROOT);
     PROCEDURES.put(name, procedure);
     // Also register in the unified ProcedureRegistry for cross-engine access
     ProcedureRegistry.registerOrReplace(procedure);
@@ -215,7 +216,7 @@ public final class CypherProcedureRegistry {
    * @return the normalized name (lowercase, without apoc. prefix)
    */
   private static String normalizeApocName(final String name) {
-    final String lowerName = name.toLowerCase();
+    final String lowerName = name.toLowerCase(Locale.ROOT);
     if (lowerName.startsWith(APOC_PREFIX)) {
       return lowerName.substring(APOC_PREFIX.length());
     }
