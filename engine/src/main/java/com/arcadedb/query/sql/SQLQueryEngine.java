@@ -112,7 +112,7 @@ public class SQLQueryEngine implements QueryEngine {
     context.setInputParameters(parameters);
     context.setConfiguration(configuration);
 
-    return statement.execute(database, parameters, context);
+    return statement.execute(executionDatabase(), parameters, context);
   }
 
   @Override
@@ -121,7 +121,25 @@ public class SQLQueryEngine implements QueryEngine {
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
-    return statement.execute(database, parameters, context);
+    return statement.execute(executionDatabase(), parameters, context);
+  }
+
+  /**
+   * The database a statement executes against, and therefore the one {@code CommandContext.getDatabase()} returns.
+   * <p>
+   * Statements that commit mid-execution - {@code TRUNCATE TYPE}/{@code BUCKET} batching every
+   * {@link com.arcadedb.GlobalConfiguration#TRUNCATE_BATCH_SIZE} records, {@code REBUILD INDEX}, {@code BatchStep} -
+   * call {@code commit()} on whatever this returns. Handing them the raw instance means those commits go straight to
+   * {@code LocalDatabase.commit()}, which on an HA leader applies the pages locally and never proposes them to Raft:
+   * followers then trail by exactly those page versions and the next replicated entry touching one of them fails the
+   * version check (#5492).
+   * <p>
+   * {@code SQLScriptQueryEngine} has always resolved the wrapper for the same reason, which is why the identical
+   * statements replicate correctly under {@code sqlscript} and not under {@code sql}. Off HA the wrapper is the
+   * instance itself, so this is a no-op there.
+   */
+  private DatabaseInternal executionDatabase() {
+    return database.getWrappedDatabaseInstance();
   }
 
   @Override

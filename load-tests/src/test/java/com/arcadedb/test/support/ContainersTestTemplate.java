@@ -26,6 +26,7 @@ import com.arcadedb.utility.FileUtils;
 
 import com.github.dockerjava.api.model.ContainerNetwork;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.logging.LoggingRegistryConfig;
@@ -67,7 +68,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 public abstract class ContainersTestTemplate {
-  public static final String                    IMAGE      = "arcadedata/arcadedb:latest";
+  /**
+   * Image under test. Override with {@code -Darcadedb.test.image=arcadedata/arcadedb:26.8.1-SNAPSHOT} to pin a locally
+   * built tag instead of whatever {@code :latest} happens to point at, so a run's result names the build it tested.
+   */
+  public static final String                    IMAGE      = System.getProperty("arcadedb.test.image",
+      "arcadedata/arcadedb:latest");
   public static final String                    PASSWORD   = "playwithdata";
   public static final String                    DATABASE   = "playwithpictures";
   protected           LoggingMeterRegistry      loggingMeterRegistry;
@@ -688,6 +694,77 @@ public abstract class ContainersTestTemplate {
         logger.info("Container {} is running", name);
       }
     }
+  }
+
+  /**
+   * Counts how many times a marker appears in each container's stdout, and logs the per-container tally.
+   * Used to turn a replication failure into a number: {@code WALVersionGapException} occurrences and snapshot-resync
+   * cycles are the signature of #5492, and a run that converges on counts can still have logged them.
+   *
+   * @param marker substring to look for, matched literally
+   *
+   * @return total occurrences across every container
+   */
+  /**
+   * Sums a counter over the per-test {@link #loggingMeterRegistry} rather than {@link Metrics#globalRegistry}.
+   * A meter on the global composite reports the value of one arbitrarily chosen child registry, not the sum, and this
+   * class adds and removes a backing registry around every test - so reading a counter off the composite can return
+   * another test method's value or zero. The per-test registry is created fresh in setup, which makes the value both
+   * unambiguous and scoped to the run being measured.
+   *
+   * @param name counter name, matched exactly
+   *
+   * @return summed count across every counter registered under that name
+   */
+  /**
+   * Writes each container's stdout to {@code target/container-logs/<label>-<name>.log} while the containers are still
+   * up. Testcontainers removes them during teardown, taking the logs with them, so anything not written out here
+   * cannot be examined after the run - which matters when a count printed at the end raises a question the raw log is
+   * the only thing that can answer.
+   *
+   * @param label prefix identifying the scenario, so arms of the same comparison do not overwrite each other
+   */
+  protected void dumpContainerLogs(final String label) {
+    final Path target = Path.of("target", "container-logs");
+    try {
+      Files.createDirectories(target);
+    } catch (final IOException e) {
+      logger.warn("Could not create {}: {}", target, e.getMessage());
+      return;
+    }
+    for (final GenericContainer<?> container : containers) {
+      final String name = container.getContainerName().replace("/", "");
+      final Path file = target.resolve(label + "-" + name + ".log");
+      try {
+        Files.writeString(file, container.getLogs());
+        logger.info("Wrote container log to {}", file.toAbsolutePath());
+      } catch (final Exception e) {
+        logger.warn("Could not write log of container {}: {}", name, e.getMessage());
+      }
+    }
+  }
+
+  protected double sumCounter(final String name) {
+    return loggingMeterRegistry.find(name).counters().stream().mapToDouble(Counter::count).sum();
+  }
+
+  protected int countInContainerLogs(final String marker) {
+    int total = 0;
+    for (final GenericContainer<?> container : containers) {
+      final String name = container.getContainerName();
+      int occurrences = 0;
+      try {
+        final String logs = container.getLogs();
+        for (int from = logs.indexOf(marker); from >= 0; from = logs.indexOf(marker, from + marker.length()))
+          ++occurrences;
+      } catch (final Exception e) {
+        logger.warn("Could not read logs of container {} looking for '{}': {}", name, marker, e.getMessage());
+        continue;
+      }
+      logger.info("Container {}: '{}' x{}", name, marker, occurrences);
+      total += occurrences;
+    }
+    return total;
   }
 
   /**
