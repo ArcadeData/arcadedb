@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.exception.ArithmeticErrorException;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;

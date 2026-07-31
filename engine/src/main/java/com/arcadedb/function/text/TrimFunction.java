@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -87,7 +87,7 @@ public class TrimFunction implements StatelessFunction {
       };
     }
 
-    throw CypherFunctionHelper.arityMismatch(getName(), "1 or 3 arguments", args.length);
+    throw FunctionArity.mismatch(getName(), "1 or 3 arguments", args.length);
   }
 
   static String stripLeading(final String source, final String trimChars) {

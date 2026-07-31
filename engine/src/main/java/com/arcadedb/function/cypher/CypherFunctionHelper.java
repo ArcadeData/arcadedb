@@ -198,47 +198,6 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * The one wording for "wrong number of arguments", shared by the parse-time check in {@code FunctionValidator} and by the
-   * functions' own runtime guards so that a client never sees the same mistake described two different ways. See issue
-   * #5484.
-   *
-   * @param functionName function name without parentheses, e.g. {@code "abs"}
-   * @param expectedArgs the accepted count, phrased for the message, e.g. {@code "1 argument"} or {@code "1-3 arguments"}
-   * @param actualArgs   how many arguments the call actually carried
-   */
-  public static String arityMessage(final String functionName, final String expectedArgs, final int actualArgs) {
-    return "Function '" + functionName + "' expects " + expectedArgs + " but got " + actualArgs;
-  }
-
-  /**
-   * The exception form of {@link #arityMessage}: a wrong argument count is the caller's mistake, so it is a client error
-   * (HTTP 400) rather than an internal failure.
-   */
-  public static CommandSemanticException arityMismatch(final String functionName, final String expectedArgs,
-      final int actualArgs) {
-    return new CommandSemanticException(arityMessage(functionName, expectedArgs, actualArgs));
-  }
-
-  /**
-   * Phrases an accepted argument count for {@link #arityMessage}, e.g. {@code "1 argument"}, {@code "2-3 arguments"} or
-   * {@code "at least 1 argument"}.
-   * <p>
-   * Shared by the parse-time gate ({@code FunctionValidator.FunctionSignature}) and by the executors' own runtime guard
-   * ({@link com.arcadedb.function.Function#checkArity}) so the two never describe the same range differently - the point
-   * of #5484, extended in #5602 to the runtime side.
-   *
-   * @param minArgs fewest arguments accepted
-   * @param maxArgs most arguments accepted; {@code -1} and {@link Integer#MAX_VALUE} both mean "no limit"
-   */
-  public static String argumentCountDescription(final int minArgs, final int maxArgs) {
-    if (minArgs == maxArgs)
-      return minArgs + " argument" + (minArgs == 1 ? "" : "s");
-    if (maxArgs == -1 || maxArgs == Integer.MAX_VALUE)
-      return "at least " + minArgs + " argument" + (minArgs == 1 ? "" : "s");
-    return minArgs + "-" + maxArgs + " arguments";
-  }
-
-  /**
    * Builds the error raised when a function is handed an argument outside its input domain, e.g. {@code size(42)}
    * (issue #5477) or {@code head(42)} (issue #5476). Answering {@code null} instead would be indistinguishable from legal
    * Cypher null propagation, so a wrong query would look like a successful one. A {@link CommandSemanticException} makes the

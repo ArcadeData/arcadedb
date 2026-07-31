@@ -19,7 +19,6 @@
 package com.arcadedb.function;
 
 import com.arcadedb.exception.CommandSemanticException;
-import com.arcadedb.function.cypher.CypherFunctionHelper;
 
 import java.util.List;
 
@@ -92,8 +91,7 @@ public interface Function {
   default void checkArity(final Object[] args) {
     final int actualArgs = args == null ? 0 : args.length;
     if (actualArgs < getMinArgs() || actualArgs > getMaxArgs())
-      throw CypherFunctionHelper.arityMismatch(getName(),
-          CypherFunctionHelper.argumentCountDescription(getMinArgs(), getMaxArgs()), actualArgs);
+      throw FunctionArity.mismatch(getName(), FunctionArity.describe(getMinArgs(), getMaxArgs()), actualArgs);
   }
 
   /**

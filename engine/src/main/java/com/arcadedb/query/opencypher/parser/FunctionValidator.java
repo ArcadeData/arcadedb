@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.FunctionArity;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -82,7 +82,7 @@ public class FunctionValidator {
     }
 
     public String getExpectedArgsDescription() {
-      return CypherFunctionHelper.argumentCountDescription(minArgs, maxArgs);
+      return FunctionArity.describe(minArgs, maxArgs);
     }
   }
 
@@ -314,7 +314,7 @@ public class FunctionValidator {
 
     if (!sig.acceptsArgCount(actualArgs)) {
       // Same wording the functions' own runtime guards use, so a client is told the same thing whichever path caught it.
-      return CypherFunctionHelper.arityMessage(functionName, sig.getExpectedArgsDescription(), actualArgs);
+      return FunctionArity.message(functionName, sig.getExpectedArgsDescription(), actualArgs);
     }
 
     return null;
