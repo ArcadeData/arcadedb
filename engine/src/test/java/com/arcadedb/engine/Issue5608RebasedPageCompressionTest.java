@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,6 +58,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue5608RebasedPageCompressionTest extends TestHelper {
   private static final String PAD   = "0".repeat(64);
   private static final String BULKY = "x".repeat(2000);
+  /** Generous enough to never fire on a loaded CI box, short enough that a real deadlock fails fast. */
+  private static final long   HANDOFF_TIMEOUT_SECONDS = 60;
 
   private boolean savedSlotMerge;
 
@@ -141,6 +144,11 @@ class Issue5608RebasedPageCompressionTest extends TestHelper {
   /**
    * Runs {@code write} in a transaction that loses the page version race against a same-size update of {@code bumped}
    * (a false conflict on ANOTHER slot of the same page), so the commit resolves it through the disjoint-slot merge.
+   * <p>
+   * Every wait is bounded and every hand-off latch is released from a {@code finally}: a two-thread commit race that
+   * deadlocks must fail this test in seconds, not hang the whole suite. In particular the main thread releases
+   * {@code mainTxWroteAndReadThePage} even when {@code write} throws, which would otherwise park the competitor
+   * forever on a latch nobody counts down.
    *
    * @return how many slot merges fired, so the caller can tell a merged commit from a plain uncontended one.
    */
@@ -152,7 +160,8 @@ class Issue5608RebasedPageCompressionTest extends TestHelper {
 
     final Thread bumper = new Thread(() -> {
       try {
-        mainTxWroteAndReadThePage.await();
+        if (!mainTxWroteAndReadThePage.await(HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+          throw new AssertionError("the main transaction never signalled that it had written and read the page");
         database.transaction(() -> bumped.asDocument(true).modify().set("tag", "9".repeat(PAD.length())).save(), true, 50);
       } catch (final Throwable e) {
         errors.add(e);
@@ -164,16 +173,21 @@ class Issue5608RebasedPageCompressionTest extends TestHelper {
 
     database.begin();
     try {
-      write.run();                          // loads the page at its current version and registers the tracked write
-      mainTxWroteAndReadThePage.countDown();
-      bumpCommitted.await();                // ...which the competitor now makes stale
-      database.commit();
+      try {
+        write.run();                        // loads the page at its current version and registers the tracked write
+      } finally {
+        mainTxWroteAndReadThePage.countDown();
+      }
+      if (!bumpCommitted.await(HANDOFF_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        throw new AssertionError("the competitor never finished its update of the shared page");
+      database.commit();                    // ...whose commit has now made this transaction's page version stale
     } finally {
       if (database.isTransactionActive())
         database.rollback();
-      bumper.join();
+      bumper.join(TimeUnit.SECONDS.toMillis(HANDOFF_TIMEOUT_SECONDS));
     }
 
+    assertThat(bumper.isAlive()).as("the competitor thread must not still be running").isFalse();
     if (!errors.isEmpty())
       throw new AssertionError("competitor failed: " + errors.getFirst(), errors.getFirst());
 

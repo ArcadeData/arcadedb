@@ -29,6 +29,7 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -839,6 +840,12 @@ public class TransactionContext implements Transaction {
     // merge just re-derived is what makes compressPage's COVERAGE_ALL_MERGES declaration true rather than merely
     // plausible - a declaration that, without this call, would vouch for a defrag the rebase silently dropped.
     // Pinned by Issue5608RebasedPageCompressionTest.
+    //
+    // The null-tolerant two-arg lookup, where rebaseSlots below simply reuses the bucket it already resolved, is not an
+    // accident: THAT method needs its bucket to replay the slots at all, so it is non-null long before it compresses,
+    // while here the bucket is wanted only for the defrag. This preserves the tolerance the commit loop had before the
+    // call moved in - a file the schema does not map to a bucket costs the page its defrag, rather than replacing a
+    // retryable conflict with a schema error on the way out of a merge that already succeeded.
     final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(pageId.getFileId(), false);
     if (bucket != null)
       bucket.compressPage(rebased, false);
@@ -1134,6 +1141,18 @@ public class TransactionContext implements Transaction {
     } catch (final RuntimeException diagnosticError) {
       // The conflict the caller is about to rethrow is the truth; losing one counter increment is not worth
       // corrupting it. Logged at FINE so the swallowed cause is still recoverable when debugging this path.
+      //
+      // FINE, and not WARNING, because a bug here would fire on EVERY declined merge of a contended page: a louder
+      // level would turn one defect into a log flood on the very path that is already under pressure. The cost is
+      // that a programming error introduced into this method later (an NPE, a bad index) would be swallowed as
+      // quietly as the engine exception this catch exists for - so the assertion below draws the line between the
+      // two. It fails fast under -ea (surefire's default) at zero production cost, exactly like the leaked-coverage
+      // check in MutablePage.beginCoveredWrite; every exception this method can legitimately meet is an
+      // ArcadeDBException (SchemaException from the bucket lookup, ConcurrentModificationException from its
+      // sibling branch), so anything else is a defect in the diagnostic itself and not a state it must tolerate.
+      assert diagnosticError instanceof ArcadeDBException :
+          "reportCoverageDecline is a diagnostic and must not fail on its own: " + diagnosticError;
+
       LogManager.instance().log(this, Level.FINE, "Unable to report the coverage decline of page %s", diagnosticError,
           page.getPageId());
     }
