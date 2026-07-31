@@ -229,8 +229,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (json.has("allowLeadingWildcard"))
       this.allowLeadingWildcard = metadataBoolean(json, "allowLeadingWildcard");
 
+    // Through the validating setter: the query parser understands only AND and OR, so anything else was accepted here
+    // and then quietly behaved as OR - the last silent-accept left on the full-text clause (issue #5639).
     if (json.has("defaultOperator"))
-      this.defaultOperator = json.getString("defaultOperator");
+      setDefaultOperator(json.getString("defaultOperator"));
 
     // Route through the validating setters so an unknown similarity or an out-of-range k1/b in METADATA {...} is
     // reported at creation rather than silently scoring wrong.
@@ -399,12 +401,21 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets the default operator for query parsing.
+   * Sets the default operator for query parsing: {@code "OR"} (default) or {@code "AND"}, case-insensitive.
+   * <p>
+   * Validated because the query parser recognises nothing else, so an unrecognised operator would silently behave as
+   * OR. {@link #fromJSON} deliberately does NOT route through here: it reads a PERSISTED definition, written by this
+   * setter in the first place, and refusing a value there would make a database unopenable rather than report a typo.
    *
    * @param defaultOperator "OR" or "AND"
+   *
+   * @throws IllegalArgumentException if the operator is neither
    */
   public void setDefaultOperator(final String defaultOperator) {
-    this.defaultOperator = defaultOperator;
+    if (defaultOperator == null || (!"OR".equalsIgnoreCase(defaultOperator.trim()) && !"AND".equalsIgnoreCase(
+        defaultOperator.trim())))
+      throw new IllegalArgumentException("Full-text defaultOperator must be AND or OR, got: " + defaultOperator);
+    this.defaultOperator = defaultOperator.trim().toUpperCase();
   }
 
   /**

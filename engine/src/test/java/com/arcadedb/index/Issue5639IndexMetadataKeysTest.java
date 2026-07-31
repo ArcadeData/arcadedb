@@ -364,6 +364,29 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     assertThat(fullTextMetadata("Article[text]").getSimilarity()).isEqualTo(FullTextIndexMetadata.SIMILARITY_BM25);
   }
 
+  /**
+   * The query parser understands only AND and OR, so any other operator was accepted and then behaved as OR - the last
+   * value on the full-text clause that was taken and quietly ignored.
+   */
+  @Test
+  void unknownFullTextDefaultOperatorIsReported() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.text STRING");
+    });
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX ON Article (text) FULL_TEXT METADATA {\"defaultOperator\": \"XOR\"}"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("AND or OR");
+
+    assertThat(database.getSchema().existsIndex("Article[text]")).isFalse();
+
+    // The two it does understand keep working, case-insensitively.
+    database.command("sql", "CREATE INDEX ON Article (text) FULL_TEXT METADATA {\"defaultOperator\": \"and\"}");
+    assertThat(fullTextMetadata("Article[text]").getDefaultOperator()).isEqualTo("AND");
+  }
+
   private FullTextIndexMetadata fullTextMetadata(final String indexName) {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(indexName);
     return ((LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0]).getFullTextMetadata();

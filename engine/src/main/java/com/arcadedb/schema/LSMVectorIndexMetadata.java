@@ -314,11 +314,14 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     else if (metadata.has("similarityFunction"))
       setSimilarity(metadata.getString("similarityFunction"));
 
+    // Through the setters, like "similarity" above: a value that cannot be read here comes from a corrupted or
+    // hand-edited schema.json and surfaces while OPENING the database, so it is worth the setter's message naming the
+    // supported values instead of a bare enum constant name.
     if (metadata.has("quantization"))
-      this.quantizationType = VectorQuantizationType.valueOf(metadata.getString("quantization"));
+      setQuantization(metadata.getString("quantization"));
 
     if (metadata.has("encoding"))
-      this.encoding = VectorEncoding.fromString(metadata.getString("encoding"));
+      setEncoding(metadata.getString("encoding"));
 
     if (metadata.has("maxConnections"))
       this.maxConnections = metadata.getInt("maxConnections");
@@ -329,9 +332,10 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("efSearch"))
       this.efSearch = metadata.getInt("efSearch");
 
-    // metadataFloat, not a cast to Number: a hand-edited or hand-restored schema.json carrying a quoted value would
-    // otherwise raise ClassCastException while OPENING the database, which is a worse outcome than the 400 the same
-    // value gets on the user path. The tolerant reader is already there; use it on both.
+    // metadataFloat, not a cast to Number: the cast raised ClassCastException on a quoted value, which for a
+    // hand-edited or hand-restored schema.json meant a failure while OPENING the database. The integer keys above
+    // need no equivalent change - getInt() already parses a quoted number through Gson's lazy Number - so the reader
+    // here is deliberately not mirrored onto them.
     if (metadata.has("neighborOverflowFactor"))
       this.neighborOverflowFactor = metadataFloat(metadata, "neighborOverflowFactor");
 
