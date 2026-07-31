@@ -31,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 
 import static com.mongodb.client.model.Filters.eq;
@@ -199,8 +200,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   void aQuoteBearingValueSurvivesBeingSetByAnUpdate() {
     collection.insertOne(new Document("name", "target"));
 
-    // $set values travel as a JSON literal rather than as a bound parameter, so their escaping is a separate mechanism
-    // from the WHERE clause: this pins that it actually holds
+    // $set values are bound as the payload of MERGE, so this is the observable contract the binding has to preserve
     final String awkward = "it's a \"quoted\" C:\\path";
     collection.updateOne(eq("name", "target"), new Document("$set", new Document("note", awkward)));
 
@@ -211,11 +211,100 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   void aQuoteBearingValueSurvivesAFullReplacement() {
     collection.insertOne(new Document("name", "target"));
 
-    // a replacement document goes out as SQL CONTENT <json>, another inlined-JSON path
+    // a replacement document goes out as SQL CONTENT :p<n>, bound the same way
     final String awkward = "replaced' with \"quotes\"";
     collection.replaceOne(eq("name", "target"), new Document("name", "target").append("note", awkward));
 
     assertThat(collection.find(eq("name", "target")).first().getString("note")).isEqualTo(awkward);
+  }
+
+  @Test
+  void aNestedDocumentSurvivesBeingSetByAnUpdate() {
+    collection.insertOne(new Document("name", "target"));
+
+    // the bound payload is a nested Map rather than JSON text, so the nesting has to survive the parameter round trip
+    collection.updateOne(eq("name", "target"),
+        new Document("$set", new Document("address", new Document("city", "Rome").append("zip", 145))));
+
+    final Document address = (Document) collection.find(eq("name", "target")).first().get("address");
+    assertThat(address.getString("city")).isEqualTo("Rome");
+    assertThat(address.getInteger("zip")).isEqualTo(145);
+  }
+
+  @Test
+  void anArraySurvivesBeingSetByAnUpdate() {
+    collection.insertOne(new Document("name", "target"));
+
+    collection.updateOne(eq("name", "target"), new Document("$set", new Document("tags", List.of("a", "b' c"))));
+
+    assertThat(collection.find(eq("name", "target")).first().getList("tags", String.class)).containsExactly("a", "b' c");
+  }
+
+  @Test
+  void aNestedDocumentSurvivesAFullReplacement() {
+    collection.insertOne(new Document("name", "target"));
+
+    collection.replaceOne(eq("name", "target"),
+        new Document("name", "target").append("address", new Document("city", "Rome' \"quoted\"")));
+
+    final Document address = (Document) collection.find(eq("name", "target")).first().get("address");
+    assertThat(address.getString("city")).isEqualTo("Rome' \"quoted\"");
+  }
+
+  @Test
+  void aCombinedSetAndIncUpdateAppliesBothOperations() {
+    collection.insertOne(new Document("name", "target").append("count", 1));
+
+    // a driver can send both operators in one update: the statement then chains MERGE :p0 with SET ... += :p1, so
+    // this is what proves the bound payload does not swallow the SET keyword that follows it
+    collection.updateOne(eq("name", "target"),
+        new Document("$set", new Document("note", "v1' \"x\"")).append("$inc", new Document("count", 3)));
+
+    final Document found = collection.find(eq("name", "target")).first();
+    assertThat(found.getString("note")).isEqualTo("v1' \"x\"");
+    assertThat(((Number) found.get("count")).intValue()).isEqualTo(4);
+  }
+
+  @Test
+  void aDateSurvivesBeingSetByAnUpdate() {
+    collection.insertOne(new Document("name", "target"));
+
+    // the fidelity half of the binding: routing through JSONObject reshaped a Date before it reached the record, so
+    // this guards the stated behaviour change end to end rather than only at the parameter map
+    final Date when = new Date(1_700_000_000_000L);
+    collection.updateOne(eq("name", "target"), new Document("$set", new Document("when", when)));
+
+    assertThat(collection.find(eq("name", "target")).first().getDate("when")).isEqualTo(when);
+  }
+
+  @Test
+  void aDateSurvivesBeingInsertedAndReadBack() {
+    // the insert path never went through the update binding, so this covers the read-side conversion on its own: a
+    // stored temporal property used to reach the BSON encoder as a java.time value and kill the connection
+    final Date when = new Date(1_700_000_000_000L);
+    collection.insertOne(new Document("name", "inserted").append("when", when));
+
+    assertThat(collection.find(eq("name", "inserted")).first().getDate("when")).isEqualTo(when);
+  }
+
+  @Test
+  void aDateNestedInsideASubDocumentSurvivesTheRoundTrip() {
+    final Date when = new Date(1_700_000_000_000L);
+    collection.insertOne(new Document("name", "nested").append("meta", new Document("created", when)));
+
+    final Document meta = (Document) collection.find(eq("name", "nested")).first().get("meta");
+    assertThat(meta.getDate("created")).isEqualTo(when);
+  }
+
+  @Test
+  void aLargeDoubleSurvivesBeingSetByAnUpdate() {
+    collection.insertOne(new Document("name", "target"));
+
+    // inlining stringified this into scientific notation on its way into the statement
+    final double big = 1.0E10d;
+    collection.updateOne(eq("name", "target"), new Document("$set", new Document("ratio", big)));
+
+    assertThat(((Number) collection.find(eq("name", "target")).first().get("ratio")).doubleValue()).isEqualTo(big);
   }
 
   @Test

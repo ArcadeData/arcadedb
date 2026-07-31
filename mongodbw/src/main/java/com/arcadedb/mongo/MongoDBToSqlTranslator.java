@@ -24,7 +24,14 @@ import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -215,23 +222,50 @@ public class MongoDBToSqlTranslator {
   }
 
   protected static Document convertDocumentToMongoDB(final com.arcadedb.database.Document doc) {
+    return convertMapToMongoDB(doc.toMap());
+  }
+
+  protected static Document convertDocumentToMongoDB(final Result doc) {
+    return convertMapToMongoDB(doc.toMap());
+  }
+
+  private static Document convertMapToMongoDB(final Map<String, Object> map) {
     final Document result = new Document();
-    for (final Map.Entry<String, Object> entry : doc.toMap().entrySet()) {
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final String p = entry.getKey();
       final Object value = entry.getValue();
-      result.put(p, "_id".equals(p) ? getObjectId((String) value) : value);
+      result.put(p, "_id".equals(p) ? getObjectId((String) value) : toBsonValue(value));
     }
     return result;
   }
 
-  protected static Document convertDocumentToMongoDB(final Result doc) {
-    final Document result = new Document();
-    for (final Map.Entry<String, Object> entry : doc.toMap().entrySet()) {
-      final String p = entry.getKey();
-      final Object value = entry.getValue();
-      result.put(p, "_id".equals(p) ? getObjectId((String) value) : value);
+  /**
+   * Maps a stored value onto a type the BSON encoder accepts. A temporal property is held as a {@code java.time} value, and
+   * the encoder handles exactly one of those, {@link Instant}, rejecting the rest outright and failing the whole response.
+   * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact.
+   */
+  @SuppressWarnings("unchecked")
+  private static Object toBsonValue(final Object value) {
+    if (value instanceof Instant)
+      return value;
+    else if (value instanceof LocalDateTime dateTime)
+      return dateTime.toInstant(ZoneOffset.UTC);
+    else if (value instanceof LocalDate date)
+      return date.atStartOfDay().toInstant(ZoneOffset.UTC);
+    else if (value instanceof ZonedDateTime dateTime)
+      return dateTime.toInstant();
+    else if (value instanceof Date date)
+      return date.toInstant();
+    else if (value instanceof Map)
+      // an embedded document can hold a temporal property of its own
+      return convertMapToMongoDB((Map<String, Object>) value);
+    else if (value instanceof List<?> list) {
+      final List<Object> converted = new ArrayList<>(list.size());
+      for (final Object item : list)
+        converted.add(toBsonValue(item));
+      return converted;
     }
-    return result;
+    return value;
   }
 
   protected static ObjectId getObjectId(final String s) {

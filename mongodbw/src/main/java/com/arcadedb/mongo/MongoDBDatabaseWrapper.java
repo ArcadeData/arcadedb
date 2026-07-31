@@ -623,9 +623,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
   }
 
-  private void appendUpdateOperations(final StringBuilder sql, final Map<String, Object> params, final Document u) {
+  /**
+   * Appends the update clauses for a BSON update document, binding every value it carries into {@code params} rather than
+   * spelling it into {@code sql}. Field names are the exception: SQL cannot bind a property name, so {@code $unset} and
+   * {@code $inc} quote theirs as identifiers.
+   * <p>
+   * {@code params} must be empty on entry and hold only generated placeholders afterwards: names are derived from the map's
+   * current size, so a pre-seeded map would silently reuse one. A caller that also appends a WHERE clause must share this
+   * same map, which continues the numbering instead of colliding with it.
+   */
+  static void appendUpdateOperations(final StringBuilder sql, final Map<String, Object> params, final Document u) {
+    assert params.isEmpty();
+
     if (isReplacement(u)) {
-      sql.append(" CONTENT ").append(documentToJson(u));
+      sql.append(" CONTENT ");
+      MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(u));
       return;
     }
 
@@ -633,7 +645,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final String op = entry.getKey();
       final Document operand = (Document) entry.getValue();
       switch (op) {
-      case "$set" -> sql.append(" MERGE ").append(documentToJson(operand));
+      case "$set" -> {
+        sql.append(" MERGE ");
+        MongoDBToSqlTranslator.buildValue(sql, params, documentToMap(operand));
+      }
       case "$unset" -> {
         sql.append(" REMOVE ");
         int i = 0;
@@ -679,21 +694,25 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return 0;
   }
 
-  private static JSONObject documentToJson(final Document doc) {
-    final JSONObject json = new JSONObject();
+  /**
+   * Converts a BSON document into the map bound as the payload of {@code UPDATE ... MERGE} / {@code ... CONTENT}. Insertion
+   * order is preserved so a replacement document reaches the record in wire order.
+   */
+  private static Map<String, Object> documentToMap(final Document doc) {
+    final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
-      json.put(entry.getKey(), toJsonValue(entry.getValue()));
-    return json;
+      map.put(entry.getKey(), toMapValue(entry.getValue()));
+    return map;
   }
 
-  private static Object toJsonValue(final Object value) {
+  private static Object toMapValue(final Object value) {
     if (value instanceof Document document)
-      return documentToJson(document);
+      return documentToMap(document);
     else if (value instanceof List<?> list) {
-      final JSONArray array = new JSONArray();
+      final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)
-        array.put(toJsonValue(item));
-      return array;
+        converted.add(toMapValue(item));
+      return converted;
     } else if (value instanceof ObjectId id)
       return toHexString(id);
     return value;
