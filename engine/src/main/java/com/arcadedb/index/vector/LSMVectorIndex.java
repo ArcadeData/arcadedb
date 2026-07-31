@@ -5545,11 +5545,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * Epoch used to decide whether a pooled searcher (and the graph view it holds) is still valid. It must change on
-   * anything that can alter what a search would see: a graph rebuild swaps {@link #graphIndex}, and every
-   * insert/update/delete bumps {@link #mutationsSinceSerialize}.
+   * anything that can alter what a search would see: a graph rebuild swaps {@link #graphIndex} and advances
+   * {@link #rebuildSnapshotGeneration}, and every insert/update/delete bumps {@link #mutationsSinceSerialize}.
+   * <p>
+   * The value never repeats. That matters because graph identity is not a sufficient guard on its own: the
+   * live-builder path keeps serving searches from the same graph instance while it grows, so the epoch is the only
+   * thing that can tell a pooled view its contents moved underneath it.
    */
   private long searcherPoolEpoch() {
-    return mutationsSinceSerialize.get();
+    // The mutation counter alone cannot carry this: a rebuild subtracts back exactly what it absorbed
+    // (mutationsAtBuildStart), so a settled index reads the same value after every rebuild and an epoch taken from it
+    // repeats. Pairing it with the rebuild generation, which only ever increases, makes the epoch strictly monotonic
+    // across both kinds of event. The generation occupies the high bits so ordinary mutations still move the low ones.
+    return (rebuildSnapshotGeneration << 32) | (mutationsSinceSerialize.get() & 0xFFFFFFFFL);
   }
 
   /**
