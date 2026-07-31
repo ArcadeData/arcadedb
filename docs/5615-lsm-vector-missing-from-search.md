@@ -88,6 +88,12 @@ In addition to the six already recorded on the issue:
 - Only the from-scratch path needs this. Vectors ingested through the live builder are already in the delta
   buffer from insertion, so an orphan there is served by the delta scan until a rebuild absorbs it.
 
+## Scope of the guarantee
+
+This restores "every committed vector is findable" **for the running session, until the next rebuild** - not
+unconditionally. The two gaps below are inherent to serving the recovery from an in-memory buffer, and both are
+bounded by the next rebuild re-detecting the orphan.
+
 ## Known limitations
 
 - **The recovery does not survive a restart.** `deltaVectors` is in-memory, so a restart drops the re-queued
@@ -122,3 +128,25 @@ mvn -pl engine test -Dtest='com.arcadedb.index.vector.*Test'   # 246 tests, 0 fa
 The concurrency reproducer is inherently probabilistic - its flake rate on unfixed code swung between 1 run in
 1 and 1 run in 10 - so a single clean run of it never proves anything on its own. The deterministic test is
 what pins the fix.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/5633
+
+### Review cycles
+
+| Cycle | Head | Outcome |
+|---|---|---|
+| 1 | `ba5ff86` | Sentinel not excluded when re-queueing - **real**, fixed (`isDeletedSentinel` + test). Three further notes assessed and documented rather than coded. |
+| 2 | `4ce9ef6` | Main ask (exception storm in the level loop) rested on a **false premise** - `OnHeapGraphIndex.getNeighborsIterator` returns `EMPTY_NODE_ITERATOR` for an absent node, verified in bytecode, and the suggested `contains()` guard would add a lookup rather than remove one. Pushed back with evidence; corrected the misleading comment that caused it. Applied the entry-node null check and the level-union note. |
+| 3 | `b1eb6e4` | Restart gap - **real**; verified the precise mechanism (the staleness check needs `graphSize < ordinalMap.length`, and an orphan is counted in the graph) and documented it. Guarded the null neighbor iterator. |
+| 4 | `f8a494d` | No blockers. Softened the framing of the guarantee to match what is delivered. |
+
+### Follow-ups not taken here
+
+- **Upstream:** why `GraphIndexBuilder.build()` leaves a node unreferenced despite calling `cleanup()`.
+- **Separate defect, unfiled:** `GraphSearcherPool.borrow` calls `drain()` *before* publishing `pooledGraph` /
+  `pooledEpoch`, so a concurrent `release` reading the still-old matching pair can return a searcher bound to
+  the old graph to the idle queue. Needs two searching threads on one index, so it is not #5615.
+- **Possible enhancement:** a bounded self-heal (one deferred rebuild when orphans are found) if orphan counts
+  are ever observed to be large in practice.
