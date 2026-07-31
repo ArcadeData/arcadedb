@@ -338,8 +338,13 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   @Override
-  public TypeLSMVectorIndexBuilder withMetadata(IndexMetadata metadata) {
-    this.metadata = (LSMVectorIndexMetadata) metadata;
+  public TypeLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
+    // Same guard as the full-text and bucket-level vector builders: a raw cast here would raise the very
+    // ClassCastException, blamed on an unrelated line, that vectorMetadata() exists to turn into an actionable error.
+    if (metadata != null && !(metadata instanceof LSMVectorIndexMetadata))
+      throw new IllegalArgumentException(
+          "An LSM_VECTOR index requires LSMVectorIndexMetadata but got " + metadata.getClass().getName());
+    this.metadata = metadata;
     return this;
   }
 

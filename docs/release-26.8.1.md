@@ -1076,6 +1076,14 @@ search after a reopen scored with the wrong metric against a graph built with th
 now. The persisted definition also carries every remaining knob, so a setting no longer silently reverts to its
 default on the next restart.
 
+**Upgrade note, and the one with visible effects.** If you have an existing `EUCLIDEAN` or `DOT_PRODUCT` vector index,
+its searches have been scoring with COSINE since the first restart after it was created. On the first reopen after this
+upgrade it scores with the metric it was created with - so **distances and result ordering will change**, and they
+change to what was asked for. Nothing needs re-creating, re-importing or rebuilding: the graph was always built with
+the correct metric, only the search side disagreed with it, and the fix is applied on open. An index created with the
+default COSINE is unaffected in every respect. If you have been compensating for the old behaviour anywhere - a tuned
+distance threshold, a golden-file test of result order - that is the thing to re-check.
+
 Finally, restoring a vector index from an exported definition (`IMPORT DATABASE` of a JSONL dump) goes through a
 distinct entry point: an exported definition legitimately carries structural keys - `type`, `bucket`, `version`, ... -
 that the `METADATA`-clause reader has to reject as typos.

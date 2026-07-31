@@ -96,7 +96,12 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
 
   @Override
   public TypeLSMSparseVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
-    this.metadata = (LSMSparseVectorIndexMetadata) metadata;
+    // Guarded rather than cast, for the same reason as sparseMetadata(): an actionable error beats a
+    // ClassCastException attributed to an unrelated line.
+    if (metadata != null && !(metadata instanceof LSMSparseVectorIndexMetadata))
+      throw new IllegalArgumentException(
+          "An LSM_SPARSE_VECTOR index requires LSMSparseVectorIndexMetadata but got " + metadata.getClass().getName());
+    this.metadata = metadata;
     return this;
   }
 

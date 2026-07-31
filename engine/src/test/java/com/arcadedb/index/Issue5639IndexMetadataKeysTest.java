@@ -26,6 +26,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.BucketLSMVectorIndexBuilder;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Schema;
@@ -258,6 +259,30 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     assertThat(index.getMetadata().similarityFunction.name()).isEqualTo("EUCLIDEAN");
     assertThat(index.getMetadata().efSearch).isEqualTo(250);
     assertThat(index.getMetadata().maxConnections).isEqualTo(24);
+  }
+
+  /**
+   * The typed {@code withMetadata} overloads guard the cast instead of performing it, so a metadata of the wrong subtype
+   * reports what was expected rather than raising a {@link ClassCastException} attributed to an unrelated line.
+   */
+  @Test
+  void aMetadataOfTheWrongSubtypeIsReported() {
+    createVectorType("Doc");
+
+    final IndexMetadata plain = new IndexMetadata("Doc", new String[] { "embedding" }, -1);
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("Doc", new String[] { "embedding" })
+        .withLSMVectorType()
+        .withMetadata(plain))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("requires LSMVectorIndexMetadata");
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex("Doc", new String[] { "embedding" })
+        .withType(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR)
+        .withSparseVectorType()
+        .withMetadata(plain))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("requires LSMSparseVectorIndexMetadata");
   }
 
   @Test
