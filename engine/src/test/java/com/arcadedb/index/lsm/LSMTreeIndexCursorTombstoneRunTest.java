@@ -134,10 +134,16 @@ class LSMTreeIndexCursorTombstoneRunTest extends TestHelper {
   }
 
   private static int countEntries(final IndexCursor cursor) {
-    int count = 0;
-    while (cursor.hasNext())
-      if (cursor.next() != null)
+    try {
+      // no null filtering: since #5635 hasNext() is exact, so every next() yields a real entry
+      int count = 0;
+      while (cursor.hasNext()) {
+        assertThat(cursor.next()).isNotNull();
         ++count;
-    return count;
+      }
+      return count;
+    } finally {
+      cursor.close();
+    }
   }
 }

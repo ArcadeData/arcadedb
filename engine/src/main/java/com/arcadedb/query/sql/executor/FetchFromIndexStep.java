@@ -51,14 +51,23 @@ import java.util.*;
  */
 public class FetchFromIndexStep extends AbstractExecutionStep {
   protected final String                                         indexName;
-  private final   List<IndexCursor>                              nextCursors = new ArrayList<>();
+  /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
+  final           List<IndexCursor>                              nextCursors = new ArrayList<>();
+  /**
+   * The per-value cursors an {@code IN} condition opens ({@link #processInCondition()} hands each to
+   * {@code customIterator} rather than to {@code nextCursors}). Held here only so {@link #releaseCursors()} can close
+   * them: nothing else ever would, so an {@code IN} list left the same retired-file guard behind that {@code close()}
+   * exists to release.
+   */
+  final           List<IndexCursor>                              customCursors = new ArrayList<>();
   protected       RangeIndex                                     index;
   protected       BooleanExpression                              condition;
   private       BinaryCondition additionalRangeCondition;
   private final boolean         orderAsc;
   private       long            count       = 0;
   private         boolean                                        inited      = false;
-  private         IndexCursor                                    cursor;
+  /** Package-private for the same reason as {@link #nextCursors}. */
+  IndexCursor                                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
   private         Iterator<?>                                    nullKeyIterator;
   private         Pair<Object, Identifiable>                     nextEntry   = null;
@@ -184,10 +193,17 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    // Release the index cursors even when the scan did not run to exhaustion (e.g. a LIMIT was
-    // reached or the result set was closed early): compacted-series cursors register with their
-    // file so a full compaction defers dropping it, and an unclosed cursor would keep the retired
-    // file alive until the next database restart.
+    releaseCursors();
+    super.close();
+  }
+
+  /**
+   * Releases the index cursors even when the scan did not run to exhaustion (e.g. a LIMIT was reached, the result set
+   * was closed early, or the step is being restarted): compacted-series cursors register with their file so a full
+   * compaction defers dropping it, and an unclosed cursor would keep the retired file alive until the next database
+   * restart.
+   */
+  private void releaseCursors() {
     if (cursor != null) {
       cursor.close();
       cursor = null;
@@ -195,8 +211,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     for (final IndexCursor c : nextCursors)
       c.close();
     nextCursors.clear();
-
-    super.close();
+    for (final IndexCursor c : customCursors)
+      c.close();
+    customCursors.clear();
   }
 
   private void updateIndexStats() {
@@ -278,6 +295,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       customIterator = new MultiIterator<>();
       for (final Object item : MultiValue.getMultiValueIterable(rightValue)) {
         final IndexCursor localCursor = createCursor(equals, unwrapSubQueryResult(item), context);
+        customCursors.add(localCursor);
 
         customIterator.addIterator(new Iterator<Map.Entry>() {
           @Override
@@ -661,8 +679,25 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
+  /**
+   * Restarts the step: {@code inited} goes back to false and {@code init()} rebuilds the whole cursor set from scratch
+   * (that is what {@code UpdateExecutionPlan.reset()} relies on - it re-runs the plan straight after). So the cursors of
+   * the previous run must be RELEASED here, not just dropped (#5635):
+   * <ul>
+   *   <li>a {@code LSMTreeIndexUnderlyingCompactedSeriesCursor} stays registered with its file, and
+   *       {@code LSMTreeIndex.dropRetiredCompactedIndexes} skips a retired file that still has one - for the lifetime of
+   *       the database, since nothing else will ever close it;</li>
+   *   <li>{@code nextCursors} was not even cleared, so the pending cursors of the previous run survived into the new one
+   *       and {@code init()} appended to them: the restarted scan replayed the OLD, partly consumed cursors before
+   *       reaching the ones it had just opened.</li>
+   * </ul>
+   * Not propagated to {@code prev}: {@code SelectExecutionPlan.reset()} walks every step itself, so a step that reset
+   * its predecessor would reset it twice.
+   */
   @Override
   public void reset() {
+    releaseCursors();
+
     index = null;
     condition = condition == null ? null : condition.copy();
     additionalRangeCondition = additionalRangeCondition == null ? null : additionalRangeCondition.copy();
@@ -671,10 +706,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     count = 0;
 
     inited = false;
-    cursor = null;
     customIterator = null;
     nullKeyIterator = null;
     nextEntry = null;
+    nextEntryScore = 0f;
   }
 
   @Override

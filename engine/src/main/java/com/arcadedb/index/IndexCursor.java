@@ -25,13 +25,26 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 /**
  * Cursor to browse an result set from an index.
+ * <p>
+ * <b>Contract (#5635).</b> An index cursor is a plain {@link java.util.Iterator}: {@code hasNext()} is EXACT and
+ * {@code next()} never answers null - it throws {@link java.util.NoSuchElementException} once exhausted. Implementations
+ * that have skip work to do (tombstones, deduplication, a covering-cell walk) must do it in {@code hasNext()} and cache
+ * the result, not answer optimistically and hand out a null element. Consumers must therefore not guard against a null
+ * from {@code next()}; several used to, each with its own comment, because {@code LSMTreeIndexCursor} did answer
+ * optimistically.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @ExcludeFromJacocoGeneratedReport
 public interface IndexCursor extends Cursor {
+  /**
+   * The keys of the entry {@link #next()} last returned, or null before the first call.
+   */
   Object[] getKeys();
 
+  /**
+   * The entry {@link #next()} last returned, or null before the first call.
+   */
   Identifiable getRecord();
 
   /**
