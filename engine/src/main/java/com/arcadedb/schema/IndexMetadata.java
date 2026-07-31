@@ -1,13 +1,3 @@
-package com.arcadedb.schema;
-
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
-
-import java.math.BigDecimal;
-import java.util.List;
-import java.util.Set;
-import java.util.TreeSet;
-
 /*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
@@ -22,7 +12,20 @@ import java.util.TreeSet;
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
+package com.arcadedb.schema;
+
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+
 public class IndexMetadata {
   public static final String COLLATION_CI      = "CI";
   public static final String COLLATION_DEFAULT = "DEFAULT";

@@ -1037,7 +1037,15 @@ CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {"dimensions": 384, "similar
 
 An unknown key is now refused with the list of the ones the index type accepts, as an HTTP 400. This holds for
 `LSM_VECTOR`, `LSM_SPARSE_VECTOR` and `FULL_TEXT`; `GEOSPATIAL` already behaved this way, and an index type with no
-settings at all already refused a `METADATA` clause outright.
+settings at all already refused a `METADATA` clause outright. A value of the wrong shape is refused the same way, and
+is no longer coerced: `{"dimensions": 8.5}` used to create an 8-dimension index, and `{"addHierarchy": "yes"}` used to
+*disable* the setting being asked for, because a string that is not `"true"` reads as `false`.
+
+**Upgrade note.** This is the one behaviour change to be aware of: a stored `CREATE INDEX` script or migration that
+carried a stray or misspelled `METADATA` key used to run and is now refused. That is the point of the change - the key
+was never doing anything - but a statement that "worked" before can now fail, so check any generated DDL against the
+accepted keys, which the error message lists. Existing indexes are untouched; only new `CREATE INDEX` statements are
+validated, and reading a persisted definition stays tolerant of the structural keys it carries.
 
 Four dense-vector settings were unreachable behind that silence, and are now settable and persisted:
 

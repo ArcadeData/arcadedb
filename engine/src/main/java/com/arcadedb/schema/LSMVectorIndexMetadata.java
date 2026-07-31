@@ -329,11 +329,14 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("efSearch"))
       this.efSearch = metadata.getInt("efSearch");
 
+    // metadataFloat, not a cast to Number: a hand-edited or hand-restored schema.json carrying a quoted value would
+    // otherwise raise ClassCastException while OPENING the database, which is a worse outcome than the 400 the same
+    // value gets on the user path. The tolerant reader is already there; use it on both.
     if (metadata.has("neighborOverflowFactor"))
-      this.neighborOverflowFactor = ((Number) metadata.get("neighborOverflowFactor")).floatValue();
+      this.neighborOverflowFactor = metadataFloat(metadata, "neighborOverflowFactor");
 
     if (metadata.has("alphaDiversityRelaxation"))
-      this.alphaDiversityRelaxation = ((Number) metadata.get("alphaDiversityRelaxation")).floatValue();
+      this.alphaDiversityRelaxation = metadataFloat(metadata, "alphaDiversityRelaxation");
 
     if (metadata.has("idPropertyName"))
       this.idPropertyName = metadata.getString("idPropertyName");
