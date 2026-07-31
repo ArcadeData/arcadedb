@@ -297,7 +297,7 @@ def get_arcadedb_module():
 
 def get_ladybug_module():
     try:
-        import real_ladybug as lb
+        import ladybug as lb
     except ImportError:
         return None
     return lb
@@ -5397,7 +5397,7 @@ def run_graph_oltp_ladybug(
 ) -> dict:
     lb = get_ladybug_module()
     if lb is None:
-        raise RuntimeError("real_ladybug is not installed")
+        raise RuntimeError("ladybug is not installed")
 
     if db_path.exists():
         shutil.rmtree(db_path)
@@ -9724,7 +9724,10 @@ def run_in_docker(args) -> bool:
     else:
         packages = ["lxml"]
         if args.db in ("ladybug", "ladybugdb"):
-            packages.append("real_ladybug")
+            # Pinned for reproducible benchmark numbers: ladybug is pre-1.0 and no CI
+            # job exercises this path, so an unpinned minor bump would go unnoticed.
+            # Re-check against the latest release when refreshing published results.
+            packages.append("ladybug==0.19.0")
         if args.db == "graphqlite":
             packages.append("graphqlite")
         if args.db == "duckdb":
