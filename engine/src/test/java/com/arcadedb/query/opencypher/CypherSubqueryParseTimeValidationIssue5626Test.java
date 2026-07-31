@@ -347,10 +347,15 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
   // ===================== the walker visits each expression exactly once =====================
 
   /**
-   * A {@code WITH} can be registered on the ordered clause list, on the statement, or on both, and the walk has to
-   * cover all three without visiting one twice - which is what lets a visitor accumulate rather than only assert.
-   * The precondition is asserted first: without a query whose WITH really is registered on both, the count below
-   * would pass for the trivial reason that there was nothing to double-visit.
+   * The walk covers the whole clause tree from the ordered clause list alone, which is only correct because a
+   * {@code WITH} registered on {@code getWithClauses()} is the very same object registered on
+   * {@code getClausesInOrder()} - one builder method puts it on both. Asserted here rather than assumed, because a
+   * builder path that ever registered a WITH on the statement alone would make the walk, and every check running
+   * through it, silently skip that clause.
+   * <p>
+   * The visit count then holds the other half: no expression is reached twice, which is what lets a visitor
+   * accumulate rather than only assert. It is checked on a query with a WITH in the outer statement and another in a
+   * {@code CALL} body, so a double-registration would have to show up in both scopes to go unnoticed.
    */
   @Test
   void everyExpressionIsVisitedExactlyOnce() {
@@ -358,16 +363,16 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
         "MATCH (n:P) WITH n, abs(n.age) AS a WHERE a > 0 "
             + "CALL { MATCH (m:P) WITH m WHERE m.age > 0 RETURN m.name AS b } RETURN a, b ORDER BY a");
 
-    final List<ClauseEntry> clauses = statement.getClausesInOrder();
-    final List<WithClause> ordered = clauses.stream()
+    final List<WithClause> ordered = statement.getClausesInOrder().stream()
         .filter(entry -> entry.getType() == ClauseEntry.ClauseType.WITH)
         .map(entry -> (WithClause) entry.getTypedClause())
         .toList();
     assertThat(ordered).isNotEmpty();
     assertThat(statement.getWithClauses()).isNotEmpty();
-    assertThat(statement.getWithClauses().stream().anyMatch(w -> ordered.stream().anyMatch(o -> o == w)))
-        .as("the query must have a WITH registered on both collections, or this test proves nothing")
-        .isTrue();
+    for (final WithClause withClause : statement.getWithClauses())
+      assertThat(ordered.stream().anyMatch(entry -> entry == withClause))
+          .as("a WITH on the statement must be the same instance on the ordered list, or the walk would miss it")
+          .isTrue();
 
     final Map<Expression, Integer> visits = new IdentityHashMap<>();
     CypherExpressionWalker.walk(statement, expression -> visits.merge(expression, 1, Integer::sum));

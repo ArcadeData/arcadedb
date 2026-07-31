@@ -71,11 +71,8 @@ import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Visits every expression a statement contains, wherever it appears: inside another expression, inside a predicate,
@@ -117,10 +114,10 @@ public final class CypherExpressionWalker {
   @FunctionalInterface
   public interface Visitor {
     /**
-     * Called once per expression node, parents before children. Once means once: a node the AST makes reachable by
-     * two routes is still visited a single time, so a visitor that accumulates - a counter, a collector - is safe.
-     * The same expression object appearing at two genuinely different places in the query is two nodes and is
-     * visited twice, which is what a check of any kind wants.
+     * Called once per expression node, parents before children. Once means once - a visitor that accumulates, a
+     * counter or a collector, is safe - and it is structural rather than guarded: each arm of the walk covers a part
+     * of the tree no other arm does. Preserve that when adding an arm; walking a clause from two places is how the
+     * property gets lost.
      */
     void visit(Expression expression);
 
@@ -170,28 +167,16 @@ public final class CypherExpressionWalker {
     walk(statement.getSkip(), visitor);
     walk(statement.getLimit(), visitor);
 
-    // A WITH can be registered on the ordered list, on the statement, or on both, depending on the builder path that
-    // produced it, and every one of them has to be covered. Which ones the ordered walk already reached is tracked by
-    // identity so the second pass adds only what it missed - the one place in this traversal where the same expression
-    // was otherwise reachable twice. Everywhere else once-only falls out of each arm below walking a part of the tree
-    // no other arm does, which is a property to preserve when adding one, not something enforced here.
-    Set<WithClause> alreadyWalked = null;
-
+    // The ordered clause list is the whole clause tree, WITH included: StatementBuilder.addWith is the one place a
+    // WITH is registered and it puts the same object on both getWithClauses() and this list, so walking the second
+    // collection as well would walk every WITH twice rather than reach one this misses. That invariant is what makes
+    // once-only structural here instead of guarded, and CypherSubqueryParseTimeValidationIssue5626Test pins it -
+    // a builder path that ever registers a WITH on the statement alone has to add it here too, or the walk, and every
+    // check running through it, will not see it.
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses != null)
-      for (int i = 0; i < clauses.size(); i++) {
-        final ClauseEntry entry = clauses.get(i);
-        if (entry.getType() == ClauseEntry.ClauseType.WITH) {
-          if (alreadyWalked == null)
-            alreadyWalked = Collections.newSetFromMap(new IdentityHashMap<>());
-          alreadyWalked.add(entry.getTypedClause());
-        }
-        walkClause(entry, visitor);
-      }
-
-    for (final WithClause withClause : statement.getWithClauses())
-      if (alreadyWalked == null || !alreadyWalked.contains(withClause))
-        walkWith(withClause, visitor);
+      for (int i = 0; i < clauses.size(); i++)
+        walkClause(clauses.get(i), visitor);
   }
 
   /**
