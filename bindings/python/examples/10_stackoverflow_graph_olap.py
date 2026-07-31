@@ -6566,7 +6566,7 @@ def run_in_docker(args) -> bool:
     else:
         packages = ["lxml"]
         if args.db in ("ladybug", "ladybugdb"):
-            packages.append("ladybug")
+            packages.append("ladybug==0.19.0")
         if args.db == "graphqlite":
             packages.append("graphqlite")
         if args.db == "duckdb":
