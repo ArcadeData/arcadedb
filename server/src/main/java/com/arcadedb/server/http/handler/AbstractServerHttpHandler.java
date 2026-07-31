@@ -52,9 +52,11 @@ import java.nio.charset.Charset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -889,6 +891,28 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       throw new IllegalArgumentException("Database parameter is null");
     if (user != null && !user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not allowed to access database '" + databaseName + "'");
+  }
+
+  /**
+   * Companion of {@link #checkAuthorizationOnDatabase} for the server-scoped routes that enumerate the whole
+   * database registry instead of naming one database in the path (database listing, server status, cluster
+   * status). Those routes stay open to any authenticated user because what they primarily report is
+   * server-level - but every per-database entry they emit has to be reduced to what the caller may access,
+   * otherwise a tenant scoped to one database learns the names of all the others, and with them whatever the
+   * route hangs off a name: transaction ids, bootstrap fingerprints, schema, index metrics.
+   * <p>
+   * Authorization is delegated to {@link ServerSecurityUser#canAccessToDatabase}, so the wildcard grant is
+   * honoured in exactly one place. A {@code null} user means the route runs without authentication and
+   * everything is returned, matching the permissive behaviour of {@link #checkAuthorizationOnDatabase}.
+   *
+   * @return a new set holding the accessible subset, in the iteration order of {@code databaseNames}
+   */
+  protected Set<String> filterAuthorizedDatabases(final ServerSecurityUser user, final Collection<String> databaseNames) {
+    final Set<String> authorized = new LinkedHashSet<>(databaseNames.size());
+    for (final String databaseName : databaseNames)
+      if (user == null || user.canAccessToDatabase(databaseName))
+        authorized.add(databaseName);
+    return authorized;
   }
 
   /**
