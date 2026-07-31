@@ -945,6 +945,10 @@ The API shape is what kept inviting the mistake, so the pattern is closed rather
 exposes null-returning `getBucketByIdIfExists(int)` and `getBucketByNameIfExists(String)` - named after the
 `getFileByIdIfExists(int)` already on the interface - and the throwing forms document that they throw.
 
+Both in-tree implementors (`LocalSchema`, `RemoteSchema`) are updated. Note the two new interface methods are
+source-incompatible for anyone implementing `com.arcadedb.schema.Schema` outside the project: such an
+implementation needs the two methods added before it compiles against this release.
+
 ## Server and cluster status endpoints scope their per-database output to the caller
 
 The routes that enumerate the whole database registry rather than naming one database in the path now reduce

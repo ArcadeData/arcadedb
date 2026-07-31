@@ -18,6 +18,10 @@ name: Meterian Scanner workflow
 on:
   push:
     branches: [main]
+  # PRs are still scanned. What changed is that the result cannot fail the check (continue-on-error below), so a
+  # newly introduced vulnerable dependency still surfaces its SARIF diff at PR time instead of only after it lands
+  # on main - the signal is kept, only the blocking red X is dropped.
+  pull_request:
   schedule:
     # Daily, so the alert set stays current between main commits.
     - cron: "17 4 * * *"

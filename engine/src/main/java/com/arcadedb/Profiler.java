@@ -122,15 +122,23 @@ public class Profiler {
   /**
    * Sums the per-database counters of every open database on top of the retained baseline of the closed ones.
    * Shared by {@link #toJSON()} and {@link #dumpMetrics(PrintStream)} so the two cannot drift apart.
+   * <p>
+   * Deliberately NOT guarded per database, unlike the fold in {@link #unregisterDatabase}. Skipping a database whose
+   * stat sources are mid-teardown would drop its contribution from this one snapshot and restore it on the next -
+   * a transient DIP, which is exactly the counter-reset artifact this whole change exists to eliminate. Letting the
+   * read throw instead surfaces as a failed scrape, which Prometheus already handles by carrying the last value
+   * forward. A wrong number is worse than a missing one here.
    */
   private long[] collectDatabaseStats() {
     final long[] acc = new long[STATS_COUNT];
     System.arraycopy(retainedStats, 0, acc, 0, MONOTONIC_STATS);
 
     for (final DatabaseInternal db : databases) {
-      accumulateMonotonic(acc, db);
-
-      acc[STAT_WAL_TOTAL_FILES] += statOf(db.getTransactionManager().getStats(), "logFiles");
+      // The WAL map comes back from the fold rather than being re-read: TransactionManager.getStats() allocates a
+      // fresh HashMap and walks the active WAL pool on every call, and logFiles lives in the same map as the two
+      // monotonic WAL counters.
+      final Map<String, Object> walStats = accumulateMonotonic(acc, db);
+      acc[STAT_WAL_TOTAL_FILES] += statOf(walStats, "logFiles");
 
       final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
       acc[STAT_OPEN_FILES] += fStats.totalOpenFiles;
@@ -146,8 +154,12 @@ public class Profiler {
    * Adds one database's monotonic counters into {@code acc}. Deliberately touches only the two stat sources that stay
    * readable after a close ({@link DatabaseInternal#getStats()} reads a plain counter holder, and
    * {@code TransactionManager.getStats()} guards a retired WAL pool), so {@link #unregisterDatabase} can reuse it.
+   *
+   * @return the WAL stat map it read, so a caller that also needs the instantaneous {@code logFiles} count out of it
+   *         does not pay for a second {@code TransactionManager.getStats()}. {@code logFiles} cannot join the fold
+   *         itself - it is a current count, not a total, so carrying it across a close would inflate it forever.
    */
-  private void accumulateMonotonic(final long[] acc, final DatabaseInternal db) {
+  private Map<String, Object> accumulateMonotonic(final long[] acc, final DatabaseInternal db) {
     final Map<String, Object> dbStats = db.getStats();
     for (int i = 0; i < DB_STAT_KEYS.length; i++)
       acc[i] += statOf(dbStats, DB_STAT_KEYS[i]);
@@ -155,6 +167,7 @@ public class Profiler {
     final Map<String, Object> walStats = db.getTransactionManager().getStats();
     acc[STAT_WAL_PAGES_WRITTEN] += statOf(walStats, "pagesWritten");
     acc[STAT_WAL_BYTES_WRITTEN] += statOf(walStats, "bytesWritten");
+    return walStats;
   }
 
   /**

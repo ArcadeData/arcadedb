@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -113,9 +114,12 @@ class Issue5636ProfilerMonotonicTest {
       final long afterFirst = profilerCount("queries");
 
       // The database is already gone from the registry; a second unregister must be a no-op, not a second fold.
-      Profiler.INSTANCE.unregisterDatabase((com.arcadedb.database.DatabaseInternal) db);
+      Profiler.INSTANCE.unregisterDatabase((DatabaseInternal) db);
+      // Bounded rather than exact: a second fold would add at least this database's own QUERIES again, while
+      // anything else sharing the reused surefire fork can only add a few. Exact equality would go intermittent
+      // the day the suite runs test classes concurrently.
       assertThat(profilerCount("queries")).as("a repeated unregister must not fold the same counters in again")
-          .isEqualTo(afterFirst);
+          .isGreaterThanOrEqualTo(afterFirst).isLessThan(afterFirst + QUERIES);
       assertThat(afterFirst).isGreaterThanOrEqualTo(beforeClose);
     }
 
