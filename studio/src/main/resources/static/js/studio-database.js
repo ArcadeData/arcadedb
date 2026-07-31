@@ -1277,6 +1277,74 @@ function createProperty(typeName) {
   }, 100);
 }
 
+/**
+ * Validates the values collected from the "Add Index" dialog before any SQL is assembled.
+ * Kept free of DOM/jQuery access so it can be unit tested (studio/test/create-index-command.test.js).
+ *
+ * @param opts {object} see buildCreateIndexCommand()
+ * @return {string|null} the error to show, or null when the input is usable
+ */
+function validateCreateIndexOptions(opts) {
+  let properties = opts.properties || [];
+
+  // The algorithm-specific arity rules come first, so an LSM_VECTOR or LSM_SPARSE_VECTOR submitted with
+  // no property at all gets the message that names its own rule rather than the generic one.
+  if (opts.algorithm == "LSM_SPARSE_VECTOR" && properties.length != 2)
+    return "LSM_SPARSE_VECTOR requires both an indices property and a weights property";
+
+  if (opts.algorithm == "LSM_VECTOR" && properties.length != 1) return "LSM_VECTOR requires exactly one property";
+
+  if (properties.length == 0) return "At least one property is required";
+
+  if (opts.algorithm == "LSM_VECTOR") {
+    // The engine has no usable default for the vector width: it compares every candidate vector
+    // length against it, so an index created without it never indexes anything (issue #5607).
+    let dimensions = opts.metadata == null ? null : opts.metadata.dimensions;
+    if (!(dimensions > 0)) return "Dimensions is required for LSM_VECTOR: the number of components of each vector";
+  }
+
+  return null;
+}
+
+/**
+ * Assembles the CREATE INDEX statement for the "Add Index" dialog. Pure function: it takes the
+ * already collected dialog values so the emitted SQL can be unit tested without a browser.
+ *
+ * @param opts {object} with:
+ *   typeName {string}     the type the index is created on
+ *   algorithm {string}    LSM_TREE | HASH | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR
+ *   properties {string[]} the indexed property names, in order
+ *   unique {boolean}      LSM_TREE / HASH only
+ *   nullStrategy {string} LSM_TREE / HASH only, "" for the server default
+ *   ifNotExists {boolean} emit IF NOT EXISTS
+ *   metadata {object}     METADATA payload, omitted when null or empty
+ * @return {string} the SQL command
+ */
+function buildCreateIndexCommand(opts) {
+  let algorithm = opts.algorithm;
+
+  let indexTypeSql;
+  if (algorithm == "LSM_TREE") indexTypeSql = opts.unique ? "UNIQUE" : "NOTUNIQUE";
+  else if (algorithm == "HASH") indexTypeSql = opts.unique ? "UNIQUE_HASH" : "NOTUNIQUE_HASH";
+  else indexTypeSql = algorithm;
+
+  let command = "CREATE INDEX";
+  if (opts.ifNotExists) command += " IF NOT EXISTS";
+  command += " ON " + quoteSqlName(opts.typeName) + " (";
+  command += opts.properties
+    .map(function (p) {
+      return quoteSqlName(p);
+    })
+    .join(", ");
+  command += ") " + indexTypeSql;
+
+  if ((algorithm == "LSM_TREE" || algorithm == "HASH") && opts.nullStrategy) command += " NULL_STRATEGY " + opts.nullStrategy;
+
+  if (opts.metadata != null && Object.keys(opts.metadata).length > 0) command += " METADATA " + JSON.stringify(opts.metadata);
+
+  return command;
+}
+
 function createIndex(typeName) {
   let database = getCurrentDatabase();
   if (database == "") {
@@ -1325,6 +1393,43 @@ function createIndex(typeName) {
   } else {
     html += "<input class='form-control mt-1 mb-3' id='inputCreateIdxPropsVectorText' placeholder='Property name (ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES)'>";
   }
+  // The engine refuses an LSM_VECTOR index without a METADATA clause carrying 'dimensions', so the
+  // dialog has to collect it. The remaining knobs default server-side; they are pre-filled with the
+  // same defaults and always sent, which keeps the generated DDL self-documenting (issue #5607).
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreateIdxVectorDimensions'>Dimensions <span style='color:#dc3545'>*</span></label>";
+  html += "<input type='number' min='1' class='form-control mt-1' id='inputCreateIdxVectorDimensions' placeholder='e.g. 384'>";
+  html += "<small class='text-muted'>Number of components of each vector.</small>";
+  html += "</div>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreateIdxVectorSimilarity'>Similarity</label>";
+  html += "<select class='form-select mt-1' id='inputCreateIdxVectorSimilarity'>";
+  html += "<option value='COSINE' selected>COSINE (default)</option>";
+  html += "<option value='DOT_PRODUCT'>DOT_PRODUCT</option>";
+  html += "<option value='EUCLIDEAN'>EUCLIDEAN</option>";
+  html += "</select>";
+  html += "</div>";
+  html += "</div>";
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-4'>";
+  html += "<label for='inputCreateIdxVectorMaxConnections'>Max connections</label>";
+  html += "<input type='number' min='1' class='form-control mt-1' id='inputCreateIdxVectorMaxConnections' value='32'>";
+  html += "</div>";
+  html += "<div class='col-4'>";
+  html += "<label for='inputCreateIdxVectorBeamWidth'>Beam width</label>";
+  html += "<input type='number' min='1' class='form-control mt-1' id='inputCreateIdxVectorBeamWidth' value='100'>";
+  html += "</div>";
+  html += "<div class='col-4'>";
+  html += "<label for='inputCreateIdxVectorQuantization'>Quantization</label>";
+  html += "<select class='form-select mt-1' id='inputCreateIdxVectorQuantization'>";
+  html += "<option value='' selected>NONE (default)</option>";
+  html += "<option value='INT8'>INT8</option>";
+  html += "<option value='BINARY'>BINARY</option>";
+  html += "<option value='PRODUCT'>PRODUCT</option>";
+  html += "</select>";
+  html += "</div>";
+  html += "</div>";
   html += "</div>";
 
   // Sparse vector properties (LSM_SPARSE_VECTOR - parallel ARRAY_OF_INTEGERS + ARRAY_OF_FLOATS)
@@ -1355,15 +1460,23 @@ function createIndex(typeName) {
   html += "</div>";
   html += "</div>";
   html += "<div class='row mb-3'>";
-  html += "<div class='col-6'>";
+  html += "<div class='col-4'>";
   html += "<label>Dimensions <small class='text-muted'>(optional)</small></label>";
   html += "<input type='number' min='1' class='form-control mt-1' id='inputCreateIdxSparseDimensions' placeholder='e.g. 105000'>";
   html += "</div>";
-  html += "<div class='col-6'>";
+  html += "<div class='col-4'>";
   html += "<label>Modifier <small class='text-muted'>(optional)</small></label>";
   html += "<select class='form-select mt-1' id='inputCreateIdxSparseModifier'>";
   html += "<option value='' selected>NONE (default)</option>";
   html += "<option value='IDF'>IDF - inverse document frequency</option>";
+  html += "</select>";
+  html += "</div>";
+  html += "<div class='col-4'>";
+  html += "<label>Weight quantization <small class='text-muted'>(optional)</small></label>";
+  html += "<select class='form-select mt-1' id='inputCreateIdxSparseWeightQuantization'>";
+  html += "<option value='' selected>INT8 (default)</option>";
+  html += "<option value='FP16'>FP16</option>";
+  html += "<option value='FP32'>FP32 - exact scoring</option>";
   html += "</select>";
   html += "</div>";
   html += "</div>";
@@ -1400,9 +1513,17 @@ function createIndex(typeName) {
   html += "</div>";
 
   globalPrompt("Add Index to " + escapeHtml(typeName), html, "Create", function () {
+    // Reads an integer from an input, returning null when it is empty or not a positive number.
+    function positiveInt(selector) {
+      let raw = $(selector).val();
+      if (raw == null || raw === "") return null;
+      let value = parseInt(raw, 10);
+      return !isNaN(value) && value > 0 ? value : null;
+    }
+
     let algorithm = $("#inputCreateIdxAlgorithm").val();
     let selectedProps = [];
-    let metadataJson = null;
+    let metadata = null;
     if (algorithm == "LSM_VECTOR") {
       let vectorEl = document.getElementById("inputCreateIdxPropsVector");
       if (vectorEl) {
@@ -1412,6 +1533,17 @@ function createIndex(typeName) {
         let text = $("#inputCreateIdxPropsVectorText").val().trim();
         if (text != "") selectedProps = [text];
       }
+
+      metadata = {};
+      let dimensions = positiveInt("#inputCreateIdxVectorDimensions");
+      if (dimensions != null) metadata.dimensions = dimensions;
+      metadata.similarity = $("#inputCreateIdxVectorSimilarity").val();
+      let maxConnections = positiveInt("#inputCreateIdxVectorMaxConnections");
+      if (maxConnections != null) metadata.maxConnections = maxConnections;
+      let beamWidth = positiveInt("#inputCreateIdxVectorBeamWidth");
+      if (beamWidth != null) metadata.beamWidth = beamWidth;
+      let quantization = $("#inputCreateIdxVectorQuantization").val();
+      if (quantization) metadata.quantization = quantization;
     } else if (algorithm == "LSM_SPARSE_VECTOR") {
       let idxEl = document.getElementById("inputCreateIdxPropsSparseIdx");
       let idxName = idxEl ? $("#inputCreateIdxPropsSparseIdx").val() : $("#inputCreateIdxPropsSparseIdxText").val().trim();
@@ -1419,18 +1551,13 @@ function createIndex(typeName) {
       let wName = wEl ? $("#inputCreateIdxPropsSparseWeights").val() : $("#inputCreateIdxPropsSparseWeightsText").val().trim();
       if (idxName && wName) selectedProps = [idxName, wName];
 
-      let metaParts = [];
-      let dimsRaw = $("#inputCreateIdxSparseDimensions").val();
-      if (dimsRaw != null && dimsRaw !== "") {
-        let dims = parseInt(dimsRaw, 10);
-        if (!isNaN(dims) && dims > 0)
-          metaParts.push("\"dimensions\": " + dims);
-      }
+      metadata = {};
+      let dimensions = positiveInt("#inputCreateIdxSparseDimensions");
+      if (dimensions != null) metadata.dimensions = dimensions;
       let modifier = $("#inputCreateIdxSparseModifier").val();
-      if (modifier != null && modifier !== "")
-        metaParts.push("\"modifier\": \"" + modifier + "\"");
-      if (metaParts.length > 0)
-        metadataJson = "{ " + metaParts.join(", ") + " }";
+      if (modifier) metadata.modifier = modifier;
+      let weightQuantization = $("#inputCreateIdxSparseWeightQuantization").val();
+      if (weightQuantization) metadata.weightQuantization = weightQuantization;
     } else {
       let multiEl = document.getElementById("inputCreateIdxProps");
       if (multiEl) {
@@ -1443,33 +1570,23 @@ function createIndex(typeName) {
       }
     }
 
-    if (algorithm == "LSM_SPARSE_VECTOR" && selectedProps.length != 2) {
-      globalNotify("Error", "LSM_SPARSE_VECTOR requires both an indices property and a weights property", "danger");
+    let options = {
+      typeName: typeName,
+      algorithm: algorithm,
+      properties: selectedProps,
+      unique: $("#inputCreateIdxUnique").prop("checked"),
+      nullStrategy: $("#inputCreateIdxNullStrategy").val(),
+      ifNotExists: $("#inputCreateIdxIfNotExists").prop("checked"),
+      metadata: metadata
+    };
+
+    let error = validateCreateIndexOptions(options);
+    if (error != null) {
+      globalNotify("Error", error, "danger");
       return;
     }
-    if (selectedProps.length == 0) {
-      globalNotify("Error", "At least one property is required", "danger");
-      return;
-    }
-    let unique = $("#inputCreateIdxUnique").prop("checked");
-    let nullStrategy = $("#inputCreateIdxNullStrategy").val();
-    let ifNotExists = $("#inputCreateIdxIfNotExists").prop("checked");
 
-    let indexTypeSql;
-    if (algorithm == "LSM_TREE")
-      indexTypeSql = unique ? "UNIQUE" : "NOTUNIQUE";
-    else if (algorithm == "HASH")
-      indexTypeSql = unique ? "UNIQUE_HASH" : "NOTUNIQUE_HASH";
-    else
-      indexTypeSql = algorithm;
-
-    let command = "CREATE INDEX";
-    if (ifNotExists) command += " IF NOT EXISTS";
-    command += " ON " + quoteSqlName(typeName) + " (";
-    command += selectedProps.map(function (p) { return quoteSqlName(p); }).join(", ");
-    command += ") " + indexTypeSql;
-    if ((algorithm == "LSM_TREE" || algorithm == "HASH") && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
-    if (metadataJson != null) command += " METADATA " + metadataJson;
+    let command = buildCreateIndexCommand(options);
 
     jQuery.ajax({
       type: "POST",

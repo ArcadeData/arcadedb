@@ -694,6 +694,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     public IndexInternal create(final IndexBuilder<? extends Index> builder) {
       final BucketLSMVectorIndexBuilder vectorBuilder = (BucketLSMVectorIndexBuilder) builder;
 
+      // "dimensions" is the one vector setting with no usable default: every put() and every graph
+      // build compares the candidate vector length against metadata.dimensions, so a zero (or
+      // negative) value yields an index that silently accepts writes and never indexes a single
+      // vector. Refusing it here covers all creation entry points at once - SQL METADATA, the
+      // schema builders and the importers - instead of only the SQL one (issue #5607).
+      if (vectorBuilder.dimensions < 1)
+        throw new IndexException(
+            "LSM_VECTOR index '" + builder.getIndexName() + "' requires a positive 'dimensions' setting (got "
+                + vectorBuilder.dimensions
+                + "): it must match the number of components of the indexed vectors, e.g. METADATA {\"dimensions\": 384}");
+
       // Reject the (encoding=INT8, quantization=INT8) combination: wire/storage is already int8,
       // and JVector's internal INT8 scalar quantization re-runs the same lossy reduction on the
       // float vectors we just dequantized at ingest. The user's intent is almost certainly one or

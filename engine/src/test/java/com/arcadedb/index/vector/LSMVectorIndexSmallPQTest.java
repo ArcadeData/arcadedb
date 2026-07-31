@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
@@ -155,6 +156,8 @@ class LSMVectorIndexSmallPQTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
     });
 
+    // The builder still raises IllegalArgumentException; the SQL layer wraps every METADATA value it cannot
+    // read into a parsing exception, so the HTTP answer to a malformed statement is a 400 (issue #5607).
     assertThatThrownBy(() -> database.command("sql", """
         CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {
           "dimensions": 8,
@@ -162,8 +165,9 @@ class LSMVectorIndexSmallPQTest extends TestHelper {
           "quantization": "PRODUCT",
           "pqClusters": 512
         }"""))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("pqClusters cannot exceed 256");
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("pqClusters cannot exceed 256")
+        .hasCauseInstanceOf(IllegalArgumentException.class);
   }
 
   private LSMVectorIndex vectorIndex() {
