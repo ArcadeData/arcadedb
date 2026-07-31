@@ -33,6 +33,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.List;
 
+import static com.arcadedb.partitioning.WarningCapture.captureSevere;
 import static com.arcadedb.partitioning.WarningCapture.captureWarnings;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -240,12 +241,20 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
       writer.write(schemaJson.toString());
     }
 
-    database = factory.open();
+    final List<String> severe = captureSevere(() -> database = factory.open());
 
     assertThat(database.getSchema().getType("Broken").getBucketSelectionStrategy().getName())
         .as("an unusable strategy falls back to the default").isEqualTo("round-robin");
     assertThat(database.getSchema().getExtension("lifecycle-probe"))
         .as("and everything the loader reads after the strategies is still there").isNotNull();
+
+    // The catch that provides the isolation has to be broad, so the level is what separates "this database is
+    // configured that way" from "the bind path is broken". A strategy declining to be restored is the former, and
+    // reporting it at SEVERE would leave a real fault here indistinguishable from it.
+    assertThat(severe).as("a refused strategy is a property of the database, not an engine fault")
+        .noneMatch(m -> m.contains("Broken"));
+    assertThat(severe).as("and the schema is emphatically not reset")
+        .noneMatch(m -> m.contains("The schema will be reset"));
   }
 
   // ---------------------------------------------------------------------------------------------------------------

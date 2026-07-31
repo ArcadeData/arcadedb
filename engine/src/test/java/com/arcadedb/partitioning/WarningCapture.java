@@ -49,7 +49,19 @@ final class WarningCapture {
 
   /** Runs {@code action} and returns the WARNING-or-worse messages the engine logged while it ran. */
   static List<String> captureWarnings(final Runnable action) {
-    final CapturingLogger capturing = new CapturingLogger(LogManager.instance().getLogger());
+    return capture(action, Level.WARNING);
+  }
+
+  /**
+   * The same, restricted to SEVERE. Lets a test assert that a condition it expects to be reported is reported at the
+   * level that says "this database is configured that way" rather than the one that says "the engine is broken".
+   */
+  static List<String> captureSevere(final Runnable action) {
+    return capture(action, Level.SEVERE);
+  }
+
+  private static List<String> capture(final Runnable action, final Level minimum) {
+    final CapturingLogger capturing = new CapturingLogger(LogManager.instance().getLogger(), minimum);
     LogManager.instance().setLogger(capturing);
     try {
       action.run();
@@ -61,14 +73,16 @@ final class WarningCapture {
 
   private static final class CapturingLogger implements Logger {
     private final Logger       delegate;
+    private final Level        minimum;
     private final List<String> messages = new CopyOnWriteArrayList<>();
 
-    private CapturingLogger(final Logger delegate) {
+    private CapturingLogger(final Logger delegate, final Level minimum) {
       this.delegate = delegate;
+      this.minimum = minimum;
     }
 
     private void record(final Level level, final String message, final Object... args) {
-      if (message == null || level.intValue() < Level.WARNING.intValue())
+      if (message == null || level.intValue() < minimum.intValue())
         return;
       try {
         messages.add(args.length > 0 ? message.formatted(args) : message);

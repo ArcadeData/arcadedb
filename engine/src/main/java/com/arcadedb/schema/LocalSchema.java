@@ -1895,7 +1895,15 @@ public class LocalSchema implements Schema {
             // and the compaction file-migration map WAL recovery redirects through - while the outer catch reports
             // the whole schema as "reset". The type stays on its default round-robin strategy, which loses the
             // partition pruning but leaves a database that opens and says why.
-            LogManager.instance().log(this, Level.WARNING,
+            //
+            // The catch has to be broad to give that guarantee, so the LEVEL carries what the type cannot: a
+            // SchemaException or IllegalArgumentException is the strategy declining to be restored - an
+            // unresolvable implementation class, a configuration the suitability check refuses - which is a
+            // property of this database and worth a WARNING. Anything else reaching here is a fault in the bind
+            // path itself, and would otherwise be indistinguishable from an expected refusal in the log of a
+            // database that opens successfully.
+            final boolean expected = e instanceof SchemaException || e instanceof IllegalArgumentException;
+            LogManager.instance().log(this, expected ? Level.WARNING : Level.SEVERE,
                 "Cannot restore the '%s' bucket selection strategy on type '%s': %s. The type falls back to `%s`",
                 e, bucketSelectionStrategy.getString("name"), typeName, e.getMessage(),
                 RoundRobinBucketSelectionStrategy.NAME);

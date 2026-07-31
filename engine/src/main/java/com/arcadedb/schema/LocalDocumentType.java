@@ -741,6 +741,19 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
+    return setBucketSelectionStrategy(selectionStrategy, true);
+  }
+
+  /**
+   * @param persistOnItsOwn {@code false} for a caller that is already inside a {@link LocalSchema#recordFileChanges}
+   *                        block, which saves the schema when it completes. That save carries the strategy just as
+   *                        this method's own would - the field is assigned before either runs - so persisting here
+   *                        as well would rewrite {@code schema.json} twice for one operation. Every caller that is
+   *                        the whole operation passes {@code true}: the point of issue #5637 is that this mutator
+   *                        must not depend on somebody else writing for it.
+   */
+  private DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy,
+      final boolean persistOnItsOwn) {
     checkForSchemaMutation();
     final BucketSelectionStrategy previous = this.bucketSelectionStrategy;
     this.bucketSelectionStrategy = selectionStrategy;
@@ -806,9 +819,10 @@ public class LocalDocumentType implements DocumentType {
     // memory and round-robin in schema.json - exactly the shape this issue is about. A skip-if-unchanged guard would
     // read the in-memory value, conclude nothing changed, and turn that repair into a silent no-op. The cost of not
     // guarding is one rewrite of schema.json per redundant DDL statement, on a path measured in statements per
-    // database lifetime. What IS skipped is the write the needsRepartition flip just made in this same call, which
-    // is a different redundancy: same call, same file, same content.
-    if (!schema.isReadingFromFile() && !alreadySaved)
+    // database lifetime. What IS skipped are two writes that would be redundant within one operation rather than
+    // across two DDL statements: the one the needsRepartition flip just made in this same call, and the one an
+    // enclosing recordFileChanges block is going to make on its way out (see persistOnItsOwn).
+    if (!schema.isReadingFromFile() && !alreadySaved && persistOnItsOwn)
       schema.saveConfiguration();
 
     return this;
@@ -1864,8 +1878,9 @@ public class LocalDocumentType implements DocumentType {
       }
 
       if (!superType.getBucketSelectionStrategy().getName().equalsIgnoreCase(getBucketSelectionStrategy().getName()))
-        // INHERIT THE BUCKET SELECTION STRATEGY FROM THE SUPER TYPE
-        setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy());
+        // INHERIT THE BUCKET SELECTION STRATEGY FROM THE SUPER TYPE. The enclosing recordFileChanges saves the
+        // schema when it completes, and that write carries this strategy, so the setter does not persist on its own.
+        setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy(), false);
 
       return null;
     });
