@@ -741,11 +741,12 @@ public class LocalDocumentType implements DocumentType {
     try {
       // The field is assigned before this so the strategy can read back the type it is being bound to, which means
       // anything thrown from here would otherwise leave the type carrying a strategy the DDL went on to reject.
-      // Both validations live inside the try: the unique-index requirement, and the suitability check that refuses a
-      // partition which could never prune (issue #5603).
+      // Binding no longer validates anything (see PartitionedBucketSelectionStrategy.setType); every refusal comes
+      // out of the suitability check below, which is also what makes the reaction depend on how we got here.
       this.bucketSelectionStrategy.setType(this);
       if (selectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
-        reportPartitionSuitability(partitioned);
+        reportPartitionSuitability(partitioned,
+            schema.isReadingFromFile() ? PartitionReport.RELOAD : PartitionReport.ASSIGNMENT);
     } catch (final RuntimeException e) {
       // Restoring the reference is the whole rollback: previous was bound to this type when it was assigned, and
       // nothing here unbinds it, so re-invoking previous.setType(this) would be a no-op.
@@ -776,11 +777,50 @@ public class LocalDocumentType implements DocumentType {
       // the wrapping DDL happens to save the schema afterward; relying on that is brittle.
       setNeedsRepartition(true);
 
+    // Persist the strategy itself (issue #5637). This is the one schema mutator that used to leave the write to
+    // somebody else - every sibling either calls saveConfiguration() directly (setAliases, LocalProperty's setters)
+    // or goes through recordFileChanges, which calls it - so a type partitioned by `ALTER TYPE ...
+    // BucketSelectionStrategy` and nothing else reopened as round-robin. That is worse than an unsuitable partition
+    // being accepted: a correctly configured type lost its pruning across a restart AND started placing new records
+    // round-robin among rows the partition hash had placed, with nothing said anywhere. The flag ABOUT the
+    // partitioning persisted (see setNeedsRepartition above) while the partitioning did not.
+    //
+    // Skipped while the schema is being read back, where the value being assigned is the one just read from
+    // schema.json: saveConfiguration() would only mark the schema dirty, and LocalSchema flushes that at the end of
+    // load, rewriting an identical file on every single open of any partitioned database.
+    if (!schema.isReadingFromFile())
+      schema.saveConfiguration();
+
     return this;
   }
 
   /**
-   * Reports what the partition configuration will actually do, at the moment it is chosen rather than at the first
+   * How the caller wants a partition diagnosis reacted to. The diagnosis itself is identical in all three cases -
+   * {@link PartitionedBucketSelectionStrategy#checkSuitability()} is the single source - and only the reaction moves.
+   */
+  private enum PartitionReport {
+    /**
+     * The user is choosing the strategy right now. A blocker is refused outright and warnings are advice worth one
+     * line at the moment the shape is chosen.
+     */
+    ASSIGNMENT,
+    /**
+     * The strategy is being read back out of {@code schema.json}. A refusal here would turn a slow database into an
+     * unopenable one, so a blocker is only logged; warnings are suppressed, because they describe a schema that was
+     * accepted and is working as designed and would otherwise put a WARNING on every startup, forever - the kind of
+     * line operators learn to filter out, taking the blockers with it.
+     */
+    RELOAD,
+    /**
+     * A later schema change (an index created on an already-partitioned type) has just re-decided the answer
+     * (issue #5637). Everything is reported and nothing is refused: the index is what the user asked for and it is
+     * useful, whereas at assignment time the strategy was what was asked for and a blocked one is pure cost.
+     */
+    SCHEMA_CHANGE
+  }
+
+  /**
+   * Reports what the partition configuration will actually do, at the moment it is decided rather than at the first
    * query that comes up short (issue #5603).
    * <p>
    * Both #5589 and #5595 were the same story from the user's side: the strategy attached without complaint and the
@@ -788,52 +828,62 @@ public class LocalDocumentType implements DocumentType {
    * with nothing tying it back to the {@code ALTER TYPE}. The read side is fixed; this is the other half, saying so
    * up front.
    * <p>
-   * <b>Refuse a new assignment, only warn on reload.</b> A blocker means the strategy can never prune, so accepting
-   * it is accepting pure cost, and the DDL that asks for it is refused. The identical state read back out of
-   * {@code schema.json} is only logged: an existing database has records placed under that strategy already and must
-   * still open - a refusal there would turn a slow database into an unopenable one. Note the asymmetry is in the
-   * reaction, not the diagnosis; both paths run the same check.
+   * <b>The moment is not only the assignment.</b> A partition's suitability is a fact about the type AND its indexes,
+   * so a {@code CREATE INDEX} that lands afterwards can flip the answer - recollating the partition index {@code
+   * COLLATE CI} makes it unprunable, and an index on other properties adds a lookup that fans out. That reordering
+   * of the same DDL walked straight past the assignment-time check, which is why {@link TypeIndexBuilder} calls this
+   * too (issue #5637).
    * <p>
-   * Warnings never refuse. A second index on non-partition properties is a perfectly reasonable schema, it just does
-   * not benefit from the partitioning, and it is common enough that refusing it would be hostile. They are reported
-   * last so a configuration that is about to be refused outright does not first draw advice on how to speed it up.
-   * <p>
-   * <b>Warnings are assignment-time advice, so they are not repeated on reload.</b> They say "this is not the shape
-   * you probably meant", which is worth one line at the moment the shape is chosen and nothing at all on every
-   * subsequent open of a database whose schema has not changed since. Left unconditional they would put a WARNING
-   * per startup, forever, against a schema that was accepted and is working as designed - the kind of line operators
-   * learn to filter out, taking the blockers below with it. Blockers do repeat on every open, deliberately: those
-   * describe a database that is still paying for a strategy it cannot use, and that stays worth saying until
-   * somebody acts on it.
+   * Blockers repeat on every open, deliberately: those describe a database that is still paying for a strategy it
+   * cannot use, and that stays worth saying until somebody acts on it. Warnings never refuse anywhere - a second
+   * index on non-partition properties is a perfectly reasonable schema, it just does not benefit from the
+   * partitioning - and they are reported last, so a configuration that is about to be refused outright does not
+   * first draw advice on how to speed it up.
+   *
+   * @param mode what to do with the diagnosis; see {@link PartitionReport}
    */
-  private void reportPartitionSuitability(final PartitionedBucketSelectionStrategy partitioned) {
+  private void reportPartitionSuitability(final PartitionedBucketSelectionStrategy partitioned,
+      final PartitionReport mode) {
     final PartitionedBucketSelectionStrategy.Suitability suitability = partitioned.checkSuitability();
 
-    if (!suitability.canPrune()) {
+    if (!suitability.isUsable()) {
       final String reasons = String.join("; ", suitability.blockers());
 
-      if (!schema.isReadingFromFile())
+      if (mode == PartitionReport.ASSIGNMENT)
         throw new SchemaException(
             "Cannot use the partitioned bucket selection strategy on " + partitioned.getProperties() + " for type '"
                 + name + "': " + reasons
-                + ". Every lookup would fan out across all buckets, so the partitioning would cost the placement "
-                + "constraints and return nothing. Use `round-robin` instead, or change the partition key.");
+                + ". No lookup would ever be pruned to one bucket, so the partitioning would cost the placement "
+                + "constraints and return nothing. Use `round-robin` instead, or fix the partition key or its index.");
 
       LogManager.instance().log(this, Level.WARNING, """
-          Type '%s' is configured with the partitioned bucket selection strategy on %s, but it can never prune a \
-          lookup to one bucket because %s. Queries stay correct - every lookup fans out across all %d buckets - but \
-          the partitioning buys nothing. Switch the type back to `round-robin`, or fix the configuration and run \
+          Type '%s' is configured with the partitioned bucket selection strategy on %s, but no lookup can be pruned \
+          to one bucket because %s. Queries stay correct - every lookup fans out across all %d buckets - but the \
+          partitioning buys nothing. Switch the type back to `round-robin`, or fix the configuration and run \
           `REBUILD TYPE %s WITH repartition = true`.""", null, name, partitioned.getProperties(), reasons,
           buckets.size(), name);
     }
 
-    if (schema.isReadingFromFile())
+    if (mode == PartitionReport.RELOAD)
       return;
 
     for (final String warning : suitability.warnings())
       LogManager.instance().log(this, Level.WARNING,
           "Type '%s' uses the partitioned bucket selection strategy on %s, but %s", null, name,
           partitioned.getProperties(), warning);
+  }
+
+  /**
+   * Re-runs the partition diagnosis after a schema change that can have altered it, reporting everything and
+   * refusing nothing (issue #5637). A no-op on a type that is not partitioned.
+   * <p>
+   * Called from {@link TypeIndexBuilder}, which runs once per {@code CREATE INDEX}. The obvious hook,
+   * {@link #addIndexInternal}, runs once per BUCKET, so it would multiply every line by the bucket count and fire
+   * during schema reload as well.
+   */
+  void reportPartitionSuitabilityAfterSchemaChange() {
+    if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy partitioned)
+      reportPartitionSuitability(partitioned, PartitionReport.SCHEMA_CHANGE);
   }
 
   /**

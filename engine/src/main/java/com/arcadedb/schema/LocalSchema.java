@@ -1886,7 +1886,20 @@ public class LocalSchema implements Schema {
               new Object[0];
 
           final DocumentType type = getType(typeName);
-          type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
+          try {
+            type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
+          } catch (final Exception e) {
+            // One type's strategy must not take the rest of the load down with it (issue #5637). This block sits
+            // near the end of readConfiguration, so an exception escaping here aborts every remaining type's
+            // strategy AND everything the loader has not reached yet - triggers, function libraries, extensions,
+            // and the compaction file-migration map WAL recovery redirects through - while the outer catch reports
+            // the whole schema as "reset". The type stays on its default round-robin strategy, which loses the
+            // partition pruning but leaves a database that opens and says why.
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot restore the '%s' bucket selection strategy on type '%s': %s. The type falls back to `%s`",
+                e, bucketSelectionStrategy.getString("name"), typeName, e.getMessage(),
+                RoundRobinBucketSelectionStrategy.NAME);
+          }
         }
         // Restore the persisted needsRepartition flag AFTER the strategy is set. We always force
         // the flag to the persisted value (true OR false), because {@link

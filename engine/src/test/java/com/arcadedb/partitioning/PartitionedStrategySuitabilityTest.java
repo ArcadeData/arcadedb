@@ -437,11 +437,6 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON ReopenIdx(code) UNIQUE");
     });
     partition("ReopenIdx");
-    // The schema is flushed explicitly because `ALTER TYPE ... BucketSelectionStrategy` does not persist on its own -
-    // the strategy lives in memory until some later schema mutation happens to save, so without this the type would
-    // reopen as round-robin and the test would pass for the wrong reason. Pre-existing and unrelated to this change
-    // (reproduced on the unmodified sources); reported separately.
-    ((LocalSchema) database.getSchema().getEmbedded()).saveConfiguration();
     database.close();
 
     final List<String> warnings = captureWarnings(() -> database = factory.open());
@@ -516,7 +511,7 @@ class PartitionedStrategySuitabilityTest extends TestHelper {
     strategy.setType((LocalDocumentType) database.getSchema().getType("Diag"));
 
     final PartitionedBucketSelectionStrategy.Suitability suitability = strategy.checkSuitability();
-    assertThat(suitability.canPrune()).isFalse();
+    assertThat(suitability.isUsable()).isFalse();
     assertThat(suitability.blockers()).singleElement().asString().contains("DECIMAL");
     assertThat(suitability.warnings()).singleElement().asString().contains("code");
 
