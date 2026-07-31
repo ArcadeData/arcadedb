@@ -227,11 +227,12 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
             .isNotNull()
             .isNotEmpty();
 
-        // Should at least have a 200 response
+        // Should at least have a success response (200 or 204)
         ApiResponses responses = getOp.getResponses();
-        assertThat(responses.get("200"))
-            .as("GET operation for %s should have 200 response defined", path)
-            .isNotNull();
+        boolean hasSuccessResponse = responses.get("200") != null || responses.get("204") != null;
+        assertThat(hasSuccessResponse)
+            .as("GET operation for %s should have success response (200 or 204)", path)
+            .isTrue();
       }
 
       // Check POST operations

@@ -60,6 +60,7 @@ public class CoreApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("ErrorResponse", createErrorResponseSchema());
     openAPI.getComponents().addSchemas("ServerInfo", createServerInfoSchema());
     openAPI.getComponents().addSchemas("DatabaseList", createDatabaseListSchema());
+    openAPI.getComponents().addSchemas("DatabaseExists", createDatabaseExistsSchema());
     openAPI.getComponents().addSchemas("BatchResponse", createBatchResponseSchema());
     openAPI.getComponents().addSchemas("BatchError", createBatchErrorSchema());
     openAPI.getComponents().addSchemas("ProgressResponse", createProgressResponseSchema());
@@ -129,10 +130,9 @@ public class CoreApiSpec implements OpenApiContributor {
   private ApiResponses createHealthResponses() {
     final ApiResponses responses = new ApiResponses();
 
-    // Liveness only ever responds with a 2xx when reachable; it never returns 503 (unlike readiness).
+    // Liveness only ever responds with 204 when reachable; it never returns 503 (unlike readiness).
     final ApiResponse liveResponse = new ApiResponse();
     liveResponse.setDescription("Server process and HTTP layer are up");
-    responses.addApiResponse("200", liveResponse);
     responses.addApiResponse("204", liveResponse);
 
     return responses;
@@ -422,12 +422,13 @@ public class CoreApiSpec implements OpenApiContributor {
     final ApiResponses responses = new ApiResponses();
 
     final ApiResponse readyResponse = new ApiResponse();
-    readyResponse.setDescription("Server is ready");
-    responses.addApiResponse("200", readyResponse);
+    readyResponse.setDescription("Server is ready to accept requests");
     responses.addApiResponse("204", readyResponse);
 
     final ApiResponse notReadyResponse = new ApiResponse();
-    notReadyResponse.setDescription("Server not ready");
+    notReadyResponse.setDescription("""
+        Server is not ready: it has not finished starting, has not yet joined the Raft group, \
+        or has not caught up on replication""");
     responses.addApiResponse("503", notReadyResponse);
 
     return responses;
@@ -444,14 +445,9 @@ public class CoreApiSpec implements OpenApiContributor {
   private ApiResponses createExistsResponses() {
     final ApiResponses responses = new ApiResponses();
 
-    final ApiResponse existsResponse = new ApiResponse();
-    existsResponse.setDescription("Database exists");
-    responses.addApiResponse("200", existsResponse);
-
-    final ApiResponse notExistsResponse = new ApiResponse();
-    notExistsResponse.setDescription("Database does not exist");
-    responses.addApiResponse("404", notExistsResponse);
-
+    responses.addApiResponse("200", SpecBuilders.jsonResponse("""
+        Whether the database exists and is visible to the authenticated user""", "DatabaseExists"));
+    responses.addApiResponse("400", SpecBuilders.errorResponse("Missing database parameter"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
 
@@ -552,6 +548,15 @@ public class CoreApiSpec implements OpenApiContributor {
   private Schema<?> createDatabaseListSchema() {
     final Schema<Object> schema = SpecBuilders.object("Database list response");
     schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.string(null), "List of database names"));
+    return schema;
+  }
+
+  private Schema<?> createDatabaseExistsSchema() {
+    final Schema<Object> schema = SpecBuilders.object("Database existence check result");
+    schema.addProperty("result", SpecBuilders.bool("""
+        True when the database exists and is among the authenticated user's authorized databases. \
+        False both when the database does not exist and when it exists but the caller is not \
+        authorized to see it, since the response does not distinguish the two cases."""));
     return schema;
   }
 

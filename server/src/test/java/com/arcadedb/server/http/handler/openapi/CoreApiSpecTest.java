@@ -113,4 +113,41 @@ class CoreApiSpecTest {
     assertThat(openAPI.getPaths().get("/api/v1/server").getGet().getOperationId())
         .isEqualTo("getServerInfo");
   }
+
+  @Test
+  void checkDatabaseExistsDeclaresOnlyTheStatusCodesTheHandlerCanReturn() {
+    final Operation get = openAPI.getPaths().get("/api/v1/exists/{database}").getGet();
+    assertThat(get.getOperationId()).isEqualTo("checkDatabaseExists");
+
+    assertThat(get.getResponses().keySet())
+        .as("the handler returns 200 always, and 400 only when the database parameter is missing; "
+            + "it never returns 404")
+        .containsExactlyInAnyOrder("200", "400", "401", "500");
+
+    final Schema<?> okSchema = get.getResponses().get("200").getContent().get("application/json").getSchema();
+    assertThat(okSchema.get$ref())
+        .as("a client needs a typed boolean to read the result, not just the status code")
+        .isEqualTo("#/components/schemas/DatabaseExists");
+
+    final Schema<?> databaseExists = openAPI.getComponents().getSchemas().get("DatabaseExists");
+    assertThat(databaseExists.getProperties().keySet()).containsExactly("result");
+  }
+
+  @Test
+  void checkHealthNeverDeclaresA200() {
+    final Operation get = openAPI.getPaths().get("/api/v1/health").getGet();
+    assertThat(get.getOperationId()).isEqualTo("checkHealth");
+    assertThat(get.getResponses().keySet())
+        .as("GetHealthHandler.execute only ever returns 204")
+        .containsExactly("204");
+  }
+
+  @Test
+  void checkReadyNeverDeclaresA200() {
+    final Operation get = openAPI.getPaths().get("/api/v1/ready").getGet();
+    assertThat(get.getOperationId()).isEqualTo("checkReady");
+    assertThat(get.getResponses().keySet())
+        .as("GetReadyHandler.execute only ever returns 204 or 503")
+        .containsExactlyInAnyOrder("204", "503");
+  }
 }
