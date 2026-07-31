@@ -957,6 +957,36 @@ Both in-tree implementors (`LocalSchema`, `RemoteSchema`) are updated. Note the 
 source-incompatible for anyone implementing `com.arcadedb.schema.Schema` outside the project: such an
 implementation needs the two methods added before it compiles against this release.
 
+## An index cursor never hands out a null entry, and a restarted index scan releases its cursors
+
+Iterating an LSM-Tree index cursor could yield a `null` element ([#5635](https://github.com/ArcadeData/arcadedb/issues/5635)).
+`hasNext()` answered on how many underlying page cursors were still live, not on whether any of them still held a
+surviving RID, so a scan that ended on a run of tombstoned keys said "yes" and then handed the caller nothing.
+`IndexCursor` is an `Iterator<Identifiable>`, so `for (final Identifiable r : cursor)` yielded that null, and the
+callers that had noticed each carried their own guard against it.
+
+`hasNext()` now prefetches: it runs the merge until it holds an entry it can actually emit, so it is exact, and
+`next()` is a pure drain that throws `NoSuchElementException` once exhausted - the contract every other index cursor
+already honoured. Two consequences were user-visible:
+
+- `SELECT min(...)` / `SELECT max(...)` read the key off the cursor after `next()`. The trailing null still moved the
+  cursor, so on a type whose lowest (or highest) keys had all been deleted the answer was one of those **deleted**
+  keys.
+- A delete-heavy index reported one entry too many in `countEntries()` - the residual #5601 chased, and the reason it
+  survived a full compaction that had already dropped every tombstone.
+
+`getRecord()` and `getKeys()` are settled at the same time: they describe the entry `next()` **last returned**. The old
+implementation peeked at the not-yet-consumed value, so a caller reading them right after `next()` saw the following
+row.
+
+Separately, `FETCH FROM INDEX` now releases its cursors on `reset()`, not only on `close()`. A restart rebuilds every
+cursor from scratch, so the previous run's had to go: a compacted-series cursor stays registered with its file and
+`dropRetiredCompactedIndexes` skips a retired file that still has one, for the lifetime of the database. The pending
+cursors were not even dropped, so a restarted scan replayed the old, partly consumed ones before reaching the new. The
+same release now covers the per-value cursors of a `key IN [...]` lookup, which nothing had ever closed, and the
+cursors held by `MIN`/`MAX`, by the full-text term walks, and by the Cypher `NodeIndexSeek` / `NodeIndexRangeScan`
+operators - all of which stop before exhaustion by design.
+
 ## Server and cluster status endpoints scope their per-database output to the caller
 
 The routes that enumerate the whole database registry rather than naming one database in the path now reduce

@@ -252,7 +252,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
       @Override
       public void close() {
-        // IndexCursor doesn't need explicit closing
+        // #5635: an index cursor DOES need explicit closing - a compacted-series cursor registers with its file, so a
+        // scan abandoned on a LIMIT would keep a retired file alive until the next database restart.
+        if (cursor != null) {
+          cursor.close();
+          cursor = null;
+        }
       }
     };
   }

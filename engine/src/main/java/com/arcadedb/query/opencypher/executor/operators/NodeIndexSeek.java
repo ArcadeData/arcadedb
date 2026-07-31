@@ -217,6 +217,12 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         while (buffer.size() < n) {
           // Advance to the next seek value when the current cursor is exhausted.
           if (cursor == null || !cursor.hasNext()) {
+            if (cursor != null) {
+              // release the drained cursor before opening the next one: a compacted-series cursor holds its file's
+              // retire guard, and an IN list opens one cursor per value (#5635)
+              cursor.close();
+              cursor = null;
+            }
             if (seekIndex >= seekKeys.size()) {
               finished = true;
               return;
@@ -246,7 +252,12 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
       @Override
       public void close() {
-        // IndexCursor doesn't need explicit closing
+        // #5635: an index cursor DOES need explicit closing - a compacted-series cursor registers with its file, so a
+        // scan abandoned on a LIMIT would keep a retired file alive until the next database restart.
+        if (cursor != null) {
+          cursor.close();
+          cursor = null;
+        }
       }
     };
   }

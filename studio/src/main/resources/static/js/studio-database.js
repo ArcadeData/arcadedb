@@ -3349,6 +3349,107 @@ function fetchSchemaTypes(callback) {
     });
 }
 
+// The single place where a schema object name is spelled into an HTML attribute (issue #5580). An inline
+// onclick nests three contexts - HTML attribute, JS string literal, handler argument - and escapes only the
+// first, so a name holding a double quote decodes back to `"` and breaks out of the JS string. A data-*
+// attribute has one context: the value is HTML-escaped once and read back through dataset, which the browser
+// returns as a plain string with no further interpretation. `parent` carries the owning type for the actions
+// that need two names (drop-property, drop-index).
+//
+// `action` is deliberately not escaped: it is always a string literal chosen from the registries below,
+// never a runtime value. `name` and `parent` are the untrusted halves. The "every emitted data-action is
+// covered by a dispatch registry" test fails at CI if a caller ever passes something else.
+function schemaActionAttrs(action, name, parent) {
+  let attrs = " data-action='" + action + "' data-name='" + escapeHtml(name) + "'";
+  if (parent != null) attrs += " data-parent='" + escapeHtml(parent) + "'";
+  return attrs;
+}
+
+function renderTypeLink(typeName) {
+  return "<a class='link' href='#'" + schemaActionAttrs("show-type-detail", typeName) + ">" + escapeHtml(typeName) + "</a>";
+}
+
+function renderTypeSidebarBadge(row, color, action) {
+  let name = escapeHtml(row.name);
+  let records = (row.records || 0).toLocaleString();
+  return (
+    "<a class='sidebar-badge' href='#' style='background-color: " + color + "'" +
+    schemaActionAttrs(action, row.name) +
+    " title='" + name + " (" + records + " records)'>" +
+    "<span class='sidebar-badge-name'>" + name + "</span>" +
+    "<span class='sidebar-badge-count'>" + records + "</span>" +
+    "</a>"
+  );
+}
+
+function renderTypeQuickActions(row) {
+  let html = "<button class='btn btn-sm db-action-btn'" + schemaActionAttrs("browse-records", row.name) + "><i class='fa fa-table'></i> Browse records</button>";
+  if (row.type == "vertex")
+    html += "<button class='btn btn-sm db-action-btn'" + schemaActionAttrs("browse-records-with-connections", row.name) + "><i class='fa fa-project-diagram'></i> With connections</button>";
+  html += "<button class='btn btn-sm db-action-btn'" + schemaActionAttrs("count-records", row.name) + "><i class='fa fa-calculator'></i> Count records</button>";
+  html += "<button class='btn btn-sm db-action-btn db-action-btn-danger'" + schemaActionAttrs("drop-type", row.name) + "><i class='fa fa-trash'></i> Drop Type</button>";
+  return html;
+}
+
+function renderMaterializedViewQuickActions(view) {
+  return (
+    "<button class='btn btn-sm db-action-btn'" + schemaActionAttrs("refresh-materialized-view", view.name) + "><i class='fa fa-sync'></i> Refresh Now</button>" +
+    "<button class='btn btn-sm db-action-btn'" + schemaActionAttrs("browse-records", view.name) + "><i class='fa fa-table'></i> Browse Records</button>" +
+    "<button class='btn btn-sm db-action-btn'" + schemaActionAttrs("alter-materialized-view", view.name) + "><i class='fa fa-pen'></i> Alter Refresh Mode</button>" +
+    "<button class='btn btn-sm db-action-btn db-action-btn-danger'" + schemaActionAttrs("drop-materialized-view", view.name) + "><i class='fa fa-trash'></i> Drop View</button>"
+  );
+}
+
+// Delegated handlers for the schema actions emitted by schemaActionAttrs(). The registry doubles as the
+// allowlist: an unknown data-action falls through untouched, which is what lets studio-security.js keep its
+// own document-level handlers. Values are read from dataset, never from jQuery's .data(): schema names may
+// look numeric or boolean ("123", "true") and .data() would coerce those away from the string the SQL layer
+// expects.
+//
+// Note for anyone adding a control elsewhere in Studio: because the dispatch is bound to document, the
+// data-action values below form a page-wide namespace. Reusing one of these names for an unrelated control
+// anywhere in the DOM would route its clicks here as well, so pick a distinct value (or a distinct
+// container-scoped handler) rather than a name that already appears in either registry.
+var schemaClickActions = {
+  "show-type-detail": function (d) { showTypeDetail(d.name); },
+  "browse-type": function (d) { browseType(d.name); },
+  "browse-records": function (d) { browseRecords(d.name); },
+  "browse-records-with-connections": function (d) { browseRecordsWithConnections(d.name); },
+  "count-records": function (d) { countRecords(d.name); },
+  "create-property": function (d) { createProperty(d.name); },
+  "create-index": function (d) { createIndex(d.name); },
+  "drop-type": function (d) { dropType(d.name); },
+  "drop-property": function (d) { dropProperty(d.parent, d.name); },
+  "drop-index": function (d) { dropIndex(d.name, d.parent); },
+  "run-repartition": function (d) { runRepartition(d.name); },
+  "show-materialized-view-detail": function (d) { showMaterializedViewDetail(d.name); },
+  "refresh-materialized-view": function (d) { refreshMaterializedView(d.name); },
+  "alter-materialized-view": function (d) { alterMaterializedView(d.name); },
+  "drop-materialized-view": function (d) { dropMaterializedView(d.name); },
+  "show-gav-detail": function (d) { showGavDetail(d.name); },
+  "rebuild-gav": function (d) { rebuildGav(d.name); },
+  "drop-gav": function (d) { dropGav(d.name); }
+};
+
+var schemaChangeActions = {
+  "alter-gav-update-mode": function (d, value) { alterGavUpdateMode(d.name, value); }
+};
+
+$(document).ready(function () {
+  $(document).on("click", "[data-action]", function (e) {
+    let handler = schemaClickActions[this.dataset.action];
+    if (handler == null) return;
+    e.preventDefault();
+    handler(this.dataset);
+  });
+
+  $(document).on("change", "[data-action]", function () {
+    let handler = schemaChangeActions[this.dataset.action];
+    if (handler == null) return;
+    handler(this.dataset, this.value);
+  });
+});
+
 function displaySchema(onReady) {
   fetchSchemaTypes(function (types) {
     // Build sub-types map
@@ -3406,14 +3507,7 @@ function displaySchema(onReady) {
         let row = items[j];
         let color = colors[j % colors.length];
         globalSidebarTypeColors[row.name] = color;
-        let name = escapeHtml(row.name);
-        let records = (row.records || 0).toLocaleString();
-        html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-        html += "onclick='showTypeDetail(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;' ";
-        html += "title='" + name + " (" + records + " records)'>";
-        html += "<span class='sidebar-badge-name'>" + name + "</span>";
-        html += "<span class='sidebar-badge-count'>" + records + "</span>";
-        html += "</a>";
+        html += renderTypeSidebarBadge(row, color, "show-type-detail");
       }
 
       html += "</div></div>";
@@ -3476,14 +3570,6 @@ function showTypeDetail(typeName) {
   // refreshes the schema view on completion. Records are SAFE while the flag is true (queries
   // fan out and stay correct), but the optimisation is off until the rebuild runs.
   if (row.needsRepartition === true) {
-    let btnId = "btnRepartition_" + row.name.replace(/[^a-zA-Z0-9]/g, "_");
-    // The button is wired programmatically (via addEventListener after the HTML lands in the
-    // DOM) rather than through an inline onclick. Inline handlers embedding row.name into a
-    // JS-string-in-HTML-attribute context are double-escape territory: even with escapeHtml,
-    // a name containing a literal double-quote escapes back to `"` after HTML decoding and
-    // breaks out of the JS string. The data-* attribute carries the untrusted value through
-    // a single HTML-escaping; the click handler reads it via dataset.typeName which the
-    // browser exposes as a plain string with no further interpretation.
     html += "<div class='alert alert-warning d-flex align-items-center justify-content-between' role='alert' style='margin-bottom:14px;'>";
     html += "  <div>";
     html += "    <i class='fa fa-triangle-exclamation me-2'></i>";
@@ -3491,7 +3577,7 @@ function showTypeDetail(typeName) {
     html += "    A bucket was added/dropped or the strategy changed; partition-aware query pruning is suppressed for this type. ";
     html += "    Queries remain correct but lose the optimisation until a repartition rebuild runs.";
     html += "  </div>";
-    html += "  <button id='" + escapeHtml(btnId) + "' class='btn btn-sm btn-warning js-repartition-btn' data-type-name='" + escapeHtml(row.name) + "'>";
+    html += "  <button class='btn btn-sm btn-warning'" + schemaActionAttrs("run-repartition", row.name) + ">";
     html += "    <i class='fa fa-rotate'></i> Run Repartition";
     html += "  </button>";
     html += "</div>";
@@ -3502,7 +3588,7 @@ function showTypeDetail(typeName) {
     html += "<div class='db-type-meta'>Super Types: ";
     for (let ptidx in row.parentTypes) {
       if (ptidx > 0) html += ", ";
-      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + row.parentTypes[ptidx] + "\"); return false;'>" + escapeHtml(row.parentTypes[ptidx]) + "</a>";
+      html += renderTypeLink(row.parentTypes[ptidx]);
     }
     html += "</div>";
   }
@@ -3513,7 +3599,7 @@ function showTypeDetail(typeName) {
     html += "<div class='db-type-meta'>Sub Types: ";
     for (let stidx in typeSubTypes) {
       if (stidx > 0) html += ", ";
-      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + typeSubTypes[stidx] + "\"); return false;'>" + escapeHtml(typeSubTypes[stidx]) + "</a>";
+      html += renderTypeLink(typeSubTypes[stidx]);
     }
     html += "</div>";
   }
@@ -3551,7 +3637,7 @@ function showTypeDetail(typeName) {
     html += "<div class='db-detail-section'>";
     html += "<div class='d-flex align-items-center justify-content-between mb-2'>";
     html += "<h6 class='mb-0'><i class='fa fa-list'></i> Properties</h6>";
-    html += "<button class='btn btn-sm btn-outline-primary' onclick='createProperty(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;'><i class='fa fa-plus'></i> Add Property</button>";
+    html += "<button class='btn btn-sm btn-outline-primary'" + schemaActionAttrs("create-property", row.name) + "><i class='fa fa-plus'></i> Add Property</button>";
     html += "</div>";
     let propHtml = renderProperties(row, types);
     if (propHtml == "") {
@@ -3570,7 +3656,7 @@ function showTypeDetail(typeName) {
     html += "<div class='db-detail-section'>";
     html += "<div class='d-flex align-items-center justify-content-between mb-2'>";
     html += "<h6 class='mb-0'><i class='fa fa-bolt'></i> Indexes</h6>";
-    html += "<button class='btn btn-sm btn-outline-primary' onclick='createIndex(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;'><i class='fa fa-plus'></i> Add Index</button>";
+    html += "<button class='btn btn-sm btn-outline-primary'" + schemaActionAttrs("create-index", row.name) + "><i class='fa fa-plus'></i> Add Index</button>";
     html += "</div>";
     let idxHtml = renderIndexes(row, types);
     if (idxHtml != "") {
@@ -3663,24 +3749,11 @@ function showTypeDetail(typeName) {
   html += "<div class='db-detail-section'>";
   html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
   html += "<div class='d-flex flex-wrap gap-2'>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='browseRecords(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-table'></i> Browse records</button>";
-  if (row.type == "vertex")
-    html += "<button class='btn btn-sm db-action-btn' onclick='browseRecordsWithConnections(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-project-diagram'></i> With connections</button>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='countRecords(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-calculator'></i> Count records</button>";
-  html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropType(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-trash'></i> Drop Type</button>";
+  html += renderTypeQuickActions(row);
   html += "</div>";
   html += "</div>";
 
   $("#dbTypeDetail").html(html);
-
-  // Wire the repartition button (issue #4087). Done programmatically rather than via inline
-  // onclick so the type name carries through a single HTML-escape (in the data-type-name
-  // attribute) and is read back as a plain string via dataset.typeName, with no JS-string
-  // interpretation. Avoids the double-escape footgun on type names with embedded quotes.
-  $("#dbTypeDetail .js-repartition-btn").on("click", function (e) {
-    e.preventDefault();
-    runRepartition(this.dataset.typeName);
-  });
 }
 
 var sidebarBadgeColors = {
@@ -3733,14 +3806,7 @@ function populateQuerySidebar() {
       let row = items[j];
       let color = palette[j % palette.length];
       globalSidebarTypeColors[row.name] = color;
-      let name = escapeHtml(row.name);
-      let records = (row.records || 0).toLocaleString();
-      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='browseType(\"" + row.name + "\"); return false;' ";
-      html += "title='" + name + " (" + records + " records)'>";
-      html += "<span class='sidebar-badge-name'>" + name + "</span>";
-      html += "<span class='sidebar-badge-count'>" + records + "</span>";
-      html += "</a>";
+      html += renderTypeSidebarBadge(row, color, "browse-type");
     }
 
     html += "</div></div>";
@@ -3819,11 +3885,9 @@ function renderProperties(row, results) {
 
     panelHtml += "<td>" + (totalIndexes > 0 ? totalIndexes : "None") + "</td>";
     panelHtml +=
-      "<td><button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropProperty(\"" +
-      row.name +
-      '", "' +
-      property.name +
-      "\")'><i class='fa fa-minus'></i> Drop Property</button></td></tr>";
+      "<td><button class='btn btn-sm db-action-btn db-action-btn-danger'" +
+      schemaActionAttrs("drop-property", property.name, row.name) +
+      "><i class='fa fa-minus'></i> Drop Property</button></td></tr>";
 
     if (property.custom != null && Object.keys(property.custom).length > 0) {
       panelHtml += "<td></td>";
@@ -3870,7 +3934,7 @@ function renderIndexes(row, results, seen) {
 
     panelHtml += "<td>" + (index.unique ? true : false) + "</td>";
     panelHtml += "<td>" + (index.automatic ? true : false) + "</td>";
-    panelHtml += "<td><button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropIndex(\"" + index.name + "\", \"" + row.name.replace(/"/g, "&quot;") + "\")'><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
+    panelHtml += "<td><button class='btn btn-sm db-action-btn db-action-btn-danger'" + schemaActionAttrs("drop-index", index.name, row.name) + "><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
   }
 
   // Recurse into parent types so inherited indexes appear in the child type detail (issue #4140).
@@ -4358,21 +4422,12 @@ function renderMaterializedViewsSidebarSection(views, isQuerySidebar) {
     let name = escapeHtml(view.name);
     let statusClass = "mv-status-dot-" + (view.status || "valid").toLowerCase();
 
-    if (isQuerySidebar) {
-      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='browseRecords(\"" + escapeHtml(view.name) + "\"); return false;' ";
-      html += "title='" + name + " (Materialized View)'>";
-      html += "<span class='mv-status-dot " + statusClass + "'></span>";
-      html += "<span class='sidebar-badge-name'>" + name + "</span>";
-      html += "</a>";
-    } else {
-      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='showMaterializedViewDetail(\"" + view.name.replace(/"/g, "&quot;") + "\"); return false;' ";
-      html += "title='" + name + " (Materialized View)'>";
-      html += "<span class='mv-status-dot " + statusClass + "'></span>";
-      html += "<span class='sidebar-badge-name'>" + name + "</span>";
-      html += "</a>";
-    }
+    html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "'";
+    html += schemaActionAttrs(isQuerySidebar ? "browse-records" : "show-materialized-view-detail", view.name);
+    html += " title='" + name + " (Materialized View)'>";
+    html += "<span class='mv-status-dot " + statusClass + "'></span>";
+    html += "<span class='sidebar-badge-name'>" + name + "</span>";
+    html += "</a>";
   }
 
   html += "</div></div>";
@@ -4402,21 +4457,12 @@ function renderMaterializedViewsSidebarBadges(views, isQuerySidebar) {
     let name = escapeHtml(view.name);
     let statusClass = "mv-status-dot-" + (view.status || "valid").toLowerCase();
 
-    if (isQuerySidebar) {
-      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='browseRecords(\"" + escapeHtml(view.name) + "\"); return false;' ";
-      html += "title='" + name + " (Materialized View)'>";
-      html += "<span class='mv-status-dot " + statusClass + "'></span>";
-      html += "<span class='sidebar-badge-name'>" + name + "</span>";
-      html += "</a>";
-    } else {
-      html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
-      html += "onclick='showMaterializedViewDetail(\"" + view.name.replace(/"/g, "&quot;") + "\"); return false;' ";
-      html += "title='" + name + " (Materialized View)'>";
-      html += "<span class='mv-status-dot " + statusClass + "'></span>";
-      html += "<span class='sidebar-badge-name'>" + name + "</span>";
-      html += "</a>";
-    }
+    html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "'";
+    html += schemaActionAttrs(isQuerySidebar ? "browse-records" : "show-materialized-view-detail", view.name);
+    html += " title='" + name + " (Materialized View)'>";
+    html += "<span class='mv-status-dot " + statusClass + "'></span>";
+    html += "<span class='sidebar-badge-name'>" + name + "</span>";
+    html += "</a>";
   }
 
   html += "</div>";
@@ -4474,10 +4520,10 @@ function renderGavSidebarBadges(gavs, isQuerySidebar) {
     let name = escapeHtml(gav.name);
     let statusClass = mvStatusDotClass(gav.status);
 
-    html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "' ";
+    html += "<a class='sidebar-badge' href='#' style='background-color: " + color + "'";
     if (!isQuerySidebar)
-      html += "onclick='showGavDetail(\"" + gav.name.replace(/"/g, "&quot;") + "\"); return false;' ";
-    html += "title='" + name + " (Graph Analytical View)'>";
+      html += schemaActionAttrs("show-gav-detail", gav.name);
+    html += " title='" + name + " (Graph Analytical View)'>";
     html += "<span class='mv-status-dot " + statusClass + "'></span>";
     html += "<span class='sidebar-badge-name'>" + name + "</span>";
     html += "</a>";
@@ -4528,10 +4574,9 @@ function showGavDetail(gavName) {
   if (gav.edgePropertyFilter && gav.edgePropertyFilter.length > 0)
     html += "<div class='mv-info-row'><span class='mv-info-label'>Edge Properties:</span> " + escapeHtml(gav.edgePropertyFilter.join(", ")) + "</div>";
 
-  let safeName = gav.name.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
   let currentMode = escapeHtml(gav.updateMode || "OFF");
   html += "<div class='mv-info-row'><span class='mv-info-label'>Update Mode:</span> ";
-  html += "<select class='form-select form-select-sm d-inline-block' style='width:auto;' id='gavUpdateModeSelect' onchange='alterGavUpdateMode(\"" + safeName + "\", this.value)'>";
+  html += "<select class='form-select form-select-sm d-inline-block' style='width:auto;' id='gavUpdateModeSelect'" + schemaActionAttrs("alter-gav-update-mode", gav.name) + ">";
   let modes = ["OFF", "SYNCHRONOUS", "ASYNCHRONOUS"];
   for (let m = 0; m < modes.length; m++)
     html += "<option value='" + modes[m] + "'" + (modes[m] === currentMode ? " selected" : "") + ">" + modes[m] + "</option>";
@@ -4551,8 +4596,8 @@ function showGavDetail(gavName) {
 
   // Actions
   html += "<div class='mt-3 d-flex gap-2'>";
-  html += "<button class='btn btn-sm btn-outline-primary' onclick='rebuildGav(\"" + safeName + "\")'><i class='fa fa-sync'></i> Rebuild</button>";
-  html += "<button class='btn btn-sm btn-outline-danger' onclick='dropGav(\"" + safeName + "\")'><i class='fa fa-trash'></i> Drop</button>";
+  html += "<button class='btn btn-sm btn-outline-primary'" + schemaActionAttrs("rebuild-gav", gav.name) + "><i class='fa fa-sync'></i> Rebuild</button>";
+  html += "<button class='btn btn-sm btn-outline-danger'" + schemaActionAttrs("drop-gav", gav.name) + "><i class='fa fa-trash'></i> Drop</button>";
   html += "</div>";
 
   html += "</div>";
@@ -5138,8 +5183,7 @@ function showMaterializedViewDetail(viewName) {
     html += "<h6><i class='fa fa-link'></i> Source Types</h6>";
     html += "<div class='d-flex flex-wrap gap-2'>";
     for (let i = 0; i < view.sourceTypes.length; i++) {
-      let st = view.sourceTypes[i];
-      html += "<a class='link' href='#' onclick='showTypeDetail(\"" + escapeHtml(st) + "\"); return false;' style='font-weight:600;'>" + escapeHtml(st) + "</a>";
+      html += "<span style='font-weight:600;'>" + renderTypeLink(view.sourceTypes[i]) + "</span>";
     }
     html += "</div></div>";
   }
@@ -5192,10 +5236,7 @@ function showMaterializedViewDetail(viewName) {
   html += "<div class='db-detail-section'>";
   html += "<h6><i class='fa fa-play-circle'></i> Quick Actions</h6>";
   html += "<div class='d-flex flex-wrap gap-2'>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='refreshMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-sync'></i> Refresh Now</button>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='browseRecords(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-table'></i> Browse Records</button>";
-  html += "<button class='btn btn-sm db-action-btn' onclick='alterMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-pen'></i> Alter Refresh Mode</button>";
-  html += "<button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropMaterializedView(\"" + escapeHtml(view.name) + "\")'><i class='fa fa-trash'></i> Drop View</button>";
+  html += renderMaterializedViewQuickActions(view);
   html += "</div></div>";
 
   $("#dbTypeDetail").html(html);

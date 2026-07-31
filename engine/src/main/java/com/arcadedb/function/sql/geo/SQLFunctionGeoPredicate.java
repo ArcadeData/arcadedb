@@ -239,12 +239,9 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
 
       while (true) {
         if (cursor != null) {
-          while (cursor.hasNext()) {
-            final Identifiable candidate = cursor.next();
-            if (candidate != null) {
-              pending = candidate;
-              return;
-            }
+          if (cursor.hasNext()) {
+            pending = cursor.next();
+            return;
           }
           cursor.close();
           cursor = null;

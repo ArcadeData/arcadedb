@@ -46,9 +46,10 @@ import java.util.Set;
  * the whole ancestor chain of every cell, the set additionally absorbs the same record being found under a cell and
  * under one of its ancestors.
  * <p>
- * Unlike {@code LSMTreeIndexCursor}, this cursor is honest about {@link #hasNext()}: the lookahead needed to skip
- * already-seen RIDs also makes it exact, so {@link #next()} never answers null and throws
- * {@link NoSuchElementException} when exhausted, per the {@link Iterator} contract.
+ * {@link #hasNext()} is exact: the lookahead needed to skip already-seen RIDs also makes it honest, so {@link #next()}
+ * never answers null and throws {@link NoSuchElementException} when exhausted, per the {@link Iterator} contract. Since
+ * #5635 that is the contract of every {@link IndexCursor}, {@code LSMTreeIndexCursor} included, so the cell scans this
+ * one drains need no null guard.
  * <p>
  * A geospatial hit has no relevance to report - the materialising implementation stamped a constant 1 on every entry -
  * so the score is left at the interface default, the documented "scoring not supported" value. Nothing reads a score
@@ -114,13 +115,7 @@ class GeoIndexCursor implements IndexCursor {
     while (true) {
       if (cellCursor != null) {
         while (cellCursor.hasNext()) {
-          // A range cursor answers hasNext() optimistically and returns null once a run of tombstones leaves nothing
-          // to emit, so the result must be checked rather than dereferenced.
-          final Identifiable candidate = cellCursor.next();
-          if (candidate == null)
-            continue;
-
-          final RID rid = candidate.getIdentity();
+          final RID rid = cellCursor.next().getIdentity();
           if (seen.add(rid)) {
             nextRID = rid;
             return;

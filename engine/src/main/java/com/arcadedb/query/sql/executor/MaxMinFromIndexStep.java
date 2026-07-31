@@ -78,22 +78,31 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
           // The first non-null key is the result
           final IndexCursor cursor = index.iterator(!max);
 
-          while (cursor.hasNext()) {
-            cursor.next(); // advance to get the key
-            final Object key = cursor.getKeys();
+          try {
+            while (cursor.hasNext()) {
+              // #5635: the cursor answers hasNext() exactly, so this entry is live and the key it leaves behind is a
+              // key that still has a record. While hasNext() was optimistic, a fully tombstoned end of the key space
+              // let the loop consume a null and read the DELETED key it had stepped over.
+              cursor.next(); // advance to get the key
+              final Object key = cursor.getKeys();
 
-            if (key != null) {
-              // Handle single-key vs multi-key indexes
-              if (key instanceof final Object[] keys) {
-                if (keys.length > 0 && keys[0] != null) {
-                  resultValue = keys[0];
+              if (key != null) {
+                // Handle single-key vs multi-key indexes
+                if (key instanceof final Object[] keys) {
+                  if (keys.length > 0 && keys[0] != null) {
+                    resultValue = keys[0];
+                    break;
+                  }
+                } else {
+                  resultValue = key;
                   break;
                 }
-              } else {
-                resultValue = key;
-                break;
               }
             }
+          } finally {
+            // MIN/MAX stops on the FIRST entry, so the scan is abandoned by design: a compacted-series cursor left
+            // registered here would keep a retired file alive until the next database restart.
+            cursor.close();
           }
 
           executed = true;
