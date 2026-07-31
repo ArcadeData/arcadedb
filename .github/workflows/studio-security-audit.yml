@@ -149,7 +149,13 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
-          allow-dependencies-licenses: "MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD"
+          # No allow-dependencies-licenses here: that input takes package URLs of dependencies to exempt
+          # from the license check ("pkg:npm/foo@1.2.3"), not a list of acceptable licenses, so the SPDX
+          # ids that used to sit here failed the action's own input validation ("package-url must start
+          # with pkg:") and the job errored out before reviewing anything. The acceptable-license side is
+          # covered by deny-licenses below and by the `license-checker --onlyAllow` step of this workflow;
+          # an allow-list cannot be used here anyway, since the action rejects allow-licenses and
+          # deny-licenses together and the project's allowed set is wider than any short list.
           deny-licenses: "GPL-2.0, GPL-3.0, AGPL-3.0"
           config-file: ".github/dependency-review-config.yml"
 
