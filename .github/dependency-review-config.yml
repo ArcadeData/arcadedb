@@ -59,5 +59,8 @@ deny-packages:
   # 3.7.2 was a compromised release; the surrounding versions are fine.
   - pkg:npm/eslint-scope@3.7.2
 
-license-check: true
-vulnerability-check: true
+# Deliberately NOT listed here: `license-check: true` and `vulnerability-check: true`. Both are already the action's
+# defaults, so a key that was silently dropped and a key that was honoured would produce identical behaviour - there is
+# no run in which the difference is observable. Carrying a setting whose effect cannot be demonstrated is how the
+# previous version of this file came to "enforce" a policy it did not have; every key above earns its place by changing
+# what the action does, visibly, in the job log.
