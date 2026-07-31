@@ -221,6 +221,24 @@ class MCPTransportConformanceTest extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * The tools/call request log is built above the handler's try, and it resolves the setting key to decide whether
+   * to mask a secret value. A key of another JSON type raised out of that read, so the request failed before the
+   * tool ran and reached the transport as an HTTP 500 with no envelope.
+   */
+  @Test
+  void toolsCallWithNonStringSettingKeyStillAnswersWithAnEnvelope() throws Exception {
+    final Response response = post(
+        "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\","
+            + "\"params\":{\"name\":\"set_server_setting\",\"arguments\":{\"key\":{},\"value\":\"x\"}}}", null);
+
+    assertThat(response.status).isEqualTo(200);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.getString("jsonrpc")).isEqualTo("2.0");
+    // The argument is the tool's, not a JSON-RPC member, so the tool rejects it as a tool error rather than -32602.
+    assertThat(json.has("error") || json.getJSONObject("result").getBoolean("isError")).isTrue();
+  }
+
   @Test
   void promptsGetWithNonStringNameIsRejected() throws Exception {
     final Response response = post(
