@@ -131,6 +131,32 @@ every other argument type are untouched.
 
 The Cypher-side `AbsFunction` is a separate class and does not have this branch, so it is unaffected.
 
+## Review
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5654
+
+### Cycle 1 - `1586a4545`
+
+`claude[bot]` reviewed and recommended merging. Nothing blocking, and the two points raised under
+"minor / optional" both explicitly ask for no change, so no code moved this cycle. Nothing was deferred.
+
+**1. "The unit tests overlap somewhat with `fromQueryOverNegativeDuration`" - no action, and the review
+agrees it is desirable.** The overlap is deliberate: the unit tests pin the function's contract per
+defect class, the query test pins that the fix is actually reachable through the SQL engine rather than
+only through a direct call. For a silent-corruption regression with no prior coverage, losing either
+side would leave a real gap.
+
+**2. "The two `absExact` overloads carry different failure semantics - equality guard vs. try/catch" -
+no change, flagged for future readers only.** This is inherent to the types. A fixed-width integer has a
+single MIN_VALUE known statically, so an equality guard states the boundary exactly and costs nothing on
+the hot path. `Duration` has no such constant to compare against, and deriving the boundary by hand
+would restate `Duration`'s own normalization rules, which is precisely the reasoning the original bug
+got wrong. Letting `negated()` be the authority on what it cannot represent, and translating its
+exception, is the safer construction even though it reads less symmetrically.
+
+The review also noted it could not run Maven in its sandbox and relied on the reported suite results.
+Those were run locally and are recorded under "Test results" above, each with exit 0.
+
 ## Follow-ups
 
 None. Unlike #5647 there is no remaining silent-wrap path here: the one unrepresentable input now
