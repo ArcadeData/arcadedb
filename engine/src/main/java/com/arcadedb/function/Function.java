@@ -86,7 +86,9 @@ public interface Function {
    * than an internal failure.
    *
    * @param args the arguments the call carried, {@code null} counting as none - a couple of executors used to defend
-   *             against a null array by hand, and folding that in here keeps the count check in one place
+   *             against a null array by hand, and folding that in here keeps the count check in one place. Note that
+   *             this only rejects the null array for a function that requires at least one argument: an executor
+   *             declaring {@code getMinArgs() == 0} is handed it unchanged and must still tolerate it.
    */
   default void checkArity(final Object[] args) {
     final int actualArgs = args == null ? 0 : args.length;
@@ -142,21 +144,22 @@ public interface Function {
   }
 
   /**
-   * Validates the arguments before execution.
-   * Default implementation checks argument count against min/max bounds.
+   * Validates the arguments before execution. Kept as the name the {@code CALL} path calls
+   * ({@code CallStep.executeFunction}); the check itself is {@link #checkArity}, so a wrong argument count is
+   * reported identically however the function was invoked.
+   * <p>
+   * It used to raise its own {@link IllegalArgumentException} with its own wording, which meant the same mistake
+   * read one way through an expression and another through {@code CALL} - and, because {@code CallStep} wraps what
+   * it catches, surfaced over HTTP as 500 rather than the 400 the expression path gave (issue #5602).
+   * <p>
+   * Note that {@code Procedure} declares a separate {@code validateArgs} of its own. Procedures are not functions -
+   * they have their own registry, their own {@code CALL} handling and around eighty implementations - so unifying
+   * the two is a change to the procedure abstraction rather than to this one, and is deliberately not done here.
    *
    * @param args the arguments to validate
-   * @throws IllegalArgumentException if arguments are invalid
+   * @throws CommandSemanticException if the argument count is outside the declared bounds
    */
   default void validateArgs(final Object[] args) {
-    if (args.length < getMinArgs() || args.length > getMaxArgs()) {
-      if (getMinArgs() == getMaxArgs()) {
-        throw new IllegalArgumentException(
-            getName() + "() requires exactly " + getMinArgs() + " argument(s), got " + args.length);
-      } else {
-        throw new IllegalArgumentException(
-            getName() + "() requires " + getMinArgs() + " to " + getMaxArgs() + " arguments, got " + args.length);
-      }
-    }
+    checkArity(args);
   }
 }

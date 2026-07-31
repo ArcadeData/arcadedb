@@ -672,7 +672,9 @@ row) - and the pin itself is asserted to still bite.
 - **A wrong argument count is now a client error everywhere.** The shared function layer previously answered
   `CommandExecutionException` (HTTP `500`) from its own runtime guards while the parser answered
   `CommandSemanticException` (HTTP `400`) for the same mistake. Both now say
-  `Function 'x' expects N arguments but got M` with the client-error class.
+  `Function 'x' expects N arguments but got M` with the client-error class. `Function.validateArgs()` - the entry
+  point the `CALL` path uses - runs the same check rather than its own, so calling a function through `CALL` with
+  the wrong number of arguments no longer reports a different message, or a `500` where an expression gave `400`.
 
 **Parse-time argument validation is no longer confined to `RETURN` and `WITH`.** `MATCH (n:Nothing) WHERE
 abs('x') > 0 RETURN n` ran to completion - and, matching no row, looked like a success - while the identical call
@@ -681,6 +683,12 @@ the call is valid, so the same checks now run over `WHERE`, `UNWIND`, `SET`, `CR
 `FOREACH`, `ORDER BY`, `SKIP`/`LIMIT` and inline pattern properties, through one traversal rather than a
 per-clause recursion. No check is new; only its reach. A call that does execute still fails with the same message
 from the function's own guard.
+
+> **Potentially breaking.** A query that today runs to completion because its bad call sits in a clause the
+> validation never walked - or in a branch that never executes, such as a `WHERE` on a pattern that matches no row -
+> is now rejected before it starts. The call was always wrong and would always have failed had it run; what changes
+> is that the failure is no longer conditional on the data. If a query of yours starts failing, the error names the
+> function and what it expected.
 
 **`charLength()` and `isNormalized()` work; `charAt()` is gone.** All three were registered as known to the
 parser with no executor behind them, so a call parsed and then failed at execution with the confusing `Unknown
