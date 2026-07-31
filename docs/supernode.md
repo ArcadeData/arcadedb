@@ -553,22 +553,34 @@ written to the WAL and replicated, so followers apply the merged bytes verbatim.
 
 - **Leader / embedded only** (`commit1stPhase(isLeader)`); followers never rebase,
   so no HA divergence.
-- **Only pure-append pages are eligible.** Every non-commutative write **poisons**
-  the page: edge removal/relink (`EdgeLinkedList.updateSegment`), bulk `addAll`,
-  `deleteAll`, and new-chunk allocation (centralised in
-  `LocalDatabase.createRecordNoLock`).
-- **Bulk import (`GraphBatch`) neither tracks nor poisons** - safe only because a
-  `GraphBatch` tx never also drives `EdgeLinkedList.add` on the same page (implicit
-  invariant; any future mixing must poison those pages).
+- **Only pure-append pages are eligible, and the merge has to PROVE it (#5596).**
+  A page is rebasable only when *every* byte this transaction wrote to it was written
+  inside a `MutablePage.beginCoveredWrite(COVERAGE_EDGE_APPEND_MERGE)` declaration -
+  the coverage is opt-**in**, not opt-out. `LocalBucket` declares exactly the in-place
+  segment rewrite that backs a tracked append (plus `compressPage`, whose defrag the
+  commit path re-runs on the rebased page anyway); any other writer touching the page
+  leaves an undeclared byte behind and disqualifies it. A writer that never heard of
+  the merge therefore cannot have its change silently dropped - the worst outcome is
+  the plain retry that predates the merge.
+- **The explicit poison calls stay as the fast, precise path.** Every non-commutative
+  write still poisons the page up front: edge removal/relink
+  (`EdgeLinkedList.updateSegment`), bulk `addAll`, `deleteAll`, and new-chunk
+  allocation (centralised in `LocalDatabase.createRecordNoLock`). The coverage proof is
+  the backstop that turns a forgotten call into a retry instead of a lost write.
+- **Bulk import (`GraphBatch`) neither tracks nor poisons** - and since #5596 it no
+  longer has to: its chunk writes are undeclared, so a page it touched can never be
+  rebased, even if the same transaction also drove `EdgeLinkedList.add` on it.
 - **Allocation-free hot path**: appends keyed by *segment* RID with the pairs packed
   into primitive arrays (`EdgeAppendBuffer`); poisoned pages held as packed-long
-  keys in a `LongHashSet`; `PageId` materialised only on the rare conflict. Measured
-  overhead: **+39 bytes/edge** (~0.7%) vs feature-off, throughput within noise.
+  keys in a `LongHashSet`; `PageId` materialised only on the rare conflict; the
+  coverage proof is two ints per page and one OR per write. Measured overhead:
+  **+39 bytes/edge** (~0.7%) vs feature-off, throughput within noise.
 
 **Touched files:** `GlobalConfiguration` (flag), `TransactionContext` (tracking +
-poison + `rebaseEdgeAppends` + commit-loop hook), `LocalDatabase` (central
-new-chunk poison), `EdgeLinkedList` (register appends; poison remove/bulk paths),
-`PageManager` (`edgeAppendMerges` stat).
+poison + coverage check + `rebaseEdgeAppends` + commit-loop hook), `MutablePage`
+(per-page coverage bookkeeping), `LocalBucket` (declares the replayable writes),
+`LocalDatabase` (central new-chunk poison), `EdgeLinkedList` (register appends;
+poison remove/bulk paths), `PageManager` (`edgeAppendMerges` stat).
 
 ## B.4 The two lost-update fixes (#5147, #5153) (shipped)
 
