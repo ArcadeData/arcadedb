@@ -19,7 +19,7 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.math.BigDecimal;
@@ -88,6 +88,11 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
    * cannot represent. {@code Math.abs()} wraps around and returns that value unchanged, so the caller
    * receives a negative "absolute value" that looks valid and can be persisted. Fail the query
    * instead, using the same wording as the Cypher arithmetic operators.
+   * <p>
+   * Reported as an {@link ArithmeticErrorException} so the caller's unrepresentable value is a 400 rather than
+   * a 500: the query is well-formed and the engine is healthy, and the wire layers single that subclass out from
+   * the runtime failures that genuinely are the server's fault. It still extends
+   * {@code CommandExecutionException}, so embedded code catching the broader type is unaffected.
    *
    * @param value    the input widened to a long, so one guard serves byte, short, int and long
    * @param minValue the MIN_VALUE of the input's own type, which is the only unrepresentable input
@@ -95,7 +100,7 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
    */
   private static long absExact(final long value, final long minValue, final String typeName) {
     if (value == minValue)
-      throw new CommandExecutionException(typeName + " overflow");
+      throw new ArithmeticErrorException(typeName + " overflow");
     return Math.abs(value);
   }
 
