@@ -28,11 +28,9 @@ import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
-import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -61,7 +59,6 @@ import org.locationtech.spatial4j.shape.Shape;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -254,43 +251,32 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final double distErr = args.resolveDistErr(GeoUtils.getSpatialContext(), strategy.getDistErrPct());
     final int detailLevel = grid.getLevelForDistance(distErr);
 
-    // TODO: For large regions at high precision (up to 12 levels) this materialises the candidate RID set in memory.
-    //       A streaming/lazy cursor chaining cells on demand (similar to LSMTreeFullTextIndex) would reduce GC
-    //       pressure on production datasets with dense or wide-area queries.
+    // #5601: the covering cells are walked LAZILY, one underlying scan open at a time, instead of draining every cell
+    // into a candidate set before the caller sees the first row. A wide-area query resolves into thousands of cells,
+    // and a consumer that stops early no longer pays for the ones it never reached.
     // `limit` is DELIBERATELY IGNORED, see isResultApproximate(): what this index returns is a superset of the match
     // that the SQL geo.* predicate re-checks, so truncating it here would drop rows that would have survived the
-    // filter - silently, and only on some queries. The caller applies the limit to the FILTERED rows instead.
-    final LinkedHashSet<RID> seen = new LinkedHashSet<>();
+    // filter - silently, and only on some queries. The caller applies the limit to the FILTERED rows instead, which
+    // now stops this cursor at the right place rather than after the fact.
+    return new GeoIndexCursor(keys, newCoveringCellWalk(searchShape, detailLevel), this::openCellCursor);
+  }
 
-    forEachCoveringCell(searchShape, detailLevel, (token, frontier) -> {
-      final IndexCursor cursor;
-      if (tokenization == GeoIndexMetadata.TOKENIZATION.FULL || !frontier)
-        // A cell that still has children can only match a shape whose OWN decomposition stopped there, so an exact
-        // lookup is enough - and it is the only thing the legacy layout can do, having stored every ancestor.
-        cursor = underlyingIndex.get(new Object[] { token });
-      else {
-        // Frontier cell: every indexed cell at or below it starts with its token, which on a sorted store is one
-        // range scan instead of one lookup per descendant level. This is the site the ASCII invariant actually
-        // protects - the bound is appended to THIS token - so assert it here as well as where tokens are written.
-        assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
-        cursor = underlyingIndex.range(true, new Object[] { token }, true,
-            new Object[] { token + PREFIX_SCAN_UPPER_BOUND }, true);
-      }
+  /**
+   * Opens the underlying scan answering one covering cell. Package-private: the only caller is {@link GeoIndexCursor},
+   * which owns the cursor and closes it as soon as it is drained.
+   */
+  IndexCursor openCellCursor(final String token, final boolean frontier) {
+    if (tokenization == GeoIndexMetadata.TOKENIZATION.FULL || !frontier)
+      // A cell that still has children can only match a shape whose OWN decomposition stopped there, so an exact
+      // lookup is enough - and it is the only thing the legacy layout can do, having stored every ancestor.
+      return underlyingIndex.get(new Object[] { token });
 
-      while (cursor.hasNext()) {
-        // A range cursor answers hasNext() optimistically and returns null once a run of tombstones leaves nothing
-        // to emit, so the result must be checked rather than dereferenced.
-        final Identifiable next = cursor.next();
-        if (next != null)
-          seen.add(next.getIdentity());
-      }
-      return true;
-    });
-
-    final List<IndexCursorEntry> entries = new ArrayList<>(seen.size());
-    for (final RID rid : seen)
-      entries.add(new IndexCursorEntry(keys, rid, 1));
-    return new TempIndexCursor(entries);
+    // Frontier cell: every indexed cell at or below it starts with its token, which on a sorted store is one
+    // range scan instead of one lookup per descendant level. This is the site the ASCII invariant actually
+    // protects - the bound is appended to THIS token - so assert it here as well as where tokens are written.
+    assert isAsciiToken(token) : "a FRONTIER token must be ASCII for the prefix range scan bound to hold: " + token;
+    return underlyingIndex.range(true, new Object[] { token }, true,
+        new Object[] { token + PREFIX_SCAN_UPPER_BOUND }, true);
   }
 
   @Override
@@ -667,44 +653,15 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   }
 
   /**
-   * Walks the GeoHash cells covering {@code shape} down to {@code detailLevel}, telling the visitor whether each one is
-   * a FRONTIER cell - one the decomposition stops at, with no deeper cell of its own below it.
-   * <p>
-   * {@link org.apache.lucene.spatial.prefix.tree.CellIterator} is a depth-first pre-order walk, so a cell is a frontier
-   * exactly when the cell that follows it is not deeper; the last cell always is. This is derived from the traversal
-   * rather than from {@link Cell#isLeaf()} so that it holds for every shape and grid, including the boundary cells at
-   * {@code detailLevel} that are emitted without the leaf flag.
-   *
-   * @param visitor returns false to stop the walk
+   * Pull-style walk of the GeoHash cells covering {@code shape} down to {@code detailLevel}, driven by
+   * {@link GeoIndexCursor} one cell at a time as its consumer asks for rows.
    */
-  private void forEachCoveringCell(final Shape shape, final int detailLevel, final CellVisitor visitor) {
-    final CellIterator cellIter = grid.getTreeCellIterator(shape, detailLevel);
-
-    // Retargeted at each cell's own bytes rather than allocating one BytesRef per cell; the token is turned into a
-    // String immediately, so nothing outlives the next call.
-    final BytesRef scratch = new BytesRef();
-
-    String pendingToken = null;
-    int pendingLevel = -1;
-
-    while (cellIter.hasNext()) {
-      final Cell cell = cellIter.next();
-      final int level = cell.getLevel();
-      final String token = cell.getTokenBytesNoLeaf(scratch).utf8ToString();
-
-      if (pendingToken != null && !visitor.visit(pendingToken, level <= pendingLevel))
-        return;
-
-      pendingToken = token.isEmpty() ? null : token;
-      pendingLevel = level;
-    }
-
-    if (pendingToken != null)
-      visitor.visit(pendingToken, true);
+  private GeoCoveringCellWalk newCoveringCellWalk(final Shape shape, final int detailLevel) {
+    return new GeoCoveringCellWalk(grid.getTreeCellIterator(shape, detailLevel));
   }
 
   /**
-   * Walks the same cells as {@link #forEachCoveringCell} but emits only the FRONTIER ones, collapsing a COMPLETE set of
+   * Walks the same cells as {@link #newCoveringCellWalk} but emits only the FRONTIER ones, collapsing a COMPLETE set of
    * sibling frontier cells into their parent, recursively. This is what Lucene calls {@code pruneLeafyBranches} and
    * enables by default on the indexing path: the parent rectangle is the union of its children, so the cover can only
    * grow and a match can never be lost, while an area shape costs measurably fewer index entries - measured at 57% and
@@ -839,13 +796,5 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         pending = Arrays.copyOf(pending, Math.max(8, pending.length * 2));
       pending[pendingCount++] = childToken;
     }
-  }
-
-  @FunctionalInterface
-  private interface CellVisitor {
-    /**
-     * @return false to stop the walk
-     */
-    boolean visit(String token, boolean frontier);
   }
 }

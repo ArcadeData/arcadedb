@@ -66,6 +66,16 @@ public interface Index {
    */
   void remove(Object[] keys, Identifiable rid);
 
+  /**
+   * Returns the number of LIVE entries in the index: keys deleted but not yet purged by a compaction (tombstones) are
+   * NOT counted, so on an LSM index the value drops as records are removed instead of settling on a residual (#5601).
+   * <p>
+   * "Entry" is the index's own unit, which is not always one per record: a full-text index counts one entry per
+   * analyzed token, a sparse vector index one per posting, and a geospatial index one per covering cell of a shape.
+   * <p>
+   * The cost is index-dependent and only {@code HASH} answers in constant time - every LSM-based implementation walks
+   * the whole structure. Never call it on a query path.
+   */
   long countEntries();
 
   Schema.INDEX_TYPE getType();

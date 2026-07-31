@@ -166,8 +166,8 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
 
   /**
    * put() and remove() must tokenize identically, or a delete leaves entries behind that still resolve to a RID that no
-   * longer exists. Asserted on what the index answers, not on {@code countEntries()}, which counts tombstones until the
-   * next full compaction on every LSM index, geospatial or not.
+   * longer exists. Asserted on BOTH what the index answers and {@code countEntries()}: the latter used to count
+   * tombstones as live entries on every LSM index, geospatial or not, and became a usable oracle with #5601.
    */
   @Test
   void deleteRemovesEveryEntryOfTheRecord() {
@@ -256,6 +256,9 @@ class LSMTreeGeoIndexTokenizationTest extends TestHelper {
       database.transaction(() -> database.command("sql", "DELETE FROM " + typeName + " WHERE name = '" + city + "'"));
       assertThat(lookup(typeName, italy)).hasSize(CITIES.length - i - 1);
     }
+
+    // #5601: with every record gone the index must report no live entry, tombstones or not
+    assertThat(database.getSchema().getIndexByName(typeName + "[coords]").countEntries()).isZero();
   }
 
   /**
