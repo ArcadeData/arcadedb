@@ -552,6 +552,33 @@ slower:
   (Bucket counts that are a power of two up to 32 hid this by arithmetic accident: flipping the case of an ASCII
   letter shifts the Java string hash by a multiple of 32.)
 
+## Commit-time page merges now prove their coverage instead of trusting every writer
+
+The two commit-time page merges - the commutative edge-append merge and the disjoint-slot merge - resolve a page
+version conflict by discarding this transaction's whole image of the page and replaying only its *tracked* writes
+on top of the newer committed version. That is sound only when every byte the transaction wrote to that page
+belongs to a tracked write. Until now nothing checked it: the invariant was maintained by hand, through
+`poisonEdgeAppendPage`/`poisonSlotRebasePage` calls scattered across the writers. A writer that forgot one
+committed a page from which its own change had silently vanished - no exception, no log line, and the merged bytes
+then replicated faithfully to every follower. The same gap had already been found and patched three times by
+people reading the code rather than by a test.
+
+The eligibility test is now the other way round: a byte counts as replayable only while its writer says so
+(`MutablePage.beginCoveredWrite`), and a page that carries even one byte written outside such a declaration is
+refused. `LocalBucket` declares exactly the writes each merge re-applies - the single-slot insert, the in-page
+update (overwrite or growth), the plain-record delete, the in-place rewrite behind a tracked edge append, and
+`compressPage`, whose defrag the commit path re-runs on the rebased page. Everything else - the inline
+record-table writes of the multi-page writers, a placeholder, a record spilling out of its page, a
+stripe-directory update co-located with a segment append, a `GraphBatch` bulk load, any writer added in the
+future - leaves the page undeclared and falls back to the ordinary retry it would have taken before the merges
+existed ([#5596](https://github.com/ArcadeData/arcadedb/issues/5596)).
+
+- **No configuration change and no new failure mode.** The existing poison calls stay as the fast, precise path;
+  the coverage proof only ever turns a would-be silent lost write into a retry.
+- **Merge rates are unchanged on the workloads the merges were built for** (concurrent appends to one super-node,
+  concurrent updates, inserts and deletes of unrelated records sharing a page): those pages are fully declared.
+- **Cost is two ints per page and one OR per page write.**
+
 ## A `STRING` property no longer reads back as a geometry
 
 Deserializing any string looked at its first characters and, when they were `POINT`, `CIRCLE`, `LINESTRING`,
