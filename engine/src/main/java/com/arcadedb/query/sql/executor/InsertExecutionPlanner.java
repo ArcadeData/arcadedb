@@ -146,13 +146,15 @@ public class InsertExecutionPlanner {
         bucket = null;
 
       if (bucket == null)
-        // Now that the unknown-name / unknown-id cases actually reach this branch, "Target not specified" would be
-        // a lie for two of the three ways to get here: the target WAS specified, it just does not exist.
+        // Now that the unknown-name / unknown-id cases actually reach this branch, "not specified" would be a lie
+        // for two of the three ways to get here: the target WAS specified, it just does not exist.
         throw new CommandSQLParsingException(resolvedName != null ?
             "Target bucket '" + resolvedName + "' not found" :
             targetBucket.getBucketNumber() != null ?
                 "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
-                "Target not specified");
+                // Same wording as handleInsertSelect below: it is the bucket that is missing, and the two paths
+                // answer the same question.
+                "Target bucket not specified");
 
       targetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }

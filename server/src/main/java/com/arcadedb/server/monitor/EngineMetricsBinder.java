@@ -68,6 +68,11 @@ public final class EngineMetricsBinder implements MeterBinder {
    * instance would let every one of them silently stop reporting at the next GC. Being static also means a server
    * that binds several registries (Prometheus + OTLP) rebuilds the expensive snapshot once per scrape window
    * instead of once per registry.
+   * <p>
+   * The consequence to be aware of is that the TTL is process-wide, not per binder: in an embedded host that binds
+   * this more than once, they all read the same memoized snapshot. That is correct rather than merely tolerable -
+   * what they are all reading is {@code Profiler.INSTANCE}, itself a JVM-wide singleton, so a per-binder cache
+   * would only buy duplicated work over the same numbers.
    */
   private static final SnapshotCache CACHE = new SnapshotCache();
 
