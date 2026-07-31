@@ -6566,6 +6566,9 @@ def run_in_docker(args) -> bool:
     else:
         packages = ["lxml"]
         if args.db in ("ladybug", "ladybugdb"):
+            # Pinned for reproducible benchmark numbers: ladybug is pre-1.0 and no CI
+            # job exercises this path, so an unpinned minor bump would go unnoticed.
+            # Re-check against the latest release when refreshing published results.
             packages.append("ladybug==0.19.0")
         if args.db == "graphqlite":
             packages.append("graphqlite")
