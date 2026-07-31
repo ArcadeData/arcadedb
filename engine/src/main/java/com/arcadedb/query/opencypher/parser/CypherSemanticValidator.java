@@ -118,7 +118,7 @@ public class CypherSemanticValidator {
   private void validateVariableTypes(final CypherStatement statement) {
     // The field is refilled rather than replaced: the later phases hold this same map.
     varTypes.clear();
-    varTypes.putAll(buildVarTypes(statement, Map.of(), true));
+    varTypes.putAll(buildVarTypes(statement, Map.of()));
   }
 
   /**
@@ -128,20 +128,24 @@ public class CypherSemanticValidator {
    * <p>
    * One construction serves both the statement being validated and the body of a subquery inside it. They used to be
    * two, which is how the two spellings of the same import came to disagree (#5626) - the kind of drift that follows
-   * from writing the same walk twice, and the reason this is one method with two parameters rather than two methods
-   * that resemble each other:
-   * <ul>
-   * <li>{@code inherited} is empty for the statement, which declares its scope from nothing, and the enclosing scope
-   * for a subquery body, which sees the outer row. See {@link #nestedVarTypes} for what that inheritance means for a
-   * {@code CALL { }} body, which imports nothing.</li>
-   * <li>{@code raiseOnKindClash} is on for the statement, where a name declared as two different kinds is the
-   * {@code VariableTypeConflict} this phase exists to raise, and off inside a body, where a name the body binds for
-   * itself legitimately shadows an outer one of another kind.</li>
-   * </ul>
+   * from writing the same walk twice. What separates the two callers is one argument: {@code inherited} is empty for
+   * the statement, which declares its scope from nothing, and the enclosing scope for a subquery body, which sees the
+   * outer row. See {@link #nestedVarTypes} for what that inheritance means for a {@code CALL { }} body, which imports
+   * nothing.
+   * <p>
+   * <b>Shadowing an inherited name is not the same as clashing with one declared here.</b> Declaring {@code x} a node
+   * and then a relationship is the {@code VariableTypeConflict} this phase exists to raise, and it is raised inside a
+   * body exactly as outside one - which is the whole point of #5626. Re-declaring a name the body only <i>inherited</i>
+   * is not that: an implicit {@code CALL { }} imports nothing, so a body is free to bind a name the enclosing query
+   * happens to use for something else. The two are told apart by tracking which names this scope declared itself,
+   * rather than by a flag that would have to turn the check off wholesale to allow the second.
    */
   private static Map<String, VarType> buildVarTypes(final CypherStatement statement,
-      final Map<String, VarType> inherited, final boolean raiseOnKindClash) {
+      final Map<String, VarType> inherited) {
     final Map<String, VarType> scope = new HashMap<>(inherited);
+    // The names this scope declares for itself, as opposed to the ones it inherited: only a clash between two of
+    // these is a conflict. Empty for a statement, so there every clash is one.
+    final Set<String> declaredHere = new HashSet<>();
 
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses == null || clauses.isEmpty()) {
@@ -149,14 +153,14 @@ public class CypherSemanticValidator {
       for (final MatchClause matchClause : statement.getMatchClauses())
         if (matchClause.hasPathPatterns())
           for (final PathPattern path : matchClause.getPathPatterns())
-            declarePatternVarTypes(path, scope, raiseOnKindClash);
+            declarePatternVarTypes(path, scope, declaredHere);
 
       if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty())
         for (final PathPattern path : statement.getCreateClause().getPathPatterns())
-          declarePatternVarTypes(path, scope, raiseOnKindClash);
+          declarePatternVarTypes(path, scope, declaredHere);
 
       if (statement.getMergeClause() != null)
-        declarePatternVarTypes(statement.getMergeClause().getPathPattern(), scope, raiseOnKindClash);
+        declarePatternVarTypes(statement.getMergeClause().getPathPattern(), scope, declaredHere);
 
       return scope;
     }
@@ -167,31 +171,31 @@ public class CypherSemanticValidator {
         final MatchClause matchClause = entry.getTypedClause();
         if (matchClause.hasPathPatterns())
           for (final PathPattern path : matchClause.getPathPatterns())
-            declarePatternVarTypes(path, scope, raiseOnKindClash);
+            declarePatternVarTypes(path, scope, declaredHere);
       }
       case CREATE -> {
         final CreateClause createClause = entry.getTypedClause();
         if (createClause != null && !createClause.isEmpty())
           for (final PathPattern path : createClause.getPathPatterns())
-            declarePatternVarTypes(path, scope, raiseOnKindClash);
+            declarePatternVarTypes(path, scope, declaredHere);
       }
       case MERGE -> {
         final MergeClause mergeClause = entry.getTypedClause();
         if (mergeClause != null)
-          declarePatternVarTypes(mergeClause.getPathPattern(), scope, raiseOnKindClash);
+          declarePatternVarTypes(mergeClause.getPathPattern(), scope, declaredHere);
       }
-      case WITH -> applyWithProjection(entry.getTypedClause(), scope);
-      case UNWIND -> scope.remove(((UnwindClause) entry.getTypedClause()).getVariable());
-      case LOAD_CSV -> scope.remove(((LoadCSVClause) entry.getTypedClause()).getVariable());
+      case WITH -> applyWithProjection(entry.getTypedClause(), scope, declaredHere);
+      case UNWIND -> forget(((UnwindClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
+      case LOAD_CSV -> forget(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
       // Only the FOREACH variable itself: what the clause's inner CREATE/MERGE bind lives and dies inside the loop
       // and is not in scope after it, so declaring those kinds here would be declaring them where they cannot be
       // referenced. The expression walk still descends into the inner clauses and checks them against this scope.
-      case FOREACH -> scope.remove(((ForeachClause) entry.getTypedClause()).getVariable());
+      case FOREACH -> forget(((ForeachClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
       case CALL -> {
         final CallClause callClause = entry.getTypedClause();
         if (callClause.hasYield())
           for (final CallClause.YieldItem item : callClause.getYieldItems())
-            scope.remove(item.getOutputName());
+            forget(item.getOutputName(), scope, declaredHere);
       }
       case SUBQUERY -> {
         // What a nested CALL subquery returns enters this scope under a kind this phase does not track back through
@@ -201,7 +205,7 @@ public class CypherSemanticValidator {
           final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
           if (innerReturn != null)
             for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
-              scope.remove(item.getOutputName());
+              forget(item.getOutputName(), scope, declaredHere);
         }
       }
       default -> {
@@ -218,8 +222,13 @@ public class CypherSemanticValidator {
    * importing {@code WITH p} - and a renaming {@code WITH p AS q} - a path, while {@code WITH 1 AS p} stops being one.
    * <p>
    * {@code WITH *} passes the incoming scope through, so a kind survives a projection that does not name it.
+   * <p>
+   * What the clause projects becomes this scope's own, whether the name came from here or was inherited: past a
+   * {@code WITH p} the body has restated {@code p}, so a later clause declaring it something else is the conflict a
+   * restatement makes it, not the shadowing an inherited name would have allowed.
    */
-  private static void applyWithProjection(final WithClause withClause, final Map<String, VarType> scope) {
+  private static void applyWithProjection(final WithClause withClause, final Map<String, VarType> scope,
+      final Set<String> declaredHere) {
     boolean star = false;
     final Map<String, VarType> carried = new HashMap<>();
     final Set<String> lost = new HashSet<>();
@@ -242,10 +251,14 @@ public class CypherSemanticValidator {
         lost.add(outputName);
     }
 
-    if (!star)
+    if (!star) {
       scope.clear();
+      declaredHere.clear();
+    }
     scope.keySet().removeAll(lost);
+    declaredHere.removeAll(lost);
     scope.putAll(carried);
+    declaredHere.addAll(carried.keySet());
   }
 
   /**
@@ -271,30 +284,44 @@ public class CypherSemanticValidator {
   }
 
   private static void declarePatternVarTypes(final PathPattern path, final Map<String, VarType> scope,
-      final boolean raiseOnKindClash) {
+      final Set<String> declaredHere) {
     if (path == null)
       return;
 
     if (path.hasPathVariable())
-      declareVar(path.getPathVariable(), VarType.PATH, scope, raiseOnKindClash);
+      declareVar(path.getPathVariable(), VarType.PATH, scope, declaredHere);
     for (final NodePattern node : path.getNodes())
       if (node.getVariable() != null)
-        declareVar(node.getVariable(), VarType.NODE, scope, raiseOnKindClash);
+        declareVar(node.getVariable(), VarType.NODE, scope, declaredHere);
     for (final RelationshipPattern rel : path.getRelationships())
       if (rel.getVariable() != null)
-        declareVar(rel.getVariable(), VarType.RELATIONSHIP, scope, raiseOnKindClash);
+        declareVar(rel.getVariable(), VarType.RELATIONSHIP, scope, declaredHere);
   }
 
+  /**
+   * Declares one name as one kind. A second declaration of a name <i>this scope already declared</i>, as a different
+   * kind, is the conflict; a first declaration of a name the scope merely inherited is shadowing, and is allowed.
+   */
   private static void declareVar(final String name, final VarType type, final Map<String, VarType> scope,
-      final boolean raiseOnKindClash) {
-    if (raiseOnKindClash) {
-      final VarType existing = scope.get(name);
-      if (existing != null && existing != type)
-        throw new CommandParsingException(
-            "VariableTypeConflict: Variable '" + name + "' already defined as " + existing + ", cannot redefine as "
-                + type);
-    }
+      final Set<String> declaredHere) {
+    final VarType existing = scope.get(name);
+    if (existing != null && existing != type && declaredHere.contains(name))
+      throw new CommandParsingException(
+          "VariableTypeConflict: Variable '" + name + "' already defined as " + existing + ", cannot redefine as "
+              + type);
+
     scope.put(name, type);
+    declaredHere.add(name);
+  }
+
+  /**
+   * Drops a name bound by something that says nothing about its kind - an {@code UNWIND} variable, a {@code YIELD}
+   * output. It leaves this scope's declarations too, so a later pattern may declare it afresh without clashing with
+   * a kind the name no longer has.
+   */
+  private static void forget(final String name, final Map<String, VarType> scope, final Set<String> declaredHere) {
+    scope.remove(name);
+    declaredHere.remove(name);
   }
 
   // ==============================
@@ -1886,7 +1913,7 @@ public class CypherSemanticValidator {
     if (nested instanceof UnionStatement)
       return new HashMap<>(outer);
 
-    return buildVarTypes(nested, outer, false);
+    return buildVarTypes(nested, outer);
   }
 
   /**

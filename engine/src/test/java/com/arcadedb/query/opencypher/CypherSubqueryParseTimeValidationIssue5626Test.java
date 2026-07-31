@@ -454,6 +454,34 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
     assertThatCode(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) WITH 1 AS p RETURN p")).doesNotThrowAnyException();
   }
 
+  /**
+   * A name declared twice as two different kinds is a {@code VariableTypeConflict}, and it is one inside a body for
+   * the same reason it is one outside: that is what "validate a body like the query around it" means.
+   * <p>
+   * What must still be allowed is the other thing that looks like it. A body that binds a name the enclosing query
+   * also uses is shadowing, not clashing - an implicit {@code CALL { }} imports nothing, so the outer name is not
+   * one the body is redefining. Both are asserted, because a check that told them apart in only one direction would
+   * either miss the conflict or reject the shadow.
+   */
+  @Test
+  void aKindClashInsideABodyIsAConflictWhileShadowingAnOuterNameIsNot() {
+    assertThatThrownBy(() -> explain("MATCH (x:P) MATCH ()-[x]->() RETURN x"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("VariableTypeConflict");
+    assertThatThrownBy(
+        () -> explain("MATCH (n:P) WHERE EXISTS { MATCH (x:P) MATCH ()-[x]->() RETURN x } RETURN n"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("VariableTypeConflict");
+    assertThatThrownBy(
+        () -> explain("MATCH (n:P) CALL { MATCH (x:P) MATCH ()-[x]->() RETURN x AS r } RETURN r"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("VariableTypeConflict");
+
+    // Shadowing: the body binds a name the outer query declared as another kind, and imports nothing.
+    assertThatCode(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL { MATCH (p:P) RETURN p.name AS n } RETURN n"))
+        .doesNotThrowAnyException();
+  }
+
   private List<String> names(final String query) {
     final List<String> result = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
