@@ -59,7 +59,8 @@ import java.util.logging.Level;
  * <p>
  * Authentication is inherited from {@link AbstractServerHttpHandler}: the standard
  * {@code X-ArcadeDB-Cluster-Token} + {@code X-ArcadeDB-Forwarded-User} pair used by every other
- * peer-to-peer cluster RPC.
+ * peer-to-peer cluster RPC. Authorization is the root check below, which that pair satisfies because peers
+ * forward as root.
  */
 public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
 
@@ -73,6 +74,13 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
+    // Root-only, like every other cluster RPC: peers reach this endpoint with the cluster token forwarded
+    // as root, so the legitimate caller is unaffected, while an ordinary authenticated user has no business
+    // here. Filtering the response by authorization would not be enough - the work itself is the problem,
+    // since each call computes a SHA-256 over every database directory on the node and may open a database
+    // that was deliberately left closed.
+    checkRootUser(user);
+
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());

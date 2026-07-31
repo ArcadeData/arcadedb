@@ -26,7 +26,6 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.HashSet;
 import java.util.Set;
 
 @Deprecated
@@ -38,11 +37,7 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload)
       throws Exception {
-    final Set<String> installedDatabases = new HashSet<>(httpServer.getServer().getDatabaseNames());
-    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
-
-    if (!allowedDatabases.contains("*"))
-      installedDatabases.retainAll(allowedDatabases);
+    final Set<String> installedDatabases = filterAuthorizedDatabases(user, httpServer.getServer().getDatabaseNames());
 
     final JSONObject response = new JSONObject()
         .put("version", Constants.getVersion())

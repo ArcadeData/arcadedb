@@ -26,8 +26,6 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.Deque;
-import java.util.HashSet;
-import java.util.Set;
 
 public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
   public GetExistsDatabaseHandler(final HttpServer httpServer) {
@@ -43,13 +41,8 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.exists-database").increment();
 
-    final Set<String> installedDatabases = new HashSet<>(server.getDatabaseNames());
-    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
-
-    if (!allowedDatabases.contains("*"))
-      installedDatabases.retainAll(allowedDatabases);
-
-    final boolean existsDatabase = installedDatabases.contains(databaseName.getFirst());
+    final boolean existsDatabase = filterAuthorizedDatabases(user, server.getDatabaseNames())
+        .contains(databaseName.getFirst());
 
     final JSONObject response = new JSONObject();
     response.put("result", existsDatabase);
