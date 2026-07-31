@@ -52,6 +52,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * Lives in {@code com.arcadedb.engine} to read the page layout constants directly: measuring the holes against the
  * record table is the only assertion that says "compressed" without re-deriving it from the engine's own defrag code.
+ * <p>
+ * DELIBERATELY NOT {@code @Tag("slow")}, for the reason {@code Issue5596MergeCoverageTest} spells out next door: the
+ * tag keys on elapsed time, not on whether a test spawns a thread. Both methods here drive the SMALLEST contention
+ * that reproduces - one competitor, one commit each - and the whole class measures ~0.02s. It also belongs on every
+ * build: a merge that stops re-compressing costs a defrag, which no correctness assertion anywhere would catch.
+ * Re-measure before tagging it, rather than tagging it by family resemblance to the contention suites.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
