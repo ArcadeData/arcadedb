@@ -34,12 +34,23 @@ import java.util.logging.Level;
  * Returns true if the pattern/subquery has at least one match, false otherwise.
  */
 public class ExistsExpression implements Expression {
-  private final String subquery;
-  private final String text;
+  private final String          subquery;
+  private final String          text;
+  private final CypherStatement parsedSubquery;
 
+  /**
+   * Used by the runtime paths that synthesize an existential subquery from a pattern already held as an AST
+   * ({@link PatternPredicateExpression}). Such an expression is built while the query runs, never handed to the
+   * parse-time validation, so it carries no parsed body.
+   */
   public ExistsExpression(final String subquery, final String text) {
+    this(subquery, text, null);
+  }
+
+  public ExistsExpression(final String subquery, final String text, final CypherStatement parsedSubquery) {
     this.subquery = subquery;
     this.text = text;
+    this.parsedSubquery = parsedSubquery;
   }
 
   @Override
@@ -84,5 +95,16 @@ public class ExistsExpression implements Expression {
 
   public String getSubquery() {
     return subquery;
+  }
+
+  /**
+   * The body as an AST, or {@code null} when this expression was synthesized at runtime rather than parsed.
+   * <p>
+   * The body still executes from {@link #getSubquery()}, because what runs is the text after
+   * {@link CorrelatedSubqueryRewriter} has correlated it to the outer row, which differs row by row. This AST is the
+   * body as written, and exists so that the parse-time checks reach inside it (issue #5626).
+   */
+  public CypherStatement getParsedSubquery() {
+    return parsedSubquery;
   }
 }
