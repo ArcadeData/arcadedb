@@ -56,6 +56,58 @@ jobs:
         working-directory: bindings/python
         run: python -m bandit -c pyproject.toml -r examples --severity-level medium --confidence-level high
 
+  # Meterian cannot scan this folder: `uv lock` refuses on a project carrying
+  # `[tool.uv] managed = false`, so it produces no lockfile to read (see #5616).
+  # This audits the dependency floors declared in pyproject.toml instead.
+  dependency-floors:
+    name: Dependency floor audit (bindings/python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Setup UV package manager
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+
+      - name: Install pip-audit
+        run: python -m pip install "pip-audit==2.10.1"
+
+      # --resolution lowest-direct pins every declared dependency to the oldest
+      # release its own constraint admits, which is the version this manifest
+      # actually promises to work with. The default resolution would pick the
+      # newest instead, and a floor left open to a vulnerable release would
+      # never show up.
+      #
+      # The dev extra is excluded on purpose: black, isort, mypy and pytest-cov
+      # declare no lower bound, so lowest-direct drops them onto their earliest
+      # PyPI releases (mypy 0.1, which pulls Python 2-era sdists that fail to
+      # build). It is contributor tooling and is never installed from the wheel.
+      - name: Resolve declared dependency floors
+        working-directory: bindings/python
+        run: |
+          uv pip compile pyproject.toml \
+            --extra test --extra vector --extra examples \
+            --resolution lowest-direct \
+            -o "$RUNNER_TEMP/floors.txt"
+          cat "$RUNNER_TEMP/floors.txt"
+
+      # --disable-pip reads the pinned file directly rather than asking pip to
+      # resolve it. Without it, a floor whose version has no wheel for this
+      # interpreter fails as an sdist build error instead of reporting the
+      # advisory that caused the regression.
+      - name: Audit the floors against the advisory database
+        run: pip-audit --no-deps --disable-pip -r "$RUNNER_TEMP/floors.txt"
+
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
     name: Download ArcadeDB JARs
