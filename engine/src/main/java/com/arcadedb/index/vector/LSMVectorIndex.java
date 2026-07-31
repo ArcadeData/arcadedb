@@ -68,6 +68,7 @@ import com.arcadedb.utility.RidHashSet;
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
+import io.github.jbellis.jvector.graph.NodesIterator;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
@@ -101,6 +102,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.Timer;
@@ -1396,6 +1398,91 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Using a per-index pool allows us to cancel long-running builds on shutdown
    * by calling shutdownNow() on this pool.
    */
+  /**
+   * Ordinals that no path from the entry node reaches. Beam search only ever follows edges forward from the entry
+   * node, so such a node can never be returned no matter how wide the beam - the graph build occasionally leaves one
+   * with a full out-degree and no in-edges (issue #5615). Callers keep those vectors searchable through the delta
+   * scan instead.
+   * <p>
+   * The walk unions the edges of every level, while a search descends the levels before beam-searching level 0.
+   * Union-reachability is therefore a superset of what a search can reach: this never invents an orphan, but a node
+   * reachable only through a higher-level in-edge is not reported. That suits the observed defect, which is a node
+   * with no in-edges at any level, and keeps the check conservative - a false orphan would cost a duplicate delta
+   * entry on every search.
+   *
+   * @return the unreachable ordinals, empty when every node is reachable
+   */
+  int[] findUnreachableOrdinals(final ImmutableGraphIndex graph) {
+    try (final ImmutableGraphIndex.View view = graph.getView()) {
+      final int upper = graph.getIdUpperBound();
+      if (upper <= 0)
+        return EMPTY_ORDINALS;
+
+      final boolean[] reached = new boolean[upper];
+      final int[] queue = new int[upper];
+      int head = 0, tail = 0;
+
+      final ImmutableGraphIndex.NodeAtLevel entryNode = view.entryNode();
+      if (entryNode == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Graph for index %s has no entry node, skipping the connectivity check", indexName);
+        return EMPTY_ORDINALS;
+      }
+      final int entry = entryNode.node;
+      if (entry < 0 || entry >= upper)
+        return EMPTY_ORDINALS;
+      reached[entry] = true;
+      queue[tail++] = entry;
+
+      final int maxLevel = graph.getMaxLevel();
+      while (head < tail) {
+        final int node = queue[head++];
+        for (int level = 0; level <= maxLevel; level++) {
+          final NodesIterator neighbors;
+          try {
+            // A node absent from a level yields an empty iterator rather than an exception
+            // (OnHeapGraphIndex.getNeighborsIterator returns EMPTY_NODE_ITERATOR for both an out-of-range level
+            // and an unmapped node), so this walks the levels without paying for control flow. The catch only
+            // guards View implementations that choose to throw instead.
+            neighbors = view.getNeighborsIterator(level, node);
+          } catch (final Exception e) {
+            continue;
+          }
+          // Skip one node rather than letting an NPE unwind to the outer catch, which would abandon the walk and
+          // silently treat every remaining node as reachable.
+          if (neighbors == null)
+            continue;
+          while (neighbors.hasNext()) {
+            final int next = neighbors.nextInt();
+            if (next >= 0 && next < upper && !reached[next]) {
+              reached[next] = true;
+              queue[tail++] = next;
+            }
+          }
+        }
+      }
+
+      int unreachable = 0;
+      for (int node = 0; node < upper; node++)
+        if (!reached[node] && graph.containsNode(node))
+          unreachable++;
+
+      if (unreachable == 0)
+        return EMPTY_ORDINALS;
+
+      final int[] result = new int[unreachable];
+      int i = 0;
+      for (int node = 0; node < upper; node++)
+        if (!reached[node] && graph.containsNode(node))
+          result[i++] = node;
+      return result;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not verify graph connectivity for index %s: %s", indexName, e.getMessage());
+      return EMPTY_ORDINALS;
+    }
+  }
+
   private synchronized ForkJoinPool getOrCreateGraphBuildPool() {
     ForkJoinPool pool = graphBuildPool;
     if (pool == null || pool.isShutdown()) {
@@ -1987,6 +2074,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
         throw e;
       }
 
+      // The build occasionally leaves a node with a full out-degree and no in-edges, which no beam search can reach
+      // at any efSearch (issue #5615). Collect those vectors here, before the write lock, so neither the O(V+E)
+      // walk nor the vector reads stall concurrent searches; they are re-queued into the delta buffer below and
+      // stay searchable through the delta scan until the next rebuild wires them into the graph.
+      //
+      // Only the from-scratch build needs this. Vectors ingested through the live builder are already in the
+      // delta buffer from the moment they are inserted, so an orphan there is served by the delta scan until a
+      // rebuild absorbs it - at which point this check runs over it.
+      //
+      // Re-queueing deliberately does not bump mutationsSinceSerialize: a re-queued vector is not a mutation, and
+      // counting it would let an index whose last build orphaned a node rebuild itself forever. Two consequences,
+      // both accepted:
+      //  - the decrement just above may take the counter to zero and cancel the inactivity rebuild timer, so an
+      //    otherwise idle index has no self-scheduled path out of scanning these entries until the next real
+      //    mutation. That is the price of not spinning on rebuilds;
+      //  - deltaVectors is in-memory, so a restart drops the re-queue. The persisted graph still physically holds
+      //    the orphan and reports the same node count as the ordinal map, so the staleness check on load sees an
+      //    up-to-date graph and the vector is unsearchable again until some mutation triggers a rebuild. Closing
+      //    that would mean persisting the orphan set; it is left open because any rebuild re-detects it.
+      final List<DeltaVectorEntry> unreachableEntries = new ArrayList<>();
+      for (final int ordinal : findUnreachableOrdinals(builtGraph)) {
+        if (ordinal >= finalActiveVectorIds.length)
+          continue;
+        final int vectorId = finalActiveVectorIds[ordinal];
+        // Anything at or past the snapshot is already carried over by the trim below; re-adding it here would
+        // score the same vector twice in the delta scan.
+        if (vectorId >= deltaSnapshotId)
+          continue;
+        final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+        if (loc == null || loc.deleted)
+          continue;
+        // getVector() resolves the location through the build snapshot and never returns null: an unreadable
+        // ordinal comes back as the sentinel, which would pair a real RID with a meaningless distance in the
+        // delta scan. The location check above cannot stand in for this - it reads the live index, not the
+        // snapshot, and says nothing about the six document-read failures that also yield the sentinel.
+        final VectorFloat<?> vector = vectors.getVector(ordinal);
+        if (vector == null || (vectors instanceof final ArcadePageVectorValues pageValues
+            && pageValues.isDeletedSentinel(vector)))
+          continue;
+        unreachableEntries.add(new DeltaVectorEntry(vectorId, loc.rid, vector));
+      }
+      if (!unreachableEntries.isEmpty())
+        LogManager.instance().log(this, Level.WARNING,
+            "Graph build left %d of %d vectors unreachable for index %s: serving them from the delta scan until the "
+                + "next rebuild", unreachableEntries.size(), finalActiveVectorIds.length, indexName);
+
       // Reacquire write lock to update graph state
       lock.writeLock().lock();
       try {
@@ -2001,6 +2134,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         for (final DeltaVectorEntry e : deltaVectors)
           if (e.vectorId >= deltaSnapshotId)
             remaining.add(e);
+
+        remaining.addAll(unreachableEntries);
+
         this.deltaVectors = remaining;
 
         // Subtract only mutations present at build start, preserving concurrent ones
@@ -2412,6 +2548,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Above this threshold, a full rebuild can take seconds to minutes, so async is preferred.
    */
   private static final int ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000;
+  private static final int[] EMPTY_ORDINALS             = new int[0];
 
   /**
    * Check if the graph needs rebuilding before a search, and trigger the appropriate rebuild strategy.
@@ -3922,7 +4059,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         @Override
         public Identifiable next() {
           if (!hasNext())
-            return null;
+            // #5635: an exhausted IndexCursor throws, it does not hand the caller a null element
+            throw new NoSuchElementException();
           return resultRIDs.get(position++);
         }
 

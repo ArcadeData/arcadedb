@@ -878,6 +878,35 @@ The underlying contract was loose in three places, and all three are tightened:
   `NumberFormatException`), an unknown `similarity` or `quantization` name, or an out-of-range `pqClusters` is a
   client mistake. They are reported as parsing errors now, the same treatment the `GEOSPATIAL` metadata gets.
 
+## An index cursor never hands out a null entry, and a restarted index scan releases its cursors
+
+Iterating an LSM-Tree index cursor could yield a `null` element ([#5635](https://github.com/ArcadeData/arcadedb/issues/5635)).
+`hasNext()` answered on how many underlying page cursors were still live, not on whether any of them still held a
+surviving RID, so a scan that ended on a run of tombstoned keys said "yes" and then handed the caller nothing.
+`IndexCursor` is an `Iterator<Identifiable>`, so `for (final Identifiable r : cursor)` yielded that null, and the
+callers that had noticed each carried their own guard against it.
+
+`hasNext()` now prefetches: it runs the merge until it holds an entry it can actually emit, so it is exact, and
+`next()` is a pure drain that throws `NoSuchElementException` once exhausted - the contract every other index cursor
+already honoured. Two consequences were user-visible:
+
+- `SELECT min(...)` / `SELECT max(...)` read the key off the cursor after `next()`. The trailing null still moved the
+  cursor, so on a type whose lowest (or highest) keys had all been deleted the answer was one of those **deleted**
+  keys.
+- A delete-heavy index reported one entry too many in `countEntries()` - the residual #5601 chased, and the reason it
+  survived a full compaction that had already dropped every tombstone.
+
+`getRecord()` and `getKeys()` are settled at the same time: they describe the entry `next()` **last returned**. The old
+implementation peeked at the not-yet-consumed value, so a caller reading them right after `next()` saw the following
+row.
+
+Separately, `FETCH FROM INDEX` now releases its cursors on `reset()`, not only on `close()`. A restart rebuilds every
+cursor from scratch, so the previous run's had to go: a compacted-series cursor stays registered with its file and
+`dropRetiredCompactedIndexes` skips a retired file that still has one, for the lifetime of the database. The pending
+cursors were not even dropped, so a restarted scan replayed the old, partly consumed ones before reaching the new. The
+same release now covers the per-value cursors of a `key IN [...]` lookup, which nothing had ever closed, and the
+cursors held by `MIN`/`MAX`, by the full-text term walks, and by the Cypher `NodeIndexSeek` / `NodeIndexRangeScan`
+operators - all of which stop before exhaustion by design.
 ## Server and cluster status endpoints scope their per-database output to the caller
 
 The routes that enumerate the whole database registry rather than naming one database in the path now reduce
@@ -951,5 +980,48 @@ warns about it on load. The type keeps its partitioned placement, so records wri
 still land where a lookup would look for them. Any other unusable strategy - an implementation class that no longer
 resolves, say - now falls back to `round-robin` for that one type with a warning naming it, instead of costing the
 rest of the schema.
+## Cypher: a subquery body is validated like the query around it
+
+The widening of #5602 left one place the walk could not reach, and the class it was written on said so in the
+opposite direction: the bodies of `EXISTS { }`, `COUNT { }` and `COLLECT { }` were "parsed on their own and
+validated then". They were not. Each of the three keeps its body as text and re-parses it once per outer row, and
+a body that cannot run is absorbed into the expression's neutral value - `false`, `0`, an empty list. A `CALL { }`
+body was never handed to this phase at all ([#5626](https://github.com/ArcadeData/arcadedb/issues/5626)).
+
+So `MATCH (n:P) WHERE abs('x') > 0 RETURN n` was rejected before it started, while the identical call one level in,
+`MATCH (n:P) WHERE EXISTS { MATCH (m:P) WHERE abs('x') > 0 RETURN m } RETURN n`, was accepted - the very
+clause-dependent asymmetry #5602 set out to remove. Neo4j type-checks a subquery body exactly as it does the query
+around it.
+
+The three expressions now carry their body as an AST alongside the text, built from the parse tree ANTLR already
+produced for it rather than by re-lexing, and the traversal descends into it - as it does into a `CALL { }` body.
+Crossing into a body changes the variable scope, so a check that reads variable kinds (`type()` wants a
+relationship, `p.name` needs `p` not to be a path) re-binds itself to the kinds the body declares, over the ones it
+inherits; an implicit `CALL { }` imports nothing, so a name the body binds for itself shadows the outer one rather
+than answering for it. A body's kinds are built by walking its clauses in order, so the two spellings of the same
+import - `CALL (p) { ... }` and a leading `WITH p` - answer alike, while `WITH 1 AS p` stops `p` being a path. Each
+branch of a `UNION` is a scope in its own right: a variable only one branch declares is checked against the kind
+that branch gives it, instead of being dropped for the branches disagreeing about it.
+
+Two expression positions that were leaves for the same reason are covered too: an `EXISTS { }` written as a bare
+`WHERE` predicate, and a function call used as one (`WHERE isEmpty(x)`), each used to get an anonymous
+`BooleanExpression` adapter that the traversal could only treat as a leaf. Both are now the ordinary
+`BooleanCoercionExpression` - byte-for-byte the same behaviour, minus the blind spot. Procedure `CALL` arguments
+and the `LOAD CSV FROM` url expression are walked as well.
+
+Working out what a name is - a node, a relationship, a path - was written twice, once for a statement and once
+for a subquery body, and the two had already drifted. They are one construction now, which closed an asymmetry
+older than this issue: the statement's copy dropped every kind at a `WITH *`, because it kept only what the
+projection names, while the body's copy passed the incoming scope through.
+
+> **Potentially breaking, in the same way #5602 was.** A query whose bad call sits inside a subquery body is now
+> rejected before it starts rather than failing at runtime - or, where the subquery matched no row, rather than
+> quietly answering `false` / `0` / `[]`. The call was always wrong. One shape worth calling out: `type(b)` where
+> `b` is a node, written inside a subquery, is now the type error it already was outside one.
+>
+> A second shape comes from the shared scope construction: a kind now survives `WITH *`, so
+> `MATCH p = (a)-[:KNOWS]->(b) WITH * RETURN p.name` is rejected as the path-property access it always was,
+> where before the `WITH *` made the engine forget `p` was a path and the query failed at runtime instead. A
+> projection that names what it keeps is unaffected - `WITH 1 AS p` still stops `p` being a path.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1

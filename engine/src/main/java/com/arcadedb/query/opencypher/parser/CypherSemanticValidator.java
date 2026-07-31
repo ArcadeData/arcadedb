@@ -25,7 +25,6 @@ import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.query.opencypher.ast.*;
 
 import java.util.*;
-import java.util.function.Consumer;
 
 /**
  * Semantic validator for Cypher statements.
@@ -117,106 +116,212 @@ public class CypherSemanticValidator {
   // ========================
 
   private void validateVariableTypes(final CypherStatement statement) {
-    // Walk clauses in order if available, otherwise walk MATCH + CREATE + MERGE
-    final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
-    if (clausesInOrder != null && !clausesInOrder.isEmpty()) {
-      for (final ClauseEntry entry : clausesInOrder) {
-        switch (entry.getType()) {
-          case MATCH:
-            final MatchClause matchClause = entry.getTypedClause();
-            if (matchClause.hasPathPatterns())
-              for (final PathPattern path : matchClause.getPathPatterns())
-                registerPathPatternVarTypes(path, varTypes);
-            break;
-          case CREATE:
-            final CreateClause createClause = entry.getTypedClause();
-            if (createClause != null && !createClause.isEmpty())
-              for (final PathPattern path : createClause.getPathPatterns())
-                registerPathPatternVarTypes(path, varTypes);
-            break;
-          case MERGE:
-            final MergeClause mergeClause = entry.getTypedClause();
-            if (mergeClause != null)
-              registerPathPatternVarTypes(mergeClause.getPathPattern(), varTypes);
-            break;
-          case WITH:
-            // WITH resets scope. Variables projected through WITH may keep their type
-            // if they directly reference a pattern variable. For literal values (numbers,
-            // strings, booleans, maps), mark as SCALAR to detect type conflicts.
-            // For complex expressions, don't track type to avoid false positives.
-            final WithClause withClauseTypes = entry.getTypedClause();
-            final Map<String, VarType> newVarTypes = new HashMap<>();
-            for (final ReturnClause.ReturnItem item : withClauseTypes.getItems()) {
-              final String outputName = item.getOutputName();
-              if (outputName == null || "*".equals(outputName))
-                continue;
-              // Check if the expression is a simple variable reference that preserves type
-              if (item.getExpression() instanceof VariableExpression) {
-                final String srcVar = ((VariableExpression) item.getExpression()).getVariableName();
-                final VarType srcType = varTypes.get(srcVar);
-                if (srcType != null) {
-                  newVarTypes.put(outputName, srcType);
-                  continue;
-                }
-              }
-              // Only mark as SCALAR for clear non-null literal values
-              if (item.getExpression() instanceof LiteralExpression) {
-                final Object litVal = ((LiteralExpression) item.getExpression()).getValue();
-                if (litVal != null)
-                  newVarTypes.put(outputName, VarType.SCALAR);
-              } else if (item.getExpression() instanceof MapExpression
-                  || isLiteralListExpression(item.getExpression()))
-                newVarTypes.put(outputName, VarType.SCALAR);
-              // A list containing node variables (e.g., [n]) cannot be used as a node
-              else if (item.getExpression() instanceof ListExpression && containsNodeVariable(item.getExpression()))
-                newVarTypes.put(outputName, VarType.SCALAR);
-              // For complex expressions (list indexing, function calls, etc.)
-              // don't track type to avoid false positives
-            }
-            varTypes.clear();
-            varTypes.putAll(newVarTypes);
-            break;
-          case UNWIND:
-            // UNWIND variable type depends on the list content, can't determine at parse time
-            break;
-          default:
-            break;
-        }
-      }
-    } else {
-      // Fallback: walk match clauses + create + merge
+    // The field is refilled rather than replaced: the later phases hold this same map.
+    varTypes.clear();
+    varTypes.putAll(buildVarTypes(statement, Map.of()));
+  }
+
+  /**
+   * Builds the variable kinds a statement's clauses declare, walking them in order: a graph pattern declares them, a
+   * {@code WITH} resets the scope to what it projects, and a binding that says nothing about the kind - an
+   * {@code UNWIND} variable, a {@code YIELD} output - drops whatever the name held.
+   * <p>
+   * One construction serves both the statement being validated and the body of a subquery inside it. They used to be
+   * two, which is how the two spellings of the same import came to disagree (#5626) - the kind of drift that follows
+   * from writing the same walk twice. What separates the two callers is one argument: {@code inherited} is empty for
+   * the statement, which declares its scope from nothing, and the enclosing scope for a subquery body, which sees the
+   * outer row. See {@link #nestedVarTypes} for what that inheritance means for a {@code CALL { }} body, which imports
+   * nothing.
+   * <p>
+   * <b>Shadowing an inherited name is not the same as clashing with one declared here.</b> Declaring {@code x} a node
+   * and then a relationship is the {@code VariableTypeConflict} this phase exists to raise, and it is raised inside a
+   * body exactly as outside one - which is the whole point of #5626. Re-declaring a name the body only <i>inherited</i>
+   * is not that: an implicit {@code CALL { }} imports nothing, so a body is free to bind a name the enclosing query
+   * happens to use for something else. The two are told apart by tracking which names this scope declared itself,
+   * rather than by a flag that would have to turn the check off wholesale to allow the second.
+   */
+  private static Map<String, VarType> buildVarTypes(final CypherStatement statement,
+      final Map<String, VarType> inherited) {
+    final Map<String, VarType> scope = new HashMap<>(inherited);
+    // The names this scope declares for itself, as opposed to the ones it inherited: only a clash between two of
+    // these is a conflict. Empty for a statement, so there every clash is one.
+    final Set<String> declaredHere = new HashSet<>();
+
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty()) {
+      // Some builder paths leave the ordered list empty; the per-kind getters still answer.
       for (final MatchClause matchClause : statement.getMatchClauses())
         if (matchClause.hasPathPatterns())
           for (final PathPattern path : matchClause.getPathPatterns())
-            registerPathPatternVarTypes(path, varTypes);
+            declarePatternVarTypes(path, scope, declaredHere);
 
       if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty())
         for (final PathPattern path : statement.getCreateClause().getPathPatterns())
-          registerPathPatternVarTypes(path, varTypes);
+          declarePatternVarTypes(path, scope, declaredHere);
 
       if (statement.getMergeClause() != null)
-        registerPathPatternVarTypes(statement.getMergeClause().getPathPattern(), varTypes);
+        declarePatternVarTypes(statement.getMergeClause().getPathPattern(), scope, declaredHere);
+
+      return scope;
     }
+
+    for (final ClauseEntry entry : clauses) {
+      switch (entry.getType()) {
+      case MATCH -> {
+        final MatchClause matchClause = entry.getTypedClause();
+        if (matchClause.hasPathPatterns())
+          for (final PathPattern path : matchClause.getPathPatterns())
+            declarePatternVarTypes(path, scope, declaredHere);
+      }
+      case CREATE -> {
+        final CreateClause createClause = entry.getTypedClause();
+        if (createClause != null && !createClause.isEmpty())
+          for (final PathPattern path : createClause.getPathPatterns())
+            declarePatternVarTypes(path, scope, declaredHere);
+      }
+      case MERGE -> {
+        final MergeClause mergeClause = entry.getTypedClause();
+        if (mergeClause != null)
+          declarePatternVarTypes(mergeClause.getPathPattern(), scope, declaredHere);
+      }
+      case WITH -> applyWithProjection(entry.getTypedClause(), scope, declaredHere);
+      case UNWIND -> forget(((UnwindClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
+      case LOAD_CSV -> forget(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
+      // Only the FOREACH variable itself: what the clause's inner CREATE/MERGE bind lives and dies inside the loop
+      // and is not in scope after it, so declaring those kinds here would be declaring them where they cannot be
+      // referenced. The expression walk still descends into the inner clauses and checks them against this scope.
+      case FOREACH -> forget(((ForeachClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
+      case CALL -> {
+        final CallClause callClause = entry.getTypedClause();
+        if (callClause.hasYield())
+          for (final CallClause.YieldItem item : callClause.getYieldItems())
+            forget(item.getOutputName(), scope, declaredHere);
+      }
+      case SUBQUERY -> {
+        // What a nested CALL subquery returns enters this scope under a kind this phase does not track back through
+        // it; that subquery's body is a scope of its own and gets its own map when the walk descends.
+        final SubqueryClause subqueryClause = entry.getTypedClause();
+        if (subqueryClause.getInnerStatement() != null) {
+          final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+          if (innerReturn != null)
+            for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
+              forget(item.getOutputName(), scope, declaredHere);
+        }
+      }
+      default -> {
+        // No binding of its own.
+      }
+      }
+    }
+    return scope;
   }
 
-  private void registerPathPatternVarTypes(final PathPattern path, final Map<String, VarType> varTypes) {
-    if (path.hasPathVariable())
-      registerVar(path.getPathVariable(), VarType.PATH, varTypes);
+  /**
+   * Applies a {@code WITH} to the kinds in scope: the clause resets the scope to what it projects, and each item
+   * carries through whatever kind {@link #projectedVarType} can read off its expression. That is what keeps an
+   * importing {@code WITH p} - and a renaming {@code WITH p AS q} - a path, while {@code WITH 1 AS p} stops being one.
+   * <p>
+   * {@code WITH *} passes the incoming scope through, so a kind survives a projection that does not name it.
+   * <p>
+   * What the clause projects becomes this scope's own, whether the name came from here or was inherited: past a
+   * {@code WITH p} the body has restated {@code p}, so a later clause declaring it something else is the conflict a
+   * restatement makes it, not the shadowing an inherited name would have allowed.
+   */
+  private static void applyWithProjection(final WithClause withClause, final Map<String, VarType> scope,
+      final Set<String> declaredHere) {
+    boolean star = false;
+    final Map<String, VarType> carried = new HashMap<>();
+    final Set<String> lost = new HashSet<>();
 
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      final Expression expr = item.getExpression();
+      if (expr instanceof StarExpression
+          || (expr instanceof VariableExpression variable && "*".equals(variable.getVariableName()))) {
+        star = true;
+        continue;
+      }
+      final String outputName = item.getOutputName();
+      if (outputName == null || "*".equals(outputName))
+        continue;
+
+      final VarType projected = projectedVarType(expr, scope);
+      if (projected != null)
+        carried.put(outputName, projected);
+      else
+        lost.add(outputName);
+    }
+
+    if (!star) {
+      scope.clear();
+      declaredHere.clear();
+    }
+    scope.keySet().removeAll(lost);
+    declaredHere.removeAll(lost);
+    scope.putAll(carried);
+    declaredHere.addAll(carried.keySet());
+  }
+
+  /**
+   * The kind a {@code WITH} item projects, or null when the expression says nothing about it - which is the answer
+   * for anything computed (a function call, an index into a list), because guessing there is how a check starts
+   * rejecting valid queries.
+   */
+  private static VarType projectedVarType(final Expression expr, final Map<String, VarType> scope) {
+    // A plain reference carries the source variable's kind, and carries none when the source has none.
+    if (expr instanceof VariableExpression variable)
+      return scope.get(variable.getVariableName());
+
+    // A value that is plainly not a graph element is SCALAR rather than untracked, so using it as one is caught.
+    if (expr instanceof LiteralExpression literal)
+      return literal.getValue() != null ? VarType.SCALAR : null;
+    if (expr instanceof MapExpression || isLiteralListExpression(expr))
+      return VarType.SCALAR;
+    // A list holding node variables, [n], is itself not a node.
+    if (expr instanceof ListExpression && containsNodeVariable(expr, scope))
+      return VarType.SCALAR;
+
+    return null;
+  }
+
+  private static void declarePatternVarTypes(final PathPattern path, final Map<String, VarType> scope,
+      final Set<String> declaredHere) {
+    if (path == null)
+      return;
+
+    if (path.hasPathVariable())
+      declareVar(path.getPathVariable(), VarType.PATH, scope, declaredHere);
     for (final NodePattern node : path.getNodes())
       if (node.getVariable() != null)
-        registerVar(node.getVariable(), VarType.NODE, varTypes);
-
+        declareVar(node.getVariable(), VarType.NODE, scope, declaredHere);
     for (final RelationshipPattern rel : path.getRelationships())
       if (rel.getVariable() != null)
-        registerVar(rel.getVariable(), VarType.RELATIONSHIP, varTypes);
+        declareVar(rel.getVariable(), VarType.RELATIONSHIP, scope, declaredHere);
   }
 
-  private void registerVar(final String name, final VarType type, final Map<String, VarType> varTypes) {
-    final VarType existing = varTypes.get(name);
-    if (existing != null && existing != type)
-      throw new CommandParsingException("VariableTypeConflict: Variable '" + name + "' already defined as " + existing + ", cannot redefine as " + type);
-    varTypes.put(name, type);
+  /**
+   * Declares one name as one kind. A second declaration of a name <i>this scope already declared</i>, as a different
+   * kind, is the conflict; a first declaration of a name the scope merely inherited is shadowing, and is allowed.
+   */
+  private static void declareVar(final String name, final VarType type, final Map<String, VarType> scope,
+      final Set<String> declaredHere) {
+    final VarType existing = scope.get(name);
+    if (existing != null && existing != type && declaredHere.contains(name))
+      throw new CommandParsingException(
+          "VariableTypeConflict: Variable '" + name + "' already defined as " + existing + ", cannot redefine as "
+              + type);
+
+    scope.put(name, type);
+    declaredHere.add(name);
+  }
+
+  /**
+   * Drops a name bound by something that says nothing about its kind - an {@code UNWIND} variable, a {@code YIELD}
+   * output. It leaves this scope's declarations too, so a later pattern may declare it afresh without clashing with
+   * a kind the name no longer has.
+   */
+  private static void forget(final String name, final Map<String, VarType> scope, final Set<String> declaredHere) {
+    scope.remove(name);
+    declaredHere.remove(name);
   }
 
   // ==============================
@@ -846,11 +951,11 @@ public class CypherSemanticValidator {
     return true;
   }
 
-  private boolean containsNodeVariable(final Expression expr) {
+  private static boolean containsNodeVariable(final Expression expr, final Map<String, VarType> scope) {
     if (expr instanceof ListExpression)
       for (final Expression elem : ((ListExpression) expr).getElements()) {
         if (elem instanceof VariableExpression) {
-          final VarType type = varTypes.get(((VariableExpression) elem).getVariableName());
+          final VarType type = scope.get(((VariableExpression) elem).getVariableName());
           if (type == VarType.NODE)
             return true;
         }
@@ -1741,114 +1846,81 @@ public class CypherSemanticValidator {
    * {@code MATCH} or a {@code WITH} - now run wherever an expression appears. A call that reaches a row still fails
    * with the same message from the function's own runtime guard, so what changes is when the client is told, not what
    * they are told.
+   * <p>
+   * Issue #5626 closed the last gap: the body of a {@code CALL { ... }} clause and of the three subquery expressions
+   * ({@code EXISTS}, {@code COUNT}, {@code COLLECT}) are walked too. Each body is a scope of its own, so the visitor
+   * re-binds itself to the variable kinds visible inside it - see {@link FunctionArgumentChecks#forNestedStatement}.
    */
   private void validateFunctionArgumentTypes(final CypherStatement statement) {
-    final Consumer<Expression> checks = expression -> {
-      checkFunctionArgTypes(expression);
-      checkPropertyAccessOnPath(expression);
-    };
-
-    if (statement.getReturnClause() != null)
-      for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
-        CypherExpressionWalker.walk(item.getExpression(), checks);
-    walkOrderBy(statement.getOrderByClause(), checks);
-    // The top-level ORDER BY / SKIP / LIMIT belong to the statement rather than to any clause entry, and are walked
-    // here for the same reason walkWith() walks a WITH's: leaving them out is the clause-dependent asymmetry this
-    // widening exists to remove.
-    CypherExpressionWalker.walk(statement.getSkip(), checks);
-    CypherExpressionWalker.walk(statement.getLimit(), checks);
-
-    final List<ClauseEntry> clauses = statement.getClausesInOrder();
-    if (clauses != null)
-      for (final ClauseEntry entry : clauses)
-        walkClause(entry, checks);
-
-    // A WITH not present in the ordered list (some builder paths register it only on the statement) still has to be
-    // covered, and walking one twice is harmless - the checks are pure.
-    for (final WithClause withClause : statement.getWithClauses())
-      walkWith(withClause, checks);
+    CypherExpressionWalker.walk(statement, new FunctionArgumentChecks(varTypes));
   }
 
-  private void walkClause(final ClauseEntry entry, final Consumer<Expression> checks) {
-    switch (entry.getType()) {
-    case MATCH -> {
-      final MatchClause matchClause = entry.getTypedClause();
-      if (matchClause.hasWhereClause())
-        CypherExpressionWalker.walk(matchClause.getWhereClause().getConditionExpression(), checks);
-      if (matchClause.getPathPatterns() != null)
-        for (final PathPattern pattern : matchClause.getPathPatterns())
-          CypherExpressionWalker.walk(pattern, checks);
+  /**
+   * The function checks bound to one variable scope.
+   * <p>
+   * Most of what they look at - the function name, how many arguments it was given, whether a literal argument is of
+   * a type the function accepts - is the same wherever the call was written. What is not is the <i>kind</i> of a
+   * variable ({@code length(node)}, {@code p.name} on a path), and a subquery body has a variable scope of its own:
+   * hence one instance per scope rather than one per statement.
+   */
+  private final class FunctionArgumentChecks implements CypherExpressionWalker.Visitor {
+    private final Map<String, VarType> scope;
+
+    private FunctionArgumentChecks(final Map<String, VarType> scope) {
+      this.scope = scope;
     }
-    case WITH -> walkWith(entry.getTypedClause(), checks);
-    case UNWIND -> CypherExpressionWalker.walk(((UnwindClause) entry.getTypedClause()).getListExpression(), checks);
-    case CREATE -> {
-      final CreateClause createClause = entry.getTypedClause();
-      if (createClause.getPathPatterns() != null)
-        for (final PathPattern pattern : createClause.getPathPatterns())
-          CypherExpressionWalker.walk(pattern, checks);
+
+    @Override
+    public void visit(final Expression expression) {
+      checkFunctionArgTypes(expression, scope);
+      checkPropertyAccessOnPath(expression, scope);
     }
-    case MERGE -> {
-      final MergeClause mergeClause = entry.getTypedClause();
-      CypherExpressionWalker.walk(mergeClause.getPathPattern(), checks);
-      walkSet(mergeClause.getOnCreateSet(), checks);
-      walkSet(mergeClause.getOnMatchSet(), checks);
-    }
-    case SET -> walkSet(entry.getTypedClause(), checks);
-    case DELETE -> {
-      final DeleteClause deleteClause = entry.getTypedClause();
-      if (deleteClause.getExpressions() != null)
-        for (final Expression expression : deleteClause.getExpressions())
-          CypherExpressionWalker.walk(expression, checks);
-    }
-    case FOREACH -> {
-      final ForeachClause foreachClause = entry.getTypedClause();
-      CypherExpressionWalker.walk(foreachClause.getListExpression(), checks);
-      if (foreachClause.getInnerClauses() != null)
-        for (final ClauseEntry inner : foreachClause.getInnerClauses())
-          walkClause(inner, checks);
-    }
-    default -> {
-      // RETURN is walked from the statement, and CALL / SUBQUERY / LOAD CSV / FINISH carry no expression this
-      // validation applies to - a subquery is a statement of its own and is validated when it is parsed.
-    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement nested) {
+      return new FunctionArgumentChecks(nestedVarTypes(scope, nested));
     }
   }
 
-  private void walkWith(final WithClause withClause, final Consumer<Expression> checks) {
-    if (withClause == null)
-      return;
-    for (final ReturnClause.ReturnItem item : withClause.getItems())
-      CypherExpressionWalker.walk(item.getExpression(), checks);
-    if (withClause.getWhereClause() != null)
-      CypherExpressionWalker.walk(withClause.getWhereClause().getConditionExpression(), checks);
-    walkOrderBy(withClause.getOrderByClause(), checks);
-    CypherExpressionWalker.walk(withClause.getSkip(), checks);
-    CypherExpressionWalker.walk(withClause.getLimit(), checks);
-  }
+  /**
+   * The variable kinds visible inside a nested subquery body: what the body's own clauses declare, over what it
+   * inherits from the enclosing scope.
+   * <p>
+   * The body's clauses are walked by {@link #buildVarTypes}, the same construction {@link #validateVariableTypes}
+   * runs on the statement, because the kinds a body ends up with are built the same way - and because two copies of
+   * that walk is what let the two spellings of the same import disagree in the first place. What differs is only what
+   * this passes it: an inherited scope instead of an empty one, and no raise on a kind clash, since a name the body
+   * binds for itself may legitimately shadow an outer one of another kind.
+   * <p>
+   * Inheriting the enclosing kinds is what the three subquery expressions need, since they see the outer row. An
+   * implicit {@code CALL { ... }} imports nothing, so it inherits kinds for names its body cannot legally reference -
+   * harmless, because {@link #validateVariableScope} runs first and reports such a reference as the undefined variable
+   * it is, before this phase gets to read a kind for it.
+   * <p>
+   * What comes back is the body's <i>end</i> state, one map applied to every expression in it wherever that expression
+   * sits - deliberately, because it is the same approximation the top-level statement already runs on ({@code varTypes}
+   * is one map for the whole statement), and answering a body more precisely than the query around it would put back a
+   * clause-dependent asymmetry of exactly the kind #5602 and this issue exist to remove. It errs one way only: a name a
+   * later {@code WITH} re-binds to something kindless loses its kind for the clauses before it too, so a check is
+   * missed, never invented. It cannot err the other way, because the only rebinding Cypher allows on a bound name is a
+   * {@code WITH} projection, which can drop a kind but never turn a name into a path.
+   */
+  private static Map<String, VarType> nestedVarTypes(final Map<String, VarType> outer, final CypherStatement nested) {
+    // A UNION declares nothing of its own - each branch is a scope of its own and is entered as a nested statement
+    // in its own right, so it is the branch, not the union, that builds a scope over what is inherited here.
+    // (UnionStatement.getClausesInOrder() answers with its FIRST branch's clauses, which is why this returns before
+    // delegating rather than letting the shared build walk them as if they were the union's.)
+    if (nested instanceof UnionStatement)
+      return new HashMap<>(outer);
 
-  private void walkSet(final SetClause setClause, final Consumer<Expression> checks) {
-    if (setClause == null)
-      return;
-    for (final SetClause.SetItem item : setClause.getItems()) {
-      CypherExpressionWalker.walk(item.getTargetExpression(), checks);
-      CypherExpressionWalker.walk(item.getKeyExpression(), checks);
-      CypherExpressionWalker.walk(item.getValueExpression(), checks);
-    }
-  }
-
-  private void walkOrderBy(final OrderByClause orderBy, final Consumer<Expression> checks) {
-    if (orderBy == null || orderBy.getItems() == null)
-      return;
-    for (final OrderByClause.OrderByItem item : orderBy.getItems())
-      // An ORDER BY item keeps its expression as text and, when the builder could parse one, as an AST too.
-      CypherExpressionWalker.walk(item.getExpressionAST(), checks);
+    return buildVarTypes(nested, outer);
   }
 
   /**
    * The per-expression function checks. Called on every node of the traversal, so it inspects only the node handed to
    * it: descending into a function's arguments is {@link CypherExpressionWalker}'s job.
    */
-  private void checkFunctionArgTypes(final Expression expr) {
+  private void checkFunctionArgTypes(final Expression expr, final Map<String, VarType> scope) {
     if (!(expr instanceof FunctionCallExpression func))
       return;
 
@@ -1873,7 +1945,7 @@ public class CypherSemanticValidator {
       final Expression arg = args.get(0);
       if (numeric == null)
         checkStaticallyKnownArgType(name, arg);
-      final VarType argType = getExpressionType(arg);
+      final VarType argType = getExpressionType(arg, scope);
       if (argType != null) {
         switch (name) {
           case "length":
@@ -1981,15 +2053,15 @@ public class CypherSemanticValidator {
    * A path variable holds a whole path, so {@code p.name} names nothing. Called on every node of the traversal, which
    * is why it inspects only the node handed to it rather than recursing.
    */
-  private void checkPropertyAccessOnPath(final Expression expr) {
-    if (expr instanceof PropertyAccessExpression access && varTypes.get(access.getVariableName()) == VarType.PATH)
+  private void checkPropertyAccessOnPath(final Expression expr, final Map<String, VarType> scope) {
+    if (expr instanceof PropertyAccessExpression access && scope.get(access.getVariableName()) == VarType.PATH)
       throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
   }
 
-  private VarType getExpressionType(final Expression expr) {
+  private VarType getExpressionType(final Expression expr, final Map<String, VarType> scope) {
     if (expr instanceof VariableExpression) {
       final String varName = ((VariableExpression) expr).getVariableName();
-      return varTypes.get(varName);
+      return scope.get(varName);
     }
     return null;
   }

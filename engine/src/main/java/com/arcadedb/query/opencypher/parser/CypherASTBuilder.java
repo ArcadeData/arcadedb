@@ -32,7 +32,6 @@ import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
-import com.arcadedb.query.opencypher.ast.ExistsExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FinishClause;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
@@ -76,8 +75,6 @@ import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.query.opencypher.rewriter.InlineNodeWhereHoister;
 import com.arcadedb.query.opencypher.rewriter.LabelPredicateHoister;
 import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -1347,23 +1344,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Cypher25Parser.ExistsExpressionContext existsExpr = expressionBuilder.findExistsExpressionRecursive(expr6);
     if (existsExpr != null && compCtx == null
         && existsExpr.getText().length() >= expr6.getText().length() - 2) {
-      // Parse the EXISTS expression and wrap it as a boolean expression
-      final ExistsExpression exists = expressionBuilder.parseExistsExpression(existsExpr);
-      // ExistsExpression implements Expression, we need to wrap it to return as BooleanExpression
-      // Create an adapter that evaluates the EXISTS expression as a boolean
-      return new BooleanExpression() {
-        @Override
-        public boolean evaluate(final Result result,
-            final CommandContext context) {
-          final Object value = exists.evaluate(result, context);
-          return value instanceof Boolean && (Boolean) value;
-        }
-
-        @Override
-        public String getText() {
-          return exists.getText();
-        }
-      };
+      // ExistsExpression implements Expression, so it has to be adapted to be returned as a BooleanExpression.
+      // Wrap via BooleanCoercionExpression (rather than an anonymous adapter, which the walk of
+      // CypherExpressionWalker could only treat as a leaf) so that the parse-time checks reach the subquery body
+      // inside it - it was the anonymous adapter that hid an EXISTS written in a WHERE (issue #5626).
+      return new BooleanCoercionExpression(expressionBuilder.parseExistsExpression(existsExpr));
     }
 
     // Check if expression6 contains a parenthesized expression
@@ -1486,37 +1471,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new BooleanCoercionExpression(listPredExpr);
     }
 
-    // Check if the expression is a function call used as a predicate (e.g., isEmpty(x), exists(x))
-    final Cypher25Parser.FunctionInvocationContext funcCtx = expressionBuilder.findFunctionInvocationRecursive(expr6);
-    if (funcCtx != null) {
-      final Expression funcExpr = expressionBuilder.parseExpressionFromText(expr6);
-      return new BooleanExpression() {
-        @Override
-        public boolean evaluate(final Result result, final CommandContext context) {
-          final Object value = funcExpr.evaluate(result, context);
-          return value instanceof Boolean && (Boolean) value;
-        }
-
-        @Override
-        public Object evaluateTernary(final Result result, final CommandContext context) {
-          final Object value = funcExpr.evaluate(result, context);
-          if (value == null)
-            return null;
-          if (value instanceof Boolean)
-            return value;
-          return Boolean.TRUE;
-        }
-
-        @Override
-        public String getText() {
-          return funcExpr.getText();
-        }
-      };
-    }
-
     // No special boolean form matched. Parse as a generic expression and adapt
     // it to a boolean predicate. Covers bare boolean literals (WHERE true /
-    // WHERE false), boolean-typed properties, parameters, etc.
+    // WHERE false), boolean-typed properties, parameters, and a function call used as a predicate
+    // (isEmpty(x), exists(x), ...) - that last one used to get an anonymous adapter of its own here, byte-for-byte
+    // equivalent to BooleanCoercionExpression except that CypherExpressionWalker could only treat it as a leaf, so
+    // the call inside it escaped the parse-time checks (issue #5626).
     final Expression parsedExpr = expressionBuilder.parseExpressionFromText(expr6);
     if (parsedExpr != null)
       return new BooleanCoercionExpression(parsedExpr);

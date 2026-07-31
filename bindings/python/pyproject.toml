@@ -44,20 +44,20 @@ managed = false
 
 [project.optional-dependencies]
 test = [
-    "pytest>=7.0.0",
+    "pytest>=9.0.3",
     "pytest-cov",
     "numpy>=1.26.4",
-    "requests>=2.0.0",  # HTTP API / docs-example tests
+    "requests>=2.33.0",  # HTTP API / docs-example tests
 ]
 dev = [
     "black",
     "isort",
     "mypy",
-    "pytest>=7.0.0",
+    "pytest>=9.0.3",
     "pytest-cov",
     "numpy>=1.26.4",
-    "requests>=2.0.0",  # HTTP API / docs-example tests
-    "bandit>=1.9.0",
+    "requests>=2.33.0",  # HTTP API / docs-example tests
+    "bandit>=1.9.1",
 ]
 vector = [
     "numpy>=1.26.4",

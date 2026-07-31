@@ -304,8 +304,8 @@ public class FullTextSearch {
       for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
         final IndexCursor postings = ftIndex.getPostings(token);
         while (postings.hasNext()) {
-          final Identifiable posting = postings.next();
-          if (posting != null && posting.getIdentity().getBucketId() >= 0)
+          // a deletion marker carries a negative bucket id: it is not a live document
+          if (postings.next().getIdentity().getBucketId() >= 0)
             ++df;
         }
       }
@@ -317,8 +317,7 @@ public class FullTextSearch {
   private static void mergeCursor(final Map<RID, Float> target, final IndexCursor cursor) {
     while (cursor.hasNext()) {
       final Identifiable match = cursor.next();
-      if (match != null)
-        target.put(canonicalRID(match.getIdentity()), cursor.getFloatScore());
+      target.put(canonicalRID(match.getIdentity()), cursor.getFloatScore());
     }
   }
 
