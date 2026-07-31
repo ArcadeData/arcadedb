@@ -24,9 +24,11 @@ import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.BucketLSMVectorIndexBuilder;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.schema.Schema;
 
 import org.junit.jupiter.api.Test;
 
@@ -236,6 +238,28 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     assertThat(metadata.storeVectorsInGraph).isTrue();
   }
 
+  /**
+   * The bucket-level builder no longer keeps its own copy of the settings, so it has to carry them on the metadata its
+   * constructor installs - including when {@code withMetadata()} is never called at all, which is what this path does.
+   * Without that installation the settings would have nowhere to live before the factory reads them.
+   */
+  @Test
+  void bucketLevelVectorBuilderCarriesItsSettings() {
+    createVectorType("Doc");
+
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+    final BucketLSMVectorIndexBuilder builder = (BucketLSMVectorIndexBuilder) database.getSchema()
+        .buildBucketIndex("Doc", bucketName, new String[] { "embedding" })
+        .withType(Schema.INDEX_TYPE.LSM_VECTOR);
+    builder.withDimensions(8).withSimilarity("EUCLIDEAN").withEfSearch(250).withMaxConnections(24);
+
+    final LSMVectorIndex index = (LSMVectorIndex) builder.create();
+    assertThat(index.getMetadata().dimensions).isEqualTo(8);
+    assertThat(index.getMetadata().similarityFunction.name()).isEqualTo("EUCLIDEAN");
+    assertThat(index.getMetadata().efSearch).isEqualTo(250);
+    assertThat(index.getMetadata().maxConnections).isEqualTo(24);
+  }
+
   @Test
   void unknownDenseVectorMetadataKeyIsReported() {
     createVectorType("Doc");
@@ -362,6 +386,30 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     database.command("sql", "CREATE INDEX ON Article (text) FULL_TEXT METADATA {\"defaultOperator\": \"AND\"}");
 
     assertThat(fullTextMetadata("Article[text]").getSimilarity()).isEqualTo(FullTextIndexMetadata.SIMILARITY_BM25);
+  }
+
+  /**
+   * A per-field key is recognised by shape, so it is the one place a typo could still slip through the guard: an
+   * analyzer or boost for a property the index does not cover is dead configuration, since only an indexed field is
+   * analyzed and only an indexed field can produce a field-qualified match.
+   */
+  @Test
+  void fullTextPerFieldKeyForANonIndexedPropertyIsReported() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.text STRING");
+      database.command("sql", "CREATE PROPERTY Article.title STRING");
+    });
+
+    // 'titel' is a typo for the indexed 'title'; 'text' is a real property but not covered by this index.
+    for (final String metadata : new String[] { "{\"titel_boost\": 2.0}", "{\"titel_analyzer\": \"x\"}",
+        "{\"text_boost\": 2.0}" })
+      assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Article (title) FULL_TEXT METADATA " + metadata))
+          .as("METADATA %s", metadata)
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("indexed properties");
+
+    assertThat(database.getSchema().existsIndex("Article[title]")).isFalse();
   }
 
   /**

@@ -194,9 +194,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * The per-field keys are recognised by shape, not against the indexed properties: a boost or analyzer may legitimately
-   * name a property that is added to the type later, and {@link #fromJSON} restores whatever was persisted, so tying the
-   * clause to the current property list would reject configurations the index can carry.
+   * Recognises the per-field keys by shape; {@link #applyUserMetadata} then checks that the field they name is one this
+   * index covers, so a typo is reported rather than stored against a property that will never match.
+   * <p>
+   * Two consequences of a suffix-based key space, both inherent and neither worth a different scheme: a property named
+   * {@code index} or {@code query} cannot take a per-field analyzer, because {@code index_analyzer} and
+   * {@code query_analyzer} are the reserved keys for the indexing and querying analyzers; and a property whose own name
+   * ends in {@code _analyzer} or {@code _boost} would be read as a per-field key for the shorter name. Both are
+   * ambiguities of the notation, not of the reader.
    */
   @Override
   protected boolean isUserMetadataKey(final String key) {
@@ -247,9 +252,31 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
     for (final String key : json.keySet())
       if (key.endsWith(ANALYZER_SUFFIX) && !USER_METADATA_KEYS.contains(key))
-        setFieldAnalyzer(key.substring(0, key.length() - ANALYZER_SUFFIX.length()), json.getString(key));
+        setFieldAnalyzer(checkIndexedField(key, ANALYZER_SUFFIX), json.getString(key));
       else if (key.endsWith(BOOST_SUFFIX))
-        setFieldBoost(key.substring(0, key.length() - BOOST_SUFFIX.length()), metadataFloat(json, key));
+        setFieldBoost(checkIndexedField(key, BOOST_SUFFIX), metadataFloat(json, key));
+  }
+
+  /**
+   * Returns the field name a per-field {@code METADATA} key configures, having checked that this index covers it.
+   * <p>
+   * An analyzer or a boost for a property the index does not cover is dead configuration: only an indexed field is
+   * analyzed, and a boost applies to field-qualified matches, which only an indexed field can produce. Accepting
+   * {@code titel_boost} for an index on {@code title} would therefore be the same silently-dropped setting this reader
+   * exists to report (issue #5639).
+   * <p>
+   * Only the user clause is checked. {@link #fromJSON} restores a persisted definition and stays tolerant: an index
+   * whose property list changed must still open, and refusing a stale per-field entry there would cost a database its
+   * availability to report a setting that is merely inert. The check is also skipped when the property list is not
+   * known yet, since there would be nothing to check against.
+   */
+  private String checkIndexedField(final String key, final String suffix) {
+    final String fieldName = key.substring(0, key.length() - suffix.length());
+    if (propertyNames != null && !propertyNames.isEmpty() && !propertyNames.contains(fieldName))
+      throw new IllegalArgumentException("Full-text metadata key '" + key + "' names '" + fieldName
+          + "', which is not one of the indexed properties " + propertyNames
+          + ": a per-field analyzer or boost only applies to a property the index covers");
+    return fieldName;
   }
 
   /**
