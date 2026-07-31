@@ -93,6 +93,27 @@ its extraction harness because `renderIndexes` now calls `schemaActionAttrs`; no
 22 rendered controls fired their handler and delivered the name ``a"b'c`d\e<f>&g`` byte-exact, with zero
 corrupted arguments. The same page confirms the pre-fix spelling raises a `SyntaxError` and never fires.
 
+## Review cycles
+
+PR: https://github.com/ArcadeData/arcadedb/pull/5634
+
+### Cycle 1 - `36a3cb88d`
+
+`claude[bot]` reviewed and concluded **LGTM**, with four non-blocking notes. It independently confirmed the
+two things most likely to have silently sunk the approach: that single-quoted attributes are safe because
+`escapeHtml` escapes `'` as `&#039;`, and that the two-name argument order (`dropProperty(type, property)`,
+`dropIndex(index, type)`) is preserved at every converted site.
+
+| Note | Assessment | Action |
+|---|---|---|
+| Dead `id` on the repartition button | Verified against the code. The `id` is emitted but referenced nowhere in JS, HTML, CSS or the e2e module. `git show origin/main` shows it was **already** unreferenced before this change - the old wiring keyed on `.js-repartition-btn`, not the id - so the bot's "with `.js-repartition-btn` gone" framing is slightly off, but the conclusion holds | **Applied.** Removed `btnId` and the `id` attribute |
+| `renderMaterializedViewsSidebarSection` dead + duplicated | Agreed, and the bot agreed the convert-not-delete choice was reasonable | No change; follow-up below |
+| `studio-security.js` still uses `$(this).data("name")` | Correct, same coercion footgun | No change; left for the developer to file, since opening issues is outside this task's mandate |
+| Remaining inline handlers confirmed benign | Matches the scope analysis | No change |
+
+The bot noted it could not execute `node --test` in its sandbox and read the tests instead of running them.
+The 41/41 result is reproduced locally, and the revert-one-renderer falsification check is recorded above.
+
 ## Out of scope / follow-ups
 
 - `restoreBackupAction` / `deleteBackupAction` (backup file names) and `updateDatabaseSetting` (setting

@@ -3561,7 +3561,6 @@ function showTypeDetail(typeName) {
   // refreshes the schema view on completion. Records are SAFE while the flag is true (queries
   // fan out and stay correct), but the optimisation is off until the rebuild runs.
   if (row.needsRepartition === true) {
-    let btnId = "btnRepartition_" + row.name.replace(/[^a-zA-Z0-9]/g, "_");
     html += "<div class='alert alert-warning d-flex align-items-center justify-content-between' role='alert' style='margin-bottom:14px;'>";
     html += "  <div>";
     html += "    <i class='fa fa-triangle-exclamation me-2'></i>";
@@ -3569,7 +3568,7 @@ function showTypeDetail(typeName) {
     html += "    A bucket was added/dropped or the strategy changed; partition-aware query pruning is suppressed for this type. ";
     html += "    Queries remain correct but lose the optimisation until a repartition rebuild runs.";
     html += "  </div>";
-    html += "  <button id='" + escapeHtml(btnId) + "' class='btn btn-sm btn-warning'" + schemaActionAttrs("run-repartition", row.name) + ">";
+    html += "  <button class='btn btn-sm btn-warning'" + schemaActionAttrs("run-repartition", row.name) + ">";
     html += "    <i class='fa fa-rotate'></i> Run Repartition";
     html += "  </button>";
     html += "</div>";
