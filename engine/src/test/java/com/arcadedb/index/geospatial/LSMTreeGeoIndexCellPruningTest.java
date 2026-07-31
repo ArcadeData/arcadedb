@@ -68,6 +68,19 @@ class LSMTreeGeoIndexCellPruningTest {
   }
 
   /**
+   * The equality above compares SETS, so it would say nothing about a token emitted twice - which in production, where
+   * the tokens go into a List and then one put() each, is a duplicate index entry. Assert on the raw stream instead.
+   */
+  @Test
+  void noTokenIsEmittedTwice() {
+    for (final int precision : new int[] { 6, 8, 11, 12 })
+      for (final String[] shape : SHAPES) {
+        final List<String> emitted = arcadeTokenStream(precision, shape[1]);
+        assertThat(emitted).as("%s at precision %d", shape[0], precision).doesNotHaveDuplicates();
+      }
+  }
+
+  /**
    * Pruning may only ENLARGE the covered area, never shrink it: every unpruned frontier cell must still be covered by
    * a pruned token, i.e. have one of them as a prefix of itself (or be one of them).
    */
@@ -99,9 +112,14 @@ class LSMTreeGeoIndexCellPruningTest {
   }
 
   private static TreeSet<String> arcadeTokens(final int precision, final String wkt) {
+    return new TreeSet<>(arcadeTokenStream(precision, wkt));
+  }
+
+  /** The tokens exactly as the index receives them, duplicates and all. */
+  private static List<String> arcadeTokenStream(final int precision, final String wkt) {
     final GeohashPrefixTree grid = new GeohashPrefixTree(GeoUtils.getSpatialContext(), precision);
     final Shape shape = GeoUtils.parseGeometry(wkt);
-    final TreeSet<String> tokens = new TreeSet<>();
+    final List<String> tokens = new ArrayList<>();
     LSMTreeGeoIndex.forEachPrunedFrontierCell(grid, shape, detailLevel(grid, shape), tokens::add);
     return tokens;
   }

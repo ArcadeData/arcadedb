@@ -736,7 +736,9 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
     final CellIterator cellIter = grid.getTreeCellIterator(shape, detailLevel);
 
-    // One frame per level of the current path. Level is 1-based and never exceeds detailLevel.
+    // One frame per open cell of the current path. The loop below pops every frame whose level is >= the incoming
+    // one, so the levels on the stack are STRICTLY INCREASING and the depth can never exceed the number of distinct
+    // levels, detailLevel - which is what makes this bound safe no matter how the traversal descends.
     final PruneFrame[] path = new PruneFrame[detailLevel + 1];
     int depth = 0;
 
@@ -754,7 +756,10 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         closeFrame(path, depth--, emit);
 
       ++depth;
-      // The walk descends one level at a time, so the stack depth IS the cell level - which is what sizes the array.
+      // A GeoHash tree adds one base-32 character per level, so the walk descends exactly one level at a time and the
+      // stack depth equals the cell level. Nothing here NEEDS that - a frame's parent is the frame below it, found by
+      // pop order rather than by level arithmetic, and the array bound holds on strictly increasing levels alone - so
+      // this documents the grid's contract rather than guarding the algorithm.
       assert depth == level : "unexpected GeoHash traversal: level " + level + " reached at depth " + depth;
 
       final PruneFrame frame = path[depth] != null ? path[depth] : (path[depth] = new PruneFrame());
