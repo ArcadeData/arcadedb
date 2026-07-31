@@ -1777,86 +1777,77 @@ public class CypherSemanticValidator {
   }
 
   /**
-   * The variable kinds visible inside a nested subquery body: what the body declares itself, over what it inherits
-   * from the enclosing scope.
+   * The variable kinds visible inside a nested subquery body: what the body's own clauses declare, over what it
+   * inherits from the enclosing scope.
    * <p>
-   * A body that re-uses an enclosing name for something of its own has to shadow it, or the enclosing kind would
-   * decide a check about a different variable. That is only possible where the enclosing scope is not automatically
-   * imported - an implicit {@code CALL { ... }}, which imports nothing - because the three subquery expressions see
-   * the outer row and re-declaring one of its variables there is an error in its own right. A name the body binds by
-   * any means is therefore dropped from what it inherits, whether or not the binding says which kind it is.
+   * The body's clauses are walked in order, the same way {@link #validateVariableTypes} walks a statement's, because
+   * the kinds a body ends up with are built the same way: a graph pattern declares them, a {@code WITH} resets the
+   * scope to what it projects and carries a kind through only where the item is a plain variable reference, and a
+   * binding that says nothing about the kind - an {@code UNWIND} variable, a {@code YIELD} output - drops whatever the
+   * name held.
+   * <p>
+   * Inheriting the enclosing kinds is what the three subquery expressions need, since they see the outer row. An
+   * implicit {@code CALL { ... }} imports nothing, so it inherits kinds for names its body cannot legally reference -
+   * harmless, because {@link #validateVariableScope} runs first and reports such a reference as the undefined variable
+   * it is, before this phase gets to read a kind for it.
    */
   private static Map<String, VarType> nestedVarTypes(final Map<String, VarType> outer, final CypherStatement nested) {
-    final Map<String, VarType> declared = new HashMap<>();
-    final Set<String> bound = new HashSet<>();
-    collectNestedDeclarations(nested, declared, bound);
-
-    if (outer.isEmpty())
-      return declared;
-
-    for (final Map.Entry<String, VarType> entry : outer.entrySet())
-      if (!bound.contains(entry.getKey()))
-        declared.putIfAbsent(entry.getKey(), entry.getValue());
-    return declared;
-  }
-
-  /**
-   * Collects, for one subquery body, the kinds its own graph patterns declare and every name it binds by any means.
-   * A name bound without a knowable kind - a {@code WITH} projection, an {@code UNWIND} variable, a {@code YIELD}
-   * output - lands in {@code bound} only, which is enough to stop the enclosing kind from being inherited for it.
-   */
-  private static void collectNestedDeclarations(final CypherStatement statement, final Map<String, VarType> declared,
-      final Set<String> bound) {
-    if (statement instanceof UnionStatement union) {
-      for (final CypherStatement branch : union.getQueries())
-        collectNestedDeclarations(branch, declared, bound);
-      return;
+    if (nested instanceof UnionStatement union) {
+      // One map has to serve every branch, so a name survives only where the branches agree on its kind.
+      Map<String, VarType> merged = null;
+      for (final CypherStatement branch : union.getQueries()) {
+        final Map<String, VarType> branchTypes = nestedVarTypes(outer, branch);
+        if (merged == null)
+          merged = branchTypes;
+        else
+          merged.entrySet().removeIf(entry -> entry.getValue() != branchTypes.get(entry.getKey()));
+      }
+      return merged != null ? merged : new HashMap<>(outer);
     }
 
-    for (final ClauseEntry entry : statement.getClausesInOrder()) {
+    final Map<String, VarType> scope = new HashMap<>(outer);
+    final List<ClauseEntry> clauses = nested.getClausesInOrder();
+    if (clauses == null)
+      return scope;
+
+    for (final ClauseEntry entry : clauses) {
       switch (entry.getType()) {
       case MATCH -> {
         final MatchClause matchClause = entry.getTypedClause();
         if (matchClause.hasPathPatterns())
           for (final PathPattern path : matchClause.getPathPatterns())
-            collectPatternVarTypes(path, declared, bound);
+            declarePatternVarTypes(path, scope);
       }
       case CREATE -> {
         final CreateClause createClause = entry.getTypedClause();
         if (createClause != null && !createClause.isEmpty())
           for (final PathPattern path : createClause.getPathPatterns())
-            collectPatternVarTypes(path, declared, bound);
+            declarePatternVarTypes(path, scope);
       }
       case MERGE -> {
         final MergeClause mergeClause = entry.getTypedClause();
         if (mergeClause != null)
-          collectPatternVarTypes(mergeClause.getPathPattern(), declared, bound);
+          declarePatternVarTypes(mergeClause.getPathPattern(), scope);
       }
-      case WITH -> {
-        final WithClause withClause = entry.getTypedClause();
-        for (final ReturnClause.ReturnItem item : withClause.getItems())
-          if (item.getOutputName() != null)
-            bound.add(item.getOutputName());
-      }
-      case UNWIND -> bound.add(((UnwindClause) entry.getTypedClause()).getVariable());
-      case LOAD_CSV -> bound.add(((LoadCSVClause) entry.getTypedClause()).getVariable());
-      case FOREACH -> bound.add(((ForeachClause) entry.getTypedClause()).getVariable());
+      case WITH -> applyWithProjection(entry.getTypedClause(), scope);
+      case UNWIND -> scope.remove(((UnwindClause) entry.getTypedClause()).getVariable());
+      case LOAD_CSV -> scope.remove(((LoadCSVClause) entry.getTypedClause()).getVariable());
+      case FOREACH -> scope.remove(((ForeachClause) entry.getTypedClause()).getVariable());
       case CALL -> {
         final CallClause callClause = entry.getTypedClause();
         if (callClause.hasYield())
           for (final CallClause.YieldItem item : callClause.getYieldItems())
-            bound.add(item.getOutputName());
+            scope.remove(item.getOutputName());
       }
       case SUBQUERY -> {
-        // What a nested CALL subquery returns enters this body's scope; the body of that subquery is a scope of its
-        // own and gets its own map when the walk descends into it.
+        // What a nested CALL subquery returns enters this body's scope under a kind this phase does not track back
+        // through it; the body of that subquery is a scope of its own and gets its own map when the walk descends.
         final SubqueryClause subqueryClause = entry.getTypedClause();
         if (subqueryClause.getInnerStatement() != null) {
           final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
           if (innerReturn != null)
             for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
-              if (item.getOutputName() != null)
-                bound.add(item.getOutputName());
+              scope.remove(item.getOutputName());
         }
       }
       default -> {
@@ -1864,33 +1855,58 @@ public class CypherSemanticValidator {
       }
       }
     }
+    return scope;
   }
 
-  private static void collectPatternVarTypes(final PathPattern path, final Map<String, VarType> declared,
-      final Set<String> bound) {
+  /**
+   * Applies a body's {@code WITH} to the kinds in scope. The clause resets the scope to what it projects, and only an
+   * item that is a plain variable reference carries that variable's kind through under its output name - which is what
+   * keeps an importing {@code WITH p} (or a renaming {@code WITH p AS q}) a path, while {@code WITH 1 AS p} stops
+   * being one.
+   */
+  private static void applyWithProjection(final WithClause withClause, final Map<String, VarType> scope) {
+    boolean star = false;
+    final Map<String, VarType> carried = new HashMap<>();
+    final Set<String> lost = new HashSet<>();
+
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      final Expression expr = item.getExpression();
+      if (expr instanceof StarExpression
+          || (expr instanceof VariableExpression variable && "*".equals(variable.getVariableName()))) {
+        star = true;
+        continue;
+      }
+      final String outputName = item.getOutputName();
+      if (outputName == null)
+        continue;
+      final VarType carriedType = expr instanceof VariableExpression variable ?
+          scope.get(variable.getVariableName()) :
+          null;
+      if (carriedType != null)
+        carried.put(outputName, carriedType);
+      else
+        lost.add(outputName);
+    }
+
+    // WITH * passes the incoming scope through; anything else keeps only what it projects.
+    if (!star)
+      scope.clear();
+    scope.keySet().removeAll(lost);
+    scope.putAll(carried);
+  }
+
+  private static void declarePatternVarTypes(final PathPattern path, final Map<String, VarType> scope) {
     if (path == null)
       return;
 
     if (path.hasPathVariable())
-      declareNested(path.getPathVariable(), VarType.PATH, declared, bound);
+      scope.put(path.getPathVariable(), VarType.PATH);
     for (final NodePattern node : path.getNodes())
-      declareNested(node.getVariable(), VarType.NODE, declared, bound);
+      if (node.getVariable() != null)
+        scope.put(node.getVariable(), VarType.NODE);
     for (final RelationshipPattern rel : path.getRelationships())
-      declareNested(rel.getVariable(), VarType.RELATIONSHIP, declared, bound);
-  }
-
-  /**
-   * A name declared twice with different kinds inside one body is invalid Cypher, reported elsewhere; here it is left
-   * without a kind rather than arbitrarily given one of the two.
-   */
-  private static void declareNested(final String name, final VarType type, final Map<String, VarType> declared,
-      final Set<String> bound) {
-    if (name == null)
-      return;
-    bound.add(name);
-    final VarType existing = declared.putIfAbsent(name, type);
-    if (existing != null && existing != type)
-      declared.remove(name);
+      if (rel.getVariable() != null)
+        scope.put(rel.getVariable(), VarType.RELATIONSHIP);
   }
 
   /**

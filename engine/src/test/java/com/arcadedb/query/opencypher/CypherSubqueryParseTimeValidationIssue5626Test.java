@@ -236,6 +236,58 @@ class CypherSubqueryParseTimeValidationIssue5626Test extends TestHelper {
         .hasMessageContaining("path variable");
   }
 
+  /**
+   * A body that imports an enclosing variable keeps its kind, however it imports it: through the explicit scope list,
+   * through a leading {@code WITH}, or renamed on the way in. What decides the kind is that the item is a plain
+   * variable reference, not the clause it was written in.
+   */
+  @Test
+  void anImportedOuterPathVariableKeepsItsKind() {
+    assertThatThrownBy(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL (p) { RETURN p.name AS n } RETURN n"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+    assertThatThrownBy(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL { WITH p RETURN p.name AS n } RETURN n"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+    assertThatThrownBy(
+        () -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL (p) { WITH p AS q RETURN q.name AS n } RETURN n"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+    assertThatThrownBy(() -> explain("MATCH (n:P) RETURN COLLECT { MATCH q = (m:P)-->() WITH q RETURN q.name } AS r"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("path variable");
+  }
+
+  /** A {@code WITH} that computes rather than passes through drops the kind, and a renamed one carries it. */
+  @Test
+  void aWithProjectionDecidesWhichKindSurvivesIt() {
+    // Re-bound to a number: no longer a path, so the property read is no longer this phase's business.
+    assertThatCode(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL (p) { WITH 1 AS p RETURN p AS n } RETURN n"))
+        .doesNotThrowAnyException();
+    // Renamed pass-through: still a node, still a relationship.
+    assertThatCode(() -> explain("MATCH (n:P) RETURN COLLECT { MATCH (m:P) WITH m AS x RETURN labels(x) } AS r"))
+        .doesNotThrowAnyException();
+    assertThatCode(
+        () -> explain("MATCH (n:P) RETURN COLLECT { MATCH (m:P)-[r:KNOWS]->() WITH r AS e RETURN type(e) } AS r"))
+        .doesNotThrowAnyException();
+    // WITH * passes the whole scope through.
+    assertThatCode(() -> explain("MATCH (n:P) RETURN COLLECT { MATCH (m:P) WITH *, 1 AS z RETURN labels(m) } AS r"))
+        .doesNotThrowAnyException();
+  }
+
+  /**
+   * An implicit {@code CALL { }} imports nothing, so its body may not reference an enclosing variable at all. The
+   * kinds it inherits are therefore never consulted for such a name: the scope check runs first and reports it as the
+   * undefined variable it is, rather than this phase answering about a variable the body cannot see.
+   */
+  @Test
+  void anUnimportedReferenceIsReportedAsUndefinedNotAsAKindError() {
+    assertThatThrownBy(() -> explain("MATCH p = (a:P)-[:KNOWS]->(b:P) CALL { RETURN p.name } RETURN *"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'p'");
+  }
+
   // ===================== EXISTS in a WHERE still evaluates as before =====================
 
   @Test
