@@ -53,6 +53,7 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
   private static class TrackingIterator implements Iterator<Record>, AutoCloseable {
     private final Iterator<Record> delegate;
     private       boolean          closed;
+    private       boolean          failOnClose;
 
     TrackingIterator(final Iterator<Record> delegate) {
       this.delegate = delegate;
@@ -73,6 +74,8 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
       closed = true;
       if (delegate instanceof final AutoCloseable closeable)
         closeable.close();
+      if (failOnClose)
+        throw new IllegalStateException("close failed on purpose");
     }
   }
 
@@ -135,6 +138,28 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
     } finally {
       resultSet.close();
     }
+  }
+
+  @Test
+  void aFailureWhileClosingTheIteratorDoesNotEscape() {
+    createCities();
+
+    final ResultSet resultSet = database.query("sql",
+        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 1");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    resultSet.next();
+
+    final FetchFromIndexedFunctionStep step = indexedFunctionStep(resultSet);
+    final TrackingIterator tracker = new TrackingIterator(step.fullResult);
+    tracker.failOnClose = true;
+    step.fullResult = tracker;
+
+    // releasing a resource must not turn into a query failure: the close is best-effort and logged at FINE
+    resultSet.close();
+
+    assertThat(tracker.closed).isTrue();
+    assertThat(step.fullResult).as("the chain is dropped even when its close() failed").isNull();
   }
 
   private FetchFromIndexedFunctionStep indexedFunctionStep(final ResultSet resultSet) {

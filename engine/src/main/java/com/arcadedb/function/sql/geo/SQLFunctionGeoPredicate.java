@@ -195,8 +195,11 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
    * Streams the candidate records of a geo query across the per-bucket geospatial indexes, opening one index cursor at
    * a time. RIDs are unique per bucket, so no cross-bucket deduplication is needed on top of what each cursor already
    * does across the covering cells of the search shape.
+   * <p>
+   * Package-private rather than private so its lifecycle - exhaustion, early close, a bucket that is not a geospatial
+   * index - can be exercised directly instead of only through a planned query.
    */
-  private static class GeoCandidateIterator implements Iterator<Record>, AutoCloseable {
+  static class GeoCandidateIterator implements Iterator<Record>, AutoCloseable {
     private final List<Index>   bucketIndexes;
     private final Shape         searchShape;
     private       int           nextBucket;
