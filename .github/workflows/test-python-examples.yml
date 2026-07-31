@@ -366,7 +366,7 @@ jobs:
                 example_jvm_args=""
                 ;;
               "11_vector_index_build.py")
-                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --threads 1 --mem-limit 2g --batch-size 500 --max-connections 16 --beam-width 100 --quantization NONE --run-label ci11_arcadedb_sql"
+                example_args="--backend arcadedb_sql --dataset stackoverflow-tiny --threads 1 --mem-limit 2g --batch-size 500 --beam-width 100 --quantization NONE --run-label ci11_arcadedb_sql"
                 example_name="$example (vector build, arcadedb_sql backend, minimal)"
                 timeout_duration=1200
                 example_jvm_args=""
