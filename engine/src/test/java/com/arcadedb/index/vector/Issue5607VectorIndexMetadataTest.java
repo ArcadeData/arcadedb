@@ -20,8 +20,10 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 
@@ -87,6 +89,79 @@ class Issue5607VectorIndexMetadataTest extends TestHelper {
         .hasMessageContaining("dimensions");
 
     assertThat(database.getSchema().existsIndex("Doc[embedding]")).isFalse();
+  }
+
+  /**
+   * A METADATA value the builder cannot read comes from the statement, so it is a client mistake. Each
+   * of these used to escape as a raw {@code NumberFormatException} or {@code IndexException}, which the
+   * HTTP layer reports as a 500; they are parsing errors now, so the answer stays a 400.
+   */
+  @Test
+  void unreadableDenseVectorMetadataValuesAreParsingErrors() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
+    });
+
+    assertThatThrownBy(
+        () -> database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {\"dimensions\": \"abc\"}"))
+        .isInstanceOf(CommandSQLParsingException.class);
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {\"dimensions\": 8, \"similarity\": \"NOPE\"}"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("similarity");
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {\"dimensions\": 8, \"quantization\": \"NOPE\"}"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("quantization");
+
+    // pqClusters is capped at 256 because a PQ code is one byte per subspace (issue #5417).
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {\"dimensions\": 8, \"pqClusters\": 512}"))
+        .isInstanceOf(CommandSQLParsingException.class);
+
+    assertThat(database.getSchema().existsIndex("Doc[embedding]")).isFalse();
+
+    // A number that merely arrived quoted is still a number: it must keep working.
+    assertThatCode(
+        () -> database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {\"dimensions\": \"8\"}"))
+        .doesNotThrowAnyException();
+    assertThat(((LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Doc[embedding]"))
+        .getIndexesOnBuckets()[0]).getDimensions()).isEqualTo(8);
+  }
+
+  /**
+   * Product quantization needs codebooks trained from the data, and the dialog offers it on a type that
+   * is usually still empty. Creating the index and filling it afterwards has to work end to end, or the
+   * option does not belong in the dialog at all.
+   */
+  @Test
+  void productQuantizationIndexCreatedOnAnEmptyTypeAcceptsAndSearchesVectors() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE PqDoc");
+      database.command("sql", "CREATE PROPERTY PqDoc.embedding ARRAY_OF_FLOATS");
+    });
+
+    database.command("sql", "CREATE INDEX ON `PqDoc` (`embedding`) LSM_VECTOR METADATA "
+        + "{\"dimensions\":8,\"similarity\":\"COSINE\",\"maxConnections\":32,\"beamWidth\":100,\"quantization\":\"PRODUCT\"}");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++) {
+        final MutableVertex v = database.newVertex("PqDoc");
+        final float[] vector = new float[8];
+        for (int j = 0; j < 8; j++)
+          vector[j] = (i + j) / 64f;
+        v.set("embedding", vector);
+        v.save();
+      }
+    });
+
+    final ResultSet rs = database.query("sql",
+        "SELECT distance FROM (SELECT expand(vectorNeighbors('PqDoc[embedding]', ?, 5)))",
+        (Object) new float[] { 0f, 1 / 64f, 2 / 64f, 3 / 64f, 4 / 64f, 5 / 64f, 6 / 64f, 7 / 64f });
+    assertThat(rs.stream().count()).isPositive();
   }
 
   @Test

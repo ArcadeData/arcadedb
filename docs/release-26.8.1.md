@@ -673,5 +673,9 @@ The underlying contract was loose in three places, and all three are tightened:
 - **Index creation failures carry their reason again.** Any error raised while building an index was rewrapped
   as a bare `Error on creating index on type 'X', properties [y]`, discarding the cause's message on the way to
   the SQL and HTTP layers. The reason is now part of the message.
+- **A `METADATA` value the vector builder cannot read is a 400, not a 500.** Every value in that clause comes
+  from the statement, so an unparsable number (`{"dimensions": "abc"}` escaped as a raw
+  `NumberFormatException`), an unknown `similarity` or `quantization` name, or an out-of-range `pqClusters` is a
+  client mistake. They are reported as parsing errors now, the same treatment the `GEOSPATIAL` metadata gets.
 
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.2...26.8.1
