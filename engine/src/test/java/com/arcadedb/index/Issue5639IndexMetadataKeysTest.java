@@ -262,6 +262,27 @@ class Issue5639IndexMetadataKeysTest extends TestHelper {
     assertThat(database.getSchema().existsIndex("Doc[embedding]")).isTrue();
   }
 
+  /**
+   * The geospatial branch already rejected an unknown key (#5600); this pins that its errors reach the client as a 400
+   * through the same three-exception catch as the other three index types, rather than only for the one exception its
+   * setters happen to throw today.
+   */
+  @Test
+  void malformedGeospatialMetadataIsReported() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Place");
+      database.command("sql", "CREATE PROPERTY Place.location STRING");
+    });
+
+    for (final String metadata : new String[] { "{\"precison\": 6}", "{\"precision\": 6.9}", "{\"precision\": \"abc\"}",
+        "{\"precision\": 99}", "{\"tokenization\": \"NOPE\"}" })
+      assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Place (location) GEOSPATIAL METADATA " + metadata))
+          .as("METADATA %s", metadata)
+          .isInstanceOf(CommandSQLParsingException.class);
+
+    assertThat(database.getSchema().existsIndex("Place[location]")).isFalse();
+  }
+
   @Test
   void unknownSparseVectorMetadataKeyIsReported() {
     database.transaction(() -> {

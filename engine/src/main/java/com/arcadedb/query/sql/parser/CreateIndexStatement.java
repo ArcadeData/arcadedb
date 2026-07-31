@@ -289,7 +289,11 @@ public class CreateIndexStatement extends DDLStatement {
         final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
         try {
           geoBuilder.withMetadata(new JSONObject(metadataMap));
-        } catch (final IllegalArgumentException e) {
+        } catch (final IndexException | IllegalArgumentException | JSONException e) {
+          // The same three exceptions the other branches catch. Every geospatial setter happens to throw
+          // IllegalArgumentException today, so catching only that one made the HTTP 400 incidental rather than
+          // guaranteed: a future validation raising IndexException, or a JSON getter raising JSONException, would
+          // escape as a 500.
           throw new CommandSQLParsingException(e.getMessage(), e);
         }
       }
